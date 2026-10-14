@@ -1,5 +1,6 @@
 // File prediction can be omitted only when decode cannot acquire file-backed work.
-// Evaluate once after the RAM complement is complete, before requests/updates start.
+// Evaluate after resource plans and prediction consumers are finalized, immediately
+// before serving requests.
 #pragma once
 #include <cstddef>
 #include <cstdint>

@@ -6632,19 +6632,6 @@ int main(int argc, char **argv) try {
         }
 #endif
     }
-    // #1922: this port's look-ahead only warms files. Keep it for batched prompts,
-    // elastic KV or explicit overrides; otherwise complete serial decode coverage
-    // is preserved by swaps and by returning prompt loans before decode.
-    if (drive.d.lookahead != nullptr && srcp == &src && src.complement_ready()) {
-        const strata::core::ResidentDecodePrefetch mode{
-            o.serve, o.batch > 0, kvg.on, false, std::getenv("STRATA_LOOKAHEAD") != nullptr};
-        if (strata::core::resident_decode_needs_no_prediction(
-                mode, host_res, (size_t) g.n_layers * (size_t) g.n_expert,
-                [&](size_t i) { return src.has_resident((int64_t) (i / g.n_expert), (int64_t) (i % g.n_expert)); })) {
-            drive.d.lookahead = nullptr;
-            std::fprintf(stderr, "strata generate: routing-aware prefetch off (complete GPU/RAM coverage during serial decode)\n");
-        }
-    }
     if (o.adapt_async && !src.complement_ready()) adapt_async_off("the resident RAM mode is not running");
     if (o.serve) {
         if (o.spec < 2 || o.prefill_chunk <= 0 ||
@@ -8746,6 +8733,19 @@ int main(int argc, char **argv) try {
                         std::abort();
                     }
                 }).detach();
+        }
+        // #1922: all startup reservations are final and no request has run yet.
+        // This port's predictor only warms files; retain it when decode coverage
+        // can change or the user explicitly requested it.
+        if (drive.d.lookahead != nullptr && srcp == &src && src.complement_ready()) {
+            const strata::core::ResidentDecodePrefetch mode{
+                o.serve, o.batch > 0, kvg.on, false, std::getenv("STRATA_LOOKAHEAD") != nullptr};
+            if (strata::core::resident_decode_needs_no_prediction(
+                    mode, host_res, (size_t) g.n_layers * (size_t) g.n_expert,
+                    [&](size_t i) { return src.has_resident((int64_t) (i / g.n_expert), (int64_t) (i % g.n_expert)); })) {
+                drive.d.lookahead = nullptr;
+                std::fprintf(stderr, "strata generate: routing-aware prefetch off (complete GPU/RAM coverage during serial decode)\n");
+            }
         }
         std::printf("READY %lld stop\n", (long long) o.max_context);   // "stop": this engine honours STOP
         std::fflush(stdout);
