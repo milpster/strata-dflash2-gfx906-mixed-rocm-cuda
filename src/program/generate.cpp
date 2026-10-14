@@ -30,6 +30,7 @@
 #include "strata/core/conversation_memory.hpp"
 #include "strata/core/coupled_draft.hpp"
 #include "strata/core/expert_source.hpp"
+#include "strata/core/resident_decode_prefetch.hpp"
 #include "strata/core/foresight_swap.hpp"
 #include "strata/core/pinned.hpp"
 #include "strata/core/pin_budget.hpp"
@@ -8091,6 +8092,24 @@ int main(int argc, char** argv) {
             }
         }
 #endif
+    }
+    // #1922: in fixed-capacity, serial serving, a complete GPU/RAM cover remains complete
+    // through adaptive exchanges. Prompt loans are returned before decode. Batched serving
+    // and elastic KV can remove coverage during decode, so retain prediction there.
+    // This runs before any submitted work: never scan mutable residency on the worker.
+    if (drive.d.lookahead != nullptr && srcp == &src && src.complement_ready()) {
+        // The serve path attaches an existing Foresight pool even with FS_AHEAD=0;
+        // preserve that consumer whenever its slots are configured.
+        const char* fs_slots = std::getenv("STRATA_FS_SLOTS");
+        const bool prediction_consumer = la_stats || (fs_slots != nullptr && std::atoi(fs_slots) > 0);
+        const strata::core::ResidentDecodePrefetch mode{
+            o.serve, o.batch > 0, kvg.on, prediction_consumer, std::getenv("STRATA_LOOKAHEAD") != nullptr};
+        if (strata::core::resident_decode_needs_no_prediction(
+                mode, host_res, (size_t) g.n_layers * (size_t) g.n_expert,
+                [&](size_t i) { return src.has_resident((int64_t) (i / g.n_expert), (int64_t) (i % g.n_expert)); })) {
+            drive.d.lookahead = nullptr;
+            std::fprintf(stderr, "strata generate: routing-aware prefetch off (complete GPU/RAM coverage during serial decode)\n");
+        }
     }
     // (the arena mode has no RAM copy to exchange with: its experts are always in RAM, the tier only copies them in)
     if (o.adapt_async && !src.complement_ready() && srcp != &arena_src) adapt_async_off("the resident RAM mode is not running");
