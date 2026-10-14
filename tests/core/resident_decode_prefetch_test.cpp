@@ -20,6 +20,13 @@ int main() {
         return true;
     };
     check(eligible(mode));
+    // Startup can reserve GPU slots permanently after the RAM complement is built.
+    // The policy must see the final table, not cache the earlier complete cover.
+    gpu[0] = -1;
+    check(!eligible(mode));
+    ram[0] = true;
+    check(eligible(mode));
+    gpu[0] = 0; ram[0] = false;
     auto m = mode; m.serving = false; check(!eligible(m));
     m = mode; m.batched = true; check(!eligible(m));
     m = mode; m.elastic_kv = true; check(!eligible(m));
