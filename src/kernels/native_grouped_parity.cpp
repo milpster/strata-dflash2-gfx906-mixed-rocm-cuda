@@ -25,6 +25,7 @@
 #include <random>
 #include <string>
 #include <vector>
+#include <utility>
 
 namespace k = strata::kernels;
 
@@ -75,7 +76,10 @@ std::vector<uint8_t> random_rows(int t, int64_t rows, int64_t n, std::mt19937& r
     std::uniform_int_distribution<int> byte(0, 255), ex(2, 8), man(0, 1023), sgn(0, 1);
     for (auto& b : w) b = (uint8_t) byte(rng);
     for (size_t o = 0; o < w.size(); o += bs) {
-        if (t == 29) {
+        if (t == 42) {
+            const float d = std::ldexp(1.0f + (float) man(rng) / 1024.0f, -8) * (sgn(rng) ? -1.0f : 1.0f);
+            std::memcpy(&w[o], &d, sizeof(d));
+        } else if (t == 29) {
             // IQ1_M: the fp16 scale is the top nibbles of its four scale words (bytes 48..55), the sign and the
             // exponent's top bits in the last: 0x1 / 0x2 there (0x9 / 0xA negative) keeps it in 2^-11 .. 2^-3
             const uint8_t nib = (uint8_t) ((sgn(rng) ? 0x8 : 0x0) | (1 + (byte(rng) & 1)));
@@ -243,6 +247,63 @@ void check(int gu, int dt, int64_t H, int64_t FF, cudaStream_t s, std::mt19937& 
     g_fail += bad;
 }
 
+
+// #1187 refresh: Q2 mode16 GU/down bit-spreading.
+// Compare every output bit including untouched rows, and every scratch byte
+// including gate/up, hidden activations and quantized hq. No model required.
+void check_q2_modes(cudaStream_t s, bool gfx906) {
+    int cases = 0;
+    int reference_mode = 0; // CUDA mode16 fallback
+#if defined(STRATA_HIP_GFX906)
+    reference_mode = gfx906 ? 7 : 2;
+#endif
+    for (int seed : {17, 316}) {
+        std::mt19937 rng(seed);
+        for (int shape : {0, 1}) { // qualified geometry and shape-fallback control
+            const int H = shape ? 512 : 2560, FF = shape ? 256 : 640;
+            for (const auto& pair : {std::pair<int,int>{42,42}, {42,20}, {21,42}}) {
+                Setup S(pair.first, pair.second, H, FF, 6, 4, 9, rng, s);
+                for (int base : {0, 7}) {
+                    for (const std::vector<int>& sizes : {std::vector<int>{}, {1}, {2}, {3}, {4}, {5}, {6}, {1,2,3,4,5}}) {
+                        S.plan_sizes(sizes, base, rng);
+                        for (int gy : {0, 1, 2, 3, 4, S.cap + 3}) {
+                            // Unsupported devices must keep the pinned-upstream
+                            // mode16 fallback, not enter any new Q2 path.
+                            k::native_expert_set_mode(reference_mode, 0);
+                            const auto ref = S.result(false, gy, 0, s);
+                            std::vector<uint8_t> ref_scr(S.scr_bytes), got_scr(S.scr_bytes);
+                            ck(cudaMemcpy(ref_scr.data(), S.scr, S.scr_bytes, cudaMemcpyDeviceToHost), "ref scratch");
+                            for (int mode : {16}) {
+                                k::native_expert_set_mode(mode, 0);
+                                const auto got = S.result(false, gy, 0, s);
+                                ck(cudaMemcpy(got_scr.data(), S.scr, S.scr_bytes, cudaMemcpyDeviceToHost), "candidate scratch");
+                                size_t diffs = 0, nonfinite = 0, writes = 0;
+                                for (size_t i = 0; i < ref.size(); ++i) {
+                                    diffs += ref[i] != got[i];
+                                    if (i < S.out_floats && got[i] != 0xFFFFFFFFu) {
+                                        ++writes;
+                                        nonfinite += (got[i] & 0x7F800000u) == 0x7F800000u;
+                                    }
+                                }
+                                const bool scratch_diff = ref_scr != got_scr;
+                                const bool no_writes = !sizes.empty() && writes == 0;
+                                ++cases;
+                                if (diffs || scratch_diff || nonfinite || no_writes) {
+                                    ++g_fail;
+                                    std::printf("Q2 modes FAIL seed=%d H=%d FF=%d gu=%d down=%d base=%d groups=%zu gy=%d mode=%d out_diff=%zu scratch_diff=%d nonfinite=%zu writes=%zu\n",
+                                        seed,H,FF,pair.first,pair.second,base,sizes.size(),gy,mode,diffs,(int)scratch_diff,nonfinite,writes);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    k::native_expert_set_mode(-1, 0);
+    std::printf("q2_modes_parity: %d cases, %d failures, gfx906=%d\n",cases,g_fail,(int)gfx906);
+}
+
 // ------------------------------------------------------------------------------------------------ --bench
 // A window's 48 calls, one per layer, each with ITS OWN experts as the layers have: copies of the Setup's blobs in one
 // arena, so the weights stream from DRAM as in the engine.  (48 calls re-reading the same 28 experts - 73 MB, about an
@@ -349,6 +410,27 @@ void bench(cudaStream_t s, std::mt19937& rng) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    if (argc > 1 && std::string(argv[1]) == "--q2-modes") {
+        if (argc == 4 && std::string(argv[2]) == "--device") {
+            char* end = nullptr;
+            const long dev = std::strtol(argv[3], &end, 10);
+            if (!argv[3][0] || *end || dev < 0 || dev > 2147483647L) {
+                std::fprintf(stderr, "invalid device index\n"); return 2;
+            }
+            ck(cudaSetDevice((int) dev), "set device");
+        }
+        else if (argc != 2) { std::fprintf(stderr, "usage: native_grouped_parity --q2-modes [--device N]\n"); return 2; }
+        bool gfx906 = false;
+#if defined(STRATA_HIP_GFX906)
+        int dev = 0; cudaDeviceProp p{};
+        ck(cudaGetDevice(&dev), "device"); ck(cudaGetDeviceProperties(&p, dev), "properties");
+        gfx906 = p.warpSize == 64 && std::strncmp(p.gcnArchName, "gfx906", 6) == 0 && (p.gcnArchName[6] == '\0' || p.gcnArchName[6] == ':');
+#endif
+        cudaStream_t stream; ck(cudaStreamCreate(&stream), "stream");
+        check_q2_modes(stream, gfx906);
+        ck(cudaStreamDestroy(stream), "stream destroy");
+        return g_fail ? 1 : 0;
+    }
     const bool do_bench = argc > 1 && std::string(argv[1]) == "--bench";
     cudaStream_t s;
     ck(cudaStreamCreate(&s), "stream");

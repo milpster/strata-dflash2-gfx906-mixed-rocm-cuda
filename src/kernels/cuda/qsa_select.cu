@@ -23,6 +23,7 @@ static_assert(IDX_DIM == strata::core::kCompiledGeometry.idx_key_dim && IDX_HEAD
               "qsa_select is compiled for core/geometry.hpp");
 constexpr int SCORE_WARPS = 8;
 constexpr int TOPK_T = 256;
+constexpr int64_t GFX906_TOPK_SHORT_CELLS = 24576;
 
 __device__ __forceinline__ uint32_t order_key(float s) {
     const float v = s + 0.0f;
@@ -735,7 +736,22 @@ __device__ __forceinline__ int block_excl_scan(int v, int* s_warp, int& total) {
     return r;
 }
 
-template <int PER>
+// Shared, CTA-uniform predicate for the two graph-captured arms. Read current
+// device steps on every replay. Host dispatch limits the window to 1..8 rows.
+__device__ __forceinline__ bool gfx906_topk_window_fits17(const int32_t* steps, int nq) {
+    if (steps[(int64_t) (nq - 1) * kStepCount + kStepNKv] <= GFX906_TOPK_SHORT_CELLS) return false;
+    int32_t max_bid = 0;
+#pragma unroll
+    for (int q = 0; q < 8; ++q) {
+        if (q < nq) {
+            const int32_t bid = steps[(int64_t) q * kStepCount + kStepNBid];
+            max_bid = bid > max_bid ? bid : max_bid;
+        }
+    }
+    return (int64_t) max_bid + 1 <= (int64_t) TK_T * 17;
+}
+
+template <int PER, bool FIT17_ONLY = false>
 __global__ void __launch_bounds__(TK_T) block_topk_reg_kernel(const float* __restrict__ scores,
                                                               const int32_t* __restrict__ steps, int64_t max_blocks,
                                                               int64_t cap, int32_t* __restrict__ ids) {
@@ -745,6 +761,10 @@ __global__ void __launch_bounds__(TK_T) block_topk_reg_kernel(const float* __res
     const int64_t qi = blockIdx.x;
     const int32_t* st = steps + qi * kStepCount;
     const int64_t n_kv = st[kStepNKv], n_bid = st[kStepNBid], width = st[kStepWidth];
+    if constexpr (FIT17_ONLY) {
+        static_assert(PER == 17, "FIT17 requires 17 keys per thread");
+        if (!gfx906_topk_window_fits17(steps, (int) gridDim.x)) return;
+    }
     int32_t* out = ids + qi * cap;
     const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
     if (n_kv <= width) {
@@ -853,11 +873,15 @@ __global__ void __launch_bounds__(TK_T) block_topk_reg_kernel(const float* __res
 // reach > fit, i.e. the deep contexts where the ref radix was the only option on AMD).
 constexpr int TS_MAXQ = 4096;
 __device__ int g_tk_fail[TS_MAXQ];   // block_topk_sample_kernel: 1 = the query is block_topk_wide_kernel<true>'s
-template <bool ONLY_FAILED = false>
+template <bool ONLY_FAILED = false, bool FIT17_FALLBACK = false>
 __global__ void __launch_bounds__(TK_T) block_topk_wide_kernel(const float* __restrict__ scores,
                                                                const int32_t* __restrict__ steps, int64_t max_blocks,
                                                                int64_t cap, int32_t* __restrict__ ids) {
     if (ONLY_FAILED && !g_tk_fail[blockIdx.x]) return;
+    if constexpr (FIT17_FALLBACK) {
+        static_assert(!ONLY_FAILED, "FIT17 fallback is independent of sampled top-k");
+        if (gfx906_topk_window_fits17(steps, (int) gridDim.x)) return;
+    }
     __shared__ int hist[TK_T / 32][256];
     __shared__ int s_gt[TK_T / 32], s_eq[TK_T / 32];
     __shared__ int s_digit, s_above;
@@ -1943,6 +1967,26 @@ void qsa_block_topk_ref(const float* scores, const int32_t* steps, int64_t nq, i
     if (e != cudaSuccess) { std::fprintf(stderr, "qsa_block_topk: %s\n", cudaGetErrorString(e)); std::exit(1); }
 }
 
+#if defined(STRATA_HIP_GFX906) && defined(__HIPCC__)
+// The build can contain other devices. Only exact gfx906 wave64 accepts the new decode paths.
+// Device queries fail closed; the cache is per calling thread and device ordinal.
+static bool topk_current_device_is_gfx906() {
+    int dev = -1;
+    if (cudaGetDevice(&dev) != cudaSuccess) { (void) cudaGetLastError(); return false; }
+    if (dev < 0 || dev >= 64) return false;
+    static thread_local unsigned char cache[64] = {};
+    if (cache[dev] == 0) {
+        cudaDeviceProp p{};
+        if (cudaGetDeviceProperties(&p, dev) != cudaSuccess) { (void) cudaGetLastError(); return false; }
+        const char* a = p.gcnArchName;
+        const bool exact = p.warpSize == 64 && std::strncmp(a, "gfx906", 6) == 0 &&
+                           (a[6] == '\0' || a[6] == ':');
+        cache[dev] = exact ? 2 : 1;
+    }
+    return cache[dev] == 2;
+}
+#endif
+
 #if !defined(__HIPCC__)
 // Only Turing has a retained model measurement for this CUDA dispatch. Other CUDA devices keep the capacity rule
 // (the RTX 5070 regression below). Cache the properties per calling thread; layer-split device switches are checked.
@@ -2519,7 +2563,7 @@ void qsa_block_topk(const float* scores, const int32_t* steps, int64_t nq, int64
     }
 #endif
     // the blocks a query can have: the call's active count when the caller knows it (the prompt path), else the capacity.
-    // Decode (no count) keeps the capacity rule and the original register width: nothing changes there.
+    // Decode keeps the capacity rule; exact gfx906 wave64 can opt into bounded FIT17 below.
 #if defined(__HIPCC__)
     const bool counted = active_blocks > 0;
 #else
@@ -2558,6 +2602,26 @@ void qsa_block_topk(const float* scores, const int32_t* steps, int64_t nq, int64
         std::fprintf(stderr, "qsa_block_topk: unsupported geometry or cap\n");
         std::exit(1);
     }
+#if defined(STRATA_HIP_GFX906) && defined(__HIPCC__)
+    // Only the measured FIT17 band is specialized. Short and larger windows
+    // retain current-main wide arithmetic, not the historical ref/reg66 paths.
+    static const bool guarded_fit17 = [] {
+        const char* reg = std::getenv("STRATA_GFX906_TOPK_REG");
+        const char* fit17 = std::getenv("STRATA_GFX906_TOPK_FIT17");
+        return reg && std::strcmp(reg, "2") == 0 && fit17 && std::strcmp(fit17, "1") == 0;
+    }();
+    if (guarded_fit17 && !old && !counted && nq <= 8 &&
+        reach > (int64_t) TK_T * TK_PER && reach <= (int64_t) TK_T * TK_PER_MAX &&
+        topk_current_device_is_gfx906()) {
+        // Complementary guards read identical current steps before any barrier.
+        // A captured graph therefore survives growth and restores across both boundaries.
+        block_topk_reg_kernel<17, true><<<(unsigned) nq, TK_T, 0, (cudaStream_t) stream>>>(scores, steps, max_blocks, cap, ids);
+        block_topk_wide_kernel<false, true><<<(unsigned) nq, TK_T, 0, (cudaStream_t) stream>>>(scores, steps, max_blocks, cap, ids);
+        const cudaError_t e = cudaGetLastError();
+        if (e != cudaSuccess) { std::fprintf(stderr, "qsa_block_topk guarded FIT17: %s\n", cudaGetErrorString(e)); std::exit(1); }
+        return;
+    }
+#endif
     // Turing prefill (the `counted` bound) above ~90K cells (22,528 blocks): the wide kernel, which reads the keys
     // coalesced, instead of the register kernel's uncoalesced per-thread runs (PR #743: 131K, 1.03 -> 0.75 ms); the
     // same ids.  STRATA_TOPK_STREAM=0 restores the register kernel there.

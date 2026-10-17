@@ -983,6 +983,8 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_include_directories(native_grouped_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(native_grouped_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME native_grouped_parity COMMAND native_grouped_parity)
+  add_test(NAME native_q2_modes_parity COMMAND native_grouped_parity --q2-modes)
+  set_tests_properties(native_q2_modes_parity PROPERTIES TIMEOUT 600)
   add_executable(mmvf_rows_parity src/kernels/mmvf_rows_parity.cpp)
   target_include_directories(mmvf_rows_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(mmvf_rows_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
@@ -1155,6 +1157,14 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_include_directories(qsa_topk_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(qsa_topk_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME qsa_topk_parity COMMAND qsa_topk_parity --selftest)
+  if(STRATA_HIP_GFX906)
+    add_test(NAME qsa_topk_gfx906_guarded COMMAND qsa_topk_parity --gfx906-guarded)
+    set_tests_properties(qsa_topk_gfx906_guarded PROPERTIES
+      ENVIRONMENT "STRATA_GFX906_TOPK_REG=2;STRATA_GFX906_TOPK_FIT17=0" TIMEOUT 600)
+    add_test(NAME qsa_topk_gfx906_fit17 COMMAND qsa_topk_parity --gfx906-guarded)
+    set_tests_properties(qsa_topk_gfx906_fit17 PROPERTIES
+      ENVIRONMENT "STRATA_GFX906_TOPK_REG=2;STRATA_GFX906_TOPK_FIT17=1" TIMEOUT 600)
+  endif()
   # the register kernel from the smallest prompt batch (the line gfx1151 moves to 4096 blocks): same ids at every case
   add_test(NAME qsa_topk_parity_reg_always COMMAND qsa_topk_parity --selftest)
   set_tests_properties(qsa_topk_parity_reg_always PROPERTIES ENVIRONMENT "STRATA_TOPK_REG_MIN_BLOCKS=0")
@@ -1400,6 +1410,25 @@ else()
   set(_strata_avxvnni STRATA_AVXVNNI=0)
 endif()
 set_property(SOURCE src/kernels/cpu/q2_avx2.cpp APPEND PROPERTY COMPILE_DEFINITIONS ${_strata_avxvnni})
+if(STRATA_BUILD_TESTS AND NOT MSVC AND STRATA_ISA_FLOOR STREQUAL "")
+  # These direct AVX2 tests are not part of the older-CPU (avx/none) test profile.
+  # Standalone production-TU test; do not link a second q2_avx2.cpp object.
+  add_executable(q2_avx2_spread_test tests/q2_avx2_spread_test.cpp)
+  target_include_directories(q2_avx2_spread_test PRIVATE include)
+  target_compile_options(q2_avx2_spread_test PRIVATE -mavx2 -mfma -mf16c)
+  target_compile_definitions(q2_avx2_spread_test PRIVATE ${_strata_avxvnni})
+  # A separate baseline process checks the execution host BEFORE the AVX2 TU's
+  # static initializers run, including for native builds or copied test binaries.
+  add_executable(q2_avx2_test_runner tests/q2_avx2_test_runner.cpp)
+  target_compile_options(q2_avx2_test_runner PRIVATE
+    -march=x86-64 -mtune=generic -mno-avx -mno-avx2 -mno-fma -mno-f16c)
+  add_dependencies(q2_avx2_test_runner q2_avx2_spread_test)
+  add_test(NAME q2_avx2_spread_on COMMAND ${CMAKE_COMMAND} -E env
+    STRATA_Q2_AVX2_SPREAD=1 $<TARGET_FILE:q2_avx2_test_runner> $<TARGET_FILE:q2_avx2_spread_test> on)
+  add_test(NAME q2_avx2_spread_off COMMAND ${CMAKE_COMMAND} -E env
+    STRATA_Q2_AVX2_SPREAD=0 $<TARGET_FILE:q2_avx2_test_runner> $<TARGET_FILE:q2_avx2_spread_test> off)
+  set_tests_properties(q2_avx2_spread_on q2_avx2_spread_off PROPERTIES SKIP_RETURN_CODE 77)
+endif()
 find_package(Threads REQUIRED)
 target_link_libraries(strata_kernels_cpu PUBLIC Threads::Threads)
 
