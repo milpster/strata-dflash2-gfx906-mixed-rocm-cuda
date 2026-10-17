@@ -194,7 +194,20 @@ public:
     static int64_t handoff_floats(const ModelGeometry& g) { return (int64_t) g.hc * g.n_embd + g.n_embd + g.hc; }
 
     /// Keep the first `n_keep` (1..T) tokens of the last window; advances `ss.ple_prev` by them.
-    bool commit(int n_keep, std::string& err);
+    /// A non-null context requests deferral reserved for serial two-device MTP decode: only this earlier stage may return pending;
+    /// the caller MUST wait_commit immediately after drafting, including skipped drafts and every error exit.
+    /// The next stage retains its normal synchronous commit. Other callers leave the context null.
+    struct PrimaryCommitContext {
+        bool mtp = false;
+        int draft_device = -1;
+        int batch = 0;
+        int pipeline_windows = 0;
+        bool pipeline_active = false;
+        bool pipeline_ran = false;
+    };
+    // Validates runtime devices and verifier state as well as the serving mode. Opt-in only.
+    bool can_defer_primary_commit(const PrimaryCommitContext& context) const;
+    bool commit(int n_keep, std::string& err, const PrimaryCommitContext* context = nullptr);
 
     // ================================ SEVERAL SEQUENCES IN ONE WINDOW ================================
     //
@@ -449,6 +462,7 @@ private:
 #endif
     std::vector<float> logit_bias_host_;
     float* logit_bias_device_ = nullptr;
+    bool no_pcie_group_ = false;         ///< fixed before graph capture; gfx906 wave64 opt-in only
     int device_ = -1;                    ///< the device `init` ran on: run/commit switch to it (layer split)
     unsigned long long* rr_stats_ = nullptr;   ///< STRATA_ROUTE_RESIDENT's counters on device_ (#1578); null: none
     std::atomic<bool> released_{false};  ///< #267: release_gpu_waits ran (maybe on the watchdog thread): no more windows
@@ -570,6 +584,7 @@ private:
     void pcie_balance_window(int64_t steps, int G);
     cudaEvent_t commit_done_ = nullptr;   // recorded after an async commit (set_commit_async); see wait_commit
     bool commit_pending_ = false;
+    bool primary_commit_live_ = false;   // owns mapped parameters until the event/stream is drained
     cudaStream_t copy_ = nullptr;                                 // the copy engine's stream (DMA of missed experts)
     struct FlagSet { uint32_t* flag; uint32_t value; };
     FlagSet flag_sets_[2 * 64 * 2] = {};                          // host-function arguments, one per (layer, group)

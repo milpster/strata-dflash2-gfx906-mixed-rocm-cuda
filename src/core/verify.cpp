@@ -204,6 +204,28 @@ const bool g_coherent = env_on("STRATA_VERIFY_COHERENT");
 const bool g_doorbell_store = env_on("STRATA_DOORBELL_STORE");
 #endif
 const bool g_trace = env_on("STRATA_VERIFY_TRACE");
+// These gfx906 experiments require the literal value "1"; absent, "0", and other values stay off.
+bool gfx906_opt_in(const char* name) {
+    const char* value = std::getenv(name);
+    return value != nullptr && value[0] == '1' && value[1] == '\0';
+}
+// Empty PCIe-stage idea: closed PR #2223. Runtime gfx906/wave64 guards are local additions.
+// Snapshot per verifier before graph capture, not from the first device queried by the process.
+bool no_pcie_group_device(int device) {
+#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)
+    if (!gfx906_opt_in("STRATA_NO_PCIE_GROUP") || device < 0) return false;
+    cudaDeviceProp prop{};
+    if (cudaGetDeviceProperties(&prop, device) != cudaSuccess) {
+        (void) cudaGetLastError();
+        return false;
+    }
+    return prop.warpSize == 64 && strata::kernels::gfx_arch_is(prop.gcnArchName, "gfx906");
+#else
+    (void) device;
+    return false;
+#endif
+}
+
 const bool g_no_multi_gr = env_on("STRATA_NO_MULTI_GR");   // #783 PR-g: per-token GR reads/writes and generic-T kernels again
 const bool g_no_batch_kv = env_on("STRATA_NO_BATCH_KV_STEP");   // #783 PR-d: per-token K/V and indexer appends again
 // STRATA_BATCH_SELF_COMMIT=1 (opt-in): a batch window whose rows are each another slot's one token keeps them itself,
@@ -640,7 +662,9 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         if (slot.load() == this || slot.compare_exchange_strong(none, this)) break;
     }
     release_gpu_fn().store(&release_live_verifiers);
-    cudaGetDevice(&device_);   // a layer split's stage on another GPU: its streams, graphs and buffers live there
+    const bool device_ok = cudaGetDevice(&device_) == cudaSuccess;   // this stage's actual device
+    // Dynamic PCIe balancing can request a nonempty share; retain its original graph.
+    no_pcie_group_ = device_ok && bal_ == nullptr && no_pcie_group_device(device_);
     rr_stats_ = route_resident_cfg().stats_on(device_);   // STRATA_ROUTE_RESIDENT: this GPU's counters, outside graph capture
     strata::kernels::fused_gr_check();   // once per card: which bitwise-equal hyper-connection read runs there
     strata::kernels::fused_gr_persist_init();   // opt-in STRATA_HC_PERSIST=1 (HIP)
@@ -1994,20 +2018,22 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             stamp(l, 19, grp);
             grouped(p_ptr, p_start, p_counts, 0, hit_out);
             stamp(l, 20, grp);
-            if (device_plan_) wait_flag_ge_or(m_flagB_, ring, skip_ + grp, cs);
-            else if (m_bal_ != nullptr)   // set_pcie_balance: the PCIe part starts
-                wait_flag_ge_stamped(m_flagB_, ring, m_bal_ + ((l - lb_) * 2 + grp) * 4 + 1, nullptr, cs);
-            else wait_flag_ge(m_flagB_, ring, cs);                 // the PCIe share is in staging (DMA) or mapped
-            if (sink_.pcie_mode == 2) {                            // stage it with a copy kernel, then point at staging
-                const int64_t per = G == 2 ? kStagingBlobs / 2 : kStagingBlobs;
-                uint8_t* stage = staging_ + (size_t) (grp * per) * lay.max_blob;
-                fetch_blobs(p_ptr2, p_counts + 2, stage, (int64_t) lay.blob_bytes(l), (int) per, cs);
-                rebase_ptrs((unsigned long long*) p_ptr2, p_counts + 2, stage, (int64_t) lay.blob_bytes(l), cs);
+            if (!no_pcie_group_) {
+                if (device_plan_) wait_flag_ge_or(m_flagB_, ring, skip_ + grp, cs);
+                else if (m_bal_ != nullptr)   // set_pcie_balance: the PCIe part starts
+                    wait_flag_ge_stamped(m_flagB_, ring, m_bal_ + ((l - lb_) * 2 + grp) * 4 + 1, nullptr, cs);
+                else wait_flag_ge(m_flagB_, ring, cs);                 // the PCIe share is in staging (DMA) or mapped
+                if (sink_.pcie_mode == 2) {                            // stage it with a copy kernel, then point at staging
+                    const int64_t per = G == 2 ? kStagingBlobs / 2 : kStagingBlobs;
+                    uint8_t* stage = staging_ + (size_t) (grp * per) * lay.max_blob;
+                    fetch_blobs(p_ptr2, p_counts + 2, stage, (int64_t) lay.blob_bytes(l), (int) per, cs);
+                    rebase_ptrs((unsigned long long*) p_ptr2, p_counts + 2, stage, (int64_t) lay.blob_bytes(l), cs);
+                }
+                stamp(l, 21, grp);
+                // the PCIe share is pcie_frac of the misses: a few groups when the cache is cold, usually none (always none at
+                // pcie_frac 0), so its launch is kPcieGroupRows block rows striding over the groups, not cap of them
+                grouped(p_ptr2, p_start2, p_counts + 2, kPcieGroupRows, hit_out);
             }
-            stamp(l, 21, grp);
-            // the PCIe share is pcie_frac of the misses: a few groups when the cache is cold, usually none (always none at
-            // pcie_frac 0), so its launch is kPcieGroupRows block rows striding over the groups, not cap of them
-            grouped(p_ptr2, p_start2, p_counts + 2, kPcieGroupRows, hit_out);
             stamp(l, 22, grp);
             if (device_plan_) {   // no CPU share when the device planned the group: its rows are zeros
                 wait_flag_ge_or(m_flag_, ring, skip_ + grp, cs);
@@ -2651,6 +2677,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
 #endif
     using namespace strata::kernels;
     const OnDevice on_device(device_);
+    if (primary_commit_live_) { err = "verify: primary commit must drain before the next run"; return false; }
     last_batch_ = false;
     if (T < 1 || T > max_t_) { err = "verify: window size out of range"; return false; }
     if (released_.load()) { err = "verify: an earlier window never finished on the GPU (#267); restart the engine"; return false; }
@@ -3065,6 +3092,16 @@ void Verifier::fetch_dma(void* ctx, const uint8_t* const* src, int n, size_t byt
 
 void Verifier::publish_plan(void* ctx) {
     Verifier* v = (Verifier*) ctx;
+    // #2223 follow-on: run(), service(), run_batch() and batch_service() share this callback.
+    // Reject before publishing flag A; checking only run() misses pipelined and batch windows.
+    if (v->no_pcie_group_ && (v->sink_.counts == nullptr || v->sink_.counts[2] != 0)) {
+        std::fprintf(stderr, "strata verify: STRATA_NO_PCIE_GROUP=1 needs --pcie-frac 0 "
+                            "(GPU %d, plan step %u, PCIe groups %d)\n",
+                     v->device_, v->cur_layer_ + 1, v->sink_.counts ? v->sink_.counts[2] : -1);
+        std::fflush(stderr);
+        v->release_gpu_waits(5000);
+        std::abort();
+    }
     _mm_sfence();
     *(volatile uint32_t*) v->h_flagA_ = v->cur_layer_ + 1;
 }
@@ -3142,11 +3179,42 @@ bool Verifier::window_logprobs(const int32_t* targets, int T, int64_t pos0, int3
 namespace { bool g_commit_async = false; }
 void Verifier::set_commit_async(bool on) { g_commit_async = on && std::getenv("STRATA_COMMIT_SYNC") == nullptr; }
 
-bool Verifier::commit(int n_keep, std::string& err) {
+bool Verifier::can_defer_primary_commit(const PrimaryCommitContext& context) const {
+#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)
+    // No architecture-wide inference from the binary target: both actual devices must match.
+    // Timing uses process-global events; exclude it until those are made stage-local upstream.
+    if (!gfx906_opt_in("STRATA_PRIMARY_COMMIT_OVERLAP") ||
+        std::getenv("STRATA_COMMIT_SYNC") != nullptr ||
+        std::getenv("STRATA_COMMIT_TIMING") != nullptr ||
+        std::getenv("STRATA_SPLIT_OVERLAP") != nullptr ||
+        !context.mtp || context.batch != 0 || context.pipeline_windows != 0 ||
+        context.pipeline_active || context.pipeline_ran || next_ == nullptr || next_->next_ != nullptr ||
+        device_ == next_->device_ || context.draft_device != next_->device_ || last_batch_ || next_->last_batch_ || batch_rec_ || next_->batch_rec_ ||
+        ext_stream_ != nullptr || next_->ext_stream_ != nullptr || always_publish_ || next_->always_publish_ ||
+        released_.load() || next_->released_.load()) return false;
+    cudaDeviceProp p0{}, p1{};
+    const cudaError_t e0 = cudaGetDeviceProperties(&p0, device_);
+    const cudaError_t e1 = cudaGetDeviceProperties(&p1, next_->device_);
+    if (e0 != cudaSuccess || e1 != cudaSuccess) { (void) cudaGetLastError(); return false; }
+    return p0.warpSize == 64 && p1.warpSize == 64 &&
+           strata::kernels::gfx_arch_is(p0.gcnArchName, "gfx906") &&
+           strata::kernels::gfx_arch_is(p1.gcnArchName, "gfx906");
+#else
+    (void) context;
+    return false;
+#endif
+}
+
+bool Verifier::commit(int n_keep, std::string& err, const PrimaryCommitContext* context) {
 #if defined(STRATA_GPU_METAL)
     return strata::metal_engine::window_commit(metal_, n_keep, err);
 #endif
     const OnDevice on_device(device_);
+    const bool defer_this = context != nullptr && can_defer_primary_commit(*context);
+    if (primary_commit_live_ || (defer_this && commit_pending_)) {
+        err = "verify: deferred primary commit was not drained before parameter reuse";
+        return false;
+    }
     if (n_keep < 1 || n_keep > last_t_) { err = "verify: commit count out of range"; return false; }
     const Clock::time_point t0 = Clock::now();
     h_commit_[0] = n_keep;
@@ -3179,17 +3247,28 @@ bool Verifier::commit(int n_keep, std::string& err) {
         const cudaError_t le = cudaGraphLaunch(commit_exec_, cs_);
         if (ct.on) { cudaEventRecord(ct.e, cs_); ct.pending = true; }
         if (le != cudaSuccess) { err = std::string("verify: commit launch: ") + cudaGetErrorString(le); return false; }
+        if (defer_this) primary_commit_live_ = true;   // remains live even if recording its event fails
         // set_commit_async: no wait here - the next window runs on the same stream after it, and the drafter (its own
         // stream) reads only this window's final rows and its own K/V. h_commit_ is next written after the next window's
         // results are read, i.e. after this graph has run.  Everything else waits on commit_done_ (wait_commit).
-        if (!g_commit_async || next_ != nullptr) {
+        if (!defer_this && (!g_commit_async || next_ != nullptr)) {
             const cudaError_t se = cudaStreamSynchronize(cs_);
             if (se != cudaSuccess) { err = std::string("verify: commit: ") + cudaGetErrorString(se); return false; }
         } else {
             const cudaError_t re = cudaEventRecord(commit_done_, cs_);
-            if (re != cudaSuccess) { err = std::string("verify: commit event: ") + cudaGetErrorString(re); return false; }
+            if (re != cudaSuccess) {
+                err = std::string("verify: commit event: ") + cudaGetErrorString(re);
+                // A successful launch already owns the mapped parameters and saved window buffers. If its
+                // event could not be recorded, drain the stream directly; retain the original event error.
+                if (defer_this && cudaStreamSynchronize(cs_) == cudaSuccess) primary_commit_live_ = false;
+                return false;
+            }
             (void) cudaStreamQuery(cs_);
             commit_pending_ = true;
+            if (defer_this) {
+                static const bool trace = gfx906_opt_in("STRATA_PRIMARY_COMMIT_TRACE");
+                if (trace) std::fprintf(stderr, "strata primary commit: queued device %d keep %d\n", device_, n_keep);
+            }
         }
     }
     if (ple_stage())   // stages that share one session must advance it once
@@ -3198,7 +3277,9 @@ bool Verifier::commit(int n_keep, std::string& err) {
             ss_->ple_prev[1] = last_tokens_[t];
         }
     ms_commit += ms_since(t0);
-    return next_ == nullptr || next_->commit(n_keep, err);
+    if (next_ != nullptr && !next_->commit(n_keep, err)) return false;
+    // Even if legacy global async mode was enabled elsewhere, the drafter's stage must be complete.
+    return !defer_this || next_->wait_commit(err);
 }
 
 bool Verifier::wait_commit(std::string& err) {
@@ -3206,6 +3287,21 @@ bool Verifier::wait_commit(std::string& err) {
     (void) err;
     return true;
 #endif
+    if (primary_commit_live_) {
+        const OnDevice on_device(device_);
+        const cudaError_t se = commit_pending_ ? cudaEventSynchronize(commit_done_) : cudaStreamSynchronize(cs_);
+        bool ok = se == cudaSuccess;
+        if (ok || (commit_pending_ && cudaStreamSynchronize(cs_) == cudaSuccess)) {
+            commit_pending_ = false;
+            primary_commit_live_ = false;
+        }
+        if (!ok) err = std::string("verify: primary commit: ") + cudaGetErrorString(se);
+        // A primary failure must not skip draining the other stage. Preserve the first failure.
+        std::string next_err;
+        const bool next_ok = next_ == nullptr || next_->wait_commit(next_err);
+        if (ok && !next_ok) err = next_err;
+        return ok && next_ok;
+    }
     if (commit_pending_) {
         const OnDevice on_device(device_);
         commit_pending_ = false;
