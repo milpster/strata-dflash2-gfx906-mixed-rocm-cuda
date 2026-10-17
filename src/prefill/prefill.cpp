@@ -1,3 +1,9 @@
+#if defined(STRATA_HC_F16_EXACT_BUILT)
+#include "hc_f16_exact.hpp"
+#endif
+#if defined(STRATA_HC_BF16_N4_BUILT)
+#include "hc_bf16_n4.hpp"
+#endif
 // src/prefill/prefill.cpp - see include/strata/prefill/prefill.hpp.
 #include "strata/kernels/fused_gr.hpp"
 #include "strata/prefill/prefill.hpp"
@@ -866,6 +872,14 @@ struct Prefill::Impl {
     cudaStream_t cs = nullptr, copy = nullptr;
     Gemm gemm;
     std::vector<void*> owned;
+#if defined(STRATA_HC_F16_EXACT_BUILT)
+    hc_f16_exact::State hc_exact;
+    bool hc_exact_chain = false;
+#endif
+#if defined(STRATA_HC_BF16_N4_BUILT)
+    hc_n4::State hc_n4;  // independent owned slack; never part of carve/relayout/loans
+    bool hc_n4_chain = false;  // this or a descendant owns scratch; covers asymmetric refusals
+#endif
     // chunk buffers
     float *emb = nullptr, *R = nullptr, *xn = nullptr, *lo = nullptr, *gated = nullptr, *inj = nullptr;
     float* grs = nullptr;                    // F-1: the hyper-connection read's row scales (T x 4)
@@ -1045,7 +1059,27 @@ void Prefill::reset() {
 void Prefill::release() {
     if (!impl_) return;
     impl_->hand_worker.reset();   // idle here (run drains the chain before it returns); joins its thread
+#if defined(STRATA_HC_F16_EXACT_BUILT)
+    // Independent of N4: HC may own storage on a stage where N4 refused.
+    const hc_f16_exact::Owner hc_owner(impl_->device, impl_->hc_exact.scratch != nullptr);
+    if (impl_->hc_exact.scratch && cudaStreamSynchronize(impl_->cs) != cudaSuccess)
+        hc_f16_exact::fatal("compute drain before release");
+    impl_->gemm.bind_hc_f16_exact(nullptr);
+    impl_->hc_exact.release();
+#endif
+
+#if defined(STRATA_HC_BF16_N4_BUILT)
+    // Public run() drains the complete chain on normal and exceptional exit before
+    // a caller may destroy any stage. Do not traverse successors during destruction.
+    const hc_n4::DeviceScope n4_owner(impl_->device, impl_->hc_n4.scratch != nullptr);
+    if (impl_->cs) {
+        const auto status = cudaStreamSynchronize(impl_->cs);
+        if (impl_->hc_n4.scratch && status != cudaSuccess) hc_n4::fatal("compute drain failed during cleanup");
+    }
+    impl_->hc_n4.release();
+#else
     if (impl_->cs) cudaStreamSynchronize(impl_->cs);
+#endif
     if (impl_->copy) cudaStreamSynchronize(impl_->copy);
     if (impl_->kv_copy) cudaStreamSynchronize(impl_->kv_copy);
     for (int i = 0; i < RING_MAX; ++i) {
@@ -1404,6 +1438,32 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
     }
     return true;
 }
+
+#if defined(STRATA_HC_F16_EXACT_BUILT)
+bool Prefill::prepare_hc_f16_exact(std::string& err) {
+    Impl& m = *impl_;
+    // Called only after the COMPLETE existing N4 prepare traversal and all mandatory
+    // serving allocations. No cache/loan/carve sizing consumes this optional budget.
+    if (m.wt && !m.hc_exact.prepare(m.device, m.cs,
+            m.T_max >= 4095 && !m.f16_io && !m.xn_f16 && !m.xn16_lo && !m.lo16_lo && !hc_pad(), err)) return false;
+    m.gemm.bind_hc_f16_exact(m.hc_exact.enabled ? &m.hc_exact : nullptr);
+    if (next_ && !next_->prepare_hc_f16_exact(err)) return false;
+    m.hc_exact_chain = m.hc_exact.scratch || (next_ && next_->impl_->hc_exact_chain);
+    return true;
+}
+#endif
+
+#if defined(STRATA_HC_BF16_N4_BUILT)
+bool Prefill::prepare_hc_bf16_n4(std::string& err) {
+    Impl& m = *impl_;
+    // Uninitialized/disabled stages do not query the device or allocate anything.
+    if (m.wt && !m.hc_n4.prepare(m.device, m.T_max >= 4095 && !m.f16_io && !m.xn_f16 && !m.xn16_lo && !hc_pad(), err))
+        return false;
+    if (next_ && !next_->prepare_hc_bf16_n4(err)) return false;
+    m.hc_n4_chain = m.hc_n4.scratch || (next_ && next_->impl_->hc_n4_chain);
+    return true;
+}
+#endif
 
 // Every device buffer of a chunk of T tokens, from the Alloc `alloc` (after the GEMM scratch and workspace): `init`
 // once, and `relayout` for a request's own chunk.  The order is `bytes_needed`'s.
@@ -3000,7 +3060,15 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     }
                 }
                 if (!upmixed && !bf16_proj(m.gemm, wu, m.lo16, m.gated, T, su, err, 0, m.lo16_lo, 0, m.cs)) return false;
+#if defined(STRATA_HC_BF16_N4_BUILT)
+                if (!hcd) {
+                    const int n4 = m.hc_n4.call(m.gemm, wi, m.xn16, m.inj, T, m.f16_io || xf16, m.xn16_lo, ldx, m.cs, err);
+                    if (n4 < 0) return false;
+                    if (!n4 && !bf16_proj(m.gemm, wi, m.xn16, m.inj, T, si, err, 0, m.xn16_lo, ldx != D ? ldx : 0, m.cs, xf16)) return false;
+                }
+#else
                 if (!hcd && !bf16_proj(m.gemm, wi, m.xn16, m.inj, T, si, err, 0, m.xn16_lo, ldx != D ? ldx : 0, m.cs, xf16)) return false;
+#endif
                 if (upmixed) {
                 } else if (gr_unfused()) {
                     gr_mix(m.xn, m.gated, m.mixed, m.mixed_bf, T, m.cs, m.mixed_h, m.mixed_bf_lo);
@@ -4821,10 +4889,30 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
         return ok;
     }
 #endif
+#if defined(STRATA_HC_BF16_N4_BUILT)
+    hc_n4::DrainOnExit drain_on_error{[&] {
+        std::string cleanup_err;
+        return drain_pipeline(cleanup_err);
+    }, impl_->hc_n4_chain};
+#endif
+#if defined(STRATA_HC_F16_EXACT_BUILT)
+    hc_f16_exact::DrainOnExit hc_drain_on_error{[&] {
+        std::string cleanup_err; return drain_pipeline(cleanup_err);
+    }, impl_->hc_exact_chain};
+#endif
     const bool body_ok = run_impl(tokens, n, pos0, err);
 
     std::string drain_err;
     const bool drain_ok = drain_pipeline(drain_err);
+
+#if defined(STRATA_HC_F16_EXACT_BUILT)
+    hc_drain_on_error.dismiss();
+    if (!drain_ok && impl_->hc_exact_chain) hc_f16_exact::fatal("normal chain drain failed");
+#endif
+
+#if defined(STRATA_HC_BF16_N4_BUILT)
+    drain_on_error.dismiss();
+#endif
 
     if (!body_ok) return false;
     if (!drain_ok) {

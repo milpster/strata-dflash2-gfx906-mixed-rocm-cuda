@@ -1,3 +1,6 @@
+#if defined(STRATA_HC_F16_EXACT_BUILT)
+#include "hc_f16_exact.hpp"
+#endif
 // src/prefill/gemm.cu - see include/strata/prefill/gemm.hpp.
 #include "strata/prefill/gemm.hpp"
 #include "strata/kernels/dequant_bf16.hpp"
@@ -907,6 +910,103 @@ bool Gemm::rdna2_sgemm(const uint16_t* X, const uint16_t* W, float* Y, int64_t T
 }
 #endif
 
+#if defined(STRATA_HC_F16_EXACT_BUILT) && defined(__HIPCC__)
+template <bool AUDIT, bool SCALED = false, bool EXACT = false>
+__global__ void hc_exact_bf16_to_f16(const uint16_t* in, __half* out, int64_t n, unsigned* stats, float scale = 1.0f) {
+    const int64_t i = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned magnitude = 0;
+    if (i < n) {
+        const uint16_t word = in[i];
+        const float f = __uint_as_float((uint32_t)word << 16);
+        const float converted = SCALED ? f * scale : f;
+        // E007 uses positive power-of-two scales; preserve the source zero sign.
+        const __half h = (SCALED && EXACT && !AUDIT && (word & 0x7fffu) == 0)
+                             ? __ushort_as_half(word)
+                             : __float2half_rn(converted);  // no saturation; numerical-change opt-in
+        out[i] = h;
+        if constexpr (SCALED && !AUDIT) {
+            // Guard fused into the conversion pass; ordinary finite values do no atomics.
+            if (!isfinite(f)) atomicOr(stats + 1, 1u);
+            if (!isfinite(converted) || fabsf(converted) > 65504.0f) atomicOr(stats + 2, 1u);
+            if constexpr (EXACT) {
+                const float back = __half2float(h) / scale;
+                if (__float_as_uint(f) != __float_as_uint(back)) atomicOr(stats + 3, 1u);
+            }
+        }
+        if constexpr (AUDIT) {
+            const float back = SCALED ? __half2float(h) / scale : __half2float(h);
+            if (!isfinite(f)) atomicAdd(stats + 1, 1u);
+            else {
+                magnitude = __float_as_uint(fabsf(f));
+                if (fabsf(converted) > 65504.0f) atomicAdd(stats + 2, 1u);
+            }
+            if (__float_as_uint(f) != __float_as_uint(back)) atomicAdd(stats + 3, 1u);
+            if (f != 0.0f && back == 0.0f) atomicAdd(stats + 4, 1u);
+        }
+    }
+    if constexpr (AUDIT) {
+        // One global maximum update per 256-thread block, including a partial tail.
+        __shared__ unsigned maxima[8];
+        for (int o = 16; o; o >>= 1) {
+            const unsigned v = __shfl_xor(magnitude, o, 32);
+            magnitude = magnitude > v ? magnitude : v;
+        }
+        if ((threadIdx.x & 31) == 0) maxima[threadIdx.x >> 5] = magnitude;
+        __syncthreads();
+        if (threadIdx.x < 32) {
+            magnitude = threadIdx.x < 8 ? maxima[threadIdx.x] : 0;
+            for (int o = 16; o; o >>= 1) {
+                const unsigned v = __shfl_xor(magnitude, o, 32);
+                magnitude = magnitude > v ? magnitude : v;
+            }
+            if (threadIdx.x == 0) atomicMax(stats, magnitude);
+        }
+    }
+}
+
+extern "C" int strata_hc_f16_exact_supported(int owner) {
+ int current=-1;if(hipGetDevice(&current)!=hipSuccess||current!=owner)return -1;
+ hipDeviceProp_t p{};if(hipGetDeviceProperties(&p,owner)!=hipSuccess)return -1;
+ return std::strncmp(p.gcnArchName,"gfx906",6)==0&&(p.gcnArchName[6]==0||p.gcnArchName[6]==':')&&p.warpSize==64?1:0;
+}
+#endif
+#if defined(STRATA_HC_F16_EXACT_BUILT)
+bool Gemm::try_hc_f16_exact(const uint16_t* X,const uint16_t* W,float* Y,int64_t T,int64_t N,int64_t K,int64_t ldy,float beta,int64_t ldx) {
+#if defined(STRATA_HC_F16_EXACT_BUILT) && defined(__HIPCC__)
+ if(!hc_exact_||!hc_exact_->eligible(X,W,Y,T,N,K,ldy,beta,ldx,f16_io_,stream_))return false;
+ auto& state=*hc_exact_;const uint64_t we=uint64_t(N)*K,xe=uint64_t(T)*K;
+ auto* wh=static_cast<uint16_t*>(state.scratch);auto* xh=wh+we;auto* stats=reinterpret_cast<unsigned*>(xh+xe);
+ const auto st=static_cast<cudaStream_t>(stream_);
+ auto check=[](cudaError_t e,const char* why){if(e!=cudaSuccess)hc_f16_exact::fatal(why);};
+ check(cudaMemsetAsync(stats,0,64,st),"guard reset");
+ hc_exact_bf16_to_f16<false,true,true><<<(unsigned)((we+255)/256),256,0,st>>>(W,(__half*)wh,we,stats,4096.0f);
+ check(cudaGetLastError(),"weight conversion launch");
+ hc_exact_bf16_to_f16<false,true,true><<<(unsigned)((xe+255)/256),256,0,st>>>(X,(__half*)xh,xe,stats+5,512.0f);
+ check(cudaGetLastError(),"input conversion launch");unsigned guard[10]={};
+ check(cudaMemcpyAsync(guard,stats,sizeof(guard),cudaMemcpyDeviceToHost,st),"guard copy");check(cudaStreamSynchronize(st),"guard sync");
+ if(guard[1]||guard[6]||guard[2]||guard[7]||guard[3]||guard[8]){++state.guard_fallback;return false;}
+ if(state.reference_only){++state.other_fallback;return false;}
+ const float alpha=0x1p-21f,zero=0.0f;
+ ck(cublasGemmEx((cublasHandle_t)handle_,CUBLAS_OP_T,CUBLAS_OP_N,(int)N,(int)T,(int)K,
+                &alpha,wh,CUDA_R_16F,(int)K,xh,CUDA_R_16F,(int)K,&zero,Y,CUDA_R_32F,(int)ldy,
+                CUBLAS_COMPUTE_32F,CUBLAS_GEMM_DEFAULT),"HC exact scaled F16");
+ STRATA_ABSORB_HIPBLAS_STICKY("HC exact scaled F16");++state.takes;
+ if(state.shadow){
+  // Qualification requires the separately sealed full-word E006 observer. This is
+  // reference-output ordering, not a self-contained numerical comparison gate.
+  const float one=1.0f;
+  ck(cublasGemmEx((cublasHandle_t)handle_,CUBLAS_OP_T,CUBLAS_OP_N,(int)N,(int)T,(int)K,
+                 &one,W,CUDA_R_16BF,(int)K,X,CUDA_R_16BF,(int)K,&zero,Y,CUDA_R_32F,(int)ldy,
+                 CUBLAS_COMPUTE_32F,CUBLAS_GEMM_DEFAULT),"HC exact shadow BF16 reference");
+  STRATA_ABSORB_HIPBLAS_STICKY("HC exact shadow BF16 reference");
+ }
+ return true;
+#else
+ (void)X;(void)W;(void)Y;(void)T;(void)N;(void)K;(void)ldy;(void)beta;(void)ldx;return false;
+#endif
+}
+#endif
+
 bool Gemm::bf16_converts_x() const {
 #if defined(__HIPCC__) || defined(STRATA_EXPERIMENTAL_SM60)
     return false;
@@ -954,6 +1054,10 @@ void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64
         STRATA_ABSORB_HIPBLAS_STICKY("hipBLASLt bf16");
         return;
     }
+#endif
+#if defined(STRATA_HC_F16_EXACT_BUILT)
+    // The conversion guard reads BF16 words; neither FP16 input representation is admissible.
+    if (!x_f16 && !f16_io_ && try_hc_f16_exact(X, W, Y, T, N, K, ldy, beta, ldx)) return;
 #endif
 #if defined(__HIPCC__)
     // a padded X (STRATA_PF_PAD, ldx > K) keeps the native call: the widening copies contiguous rows

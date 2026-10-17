@@ -68,6 +68,11 @@ if(STRATA_HIP_GFX906)
   endif()
   set(STRATA_ENABLE_CUDA ON CACHE BOOL "" FORCE)
 endif()
+option(STRATA_GFX906_HC_F16_EXACT "Experimental exact-guarded HC down/up (default OFF)" OFF)
+option(STRATA_GFX906_HC_BF16_N4 "Build the experimental opt-in gfx906 BF16 HC injection kernel" OFF)
+if((STRATA_GFX906_HC_BF16_N4 OR STRATA_GFX906_HC_F16_EXACT) AND NOT STRATA_HIP_GFX906)
+  message(FATAL_ERROR "The experimental gfx906 HC kernels require the gfx906 compatibility backend")
+endif()
 option(STRATA_ENABLE_HIP "Build the HIP targets for wave32 AMD GPUs (gfx1100, gfx1201; gfx1012/gfx1030 unvalidated)" OFF)
 option(STRATA_PREFILL_MMQ "Build the optional GGML MMQ prefill path for HIP" OFF)
 # MMQ prompt kernels for Q4_K / Q5_K / Q5_1 / Q6_K (Unsloth's UD-Q4/Q5/Q6_K_XL experts; on HIP also the dense GGUF
@@ -298,6 +303,28 @@ if(STRATA_BUILD_TESTS)
   add_executable(host_limits_test tests/platform/host_limits_test.cpp)
   target_include_directories(host_limits_test PRIVATE include)
   add_test(NAME host_limits_test COMMAND host_limits_test)
+  # Comparison/route-counter checks for the independent HC GPU fixture (no GPU needed).
+  add_executable(hc_f16_exact_checks_test tests/hip/hc_f16_exact_checks_test.cpp)
+  add_test(NAME hc_f16_exact_checks COMMAND hc_f16_exact_checks_test)
+
+  # Pure host policy/lifetime tests: the fake runtime is private to this target.
+  add_executable(hc_f16_exact_owned_test tests/prefill/hc_f16_exact_owned_test.cpp)
+  target_include_directories(hc_f16_exact_owned_test BEFORE PRIVATE
+    tests/prefill/hc_n4_fake_runtime src/prefill include)
+  add_test(NAME hc_f16_exact_owned COMMAND hc_f16_exact_owned_test)
+
+  add_executable(hc_bf16_n4_owned_test tests/prefill/hc_bf16_n4_owned_test.cpp)
+  target_include_directories(hc_bf16_n4_owned_test BEFORE PRIVATE
+    tests/prefill/hc_n4_fake_runtime src/prefill include)
+  target_link_libraries(hc_bf16_n4_owned_test PRIVATE Threads::Threads)
+  add_test(NAME hc_bf16_n4_owned COMMAND hc_bf16_n4_owned_test)
+  add_test(NAME hc_bf16_n4_shadow_order COMMAND hc_bf16_n4_owned_test shadow)
+  add_test(NAME hc_bf16_n4_launch_failure COMMAND hc_bf16_n4_owned_test launch-failure)
+  add_test(NAME hc_bf16_n4_restore_failure COMMAND hc_bf16_n4_owned_test restore-failure)
+  add_test(NAME hc_bf16_n4_drain_failure COMMAND hc_bf16_n4_owned_test drain-failure)
+  add_test(NAME hc_bf16_n4_drain_exception COMMAND hc_bf16_n4_owned_test drain-exception)
+  set_tests_properties(hc_bf16_n4_launch_failure hc_bf16_n4_restore_failure
+    hc_bf16_n4_drain_failure hc_bf16_n4_drain_exception PROPERTIES WILL_FAIL TRUE)
 endif()
 
 # ---- strata_plan ----------------------------------------------------------
@@ -677,6 +704,36 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   # against llama.cpp on the SAME ids and a tokenizer on one side of that comparison is a second variable.
   # plan v0.3 P5: batched prompt processing (tensor-core GEMMs through cuBLAS).
   add_library(strata_prefill STATIC src/prefill/gemm.cu src/prefill/kernels.cu src/prefill/prefill.cpp)
+  if(STRATA_GFX906_HC_F16_EXACT)
+    if(NOT STRATA_HIP_GFX906 OR NOT CMAKE_HIP_ARCHITECTURES STREQUAL "gfx906")
+      message(FATAL_ERROR "HC F16 exact requires gfx906 compatibility backend and exactly gfx906")
+    endif()
+    target_compile_definitions(strata_prefill PUBLIC STRATA_HC_F16_EXACT_BUILT=1)
+    if(STRATA_BUILD_TESTS)
+      add_executable(hc_f16_exact_parity tests/hip/hc_f16_exact_parity.cpp)
+      target_include_directories(hc_f16_exact_parity PRIVATE src/prefill)
+      target_link_libraries(hc_f16_exact_parity PRIVATE strata_prefill ${_strata_gpu_runtime_target})
+      add_test(NAME hc_f16_exact_parity COMMAND hc_f16_exact_parity)
+      set_tests_properties(hc_f16_exact_parity PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
+    endif()
+  endif()
+
+  if(STRATA_GFX906_HC_BF16_N4)
+    # The inspected arithmetic is gfx906-only. Do not compile its inline ISA for another target.
+    if(NOT CMAKE_HIP_ARCHITECTURES STREQUAL "gfx906")
+      message(FATAL_ERROR "The experimental HC N4 kernel requires exactly CMAKE_HIP_ARCHITECTURES=gfx906")
+    endif()
+    target_sources(strata_prefill PRIVATE src/prefill/hc_bf16_n4.cu)
+    target_compile_definitions(strata_prefill PUBLIC STRATA_HC_BF16_N4_BUILT=1)
+    if(STRATA_BUILD_TESTS)
+      add_executable(hc_bf16_n4_parity tests/hip/hc_bf16_n4_parity.cpp)
+      target_link_libraries(hc_bf16_n4_parity PRIVATE strata_prefill ${_strata_gpu_runtime_target})
+      add_test(NAME hc_bf16_n4_parity COMMAND hc_bf16_n4_parity)
+      set_tests_properties(hc_bf16_n4_parity PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
+    endif()
+    set_source_files_properties(src/prefill/hc_bf16_n4.cu PROPERTIES
+      COMPILE_OPTIONS "-fno-fast-math;-fdenormal-fp-math=ieee;-Xclang;-fdenormal-fp-math-f32=ieee")
+  endif()
   if(STRATA_ENABLE_HIP)
     # #313: the RDNA3 WMMA GEMMs include hip_runtime.h: AMD builds only (a CUDA build never sees this file)
     target_sources(strata_prefill PRIVATE src/prefill/wmma_gemm.cu)

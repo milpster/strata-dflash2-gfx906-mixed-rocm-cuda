@@ -10374,6 +10374,20 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata trace: %s %lld %lld\n", what, a, b);
             std::fflush(stderr);
         };
+#if defined(STRATA_HC_BF16_N4_BUILT)
+        // The optional owned workspace comes from remaining slack, after verify/draft/cache
+        // initialization. Do not feed it into cache selection or the prefill loan layout.
+        if (!sp.prepare_hc_bf16_n4(err)) {
+            std::fprintf(stderr, "strata serve: %s\n", err.c_str());
+            return 1;
+        }
+#endif
+#if defined(STRATA_HC_F16_EXACT_BUILT)
+        if (!sp.prepare_hc_f16_exact(err)) {
+            std::fprintf(stderr, "strata serve: %s\n", err.c_str());
+            return 1;
+        }
+#endif
         {
             // what is left once everything is allocated: under WDDM a GPU filled to the brim does not fail, it pages -
             // and a page-in while the verify graph spins on a host flag stalls the request for good

@@ -73,6 +73,16 @@ public:
               void* stream, std::string& err, void* borrow = nullptr, uint64_t borrow_bytes = 0,
               bool borrow_spill = false);
 
+#if defined(STRATA_HC_F16_EXACT_BUILT)
+    bool prepare_hc_f16_exact(std::string& err);
+#endif
+
+#if defined(STRATA_HC_BF16_N4_BUILT)
+    /// Experimental optional scratch, prepared once after mandatory serving initialization.
+    /// No loan/cache sizing changes. A resource refusal keeps the original GEMM path.
+    bool prepare_hc_bf16_n4(std::string& err);
+#endif
+
     /// With borrowed buffers: lay them out again for chunks of `chunk` tokens (at most `init`'s) in `borrow` - a
     /// request lends only the slots its prompt needs.  The stream must be idle (between prompts).
     bool relayout(int64_t chunk, void* borrow, uint64_t borrow_bytes, std::string& err);
