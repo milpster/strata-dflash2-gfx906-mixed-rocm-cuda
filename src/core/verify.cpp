@@ -2274,7 +2274,9 @@ bool Verifier::capture(int T, std::string& err) {
     if (exec_t != nullptr) return true;
     {   // said before the capture: a process that exits inside it (#1275: Windows, 313 MiB free) leaves this line as the trace
         size_t free_b = 0, total_b = 0;
-        if (cudaMemGetInfo(&free_b, &total_b) == cudaSuccess)
+        // print only a sane pair: on the FP16-prompt path this ROCm 6.1 stack has been seen to return
+        // success with a bogus free value (~2^64 bytes), which made the log line say 17592186044302 MiB
+        if (cudaMemGetInfo(&free_b, &total_b) == cudaSuccess && free_b <= total_b)
             std::fprintf(stderr, "strata verify: capturing the %d-token window (%zu MiB of VRAM free)\n", T, free_b >> 20);
         else
             (void) cudaGetLastError();

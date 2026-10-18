@@ -146,6 +146,9 @@ if(STRATA_HIP_GFX906)
   enable_language(HIP)
   find_package(hip REQUIRED)
   find_package(hipblas REQUIRED)
+  # gfx906: the rocBLAS solution table (STRATA_ROCBLAS_TUNING, tools/hip/tune_rocblas) needs roc::rocblas too;
+  # without a found package the table path stays off and the engine builds exactly as before
+  find_package(rocblas CONFIG QUIET)
   add_library(CUDA::cudart INTERFACE IMPORTED)
   target_link_libraries(CUDA::cudart INTERFACE hip::host)
   target_compile_definitions(CUDA::cudart INTERFACE STRATA_HIP_GFX906=1 __HIP_PLATFORM_AMD__=1)
@@ -747,8 +750,9 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     add_executable(tune_hipblaslt tools/hip/tune_hipblaslt.cpp)
     target_link_libraries(tune_hipblaslt PRIVATE hip::host roc::hipblas roc::hipblaslt)
   endif()
-  if(STRATA_ENABLE_HIP AND STRATA_ROCBLAS_AVAILABLE)
+  if((STRATA_ENABLE_HIP OR STRATA_HIP_GFX906) AND TARGET roc::rocblas)
     # the prompt path's rocBLAS solution table (STRATA_ROCBLAS_TUNING; tools/hip/tune_rocblas makes one)
+    # gfx906 builds take the CUDA branches (STRATA_ENABLE_HIP stays off), so the gate includes STRATA_HIP_GFX906
     target_compile_definitions(strata_prefill PRIVATE STRATA_ROCBLAS_AVAILABLE=1)
     target_link_libraries(strata_prefill PRIVATE roc::rocblas)
 
