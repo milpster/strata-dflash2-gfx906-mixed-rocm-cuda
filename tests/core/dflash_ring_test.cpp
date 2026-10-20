@@ -83,16 +83,30 @@ int main() {
     check(dflash_snapshot_extent(100, RING) == 100, "a short context parks whole");
     check(dflash_snapshot_extent(200000, 0) == 200000, "ring 0 keeps the legacy full extent");
 
-    // All/partial/zero re-append: re-appending a committed prefix overwrites the same rows -
-    // the mapping is positional, so re-appends land in the cells the window reads.
+    // All/partial/zero re-append against a slot-indexed pool: noise rows land at the block's
+    // cells; the committed prefix re-appends the SAME cells (positional overwrite); a later
+    // full commit overwrites exactly the stale noise rows the next window would read.
     {
-        std::vector<int64_t> rows_written;
-        for (int64_t pos = 200000; pos < 200000 + ROWS; ++pos) rows_written.push_back(pos);
-        for (int64_t pos : rows_written)
-            check(dflash_ring_cell(pos, RING) == dflash_ring_cell(pos, RING), "re-append targets the same cell");
-        int64_t partial = 0;
-        for (int64_t pos = 200000; pos < 200003; ++pos) partial += dflash_ring_cell(pos, RING) >= 0;
-        check(partial == 3, "a partial commit re-appends exactly its rows");
+        std::vector<int64_t> pool((size_t) RING, -1);
+        auto append = [&](int64_t pos0, int64_t rows) {
+            for (int64_t r = 0; r < rows; ++r) pool[(size_t) dflash_ring_cell(pos0 + r, RING)] = pos0 + r;
+        };
+        append(200000, ROWS);                       // propose writes the block (noise included)
+        append(200000, 3);                          // partial commit re-appends the accepted prefix
+        for (int64_t r = 0; r < 3; ++r)
+            check(pool[(size_t) dflash_ring_cell(200000 + r, RING)] == 200000 + r,
+                  "committed prefix re-appends its own cells");
+        for (int64_t r = 3; r < ROWS; ++r)
+            check(pool[(size_t) dflash_ring_cell(200000 + r, RING)] == 200000 + r,
+                  "the re-append overwrote the same absolute cells");
+        append(200003, ROWS);                       // next propose at the commit point
+        check(dflash_ring_retained(200003, ROWS, W, RING, 200003 + ROWS),
+              "propose after the commit reads retained (overwritten) history");
+        append(200011, ROWS);                       // and so on: the ring only keeps the newest writers
+        bool congruent = true;
+        for (int64_t s = 0; s < RING; ++s)
+            if (pool[(size_t) s] >= 0 && pool[(size_t) s] % RING != s) congruent = false;
+        check(congruent, "every slot holds a congruent absolute cell (positional addressing)");
     }
 
     if (failures) {
