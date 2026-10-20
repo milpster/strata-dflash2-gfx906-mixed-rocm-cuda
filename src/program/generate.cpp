@@ -12978,6 +12978,12 @@ int main(int argc, char** argv) {
                         if ((int64_t) k.ids.size() == resume && starts_with(k.ids, k.imgs)) { c = &k; lent = true; }
                 if (!lent) lent_slot = -1;
                 if (c != nullptr) c->used = ++check_clock;   // mounting through it is the use LRU counts
+                // The bounded draft ring (include/strata/core/dflash_ring.hpp): a rewind whose
+                // readable window reaches cells newer appends overwrote must not mount stale
+                // draft history. The target restore below stays valid; this request re-reads
+                // the prompt (the fresh-prefill path), which rebuilds the draft context.
+                // Legacy full-capacity drafters (ring 0) always retain.
+                const bool ring_ok = !has_dflash || dflash.context_retained(resume, dflash.max_block() + 1);
                 static const bool reread = std::getenv("STRATA_CKPT_REREAD") != nullptr;
                 if (reread && c != nullptr) {
                     // THE CHECK OF THE CHECKPOINT: instead of restoring it, read its tokens again from position 0 in
@@ -12995,7 +13001,7 @@ int main(int argc, char** argv) {
                     reread_to = resume;
                     std::fprintf(stderr, "strata serve: STRATA_CKPT_REREAD: reading %lld tokens again instead of "
                                          "restoring\n", (long long) resume);
-                } else if (c == nullptr || !checkpoint_restore(*c, ss, g) || c->stage_parts.size() != stages.size() ||
+                } else if (c == nullptr || !ring_ok || !checkpoint_restore(*c, ss, g) || c->stage_parts.size() != stages.size() ||
                            [&] {
                                for (size_t i = 0; i < stages.size(); ++i) {
                                    const strata::core::OnDevice on(stages[i]->dev);
@@ -13003,7 +13009,9 @@ int main(int argc, char** argv) {
                                }
                                return false;
                            }()) {
-                    std::printf("ERR restoring a conversation checkpoint failed\n");
+                    std::printf("ERR restoring a conversation checkpoint failed%s\n",
+                                ring_ok ? ""
+                                        : " (the bounded draft ring no longer retains this rewind's window; re-reading the prompt rebuilds it)");
                     return 1;
                 }
                 if (lent && lent_slot == admit_slot) {
