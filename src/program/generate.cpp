@@ -679,7 +679,7 @@ struct Options {
     std::string dflash_vocab;      ///< selected rows of the shared target head, int32 token ids
     std::string dflash_head;       ///< optional draft-only GGUF output.weight
     int dflash_block = 0;          ///< cap the candidates per pass below the trained block (0 = min(spec-1, trained))
-    int64_t dflash_window = 32768; ///< the drafter's attention window in cells (the reference attends to every cell)
+    int64_t dflash_window = -1; ///< --dflash-window capacity in cells; -1 = unset: legacy drafter defaults to 32768, the official SWA geometry follows --max-context (include/strata/core/dflash_ring.hpp)
     int64_t dflash_mask = -1;      ///< the mask token id when the artifact's metadata lacks it
     bool suffix_draft_set = false; ///< whether --suffix-draft was passed explicitly
     bool lookup_chain_set = false;
@@ -948,8 +948,9 @@ void usage() {
                  "  --dflash-vocab FILE  draft over these int32 token ids in the shared head (full vocabulary if omitted)\n"
                  "  --dflash-head GGUF   experimental draft-only BF16 or quantized output.weight; target verification keeps its own head\n"
                  "  --dflash-block K     fixed candidates per pass; 0 = trained pass with confidence gating\n"
-                 "  --dflash-window N    the drafter's attention window in cells (default 32768; the reference model\n"
-                 "                       attends to every cell)\n"
+                 "  --dflash-window N    the drafter's context capacity in cells (docs/DFLASH.md: a capacity limit, not a\n"
+                 "                       rolling window). Unset: legacy drafters use 32768; the official SWA DFlash2\n"
+                 "                       geometry follows --max-context (its pools are bounded rings). 0 = full target context.\n"
                  "  --dflash-mask-token ID  the mask token when the artifact's metadata lacks it (published artifact: 248077)\n"
                  "  --control-vector-scaled FILE:SCALE[,...]  a control vector GGUF on the residual stream (llama.cpp's\n"
                  "                       format; --control-vector FILE = scale 1).  --serve: requests switch it (cvec=0|1)\n"
@@ -9538,6 +9539,9 @@ int main(int argc, char** argv) {
                                 strata::core::dflash_snapshot_extent((int64_t) live.size(),
                                                                     dflash.kv_states()[j].max_cells),
                                 false, err)) return false;
+                    // The drafter's exact horizon travels with the image: confirmed end and
+                    // newest append end (rejected noise included), never inferred from tokens.
+                    image.dflash_meta = dflash.snapshot_meta();
                 }
                 for (size_t k = 0; k < n_st; ++k) {   // the later stages (the last one with the draft layer's K/V)
                     auto& st = stages[k];
@@ -12718,6 +12722,18 @@ int main(int argc, char** argv) {
                 // artifact's extent is refused; geometry/size checks above reject foreign rings).
                 if (valid && (int64_t) incoming->live.ids.size() > dflash.capacity()) valid = false;
                 if (valid && incoming->dflash_kv.empty()) valid = false;
+                // The descriptor must be present, match this drafter's layout, and be internally
+                // consistent - a same-geometry image with corrupt/absent horizon metadata is
+                // rejected before ANY restore (include/strata/core/dflash_ring.hpp).
+                if (valid) {
+                    const strata::core::DFlashSnapshotMeta mine = dflash.snapshot_meta();
+                    const strata::core::DFlashSnapshotMeta& m = incoming->dflash_meta;
+                    valid = m.committed_end >= 0 && m.appended_through >= m.committed_end &&
+                            m.committed_end <= mine.capacity && m.appended_through <= mine.capacity &&
+                            m.ring_cells == mine.ring_cells && m.window == mine.window &&
+                            m.capacity == mine.capacity &&
+                            (int64_t) incoming->live.ids.size() >= m.committed_end;
+                }
                 if (!valid) { incoming.reset(); err.clear(); }
             }
             // Preserve the outgoing branch before any checkpoint rewind, reset,
@@ -12867,7 +12883,7 @@ int main(int argc, char** argv) {
                         }
                     // The restored ring's horizon: the image captured at this absolute end, so
                     // propose/rewind guards can tell retained from overwritten history.
-                    if (!dflash.note_restored_context((int64_t) incoming->live.ids.size(), err)) {
+                    if (!dflash.restore_snapshot(incoming->dflash_meta, err)) {
                         std::printf("ERR restoring DFlash conversation: %s\n", err.c_str());
                         return 1;
                     }
@@ -12985,7 +13001,24 @@ int main(int argc, char** argv) {
                 // Legacy full-capacity drafters (ring 0) always retain.
                 const bool ring_ok = !has_dflash || dflash.context_retained(resume, dflash.max_block() + 1);
                 static const bool reread = std::getenv("STRATA_CKPT_REREAD") != nullptr;
-                if (reread && c != nullptr) {
+                if (c != nullptr && !ring_ok) {
+                    // A deep rewind on the bounded ring: the draft window this resume reads was
+                    // overwritten. Never mount stale draft history: rebuild like STRATA_CKPT_REREAD -
+                    // zero the target session and read the resume tokens again from 0 (the prompt
+                    // path re-fuses the draft context and resets the horizon logically). The
+                    // request recovers; the serving process keeps running.
+                    std::fprintf(stderr, "strata serve: the draft ring no longer retains a rewind to "
+                                         "%lld; reading the prompt again (%lld tokens) instead of restoring\n",
+                                 (long long) resume, (long long) resume);
+                    strata::core::session_zero(ss, g, nullptr, main_cs);
+                    cudaStreamSynchronize(main_stream);
+                    for (auto& st : stages) {
+                        const strata::core::OnDevice on(st->dev);
+                        strata::core::session_zero(st->ss, g, nullptr, (void*) st->stream);
+                        cudaStreamSynchronize(st->stream);
+                    }
+                    reread_to = resume;
+                } else if (reread && c != nullptr) {
                     // THE CHECK OF THE CHECKPOINT: instead of restoring it, read its tokens again from position 0 in
                     // one run (below, with the prompt path's slots lent like any read) - the same chunks the request
                     // that saved it read them in, when that request started at 0.  With the VRAM expert set fixed
@@ -13001,7 +13034,7 @@ int main(int argc, char** argv) {
                     reread_to = resume;
                     std::fprintf(stderr, "strata serve: STRATA_CKPT_REREAD: reading %lld tokens again instead of "
                                          "restoring\n", (long long) resume);
-                } else if (c == nullptr || !ring_ok || !checkpoint_restore(*c, ss, g) || c->stage_parts.size() != stages.size() ||
+                } else if (c == nullptr || !checkpoint_restore(*c, ss, g) || c->stage_parts.size() != stages.size() ||
                            [&] {
                                for (size_t i = 0; i < stages.size(); ++i) {
                                    const strata::core::OnDevice on(stages[i]->dev);
@@ -13009,9 +13042,7 @@ int main(int argc, char** argv) {
                                }
                                return false;
                            }()) {
-                    std::printf("ERR restoring a conversation checkpoint failed%s\n",
-                                ring_ok ? ""
-                                        : " (the bounded draft ring no longer retains this rewind's window; re-reading the prompt rebuilds it)");
+                    std::printf("ERR restoring a conversation checkpoint failed\n");
                     return 1;
                 }
                 if (lent && lent_slot == admit_slot) {
