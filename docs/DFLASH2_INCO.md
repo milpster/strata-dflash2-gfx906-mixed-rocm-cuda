@@ -91,6 +91,36 @@ both sides. It is not an independent runtime numerical forward.
 
 ## Limits and open work
 
+### gfx906 HIP build (compiled + CPU-tested 2026-10-20; no GPU execution)
+
+On a gfx906 box, `STRATA_ENABLE_DFLASH2=ON` with `STRATA_HIP_GFX906=ON` now configures and
+compiles: the gate (CMakeLists) accepts NVIDIA CUDA and the gfx906 wave64 build; wave32 HIP and
+SYCL stay refused. `src/kernels/cuda/dflash2.cu` is compiled as HIP (`--offload-arch=gfx906`)
+through `include/strata/platform/hip_compat/` - its only warp construct, the 5-step
+`__shfl_xor_sync(0xffffffff, dot, 16..1)` butterfly, becomes the compat layer's width-32
+half-wave shuffle (the documented contract); the kernels use no cuBLAS, no WMMA, no packed-byte
+SIMD. The wave32 lane arithmetic is therefore the documented half-wave mapping, not a measured
+wave64 rewrite. Build facts (2026-10-20):
+
+- configure: `-DSTRATA_HIP_GFX906=ON -DSTRATA_ENABLE_DFLASH2=ON -DCMAKE_HIP_ARCHITECTURES=gfx906`
+  with `-DSTRATA_GGML_DIR=/mnt/user/dflash2/deps/llama.cpp` (a copy at pin `3cf03257`), HIP
+  compiler `/opt/rocm-6.1.0/llvm/bin/clang++`, host gcc/g++ 14.2; ldd resolves
+  libamdhip64/libhipblas/librocblas/librocsolver/librocsparse from `/opt/rocm-6.4.4` and
+  libhsa-runtime64 from `/opt/rocm`.
+- built: `strata` (39.3 MB), `dflash2_parity`, `dflash_taps_test`, `dflash_head_bf16_test`,
+  `dflash_rope_parity`, `dflash_owned_kv_test`, `dflash_load_test`; dflash2.cu compiles with zero
+  warnings; full log in `/mnt/user/dflash2/logs/13..16,21`.
+- executed: `dflash_load_test` only (its main has no CUDA calls): **1/1 Passed**. The five GPU
+  parity tests were NOT run - they allocate device memory and run only with prod-down approval.
+- option OFF leaves the target inventory unchanged (825 vs 829; ON-only = the dflash2 objects,
+  parity target, its object-order phony).
+- host-side fix needed by the parity tool: `hip_compat/strata_hip.h` adds plain-C++ `__half_as_ushort`/
+  `__ushort_as_half` bit casts (`!__HIPCC__` only; hipcc keeps hip_fp16.h's own).
+- cherry-picked provenance: `10715d85` (upstream gfx906 fixes) → `5ef3000d`; local `70e0d531`
+  (int4 shared-array align syntax) → `a5c6272f`.
+
+## Limits and open work
+
 - No engine load test. `dflash_load_test.cpp` fixtures exercise the loader; this exact file has
   not been opened by the engine on any backend yet.
 - No generation, server, acceptance-rate, or memory claims. Those measurements belong to the
