@@ -129,3 +129,33 @@ wave64 rewrite. Build facts (2026-10-20):
 - Projection parity samples rows/columns deterministically; it does not claim a full draft forward.
 - Parity of GGUF bytes is proven against the checkpoint bytes; quantized (Q8_0 etc.) variants are
   covered by the legacy quantizer-extension test, not by new numbers here.
+
+## L7 bounded SWA ring (2026-10-20, compiled only — tests NOT executed)
+
+Official DFlash2 geometry (window 2048, head_dim 128) now runs the five draft pools as bounded
+rings: physical `round64(2048 + 8 - 1) = 2112` cells per pool — exactly 43,253,760 bytes of FP16
+(5 pools x 2112 cells x 8 KV heads x 128 dim x 2 (K,V) x 2 B) — fixed before expert-cache sizing,
+elastic/VMM disabled for them. `--dflash-window` keeps its docs/DFLASH.md capacity meaning (0
+follows `--max-context`), so the 32768 default does not cap official 262K use. Append steps
+(`dflash_build_steps`) and the attention's pool reads map `cell % ring`
+(`include/strata/core/dflash_ring.hpp`, one CPU model shared by runtime and tests); RoPE
+positions, the readable window, and visibility stay absolute. Host horizon guards refuse gaps
+and deep rewinds past the retained span; conversation snapshots park the physical ring image
+(clamped extent) and restore sets the captured-end horizon.
+
+Compiled evidence (gfx906 HIP, `nice -n19 -j2`, logs 23–26): `strata`, `dflash_ring_test` (new
+CPU target), `dflash_load_test` (now accepts `--artifact PATH`), `dflash2_parity` (ring-wrap
+cases), `dflash_owned_kv_test` (ring section, gated on the DFlash2 flag) all link; the OFF
+config rebuilds clean. NOTHING executed except the pre-existing L5 `dflash_load_test` result:
+the parent owns every run. Commits (branch `inco-dflash2-gfx906`, unpushed, on top of
+`10180441`): `ca2e0a16` ring helper + CPU test, `f9187f9a` kernel ring mapping,
+`f5f82df9` runtime pools/horizon/snapshot clamps, `5b83c26d` + `7ab565c7` test coverage.
+
+## Limits and open work (L7)
+
+- Ring wrap behavior on device is compile-verified only: the parity and owned-KV ring cases
+  need the parent's prod-down GPU window.
+- The 2112-cell bound assumes the widest block (8 rows = 7 proposals + anchor); geometry with
+  a larger trained block needs `dflash_ring_capacity` with that width (the helper takes it).
+- Snapshot horizon rejects stale rewinds at propose time; the engine's fresh-prefill path for
+  the rejection is exercised by the parent's parked-conversation runs, not by this lane.

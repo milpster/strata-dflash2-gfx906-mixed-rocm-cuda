@@ -78,6 +78,17 @@ On the profiled CUDA/VMM path, draft pools and attention scratch start at 8192 c
 They grow as requests need more context by exchanging memory with expert-cache slots.
 Without that path the full capacity is allocated at startup. An infeasible allocation
 or growth reports an error; a larger configured context is not guaranteed to fit every GPU.
+
+For the official symmetric-window geometry (head_dim 128, sliding window 2048) the
+five pools are BOUNDED rings instead: physical cells = round64(window + widest block - 1)
+= 2112 cells (33 pages, 43,253,760 bytes across the five FP16 pools), fixed before
+expert-cache sizing with elastic growth disabled. The logical `--dflash-window` capacity
+keeps its docs/DFLASH.md meaning (0 follows `--max-context`), so the 32768 default never
+limits official 262K-context use; only the physical pools shrink. Append steps and the
+attention's page reads map cells through `cell % ring` (include/strata/core/dflash_ring.hpp)
+while RoPE positions, the readable window, and the visibility mask stay absolute. The host
+tracks the append horizon: a rewind whose window reaches cells the ring overwrote is refused
+with an explicit diagnostic, and the prefill from position 0 resets the horizon logically.
 The setup low-RAM estimate includes the selected weight format and full draft capacity.
 
 The [128K VRAM audit](../bench/results/2026-10-19-dflash2-vram/README.md) checks full
@@ -106,7 +117,10 @@ are point masses verified by the target; only its accepted prefix is committed.
 Sampled requests use target-only decoding and maintain draft context for later greedy reuse.
 
 In-memory prompt and conversation snapshots include the drafter's five committed K/V
-prefixes. Rewind overwrites later cells. Disk SAVE/RESTORE remains unsupported.
+prefixes. For the bounded rings the parked image is the physical ring in slot order —
+the transfer extent clamps to the pool's cells, never the live length — and the restore
+sets the horizon to the absolute end the image captured. Rewind overwrites later cells;
+a rewind reaching past the ring's newest span must re-prefill. Disk SAVE/RESTORE remains unsupported.
 The [cache regression evidence](../bench/results/2026-10-19-dflash2-pr/cache/README.md)
 records fixed-residency comparisons with fresh drafter and target-only controls.
 
