@@ -17,6 +17,52 @@ from gguf_reader import GGUFFile
 from dflash_stage_parity import Report, bf16, rmsnorm, read_bin
 
 
+def unpack_meta(raw):
+    """meta.bin: 5 ints (legacy full-resident dumps) or 6 (the bounded ring adds its cells)."""
+    if len(raw) % 4:
+        raise ValueError(f"meta.bin: {len(raw)} bytes is not a multiple of 4")
+    vals = struct.unpack(f'<{len(raw) // 4}I', raw)
+    if len(vals) not in (5, 6):
+        raise ValueError(f"meta.bin: {len(vals)} fields, expected 5 (legacy) or 6 (ring)")
+    return vals[:5] + (vals[5],) if len(vals) == 6 else vals + (0,)
+
+
+def ring_cells_span(pos, K, window, ring):
+    """Logical cells a dump comparison covers: the union of the attention's readable window
+    span [max(0,pos-window+1), pos+K) and the context's retained span [max(0,pos+K-ring+1), pos).
+    Bounded by max(window, ring) cells - never the whole logical history."""
+    start = max(0, pos - window + 1) if window else 0
+    lo = max(0, pos + K - ring) if ring > 0 else 0
+    return np.arange(min(start, lo), pos + K)
+
+
+def ring_context_span(pos, K, ring):
+    """First context cell whose pool row survives the block's own writes [pos, pos+K): a cell's
+    row is overwritten by its next congruent cell c+ring, so cells BELOW pos+K-ring carry NOISE
+    (the dumped context at those cells is not in the pool) - comparing them is contamination."""
+    return max(0, pos + K - ring) if ring > 0 else 0
+
+
+def ring_pool_rows(pt, cells, ring, page, nkv):
+    """Pool rows for logical cells: the same `cell % ring` the kernel applies (ring 0: identity).
+    Malformed ring dumps (short tables/pools) are refused with a descriptive message."""
+    if ring > 0:
+        if ring % page:
+            raise ValueError(f"ring {ring} is not a multiple of page {page}")
+        if len(pt) != ring // page:
+            raise ValueError(f"ring page table has {len(pt)} entries, expected {ring // page} "
+                             f"(ring {ring}, page {page})")
+        pc = cells % ring
+    else:
+        pc = cells
+    over = np.nonzero(pc // page >= len(pt))[0]
+    if len(over):
+        raise ValueError(f"cells at span offsets {list(over[:4])} index past the {len(pt)}-entry "
+                         f"page table: the dump is truncated or the meta is malformed")
+    rows = pt[pc // page] * nkv * page + pc % page
+    return rows
+
+
 def check(path, directory):
     g=GGUFFile(path); m=g.metadata
     weights={}
@@ -30,9 +76,7 @@ def check(path, directory):
     taps=int(m['dflash.conv_kernel_size']);group=int(m['dflash.conv_group_size'])
     rank=int(m['dflash.selector_rank']);top=int(m['dflash.selector_top_k'])
     window=int(m.get('dflash.attention.sliding_window',0));theta=float(m['dflash.rope.frequency_base'])
-    meta=struct.unpack(f'<{len((Path(directory)/"meta.bin").read_bytes())//4}I',(Path(directory)/'meta.bin').read_bytes())
-    pos,K,anchor,mask,page=meta[:5]
-    ring=meta[5] if len(meta)>5 else 0   # bounded SWA ring cells (0 = legacy full-resident pools)
+    pos,K,anchor,mask,page,ring=unpack_meta((Path(directory)/'meta.bin').read_bytes())
     report=Report()
     def dump(name):return read_bin(directory,name)
     def stage(name,ref):
@@ -56,14 +100,17 @@ def check(path, directory):
     if (Path(directory)/'tapsin.bin').exists():
         x=dump('tapsin').reshape(-1,W['fc.weight'].shape[1])
         stage('ctx',rmsnorm(project(x,'fc.weight'),W['enc.output_norm.weight']))
-    context={};lo=max(pos-ring,0) if ring else 0   # ring: only retained cells can be oracle-checked
+    # Context rows keyed by ABSOLUTE cell (the dump's p0), bounded to the retained span:
+    # cells below pos+K-ring map to pool rows the block's own writes overwrite.
+    lo = ring_context_span(pos, K, ring)
+    context = {}
     for chunk in Path(directory).glob('ctx_b*.bin'):
         p0=int(chunk.stem.removeprefix('ctx_b'))
         values=dump(chunk.stem).reshape(-1,H)
         count=min(len(values),pos-p0)
         for r in range(count):
             c=p0+r
-            if c>=lo:context[c%ring if ring else c]=(c,values[r])
+            if c>=lo:context[c]=values[r]
     h=dump('emb').reshape(K,H)
     for l in range(int(m['dflash.block_count'])):
         pre=f'blk.{l}.'
@@ -75,24 +122,30 @@ def check(path, directory):
         q=rmsnorm(q,W[pre+'attn_q_norm.weight']);stage(f'qnormed{l}',q)
         q=rope(q);k=rope(rmsnorm(k,W[pre+'attn_k_norm.weight']))
         stage(f'q{l}',q);stage(f'k{l}',k);stage(f'v{l}',v)
-        # Attention oracle reads paged FP16 pools, independently of the GPU attention.
-        # The bounded ring dumped its physical pages; map every logical cell through the same
-        # modulo the kernel applies (cell % ring) before the page lookup.
+        # Attention oracle reads paged FP16 pools, independently of the GPU attention, over the
+        # window-bounded logical span only: the bounded ring maps every cell through the same
+        # `cell % ring` the kernel applies; malformed ring dumps are refused descriptively.
         pt=dump(f'pt{l}').view('<i4')
-        cells=np.arange(pos+K);pc=cells%ring if ring else cells
-        pr=pt[pc//page]*nkv*page+pc%page
+        cells=ring_cells_span(pos,K,window,ring);start=int(cells[0]) if len(cells) else pos+K
+        pr=ring_pool_rows(pt,cells,ring,page,nkv)
         kp=dump(f'kpool{l}').reshape(-1,D);vp=dump(f'vpool{l}').reshape(-1,D)
-        if pos>lo and len(context)==pos-lo:
-            rows=np.stack([context[c][1] for c in range(lo,pos)])
+        if len(pr) and (int(pr.max())>=len(kp) or int(pr.max())>=len(vp)):
+            raise ValueError(f"pool row {int(pr.max())} is past the dumped kpool/vpool "
+                             f"({len(kp)} rows): truncated ring dump")
+        if pos>lo:
+            if len(context)!=pos-lo:
+                raise ValueError(f"context chunks cover {len(context)} of {pos-lo} retained "
+                                 f"cells [lo={lo},pos): malformed dump")
+            rows=np.stack([context[c] for c in range(lo,pos)])
             expected_k=project(rows,pre+'attn_k.weight').reshape(pos-lo,nkv,D)
             expected_k=rope(rmsnorm(expected_k,W[pre+'attn_k_norm.weight']),np.arange(lo,pos))
             expected_v=project(rows,pre+'attn_v.weight').reshape(pos-lo,nkv,D)
-            pool_rows=pr[lo:pos,None]+np.arange(nkv)[None,:]*page
+            pool_rows=pr[lo-start:pos-start,None]+np.arange(nkv)[None,:]*page
             report.stage(f'context_k{l}',kp[pool_rows],expected_k.astype(np.float16).astype(np.float32))
             report.stage(f'context_v{l}',vp[pool_rows],expected_v.astype(np.float16).astype(np.float32))
         attn=np.zeros((K,nq,D),np.float32)
         for r in range(K):
-            visible=np.ones(pos+K,bool) if not window else np.abs(cells-(pos+r))<window
+            visible=np.abs(cells-(pos+r))<window if window else np.ones(len(cells),bool)
             for kv in range(nkv):
                 hs=slice(kv*(nq//nkv),(kv+1)*(nq//nkv))
                 keys=kp[pr[visible]+kv*page];values=vp[pr[visible]+kv*page]
