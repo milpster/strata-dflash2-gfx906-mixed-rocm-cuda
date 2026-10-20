@@ -218,7 +218,7 @@ uint64_t DFlashDrafter::vram_bytes() const {
 uint64_t DFlashDrafter::scratch_bytes(int64_t cells) const {
     // The bounded ring (include/strata/core/dflash_ring.hpp) reads window-bounded spans: the scratch is
     // sized for the ring union, never for the full logical context.
-    const int64_t bound = ring_ ? std::min(cap_, ring_) : cap_;
+    const int64_t bound = ring_state_.ring ? std::min(cap_, ring_state_.ring) : cap_;
     return (uint64_t) max_rows_ * strata::kernels::qsa_decode_attn_scratch_floats(
         std::min<int64_t>(bound, cells), shapes_) * sizeof(float);
 }
@@ -320,7 +320,7 @@ void DFlashDrafter::release() {
     emb_ref_ = nullptr;
     head_ = nullptr;
     window_ = cap_ = scratch_cap_ = attn_scratch_floats_ = 0;
-    ring_ = committed_end_ = appended_through_ = 0;
+    ring_state_ = {};
     parity_dir_[0] = 0;
     cycle_ = 0; max_rows_ = 0; graph_prob_ = false; mask_ = -1;
 }
@@ -415,6 +415,12 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
     // This is a context capacity, not a rolling window: preserve every cell up
     // to it, including the true rope positions. CUDA may map its physical memory
     // on demand; other backends carve the full FP16 pools from the owned arenas.
+    // Unset (--dflash-window absent, the CLI's -1 sentinel): the official SWA geometry runs
+    // logical capacity = full target context (its physical pools are the bounded ring); legacy
+    // geometries keep the documented 32768 default. An EXPLICIT value is never ignored -
+    // docs/DFLASH.md capacity semantics apply exactly as given.
+    if (window < 0)
+        window = dg.is_dflash2() && dg.head_dim == 128 && dg.sliding_window > 0 ? 0 : 32768;
     window_ = (window > 0 && window < max_cells) ? window : 0;
     cap_ = std::min<int64_t>(((window_ > 0 ? window_ : max_cells) + 63) / 64 * 64, max_cells);
     // The official SWA geometry (docs/DFLASH2.md: head_dim 128, symmetric window) keeps a
@@ -422,14 +428,17 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
     // widest block (8 rows). The logical cap_ above stays the --dflash-window capacity semantics
     // (docs/DFLASH.md), and the 32768 default never limits official 262K-context use: only the
     // physical pools shrink. The ring pools are fixed (no elastic/VMM) and allocated before the
-    // expert cache is sized. Legacy and full-attention geometries keep ring_ = 0 and their old
+    // expert cache is sized. Legacy and full-attention geometries keep ring_state_.ring = 0 and their old
     // full-capacity allocation untouched.
-    ring_ = dg.is_dflash2() && dg.head_dim == 128 && dg.sliding_window > 0
+    ring_state_.ring = dg.is_dflash2() && dg.head_dim == 128 && dg.sliding_window > 0
         ? dflash_ring_capacity(dg.sliding_window, 8, (int64_t) strata::core::shapes_of(pool_g_).page_size)
         : 0;
-    const int64_t pool_cells = ring_ ? std::min(cap_, ring_) : cap_;
-    if (ring_) elastic_kv = false;   // bounded pools: a fixed allocation, never grown from expert slots
-    committed_end_ = appended_through_ = 0;
+    ring_state_.window = ring_state_.ring ? dg.sliding_window : 0;
+    ring_state_.max_rows = 8;      // the widest block: proposals + anchor (propose guards K <= max_rows_)
+    ring_state_.capacity = cap_;   // the logical --dflash-window capacity the guards read
+    const int64_t pool_cells = ring_state_.ring ? std::min(cap_, ring_state_.ring) : cap_;
+    if (ring_state_.ring) elastic_kv = false;   // bounded pools: a fixed allocation, never grown from expert slots
+    ring_state_.committed_end = ring_state_.appended_through = 0;
     // ring = -1 forces mode 0 even when the target's K/V is streamed to RAM.
     strata::core::QsaStateInitOptions kv_opts;
     kv_opts.force_owned_kv = true;
@@ -509,7 +518,7 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
     max_rows_ = 8;
     shapes_ = strata::core::shapes_of(pool_g_);
     attn_scratch_floats_ = (int64_t) strata::kernels::qsa_decode_attn_scratch_floats(
-        ring_ ? std::min(cap_, ring_) : cap_, shapes_);
+        ring_state_.ring ? std::min(cap_, ring_state_.ring) : cap_, shapes_);
     const int64_t R = max_rows_, N = dg.hidden, F = dg.fusion_in(), I = dg.intermediate;
     const int64_t Q = dg.n_head * dg.head_dim, KVW = dg.n_head_kv * dg.head_dim;
     if (!dflash_mapped(R * 4 + 64, (void**) &h_out_, (void**) &out_) ||
@@ -560,7 +569,7 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
              grow_scratch(std::min<int64_t>(cap_, 8192), [] { return (VmmChunk) 0; });
         attn_scratch_ = scratch_range_->base();
     } else if (ok) {
-        scratch_cap_ = ring_ ? std::min(cap_, ring_) : cap_;
+        scratch_cap_ = ring_state_.ring ? std::min(cap_, ring_state_.ring) : cap_;
         ok = take(scratch_bytes(scratch_cap_), &attn_scratch_);
     }
     if (ok && !quant_types_.empty()) {
@@ -677,8 +686,8 @@ bool DFlashDrafter::add_context(const uint16_t* taps, int n_taps, int64_t stride
     // is needed, every read sits inside the window the new prompt's own appends cover. An
     // append past the confirmed end is a gap: its window would read rows this sequence never
     // wrote, so it is refused before any kernel launches.
-    if (pos0 == 0) committed_end_ = appended_through_ = 0;
-    if (pos0 > committed_end_) {
+    if (pos0 == 0) ring_state_.reset();   // prefill from 0 resets the horizon logically
+    if (!ring_state_.append_allowed(pos0, rows)) {
         err = "dflash: context append leaves a gap past the confirmed draft context"; return false;
     }
     for (int64_t r0 = 0; r0 < rows; r0 += 8) {
@@ -701,8 +710,7 @@ bool DFlashDrafter::add_context(const uint16_t* taps, int n_taps, int64_t stride
         err = "dflash: prompt context consumption failed";
         return false;
     }
-    if (pos0 + rows > committed_end_) committed_end_ = pos0 + rows;
-    if (pos0 + rows > appended_through_) appended_through_ = pos0 + rows;
+    ring_state_.note_append(pos0, rows);
     if (cycle_ == 0 && parity_dir_[0]) {
         // the prompt's context cells, layer 0: the first 32 pages raw ([page][kvh][slot][hd] fp16)
         if (cudaStreamSynchronize(cs_) != cudaSuccess) { err = "dflash: sync failed"; return false; }
@@ -735,8 +743,8 @@ bool DFlashDrafter::add_context_f32(const float* taps, int n_taps, int64_t strid
     if (!taps || rows < 1 || stride_floats < rows * N || pos0 < 0 || rows > cap_ - pos0) {
         err = "dflash: invalid verify tap layout or context range"; return false;
     }
-    if (pos0 == 0) committed_end_ = appended_through_ = 0;   // same reset as the prompt path
-    if (pos0 > committed_end_) {
+    if (pos0 == 0) ring_state_.reset();   // same logical reset as the prompt path
+    if (!ring_state_.append_allowed(pos0, rows)) {
         err = "dflash: verify append leaves a gap past the confirmed draft context"; return false;
     }
     {
@@ -744,8 +752,7 @@ bool DFlashDrafter::add_context_f32(const float* taps, int n_taps, int64_t strid
         strata::kernels::dflash_gather_taps(taps, tapin_, n_taps, (int) N, (int) rows, stride_floats, cs_);
     }
     if (!fusion_rows(pos0, (int) rows, err)) return false;
-    if (pos0 + rows > committed_end_) committed_end_ = pos0 + rows;
-    if (pos0 + rows > appended_through_) appended_through_ = pos0 + rows;
+    ring_state_.note_append(pos0, rows);
     if (!synchronize) return true;   // propose uses this stream and waits for both operations
     {
         DFlashSection s("ctx.sync");
@@ -759,28 +766,30 @@ bool DFlashDrafter::add_context_f32(const float* taps, int n_taps, int64_t strid
     return true;
 }
 
-bool DFlashDrafter::note_restored_context(int64_t captured_end, std::string& err) {
+bool DFlashDrafter::restore_snapshot(const DFlashSnapshotMeta& meta, std::string& err) {
     if (!cs_ || st_.empty()) { err = "dflash: upload before restoring a context"; return false; }
-    if (captured_end < 0 || captured_end > cap_) {
-        err = "dflash: restored context extent " + std::to_string(captured_end) +
-              " outside the draft capacity (" + std::to_string(cap_) + ")";
+    // Restoring the ring image (pool order = slot order, clamped by dflash_snapshot_extent)
+    // persists the descriptor's EXACT counters - the confirmed end and the newest append end
+    // (rejected noise included) - never a length inferred from the live tokens. The graphs keep
+    // stable pointers; the restore rewrote pool rows, never layouts (docs/DFLASH.md).
+    if (!ring_state_.restore(meta)) {
+        err = "dflash: snapshot draft metadata committed=" + std::to_string(meta.committed_end) +
+              " appended=" + std::to_string(meta.appended_through) + " ring=" +
+              std::to_string(meta.ring_cells) + " does not match this drafter (ring=" +
+              std::to_string(ring_state_.ring) + ", capacity=" + std::to_string(ring_state_.capacity) +
+              ") - foreign, truncated, or corrupt image";
         return false;
     }
-    // Restoring the ring image (pool order = slot order, clamped by dflash_snapshot_extent)
-    // defines the horizon: the ring's newest writes reach `captured_end`, and every rewind
-    // check reads through this. The graphs keep stable pointers - the restore rewrote pool
-    // rows, never layouts - so they stay valid (docs/DFLASH.md's graph-input contract).
-    committed_end_ = appended_through_ = captured_end;
     return true;
 }
 
 bool DFlashDrafter::context_retained(int64_t pos, int rows) const {
     if (st_.empty()) return false;
-    if (pos < 0 || rows < 1 || pos + rows > cap_) return false;
-    return dflash_ring_retained(pos, rows, artifact_.geom().sliding_window, ring_, appended_through_);
+    return ring_state_.context_retained(pos, rows);
 }
 
-void DFlashDrafter::prepare_projection(const uint16_t* x, int ni, int rows, void* stream) {    if (quant_types_.empty()) return;
+void DFlashDrafter::prepare_projection(const uint16_t* x, int ni, int rows, void* stream) {
+    if (quant_types_.empty()) return;
     strata::kernels::bf16_to_f32_bulk(x, proj_float_, (int64_t) ni * rows, stream);
     strata::kernels::native_quantize_q8_1(proj_float_, proj_q8_, ni, rows, stream);
 }
@@ -862,7 +871,7 @@ bool DFlashDrafter::fusion_rows(int64_t pos0, int rows, std::string& err) {
     }
     prepare_projection(xn16_, (int) N, rows, cs_);   // all layers share the same context activation
     dflash_build_positions(poskv_, rows, (int) dg.n_head_kv, pos0, cs_);
-    dflash_build_steps(step_, rows, pos0, (int) shapes_.page_size, cs_, ring_);
+    dflash_build_steps(step_, rows, pos0, (int) shapes_.page_size, cs_, ring_state_.ring);
 
     for (int64_t l = 0; l < dg.layers; ++l) {
         const std::string pre = "layers." + std::to_string(l);
@@ -915,7 +924,7 @@ bool DFlashDrafter::fusion_rows(int64_t pos0, int rows, std::string& err) {
                     std::fprintf(stderr, "\n");
                 }
                 for (int r = 0; r < rows; ++r) {
-                    const int64_t cell = dflash_ring_cell(pos0 + r, ring_);   // ring-mapped (0: identity)
+                    const int64_t cell = dflash_ring_cell(pos0 + r, ring_state_.ring);   // ring-mapped (0: identity)
                     int32_t page_h = -1;
                     cudaMemcpyAsync(&page_h, stl.page_table + cell / shapes_.page_size, 4,
                                     cudaMemcpyDeviceToHost, cs_);
@@ -965,25 +974,26 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
         return false;
     }
     if (pos < 0 || pos > cap_ || K > cap_ - pos ||
-        (!ring_ && (pos > scratch_cap_ || K > scratch_cap_ - pos)) ||
+        (!ring_state_.ring && (pos > scratch_cap_ || K > scratch_cap_ - pos)) ||
         (st_[0].kv_elastic >= 0 && pos + K > qsa_kv_elastic_cells())) {
         err = "dflash: the context or mapped capacity cannot fit the proposed block";
         return false;
     }
-    // The ring horizon: the block's readable window must sit in retained history - the newest
-    // append that touched each ring row must be the cell the window reads
-    // (include/strata/core/dflash_ring.hpp). A deep rewind to overwritten history is refused
-    // with an explicit diagnostic; the
-    // engine's re-prefill path is the only legitimate recovery. (A propose at the confirmed end
-    // always passes: its own appends cover the window, ring_ >= window + K - 1 by construction.)
-    if (ring_) {
-        const int64_t through = std::max(appended_through_, pos + K);
-        if (!dflash_ring_retained(pos, K, dg.sliding_window, ring_, through)) {
-            err = "dflash: the proposed block reads draft history the bounded ring overwrote - "
+    // The ring state (include/strata/core/dflash_ring.hpp): complete confirmed coverage before
+    // the anchor (no proposing past committed history, no bridging overwritten gaps) and a fully
+    // retained readable window - the newest append that touched each ring row must be the cell
+    // the window reads. A deep rewind to overwritten history is refused with an explicit
+    // diagnostic; the engine's re-prefill path is the only legitimate recovery. (A propose at
+    // the confirmed end always passes: its own appends cover the window, ring >= window + K - 1.)
+    if (ring_state_.ring) {
+        if (!ring_state_.propose_allowed(pos, K)) {
+            err = pos > ring_state_.committed_end
+                ? "dflash: the proposed block sits past the confirmed draft context (commit first)"
+                : "dflash: the proposed block reads draft history the bounded ring overwrote - "
                   "rewind to a retained window or re-prefill";
             return false;
         }
-        appended_through_ = through;
+        ring_state_.note_propose(pos, K);
     }
     const int vocab = head_ids_ ? head_rows_ : (int) dg.vocab;
 
@@ -1015,7 +1025,7 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
         // meta.bin: the cycle's block geometry plus the bounded ring's physical cells (0 =
         // legacy full-resident pools) so the parity tools map ring rows (tools/dflash2_stage_parity.py)
         const uint32_t meta[6] = {(uint32_t) pos, (uint32_t) K, (uint32_t) x, (uint32_t) mask_,
-                                  (uint32_t) shapes_.page_size, (uint32_t) ring_};
+                                  (uint32_t) shapes_.page_size, (uint32_t) ring_state_.ring};
         char path[600];
         std::snprintf(path, sizeof path, "%s/meta.bin", parity_dir_);
         if (FILE* f = std::fopen(path, "wb")) { std::fwrite(meta, 4, 6, f); std::fclose(f); }
@@ -1026,7 +1036,7 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
     // could overtake (the old two-region pinned h_pos_ dance existed only for that race)
     dflash_build_positions(pos_, K, (int) dg.n_head, pos, cs_);
     dflash_build_positions(poskv_, K, (int) dg.n_head_kv, pos, cs_);
-    dflash_build_steps(step_, K, pos, (int) shapes_.page_size, cs_, ring_);
+    dflash_build_steps(step_, K, pos, (int) shapes_.page_size, cs_, ring_state_.ring);
     dflash_build_attn_steps(attn_step_, K, pos + K, (int) shapes_.page_size, cs_);
 
     const bool graph_on = (!std::getenv("STRATA_DFLASH_GRAPH") ||
@@ -1138,7 +1148,7 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
                 std::snprintf(name, sizeof name, "steps%d", (int) l);
                 parity_dump(parity_dir_, name, attn_step_, K * 4, cs_);   // i32 bits reinterpreted as f32
             }
-            if ((int64_t)(pos + K) > cap_ || (!ring_ && pos + K > scratch_cap_)) {
+            if ((int64_t)(pos + K) > cap_ || (!ring_state_.ring && pos + K > scratch_cap_)) {
                 err = "dflash: the window cap is exceeded (raise --dflash-window)";
                 return false;
             }
@@ -1147,8 +1157,8 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
                 // pools are read-only for the kernel, so dumping before or after it is the same),
                 // the page table's entries for those pages, and the per-row steps the kernel is
                 // handed. The bounded ring dumps its physical pages - the kernel reads cells
-                // through `cell % ring_`, so the oracle maps the same way (tools/dflash2_stage_parity.py).
-                const int64_t pages = ring_ ? stl.n_pages : (pos + K + shapes_.page_size - 1) / shapes_.page_size;
+                // through `cell % ring_state_.ring`, so the oracle maps the same way (tools/dflash2_stage_parity.py).
+                const int64_t pages = ring_state_.ring ? stl.n_pages : (pos + K + shapes_.page_size - 1) / shapes_.page_size;
                 const int64_t prows = pages * shapes_.page_size * dg.n_head_kv;
                 char name[32];
                 std::snprintf(name, sizeof name, "kpool%d", (int) l);
@@ -1179,7 +1189,7 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
                     dflash2_attention(q_, pools.k_pool, pools.v_pool, pools.page_table, attn_step_,
                         attn_, (float*) attn_scratch_, K, dg.n_head, dg.n_head_kv,
                         shapes_.page_size, attention_cells,
-                        dg.sliding_window, cs_, (int) ring_);
+                        dg.sliding_window, cs_, (int) ring_state_.ring);
                 else
 #endif
                 dflash_attn_batch(q_, pools, attn_step_, attention_cells, scratch_cap_, shapes_, (float*) attn_scratch_, attn_, K, cs_);

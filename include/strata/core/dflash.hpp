@@ -16,6 +16,7 @@
 #pragma once
 
 #include "strata/artifact/gguf_reader.hpp"
+#include "strata/core/dflash_ring.hpp"
 #include "strata/core/session.hpp"
 #include "strata/core/vmm.hpp"
 
@@ -197,13 +198,20 @@ public:
     /// page 64 x block 8 rounds to 2112 cells per pool); 0 = legacy full-capacity pools
     /// (include/strata/core/dflash_ring.hpp). Pool page tables are the identity over these cells; the
     /// kernels map append cells and readable cells by `% ring` (dflash2.cu, dflash_build_steps).
-    int64_t ring_capacity() const { return ring_; }
-    /// After a conversation-snapshot restore of the ring image (slot order): the drafter must
-    /// know the absolute end the image captured, so the propose/rewind guards can tell retained
-    /// history from overwritten history. Refuses extents the ring cannot cover.
-    bool note_restored_context(int64_t captured_end, std::string& err);
-    /// True when the block [pos, pos+rows)'s readable window is inside retained history
-    /// (the snapshot restore path checks before mounting a parked conversation).
+    int64_t ring_capacity() const { return ring_state_.ring; }
+    /// The host-side context horizon a parked image captured (include/strata/core/dflash_ring.hpp):
+    /// the EXACT confirmed end and append-through (rejected noise included) plus layout identity.
+    /// The conversation snapshot stores it as SavedConversation.dflash_meta and the restore
+    /// revalidates it - the live token length never substitutes for these counters.
+    DFlashSnapshotMeta snapshot_meta() const {
+        return {ring_state_.committed_end, ring_state_.appended_through, ring_state_.ring,
+                ring_state_.window, ring_state_.capacity};
+    }
+    /// After a conversation-snapshot restore of the ring image (slot order): persist the
+    /// descriptor's counters. Refuses descriptors that do not match this drafter's layout.
+    bool restore_snapshot(const DFlashSnapshotMeta& meta, std::string& err);
+    /// True when the block [pos, pos+rows)'s readable window is inside retained, CONFIRMED
+    /// history (the checkpoint/snapshot paths check before mounting a rewind).
     bool context_retained(int64_t pos, int rows) const;
     bool idle(std::string& err) {
         if (cs_ && cudaStreamSynchronize(cs_) != cudaSuccess) { err = "dflash: its stream failed"; return false; }
@@ -258,9 +266,7 @@ private:
     strata::kernels::QsaShapes shapes_ = {};
     void* state_arena_ = nullptr;
     int64_t window_ = 0, cap_ = 0, attn_scratch_floats_ = 0;
-    int64_t ring_ = 0;            ///< bounded SWA ring cells per pool (0: legacy full capacity)
-    int64_t committed_end_ = 0;   ///< end of the target-confirmed draft context (absolute)
-    int64_t appended_through_ = 0;///< newest append end (noise rows included): the ring horizon
+    DFlashRingState ring_state_;  ///< bounded ring layout + the context horizon (counts, ring, window)
 
     // buffers: at most 8 rows ride through the forward at once
     int32_t *tok_ = nullptr, *step_ = nullptr, *attn_step_ = nullptr;
