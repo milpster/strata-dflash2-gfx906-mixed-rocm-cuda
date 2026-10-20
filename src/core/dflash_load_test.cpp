@@ -119,7 +119,42 @@ std::vector<fixture::Tensor> tensors2() {
 }
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    // `--artifact PATH` (parent-run, CPU-only): open a real BF16 GGUF through the exact loader
+    // contract, run validate_supported on its parsed geometry, and report the tensor inventory
+    // plus the converter's provenance metadata.  No CUDA call is made: this is GGUF parsing.
+    // The synthetic fixture suite below always runs.
+    if (argc > 2 && std::string(argv[1]) == "--artifact") {
+        DFlashArtifact art;
+        std::string err;
+        if (!art.open(argv[2], err)) {
+            std::printf("dflash_load_test: artifact refused: %s\n", err.c_str());
+            return 1;
+        }
+        const DFlashGeometry& g = art.geom();
+        if (!DFlashArtifact::validate_supported(g, err)) {
+            std::printf("dflash_load_test: artifact geometry unsupported: %s\n", err.c_str());
+            return 1;
+        }
+        const auto& meta = art.metadata();
+        const auto get = [&](const char* k) {
+            auto it = meta.find(k);
+            return it == meta.end() ? std::string("(absent)") : it->second.s;
+        };
+        std::printf("dflash_load_test --artifact %s\n", argv[2]);
+        std::printf("  architecture=%s name=%s source.sha256=%s\n", get("general.architecture").c_str(),
+                    get("general.name").c_str(), get("dflash.source.sha256").c_str());
+        std::printf("  tensors=%zu weight_bytes=%llu hidden=%lld layers=%d q=%d kv=%d dim=%d "
+                    "block=%d window=%lld taps=%zu markov=%d rank=%d\n",
+                    art.tensors().size(), (unsigned long long) art.weight_bytes(), (long long) g.hidden,
+                    (int) g.layers, (int) g.n_head, (int) g.n_head_kv, (int) g.head_dim, (int) g.block_size,
+                    (long long) g.sliding_window, g.target_layers.size(), (int) g.markov_rank,
+                    (int) g.selector_rank);
+        bool official = g.is_dflash2() && g.n_head == 32 && g.n_head_kv == 8 && g.head_dim == 128 &&
+                        g.sliding_window == 2048 && art.tensors().size() == 81;
+        std::printf("  official inco DFlash2 geometry: %s\n", official ? "yes" : "no");
+        if (!official) return 1;
+    }
     fs::path dir = fs::temp_directory_path() / "strata_dflash_load_test";
     fs::create_directories(dir);
 
