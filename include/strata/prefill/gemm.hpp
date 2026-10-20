@@ -19,6 +19,10 @@ void gemm_set_f16_range(bool on);
 bool gemm_f16_range_read(float max_abs[2], unsigned long long over[2], bool reset);
 
 
+#if defined(STRATA_HC_F16_EXACT_BUILT)
+namespace hc_f16_exact { struct State; }
+#endif
+
 class Gemm {
 public:
     Gemm() = default;
@@ -66,11 +70,19 @@ public:
     /// Caller-owned buffers only: the scratch and workspace moved (the prompt path laid its buffers out again).
     void rebind(uint16_t* scratch, int64_t scratch_elems, void* workspace, size_t ws_bytes);
 
+#if defined(STRATA_HC_F16_EXACT_BUILT)
+    void bind_hc_f16_exact(hc_f16_exact::State* state) { hc_exact_ = state; }
+#endif
+
     uint16_t* scratch() const { return scratch_; }
     int64_t scratch_elems() const { return scratch_elems_; }
     void* stream() const { return stream_; }
 
 private:
+#if defined(STRATA_HC_F16_EXACT_BUILT)
+    hc_f16_exact::State* hc_exact_ = nullptr;  // nonowning; Prefill owns/drains/releases
+    bool try_hc_f16_exact(const uint16_t*, const uint16_t*, float*, int64_t, int64_t, int64_t, int64_t, float, int64_t);
+#endif
     void* handle_ = nullptr;
     void* stream_ = nullptr;
     uint16_t* scratch_ = nullptr;

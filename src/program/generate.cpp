@@ -10746,6 +10746,20 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata trace: %s %lld %lld\n", what, a, b);
             std::fflush(stderr);
         };
+#if defined(STRATA_HC_BF16_N4_BUILT)
+        // The optional owned workspace comes from remaining slack, after verify/draft/cache
+        // initialization. Do not feed it into cache selection or the prefill loan layout.
+        if (!sp.prepare_hc_bf16_n4(err)) {
+            std::fprintf(stderr, "strata serve: %s\n", err.c_str());
+            return 1;
+        }
+#endif
+#if defined(STRATA_HC_F16_EXACT_BUILT)
+        if (!sp.prepare_hc_f16_exact(err)) {
+            std::fprintf(stderr, "strata serve: %s\n", err.c_str());
+            return 1;
+        }
+#endif
         {
             // what is left once everything is allocated: under WDDM a GPU filled to the brim does not fail, it pages -
             // and a page-in while the verify graph spins on a host flag stalls the request for good
@@ -14608,6 +14622,19 @@ int main(int argc, char** argv) {
                     std::fprintf(stderr, "strata pipeline calibration (p_on decile: on/scored):%s\n", cal.c_str());
                 }
             }
+            const strata::core::Verifier::PrimaryCommitContext primary_context{
+                use_mtp, use_mtp ? mtp.device() : -1, o.batch, o.pipeline_windows, bool(pipe), pl_ran};
+            const bool primary_commit_eligible = ver.can_defer_primary_commit(primary_context);
+            struct PrimaryCommitScope {
+                strata::core::Verifier& v;
+                bool active;
+                std::thread* adapt_thread;
+                ~PrimaryCommitScope() {
+                    if (active) { std::string ignored; (void) v.wait_commit(ignored); }
+                    // On an exceptional draft exit, drain before joining the adaptive worker.
+                    if (adapt_thread != nullptr && adapt_thread->joinable()) adapt_thread->join();
+                }
+            };
             while (!pl_ran && !cancelled && produced_n < max_new) {
                 int T = use_mtp ? S_mtp : 1;   // no --mtp: one token a round unless a lookup draft fires
                 if (use_mtp && req_spec_min_p > 0.0) {
@@ -14848,13 +14875,20 @@ int main(int argc, char** argv) {
                 // (--adapt-async 1: the asynchronous tier above instead, ticked before the window)
                 if (!drive.d.usage.empty() && !ajob && ((rounds + 1) % o.adapt_every) == 0)
                     adapt_thr = std::thread([&] { strata::aux_cpus::pin_current_thread(); adapt_ok = adapt(); });
-                if (!ver.commit(a + 1, err)) {
+                // Merged prompt/decode windows are new in main and stay on the original commit path.
+                const bool defer_primary_commit = primary_commit_eligible && !merged;
+                PrimaryCommitScope primary_scope{ver, defer_primary_commit, defer_primary_commit ? &adapt_thr : nullptr};
+                if (!ver.commit(a + 1, err, defer_primary_commit ? &primary_context : nullptr)) {
+                    if (defer_primary_commit) { std::string drain_err; primary_scope.active = !ver.wait_commit(drain_err); }
                     if (adapt_thr.joinable()) adapt_thr.join();
                     std::printf("ERR %s\n", err.c_str());
                     return 1;
                 }
                 if (nonfinite_hit(ver, first_window ? "first decode" : "decode")) {   // #879: none of its tokens goes out
+                    bool drained = true;
+                    if (defer_primary_commit) { drained = ver.wait_commit(err); primary_scope.active = !drained; }
                     if (adapt_thr.joinable()) adapt_thr.join();
+                    if (!drained) { std::printf("ERR %s\n", err.c_str()); return 1; }
                     if (!adapt_ok) {
                         std::printf("ERR an adaptive refill failed\n");
                         return 1;
@@ -14894,6 +14928,14 @@ int main(int argc, char** argv) {
                     mtp.set_draft_history(consumed.data(), (int64_t) consumed.size(), outv[(size_t) a]);
                 const bool drafted = !use_mtp || eos || produced_n >= max_new ||
                                      mtp.draft(T, outv.data(), p, a, drafts.data(), err, dprob.data(), (float) req_spec_min_p);
+                // Includes skipped drafts, EOS, cancellation, and draft failure. Drain before cache/next-window work.
+                bool primary_drained = true;
+                if (defer_primary_commit) {
+                    std::string drain_err;
+                    primary_drained = ver.wait_commit(drain_err);
+                    primary_scope.active = !primary_drained;
+                    if (!primary_drained && drafted) err = drain_err;
+                }
                 {
                     const Clock::time_point tw3 = Clock::now();
                     auto msd = [](Clock::time_point a0, Clock::time_point b0) { return std::chrono::duration<double, std::milli>(b0 - a0).count(); };
@@ -14910,7 +14952,7 @@ int main(int argc, char** argv) {
                     std::printf("ERR an adaptive refill failed\n");
                     return 1;
                 }
-                if (!drafted) {
+                if (!drafted || !primary_drained) {
                     std::printf("ERR %s\n", err.c_str());
                     return 1;
                 }

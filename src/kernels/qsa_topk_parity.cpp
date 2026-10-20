@@ -96,17 +96,88 @@ bool run_case(int64_t ctx, int64_t nq, int reps, int64_t capacity, bool counted)
     cudaEventDestroy(e0); cudaEventDestroy(e1);
     cudaFree(d_steps); cudaFree(d_scores); cudaFree(ids_ref); cudaFree(ids_new);
     const bool ok = same_cont == nq && same_tied == nq && same_equal == nq;
-    std::printf("%s context %lld under a capacity of %lld (%lld blocks), %lld queries %s: reference %.3f ms, "
-                "dispatched %.3f ms (%.1fx); identical ids: continuous %lld/%lld, 64 levels %lld/%lld, equal scores "
+    std::printf("%s context %lld under a capacity of %lld (%lld blocks), %lld queries %s: reference %.6f ms, "
+                "dispatched %.6f ms (%.6fx); identical ids: continuous %lld/%lld, 64 levels %lld/%lld, equal scores "
                 "%lld/%lld\n", ok ? "PASS" : "FAIL", (long long) ctx, (long long) capacity, (long long) max_blocks,
                 (long long) nq, counted ? "with their block count" : "without a block count", t_ref, t_new, t_ref / t_new,
                 (long long) same_cont, (long long) nq, (long long) same_tied,
                 (long long) nq, (long long) same_equal, (long long) nq);
     return ok;
 }
+
+// Capture once, then replay with growing and restored device steps. The maximum
+// n_bid deliberately moves away from the last row to exercise FIT17's whole-window guard.
+bool guarded_graph_case(int64_t nq) {
+    const auto s = k::qsa_real_shapes();
+    const int64_t max_blocks = 262144 / s.idx_block + 2;
+    const int64_t cap = k::qsa_selection_width(k::kTopkMaxCells, s);
+    std::vector<int32_t> steps(nq * k::kStepCount), ref(nq * cap), got(nq * cap);
+    std::vector<float> scores(nq * max_blocks);
+    std::mt19937 rng(90617);
+    for (auto& x : scores) x = float(int(rng() % 65) - 32) / 8.f;
+    float* ds = nullptr; int32_t *dt = nullptr, *dr = nullptr, *dg = nullptr;
+    ck(cudaMalloc(&ds, scores.size()*sizeof(float)), "scores");
+    ck(cudaMalloc(&dt, steps.size()*sizeof(int32_t)), "steps");
+    ck(cudaMalloc(&dr, ref.size()*sizeof(int32_t)), "reference");
+    ck(cudaMalloc(&dg, got.size()*sizeof(int32_t)), "candidate");
+    ck(cudaMemcpy(ds, scores.data(), scores.size()*sizeof(float), cudaMemcpyHostToDevice), "scores upload");
+    cudaStream_t stream; ck(cudaStreamCreate(&stream), "stream");
+    auto update = [&](int64_t ctx, bool reverse) {
+        for (int64_t i = 0; i < nq; ++i) {
+            const int64_t n = ctx - (reverse ? i : nq - 1 - i);
+            auto* st = steps.data() + i*k::kStepCount;
+            st[k::kStepPos] = int32_t(n-1); st[k::kStepNKv] = int32_t(n);
+            st[k::kStepNBid] = int32_t(n/s.idx_block);
+            st[k::kStepWidth] = int32_t(k::qsa_selection_width(n,s));
+        }
+        ck(cudaMemcpyAsync(dt, steps.data(), steps.size()*sizeof(int32_t), cudaMemcpyHostToDevice, stream), "steps upload");
+    };
+    update(24576,false);
+    // Warm host-side device caches and option parsing before capture.
+    k::qsa_block_topk(ds,dt,nq,max_blocks,cap,s,dg,stream,-1);
+    ck(cudaStreamSynchronize(stream), "warmup");
+    cudaGraph_t graph; cudaGraphExec_t exec;
+    ck(cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal), "capture begin");
+    k::qsa_block_topk(ds,dt,nq,max_blocks,cap,s,dg,stream,-1);
+    ck(cudaStreamEndCapture(stream,&graph), "capture end");
+    ck(cudaGraphInstantiate(&exec,graph,nullptr,nullptr,0), "instantiate");
+    bool ok = true;
+    // Short/long boundary, exact 17-key capacity (n_bid+1=17408), overflow,
+    // long route, and restores crossing both boundaries in the same graph.
+    for (int64_t ctx : {4096,24575,24576,24577,69627,69628,69631,69632,69633,200000,262144,69628,24576,4096,24577}) {
+        for (bool reverse : {false,true}) {
+            update(ctx,reverse);
+            ck(cudaMemsetAsync(dr,0xff,ref.size()*sizeof(int32_t),stream), "clear reference");
+            ck(cudaMemsetAsync(dg,0xff,got.size()*sizeof(int32_t),stream), "clear candidate");
+            k::qsa_block_topk_ref(ds,dt,nq,max_blocks,cap,s,dr,stream);
+            ck(cudaGraphLaunch(exec,stream), "replay");
+            ck(cudaMemcpyAsync(ref.data(),dr,ref.size()*sizeof(int32_t),cudaMemcpyDeviceToHost,stream), "read reference");
+            ck(cudaMemcpyAsync(got.data(),dg,got.size()*sizeof(int32_t),cudaMemcpyDeviceToHost,stream), "read candidate");
+            ck(cudaStreamSynchronize(stream), "replay sync");
+            // Include padding sentinels: no arm may write outside selected width.
+            if (ref != got) { ok = false; std::printf("FAIL guarded graph nq=%lld ctx=%lld reverse=%d\n",(long long)nq,(long long)ctx,int(reverse)); }
+        }
+    }
+    ck(cudaGraphExecDestroy(exec), "exec destroy"); ck(cudaGraphDestroy(graph), "graph destroy");
+    ck(cudaStreamDestroy(stream), "stream destroy");
+    cudaFree(ds); cudaFree(dt); cudaFree(dr); cudaFree(dg);
+    return ok;
+}
 }  // namespace
 
 int main(int argc, char** argv) {
+    if (argc == 2 && std::strcmp(argv[1], "--gfx906-guarded") == 0) {
+        bool ok = true;
+        for (int nq : {1,2,6,8}) ok = guarded_graph_case(nq) && ok;
+        // The uncounted >8 window, prompt/count, and capacity beyond reg66
+        // must continue to use current-main fallback paths.
+        ok = run_case(69632,9,1,262144,false) && ok;
+        ok = run_case(69632,8,1,262144,true) && ok;
+        ok = run_case(300001,8,1,524288,false) && ok;
+        std::printf("guarded/FIT17 graph parity: %s\n",ok ? "PASS" : "FAIL");
+        return ok ? 0 : 1;
+    }
+
     if (argc > 1 && std::strcmp(argv[1], "--selftest") == 0) {
         // {context, capacity}: both sides of the register kernel's reach (33,792 blocks = 135,168 cells), short
         // contexts under a long capacity (fewer blocks than the kernel's threads; a prompt batch below the dispatch's

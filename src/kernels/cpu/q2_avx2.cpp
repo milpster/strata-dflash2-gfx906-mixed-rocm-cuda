@@ -48,12 +48,31 @@ inline void unpack64(const uint8_t* codes, __m256i& lo, __m256i& hi) {
     hi = _mm256_set_m128i(_mm_unpackhi_epi16(b0, b1), _mm_unpacklo_epi16(b0, b1));  // values 32..63
 }
 
-// ---- the row kernel, twice: the AVX2 form and the AVX-VNNI one (q2_avx2_rows.inl)
+// Widen eight packed bytes to 32-bit lanes, then spread each byte's four codes.
+// This changes only integer unpacking; row FMAs, corrections and reduction stay unchanged.
+inline void unpack64_spread(const uint8_t* codes, __m256i& lo, __m256i& hi) {
+    const __m128i b = _mm_loadu_si128((const __m128i*)codes);
+    auto spread = [](__m256i q) {
+        q = _mm256_and_si256(_mm256_or_si256(q, _mm256_slli_epi32(q,12)), _mm256_set1_epi32(0x000f000f));
+        return _mm256_and_si256(_mm256_or_si256(q, _mm256_slli_epi32(q,6)), _mm256_set1_epi32(0x03030303));
+    };
+    lo = spread(_mm256_cvtepu8_epi32(b));
+    hi = spread(_mm256_cvtepu8_epi32(_mm_srli_si128(b,8)));
+}
+
+// ---- the row kernel, three copies: the AVX2 form and the AVX-VNNI one (q2_avx2_rows.inl)
 namespace plain {
 #define STRATA_ROWS_VNNI 0
 #define STRATA_ROWS_FN
 #include "q2_avx2_rows.inl"
 }  // namespace plain
+namespace spread {
+#define STRATA_ROWS_VNNI 0
+#define STRATA_ROWS_FN
+#define unpack64 unpack64_spread
+#include "q2_avx2_rows.inl"
+#undef unpack64
+}  // namespace spread
 #if STRATA_AVXVNNI
 namespace vnni {
 #define STRATA_ROWS_VNNI 1
@@ -143,6 +162,13 @@ void rows_bp(const uint8_t* w, size_t row_bytes, int npairs, const ActQ* const* 
     }
 }
 
+// Opt-in CPU optimization; independent of the attached GPU architecture.
+// Require exactly "1": a typo or unset option preserves the existing path.
+const bool kUnpackSpread = [] {
+    const char* e = std::getenv("STRATA_Q2_AVX2_SPREAD");
+    return e && std::strcmp(e, "1") == 0;
+}();
+
 const bool kBitplane = [] {
     const char* e = std::getenv("STRATA_Q2_BITPLANE");
     return e != nullptr && e[0] == '1';
@@ -161,6 +187,16 @@ void q2_0_gguf_rows_multi_avx2_v(bool vnni_rows, const uint8_t* w, size_t row_by
     }
 #endif
     (void) vnni_rows;
+    if (kUnpackSpread && (nblocks == 10 || nblocks == 40) && nt > 0 && nt % 4 != 0) {
+        // Keep the original four-token groups and use spread only for the tail.
+        // The floating-point operations and reduction are the same shared row body.
+        for (int t0 = 0; t0 < nt; t0 += 4) {
+            const int k = nt - t0 < 4 ? nt - t0 : 4;
+            if (k == 4) plain::rows_nt(w, row_bytes, nblocks, a + t0, k, out + t0, r0, r1);
+            else spread::rows_nt(w, row_bytes, nblocks, a + t0, k, out + t0, r0, r1);
+        }
+        return;
+    }
     plain::rows_nt(w, row_bytes, nblocks, a, nt, out, r0, r1);
 }
 

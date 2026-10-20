@@ -79,6 +79,11 @@ if(STRATA_HIP_GFX906)
   endif()
   set(STRATA_ENABLE_CUDA ON CACHE BOOL "" FORCE)
 endif()
+option(STRATA_GFX906_HC_F16_EXACT "Experimental exact-guarded HC down/up (default OFF)" OFF)
+option(STRATA_GFX906_HC_BF16_N4 "Build the experimental opt-in gfx906 BF16 HC injection kernel" OFF)
+if((STRATA_GFX906_HC_BF16_N4 OR STRATA_GFX906_HC_F16_EXACT) AND NOT STRATA_HIP_GFX906)
+  message(FATAL_ERROR "The experimental gfx906 HC kernels require the gfx906 compatibility backend")
+endif()
 option(STRATA_ENABLE_HIP "Build the HIP targets for wave32 AMD GPUs (gfx1100, gfx1201; gfx1012/gfx1030 unvalidated)" OFF)
 option(STRATA_PREFILL_MMQ "Build the optional GGML MMQ prefill path for HIP" OFF)
 # MMQ prompt kernels for Q4_K / Q5_K / Q5_1 / Q6_K (Unsloth's UD-Q4/Q5/Q6_K_XL experts; on HIP also the dense GGUF
@@ -153,6 +158,9 @@ if(STRATA_HIP_GFX906)
   enable_language(HIP)
   find_package(hip REQUIRED)
   find_package(hipblas REQUIRED)
+  # gfx906: the rocBLAS solution table (STRATA_ROCBLAS_TUNING, tools/hip/tune_rocblas) needs roc::rocblas too;
+  # without a found package the table path stays off and the engine builds exactly as before
+  find_package(rocblas CONFIG QUIET)
   add_library(CUDA::cudart INTERFACE IMPORTED)
   target_link_libraries(CUDA::cudart INTERFACE hip::host)
   target_compile_definitions(CUDA::cudart INTERFACE STRATA_HIP_GFX906=1 __HIP_PLATFORM_AMD__=1)
@@ -318,6 +326,28 @@ if(STRATA_BUILD_TESTS)
   add_executable(host_limits_test tests/platform/host_limits_test.cpp)
   target_include_directories(host_limits_test PRIVATE include)
   add_test(NAME host_limits_test COMMAND host_limits_test)
+  # Comparison/route-counter checks for the independent HC GPU fixture (no GPU needed).
+  add_executable(hc_f16_exact_checks_test tests/hip/hc_f16_exact_checks_test.cpp)
+  add_test(NAME hc_f16_exact_checks COMMAND hc_f16_exact_checks_test)
+
+  # Pure host policy/lifetime tests: the fake runtime is private to this target.
+  add_executable(hc_f16_exact_owned_test tests/prefill/hc_f16_exact_owned_test.cpp)
+  target_include_directories(hc_f16_exact_owned_test BEFORE PRIVATE
+    tests/prefill/hc_n4_fake_runtime src/prefill include)
+  add_test(NAME hc_f16_exact_owned COMMAND hc_f16_exact_owned_test)
+
+  add_executable(hc_bf16_n4_owned_test tests/prefill/hc_bf16_n4_owned_test.cpp)
+  target_include_directories(hc_bf16_n4_owned_test BEFORE PRIVATE
+    tests/prefill/hc_n4_fake_runtime src/prefill include)
+  target_link_libraries(hc_bf16_n4_owned_test PRIVATE Threads::Threads)
+  add_test(NAME hc_bf16_n4_owned COMMAND hc_bf16_n4_owned_test)
+  add_test(NAME hc_bf16_n4_shadow_order COMMAND hc_bf16_n4_owned_test shadow)
+  add_test(NAME hc_bf16_n4_launch_failure COMMAND hc_bf16_n4_owned_test launch-failure)
+  add_test(NAME hc_bf16_n4_restore_failure COMMAND hc_bf16_n4_owned_test restore-failure)
+  add_test(NAME hc_bf16_n4_drain_failure COMMAND hc_bf16_n4_owned_test drain-failure)
+  add_test(NAME hc_bf16_n4_drain_exception COMMAND hc_bf16_n4_owned_test drain-exception)
+  set_tests_properties(hc_bf16_n4_launch_failure hc_bf16_n4_restore_failure
+    hc_bf16_n4_drain_failure hc_bf16_n4_drain_exception PROPERTIES WILL_FAIL TRUE)
 endif()
 
 # ---- strata_plan ----------------------------------------------------------
@@ -705,6 +735,36 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   # against llama.cpp on the SAME ids and a tokenizer on one side of that comparison is a second variable.
   # plan v0.3 P5: batched prompt processing (tensor-core GEMMs through cuBLAS).
   add_library(strata_prefill STATIC src/prefill/gemm.cu src/prefill/kernels.cu src/prefill/prefill.cpp)
+  if(STRATA_GFX906_HC_F16_EXACT)
+    if(NOT STRATA_HIP_GFX906 OR NOT CMAKE_HIP_ARCHITECTURES STREQUAL "gfx906")
+      message(FATAL_ERROR "HC F16 exact requires gfx906 compatibility backend and exactly gfx906")
+    endif()
+    target_compile_definitions(strata_prefill PUBLIC STRATA_HC_F16_EXACT_BUILT=1)
+    if(STRATA_BUILD_TESTS)
+      add_executable(hc_f16_exact_parity tests/hip/hc_f16_exact_parity.cpp)
+      target_include_directories(hc_f16_exact_parity PRIVATE src/prefill)
+      target_link_libraries(hc_f16_exact_parity PRIVATE strata_prefill ${_strata_gpu_runtime_target})
+      add_test(NAME hc_f16_exact_parity COMMAND hc_f16_exact_parity)
+      set_tests_properties(hc_f16_exact_parity PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
+    endif()
+  endif()
+
+  if(STRATA_GFX906_HC_BF16_N4)
+    # The inspected arithmetic is gfx906-only. Do not compile its inline ISA for another target.
+    if(NOT CMAKE_HIP_ARCHITECTURES STREQUAL "gfx906")
+      message(FATAL_ERROR "The experimental HC N4 kernel requires exactly CMAKE_HIP_ARCHITECTURES=gfx906")
+    endif()
+    target_sources(strata_prefill PRIVATE src/prefill/hc_bf16_n4.cu)
+    target_compile_definitions(strata_prefill PUBLIC STRATA_HC_BF16_N4_BUILT=1)
+    if(STRATA_BUILD_TESTS)
+      add_executable(hc_bf16_n4_parity tests/hip/hc_bf16_n4_parity.cpp)
+      target_link_libraries(hc_bf16_n4_parity PRIVATE strata_prefill ${_strata_gpu_runtime_target})
+      add_test(NAME hc_bf16_n4_parity COMMAND hc_bf16_n4_parity)
+      set_tests_properties(hc_bf16_n4_parity PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
+    endif()
+    set_source_files_properties(src/prefill/hc_bf16_n4.cu PROPERTIES
+      COMPILE_OPTIONS "-fno-fast-math;-fdenormal-fp-math=ieee;-Xclang;-fdenormal-fp-math-f32=ieee")
+  endif()
   if(STRATA_ENABLE_HIP)
     # #313: the RDNA3 WMMA GEMMs include hip_runtime.h: AMD builds only (a CUDA build never sees this file)
     target_sources(strata_prefill PRIVATE src/prefill/wmma_gemm.cu)
@@ -723,8 +783,9 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     add_executable(tune_hipblaslt tools/hip/tune_hipblaslt.cpp)
     target_link_libraries(tune_hipblaslt PRIVATE hip::host roc::hipblas roc::hipblaslt)
   endif()
-  if(STRATA_ENABLE_HIP AND STRATA_ROCBLAS_AVAILABLE)
+  if((STRATA_ENABLE_HIP OR STRATA_HIP_GFX906) AND TARGET roc::rocblas)
     # the prompt path's rocBLAS solution table (STRATA_ROCBLAS_TUNING; tools/hip/tune_rocblas makes one)
+    # gfx906 builds take the CUDA branches (STRATA_ENABLE_HIP stays off), so the gate includes STRATA_HIP_GFX906
     target_compile_definitions(strata_prefill PRIVATE STRATA_ROCBLAS_AVAILABLE=1)
     target_link_libraries(strata_prefill PRIVATE roc::rocblas)
 
@@ -1034,6 +1095,8 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_include_directories(native_grouped_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(native_grouped_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME native_grouped_parity COMMAND native_grouped_parity)
+  add_test(NAME native_q2_modes_parity COMMAND native_grouped_parity --q2-modes)
+  set_tests_properties(native_q2_modes_parity PROPERTIES TIMEOUT 600)
   add_executable(mmvf_rows_parity src/kernels/mmvf_rows_parity.cpp)
   target_include_directories(mmvf_rows_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(mmvf_rows_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
@@ -1240,6 +1303,14 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_include_directories(qsa_topk_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(qsa_topk_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME qsa_topk_parity COMMAND qsa_topk_parity --selftest)
+  if(STRATA_HIP_GFX906)
+    add_test(NAME qsa_topk_gfx906_guarded COMMAND qsa_topk_parity --gfx906-guarded)
+    set_tests_properties(qsa_topk_gfx906_guarded PROPERTIES
+      ENVIRONMENT "STRATA_GFX906_TOPK_REG=2;STRATA_GFX906_TOPK_FIT17=0" TIMEOUT 600)
+    add_test(NAME qsa_topk_gfx906_fit17 COMMAND qsa_topk_parity --gfx906-guarded)
+    set_tests_properties(qsa_topk_gfx906_fit17 PROPERTIES
+      ENVIRONMENT "STRATA_GFX906_TOPK_REG=2;STRATA_GFX906_TOPK_FIT17=1" TIMEOUT 600)
+  endif()
   # the register kernel from the smallest prompt batch (the line gfx1151 moves to 4096 blocks): same ids at every case
   add_test(NAME qsa_topk_parity_reg_always COMMAND qsa_topk_parity --selftest)
   set_tests_properties(qsa_topk_parity_reg_always PROPERTIES ENVIRONMENT "STRATA_TOPK_REG_MIN_BLOCKS=0")
@@ -1490,6 +1561,25 @@ else()
   set(_strata_avxvnni STRATA_AVXVNNI=0)
 endif()
 set_property(SOURCE src/kernels/cpu/q2_avx2.cpp APPEND PROPERTY COMPILE_DEFINITIONS ${_strata_avxvnni})
+if(STRATA_BUILD_TESTS AND NOT MSVC AND STRATA_ISA_FLOOR STREQUAL "")
+  # These direct AVX2 tests are not part of the older-CPU (avx/none) test profile.
+  # Standalone production-TU test; do not link a second q2_avx2.cpp object.
+  add_executable(q2_avx2_spread_test tests/q2_avx2_spread_test.cpp)
+  target_include_directories(q2_avx2_spread_test PRIVATE include)
+  target_compile_options(q2_avx2_spread_test PRIVATE -mavx2 -mfma -mf16c)
+  target_compile_definitions(q2_avx2_spread_test PRIVATE ${_strata_avxvnni})
+  # A separate baseline process checks the execution host BEFORE the AVX2 TU's
+  # static initializers run, including for native builds or copied test binaries.
+  add_executable(q2_avx2_test_runner tests/q2_avx2_test_runner.cpp)
+  target_compile_options(q2_avx2_test_runner PRIVATE
+    -march=x86-64 -mtune=generic -mno-avx -mno-avx2 -mno-fma -mno-f16c)
+  add_dependencies(q2_avx2_test_runner q2_avx2_spread_test)
+  add_test(NAME q2_avx2_spread_on COMMAND ${CMAKE_COMMAND} -E env
+    STRATA_Q2_AVX2_SPREAD=1 $<TARGET_FILE:q2_avx2_test_runner> $<TARGET_FILE:q2_avx2_spread_test> on)
+  add_test(NAME q2_avx2_spread_off COMMAND ${CMAKE_COMMAND} -E env
+    STRATA_Q2_AVX2_SPREAD=0 $<TARGET_FILE:q2_avx2_test_runner> $<TARGET_FILE:q2_avx2_spread_test> off)
+  set_tests_properties(q2_avx2_spread_on q2_avx2_spread_off PROPERTIES SKIP_RETURN_CODE 77)
+endif()
 find_package(Threads REQUIRED)
 target_link_libraries(strata_kernels_cpu PUBLIC Threads::Threads)
 
