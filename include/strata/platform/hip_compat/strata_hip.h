@@ -23,6 +23,26 @@
 
 #define STRATA_HIP_GFX906 1
 
+// Host-side fp16 bit casts (hip_fp16.h spells __half_as_ushort / __ushort_as_half only for device code;
+// CUDA's cuda_fp16.h declares them for the host too, and src/kernels/dflash2_parity.cpp builds them on
+// the host as plain C++).  A bit cast is exactly what CUDA documents, so this stays bit-exact.
+// The plain-C++ targets of a gfx906 build define __HIP_PLATFORM_AMD__ (CMake) and NOT __HIPCC__;
+// hipcc TU's get hip_fp16.h's own host+device spellings, untouched.
+#if defined(__HIP_PLATFORM_AMD__) && !defined(__HIPCC__)
+static inline unsigned short strata_half_as_ushort(__half h) {
+    unsigned short u;
+    __builtin_memcpy(&u, &h, 2);
+    return u;
+}
+static inline __half strata_ushort_as_half(unsigned short u) {
+    __half h;
+    __builtin_memcpy(&h, &u, 2);
+    return h;
+}
+#define __half_as_ushort(h) strata_half_as_ushort(h)
+#define __ushort_as_half(u) strata_ushort_as_half(u)
+#endif
+
 // ---- runtime: types and constants ------------------------------------------------------------------------
 #define cudaError_t hipError_t
 #define cudaSuccess hipSuccess
