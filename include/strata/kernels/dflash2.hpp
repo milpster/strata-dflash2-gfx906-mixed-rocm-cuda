@@ -29,7 +29,11 @@ void dflash2_select_bf16(const int32_t* candidates, const float* unary, const fl
 void dflash2_hc_mean(const float* residual, float* out, uint16_t* out_bf16,
                      int rows, int hidden, int hc, void* stream);
 // Non-causal local attention for the official 32Q/8KV x 128 drafter, FP16 paged pools.
+// `ring` (include/strata/core/dflash_ring.hpp): the bounded SWA ring's physical cells. 0 keeps the legacy
+// full-resident mapping; > 0 maps every readable logical cell to `cell % ring` before the page
+// lookup while the window, the visibility mask, and the RoPE positions stay absolute.
 void dflash2_attention(const float* q, const uint16_t* k, const uint16_t* v, const int32_t* table,
                        const int32_t* steps, float* out, float* scratch, int rows, int heads,
-                       int kv_heads, int page_size, int active_cells, int window, void* stream);
+                       int kv_heads, int page_size, int active_cells, int window, void* stream,
+                       int ring = 0);
 }  // namespace strata::kernels

@@ -30,8 +30,12 @@ void dflash_rope_neox_apply(const float* x, float* out, int rows, int head_dim, 
 /// pos0 + r, the [row][head] layout the runtime's rope calls read.
 void dflash_build_positions(int32_t* pos, int rows, int n_head, int64_t pos0, void* stream);
 /// The append step records `steps[r*4] = {cell, cell+1, (cell+1)/page_size, cell+1}` for the
-/// rows' cells pos0..pos0+rows-1, on the device.
-void dflash_build_steps(int32_t* steps, int rows, int64_t pos0, int page_size, void* stream);
+/// rows' cells pos0..pos0+rows-1, on the device. `ring` > 0 (the bounded SWA ring,
+/// include/strata/core/dflash_ring.hpp) maps each append cell to `cell % ring` - the pool's page table is the
+/// identity over the ring pages, so the mapped cell lands in the ring row the window reads.
+/// RoPE positions are built separately and stay absolute (dflash_build_positions).
+void dflash_build_steps(int32_t* steps, int rows, int64_t pos0, int page_size, void* stream,
+                        int64_t ring = 0);
 /// The attention step records: every row reads [0, end) - `steps[r*4] = {end-1, end,
 /// end/page_size, end}`, on the device.
 void dflash_build_attn_steps(int32_t* steps, int rows, int64_t end, int page_size, void* stream);
