@@ -266,11 +266,16 @@ __global__ void dflash_build_positions_kernel(int32_t* __restrict__ pos, int row
     pos[i] = (int32_t) pos0 + (int32_t) (i / n_head);
 }
 
-__global__ void dflash_build_steps_kernel(int32_t* __restrict__ steps, int rows, int pos0, int page_size) {
+__global__ void dflash_build_steps_kernel(int32_t* __restrict__ steps, int rows, int pos0, int page_size,
+                                          int64_t ring) {
     const int r = blockIdx.x * blockDim.x + threadIdx.x;
     if (r >= rows) return;
-    // {cell, cell + 1, (cell + 1) / page_size, cell + 1}: kStepPos, the end, the block, the width
-    const int32_t cell = (int32_t) pos0 + r;
+    // {cell, cell + 1, (cell + 1) / page_size, cell + 1}: kStepPos, the end, the block, the width.
+    // A bounded ring (include/strata/core/dflash_ring.hpp) writes the MAPPED cell: the pool's identity page
+    // table lives on the ring pages, so kStepPos carries cell % ring while every width/end field
+    // keeps the +1 arithmetic on the mapped cell (the append kernel reads kStepPos only).
+    const int64_t abs_cell = (int64_t) pos0 + r;
+    const int32_t cell = (int32_t) (ring > 0 ? abs_cell % ring : abs_cell);
     steps[(size_t) r * 4 + 0] = cell;
     steps[(size_t) r * 4 + 1] = cell + 1;
     steps[(size_t) r * 4 + 2] = (cell + 1) / page_size;
@@ -296,10 +301,10 @@ void dflash_build_positions(int32_t* pos, int rows, int n_head, int64_t pos0, vo
     if (e != cudaSuccess) throw std::runtime_error(cudaGetErrorString(e));
 }
 
-void dflash_build_steps(int32_t* steps, int rows, int64_t pos0, int page_size, void* stream) {
+void dflash_build_steps(int32_t* steps, int rows, int64_t pos0, int page_size, void* stream, int64_t ring) {
     if (!steps || rows < 1 || rows > 65535 || pos0 < 0 || page_size < 1) return;
     dflash_build_steps_kernel<<<(unsigned) ((rows + 255) / 256), 256, 0,
-                                static_cast<cudaStream_t>(stream)>>>(steps, rows, (int) pos0, page_size);
+                                static_cast<cudaStream_t>(stream)>>>(steps, rows, (int) pos0, page_size, ring);
     const auto e = cudaGetLastError();
     if (e != cudaSuccess) throw std::runtime_error(cudaGetErrorString(e));
 }

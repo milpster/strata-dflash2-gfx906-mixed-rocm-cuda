@@ -235,6 +235,82 @@ void target_features_and_attention() {
 // Real drafter geometry, including a full local window. The output fingerprint
 // and optional binary dump let before/after binaries compare their outputs,
 // alongside the FP64 reference checks above. Timing uses graph replay.
+// The bounded SWA ring (include/strata/core/dflash_ring.hpp): absolute query positions past the
+// ring read through `cell % ring` against a ring-sized pool with the identity page table. This
+// fixture checks the kernel's mapping against the same host-side modulo at positions spanning
+// more than two ring wraps, and the launcher's refusal of undersized rings.
+void ring_attention() {
+    using namespace strata::kernels;
+    const int heads = 32, kv = 8, page = 64, hd = 128, window = 2048, rows = 8;
+    const int ring = 2112;                       // round64(2048 + 8 - 1), the official union
+    std::vector<int32_t> table(ring / page);
+    for (int p = 0; p < ring / page; ++p) table[p] = p;   // identity over the ring pages
+    std::vector<uint16_t> k(ring * kv * hd), v(k.size());
+    std::vector<float> q(rows * heads * hd);
+    for (size_t i = 0; i < k.size(); ++i) {
+        k[i] = __half_as_ushort(__float2half(((int)(i % 43) - 21) * 0.015f));
+        v[i] = __half_as_ushort(__float2half(((int)(i % 37) - 18) * 0.03f));
+    }
+    for (size_t i = 0; i < q.size(); ++i) q[i] = ((int)(i % 29) - 14) * 0.02f;
+    for (long long pos : {2047LL, 2048LL, 2111LL, 2112LL, 4224LL, 200000LL}) {
+        const long long end = pos + rows;
+        std::vector<int32_t> steps(rows * 4);
+        for (int r = 0; r < rows; ++r) steps[r * 4 + 1] = (int32_t) end;
+        Device<float> dq(q), out(q.size()), scratch(rows * heads * ((window + rows + 63) / 64) * 130);
+        Device<uint16_t> dk(k), dv(v);
+        Device<int32_t> dt(table), ds(steps);
+        dflash2_attention(dq.p, dk.p, dv.p, dt.p, ds.p, out.p, scratch.p, rows, heads, kv, page,
+                          window + rows, window, nullptr, ring);
+        const auto got = out.read(q.size());
+        for (int r = 0; r < rows; ++r) for (int h = 0; h < heads; ++h) {
+            std::vector<double> scores(end, -INFINITY);
+            double m = -INFINITY;
+            for (long long c = std::max(0LL, pos - window + 1); c < end; ++c) {
+                if (std::abs(c - (end - rows + r)) >= window) continue;
+                const long long pc = c % ring;
+                const size_t pr = ((size_t) table[pc / page] * kv + h / (heads / kv)) * page + pc % page;
+                double s = 0;
+                for (int d = 0; d < hd; ++d)
+                    s += q[(r * heads + h) * hd + d] * __half2float(__ushort_as_half(k[pr * hd + d]));
+                scores[c] = s / std::sqrt((double) hd);
+                m = std::max(m, scores[c]);
+            }
+            double sum = 0;
+            for (double& s : scores) { s = std::exp(s - m); sum += s; }
+            for (int d = 0; d < hd; ++d) {
+                double acc = 0;
+                for (long long c = std::max(0LL, pos - window + 1); c < end; ++c) {
+                    if (std::abs(c - (end - rows + r)) >= window) continue;
+                    const long long pc = c % ring;
+                    const size_t pr = ((size_t) table[pc / page] * kv + h / (heads / kv)) * page + pc % page;
+                    acc += scores[c] * __half2float(__ushort_as_half(v[pr * hd + d]));
+                }
+                near(got[(r * heads + h) * hd + d], acc / sum);
+            }
+        }
+    }
+    bool refused = false;
+    try {
+        std::vector<int32_t> steps(rows * 4, 2);
+        Device<float> dq(q), out(q.size()), scratch(rows * heads * 130);
+        Device<uint16_t> dk(k), dv(v);
+        Device<int32_t> dt(table), ds(steps);
+        dflash2_attention(dq.p, dk.p, dv.p, dt.p, ds.p, out.p, scratch.p, rows, heads, kv, page,
+                          2, 0, nullptr, 100);   // ring 100 < window 0? no: not a page multiple
+    } catch (const std::invalid_argument&) { refused = true; }
+    if (!refused) throw std::runtime_error("ring attention accepted a non-page ring");
+    refused = false;
+    try {
+        std::vector<int32_t> steps(rows * 4, 8);
+        Device<float> dq(q), out(q.size()), scratch(rows * heads * 130);
+        Device<uint16_t> dk(k), dv(v);
+        Device<int32_t> dt(table), ds(steps);
+        dflash2_attention(dq.p, dk.p, dv.p, dt.p, ds.p, out.p, scratch.p, rows, heads, kv, page,
+                          8, 2048, nullptr, 2048);   // 2048 < window + rows - 1
+    } catch (const std::invalid_argument&) { refused = true; }
+    if (!refused) throw std::runtime_error("ring attention accepted a ring below the readable span");
+}
+
 void attention_benchmark(const char* bits_path) {
     using namespace strata::kernels;
     std::ofstream bits;
@@ -404,7 +480,7 @@ int main(int argc, char** argv) {
     int devices = 0;
     if (cudaGetDeviceCount(&devices) != cudaSuccess || devices == 0) return 77;
     const bool timing=argc > 1 && std::strcmp(argv[1], "--bench") == 0;
-    try { invalid_model_values(); convolve(); selector(timing); target_features_and_attention(); topk_tile_edges(); full_vocabulary_topk(timing); if (timing) attention_benchmark(argc > 2 ? argv[2] : nullptr); checked(cudaDeviceSynchronize()); }
+    try { invalid_model_values(); convolve(); selector(timing); target_features_and_attention(); ring_attention(); topk_tile_edges(); full_vocabulary_topk(timing); if (timing) attention_benchmark(argc > 2 ? argv[2] : nullptr); checked(cudaDeviceSynchronize()); }
     catch (const std::exception& e) { std::fprintf(stderr, "FAIL: %s\n", e.what()); return 1; }
     std::puts("PASS: DFlash2 convolution, block isolation, top-k, conditioned path, confidence and nonfinite refusal");
     return 0;

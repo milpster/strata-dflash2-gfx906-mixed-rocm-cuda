@@ -256,7 +256,8 @@ __global__ void hc_mean_kernel(const float* residual, float* out, uint16_t* out_
 template<bool Canonical, bool Paired>
 __global__ void attention128_kernel(const float* q, const uint16_t* k, const uint16_t* v,
                                     const int32_t* table, const int32_t* steps, float* scratch,
-                                    int rows, int heads, int kv_heads, int page_size, int chunks, int window) {
+                                    int rows, int heads, int kv_heads, int page_size, int chunks, int window,
+                                    int ring) {
     const int ch = blockIdx.x, head = blockIdx.y, row = blockIdx.z, t = threadIdx.x;
     const int lane = t & 31, warp = t / 32;
     const int end = steps[row * 4 + 1], position = end - rows + row;
@@ -272,8 +273,13 @@ __global__ void attention128_kernel(const float* q, const uint16_t* k, const uin
         const bool visible = cell < end && (!window || abs(cell - position) < window);
         size_t poolrow = 0;
         if (visible) {
-            const int page = Canonical ? cell >> 6 : cell / page_size;
-            const int offset = Canonical ? cell & 63 : cell % page_size;
+            // The bounded ring (include/strata/core/dflash_ring.hpp): the iteration and the visibility mask
+            // stay on absolute logical cells; only the pool address takes the modulo. The page
+            // table is the identity over the ring pages, so the mapped cell indexes the row the
+            // append with the same mapping wrote. ring % page_size == 0 keeps the in-page offset.
+            const int mcell = ring ? cell % ring : cell;
+            const int page = Canonical ? mcell >> 6 : mcell / page_size;
+            const int offset = Canonical ? mcell & 63 : mcell % page_size;
             poolrow = ((size_t)table[page] * (Canonical ? 8 : kv_heads) + kv_head) *
                       (Canonical ? 64 : page_size) + offset;
             for (int d = lane; d < 128; d += 32)
@@ -338,10 +344,16 @@ void dflash2_hc_mean(const float* residual, float* out, uint16_t* out_bf16,
 }
 void dflash2_attention(const float* q, const uint16_t* k, const uint16_t* v, const int32_t* table,
                        const int32_t* steps, float* out, float* scratch, int rows, int heads,
-                       int kv_heads, int page_size, int active_cells, int window, void* stream) {
+                       int kv_heads, int page_size, int active_cells, int window, void* stream,
+                       int ring) {
     if (!q || !k || !v || !table || !steps || !out || !scratch || rows < 1 || rows > 8 ||
         heads < 1 || heads > 65535 || kv_heads < 1 || heads % kv_heads || page_size < 1 || active_cells < 1 || active_cells > INT32_MAX - 63 || window < 0 ||
-        (int64_t)rows * heads * ((active_cells + 63LL) / 64) * 130 > INT32_MAX)
+        (int64_t)rows * heads * ((active_cells + 63LL) / 64) * 130 > INT32_MAX ||
+        // A bounded ring must be whole pages and must cover the widest readable span
+        // (window + rows - 1) so a query's cells map injectively; a full-window read
+        // (window 0) must fit in the ring outright.
+        (ring < 0 || (ring > 0 && (ring % page_size || (window > 0 ? ring < window + rows - 1
+                                                                    : (int64_t) ring < active_cells)))))
         throw std::invalid_argument("dflash2_attention: invalid geometry or missing buffers");
     const int chunks = (active_cells + 63) / 64;
     // The official geometry uses power-of-two pages and four Q heads per KV
@@ -352,11 +364,11 @@ void dflash2_attention(const float* q, const uint16_t* k, const uint16_t* v, con
         // half2 load. Keep the original ordered sum for each component. Small
         // windows retain four warps; long windows benefit from smaller CTAs.
         if (active_cells >= 512 && reinterpret_cast<std::uintptr_t>(v) % alignof(__half2) == 0)
-            attention128_kernel<true, true><<<dim3(chunks, heads, rows), 64, 0, (cudaStream_t)stream>>>(q,k,v,table,steps,scratch,rows,heads,kv_heads,page_size,chunks,window);
+            attention128_kernel<true, true><<<dim3(chunks, heads, rows), 64, 0, (cudaStream_t)stream>>>(q,k,v,table,steps,scratch,rows,heads,kv_heads,page_size,chunks,window,ring);
         else
-            attention128_kernel<true, false><<<dim3(chunks, heads, rows), 128, 0, (cudaStream_t)stream>>>(q,k,v,table,steps,scratch,rows,heads,kv_heads,page_size,chunks,window);
+            attention128_kernel<true, false><<<dim3(chunks, heads, rows), 128, 0, (cudaStream_t)stream>>>(q,k,v,table,steps,scratch,rows,heads,kv_heads,page_size,chunks,window,ring);
     } else
-        attention128_kernel<false, false><<<dim3(chunks, heads, rows), 128, 0, (cudaStream_t)stream>>>(q,k,v,table,steps,scratch,rows,heads,kv_heads,page_size,chunks,window);
+        attention128_kernel<false, false><<<dim3(chunks, heads, rows), 128, 0, (cudaStream_t)stream>>>(q,k,v,table,steps,scratch,rows,heads,kv_heads,page_size,chunks,window,ring);
     attention128_merge<<<rows * heads,128,0,(cudaStream_t)stream>>>(scratch,out,chunks);
 }
 
