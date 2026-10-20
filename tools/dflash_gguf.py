@@ -77,7 +77,7 @@ def normalize_config(cfg: dict) -> dict:
     if is_dflash2(cfg):
         cfg.update(cfg.get("dflash_config") or {})
     for key, default in (("hidden_act", "silu"), ("rms_norm_eps", 1e-6),
-                         ("attention_bias", False), ("is_causal", False),
+                         ("attention_bias", False), ("is_causal", False), ("attention_dropout", 0.0),
                          ("input_embedding_scale", 1.0), ("output_multiplier", 1.0),
                          ("final_logit_softcapping", 0.0), ("partial_rotary_factor", 1.0),
                          ("markov_rank", 0), ("enable_confidence_head", False)):
@@ -98,6 +98,9 @@ def normalize_config(cfg: dict) -> dict:
     taps = cfg.get("target_layer_ids")
     if not isinstance(taps, list) or not taps or any(type(x) is not int or x < 0 for x in taps) or taps != sorted(set(taps)):
         raise ValueError("target_layer_ids must be nonempty and strictly increasing")
+    ntl = cfg.get("num_target_layers")
+    if ntl is not None and (not isinstance(ntl, int) or isinstance(ntl, bool) or ntl <= max(taps)):
+        raise ValueError("target_layer_ids must index inside num_target_layers")
     if type(cfg.get("mask_token_id")) is not int or not 0 <= cfg["mask_token_id"] < cfg["vocab_size"]:
         raise ValueError("mask_token_id must be inside the vocabulary")
     types = cfg.get("layer_types")
