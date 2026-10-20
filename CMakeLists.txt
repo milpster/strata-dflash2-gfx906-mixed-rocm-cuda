@@ -1457,6 +1457,9 @@ if(STRATA_BUILD_TESTS)
     add_executable(dflash_load_test src/core/dflash_load_test.cpp src/core/dflash.cpp)
     target_include_directories(dflash_load_test PRIVATE include ${CMAKE_CURRENT_SOURCE_DIR}/tests/core
       ${CUDAToolkit_INCLUDE_DIRS})
+    # gfx906 (docs/AMD_HIP.md): the toolkit header slots are filled by HIP's own headers - the host runtime
+    # target carries the include dirs (hip_compat first, then hip's), so the test compiles as plain C++
+    target_link_libraries(dflash_load_test PRIVATE ${_strata_gpu_runtime_target})
     add_test(NAME dflash_load_test COMMAND dflash_load_test)
   endif()
 endif()
