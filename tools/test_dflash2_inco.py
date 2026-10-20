@@ -8,7 +8,8 @@ demands) and the element formulas in src/kernels/cuda/dflash2.cu. The GGUF and
 safetensors headers are parsed with stdlib structs, not with tools/gguf_reader.py,
 so a reader bug cannot hide a writer bug.
 
-Big-file checks stream through mmap in 8 MiB chunks; nothing materializes 1.2 GB.
+Big-file checks read per-tensor mmap views and compare each tensor whole
+(np.array_equal over a mapping view); nothing materializes the 1.2 GB file.
 
     python3 tools/test_dflash2_inco.py
 
@@ -222,8 +223,10 @@ class IncoArtifact(unittest.TestCase):
                         kernel_idx = (side * K + tap) * H + channel
                         gguf_idx = channel + tap * dims[0] + side * dims[0] * dims[1]
                         self.assertEqual(kernel_idx, gguf_idx)
-                        sv = sm[self.src[f"layers.{l}.{hf}.base_kernel"][2] + 2 * kernel_idx]
-                        gv = gm[self.data_start + self.by[gguf_name]["offset"] + 2 * gguf_idx]
+                        sv = bytes(sm[self.src[f"layers.{l}.{hf}.base_kernel"][2] + 2 * kernel_idx:
+                                     self.src[f"layers.{l}.{hf}.base_kernel"][2] + 2 * kernel_idx + 2])
+                        gv = bytes(gm[self.data_start + self.by[gguf_name]["offset"] + 2 * gguf_idx:
+                                      self.data_start + self.by[gguf_name]["offset"] + 2 * gguf_idx + 2])
                         self.assertEqual(sv, gv, f"{gguf_name} ({side},{tap},{channel})")
             sm.close(); gm.close()
 
@@ -264,7 +267,6 @@ class IncoArtifact(unittest.TestCase):
                 self.assertEqual(self.meta[key], value)
 
     def test_source_provenance(self):
-        digest = 0
         h = __import__("hashlib").sha256()
         with CKPT.open("rb") as fh:
             for chunk in iter(lambda: fh.read(1 << 24), b""):
@@ -273,8 +275,10 @@ class IncoArtifact(unittest.TestCase):
         self.assertEqual(self.meta.get("dflash.source.sha256"), PINNED_SHA)
 
     def test_projection_parity(self):
-        """Deterministic projections: fixed FP32 inputs, sampled rows/columns of the
-        checkpoint and the artifact, widened BF16->FP32 independently from raw bytes."""
+        """Deterministic sampled projection parity: fixed FP32 inputs against sampled
+        rows/columns of the artifact's weights and the checkpoint, widened BF16->FP32
+        independently from raw bytes on both sides. This is artifact/weight parity only -
+        not an independent runtime numerical forward."""
         rng = np.random.default_rng(42)
         plan = [("fc.weight", [0, 1000, 2559], 12800),
                 ("layers.0.self_attn.q_proj.weight", [0, 2048, 4095], 2560),
@@ -319,7 +323,7 @@ MINI = dict(architectures=["DFlash2DraftModel"], hidden_size=32, intermediate_si
 
 
 def _mini_source(root: Path, cfg: dict, drop: str | None = None, extra: str | None = None,
-                 reshape: tuple[str, list[int]] | None = None):
+                 reshape: tuple[str, list[int]] | None = None, config: dict | None = None):
     import dflash_gguf as d
     want = d.expected(d.normalize_config(cfg))
     header, chunks, offset = {}, [], 0
@@ -339,7 +343,7 @@ def _mini_source(root: Path, cfg: dict, drop: str | None = None, extra: str | No
     encoded = json.dumps(header).encode()
     source = root / "model.safetensors"
     source.write_bytes(struct.pack("<Q", len(encoded)) + encoded + b"".join(chunks))
-    (root / "config.json").write_text(json.dumps(cfg))
+    (root / "config.json").write_text(json.dumps(config if config is not None else cfg))
     return source
 
 
@@ -403,16 +407,46 @@ class ConverterRefusals(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "geometry"):
             d.normalize_config(cfg)
 
-    def test_unknown_architecture_is_not_dflash2(self):
+    def test_unknown_architecture_is_refused_by_the_converter(self):
         import copy
-        import dflash_gguf as d
         cfg = copy.deepcopy(MINI)
         cfg["architectures"] = ["DFlash3DraftModel"]
-        self.assertFalse(d.is_dflash2(cfg))
-        cfg.update(cfg.pop("dflash_config"))     # legacy layout: the flat pre-DFlash2 config
+        cfg.update(cfg.pop("dflash_config"))     # plain layout: the refusal is about the architecture
         cfg["sample_from_anchor"] = True
-        want = d.expected(d.normalize_config(cfg))
-        self.assertFalse(any("conv" in n or "selector" in n for n in want))
+        build = copy.deepcopy(cfg); build.pop("architectures")   # tensors are plain-geometry
+        with tempfile.TemporaryDirectory() as tmp:
+            src = _mini_source(Path(tmp), build, config=cfg)
+            r = _run_converter(src, Path(tmp) / "d.gguf")
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn("unsupported architectures", r.stdout + r.stderr)
+
+    def test_known_dflash1_arch_keeps_the_plain_path(self):
+        import copy
+        cfg = copy.deepcopy(MINI)
+        cfg["architectures"] = ["DFlashDraftModel"]
+        cfg.update(cfg.pop("dflash_config"))
+        cfg["sample_from_anchor"] = True
+        with tempfile.TemporaryDirectory() as tmp:
+            src = _mini_source(Path(tmp), cfg)
+            out = Path(tmp) / "d.gguf"
+            r = _run_converter(src, out)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("SELF-CHECK PASS", r.stdout)
+            meta, tensors, _, _ = gguf_read(out)
+            self.assertEqual(meta["dflash.sample_from_anchor"], "true")
+            self.assertFalse(any("conv" in t["name"] or "selector" in t["name"] for t in tensors))
+
+    def test_no_architectures_key_stays_legacy_plain(self):
+        import copy
+        cfg = copy.deepcopy(MINI)
+        cfg.pop("architectures")
+        cfg.update(cfg.pop("dflash_config"))
+        cfg["sample_from_anchor"] = True
+        with tempfile.TemporaryDirectory() as tmp:
+            src = _mini_source(Path(tmp), cfg)
+            out = Path(tmp) / "d.gguf"
+            r = _run_converter(src, out)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
     def test_dropout_and_target_layers(self):
         import copy

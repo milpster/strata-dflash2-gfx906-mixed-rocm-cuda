@@ -74,6 +74,9 @@ def dflash2_names(cfg: dict) -> dict[str, str]:
 def normalize_config(cfg: dict) -> dict:
     original = cfg
     cfg = dict(cfg)
+    archs = cfg.get("architectures")
+    if archs and not all(a in ("DFlash2DraftModel", "DFlashDraftModel") for a in archs):
+        raise ValueError("unsupported architectures; the converter knows DFlash2DraftModel and DFlashDraftModel, or no architectures key")
     if is_dflash2(cfg):
         cfg.update(cfg.get("dflash_config") or {})
     for key, default in (("hidden_act", "silu"), ("rms_norm_eps", 1e-6),

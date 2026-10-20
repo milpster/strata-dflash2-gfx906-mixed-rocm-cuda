@@ -73,13 +73,21 @@ geometry; 23 metadata keys (geometry, RoPE base, block size, mask token, taps, s
 off, source sha); deterministic projection parity - 960 sampled elements from fc/Q/K/V/selector
 rows widened BF16->FP32 from both files, 15/15 rows exact, max abs diff 0.0, fixed-vector dot
 products 15/15 exact; and refusals for missing/unexpected tensors, non-BF16 dtype, a swapped 3D
-conv shape, bad selector rank/top-k, non-divisible conv group, unknown architecture, nonzero
+conv shape, bad selector rank/top-k, non-divisible conv group, an `architectures` list naming
+anything other than `DFlash2DraftModel`/`DFlashDraftModel` (a plain config with no architectures
+key keeps the legacy path, tested through a real converter invocation), nonzero
 `attention_dropout`, taps outside `num_target_layers`; the validator itself refuses truncated,
 overlapping, unaligned, non-BF16, and bad-magic GGUF files.
 
-`tools/dflash_gguf.py` now also refuses nonzero `attention_dropout` and taps that fall outside a
-declared `num_target_layers` (config-driven; absent keys keep the old behavior). Re-converting
-the checkpoint with the updated converter produced a byte-identical artifact (same sha256).
+`tools/dflash_gguf.py` now also refuses nonzero `attention_dropout`, taps that fall outside a
+declared `num_target_layers`, and an `architectures` list naming anything outside
+`DFlash2DraftModel`/`DFlashDraftModel` (config-driven; absent keys keep the old behavior).
+Re-converting the checkpoint with the updated converter produced a byte-identical artifact
+(same sha256).
+
+Projection parity is **sampled artifact/weight parity**: fixed FP32 inputs against sampled
+rows/columns of the checkpoint's raw bytes and the artifact's bytes, widened independently on
+both sides. It is not an independent runtime numerical forward.
 
 ## Limits and open work
 
