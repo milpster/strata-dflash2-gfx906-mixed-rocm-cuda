@@ -98,6 +98,13 @@ public:
     /// The host address of `t`'s payload inside the mmap (upload() copies from here).
     const uint8_t* host_data(const DFlashTensor& t) const;
 
+    /// The raw GGUF metadata KV (converter provenance such as `dflash.source.sha256`).  Empty
+    /// before open(); read-only diagnostics (dflash_load_test --artifact) use it.
+    const std::map<std::string, strata::MetaValue>& metadata() const {
+        static const std::map<std::string, strata::MetaValue> none;
+        return file_ ? file_->metadata() : none;
+    }
+
 private:
     bool require(const char* canon, std::vector<const char*> aliases, std::vector<uint64_t> shape,
                  DFlashTensor* out, std::string& err);
@@ -186,6 +193,18 @@ public:
     const std::vector<QsaState>& kv_states() const { return st_; }
     const ModelGeometry& pool_geometry() const { return pool_g_; }
     int device() const { return device_; }
+    /// The bounded SWA ring's physical cells (docs/DFLASH2.md official geometry: window 2048 x
+    /// page 64 x block 8 rounds to 2112 cells per pool); 0 = legacy full-capacity pools
+    /// (include/strata/core/dflash_ring.hpp). Pool page tables are the identity over these cells; the
+    /// kernels map append cells and readable cells by `% ring` (dflash2.cu, dflash_build_steps).
+    int64_t ring_capacity() const { return ring_; }
+    /// After a conversation-snapshot restore of the ring image (slot order): the drafter must
+    /// know the absolute end the image captured, so the propose/rewind guards can tell retained
+    /// history from overwritten history. Refuses extents the ring cannot cover.
+    bool note_restored_context(int64_t captured_end, std::string& err);
+    /// True when the block [pos, pos+rows)'s readable window is inside retained history
+    /// (the snapshot restore path checks before mounting a parked conversation).
+    bool context_retained(int64_t pos, int rows) const;
     bool idle(std::string& err) {
         if (cs_ && cudaStreamSynchronize(cs_) != cudaSuccess) { err = "dflash: its stream failed"; return false; }
         return true;
@@ -239,6 +258,9 @@ private:
     strata::kernels::QsaShapes shapes_ = {};
     void* state_arena_ = nullptr;
     int64_t window_ = 0, cap_ = 0, attn_scratch_floats_ = 0;
+    int64_t ring_ = 0;            ///< bounded SWA ring cells per pool (0: legacy full capacity)
+    int64_t committed_end_ = 0;   ///< end of the target-confirmed draft context (absolute)
+    int64_t appended_through_ = 0;///< newest append end (noise rows included): the ring horizon
 
     // buffers: at most 8 rows ride through the forward at once
     int32_t *tok_ = nullptr, *step_ = nullptr, *attn_step_ = nullptr;
