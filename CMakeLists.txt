@@ -76,8 +76,12 @@ if(STRATA_HIP_GFX906)
   set(STRATA_ENABLE_CUDA ON CACHE BOOL "" FORCE)
 endif()
 option(STRATA_ENABLE_HIP "Build the HIP targets for wave32 AMD GPUs (gfx1100, gfx1201; gfx1012/gfx1030 unvalidated)" OFF)
-if(STRATA_ENABLE_DFLASH2 AND (NOT STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP OR STRATA_HIP_GFX906))
-  message(FATAL_ERROR "DFlash2 currently requires the NVIDIA CUDA backend")
+# DFlash2 compiles the CUDA-shaped kernels: on NVIDIA CUDA directly, and on the gfx906 build, which compiles
+# every src/*.cu as HIP through the wave64 compat layer (the shuffles keep their 32-lane semantics there, and
+# dflash2.cu uses no cuBLAS, no WMMA, no packed-byte SIMD - audit: docs/DFLASH2_INCO.md).  The wave32 HIP
+# backend has no DFlash2 runtime and stays refused.
+if(STRATA_ENABLE_DFLASH2 AND (NOT STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP))
+  message(FATAL_ERROR "DFlash2 requires the CUDA sources: NVIDIA CUDA, or the gfx906 (HIP wave64) build that compiles them as HIP")
 endif()
 option(STRATA_PREFILL_MMQ "Build the optional GGML MMQ prefill path for HIP" OFF)
 # MMQ prompt kernels for Q4_K / Q5_K / Q5_1 / Q6_K (Unsloth's UD-Q4/Q5/Q6_K_XL experts; on HIP also the dense GGUF
