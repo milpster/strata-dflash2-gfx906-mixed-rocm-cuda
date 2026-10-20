@@ -33,6 +33,28 @@ class Gfx906CMake(unittest.TestCase):
         self.assertIn("target_sources(strata_mmq PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/prefill/moe_f16_kq.cu)", tail)
         self.assertLess(tail.index("moe_f16_kq.cu"), tail.index("set_source_files_properties(${_strata_cu} PROPERTIES LANGUAGE HIP)"))
 
+    # ---- DFlash2 on gfx906 (docs/DFLASH2_INCO.md): the gate, the HIP language, the OFF path ----
+    def test_dflash2_gate_permits_gfx906_and_refuses_wave32_hip(self):
+        self.assertRegex(TEXT, r"if\(STRATA_ENABLE_DFLASH2 AND \(NOT STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP\)\)\n  message\(FATAL_ERROR \"DFlash2 requires the CUDA sources")
+        # SYCL stays refused by its own gate
+        self.assertRegex(TEXT, r"if\(STRATA_ENABLE_SYCL\)\n\s+message\(FATAL_ERROR \"DFlash2 has no SYCL runtime yet\"\)")
+
+    def test_dflash2_cu_is_globbed_into_the_hip_sources(self):
+        tail = TEXT[TEXT.index("# ---- HIP gfx906: every CUDA source"):]
+        self.assertIn("GLOB_RECURSE _strata_cu CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cu", tail)
+        self.assertIn("set_source_files_properties(${_strata_cu} PROPERTIES LANGUAGE HIP)", tail)
+
+    def test_dflash2_off_leaves_the_source_inventory_untouched(self):
+        # dflash2.cu enters strata_kernels only under the option: OFF = default tree unchanged
+        self.assertRegex(TEXT, r"if\(STRATA_ENABLE_DFLASH2\)\n\s+target_sources\(strata_kernels PRIVATE src/kernels/cuda/dflash2.cu\)")
+        self.assertRegex(TEXT, r"if\(STRATA_ENABLE_DFLASH2\)\n\s+add_executable\(dflash2_parity src/kernels/dflash2_parity.cpp\)")
+
+    def test_qwen36_engine_stays_out_of_the_gfx906_kernel_tree(self):
+        # the q36 engine (cuBLAS entry points the compat layer does not map) is built only when NOT gfx906
+        block = re.search(r"if\(NOT STRATA_HIP_GFX906\)\n  add_library\(strata_qwen35.*?endif\(\)", TEXT, re.S)
+        self.assertIsNotNone(block)
+        self.assertIn("q36_engine.cu", block.group(0))
+
 
 if __name__ == "__main__":
     unittest.main()
