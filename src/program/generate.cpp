@@ -25,6 +25,7 @@
 #include "strata/core/remote_expert_opt.hpp"
 #include "strata/core/expert_cache.hpp"
 #include "strata/core/conversation_snapshot.hpp"
+#include "strata/core/dflash_ring.hpp"
 #include "strata/core/conversation_file.hpp"
 #include "strata/core/session_save_reclaim.hpp"
 #include "strata/core/conversation_memory.hpp"
@@ -9467,9 +9468,14 @@ int main(int argc, char** argv) {
             if (has_dflash) {
                 estimate += dflash.kv_states().size() * sizeof(strata::core::ConversationKv);
                 for (const auto& state : dflash.kv_states()) {
+                    // The bounded SWA ring parks its PHYSICAL image, never the live length
+                    // (include/strata/core/dflash_ring.hpp): the ring rows in slot order are the whole
+                    // retained history. Legacy full-capacity states keep the old extent.
+                    const int64_t extent = strata::core::dflash_snapshot_extent(
+                        (int64_t) live.size(), state.max_cells);
                     size_t bytes = 0;
                     if (!strata::core::conversation_kv_capture_bytes({}, state, dflash.pool_geometry(),
-                            (int64_t) live.size(), false, bytes, err)) return false;
+                            extent, false, bytes, err)) return false;
                     if (bytes > SIZE_MAX - estimate) { err = "DFlash snapshot size overflow"; return false; }
                     estimate += bytes;
                 }
@@ -9528,7 +9534,10 @@ int main(int argc, char** argv) {
                     image.dflash_kv.resize(dflash.kv_states().size());
                     for (size_t j = 0; j < image.dflash_kv.size(); ++j)
                         if (!strata::core::conversation_kv_save(image.dflash_kv[j], dflash.kv_states()[j],
-                                dflash.pool_geometry(), (int64_t) live.size(), false, err)) return false;
+                                dflash.pool_geometry(),
+                                strata::core::dflash_snapshot_extent((int64_t) live.size(),
+                                                                    dflash.kv_states()[j].max_cells),
+                                false, err)) return false;
                 }
                 for (size_t k = 0; k < n_st; ++k) {   // the later stages (the last one with the draft layer's K/V)
                     auto& st = stages[k];
@@ -12701,7 +12710,14 @@ int main(int argc, char** argv) {
                 bool valid = incoming->dflash_kv.size() == dflash.kv_states().size();
                 for (size_t j = 0; valid && j < incoming->dflash_kv.size(); ++j)
                     valid = strata::core::conversation_kv_validate(incoming->dflash_kv[j], dflash.kv_states()[j],
-                        dflash.pool_geometry(), (int64_t) incoming->live.ids.size(), false, err);
+                        dflash.pool_geometry(),
+                        strata::core::dflash_snapshot_extent((int64_t) incoming->live.ids.size(),
+                                                             dflash.kv_states()[j].max_cells),
+                        false, err);
+                // The captured end must sit inside this drafter's logical capacity (a foreign
+                // artifact's extent is refused; geometry/size checks above reject foreign rings).
+                if (valid && (int64_t) incoming->live.ids.size() > dflash.capacity()) valid = false;
+                if (valid && incoming->dflash_kv.empty()) valid = false;
                 if (!valid) { incoming.reset(); err.clear(); }
             }
             // Preserve the outgoing branch before any checkpoint rewind, reset,
@@ -12842,10 +12858,19 @@ int main(int argc, char** argv) {
                 if (has_dflash) {
                     for (size_t j = 0; j < incoming->dflash_kv.size(); ++j)
                         if (!strata::core::conversation_kv_restore(incoming->dflash_kv[j], dflash.kv_states()[j],
-                                dflash.pool_geometry(), (int64_t) incoming->live.ids.size(), false, err)) {
+                                dflash.pool_geometry(),
+                                strata::core::dflash_snapshot_extent((int64_t) incoming->live.ids.size(),
+                                                                    dflash.kv_states()[j].max_cells),
+                                false, err)) {
                             std::printf("ERR restoring DFlash conversation: %s\n", err.c_str());
                             return 1;
                         }
+                    // The restored ring's horizon: the image captured at this absolute end, so
+                    // propose/rewind guards can tell retained from overwritten history.
+                    if (!dflash.note_restored_context((int64_t) incoming->live.ids.size(), err)) {
+                        std::printf("ERR restoring DFlash conversation: %s\n", err.c_str());
+                        return 1;
+                    }
                     if (!dflash.idle(err)) { std::printf("ERR %s\n", err.c_str()); return 1; }
                 }
                 if (strata::core::conversation_snapshot_restore(*incoming, ss, g,
