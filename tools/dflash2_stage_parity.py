@@ -30,7 +30,9 @@ def check(path, directory):
     taps=int(m['dflash.conv_kernel_size']);group=int(m['dflash.conv_group_size'])
     rank=int(m['dflash.selector_rank']);top=int(m['dflash.selector_top_k'])
     window=int(m.get('dflash.attention.sliding_window',0));theta=float(m['dflash.rope.frequency_base'])
-    pos,K,anchor,mask,page=struct.unpack('<5I',(Path(directory)/'meta.bin').read_bytes())
+    meta=struct.unpack(f'<{len((Path(directory)/"meta.bin").read_bytes())//4}I',(Path(directory)/'meta.bin').read_bytes())
+    pos,K,anchor,mask,page=meta[:5]
+    ring=meta[5] if len(meta)>5 else 0   # bounded SWA ring cells (0 = legacy full-resident pools)
     report=Report()
     def dump(name):return read_bin(directory,name)
     def stage(name,ref):
@@ -54,13 +56,14 @@ def check(path, directory):
     if (Path(directory)/'tapsin.bin').exists():
         x=dump('tapsin').reshape(-1,W['fc.weight'].shape[1])
         stage('ctx',rmsnorm(project(x,'fc.weight'),W['enc.output_norm.weight']))
-    context=np.zeros((pos,H),np.float32)
-    have=np.zeros(pos,bool)
+    context={};lo=max(pos-ring,0) if ring else 0   # ring: only retained cells can be oracle-checked
     for chunk in Path(directory).glob('ctx_b*.bin'):
         p0=int(chunk.stem.removeprefix('ctx_b'))
         values=dump(chunk.stem).reshape(-1,H)
         count=min(len(values),pos-p0)
-        if count>0:context[p0:p0+count]=values[:count];have[p0:p0+count]=True
+        for r in range(count):
+            c=p0+r
+            if c>=lo:context[c%ring if ring else c]=(c,values[r])
     h=dump('emb').reshape(K,H)
     for l in range(int(m['dflash.block_count'])):
         pre=f'blk.{l}.'
@@ -73,14 +76,18 @@ def check(path, directory):
         q=rope(q);k=rope(rmsnorm(k,W[pre+'attn_k_norm.weight']))
         stage(f'q{l}',q);stage(f'k{l}',k);stage(f'v{l}',v)
         # Attention oracle reads paged FP16 pools, independently of the GPU attention.
+        # The bounded ring dumped its physical pages; map every logical cell through the same
+        # modulo the kernel applies (cell % ring) before the page lookup.
         pt=dump(f'pt{l}').view('<i4')
-        cells=np.arange(pos+K);pr=pt[cells//page]*nkv*page+cells%page
+        cells=np.arange(pos+K);pc=cells%ring if ring else cells
+        pr=pt[pc//page]*nkv*page+pc%page
         kp=dump(f'kpool{l}').reshape(-1,D);vp=dump(f'vpool{l}').reshape(-1,D)
-        if have.all() and pos:
-            expected_k=project(context,pre+'attn_k.weight').reshape(pos,nkv,D)
-            expected_k=rope(rmsnorm(expected_k,W[pre+'attn_k_norm.weight']),np.arange(pos))
-            expected_v=project(context,pre+'attn_v.weight').reshape(pos,nkv,D)
-            pool_rows=pr[:pos,None]+np.arange(nkv)[None,:]*page
+        if pos>lo and len(context)==pos-lo:
+            rows=np.stack([context[c][1] for c in range(lo,pos)])
+            expected_k=project(rows,pre+'attn_k.weight').reshape(pos-lo,nkv,D)
+            expected_k=rope(rmsnorm(expected_k,W[pre+'attn_k_norm.weight']),np.arange(lo,pos))
+            expected_v=project(rows,pre+'attn_v.weight').reshape(pos-lo,nkv,D)
+            pool_rows=pr[lo:pos,None]+np.arange(nkv)[None,:]*page
             report.stage(f'context_k{l}',kp[pool_rows],expected_k.astype(np.float16).astype(np.float32))
             report.stage(f'context_v{l}',vp[pool_rows],expected_v.astype(np.float16).astype(np.float32))
         attn=np.zeros((K,nq,D),np.float32)

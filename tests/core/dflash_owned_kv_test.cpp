@@ -13,8 +13,11 @@
 //   3. elastic non-membership: enabling the process elastic K/V and growing/shrinking the global
 //      pools leaves the owned state's bytes untouched;
 //   4. five states, one per draft layer, each independently owned and independent.
+//   5. bounded SWA ring: wrap-safe appends, ring-mapped attention at absolute positions,
+//      absolute rope positions, and the host horizon detecting stale deep-rewind windows.
 #include "strata/core/layer.hpp"
 #include "strata/core/dflash.hpp"
+#include "strata/core/dflash_ring.hpp"
 #include "strata/core/session.hpp"
 #include "strata/kernels/f16_bits.hpp"
 #include "strata/kernels/qsa.hpp"
@@ -323,6 +326,137 @@ void conversation_regression(const ModelGeometry& g) {
         cudaFree(o.arena);
     }
 }
+// The bounded SWA ring (include/strata/core/dflash_ring.hpp): append steps map their cells
+// through `cell % ring`, attention reads through the same modulo, and the RoPE positions stay
+// absolute. Small-scale mirror of the runtime on the test geometry: window 24, 6 rows, page 4,
+// ring 32 - appends wrap three times, attention spans the wraps, stale windows are detected.
+void ring_regression(const ModelGeometry& g) {
+    using namespace strata::kernels;
+    const QsaShapes s = qsa_real_shapes();
+    const int64_t ring = dflash_ring_capacity(24, 6, s.page_size);   // 29 -> 32 cells
+    const int rows = 6, window = 24;
+    const int kvw = s.n_head_kv * s.head_dim, qw = s.n_head * s.head_dim;
+    Owned o;
+    check(o.init(g, ring), "ring pool init");
+    check(o.st.kv_mode == 0 && o.st.n_slots == ring / s.page_size, "ring is a mode-0 pool of ring pages");
+    cudaStream_t cs;
+    cudaStreamCreateWithFlags(&cs, cudaStreamNonBlocking);
+    float *kd, *vd, *qd, *out, *scratch;
+    int32_t *steps, *attn, *positions;
+    cudaMalloc(&kd, ring * kvw * sizeof(float));
+    cudaMalloc(&vd, ring * kvw * sizeof(float));
+    cudaMalloc(&qd, rows * qw * sizeof(float));
+    cudaMalloc(&out, rows * qw * sizeof(float));
+    cudaMalloc(&scratch, rows * s.n_head * ((window + rows + 63) / 64) * 130 * sizeof(float));
+    cudaMalloc(&steps, rows * 4 * sizeof(int32_t));
+    cudaMalloc(&attn, rows * 4 * sizeof(int32_t));
+    cudaMalloc(&positions, rows * s.n_head * sizeof(int32_t));
+    std::vector<float> qh(qw * rows);
+    for (size_t i = 0; i < qh.size(); ++i) qh[i] = (int(i % 29) - 14) * 0.03125f;
+    cudaMemcpyAsync(qd, qh.data(), qh.size() * 4, cudaMemcpyHostToDevice, cs);
+    // Three full wraps: each round appends `ring` cells at [base, base+ring) and the pool must
+    // hold the NEWEST round's content at every mapped row (wrap-safe, duplicate-free writes).
+    for (int64_t base : {0LL, (int64_t) ring, 2 * (int64_t) ring}) {
+        std::vector<float> kh(ring * kvw), vh(ring * kvw);
+        for (int64_t c = 0; c < ring; ++c)
+            for (int i = 0; i < kvw; ++i) {
+                kh[c * kvw + i] = kval(base + c, i / s.head_dim, i % s.head_dim);
+                vh[c * kvw + i] = vval(base + c, i / s.head_dim, i % s.head_dim);
+            }
+        cudaMemcpyAsync(kd, kh.data(), kh.size() * 4, cudaMemcpyHostToDevice, cs);
+        cudaMemcpyAsync(vd, vh.data(), vh.size() * 4, cudaMemcpyHostToDevice, cs);
+        dflash_build_steps(steps, (int) ring, base, s.page_size, cs, ring);
+        kv_append_f16_steps(o.st.k_pool, o.st.v_pool, o.st.page_table, steps, 4, kd, vd, kvw,
+                            (int) ring, s, cs);
+        cudaStreamSynchronize(cs);
+        std::vector<uint16_t> pool(ring * kvw);
+        for (bool value : {false, true}) {
+            cudaMemcpy(pool.data(), value ? o.st.v_pool : o.st.k_pool, pool.size() * 2, cudaMemcpyDeviceToHost);
+            for (int64_t c = 0; c < ring; ++c) {
+                const int64_t pc = dflash_ring_cell(base + c, ring);
+                const int row = (int) (pc / s.page_size * s.n_head_kv) * s.page_size + (int) pc % s.page_size;
+                for (int h = 0; h < s.n_head_kv; ++h)
+                    for (int d = 0; d < s.head_dim; ++d)
+                        if (pool[((size_t) row + h * s.page_size) * s.head_dim + d] !=
+                            f16_from_f32(value ? vval(base + c, h, d) : kval(base + c, h, d))) {
+                            check(false, "ring wrap append lands at the mapped row");
+                            return;
+                        }
+            }
+        }
+    }
+    // Absolute RoPE positions are untouched by the ring mapping.
+    dflash_build_positions(positions, rows, s.n_head, 70, cs);
+    std::vector<int32_t> ph(rows * s.n_head);
+    cudaMemcpyAsync(ph.data(), positions, ph.size() * 4, cudaMemcpyDeviceToHost, cs);
+    cudaStreamSynchronize(cs);
+    for (size_t i = 0; i < ph.size(); ++i)
+        check(ph[i] == 70 + (int) (i / s.n_head), "ring keeps absolute rope positions");
+    // Attention at an absolute position past two wraps: visible window maps through the ring.
+    const int64_t pos = 70, end = pos + rows;
+    dflash_build_attn_steps(attn, rows, end, s.page_size, cs);
+    dflash2_attention(qd, o.st.k_pool, o.st.v_pool, o.st.page_table, attn, out, scratch, rows,
+                      s.n_head, s.n_head_kv, s.page_size, window + rows, window, cs, (int) ring);
+    cudaStreamSynchronize(cs);
+    std::vector<float> got(rows * qw);
+    cudaMemcpy(got.data(), out, got.size() * 4, cudaMemcpyDeviceToHost);
+    const int64_t through = 3 * ring;   // newest append end after the three wraps
+    check(!dflash_ring_retained(pos, rows, window, ring, through),
+          "host horizon flags the stale deep-rewind window");
+    check(dflash_ring_retained(through - rows, rows, window, ring, through),
+          "host horizon keeps an in-place propose");
+    for (int r = 0; r < rows; ++r) for (int h = 0; h < s.n_head; ++h) {
+        std::vector<double> scores((size_t) end, -INFINITY);
+        double m = -INFINITY;
+        auto row_of = [&](int64_t c, int head) {
+            const int64_t pc = dflash_ring_cell(c, ring);
+            return (pc / s.page_size * s.n_head_kv + head / (s.n_head / s.n_head_kv)) * s.page_size +
+                   pc % s.page_size;
+        };
+        for (int64_t c = std::max<int64_t>(0, pos - window + 1); c < end; ++c) {
+            if (std::abs(c - (end - rows + r)) >= window) continue;
+            const int64_t pc = dflash_ring_cell(c, ring);
+            const int64_t pr = (pc / s.page_size * s.n_head_kv + h / (s.n_head / s.n_head_kv)) *
+                                   s.page_size + pc % s.page_size;
+            // The row's content is the NEWEST append that landed there (three full wraps), not
+            // the logical cell the window names - exactly the stale-read condition the runtime's
+            // dflash_ring_retained guard refuses before proposing. The kernel reads rows; the
+            // reference reads the same rows' newest writers.
+            const int64_t newest = pc + ((through - 1 - pc) / ring) * ring;
+            double sc = 0;
+            for (int d = 0; d < s.head_dim; ++d) {
+                const uint16_t bits =
+                    __half_as_ushort(__float2half(kval(newest, h / (s.n_head / s.n_head_kv), d)));
+                sc += (double) qh[(r * s.n_head + h) * s.head_dim + d] * __half2float(__ushort_as_half(bits));
+            }
+            scores[(size_t) c] = sc / std::sqrt((double) s.head_dim);
+            m = std::max(m, scores[(size_t) c]);
+        }
+        double sum = 0;
+        for (double& x : scores) { x = std::exp(x - m); sum += x; }
+        for (int d = 0; d < s.head_dim; ++d) {
+            double acc = 0;
+            for (int64_t c = std::max<int64_t>(0, pos - window + 1); c < end; ++c) {
+                if (std::abs(c - (end - rows + r)) >= window) continue;
+                const int64_t pr = row_of(c, h);
+                const size_t idx = (size_t) (pr * s.head_dim + d) % (ring * kvw);
+                uint16_t bits = 0;
+                cudaMemcpy(&bits, o.st.v_pool + idx, 2, cudaMemcpyDeviceToHost);
+                acc += scores[(size_t) c] * __half2float(__ushort_as_half(bits));
+            }
+            const double want = acc / sum, have = got[(r * s.n_head + h) * s.head_dim + d];
+            if (std::abs(have - want) > 1e-4) {
+                check(false, "ring attention reads the wrapped rows");
+                return;
+            }
+        }
+    }
+    cudaFree(kd); cudaFree(vd); cudaFree(qd); cudaFree(out); cudaFree(scratch);
+    cudaFree(steps); cudaFree(attn); cudaFree(positions);
+    cudaStreamDestroy(cs);
+    cudaFree(o.arena);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -349,6 +483,7 @@ int main(int argc, char** argv) {
     batch_and_attention_regression(g);
     owned_elastic_regression(g);
     conversation_regression(g);
+    ring_regression(g);
 
     std::fprintf(stderr, "dbg: section 1 (owned+append)\n");
     {   // 1+2: one owned state, ownership + append/readback across page boundaries
