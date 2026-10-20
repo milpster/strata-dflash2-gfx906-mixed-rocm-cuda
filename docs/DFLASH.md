@@ -35,8 +35,10 @@ use target-only decoding; a later greedy request can reuse committed draft conte
 
 ## Context, cache and memory
 
-`--dflash-window N` is a draft capacity, not a rolling attention window. The CLI
-default is 32768 cells; 0 uses the target session's full configured context.
+`--dflash-window N` is a draft capacity, not a rolling attention window. Unset, it follows
+the target's `--max-context` for the official SWA DFlash2 geometry and defaults to 32768
+cells for legacy drafters; 0 uses the target session's full configured context. An explicit
+value is always honored.
 Prompt plus requested output must fit that capacity. Proposal guards also account for
 the anchor and the remaining target context. Positions retain their true RoPE indices.
 

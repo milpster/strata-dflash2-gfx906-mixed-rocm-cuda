@@ -136,7 +136,8 @@ Official DFlash2 geometry (window 2048, head_dim 128) now runs the five draft po
 rings: physical `round64(2048 + 8 - 1) = 2112` cells per pool — exactly 43,253,760 bytes of FP16
 (5 pools x 2112 cells x 8 KV heads x 128 dim x 2 (K,V) x 2 B) — fixed before expert-cache sizing,
 elastic/VMM disabled for them. `--dflash-window` keeps its docs/DFLASH.md capacity meaning (0
-follows `--max-context`), so the 32768 default does not cap official 262K use. Append steps
+follows `--max-context`; unset follows `--max-context` for this geometry, so the 32768 default
+applies only to legacy drafters and does not cap official 262K use; explicit caps are honored). Append steps
 (`dflash_build_steps`) and the attention's pool reads map `cell % ring`
 (`include/strata/core/dflash_ring.hpp`, one CPU model shared by runtime and tests); RoPE
 positions, the readable window, and visibility stay absolute. Host horizon guards refuse gaps

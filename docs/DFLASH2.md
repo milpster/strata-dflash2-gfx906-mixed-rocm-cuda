@@ -63,8 +63,9 @@ Verifying uncertain suffix rows can cost time even when the target rejects them.
 
 ## Context and memory
 
-Setup passes `--dflash-window 0`: the draft capacity follows `--max-context`.
-The engine CLI otherwise defaults to a 32768-cell capacity. A positive value is a
+Setup passes `--dflash-window 0`: the draft capacity follows `--max-context`. An engine
+run with no `--dflash-window` follows `--max-context` for this official geometry (the CLI
+sentinel); legacy drafters default to 32768 cells. A positive value is a
 capacity limit, not a rolling context window. Requests exceeding the draft capacity
 are refused. Near the end of the available context, the proposal-fit guard shortens
 verification to a target-only step rather than overrunning a pool.
@@ -83,8 +84,9 @@ For the official symmetric-window geometry (head_dim 128, sliding window 2048) t
 five pools are BOUNDED rings instead: physical cells = round64(window + widest block - 1)
 = 2112 cells (33 pages, 43,253,760 bytes across the five FP16 pools), fixed before
 expert-cache sizing with elastic growth disabled. The logical `--dflash-window` capacity
-keeps its docs/DFLASH.md meaning (0 follows `--max-context`), so the 32768 default never
-limits official 262K-context use; only the physical pools shrink. Append steps and the
+keeps its docs/DFLASH.md meaning (0 follows `--max-context`; unset follows `--max-context`
+for this geometry, so the 32768 default applies only to legacy drafters and never caps
+official 262K-context use - an explicit cap is honored); only the physical pools shrink. Append steps and the
 attention's page reads map cells through `cell % ring` (include/strata/core/dflash_ring.hpp)
 while RoPE positions, the readable window, and the visibility mask stay absolute. The host
 tracks the append horizon: a rewind whose window reaches cells the ring overwrote is refused
