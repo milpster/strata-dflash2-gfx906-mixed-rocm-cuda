@@ -1451,6 +1451,11 @@ if(STRATA_BUILD_TESTS)
   add_executable(dflash_policy_test src/spec/dflash_policy_test.cpp)
   target_link_libraries(dflash_policy_test PRIVATE strata_spec)
   add_test(NAME dflash_policy_test COMMAND dflash_policy_test)
+  # The bounded SWA ring math (src/core/dflash_ring.hpp): pure host arithmetic, no GPU headers,
+  # no link - the CPU proof of the mapping the runtime and the snapshots share (docs/DFLASH.md).
+  add_executable(dflash_ring_test tests/core/dflash_ring_test.cpp)
+  target_include_directories(dflash_ring_test PRIVATE include)
+  add_test(NAME dflash_ring_test COMMAND dflash_ring_test)
   # No device work, but the runtime header depends on GPU toolkit headers.
   # A CPU-only build must not require cuda_runtime.h just to build its tests.
   if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
