@@ -20,6 +20,7 @@
 #include "strata/core/dflash_ring.hpp"
 #include "strata/core/session.hpp"
 #include "strata/kernels/f16_bits.hpp"
+#include "strata/kernels/dflash2.hpp"
 #include "strata/kernels/qsa.hpp"
 #include "strata/kernels/qsa_decode_attn.hpp"
 #include "strata/spec/dflash_policy.hpp"
@@ -330,6 +331,8 @@ void conversation_regression(const ModelGeometry& g) {
 // through `cell % ring`, attention reads through the same modulo, and the RoPE positions stay
 // absolute. Small-scale mirror of the runtime on the test geometry: window 24, 6 rows, page 4,
 // ring 32 - appends wrap three times, attention spans the wraps, stale windows are detected.
+// Gated with the DFlash2 runtime (the attention entry point it builds).
+#ifdef STRATA_ENABLE_DFLASH2
 void ring_regression(const ModelGeometry& g) {
     using namespace strata::kernels;
     const QsaShapes s = qsa_real_shapes();
@@ -356,7 +359,7 @@ void ring_regression(const ModelGeometry& g) {
     cudaMemcpyAsync(qd, qh.data(), qh.size() * 4, cudaMemcpyHostToDevice, cs);
     // Three full wraps: each round appends `ring` cells at [base, base+ring) and the pool must
     // hold the NEWEST round's content at every mapped row (wrap-safe, duplicate-free writes).
-    for (int64_t base : {0LL, (int64_t) ring, 2 * (int64_t) ring}) {
+    for (int64_t base : {int64_t{0}, ring, 2 * ring}) {
         std::vector<float> kh(ring * kvw), vh(ring * kvw);
         for (int64_t c = 0; c < ring; ++c)
             for (int i = 0; i < kvw; ++i) {
@@ -456,6 +459,7 @@ void ring_regression(const ModelGeometry& g) {
     cudaStreamDestroy(cs);
     cudaFree(o.arena);
 }
+#endif  // STRATA_ENABLE_DFLASH2
 
 }  // namespace
 
@@ -483,7 +487,9 @@ int main(int argc, char** argv) {
     batch_and_attention_regression(g);
     owned_elastic_regression(g);
     conversation_regression(g);
+#ifdef STRATA_ENABLE_DFLASH2
     ring_regression(g);
+#endif
 
     std::fprintf(stderr, "dbg: section 1 (owned+append)\n");
     {   // 1+2: one owned state, ownership + append/readback across page boundaries
