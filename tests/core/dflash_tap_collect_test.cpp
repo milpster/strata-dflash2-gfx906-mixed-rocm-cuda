@@ -8,6 +8,7 @@
 
 #include <cuda_runtime.h>
 
+#include <array>
 #include <cstdio>
 #include <string>
 #include <thread>
@@ -190,22 +191,32 @@ int main() {
         tc.reset_staging();
     }
 
-    // Review item 2: the ACTUAL race - a producer thread stages chunk N+1 while the drafter
-    // thread assembles chunk N (prefill.cpp:4948-4963 overlap).  Every round's plane must
-    // match its own keyed pattern: slot bookkeeping + transfer enqueue stay consistent.
-    // Tag discipline: planes carry tag r when chunk key_r is staged, so pinned(key_r) holds
-    // tag r; assembling key_r must leave tag r on the plane.
+    // Review item 2 + L10 fix: the ACTUAL race - a producer thread stages chunk N+1 while
+    // the drafter thread assembles chunk N (prefill.cpp:4948-4963 overlap).  Each chunk is
+    // staged ONCE and assembled ONCE, consumed exactly where the real chain consumes it.
+    // The drafter-local producer plane PING-PONGS (plane1 / plane1b) so the previous
+    // chunk's D2D reads its own plane - the per-chunk plane lifetime of the real chain.
+    // Tag discipline: planes carry tag r when chunk key_r is staged; assembling key_r must
+    // leave tag r on the collector plane.
     {
         bool overlap_ok = true;
         const int kRounds = 8;
+        float* plane1b = nullptr;
+        {
+            const OnDevice on(drafter);
+            overlap_ok = cudaMalloc((void**) &plane1b, (size_t) 5 * kF32Rows * kN * 4) == cudaSuccess;
+        }
+        if (!overlap_ok) std::printf("FAIL overlap: drafter ping-pong plane allocation\n");
         std::vector<float> host((size_t) 5 * kF32Rows * kN), got((size_t) 5 * kF32Rows * kN);
-        const auto fill_tag = [&](int tag) {
+        const auto fill_round = [&](int round) {   // fills THIS chunk's planes with its tag
+            const int tag = round;
             for (int t = 0; t < 5; ++t)
                 for (int r = 0; r < kF32Rows; ++r)
                     for (int c = 0; c < kN; ++c)
                         host[(size_t) t * kF32Rows * kN + (size_t) r * kN + c] = f32_val(t, r, c, tag);
             { const OnDevice on(dev0); (void) cudaMemcpy(plane0, host.data(), host.size() * 4, cudaMemcpyHostToDevice); }
-            { const OnDevice on(drafter); (void) cudaMemcpy(plane1, host.data(), host.size() * 4, cudaMemcpyHostToDevice); }
+            { const OnDevice on(drafter);
+              (void) cudaMemcpy(round % 2 == 0 ? plane1 : plane1b, host.data(), host.size() * 4, cudaMemcpyHostToDevice); }
         };
         const auto verify_plane = [&](int tag) {
             if (cudaMemcpy(got.data(), tc.plane_f32(), got.size() * 4, cudaMemcpyDeviceToHost) != cudaSuccess)
@@ -217,31 +228,37 @@ int main() {
                             return false;
             return true;
         };
-        fill_tag(0);
-        const DFlashTapCollector::Slice pair[2] = {s0, s1};
+        const auto local_slice = [&](int round) { return DFlashTapCollector::Slice{1, round % 2 == 0 ? plane1 : plane1b, kF32Rows, 4}; };
+        const auto pair_for = [&](int round) {
+            return std::array<DFlashTapCollector::Slice, 2>{s0, local_slice(round)};
+        };
         std::string thread_err;
         for (int round = 0; round < kRounds && overlap_ok; ++round) {
             const int64_t key = 2000 + (int64_t) round * 100;
-            const int64_t prev = 2000 + (int64_t) (round - 1) * 100;
-            // The producer thread stages THIS chunk's GPU0 slice while we assemble the previous
-            // one: the same overlap the prefill chain creates between stage-0 and the last stage.
+            const int64_t prev = key - 100;
+            fill_round(round);   // THIS chunk's tag: the previous chunk's ping-pong plane stays intact
             std::thread producer([&tc, &s0, &thread_err, key] {
                 const OnDevice on(dev0);
                 if (!tc.stage(key, s0, 4, thread_err)) thread_err = "stage(producer): " + thread_err;
             });
-            {
+            {   // the drafter thread stages this chunk's local slice and assembles the PREVIOUS
+                // one - staged last round, consumed exactly once here (the real overlap).
                 const OnDevice on(drafter);
-                overlap_ok = tc.stage(key, s1, 4, err);
-                if (round > 0) overlap_ok = overlap_ok && tc.assemble(prev, pair, 2, 4, 4, err);
+                overlap_ok = tc.stage(key, local_slice(round), 4, err);
+                if (round > 0)
+                    overlap_ok = overlap_ok && tc.assemble(prev, pair_for(round - 1).data(), 2, 4, 4, err) && verify_plane(round - 1);
             }
             producer.join();
             overlap_ok = overlap_ok && thread_err.empty();
             if (!overlap_ok) { std::printf("FAIL overlap round %d: %s / %s\n", round, err.c_str(), thread_err.c_str()); break; }
+        }
+        {   // the prefill tail: consume the last staged chunk exactly once
             const OnDevice on(drafter);
-            overlap_ok = tc.assemble(key, pair, 2, 4, 4, err) && verify_plane(round);
-            fill_tag(round + 1);   // the next chunk stages with the next tag
+            overlap_ok = overlap_ok && tc.assemble(2000 + (int64_t) (kRounds - 1) * 100, pair_for(kRounds - 1).data(), 2, 4, 4, err)
+                         && verify_plane(kRounds - 1);
         }
         check(overlap_ok, "overlapping producer staging + drafter assembly keep slots and planes consistent");
+        { const OnDevice on(drafter); if (plane1b != nullptr) cudaFree(plane1b); }
     }
 
     tc.disable();
