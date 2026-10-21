@@ -20,7 +20,9 @@ int DFlashTapCollector::acquire(Slot (&slots)[kSlots], int64_t key, std::string&
     int victim = -1;
     for (int i = 0; i < kSlots; ++i) {
         if (slots[i].key == key) return i;
-        if (slots[i].key < 0) victim = i;
+        // First FREE slot wins (parent-found slot_test failure at b1493619: the scan used to
+        // assign every empty slot, binding new keys to the LAST free index - now deterministic).
+        if (slots[i].key < 0 && victim < 0) victim = i;
     }
     if (victim < 0) {   // all bound: evict the oldest binding (keys grow with position)
         victim = 0;
