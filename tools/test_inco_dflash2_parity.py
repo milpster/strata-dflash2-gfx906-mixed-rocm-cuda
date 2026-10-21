@@ -295,9 +295,20 @@ def selfcheck_hc_mean(cp: inco_safetensors.Checkpoint) -> None:
             ok_all &= abs(float(numpy_mean[ch]) - scalar) < 1e-4
     check(ok_all, "HC mean over 4 streams (SYNTHETIC fixture, distinct layer/stream/channel values): "
                   "numpy axis mean == independent scalar mean at tap layers 5/15/45")
-    concat = streams.reshape(rows, 5 * 4 * H // 4)   # the fused tap row is [tap][stream-mean]
-    check(len(taps) * H == 12800 and concat.shape[1] == 5 * H,
-          "fused tap row = 5 completed taps x 2560 (completed-tap order 5,15,25,35,45)")
+    # The fused tap row consumes the STREAM MEANS: average the 4-stream HC axis FIRST, then
+    # concatenate the 5 completed taps. Reshaping raw (rows,5,4,H) to (rows,5H) is a shape
+    # error - the mean must precede the reshape.
+    means = streams.mean(axis=2)                     # (rows, 5, H) - averaged over the stream axis
+    fused = means.reshape(rows, 5 * H)               # (rows, 12800) - tap-concatenated row
+    ok_layout = len(taps) * H == 12800 and fused.shape[1] == 5 * H
+    for ti, layer in enumerate(taps):                # prove axis + tap order per slice
+        sl = fused[:, ti * H:(ti + 1) * H]
+        for tok in range(rows):
+            for ch in (0, 3, H - 1):
+                scalar = sum(float(streams[tok, ti, st, ch]) for st in range(4)) / 4.0
+                ok_layout &= abs(float(sl[tok, ch]) - scalar) < 1e-4
+    check(ok_layout, "fused tap row = 4-stream mean FIRST, then 5 taps x 2560 in completed order "
+                     "5,15,25,35,45; every tap slice == independent scalar mean (axis+order proven)")
 
 
 def selfcheck_fusion(cp: inco_safetensors.Checkpoint) -> None:
@@ -311,16 +322,24 @@ def selfcheck_fusion(cp: inco_safetensors.Checkpoint) -> None:
     inv = 1.0 / (ms + 1e-6) ** 0.5
     worst = max(abs(float(got[i]) - float(x[i]) * inv * float(w[i])) for i in range(H))
     check(worst < 1e-6, f"rmsnorm == independent FP64 scalar computation (max|d|={worst:.2e}, eps 1e-6, 1e-6)")
-    fc = np.arange(2 * 4, dtype=np.float32).reshape(2, 4) / 3.0
-    tapsin = np.array([[1.0, 2.0, 3.0, 4.0], [-1.0, 0.5, 0.0, 2.0]], np.float32)
-    got = bf16(fc @ tapsin.T)                          # the engine's bf16 projection boundary
+    # Fusion boundary (engine-faithful): the projection consumes BF16 inputs and BF16 weights
+    # and emits FP32 accumulation - NOT a BF16-rounded output (BF16 rounding at the output
+    # belongs to the next norm boundary). Rows: tapsin = input rows, fc = output rows, so the
+    # product is tapsin @ fc.T = (input rows x output rows). Fixture is EXACTLY dyadic
+    # (powers of two): exact in BF16 and FP32, products and sums exact in FP32 - the strict
+    # 1e-7 threshold compares against an exact scalar reference; the tolerance is not raised.
+    tapsin = np.array([[1.0, 2.0, 0.5, -1.0], [0.25, 1.0, -2.0, 4.0]], np.float32)
+    fc = np.array([[1.0, 0.5, -0.5, 2.0], [-1.0, 2.0, 0.25, 0.5], [1.0, 1.0, 1.0, 1.0]], np.float32)
+    tb, fb = bf16(tapsin), bf16(fc)                   # the operands the engine sees (BF16 values)
+    got = tb @ fb.T                                   # (2 input rows x 3 output rows), FP32 accumulation
     worst = 0.0
-    for r in range(2):
-        for c in range(4):
-            acc = sum(float(fc[r, k]) * float(tapsin[c, k]) for k in range(4))
-            worst = max(worst, abs(float(got[r, c]) - float(bf16(np.float32(acc)))))
-    check(worst < 1e-7, f"fc fusion rows == independent scalar dot products through the same BF16 boundary "
-                        f"(max|d|={worst:.2e})")
+    for r in range(tapsin.shape[0]):                  # input row
+        for o in range(fc.shape[0]):                  # output row
+            acc = sum(float(tb[r, k]) * float(fb[o, k]) for k in range(tapsin.shape[1]))
+            worst = max(worst, abs(float(got[r, o]) - acc))
+    check(worst < 1e-7, f"fc fusion = BF16 input x BF16 weight -> FP32 accumulation == independent "
+                        f"scalar dot per (input row, output row) on the exact dyadic fixture "
+                        f"(max|d|={worst:.1e}, threshold kept strict)")
 
 
 def checked_positions(positions: list[int]) -> list[int]:
