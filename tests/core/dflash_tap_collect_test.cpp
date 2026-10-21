@@ -10,6 +10,7 @@
 
 #include <cstdio>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace strata::core;
@@ -170,6 +171,77 @@ int main() {
               "assemble with a missing producer stage refuses (no stale-plane read)");
         const DFlashTapCollector::Slice too_long{0, plane0, kF32Rows, kF32Rows + 1};
         check(!tc.stage(9001, too_long, 4, err), "rows beyond the plane capacity are refused");
+        // Review item 3: the public boundary validates type_bytes once.
+        check(!tc.stage(9002, s0, 3, err) && err.find("type_bytes") != std::string::npos,
+              "a type_bytes outside 2/4 is refused at the boundary");
+        // Review item 3: assemble respects the producer's advertised rows - rows past them are a stale read.
+        const DFlashTapCollector::Slice short0{0, plane0, kF32Rows, 2}, wide1{1, plane1, kF32Rows, 4};
+        const DFlashTapCollector::Slice pair[2] = {short0, wide1};
+        check(!tc.assemble(9003, pair, 2, 4, 4, err) && err.find("stale read") != std::string::npos,
+              "assemble rows past a producer's advertised rows are refused (Slice.rows respected)");
+        // Review item 3: a producer staged twice for the same chunk key is refused before consumption.
+        check(tc.stage(9004, s0, 4, err) && !tc.stage(9004, s0, 4, err) && err.find("staged twice") != std::string::npos,
+              "duplicate staging of the same tap for one chunk key is refused");
+        // Review item 2: reset_staging drops bindings so a new conversation reusing the key is not
+        // blocked by the aborted request's rows guard.
+        tc.reset_staging();
+        const DFlashTapCollector::Slice other_rows{0, plane0, kF32Rows, 3};
+        check(tc.stage(9004, other_rows, 4, err), "after reset_staging the same key re-binds with new rows");
+        tc.reset_staging();
+    }
+
+    // Review item 2: the ACTUAL race - a producer thread stages chunk N+1 while the drafter
+    // thread assembles chunk N (prefill.cpp:4948-4963 overlap).  Every round's plane must
+    // match its own keyed pattern: slot bookkeeping + transfer enqueue stay consistent.
+    // Tag discipline: planes carry tag r when chunk key_r is staged, so pinned(key_r) holds
+    // tag r; assembling key_r must leave tag r on the plane.
+    {
+        bool overlap_ok = true;
+        const int kRounds = 8;
+        std::vector<float> host((size_t) 5 * kF32Rows * kN), got((size_t) 5 * kF32Rows * kN);
+        const auto fill_tag = [&](int tag) {
+            for (int t = 0; t < 5; ++t)
+                for (int r = 0; r < kF32Rows; ++r)
+                    for (int c = 0; c < kN; ++c)
+                        host[(size_t) t * kF32Rows * kN + (size_t) r * kN + c] = f32_val(t, r, c, tag);
+            { const OnDevice on(dev0); (void) cudaMemcpy(plane0, host.data(), host.size() * 4, cudaMemcpyHostToDevice); }
+            { const OnDevice on(drafter); (void) cudaMemcpy(plane1, host.data(), host.size() * 4, cudaMemcpyHostToDevice); }
+        };
+        const auto verify_plane = [&](int tag) {
+            if (cudaMemcpy(got.data(), tc.plane_f32(), got.size() * 4, cudaMemcpyDeviceToHost) != cudaSuccess)
+                return false;
+            for (int t = 0; t < 5; ++t)
+                for (int r = 0; r < 4; ++r)
+                    for (int c = 0; c < kN; c += 127)
+                        if (got[(size_t) t * kF32Rows * kN + (size_t) r * kN + c] != f32_val(t, r, c, tag))
+                            return false;
+            return true;
+        };
+        fill_tag(0);
+        const DFlashTapCollector::Slice pair[2] = {s0, s1};
+        std::string thread_err;
+        for (int round = 0; round < kRounds && overlap_ok; ++round) {
+            const int64_t key = 2000 + (int64_t) round * 100;
+            const int64_t prev = 2000 + (int64_t) (round - 1) * 100;
+            // The producer thread stages THIS chunk's GPU0 slice while we assemble the previous
+            // one: the same overlap the prefill chain creates between stage-0 and the last stage.
+            std::thread producer([&tc, &s0, &thread_err, key] {
+                const OnDevice on(dev0);
+                if (!tc.stage(key, s0, 4, thread_err)) thread_err = "stage(producer): " + thread_err;
+            });
+            {
+                const OnDevice on(drafter);
+                overlap_ok = tc.stage(key, s1, 4, err);
+                if (round > 0) overlap_ok = overlap_ok && tc.assemble(prev, pair, 2, 4, 4, err);
+            }
+            producer.join();
+            overlap_ok = overlap_ok && thread_err.empty();
+            if (!overlap_ok) { std::printf("FAIL overlap round %d: %s / %s\n", round, err.c_str(), thread_err.c_str()); break; }
+            const OnDevice on(drafter);
+            overlap_ok = tc.assemble(key, pair, 2, 4, 4, err) && verify_plane(round);
+            fill_tag(round + 1);   // the next chunk stages with the next tag
+        }
+        check(overlap_ok, "overlapping producer staging + drafter assembly keep slots and planes consistent");
     }
 
     tc.disable();
