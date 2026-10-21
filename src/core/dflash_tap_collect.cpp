@@ -2,12 +2,43 @@
 // collector (include/strata/core/dflash_tap_collect.hpp).  Serial-only transport:
 // D2H runs host-synchronously inside the producer's completion context; H2D/D2D run
 // on the drafter stream, stream-ordered against the drafter's fusion reads.
+// All slot bookkeeping and transfer enqueue is serialized by mu_ (the prefill chain's
+// producer stages chunk N+1 on its host thread while the final stage assembles chunk
+// N on its own - prefill.cpp:4948-4963 is the concurrent-call evidence).
 #include <strata/core/dflash_tap_collect.hpp>
 #include <strata/core/on_device.hpp>
 
 namespace strata::core {
 
+namespace {
+constexpr bool valid_type_bytes(int type_bytes) { return type_bytes == 2 || type_bytes == 4; }
+}  // namespace
+
 DFlashTapCollector::Kind& DFlashTapCollector::kind(int type_bytes) { return type_bytes == 4 ? f32_ : bf16_; }
+
+int DFlashTapCollector::acquire(Slot (&slots)[kSlots], int64_t key, std::string& err) {
+    int victim = -1;
+    for (int i = 0; i < kSlots; ++i) {
+        if (slots[i].key == key) return i;
+        if (slots[i].key < 0) victim = i;
+    }
+    if (victim < 0) {   // all bound: evict the oldest binding (keys grow with position)
+        victim = 0;
+        for (int i = 1; i < kSlots; ++i)
+            if (slots[i].key < slots[victim].key) victim = i;
+        // Drain the evicted slot's last H2D before reusing its pinned rows.  The event
+        // was recorded by an assemble() that already released mu_, so this sync under
+        // the lock never waits on a blocked collector call.
+        if (slots[victim].ev != nullptr && cudaEventSynchronize(slots[victim].ev) != cudaSuccess) {
+            err = "dflash tap collect: draining the evicted slot's H2D failed";
+            return -1;
+        }
+    }
+    Slot& s = slots[victim];
+    s.key = key; s.rows = -1;
+    for (int t = 0; t < kDFlashMaxTaps; ++t) s.staged[t] = false;
+    return victim;
+}
 
 bool DFlashTapCollector::enable(const DFlashTapPlan& plan, int drafter_dev, int64_t f32_rows,
                                 int64_t bf16_rows, std::string& err) {
@@ -16,6 +47,7 @@ bool DFlashTapCollector::enable(const DFlashTapPlan& plan, int drafter_dev, int6
     if (drafter_dev < 0) { err = "dflash tap collect: no drafter device"; return false; }
     if (f32_rows <= 0 && bf16_rows <= 0) { err = "dflash tap collect: both row caps are zero"; return false; }
     plan_ = plan; dev_ = drafter_dev;
+    const OnDevice on_dev(dev_);   // the planes land on the drafter's card, standalone included
     const int64_t N = plan_.n_embd;
     const auto alloc_kind = [&](Kind& k, int64_t rows_cap, int type_bytes) -> bool {
         k.rows_cap = rows_cap; k.type_bytes = type_bytes;
@@ -23,6 +55,8 @@ bool DFlashTapCollector::enable(const DFlashTapPlan& plan, int drafter_dev, int6
             Slot& s = k.slots[i];
             s.key = -1; s.rows = -1;
             for (int t = 0; t < plan_.n_taps; ++t) {
+                s.staged[t] = false;
+                if (plan_.tap_device(t) == dev_) continue;   // local taps go D2D: no host staging
                 const size_t bytes = (size_t) rows_cap * N * type_bytes;
                 if (cudaHostAlloc((void**) &s.pin[t], bytes, cudaHostAllocMapped | cudaHostAllocPortable) !=
                     cudaSuccess) {
@@ -58,9 +92,11 @@ bool DFlashTapCollector::enable(const DFlashTapPlan& plan, int drafter_dev, int6
 }
 
 void DFlashTapCollector::disable() {
+    const OnDevice on_dev(dev_);   // events and device planes live on dev_; drain needs its context
     const auto free_kind = [&](Kind& k) {
         for (int i = 0; i < kSlots; ++i) {
             Slot& s = k.slots[i];
+            if (s.ev != nullptr) (void) cudaEventSynchronize(s.ev);   // the collector owns its outstanding H2Ds
             for (int t = 0; t < kDFlashMaxTaps; ++t) {
                 if (s.pin[t] != nullptr) cudaFreeHost(s.pin[t]);
                 s.pin[t] = nullptr; s.staged[t] = false;
@@ -78,28 +114,25 @@ void DFlashTapCollector::disable() {
     plane_bytes_ = 0; pin_bytes_ = 0; cs_ = nullptr;
 }
 
-int DFlashTapCollector::acquire(Kind& k, int64_t key) {
-    int victim = -1;
-    for (int i = 0; i < kSlots; ++i) {
-        if (k.slots[i].key == key) return i;
-        if (k.slots[i].key < 0) victim = i;
-    }
-    if (victim < 0) {   // all bound: evict the oldest binding (keys grow with position)
-        victim = 0;
-        for (int i = 1; i < kSlots; ++i)
-            if (k.slots[i].key < k.slots[victim].key) victim = i;
-        // Drain the evicted slot's last H2D before reusing its pinned rows.
-        if (k.slots[victim].ev != nullptr) cudaEventSynchronize(k.slots[victim].ev);
-    }
-    Slot& s = k.slots[victim];
-    s.key = key; s.rows = -1;
-    for (int t = 0; t < kDFlashMaxTaps; ++t) s.staged[t] = false;
-    return victim;
+void DFlashTapCollector::reset_staging() {
+    std::lock_guard<std::mutex> lock(mu_);
+    const OnDevice on_dev(dev_ >= 0 ? dev_ : -1);
+    const auto reset_kind = [&](Kind& k) {
+        for (int i = 0; i < kSlots; ++i) {
+            Slot& s = k.slots[i];
+            if (s.ev != nullptr) (void) cudaEventSynchronize(s.ev);   // drop nothing mid-H2D
+            s.key = -1; s.rows = -1;
+            for (int t = 0; t < kDFlashMaxTaps; ++t) s.staged[t] = false;
+        }
+    };
+    reset_kind(f32_); reset_kind(bf16_);
 }
 
 bool DFlashTapCollector::stage(int64_t key, const Slice& slice, int type_bytes, std::string& err) {
+    if (!valid_type_bytes(type_bytes)) { err = "dflash tap collect: type_bytes must be 2 (BF16) or 4 (FP32)"; return false; }
+    std::lock_guard<std::mutex> lock(mu_);
     if (!enabled()) { err = "dflash tap collect: not enabled"; return false; }
-    Kind& k = type_bytes == 4 ? f32_ : bf16_;
+    Kind& k = kind(type_bytes);
     if (k.rows_cap <= 0) { err = "dflash tap collect: that plane kind is not enabled"; return false; }
     if (slice.plane == nullptr) { err = "dflash tap collect: producer plane is null"; return false; }
     if (slice.stage < 0 || slice.stage >= plan_.n_stages) { err = "dflash tap collect: producer stage out of range"; return false; }
@@ -113,33 +146,41 @@ bool DFlashTapCollector::stage(int64_t key, const Slice& slice, int type_bytes, 
         if (plan_.owner[t] != slice.stage) continue;
         if (plan_.tap_device(t) == dev_) continue;   // drafter-device taps: assemble copies them D2D
         if (slot < 0) {
-            slot = acquire(k, key);
+            slot = acquire(k.slots, key, err);
+            if (slot < 0) return false;
             Slot& s = k.slots[slot];
             if (s.rows >= 0 && s.rows != slice.rows) { err = "dflash tap collect: chunk slot rows disagree"; return false; }
             s.rows = slice.rows;
-            if (s.ev != nullptr) cudaEventSynchronize(s.ev);   // last H2D has read its pinned copy
+            if (s.ev != nullptr && cudaEventSynchronize(s.ev) != cudaSuccess) {
+                err = "dflash tap collect: draining the slot's last H2D failed";   // pinned rows are read by the H2D
+                return false;
+            }
         }
+        Slot& s = k.slots[slot];
+        if (s.staged[t]) { err = "dflash tap collect: tap " + std::to_string(t) + " staged twice for this chunk"; return false; }
         const size_t bytes = (size_t) slice.rows * N * type_bytes;
         const OnDevice on_producer(plan_.dev[slice.stage]);
-        if (cudaMemcpy(k.slots[slot].pin[t],
+        if (cudaMemcpy(s.pin[t],
                        (const uint8_t*) slice.plane + (size_t) t * slice.stride_rows * N * type_bytes,
                        bytes, cudaMemcpyDeviceToHost) != cudaSuccess) {
             err = "dflash tap collect: D2H of the producer slice failed";
             return false;
         }
-        k.slots[slot].staged[t] = true;
+        s.staged[t] = true;
     }
     return true;
 }
 
 bool DFlashTapCollector::assemble(int64_t key, const Slice* slices, int n_slices, int64_t rows,
                                   int type_bytes, std::string& err) {
+    if (!valid_type_bytes(type_bytes)) { err = "dflash tap collect: type_bytes must be 2 (BF16) or 4 (FP32)"; return false; }
+    std::lock_guard<std::mutex> lock(mu_);
     if (!enabled()) { err = "dflash tap collect: not enabled"; return false; }
-    Kind& k = type_bytes == 4 ? f32_ : bf16_;
+    Kind& k = kind(type_bytes);
     if (k.rows_cap <= 0) { err = "dflash tap collect: that plane kind is not enabled"; return false; }
     if (rows <= 0 || rows > k.rows_cap) { err = "dflash tap collect: assemble rows exceed the plane capacity"; return false; }
     int cur = 0;
-    cudaGetDevice(&cur);
+    if (cudaGetDevice(&cur) != cudaSuccess) { err = "dflash tap collect: querying the current device failed"; return false; }
     if (cur != dev_) { err = "dflash tap collect: assemble must run on the drafter's device"; return false; }
     int slot = -1;
     for (int t = 0; t < plan_.n_taps; ++t) {
@@ -148,8 +189,8 @@ bool DFlashTapCollector::assemble(int64_t key, const Slice* slices, int n_slices
             if (plan_.owner[t] == slices[i].stage) {
                 ++producers;
                 who = i;
-                if (slices[i].plane == nullptr || rows > slices[i].stride_rows) {
-                    err = "dflash tap collect: producer rows exceed its plane stride";
+                if (slices[i].plane == nullptr || rows > slices[i].stride_rows || rows > slices[i].rows) {
+                    err = "dflash tap collect: producer rows do not cover the assembled rows - refusing a stale read";
                     return false;
                 }
             }
@@ -158,14 +199,15 @@ bool DFlashTapCollector::assemble(int64_t key, const Slice* slices, int n_slices
                   " producer slices - refusing a stale-plane read";
             return false;
         }
-        if (slot < 0) slot = acquire(k, key);
+        if (slot < 0) { slot = acquire(k.slots, key, err); if (slot < 0) return false; }
         Slot& s = k.slots[slot];
         if (s.rows >= 0 && s.rows != rows) { err = "dflash tap collect: chunk slot rows disagree"; return false; }
         const int64_t N = plan_.n_embd;
         const size_t bytes = (size_t) rows * N * type_bytes;
-        void* dst = (type_bytes == 4 ? (void*) plane_f32_ : (void*) plane_bf16_) + (size_t) t * k.rows_cap * N * type_bytes;
+        uint8_t* plane = type_bytes == 4 ? (uint8_t*) plane_f32_ : (uint8_t*) plane_bf16_;
+        uint8_t* dst = plane + (size_t) t * k.rows_cap * N * type_bytes;   // plane rows use the full capacity stride
         if (plan_.tap_device(t) == dev_) {
-            const void* src = (const uint8_t*) slices[who].plane + (size_t) t * slices[who].stride_rows * N * type_bytes;
+            const uint8_t* src = (const uint8_t*) slices[who].plane + (size_t) t * slices[who].stride_rows * N * type_bytes;
             if (cudaMemcpyAsync(dst, src, bytes, cudaMemcpyDeviceToDevice, cs_) != cudaSuccess) {
                 err = "dflash tap collect: same-device tap copy failed"; return false;
             }
@@ -179,7 +221,10 @@ bool DFlashTapCollector::assemble(int64_t key, const Slice* slices, int n_slices
     if (slot >= 0) {
         k.slots[slot].rows = -1;
         for (int t = 0; t < kDFlashMaxTaps; ++t) k.slots[slot].staged[t] = false;
-        if (k.slots[slot].ev != nullptr) cudaEventRecord(k.slots[slot].ev, cs_);   // drains protect pinned reuse
+        if (k.slots[slot].ev != nullptr && cudaEventRecord(k.slots[slot].ev, cs_) != cudaSuccess) {
+            err = "dflash tap collect: recording the slot's H2D completion event failed";   // pinned reuse needs it
+            return false;
+        }
     }
     return true;
 }

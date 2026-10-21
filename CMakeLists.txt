@@ -1469,6 +1469,15 @@ if(STRATA_BUILD_TESTS)
   add_executable(dflash_tap_plan_test tests/core/dflash_tap_plan_test.cpp)
   target_include_directories(dflash_tap_plan_test PRIVATE include)
   add_test(NAME dflash_tap_plan_test COMMAND dflash_tap_plan_test)
+  # The collector's slot lifecycle (acquire/eviction/reset), CPU-safe: ev == nullptr means
+  # the real acquire() makes no CUDA call.  Needs the toolkit headers, so the same guard
+  # as dflash_load_test (parent review 2026-10-21 item 2: prove the lifecycle on CPU).
+  if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
+    add_executable(dflash_tap_slot_test tests/core/dflash_tap_slot_test.cpp)
+    target_include_directories(dflash_tap_slot_test PRIVATE include)
+    target_link_libraries(dflash_tap_slot_test PRIVATE strata_engine)
+    add_test(NAME dflash_tap_slot_test COMMAND dflash_tap_slot_test)
+  endif()
   # No device work, but the runtime header depends on GPU toolkit headers.
   # A CPU-only build must not require cuda_runtime.h just to build its tests.
   if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
