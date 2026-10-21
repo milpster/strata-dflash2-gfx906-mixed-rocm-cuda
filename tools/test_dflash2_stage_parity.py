@@ -47,18 +47,23 @@ refuses(lambda: parity.unpack_meta(struct.pack("<3I", 1, 2, 3)), "meta with 3 fi
 refuses(lambda: parity.unpack_meta(b"\x00\x01\x02"), "meta with a non-multiple-of-4 size")
 
 # Retained span boundary: a cell survives while its next congruent cell c+ring is unwritten,
-# i.e. c >= pos+K-ring. At pos 200000 that is 198896; the noise writes' congruent cells sit
-# below it (e.g. 200007-2112 = 197895).
+# i.e. c >= pos+K-ring. At pos 200000: 200000+8-2112 = 197896; the noise writes' congruent
+# cells [200000-2112, 200008-2112) = [197888, 197896) sit just below it (e.g. 200007-2112=197895).
 lo = parity.ring_context_span(POS, K, RING)
-check(lo == POS + K - RING == 198896, "retained context lower bound pos+K-ring = 198896")
+check(lo == POS + K - RING == 197896, "retained context lower bound pos+K-ring = 197896")
 check(parity.ring_context_span(POS, K, 0) == 0, "ring 0 keeps the legacy full span")
 
-# The comparison span is the union of the readable window and the retained context, bounded
-# by ring cells - never np.arange(pos+K) over the whole logical history.
+# The comparison span is the UNION of the visible attention window [pos-W+1, pos+K) and the
+# retained context [pos+K-ring, pos): start = min(197953, 197896) = 197896, end 200008,
+# length 2112 = ring (window 2048+K 8-1 = 2055 union the extra ring slack). The visible
+# 2055-cell window span is a strict subset; never np.arange(pos+K) over the whole history.
 cells = parity.ring_cells_span(POS, K, W, RING)
-check(int(cells[0]) == POS - W + 1 and int(cells[-1]) == POS + K - 1,
-      "span covers the window start through the last block row")
-check(len(cells) == 2055 <= RING, "window-bounded span (2055 cells) stays under the ring")
+check(int(cells[0]) == POS + K - RING == 197896 and int(cells[-1]) == POS + K - 1,
+      "union span starts at min(window start, retained bound) through the last block row")
+check(len(cells) == POS + K - (POS + K - RING) == RING, "union span is exactly ring cells (2112)")
+window_span = np.arange(POS - W + 1, POS + K)
+check(len(window_span) == 2055 and window_span[0] >= cells[0] and window_span[-1] == cells[-1],
+      "visible window span (2055 cells) is a subset of the union span")
 check(len(parity.ring_cells_span(POS, K, 0, 0)) == POS + K, "legacy window 0 keeps arange(pos+K)")
 
 # Pool rows: the same cell % ring the kernel applies, identity page table.
@@ -82,6 +87,16 @@ for c in range(POS, POS + K):
     pool[c % RING] = -(c + 1)
 check(all(pool[c % RING] == c for c in (lo, lo + 1, POS - 1)),
       "retained context cells read their own committed rows")
+# Independent slot simulation of the EXACT boundary (no arithmetic literals trusted):
+# the 8 cells just below lo have congruent writers inside the noise range [pos, pos+K);
+# the 8 cells at lo have congruent writers past every write (>= pos+K) - self is newest.
+contaminated = range(POS + K - RING - K, POS + K - RING)
+check(all(c + RING in range(POS, POS + K) for c in contaminated),
+      "the 8 cells below lo are congruent to noise writers (slot-simulation proof)")
+check(all(pool[c % RING] < 0 for c in contaminated), "their slots carry the noise value")
+check(all(c + RING >= POS + K for c in range(POS + K - RING, POS + K - RING + K))
+      and all(pool[c % RING] == c for c in range(POS + K - RING, POS + K - RING + K)),
+      "the 8 cells at lo have no congruent writer - their own committed value survives")
 poisoned = POS + K - 1 - RING   # congruent to the last noise write (200007 - 2112)
 check(pool[poisoned % RING] == -(POS + K) < 0,
       "a contaminated cell's row holds the noise writer's value (excluded from comparison)")
