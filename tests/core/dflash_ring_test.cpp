@@ -99,14 +99,15 @@ int main() {
         check(st.committed_end == 0 && st.appended_through == 0, "a fresh drafter has an empty horizon");
         check(!st.propose_allowed(200000, ROWS), "propose with no confirmed context is refused");
         check(!st.append_allowed(200000, 4), "an append that skips past the confirmed end is a gap");
-        check(st.append_allowed(0, 4) && st.append_allowed(4, 4), "contiguous appends are admissible");
+        check(st.append_allowed(0, 4), "append at 0 is admissible on an empty context");
         st.note_append(0, 4);
         check(st.committed_end == 4 && st.appended_through == 4, "note_append advances both counters");
+        check(st.append_allowed(4, 4), "contiguous appends are admissible (after the first landed)");
         st.note_append(4, 4);
         check(st.committed_end == 8, "adjacent append stays contiguous");
         check(st.append_allowed(8, 4), "append at the confirmed end continues the context");
         st.note_append(8, 4);
-        check(st.committed_end == 16, "coverage tracks the full confirmed span");
+        check(st.committed_end == 12, "coverage tracks the full confirmed span (4+4+4)");
         check(!st.append_allowed(20, 4), "an append past the confirmed end is a gap");
 
         // Prefill the whole 200000 context logically (counters only), then the verify loop with
@@ -120,6 +121,8 @@ int main() {
         auto append = [&](int64_t pos0, int64_t rows, int tag) {
             for (int64_t r = 0; r < rows; ++r) pool[(size_t) dflash_ring_cell(pos0 + r, RING)] = tag;
         };
+        append(0, 200000, 1);   // materialize the prefilled rows: readable cells must carry
+                                // COMMITTED tags, not the untouched-slot default 0
         // The exhaustive loop mirrors the engine: prefill committed, then at each cycle the
         // propose writes NOISE rows [pos, pos+K), verify commits a prefix t (0..K-1) as
         // COMMITTED (re-appending the SAME cells), and the next cycle's readable window
