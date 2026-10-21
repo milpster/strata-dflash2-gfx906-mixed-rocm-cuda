@@ -6,28 +6,38 @@ What this IS:
     (/mnt/user/Strata/prod-config-swift15.json, read-only) and writes, under
     /mnt/user/dflash2/config/, (a) a PLAN MANIFEST (named manifest) and (b) VALID
     server-schema configs for the isolated prototype server on port 8019 - same schema
-    fields as prod (exe/args/cwd/tokenizer/model_name/log/lib_dirs/vision/env),
-    structurally merged flags (no duplicated --spec strings), production config NEVER
-    touched.
+    fields as prod (exe/args/cwd/tokenizer/model_name/log/env/lib_dirs/vision),
+    structurally merged flags (each flag exactly once), production config NEVER touched.
+    Prototype logs are ABSOLUTE paths under /mnt/user/dflash2/logs/ - never relative
+    paths that would create new files inside the production tree.
   * A REAL CLIENT for the isolated prototype server (--execute, parent-run): HTTP checks
-    and case runs against the explicit prototype URL (port 8019; port 8009 - production -
-    is REFUSED outright), with strict guards:
-        - production engine observed RUNNING  -> refuse
-        - detection FAILED/UNKNOWN           -> refuse (fail-closed; no override flag)
-        - --confirm-execution                 -> required explicit acknowledgement
-    Nothing in this file can stop, restart, signal, or probe production.
-  * CPU unit fixtures (--selfcheck) for the cloner/merge/guards (parent runs them).
+    against the explicit prototype URL (port 8019; port 8009 - production - REFUSED),
+    fail-closed guards (original production lineage observed RUNNING -> refuse; lineage
+    UNKNOWN -> refuse; --confirm-execution required; NO override). Nothing here stops,
+    restarts, signals, or probes production.
+  * CPU unit fixtures (--selfcheck) for the cloner/merge/guards/RT-metadata (parent runs).
 
-Observed drafter evidence (read-only, 2026-10-21, do not guess):
-  * Production config args contain NO --mtp and NO --dflash -> the production serve is
-    TARGET-ONLY with drafter-verify flags --spec 6 --spec-min-p 0.7 present (source:
-    --spec is consumed only by drafter paths - dflash validation generate.cpp:5445 and the
-    MTP bind at 9176 under use_mtp; with no drafter the flags are inert). prod_reference is
-    therefore labeled OBSERVED TARGET-ONLY, not "MTP".
-  * No MTP drafter artifact exists in the known model dirs (searched /mnt/user/ai for
-    mtp/draft artifacts exist - see new_mtp mode) -> the new_mtp mode is MTP-candidate
-    UNVALIDATED with this reason,
-    not a fake baseline; unknown MTP flags are never invented.
+BASELINE FACT (parent-verified source + runtime logs, 2026-10-22; supersedes the earlier
+"TARGET-ONLY" label, which was WRONG):
+  * generate.cpp:778 suffix_draft DEFAULT 3; the flag --suffix-draft is only reassigned at
+    2654; lookup_chain default 0 (784, flag 2656); use_mtp = !o.mtp.empty() (8344, 16456)
+    with --mtp assigned only at 2599; sfx_on = suffix_draft>0 || lookup_chain>0
+    (14338, 16711). Production args carry NO --mtp/--dflash, so MTP is off, but
+    suffix_draft=3 is ACTIVE: production is a SUFFIX-LOOKUP baseline. Production logs
+    repeat "suffix drafts: N windows, X of Y accepted". --spec 6 alone does NOT enable MTP.
+  * Pure target-only (autoregressive) requires EXPLICIT --suffix-draft 0 (plus
+    --lookup-chain 0) and --spec 1 - NOT prod args verbatim. The prod-args-verbatim clone
+    is therefore the new-binary SUFFIX-LOOKUP clone, named suffix_lookup.
+  * READY MTP loader input (parent-verified, read-only, NO conversion/copy needed):
+    /home/user/dev/Strata-data/mtp-bf16/rt/ (dense.txt 29 index lines, dense.bin
+    ~116,099,072 B, experts.bin ~675 MiB, draft_vocab.bin ~415 KiB; dense hidden 2560,
+    HC 10240 = 4 streams, 512 experts), built from mtp-bf16/mtp-q2_0.gguf (arch qwen4exp,
+    31 tensors) by tools/mtp_rt.py; MtpDrafter consumes the rt dir directly. The Lama-format
+    GGUF companions under ai/ai are NOT Strata-loadable. The Swift-1.5 target GGUF has no
+    mtp tensors; RT geometry is compatible STATICALLY, but the ACTUAL GPU load / Swift
+    acceptance is UNVALIDATED - label "READY-RT (runtime NOTRUN)", never "pack validated".
+  * new_mtp uses --mtp <rt dir> --spec 6 --spec-min-p 0.7 --suffix-draft 0 (pure MTP, not
+    mixed with suffix). The rt dir is READ-ONLY; no artifact copies.
 """
 from __future__ import annotations
 
@@ -44,13 +54,17 @@ PROD_CONFIG = "/mnt/user/Strata/prod-config-swift15.json"
 PROD_BINARY = "/mnt/user/Strata-2966/build-2966/strata"   # observed prod engine (pid cmdline evidence)
 PROTO_BINARY = "/mnt/user/dflash2/Strata-wt/build-gfx906-dflash2/strata"
 ARTIFACT = "/mnt/user/dflash2/artifacts/inco-dflash2-bf16.gguf"
+RT_DIR = "/home/user/dev/Strata-data/mtp-bf16/rt"         # ready MTP loader input (read-only)
 CONFIG_DIR = pathlib.Path("/mnt/user/dflash2/config")
+LOG_DIR = "/mnt/user/dflash2/logs"                        # absolute: prototype logs NEVER land under prod CWD
 PROTO_PORT = 8019
 PROD_PORT = 8009
 PROTO_URL_DEFAULT = f"http://127.0.0.1:{PROTO_PORT}"
+WIDTHS = list(range(1, 8))
 
-# Flags consumed ONLY by drafter paths (source-cited above): inert without --mtp/--dflash.
+# Flags consumed ONLY by drafter paths (source-cited in the header): inert without a drafter.
 DRAFTER_VERIFY_FLAGS = {"--spec": "2", "--spec-min-p": "2"}
+VALUE_FLAGS = {"--suffix-draft": "2", "--lookup-chain": "2"}   # arity table for the merge walker
 
 
 def load_prod_config(path: str = PROD_CONFIG) -> dict:
@@ -62,8 +76,9 @@ def load_prod_config(path: str = PROD_CONFIG) -> dict:
 
 
 def merge_flags(args: list[str], replace: dict[str, str], add: list[str]) -> list[str]:
-    """Structural merge over the flag list: each flag appears at most once; replacements
-    update the existing position; additions append. No duplicated '--spec' strings."""
+    """Structural merge over the flag list: each flag appears exactly once; replacements
+    update the existing position; additions append. No duplicated flag strings."""
+    arity = {**DRAFTER_VERIFY_FLAGS, **VALUE_FLAGS}
     out, i = list(args), 0
     seen = set()
     while i < len(out):
@@ -72,9 +87,12 @@ def merge_flags(args: list[str], replace: dict[str, str], add: list[str]) -> lis
             if tok in seen:
                 raise ValueError(f"merge: flag {tok} appears twice in the source args")
             seen.add(tok)
+            has_value = i + 1 < len(out) and not out[i + 1].startswith("--")
             if tok in replace:
+                if not has_value:
+                    raise ValueError(f"merge: cannot replace valueless flag {tok}")
                 out[i + 1] = replace[tok]
-            i += 2 if i + 1 < len(out) and not out[i + 1].startswith("--") else 1
+            i += 2 if has_value else 1
         else:
             i += 1
     j = 0
@@ -83,7 +101,7 @@ def merge_flags(args: list[str], replace: dict[str, str], add: list[str]) -> lis
         if flag in seen:
             raise ValueError(f"merge: refusing to add {flag} twice")
         seen.add(flag)
-        if flag in DRAFTER_VERIFY_FLAGS:
+        if flag in arity:
             out.extend([flag, add[j + 1]])
             j += 2
         else:
@@ -96,57 +114,126 @@ def clone_server_config(mode: str, prod: dict) -> dict:
     """A VALID server-schema config clone for the isolated prototype (parent starts it)."""
     cfg = copy.deepcopy(prod)
     cfg["exe"] = PROTO_BINARY
-    cfg["log"] = "logs/engine-prototype-dflash2.log"
+    cfg["log"] = f"{LOG_DIR}/engine-prototype-{mode}.log"   # ABSOLUTE - isolation from the prod tree
     # server.py derives engine flags from STRUCTURED keys (layer_split -> --layer-split,
     # server.py:2604): every such key is preserved verbatim by the deep copy; only the port
     # moves, so the isolated prototype can never collide with production's 8009.
     cfg["port"] = PROTO_PORT
-    if mode == "target_only":
-        pass  # prod args verbatim: no --dflash/--mtp present (observed); drafter-verify
-              # flags stay inert (source-verified) so the A/B baseline is byte-identical.
-    elif mode == "dflash_w3":
-        cfg["args"] = merge_flags(prod["args"], {"--spec": "4", "--spec-min-p": "0.5"},
-                                  ["--dflash", ARTIFACT, "--dflash-block", "3"])
+    if mode == "suffix_lookup":
+        pass  # prod args verbatim = SUFFIX-LOOKUP baseline on the new binary (suffix_draft
+              # default 3, generate.cpp:778 - observed in production logs)
+    elif mode == "target_only":
+        cfg["args"] = merge_flags(prod["args"], {"--spec": "1"},
+                                  ["--suffix-draft", "0", "--lookup-chain", "0"])
+    elif mode == "old_target_only":
+        cfg["exe"] = PROD_BINARY            # old binary, pure AR - for the old-vs-new correctness gate
+        cfg["log"] = f"{LOG_DIR}/engine-oldbinary-target-only.log"
+        cfg["args"] = merge_flags(prod["args"], {"--spec": "1"},
+                                  ["--suffix-draft", "0", "--lookup-chain", "0"])
+    elif mode == "mtp":
+        cfg["args"] = merge_flags(prod["args"],
+                                  {"--spec": "6", "--spec-min-p": "0.7"},
+                                  ["--mtp", RT_DIR, "--suffix-draft", "0"])
+    elif mode.startswith("dflash_w"):
+        w = int(mode.removeprefix("dflash_w"))
+        if not 1 <= w <= 7:
+            raise ValueError(f"mode {mode}: widths run 1..7 (--spec w+1 <= kVerifyMaxT 8)")
+        cfg["args"] = merge_flags(prod["args"], {"--spec": str(w + 1), "--spec-min-p": "0.5"},
+                                  ["--dflash", ARTIFACT, "--dflash-block", str(w), "--suffix-draft", "0"])
     else:
-        raise ValueError(f"mode {mode}: MTP-candidate UNVALIDATED - MTP artifacts DO exist "
-                         "(/home/user/ai/ai/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf, shared Q4/Q8, "
-                         "/home/user/dev/Strata-data/mtp-bf16/mtp-q2_0.gguf - parent L1 evidence) "
-                         "but Swift 1.5 / Strata loader compatibility with the current pack is NOT "
-                         "validated and the production config carries no --mtp; mode flags would be invented")
+        raise ValueError(f"mode {mode}: unknown mode - not emitting configs for invented labels")
     return cfg
+
+
+def validate_rt_dir(rt: str = RT_DIR) -> list[str]:
+    """Cheap, header-only MTP loader-input validation (NO large reads; prod-up safe):
+    required files exist; dense.txt lines parse as name kind rows cols offset bytes with
+    kind in {q8_0,bf16,f32}; declared byte counts match the kind's element formula;
+    spans are contiguous from 0; the last span ends within dense.bin's size. Returns the
+    list of problems (empty = metadata contract holds). Runtime stays NOTRUN regardless."""
+    problems: list[str] = []
+    root = pathlib.Path(rt)
+    for f in ("dense.txt", "dense.bin", "experts.bin", "draft_vocab.bin"):
+        if not (root / f).is_file():
+            problems.append(f"missing file {f}")
+    if problems:
+        return problems
+    dense_size = (root / "dense.bin").stat().st_size
+    offset = 0
+    for n, line in enumerate((root / "dense.txt").read_text().splitlines(), 1):
+        parts = line.split()
+        if len(parts) != 6:
+            problems.append(f"line {n}: expected 'name kind rows cols offset bytes', got {line!r}")
+            continue
+        name, kind, rows, cols, off, size = parts[0], parts[1], *map(int, parts[2:])
+        if kind not in ("q8_0", "bf16", "f32"):
+            problems.append(f"line {n} {name}: kind {kind!r} not in q8_0|bf16|f32")
+            continue
+        per = {"q8_0": rows * (cols // 32) * 34, "bf16": rows * cols * 2, "f32": rows * cols * 4}[kind]
+        if kind == "q8_0" and cols % 32:
+            problems.append(f"line {n} {name}: q8_0 cols {cols} not a multiple of 32")
+        if per != size:
+            problems.append(f"line {n} {name}: declared {size} B != {kind} formula {per} B")
+        if off != offset:
+            problems.append(f"line {n} {name}: offset {off} != contiguous {offset}")
+        if off + size > dense_size:
+            problems.append(f"line {n} {name}: span {off}+{size} exceeds dense.bin size {dense_size}")
+        offset = off + size
+    if offset > dense_size:
+        problems.append(f"index spans total {offset} exceed dense.bin size {dense_size}")
+    return problems
 
 
 def plan_manifest(prod: dict) -> dict:
     modes = {
-        "prod_reference": {"kind": "OBSERVED TARGET-ONLY", "why": "prod args contain no --mtp/--dflash; "
-                           "--spec/--spec-min-p are drafter-only (generate.cpp:5445, 9176) and inert here",
-                           "exe": prod["exe"]},
-        "new_target_only": {"kind": "clone, prod args verbatim", "exe": PROTO_BINARY},
-        "new_mtp": {"kind": "MTP-candidate UNVALIDATED", "why": "MTP artifacts exist (parent L1: "
-                    "/home/user/ai/ai/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf, shared Q4/Q8, "
-                    "/home/user/dev/Strata-data/mtp-bf16/mtp-q2_0.gguf) but Swift/Strata loader "
-                    "compatibility with the current pack is NOT validated; not active in prod "
-                    "(no --mtp in config); mode not emitted, no fake baseline"},
-        "new_dflash_w3": {"kind": "clone + --dflash artifact + --spec 4 --dflash-block 3",
-                          "why": "width=min(block,spec-1)=3 (generate.cpp:5500); trained block 8 (5482); "
-                                 "spec<=8 (5445-5454, kVerifyMaxT=8)", "exe": PROTO_BINARY},
+        "prod_reference": {"kind": "SUFFIX LOOKUP (observed: suffix_draft default 3, generate.cpp:778; "
+                                      "runtime logs 'suffix drafts: N windows, X of Y accepted')",
+                           "why": "no --mtp/--dflash in prod args, so MTP is OFF (use_mtp=!o.mtp.empty(), "
+                                  "8344), but suffix_draft=3 keeps suffix lookup ACTIVE (sfx_on 14338/16711). "
+                                  "It is NOT target-only and NOT MTP.",
+                           "exe": prod["exe"], "config": "production config as-is"},
+        "new_suffix_lookup": {"kind": "clone, prod args verbatim = new-binary SUFFIX-LOOKUP baseline",
+                              "exe": PROTO_BINARY, "config": "proto-server-swift15-suffix_lookup.json"},
+        "new_target_only": {"kind": "PURE autoregressive: --suffix-draft 0 --lookup-chain 0 --spec 1 "
+                                     "(no MTP, no DFlash) - NOT prod args verbatim",
+                            "exe": PROTO_BINARY, "config": "proto-server-swift15-target_only.json"},
+        "old_target_only": {"kind": "PURE autoregressive on the OLD prod binary - old-vs-new pure-AR "
+                                     "correctness gate", "exe": PROD_BINARY,
+                            "config": "proto-server-swift15-old_target_only.json"},
+        "new_mtp": {"kind": "READY-RT (config valid; runtime NOTRUN)", "why": "loader input "
+                    f"{RT_DIR} exists (dense.txt 29 lines, dense.bin, experts.bin, draft_vocab.bin; "
+                    "tools/mtp_rt.py contract); MtpDrafter consumes it directly, no conversion. Geometry "
+                    "compatible STATICALLY; ACTUAL GPU load + Swift acceptance UNVALIDATED - never label "
+                    "the pack validated. Args: --mtp <rt dir> --spec 6 --spec-min-p 0.7 --suffix-draft 0 "
+                    "(pure MTP, suffix not mixed). The lama-format GGUFs under ai/ai are NOT Strata-loadable.",
+                    "exe": PROTO_BINARY, "config": "proto-server-swift15-mtp.json"},
     }
+    for w in WIDTHS:
+        modes[f"new_dflash_w{w}"] = {
+            "kind": f"clone + --dflash + --spec {w + 1} --dflash-block {w} --suffix-draft 0 (pure DFlash)",
+            "why": "width=min(block,spec-1) (generate.cpp:5500); trained block 8 (5482); spec<=8 "
+                   "(5445-5454, kVerifyMaxT 8); suffix off so the drafter effect is isolated",
+            "exe": PROTO_BINARY, "config": f"proto-server-swift15-dflash_w{w}.json"}
     return {
         "manifest": True,
         "note": "This is a PLAN MANIFEST, not a server config. Valid cloned configs are the "
-                "proto-server-*.json files written beside it.",
+                "proto-server-*.json files written beside it. Every mode has its OWN config file; "
+                "no mode borrows the width-3 file.",
         "observed_rules": [
-            "sampled requests: CLI target-only fallback (generate.cpp:2830); serve sampled keeps "
-            "target-only decoding with an explicit line (12457) - never claim active DFlash for sampled",
+            "baseline = SUFFIX LOOKUP (source + runtime logs); prod config and args stay EXACTLY unchanged",
+            "pure target-only needs --suffix-draft 0 --lookup-chain 0 --spec 1; verbatim prod args are suffix-lookup, never label them target-only",
+            "MTP mode = READY-RT: config valid, runtime NOTRUN; no pack-validated claims",
+            "sampled requests: CLI target-only fallback (generate.cpp:2830); serve sampled keeps target-only decoding with an explicit line (12457) - never claim an active drafter for sampled",
             "serve --batch + dflash refused (2836); --pipeline-windows + dflash + split refused (4214)",
-            "no script stops/restarts production; detection failure is fail-closed",
+            "no script stops/restarts production; lineage detection failure is fail-closed",
             "isolated prototype ONLY on port 8019; port 8009 (production) is refused outright",
+            "prototype logs are absolute under /mnt/user/dflash2/logs - never under the production tree",
         ],
         "cases": [
             {"case": "health+identity", "setup": "GET /health, GET /props, GET /v1/models",
-             "expected": "server model_name/exe match the cloned config", "status": "PARENT-RUN (--execute)"},
-            {"case": "repeat-conversation", "setup": "same greedy prompt twice (width 3)",
-             "expected": "second request reuses prefix (prompt_tokens reported by engine), no slot-reset errors",
+             "expected": "server model_name/model_path match the cloned config", "status": "PARENT-RUN (--execute)"},
+            {"case": "repeat-conversation", "setup": "same greedy prompt twice (per-mode config)",
+             "expected": "second request reuses prefix (engine-reported prompt_tokens), no slot-reset errors",
              "status": "PARENT-RUN (--execute)"},
             {"case": "reset-new-conversation", "setup": "second unrelated prompt",
              "expected": "clean new-conversation start (no 'rows disagree' refusals)", "status": "PARENT-RUN (--execute)"},
@@ -162,31 +249,78 @@ def plan_manifest(prod: dict) -> dict:
 
 def write_artifacts(prod: dict) -> dict[str, str]:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    pathlib.Path(LOG_DIR).mkdir(parents=True, exist_ok=True)
     paths = {}
     manifest = CONFIG_DIR / "inco-dflash2-plan-manifest.json"
     manifest.write_text(json.dumps(plan_manifest(prod), indent=2) + "\n")
     paths["manifest"] = str(manifest)
-    for mode in ("target_only", "dflash_w3"):
+    modes = ["suffix_lookup", "target_only", "old_target_only", "mtp"] + [f"dflash_w{w}" for w in WIDTHS]
+    for mode in modes:
         cfg = clone_server_config(mode, prod)
         p = CONFIG_DIR / f"proto-server-swift15-{mode}.json"
         p.write_text(json.dumps(cfg, indent=2) + "\n")
         paths[mode] = str(p)
-    if prod["args"] == clone_server_config("target_only", prod)["args"]:
-        paths["identity_note"] = "target_only clone keeps prod args verbatim (byte-identical baseline)"
+    if prod["args"] == clone_server_config("suffix_lookup", prod)["args"]:
+        paths["identity_note"] = ("suffix_lookup clone keeps prod args verbatim (byte-identical "
+                                  "SUFFIX-LOOKUP baseline); target_only is the pure-AR variant")
     return paths
 
 
-def prod_status() -> str:
-    """'running' | 'absent' | 'unknown'. Any detection error is 'unknown' -> fail-closed."""
+def _cmdline(pid: str) -> str | None:
     try:
-        r = subprocess.run(["pgrep", "-f", "build-2966/strata"], capture_output=True, text=True, check=False)
-        if r.returncode == 0:
-            return "running"
-        if r.returncode == 1:
-            return "absent"
-        return "unknown"
+        return pathlib.Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode("utf-8", "replace")
+    except OSError:
+        return None
+
+
+def prod_status() -> str:
+    """Lineage-aware production detection (READ-ONLY /proc scans; nothing is signalled).
+    'running'  = ORIGINAL production lineage: server.py driven by prod-config-swift15.json
+                  (the 8009 proxy) and/or an engine whose parent chain is that server.
+    'isolated-8019' = only parent-controlled isolated servers (config under
+                  /mnt/user/dflash2/config + --port 8019) - allowed for --execute.
+    'absent'   = no engine and no server lineage found.
+    'unknown'  = anything unreadable/mixed -> fail-closed refusal.
+    The old bare pgrep -f build-2966/strata CONFLATED an isolated old-binary run on 8019
+    with production; lineage (config file + port in the server parent's cmdline) fixes that."""
+    try:
+        pids = [p.name for p in pathlib.Path("/proc").iterdir() if p.name.isdigit()]
     except OSError:
         return "unknown"
+    prod_servers, isolated_servers, engines = [], [], []
+    for pid in pids:
+        cmd = _cmdline(pid)
+        if cmd is None:
+            continue
+        if "serve/server.py" in cmd:
+            if "prod-config-swift15.json" in cmd:
+                prod_servers.append(pid)
+            elif "/mnt/user/dflash2/config/" in cmd and f"--port {PROTO_PORT}" in cmd:
+                isolated_servers.append(pid)
+        if "build-2966/strata" in cmd and "--serve" in cmd:
+            engines.append(pid)
+    if prod_servers:
+        return "running"
+    if not engines:
+        return "absent"
+    # Engines exist: their controlling server decides lineage. An engine whose parent server
+    # cmdline is unreadable/unknown is 'unknown' (fail-closed) - never assume isolation.
+    for pid in engines:
+        try:
+            fields = pathlib.Path(f"/proc/{pid}/stat").read_text().split(") ", 1)[1].split()
+            ppid = fields[1]
+        except (OSError, IndexError):
+            return "unknown"
+        parent = _cmdline(ppid)
+        if parent is None:
+            return "unknown"
+        if "serve/server.py" not in parent:
+            return "unknown"
+        if "prod-config-swift15.json" in parent:
+            return "running"
+        if not ("/mnt/user/dflash2/config/" in parent and f"--port {PROTO_PORT}" in parent):
+            return "unknown"
+    return "isolated-8019" if isolated_servers else "unknown"
 
 
 def http_json(url: str, payload: dict | None = None, timeout: float = 120.0) -> dict:
@@ -198,7 +332,8 @@ def http_json(url: str, payload: dict | None = None, timeout: float = 120.0) -> 
 
 
 def guard_execute(url: str, confirm: bool) -> str | None:
-    """Returns None when allowed, else the refusal reason. NO override of detection exists."""
+    """Returns None when allowed, else the refusal reason. NO override of detection exists.
+    The guard NEVER stops anything; 'running' (production lineage) simply refuses."""
     parsed = urllib.parse.urlparse(url)
     if parsed.port == PROD_PORT:
         return f"REFUSED: port {PROD_PORT} is production; the harness talks ONLY to the isolated prototype ({PROTO_PORT})"
@@ -207,10 +342,11 @@ def guard_execute(url: str, confirm: bool) -> str | None:
     if not confirm:
         return "REFUSED: --execute requires --confirm-execution (explicit acknowledgement)"
     status = prod_status()
-    if status != "absent":
-        return (f"REFUSED: production engine detection = {status}. The harness never stops/restarts "
-                "production; execution needs the user-approved downtime with production OBSERVED ABSENT "
-                "(detection failure is fail-closed; there is no override flag)")
+    if status in ("running", "unknown"):
+        return (f"REFUSED: production lineage detection = {status}. The harness never stops/restarts "
+                "production; GPU execution needs the user-approved downtime with ORIGINAL production "
+                "OBSERVED ABSENT (isolated 8019 servers are allowed; unknown lineage is fail-closed; "
+                "there is no override flag)")
     return None
 
 
@@ -224,15 +360,19 @@ def execute_checks(url: str, identity_cfg: str) -> int:
     except OSError as e:
         print(f"FAIL: /health at {url}: {e} (is the parent's prototype server up on {PROTO_PORT}?)")
         return 1
-    props = {}
     try:
         props = http_json(f"{url}/props")
         want = json.loads(pathlib.Path(identity_cfg).read_text())
-        if props.get("model_name") not in (None, want["model_name"]):
-            print(f"FAIL: /props model_name {props.get('model_name')!r} != cloned {want['model_name']!r}")
-            fails += 1
+        want_pack = want["args"][want["args"].index("--model") + 1] if "--model" in want["args"] else None
+        ok_model = props.get("model_alias") in (None, want["model_name"])
+        ok_pack = want_pack is None or props.get("model_path") in (None, want_pack)
+        if ok_model and ok_pack:
+            print(f"identity: model_alias/model_path match the cloned config "
+                  f"({props.get('model_alias')!r}, {props.get('model_path')!r})")
         else:
-            print(f"identity: model_name {want['model_name']} confirmed")
+            print(f"FAIL: /props {props.get('model_alias')!r}/{props.get('model_path')!r} does not match "
+                  f"cloned {want['model_name']!r}/{want_pack!r}")
+            fails += 1
     except OSError as e:
         print(f"FAIL: /props identity check: {e}")
         fails += 1
@@ -274,44 +414,77 @@ def selfcheck() -> int:
     except (OSError, ValueError) as e:
         print(f"FAIL: prod config load: {e}")
         return 1
-    clone = clone_server_config("target_only", prod)
-    check(clone["exe"] == PROTO_BINARY, "clone swaps the engine binary only")
-    check(all(k in clone for k in ("args", "cwd", "tokenizer", "model_name", "log", "env", "vision")),
+    suffix = clone_server_config("suffix_lookup", prod)
+    check(suffix["exe"] == PROTO_BINARY, "clone swaps the engine binary only")
+    check(all(k in suffix for k in ("args", "cwd", "tokenizer", "model_name", "log", "env", "vision")),
           "clone preserves every server-schema field (args/cwd/tokenizer/model/env/vision)")
-    check(clone["args"] == prod["args"], "target-only clone keeps prod args verbatim (byte-identical baseline)")
-    check(clone.get("layer_split") == prod.get("layer_split"),
+    check(suffix["args"] == prod["args"],
+          "suffix_lookup clone keeps prod args verbatim = byte-identical SUFFIX-LOOKUP baseline "
+          "(suffix_draft default 3, generate.cpp:778 - NOT target-only)")
+    check(suffix.get("layer_split") == prod.get("layer_split"),
           "structured layer_split key preserved verbatim (server.py:2604 consumes it; value not hardcoded here)")
-    check(clone.get("port") == PROTO_PORT, "prototype config moved to port 8019 (never 8009)")
-    check("--dflash" not in prod["args"] and "--mtp" not in prod["args"],
-          "observed: production serve has NO drafter flags (target-only baseline)")
-    merged = clone_server_config("dflash_w3", prod)["args"]
-    check(merged.count("--spec") == 1 and merged[merged.index("--spec") + 1] == "4",
-          "merge: exactly one --spec, replaced to 4 (no duplicated --spec strings)")
-    check(merged.count("--spec-min-p") == 1 and merged[merged.index("--spec-min-p") + 1] == "0.5",
-          "merge: exactly one --spec-min-p = 0.5")
-    check(merged.count("--dflash") == 1 and merged[merged.index("--dflash") + 1] == ARTIFACT
-          and merged[merged.index("--dflash-block") + 1] == "3", "merge: --dflash + --dflash-block 3 (width 3)")
-    check(merged.count("--expert-cache") == 1, "merge preserves the single --expert-cache flag")
-    try:
-        clone_server_config("mtp", prod)
-        check(False, "new_mtp mode was emitted (must stay MTP-candidate UNVALIDATED: loader compat unvalidated)")
-    except ValueError as e:
-        print(f"refused mtp mode: {e}")
+    check(suffix.get("port") == PROTO_PORT, "prototype config moved to port 8019 (never 8009)")
+    check(all(clone_server_config(m, prod)["log"].startswith(LOG_DIR + "/")
+              for m in ("suffix_lookup", "target_only", "old_target_only", "mtp", "dflash_w3")),
+          f"prototype logs are ABSOLUTE under {LOG_DIR}/ - relative logs under prod CWD can never "
+          "create files inside the production tree (baseline isolation)")
+    ar = clone_server_config("target_only", prod)["args"]
+    check(ar[ar.index("--suffix-draft") + 1] == "0" and ar[ar.index("--lookup-chain") + 1] == "0"
+          and ar[ar.index("--spec") + 1] == "1" and "--mtp" not in ar and "--dflash" not in ar,
+          "pure target-only = --suffix-draft 0 --lookup-chain 0 --spec 1, no MTP/DFlash (NOT verbatim prod args)")
+    old = clone_server_config("old_target_only", prod)
+    check(old["exe"] == PROD_BINARY and old["args"] == clone_server_config("target_only", prod)["args"],
+          "old_target_only = OLD binary + identical pure-AR flags (clean old-vs-new correctness gate)")
+    mtp = clone_server_config("mtp", prod)["args"]
+    check(mtp.count("--mtp") == 1 and mtp[mtp.index("--mtp") + 1] == RT_DIR
+          and mtp[mtp.index("--suffix-draft") + 1] == "0" and mtp[mtp.index("--spec") + 1] == "6"
+          and "--dflash" not in mtp,
+          "mtp config = --mtp <ready rt dir> --spec 6 --spec-min-p 0.7 --suffix-draft 0 (pure MTP, "
+          "no mixed suffix, no artifact copies)")
+    for w in WIDTHS:
+        a = clone_server_config(f"dflash_w{w}", prod)["args"]
+        check(a.count("--spec") == 1 and a[a.index("--spec") + 1] == str(w + 1)
+              and a.count("--dflash-block") == 1 and a[a.index("--dflash-block") + 1] == str(w)
+              and a.count("--dflash") == 1 and a[a.index("--suffix-draft") + 1] == "0"
+              and a[a.index("--spec-min-p") + 1] == "0.5",
+              f"dflash_w{w}: exactly one --spec {w + 1}, one --dflash-block {w}, suffix off, minp 0.5")
+    problems = validate_rt_dir()
+    check(problems == [], f"ready RT dir metadata ({RT_DIR}): {problems[:2] if problems else 'dense.txt 29 spans contiguous, kinds+sizes within dense.bin'}")
+
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        tdp = pathlib.Path(td)
+        (tdp / "dense.txt").write_text("a.weight bf16 2 4 0 16\nb.weight f32 1 2 16 8\n")
+        (tdp / "dense.bin").write_bytes(b"\0" * 24)
+        (tdp / "experts.bin").write_bytes(b"\0")
+        (tdp / "draft_vocab.bin").write_bytes(b"\0")
+        check(validate_rt_dir(str(tdp)) == [], "fixture: valid small rt dir validates clean (contiguous spans, kind formulas)")
+        (tdp / "dense.bin").write_bytes(b"\0" * 20)
+        check(bool(validate_rt_dir(str(tdp))), "fixture: truncated dense.bin -> span exceeds file bounds")
+        (tdp / "dense.bin").write_bytes(b"\0" * 24)
+        (tdp / "dense.txt").write_text("a.weight bf16 2 4 0 16\nb.weight f32 1 2 20 8\n")
+        check(bool(validate_rt_dir(str(tdp))), "fixture: non-contiguous index span refused")
+        (tdp / "dense.txt").write_text("a.weight q4_k 2 4 0 16\nb.weight f32 1 2 16 8\n")
+        check(bool(validate_rt_dir(str(tdp))), "fixture: unknown kind refused (only q8_0|bf16|f32 in the rt contract)")
+        (tdp / "dense.txt").unlink()
+        check(any("dense.txt" in p for p in validate_rt_dir(str(tdp))), "fixture: missing required rt file refused")
     r = guard_execute(f"http://127.0.0.1:{PROD_PORT}", True)
     check(r is not None and "production" in r, "guard: port 8009 (production) refused outright")
     r = guard_execute(PROTO_URL_DEFAULT, False)
     check(r is not None, "guard: --execute without --confirm-execution refused")
     orig = globals()["prod_status"]
-    for status in ("running", "unknown"):
+    for status, allowed in (("running", False), ("unknown", False), ("isolated-8019", True), ("absent", True)):
         globals()["prod_status"] = lambda s=status: s
         r = guard_execute(PROTO_URL_DEFAULT, True)
-        check(r is not None and status in r, f"guard: prod detection '{status}' refuses execution (fail-closed)")
+        check((r is None) == allowed, f"guard: lineage '{status}' -> {'allow' if allowed else 'REFUSE'} (fail-closed)")
     globals()["prod_status"] = orig
     m = plan_manifest(prod)
-    check(m.get("manifest") is True and m["modes"]["prod_reference"]["kind"].startswith("OBSERVED"),
-          "manifest labeled as manifest; prod_reference labeled OBSERVED TARGET-ONLY (no invented MTP)")
-    check(m["modes"]["new_mtp"]["kind"] == "MTP-candidate UNVALIDATED",
-          "new_mtp explicitly UNVALIDATED: artifacts exist (parent L1), load compat not validated - not absent, not available")
+    check(m.get("manifest") is True and m["modes"]["prod_reference"]["kind"].startswith("SUFFIX LOOKUP"),
+          "manifest: prod_reference labeled SUFFIX LOOKUP (observed source+runtime), NOT target-only, NOT MTP")
+    check(m["modes"]["new_mtp"]["kind"] == "READY-RT (config valid; runtime NOTRUN)",
+          "new_mtp = READY-RT with real loader path; runtime NOTRUN; no placeholder, no pack-validated claim")
+    check(m["modes"]["new_target_only"]["kind"].startswith("PURE autoregressive"),
+          "target_only labeled PURE AR with the explicit suffix-off flags")
     return 1 if fails else 0
 
 
@@ -319,6 +492,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--selfcheck", action="store_true")
     ap.add_argument("--plan", action="store_true", help="write manifest + valid cloned configs, print plan")
+    ap.add_argument("--preflight-mtp", action="store_true", help="cheap RT metadata check (no large reads)")
     ap.add_argument("--execute", action="store_true", help="PARENT-run real checks against the isolated prototype")
     ap.add_argument("--url", default=PROTO_URL_DEFAULT)
     ap.add_argument("--identity-config", default=None)
@@ -326,14 +500,22 @@ def main() -> int:
     a = ap.parse_args()
     if a.selfcheck:
         return selfcheck()
+    if a.preflight_mtp:
+        problems = validate_rt_dir()
+        print(json.dumps({"rt_dir": RT_DIR, "problems": problems,
+                          "note": "metadata contract only (stat + dense.txt spans); NO large reads; "
+                                  "runtime load/Swift acceptance remains NOTRUN"}, indent=2))
+        return 1 if problems else 0
     prod = load_prod_config()
     if a.plan:
         paths = write_artifacts(prod)
-        print(json.dumps({"written": paths, "prod_status_observed": prod_status(),
+        print(json.dumps({"written": paths, "prod_lineage_observed": prod_status(),
+                          "mtp_rt_metadata": validate_rt_dir()[:3],
                           "note": "manifest is a manifest; proto-server-*.json are valid server-schema "
-                                  "clones for the parent to start on port 8019; prod config untouched"}, indent=2))
-        print("parent start line (isolated ONLY): cd /mnt/user/Strata && .venv/bin/python serve/server.py "
-              f"--config {paths['dflash_w3']} --port {PROTO_PORT}")
+                                  "clones for the parent to start on port 8019 (one file per mode); "
+                                  "prod config untouched"}, indent=2))
+        print("parent start line (isolated ONLY, parent executes nothing now): cd /mnt/user/Strata && "
+              f".venv/bin/python serve/server.py --config {paths['dflash_w3']} --port {PROTO_PORT}")
         return 0
     if a.execute:
         reason = guard_execute(a.url, a.confirm_execution)

@@ -4,17 +4,25 @@ prototype server only (L9, parent executes everything; the fixer ran nothing - N
 author, no GPU, no production).
 
 Modes come from the ACTUAL production config clone (tools/test_inco_dflash2_integration.py
-cloner - reused, not duplicated):
-  prod_reference   OBSERVED TARGET-ONLY (prod args contain NO --mtp/--dflash; the
-                   drafter-verify flags --spec/--spec-min-p are drafter-only per
-                   generate.cpp:5445/9176 and inert without a drafter). No invented MTP.
-  new_target_only  prototype binary, prod args verbatim (byte-identical baseline).
-  new_mtp          MTP-candidate UNVALIDATED: MTP artifacts DO exist (parent L1:
-                   /home/user/ai/ai/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf, shared Q4/Q8,
-                   /home/user/dev/Strata-data/mtp-bf16/mtp-q2_0.gguf) but Swift/Strata loader
-                   + pack compatibility is NOT validated and prod carries no --mtp - reported
-                   as UNVALIDATED (not absent, not available), never a fake baseline.
-  new_dflash_wN    prototype + --dflash BF16 artifact, width w = min(--dflash-block, --spec-1)
+cloner - reused, not duplicated). BASELINE TRUTH (parent-verified source + runtime logs,
+2026-10-22): production is a SUFFIX-LOOKUP baseline - suffix_draft DEFAULT 3
+(generate.cpp:778; sfx_on = suffix_draft>0 || lookup_chain>0 at 14338/16711), prod logs
+show "suffix drafts: N windows, X of Y accepted"; MTP is OFF (use_mtp=!o.mtp.empty(),
+8344; no --mtp in args). The earlier "TARGET-ONLY" label was WRONG.
+  prod_reference   SUFFIX LOOKUP baseline (prod config/args/env verbatim).
+  new_suffix_lookup new binary, prod args verbatim (byte-identical suffix-lookup baseline).
+  new_target_only  PURE autoregressive: --suffix-draft 0 --lookup-chain 0 --spec 1.
+  old_target_only  PURE autoregressive on the OLD prod binary (old-vs-new correctness gate).
+  new_mtp          READY-RT (config valid; runtime NOTRUN): loader input
+                   /home/user/dev/Strata-data/mtp-bf16/rt/ exists (dense.txt 29 lines,
+                   dense.bin ~116 MB, experts.bin ~675 MiB, draft_vocab.bin ~415 KiB;
+                   tools/mtp_rt.py contract; MtpDrafter consumes it directly, no copies).
+                   Args --mtp <rt> --spec 6 --spec-min-p 0.7 --suffix-draft 0 (pure MTP).
+                   Geometry compatible STATICALLY; ACTUAL GPU load + Swift acceptance
+                   UNVALIDATED - never "pack validated". Lama GGUFs under ai/ai are not
+                   Strata-loadable.
+  new_dflash_wN    prototype + --dflash BF16 artifact, --spec w+1 --dflash-block w
+                   --suffix-draft 0; width w = min(--dflash-block, --spec-1)
                    (generate.cpp:5500); widths 1..7 (--spec w+1 <= kVerifyMaxT 8).
 Contexts 2K/16K/64K/200K (+260K optional). CONTEXT INTEGRITY (parent review): every record
 stores the ENGINE-OBSERVED prompt_tokens as observed_context_tokens; the REQUESTED context is
@@ -102,12 +110,33 @@ def flag_value(args: list[str], flag: str) -> str | None:
 
 def validate_mode_flags(mode: str, width: int, args: list[str]) -> str | None:
     """Label integrity: the mode/width label must match the config's EFFECTIVE flags.
-    Returns the refusal reason, None when the label is honest."""
-    if mode == "prod_reference":
-        return None if "--dflash" not in args and "--mtp" not in args \
-            else "prod_reference labeled target-only but the identity config carries drafter flags"
-    if "--mtp" in args:
-        return f"mode {mode}: config carries --mtp - the MTP mode is UNVALIDATED and never measured"
+    Baseline truth (generate.cpp:778 suffix_draft default 3; sfx_on 14338/16711;
+    use_mtp 8344): suffix lookup is ON unless --suffix-draft 0 --lookup-chain 0; prod's
+    verbatim args ARE a suffix-lookup baseline, never target-only. Returns the refusal
+    reason, None when the label is honest."""
+    suffix_off = flag_value(args, "--suffix-draft") == "0"
+    chain_off = flag_value(args, "--lookup-chain") in (None, "0")
+    if mode in ("prod_reference", "suffix_lookup"):
+        if "--mtp" in args or "--dflash" in args:
+            return f"mode {mode}: labeled suffix-lookup baseline but the config carries drafter flags"
+        if suffix_off and chain_off:
+            return f"mode {mode}: config is PURE target-only (suffix+chain off) - label it target_only"
+        return None
+    if mode in ("target_only", "old_target_only"):
+        if "--mtp" in args or "--dflash" in args:
+            return f"mode {mode}: pure-AR label carries a drafter flag"
+        if not suffix_off or not chain_off or flag_value(args, "--spec") != "1":
+            return (f"mode {mode}: pure AR requires --suffix-draft 0 --lookup-chain 0 --spec 1 "
+                    "(generate.cpp:778 defaults suffix_draft=3; verbatim prod args are suffix-lookup, not AR)")
+        return None
+    if mode == "mtp":
+        if flag_value(args, "--mtp") != integ.RT_DIR:
+            return f"mode mtp: --mtp must point at the ready loader dir {integ.RT_DIR} (no copies, no invented paths)"
+        if "--dflash" in args:
+            return "mode mtp: --dflash beside --mtp is not the pure-MTP measurement"
+        if not suffix_off:
+            return "mode mtp: requires --suffix-draft 0 (pure MTP, not mixed suffix)"
+        return None
     if mode.startswith("dflash_w"):
         if args.count("--dflash") != 1:
             return f"mode {mode}: config must carry exactly one --dflash"
@@ -115,28 +144,35 @@ def validate_mode_flags(mode: str, width: int, args: list[str]) -> str | None:
             return f"mode {mode}: --spec must be {width + 1} (width = min(block, spec-1), 5500)"
         if flag_value(args, "--dflash-block") != str(width):
             return f"mode {mode}: --dflash-block must be {width}"
+        if not suffix_off:
+            return f"mode {mode}: requires --suffix-draft 0 to isolate the drafter effect"
         return None
-    if mode == "target_only":
-        return None if "--dflash" not in args else "target_only label but config carries --dflash"
     return f"mode {mode}: unknown label"
 
 
 def plan_modes(prod: dict) -> dict:
     modes = {
-        "prod_reference": {"kind": "OBSERVED TARGET-ONLY (no --mtp/--dflash in prod args)",
+        "prod_reference": {"kind": "SUFFIX LOOKUP baseline (observed: suffix_draft default 3, "
+                                    "generate.cpp:778; runtime logs 'suffix drafts: N windows, X of Y "
+                                    "accepted') - NOT target-only, NOT MTP",
                            "server_config": "production (parent starts as-is, in the downtime window)"},
-        "new_target_only": {"kind": "clone, prod args verbatim",
+        "new_suffix_lookup": {"kind": "clone, prod args verbatim = new-binary suffix-lookup baseline",
+                              "server_config": str(integ.CONFIG_DIR / "proto-server-swift15-suffix_lookup.json")},
+        "new_target_only": {"kind": "PURE AR: --suffix-draft 0 --lookup-chain 0 --spec 1",
                             "server_config": str(integ.CONFIG_DIR / "proto-server-swift15-target_only.json")},
-        "new_mtp": {"kind": "MTP-candidate UNVALIDATED", "why": "MTP artifacts exist (parent L1: "
-                    "/home/user/ai/ai/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf, shared Q4/Q8, "
-                    "/home/user/dev/Strata-data/mtp-bf16/mtp-q2_0.gguf); Swift/Strata loader+pack "
-                    "compatibility NOT validated; prod carries no --mtp. Not absent, not available."},
+        "old_target_only": {"kind": "PURE AR on the OLD prod binary (old-vs-new correctness gate)",
+                            "server_config": str(integ.CONFIG_DIR / "proto-server-swift15-old_target_only.json")},
+        "new_mtp": {"kind": "READY-RT (config valid; runtime NOTRUN)", "why": "loader input "
+                    f"{integ.RT_DIR} exists (dense.txt/dense.bin/experts.bin/draft_vocab.bin, "
+                    "tools/mtp_rt.py contract; metadata preflight PASS at parent run); args "
+                    "--mtp <rt> --spec 6 --spec-min-p 0.7 --suffix-draft 0. Geometry compatible "
+                    "statically; ACTUAL GPU load + Swift acceptance UNVALIDATED - never 'pack validated'. "
+                    "Lama-format GGUFs under ai/ai are NOT Strata-loadable."},
     }
     for w in WIDTHS:
         modes[f"new_dflash_w{w}"] = {
-            "kind": "clone + --dflash + width flags",
-            "flags": " ".join(width_flags(w)),
-            "server_config_base": str(integ.CONFIG_DIR / "proto-server-swift15-dflash_w3.json"),
+            "kind": f"clone + --dflash + --spec {w + 1} --dflash-block {w} --suffix-draft 0",
+            "server_config": str(integ.CONFIG_DIR / f"proto-server-swift15-dflash_w{w}.json"),
         }
     return modes
 
@@ -335,26 +371,37 @@ def selfcheck() -> int:
             check(False, f"summarize accepted {bad!r} (must refuse)")
         except ValueError:
             pass
-    good = ["--dflash", "A.gguf", "--spec", "4", "--dflash-block", "3", "--expert-cache", "auto"]
-    check(validate_mode_flags("dflash_w3", 3, good) is None, "label dflash_w3 matches effective flags")
-    check(validate_mode_flags("dflash_w3", 3, ["--dflash", "A.gguf", "--spec", "6", "--dflash-block", "3"])
-          is not None, "label dflash_w3 REFUSED when --spec is 6 (spec-1 != width)")
-    check(validate_mode_flags("dflash_w3", 3, ["--spec", "4", "--dflash-block", "3"]) is not None,
-          "label dflash_w3 REFUSED when --dflash is absent")
-    check(validate_mode_flags("target_only", 3, good) is not None,
-          "label target_only REFUSED when config carries --dflash")
-    check(validate_mode_flags("target_only", 3, ["--expert-cache", "auto"]) is None,
-          "label target_only matches a drafter-free config")
-    check(validate_mode_flags("dflash_w3", 3, ["--mtp", "X.gguf", "--spec", "4", "--dflash-block", "3"])
-          is not None, "any config carrying --mtp is refused for measurement (MTP UNVALIDATED)")
-    check(validate_mode_flags("prod_reference", 3, ["--expert-cache", "auto"]) is None
-          and validate_mode_flags("prod_reference", 3, good) is not None,
+    dflash_ok = ["--dflash", "A.gguf", "--spec", "4", "--dflash-block", "3", "--suffix-draft", "0", "--expert-cache", "auto"]
+    check(validate_mode_flags("dflash_w3", 3, dflash_ok) is None, "label dflash_w3 matches effective flags (suffix off)")
+    check(validate_mode_flags("dflash_w3", 3, ["--dflash", "A.gguf", "--spec", "4", "--dflash-block", "3"]) is not None,
+          "dflash_w3 REFUSED when suffix lookup is still ON (drafter effect not isolated)")
+    check(validate_mode_flags("dflash_w3", 3, ["--dflash", "A.gguf", "--spec", "6", "--dflash-block", "3", "--suffix-draft", "0"]) is not None,
+          "dflash_w3 REFUSED when --spec is 6 (spec-1 != width)")
+    prod_like = ["--spec", "6", "--spec-min-p", "0.7", "--expert-cache", "auto"]   # verbatim-style prod args
+    check(validate_mode_flags("suffix_lookup", 3, prod_like) is None,
+          "suffix_lookup label = verbatim prod args (suffix_draft DEFAULT 3 is ACTIVE - generate.cpp:778)")
+    check(validate_mode_flags("target_only", 3, prod_like) is not None,
+          "target_only REFUSED for verbatim prod args - they are a suffix-LOOKUP baseline, not pure AR (the mislabel fix)")
+    ar_ok = ["--spec", "1", "--suffix-draft", "0", "--lookup-chain", "0", "--expert-cache", "auto"]
+    check(validate_mode_flags("target_only", 3, ar_ok) is None and validate_mode_flags("old_target_only", 3, ar_ok) is None,
+          "pure-AR labels require --suffix-draft 0 --lookup-chain 0 --spec 1")
+    mtp_ok = ["--mtp", integ.RT_DIR, "--spec", "6", "--spec-min-p", "0.7", "--suffix-draft", "0"]
+    check(validate_mode_flags("mtp", 3, mtp_ok) is None, "mtp label verified against the READY-RT dir + pure-MTP flags")
+    check(validate_mode_flags("mtp", 3, ["--mtp", "/home/user/ai/ai/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf",
+                                         "--spec", "6", "--suffix-draft", "0"]) is not None,
+          "mtp REFUSED for the lama-format GGUF (not Strata-loadable) / invented paths")
+    check(validate_mode_flags("mtp", 3, ["--mtp", integ.RT_DIR, "--spec", "6", "--suffix-draft", "3"]) is not None,
+          "mtp REFUSED when suffix is mixed in (--suffix-draft 3)")
+    check(validate_mode_flags("suffix_lookup", 3, ["--spec", "1", "--suffix-draft", "0", "--lookup-chain", "0"]) is not None,
+          "suffix_lookup REFUSED for a suffix-off config (that config is pure AR)")
+    check(validate_mode_flags("prod_reference", 3, ["--expert-cache", "auto", "--dflash", "A.gguf"]) is not None,
           "prod_reference label verified against a drafter-free prod config")
     prod = integ.load_prod_config()
     modes = plan_modes(prod)
-    check(modes["prod_reference"]["kind"].startswith("OBSERVED"), "prod_reference labeled observed target-only")
-    check(modes["new_mtp"]["kind"] == "MTP-candidate UNVALIDATED",
-          "new_mtp = MTP-candidate UNVALIDATED (artifacts exist per parent L1; loader compat NOT validated)")
+    check(modes["prod_reference"]["kind"].startswith("SUFFIX LOOKUP"),
+          "prod_reference labeled SUFFIX LOOKUP (observed source + runtime logs), not target-only, not MTP")
+    check(modes["new_mtp"]["kind"] == "READY-RT (config valid; runtime NOTRUN)",
+          "new_mtp = READY-RT (real loader dir; metadata-validated; GPU load/Swift acceptance NOTRUN)")
     gate = correctness_gate(8192)
     check(gate[0]["pin"].startswith("--expert-cache 8192") and "auto" not in gate[0]["pin"],
           "correctness gate pins an EXPLICIT equal --expert-cache slot count (auto is not a pin)")
