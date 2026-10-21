@@ -586,7 +586,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   add_library(strata_engine STATIC src/core/layer.cpp src/core/session.cpp src/core/expert_source.cpp src/core/remote_experts.cpp
     src/core/remote_expert_opt.cu
     src/core/expert_cache.cpp src/core/native_head.cpp src/core/native_dense.cpp src/core/verify.cpp src/core/mtp.cpp
-    src/core/dflash.cpp src/core/dflash_runtime.cpp
+    src/core/dflash.cpp src/core/dflash_runtime.cpp src/core/dflash_tap_collect.cpp
     src/core/conversation_snapshot.cpp src/core/conversation_state.cpp src/core/conversation_memory.cpp src/core/peer_experts.cpp
     src/core/arch_defaults.cpp src/core/nv_defaults.cpp src/core/vmm.cpp src/core/conversation_file.cpp)
   target_include_directories(strata_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -1111,6 +1111,14 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   add_test(NAME dflash_head_bf16_test COMMAND dflash_head_bf16_test)
   set_tests_properties(dflash_head_bf16_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
 
+  # Cross-device tap transport on a two-device box (include/strata/core/dflash_tap_collect.hpp):
+  # synthetic per-stage planes vs the CPU-expected assembled plane, slot-reuse rounds, refusals.
+  add_executable(dflash_tap_collect_test tests/core/dflash_tap_collect_test.cpp)
+  target_include_directories(dflash_tap_collect_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests/core)
+  target_link_libraries(dflash_tap_collect_test PRIVATE strata_engine)
+  add_test(NAME dflash_tap_collect_test COMMAND dflash_tap_collect_test)
+  set_tests_properties(dflash_tap_collect_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 180)
+
   # the DFlash drafter's full-head (256-dim) NeoX RoPE against a host reference (docs/DFLASH.md)
   add_executable(dflash_rope_parity src/kernels/dflash_rope_parity.cpp)
   target_include_directories(dflash_rope_parity PRIVATE ${_strata_gpu_include_directories})
@@ -1456,6 +1464,11 @@ if(STRATA_BUILD_TESTS)
   add_executable(dflash_ring_test tests/core/dflash_ring_test.cpp)
   target_include_directories(dflash_ring_test PRIVATE include)
   add_test(NAME dflash_ring_test COMMAND dflash_ring_test)
+  # The tap-ownership plan under --layer-split (include/strata/core/dflash_tap_plan.hpp): pure
+  # host arithmetic, the same build() the engine runs at drafter upload (docs/DFLASH2.md).
+  add_executable(dflash_tap_plan_test tests/core/dflash_tap_plan_test.cpp)
+  target_include_directories(dflash_tap_plan_test PRIVATE include)
+  add_test(NAME dflash_tap_plan_test COMMAND dflash_tap_plan_test)
   # No device work, but the runtime header depends on GPU toolkit headers.
   # A CPU-only build must not require cuda_runtime.h just to build its tests.
   if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
