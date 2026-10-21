@@ -5549,7 +5549,13 @@ int main(int argc, char** argv) {
                     std::fprintf(stderr, "strata generate: %s\n", err.c_str());
                     return 1;
                 }
-                const int64_t bf16_rows = std::max({o.prefill_chunk, o.prefill_auto_max, (int64_t) 6144});
+                // Review 2026-10-21 item 5: price only the REACHABLE chunk rows for the
+                // selected prefill mode - an inactive --prefill auto must not add its
+                // (default 8192) ceiling to the pinned/plane cost.  6144 is the floor the
+                // window/capacity guard keeps; chunks never exceed max_context.
+                const int64_t reach_rows =
+                    o.prefill_auto ? std::min(o.prefill_auto_max, o.max_context) : o.prefill_chunk;
+                const int64_t bf16_rows = std::max(reach_rows, (int64_t) 6144);
                 if (!dflash.tap_collector().enable(tap_plan, dev, strata::kernels::kVerifyMaxT, bf16_rows, err)) {
                     std::fprintf(stderr, "strata generate: %s\n", err.c_str());
                     return 1;
@@ -9178,6 +9184,17 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata serve: %s\n", err.c_str());
             return 1;
         }
+        // L8 --layer-split (review 2026-10-21 item 1): the drafter binds the TARGET's
+        // FINAL-STAGE head and weight table, exactly like the MTP bind below - the head
+        // already lives on the drafter's card, so the shared target head is SHARED,
+        // never duplicated (no 1.27 GB copy on the memory-sensitive pair).  The bind
+        // runs after the final stage's head load; single-GPU binds at the native head
+        // load above, unchanged.
+        if (has_dflash && last_st &&
+            !dflash.bind(last_st->wt, &last_st->head, err, o.dflash_vocab)) {
+            std::fprintf(stderr, "strata serve: %s\n", err.c_str());
+            return 1;
+        }
         if (prefill_head_alias_bound) mtp.set_window_R(ver.final_R_all());
         if (pipe) mtp.set_source_R(ver.final_R_all());   // the serial decode's rows (the last stage's even verifier)
         auto free_slot_mtp_rows = [](float* p) { if (p != nullptr) (void) cudaFree(p); };
@@ -12453,6 +12470,9 @@ int main(int argc, char** argv) {
             const bool req_dflash = has_dflash && req_temperature <= 0.0f;
             if (has_dflash) dflash.set_reference_mode(req_df2_reference);
             df_request = has_dflash;
+            // Review 2026-10-21 item 2: a new request must not inherit slot bindings,
+            // rows guards, or staged flags an aborted request left under the same keys.
+            if (has_dflash && dflash.tap_collector().enabled()) dflash.tap_collector().reset_staging();
             if (has_dflash && !req_dflash)
                 std::fprintf(stderr, "dflash: sampled request uses target-only decoding\n");
             if (has_dflash && (n > dflash.capacity() || max_new > dflash.capacity() - n)) {
@@ -16022,10 +16042,11 @@ int main(int argc, char** argv) {
             const auto taps = use_dflash ? dflash_capture_layers : std::vector<int32_t>{4, 16, 24, 36, 44};
             prefill.set_tap_layers(taps.data(), (int) taps.size(), use_dflash && dflash.artifact().geom().target_hc_mean);   // before init: the taps join the buffer carve
         }
+        std::function<bool(const uint16_t*, int, int64_t, int64_t, std::string&)> df_on_taps;
         if (use_dflash && std::getenv("STRATA_DF_NOPF") == nullptr) {
             // the prompt's context cells: the fusion runs per chunk over the BF16 taps
-            prefill.on_taps = [&dflash, &prefill](const uint16_t* taps, int n_taps, int64_t T, int64_t p0,
-                                                  std::string& e) -> bool {
+            df_on_taps = [&dflash, &prefill](const uint16_t* taps, int n_taps, int64_t T, int64_t p0,
+                                             std::string& e) -> bool {
                 auto& tc = dflash.tap_collector();
                 // L8 --layer-split: the CLI prompt path is the single producer stage (full layer
                 // loop on its own GPU); the compact slice moves to the drafter's card per chunk.
@@ -16036,6 +16057,7 @@ int main(int argc, char** argv) {
                 if (!tc.assemble(p0, &slice, 1, T, 2, e)) return false;
                 return dflash.add_context(tc.plane_bf16(), tc.plan().n_taps, tc.stride_rows_bf16(), p0, T, e);
             };
+            prefill.on_taps = df_on_taps;
         }
         if (const char* taps_path = std::getenv("STRATA_DFLASH_TAPS")) {
             if (!g_tap_dump) g_tap_dump = std::fopen(taps_path, "wb");
@@ -16044,11 +16066,19 @@ int main(int argc, char** argv) {
                 return 1;
             }
             const int64_t tap_n_embd = g.n_embd;
-            prefill.on_taps = [&prefill, tap_n_embd, &dflash, use_dflash](const uint16_t* taps, int n_taps, int64_t T,
-                                                     int64_t p0, std::string& e) -> bool {
-                if (use_dflash && !dflash.add_context(taps, n_taps, prefill.tap_stride_rows(), p0, T, e)) {
-                    e = "dflash: " + e;
-                    return false;
+            prefill.on_taps = [&prefill, tap_n_embd, &dflash, use_dflash, df_on_taps](const uint16_t* taps, int n_taps,
+                                                     int64_t T, int64_t p0, std::string& e) -> bool {
+                if (use_dflash) {
+                    // Review 2026-10-21 item 4: the debug export COMPOSES the production
+                    // callback - a raw producer-plane add_context is a foreign-device
+                    // pointer under --layer-split.  The parity harness's target-tap export
+                    // keeps working through the same collector on every layout.
+                    if (df_on_taps) {
+                        if (!df_on_taps(taps, n_taps, T, p0, e)) return false;
+                    } else if (!dflash.add_context(taps, n_taps, prefill.tap_stride_rows(), p0, T, e)) {
+                        e = "dflash: " + e;
+                        return false;
+                    }
                 }
                 g_tap_stride_bytes = (size_t) prefill.tap_stride_rows() * (size_t) tap_n_embd * 2;
                 if (!tap_dump_record(0, p0, (int) T, n_taps, taps, tap_n_embd, /*bf16=*/true, nullptr)) {
