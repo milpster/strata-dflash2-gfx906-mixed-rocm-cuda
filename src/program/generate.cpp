@@ -2834,8 +2834,10 @@ int main(int argc, char** argv) {
         o.dflash_vocab.clear();
     }
     if (!o.dflash.empty() && o.serve) {
-        if (o.batch > 0 || !o.layer_split.empty()) {
-            std::fprintf(stderr, "strata serve: DFlash currently requires one GPU and serial requests\n");
+        if (o.batch > 0) {
+            // L8: --layer-split is now served by the cross-GPU tap collector (dflash_tap_collect.hpp);
+            // batched requests are not - the verify windows' tap planes rotate per slot.
+            std::fprintf(stderr, "strata serve: DFlash currently requires serial requests (no --batch)\n");
             return 2;
         }
     }
@@ -4209,6 +4211,8 @@ int main(int argc, char** argv) {
                         : o.mtp.empty() || o.spec < 2 ? "it needs the MTP drafter (--mtp, --spec)"
                         : o.batch != 0 ? "not with --batch slots"
                         : o.peer_device >= 1 ? "not with --peer-device"
+                        : !o.dflash.empty() && !o.layer_split.empty()
+                            ? "not with --dflash on a layer split (the cross-GPU tap collector is serial)"
                         : helpers ? "not with the helper caches (--expert-cache-device1..3, --remote-expert-opt)"
                         : nullptr;
         if (off != nullptr) {
@@ -5521,6 +5525,43 @@ int main(int argc, char** argv) {
                 (!o.dflash_head.empty() && !dflash.load_head(o.dflash_head, err))) {
                 std::fprintf(stderr, "strata generate: %s\n", err.c_str());
                 return 1;
+            }
+            // L8 --layer-split: derive tap ownership from the ACTUAL stage ranges and enable the
+            // drafter-device collector BEFORE the expert cache is sized (docs/DFLASH2.md capture
+            // contract; dflash_tap_plan.hpp).  Serve = the layer chain [0, split_at[..]); CLI =
+            // one full-layer producer stage (its experts stream to the peer cards, the layer
+            // loop is single-device, so all taps sit on its plane).
+            if (multi_gpu) {
+                std::vector<int> lbs, les, devs;
+                if (o.serve) {
+                    const int n_st = (int) stages.size() + 1;
+                    for (int st = 0; st < n_st; ++st) {
+                        lbs.push_back(st == 0 ? 0 : (int) split_at[(size_t) st - 1]);
+                        les.push_back(st + 1 < n_st ? (int) split_at[(size_t) st] : (int) g.n_layers);
+                        devs.push_back(st == 0 ? 0 : stages[(size_t) st - 1]->dev);
+                    }
+                } else {
+                    lbs.push_back(0); les.push_back((int) g.n_layers); devs.push_back(0);
+                }
+                strata::core::DFlashTapPlan tap_plan;
+                if (!tap_plan.build(dflash_capture_layers.data(), (int) dflash_capture_layers.size(),
+                                    lbs.data(), les.data(), devs.data(), (int) lbs.size(), g.n_embd, err)) {
+                    std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+                    return 1;
+                }
+                const int64_t bf16_rows = std::max({o.prefill_chunk, o.prefill_auto_max, (int64_t) 6144});
+                if (!dflash.tap_collector().enable(tap_plan, dev, strata::kernels::kVerifyMaxT, bf16_rows, err)) {
+                    std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+                    return 1;
+                }
+                dflash.tap_collector().set_stream(dflash.stream());   // enable() resets the stream slot
+                std::fprintf(stderr, "dflash: cross-GPU tap collection serial on CUDA%d:", dev);
+                for (int t = 0; t < tap_plan.n_taps; ++t)
+                    std::fprintf(stderr, " boundary %d<-CUDA%d", tap_plan.boundary[t], tap_plan.dev[tap_plan.owner[t]]);
+                std::fprintf(stderr, "%s; planes %.1f MiB on CUDA%d, pinned staging %.1f MiB\n",
+                             dflash.artifact().geom().target_hc_mean ? " (HC stream mean capture)" : "",
+                             (double) dflash.tap_collector().device_bytes() / 1048576.0, dev,
+                             (double) dflash.tap_collector().pinned_bytes() / 1048576.0);
             }
         }
         if (!o.serve && ((int64_t)o.tokens.size() > dflash.capacity() ||
@@ -8366,7 +8407,14 @@ int main(int argc, char** argv) {
         if (has_dflash) {
             sp.set_tap_layers(dflash_capture_layers.data(), (int) dflash_capture_layers.size(), dflash.artifact().geom().target_hc_mean);
             sp.on_taps = [&](const uint16_t* data, int count, int64_t rows, int64_t pos, std::string& e) {
-                return !df_request || dflash.add_context(data, count, sp.tap_stride_rows(), pos, rows, e);
+                if (!df_request) return true;
+                auto& tc = dflash.tap_collector();
+                // L8 --layer-split: sp is the chain's stage-0 producer; the tap callback fires
+                // after this stage's stream sync, so its rows are stable for a compact D2H.
+                // The chain's LAST stage finishes the chunk (stages + assemble + add_context).
+                if (!tc.enabled()) return dflash.add_context(data, count, sp.tap_stride_rows(), pos, rows, e);
+                const strata::core::DFlashTapCollector::Slice slice{0, data, sp.tap_stride_rows(), rows};
+                return tc.stage(pos, slice, 2, e);
             };
         }
 
@@ -8715,6 +8763,28 @@ int main(int argc, char** argv) {
             for (size_t i = 0; i < stages.size(); ++i) {
                 GpuStage& st = *stages[i];
                 st.sp.set_stage(st.lb, i + 1 < stages.size() ? st.le : -1, i + 1 < stages.size() ? &stages[i + 1]->sp : nullptr);
+                if (has_dflash) {
+                    // L8 --layer-split: this stage captures ONLY the taps whose boundary layer sits
+                    // in [st.lb, st.le) (the plane's other slices stay stale, never read); its
+                    // callback stages the compact rows and the chain's LAST stage assembles the
+                    // chunk on the drafter's device (dflash_tap_collect.hpp, docs/DFLASH2.md).
+                    st.sp.set_tap_layers(dflash_capture_layers.data(), (int) dflash_capture_layers.size(),
+                                         dflash.artifact().geom().target_hc_mean);   // before init: taps join the carve
+                    if (dflash.tap_collector().enabled())
+                        st.sp.on_taps = [&, i](const uint16_t* data, int, int64_t rows, int64_t pos, std::string& e) {
+                            if (!df_request) return true;
+                            auto& tc = dflash.tap_collector();
+                            const strata::core::DFlashTapCollector::Slice slice{(int) i + 1, data, st.sp.tap_stride_rows(), rows};
+                            if (!tc.stage(pos, slice, 2, e)) return false;
+                            if (i + 1 < stages.size()) return true;   // the next stage completes this chunk
+                            const strata::core::OnDevice on_df(dflash.device());
+                            std::vector<strata::core::DFlashTapCollector::Slice> all{{0, sp.taps_plane(), sp.tap_stride_rows(), rows}};
+                            for (size_t k = 0; k < stages.size(); ++k)
+                                all.push_back({(int) k + 1, stages[k]->sp.taps_plane(), stages[k]->sp.tap_stride_rows(), rows});
+                            if (!tc.assemble(pos, all.data(), (int) all.size(), rows, 2, e)) return false;
+                            return dflash.add_context(tc.plane_bf16(), tc.plan().n_taps, tc.stride_rows_bf16(), pos, rows, e);
+                        };
+                }
                 const strata::core::OnDevice on(st.dev);
                 void* sb = nullptr;              // this stage's own loan, out of its own cache
                 uint64_t sbb = 0;
@@ -9030,6 +9100,21 @@ int main(int argc, char** argv) {
                 }
             }
             for (int st = 0; st + 1 < n_stages; ++st) stage_ver(st).set_next(&stage_ver(st + 1), &split_drive);
+            // L8 --layer-split: collect every stage's captured FP32 tap slice for one verify
+            // window onto the drafter's device (dflash_tap_collect.hpp).  The window chain has
+            // completed by the time a decode consumer runs (the handoff chain completes stage k
+            // before the final stage ends), so each producer's rows are stable for a compact
+            // host-staged D2H; the key is the window's position.
+            auto df_collect_f32 = [&](int64_t key, int64_t rows, std::string& e) -> bool {
+                auto& tc = dflash.tap_collector();
+                const strata::core::OnDevice on_df(dflash.device());
+                std::vector<strata::core::DFlashTapCollector::Slice> all;
+                for (int st = 0; st < n_stages; ++st)
+                    all.push_back({st, stage_ver(st).taps(), stage_ver(st).tap_stride() / g.n_embd, rows});
+                for (auto& s : all)
+                    if (!tc.stage(key, s, 4, e)) return false;
+                return tc.assemble(key, all.data(), (int) all.size(), rows, 4, e);
+            };
             std::string plan_s = "0-" + std::to_string(split_at[0] - 1) + " (CUDA0)";
             for (int st = 1; st < n_stages; ++st)
                 plan_s += ", " + std::to_string(split_at[(size_t) st - 1]) + "-" + std::to_string(split_drive.end[st] - 1) +
@@ -9532,6 +9617,7 @@ int main(int argc, char** argv) {
                 if (!strata::core::conversation_snapshot_save(image, view, ss, g, draft0, err,
                         std::move(reuse), &reused_bytes)) return false;
                 if (has_dflash) {
+                    const strata::core::OnDevice on_df(dflash.device());   // the pools live on the drafter's card
                     image.dflash_kv.resize(dflash.kv_states().size());
                     for (size_t j = 0; j < image.dflash_kv.size(); ++j)
                         if (!strata::core::conversation_kv_save(image.dflash_kv[j], dflash.kv_states()[j],
@@ -12711,6 +12797,7 @@ int main(int argc, char** argv) {
                 }
             }
             if (incoming && has_dflash) {
+                const strata::core::OnDevice on_df(dflash.device());   // geometry checks read the pools' state
                 bool valid = incoming->dflash_kv.size() == dflash.kv_states().size();
                 for (size_t j = 0; valid && j < incoming->dflash_kv.size(); ++j)
                     valid = strata::core::conversation_kv_validate(incoming->dflash_kv[j], dflash.kv_states()[j],
@@ -12872,6 +12959,7 @@ int main(int argc, char** argv) {
             if (incoming) {
                 const auto t0 = Clock::now();
                 if (has_dflash) {
+                    const strata::core::OnDevice on_df(dflash.device());   // the pool rows are written on the drafter's card
                     for (size_t j = 0; j < incoming->dflash_kv.size(); ++j)
                         if (!strata::core::conversation_kv_restore(incoming->dflash_kv[j], dflash.kv_states()[j],
                                 dflash.pool_geometry(),
@@ -13284,8 +13372,18 @@ int main(int argc, char** argv) {
                     if (logpos != nullptr && !ver.window_logprobs(nxt.data(), T, q, logpos_extra, logpos, e))
                         return false;
                     if (!ver.commit(T, e) || (use_mtp && !mtp.prefill(ver.final_R_all(), nxt.data(), T, q, e))) return false;
-                    if (has_dflash && !dflash.add_context_f32(ver.taps(), ver.n_taps(), ver.tap_stride(), q, T, e))
-                        return false;
+                    if (has_dflash) {
+                        // L8 --layer-split: under collection the verify window's taps arrive from
+                        // every stage's verifier; the single-GPU path below is byte-identical.
+                        auto& tc = dflash.tap_collector();
+                        const bool collected = tc.enabled();
+                        if (collected && !df_collect_f32(q, T, e)) return false;
+                        if (!dflash.add_context_f32(collected ? tc.plane_f32() : ver.taps(),
+                                                    collected ? tc.plan().n_taps : ver.n_taps(),
+                                                    collected ? tc.stride_rows_f32() * g.n_embd : ver.tap_stride(),
+                                                    q, T, e))
+                            return false;
+                    }
                     q += T;
                     pp_reached = q;   // #471
                     pp_exact = true;
@@ -15262,8 +15360,24 @@ int main(int argc, char** argv) {
                     const bool sync_context = !req_dflash || df_auto || eos || produced_n >= max_new || !strata::spec::dflash_proposal_fits(
                         p + a + 1, req_dflash_k, dflash.artifact().geom().is_dflash2(),
                         o.max_context, dflash.capacity());
-                    drafted = dflash.add_context_f32(ver.taps(), ver.n_taps(), ver.tap_stride(), p, a + 1, err,
-                                                    sync_context);
+                    // L8 --layer-split: the CLI decode's taps come from the single full-layer
+                    // producer (GPU0); under collection its compact FP32 slice moves per window.
+                    auto& df_tc = dflash.tap_collector();
+                    if (df_tc.enabled()) {
+                        const strata::core::OnDevice on_df(dflash.device());
+                        const strata::core::DFlashTapCollector::Slice slice{0, ver.taps(),
+                                                                            ver.tap_stride() / g.n_embd, a + 1};
+                        if (!df_tc.stage(p, slice, 4, err) ||
+                            !df_tc.assemble(p, &slice, 1, a + 1, 4, err)) {
+                            std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+                            return 1;
+                        }
+                        drafted = dflash.add_context_f32(df_tc.plane_f32(), df_tc.plan().n_taps,
+                                                         df_tc.stride_rows_f32() * g.n_embd, p, a + 1, err,
+                                                         sync_context);
+                    } else
+                        drafted = dflash.add_context_f32(ver.taps(), ver.n_taps(), ver.tap_stride(), p, a + 1, err,
+                                                        sync_context);
                     const auto ctx_done = Clock::now();
                     if (df_auto && rounds > 1 && !from_sfx) {
                         const double ms = std::chrono::duration<double, std::milli>(ctx_done - tw0).count();
@@ -15917,7 +16031,15 @@ int main(int argc, char** argv) {
             // the prompt's context cells: the fusion runs per chunk over the BF16 taps
             prefill.on_taps = [&dflash, &prefill](const uint16_t* taps, int n_taps, int64_t T, int64_t p0,
                                                   std::string& e) -> bool {
-                return dflash.add_context(taps, n_taps, prefill.tap_stride_rows(), p0, T, e);
+                auto& tc = dflash.tap_collector();
+                // L8 --layer-split: the CLI prompt path is the single producer stage (full layer
+                // loop on its own GPU); the compact slice moves to the drafter's card per chunk.
+                if (!tc.enabled()) return dflash.add_context(taps, n_taps, prefill.tap_stride_rows(), p0, T, e);
+                const strata::core::OnDevice on_df(dflash.device());
+                const strata::core::DFlashTapCollector::Slice slice{0, taps, prefill.tap_stride_rows(), T};
+                if (!tc.stage(p0, slice, 2, e)) return false;
+                if (!tc.assemble(p0, &slice, 1, T, 2, e)) return false;
+                return dflash.add_context(tc.plane_bf16(), tc.plan().n_taps, tc.stride_rows_bf16(), p0, T, e);
             };
         }
         if (const char* taps_path = std::getenv("STRATA_DFLASH_TAPS")) {
@@ -16773,7 +16895,15 @@ int main(int argc, char** argv) {
                     const Clock::time_point td = Clock::now();
                     dflash_ready = strata::spec::dflash_proposal_fits(p, dflash_k,
                         dflash.artifact().geom().is_dflash2(), o.max_context, dflash.capacity());
-                    const bool ok = dflash.add_context_f32(ver.taps(), ver.n_taps(), ver.tap_stride(),
+                    auto& tc = dflash.tap_collector();
+                    const bool df_collected = tc.enabled();
+                    if (df_collected && !df_collect_f32(p, a + 1, err)) {
+                        std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+                        return 1;
+                    }
+                    const bool ok = dflash.add_context_f32(df_collected ? tc.plane_f32() : ver.taps(),
+                                                           df_collected ? tc.plan().n_taps : ver.n_taps(),
+                                                           df_collected ? tc.stride_rows_f32() * g.n_embd : ver.tap_stride(),
                                                            p - (a + 1), a + 1, err, !dflash_ready) &&
                                     (!dflash_ready || (drafted = dflash.propose(x, p, dflash_k, drafts.data(), err,
                                                                 o.spec_min_p > 0 ? dprob.data() : nullptr)));
