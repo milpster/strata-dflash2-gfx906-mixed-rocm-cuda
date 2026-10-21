@@ -42,21 +42,31 @@ int main() {
     check(c == 1, "an existing key wins its slot (pipeline: a slice re-stages the same chunk key)");
     check(slots[1].rows == 4096, "key-hitting acquire does NOT clear the in-request rows guard (consistency check stays)");
 
-    // 3. All bound: the OLDEST key is evicted, fully reset before reuse.
+    // 3. L10 lifecycle: an assembled slot (staged flags cleared = RETIRED) is reused;
+    //    the key-hitting live binding stays untouched.
+    slots[0].rows = -1;   // key 100 was "assembled": flags cleared, rows released by retire
     int d = DFlashTapCollector::acquire(slots, 300, err);
-    check(d == 0 && slots[0].key == 300, "all bound: the oldest key (100) is evicted, not the newest");
-    check(slots[0].rows == -1, "an evicted slot resets rows=-1");
+    check(d == 0 && slots[0].key == 300, "a RETIRED slot (no live staging) is reused; the live binding stays");
+    check(slots[0].rows == -1, "a reused slot resets rows=-1");
     bool flags_clear = true;
     for (int t = 0; t < strata::core::kDFlashMaxTaps; ++t) flags_clear &= !slots[0].staged[t];
-    check(flags_clear, "an evicted slot resets every staged flag (no stale tap leaks into the new chunk)");
-    check(slots[1].key == 200, "the eviction takes exactly one victim: the live binding stays");
+    check(flags_clear, "a reused slot starts with every staged flag clear (no stale tap leaks into the new chunk)");
+    check(slots[1].key == 200 && slots[1].staged[0], "the live (STAGED) binding is NOT a reuse victim");
 
-    // 4. Eviction order follows the keys (positions grow): after evicting 100 and 200,
-    //    slot 0 must be 300 then 400, slot 1 re-binds 500 last.
-    int e = DFlashTapCollector::acquire(slots, 400, err);   // evicts 200 (oldest live)
-    check(e == 1 && slots[1].key == 400 && slots[0].key == 300, "eviction follows key age (200 evicted before 300)");
-    int f = DFlashTapCollector::acquire(slots, 500, err);   // evicts 300
-    check(f == 0 && slots[0].key == 500 && slots[1].key == 400, "eviction follows key age (300 evicted before 400)");
+    // 4. UNCONSUMED staging is NEVER evicted (the window-1 GPU failure: staging N+2
+    //    destroyed unconsumed N).  Both slots STAGED: acquire refuses with backpressure
+    //    (the GPU stage() waits; the CPU bookkeeping refuses deterministically).
+    slots[0].staged[0] = true;   // key 300 now holds unconsumed staging
+    int e = DFlashTapCollector::acquire(slots, 400, err);
+    check(e == -1 && err.find("backpressure") != std::string::npos,
+          "both slots STAGED: acquire REFUSES - unconsumed staging is never evicted");
+    check(slots[0].key == 300 && slots[1].key == 200 && slots[1].staged[0],
+          "the refusal changes nothing: both live bindings and their staged flags stand");
+    for (int t = 0; t < strata::core::kDFlashMaxTaps; ++t) slots[1].staged[t] = false;   // key 200 retires
+    int f = DFlashTapCollector::acquire(slots, 400, err);
+    check(f == 1 && slots[1].key == 400 && slots[0].key == 300, "after a retire, the oldest retired slot binds the new key");
+    int dup = DFlashTapCollector::acquire(slots, 300, err);
+    check(dup == 0 && slots[0].key == 300, "an existing key finds its binding (unique, never re-binds elsewhere)");
 
     // 5. The reset contract (aborted request -> new conversation, same pos0 keys):
     //    clear keys/rows/flags, then the same keys bind fresh slots with rows=-1.

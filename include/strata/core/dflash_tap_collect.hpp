@@ -24,8 +24,14 @@
 // stage returns "while later GPUs are still processing the previous chunk"): a producer
 // thread staging chunk N+1 overlaps the final stage's thread assembling chunk N, so all
 // slot bookkeeping and transfer enqueue runs under mu_.  No lock is ever held across a
-// wait that requires another collector call: the event drained by acquire() was always
-// recorded by an assemble() that already released the lock.
+// wait that requires another collector call: the producer's backpressure wait is on cv_
+// (mutex released, woken by assemble's retire / reset / disable), and every event drained
+// under the lock was recorded by an assemble() that already released the lock.
+// LIFECYCLE (window-1 GPU failure, L10): a slot is EMPTY, STAGED (unconsumed producer
+// data - acquire NEVER evicts it), or RETIRED (assembled; H2D queued+recorded).  Reuse =
+// empty, then oldest retired (caller drains the recorded H2D before host rewrite).  When
+// both slots are STAGED the producer WAITS: the bounded prefill chain (N+2 staged while N
+// is unconsumed) is backpressure, never data loss.  assemble() never waits.
 // Serial-only by design: --pipeline-windows overlap with dflash + split is refused.
 #pragma once
 
@@ -34,6 +40,7 @@
 #include <cuda_runtime.h>
 
 #include <cstdint>
+#include <condition_variable>
 #include <mutex>
 #include <string>
 
@@ -61,11 +68,16 @@ class DFlashTapCollector {
         cudaEvent_t ev = nullptr;                      ///< records the slot's last H2D
         uint8_t* pin[kDFlashMaxTaps] = {};             ///< per-tap staging rows (FOREIGN taps only)
         bool staged[kDFlashMaxTaps] = {};              ///< tap staged into this slot
+        /// Lifecycle (L10): key<0 = EMPTY; key>=0 with a staged flag = STAGED (unconsumed
+        /// producer data - NEVER evicted); key>=0 with no staged flags = RETIRED (assembled:
+        /// the H2D is queued on cs_ and `ev` records it; reuse must drain `ev` first).
     };
 
-    /// Pick (and (re)bind) the slot for `key`: an existing binding wins; otherwise the
-    /// oldest binding is evicted after draining its H2D event.  Returns the slot index,
-    /// -1 when the evicted slot's event drain failed (err set).
+    /// Pick (and (re)bind) the slot for `key`: an existing binding wins; otherwise an EMPTY
+    /// slot, then the oldest RETIRED slot.  A slot holding UNCONSUMED staging is never a
+    /// victim (window-1 GPU failure: staging chunk N+2 destroyed the unconsumed N).  When
+    /// both slots are STAGED, returns -1 with a backpressure message - the member
+    /// acquire_slot() waits for the consumer's retire.  Pure bookkeeping: no CUDA calls.
     static int acquire(Slot (&slots)[kSlots], int64_t key, std::string& err);
 
     /// Allocate the planes (on drafter_dev, which must be current) and the pinned
@@ -120,6 +132,13 @@ class DFlashTapCollector {
 
     Kind& kind(int type_bytes);
 
+    /// Producer entry: static acquire() with the metadata mutex HELD by the caller; when
+    /// both slots hold unconsumed staging, the producer WAITS on cv_ (the mutex is
+    /// released - never a lock across progress that needs another collector call) and is
+    /// woken by assemble()'s retire, by reset_staging(), and by disable().  A woken
+    /// producer against a cancelled/reset/disabled collector returns -1 deterministically.
+    int acquire_slot(Kind& k, int64_t key, std::string& err, std::unique_lock<std::mutex>& lock);
+
     DFlashTapPlan plan_;
     int dev_ = -1;
     int64_t f32_rows_ = 0, bf16_rows_ = 0;
@@ -129,6 +148,7 @@ class DFlashTapCollector {
     cudaStream_t cs_ = nullptr;   ///< the drafter's stream (planes are written on it)
     int64_t plane_bytes_ = 0, pin_bytes_ = 0;
     std::mutex mu_;   ///< serializes slot bookkeeping + transfer enqueue across stage/assemble
+    std::condition_variable cv_;   ///< backpressure wake: retire / reset / disable
 };
 
 }  // namespace strata::core

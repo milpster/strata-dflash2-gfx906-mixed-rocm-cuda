@@ -17,29 +17,44 @@ constexpr bool valid_type_bytes(int type_bytes) { return type_bytes == 2 || type
 DFlashTapCollector::Kind& DFlashTapCollector::kind(int type_bytes) { return type_bytes == 4 ? f32_ : bf16_; }
 
 int DFlashTapCollector::acquire(Slot (&slots)[kSlots], int64_t key, std::string& err) {
-    int victim = -1;
+    int first_empty = -1, oldest_retired = -1;
     for (int i = 0; i < kSlots; ++i) {
-        if (slots[i].key == key) return i;
-        // First FREE slot wins (parent-found slot_test failure at b1493619: the scan used to
-        // assign every empty slot, binding new keys to the LAST free index - now deterministic).
-        if (slots[i].key < 0 && victim < 0) victim = i;
-    }
-    if (victim < 0) {   // all bound: evict the oldest binding (keys grow with position)
-        victim = 0;
-        for (int i = 1; i < kSlots; ++i)
-            if (slots[i].key < slots[victim].key) victim = i;
-        // Drain the evicted slot's last H2D before reusing its pinned rows.  The event
-        // was recorded by an assemble() that already released mu_, so this sync under
-        // the lock never waits on a blocked collector call.
-        if (slots[victim].ev != nullptr && cudaEventSynchronize(slots[victim].ev) != cudaSuccess) {
-            err = "dflash tap collect: draining the evicted slot's H2D failed";
-            return -1;
+        if (slots[i].key == key) return i;   // the existing binding wins: unique per key
+        if (slots[i].key < 0) {
+            if (first_empty < 0) first_empty = i;
+            continue;
         }
+        bool staged_live = false;
+        for (int t = 0; t < kDFlashMaxTaps; ++t) staged_live |= slots[i].staged[t];
+        if (!staged_live && (oldest_retired < 0 || slots[i].key < slots[oldest_retired].key)) oldest_retired = i;
+    }
+    // L10 lifecycle (window-1 GPU failure: "tap 0 was never staged"): acquire() used to
+    // evict the oldest key whenever both slots were bound, destroying UNCONSUMED producer
+    // staging - the producer stages chunk N+2 while the consumer has only assembled N.
+    // Reuse order is now: EMPTY slot, then the oldest RETIRED slot (assembled, flags
+    // cleared, H2D queued+recorded - the caller drains `ev` before any host rewrite).
+    // Both slots STAGED = backpressure: unconsumed staging is NEVER evicted.
+    const int victim = first_empty >= 0 ? first_empty : oldest_retired;
+    if (victim < 0) {
+        err = "dflash tap collect: backpressure - both slots hold unconsumed staging";
+        return -1;
     }
     Slot& s = slots[victim];
     s.key = key; s.rows = -1;
     for (int t = 0; t < kDFlashMaxTaps; ++t) s.staged[t] = false;
     return victim;
+}
+
+int DFlashTapCollector::acquire_slot(Kind& k, int64_t key, std::string& err, std::unique_lock<std::mutex>& lock) {
+    for (;;) {
+        int idx = acquire(k.slots, key, err);
+        if (idx >= 0) return idx;
+        // Bounded producer wait with the metadata mutex RELEASED.  Every wake source is
+        // external to this call: assemble()'s retire, reset_staging(), disable().
+        err.clear();
+        cv_.wait(lock);
+        if (!enabled()) { err = "dflash tap collect: staging cancelled (collector reset/disabled)"; return -1; }
+    }
 }
 
 bool DFlashTapCollector::enable(const DFlashTapPlan& plan, int drafter_dev, int64_t f32_rows,
@@ -114,6 +129,7 @@ void DFlashTapCollector::disable() {
     free_kind(f32_); free_kind(bf16_);
     plan_ = DFlashTapPlan{}; dev_ = -1; f32_rows_ = 0; bf16_rows_ = 0;
     plane_bytes_ = 0; pin_bytes_ = 0; cs_ = nullptr;
+    cv_.notify_all();   // the collector is gone: pending producer waiters reject, no hang
 }
 
 void DFlashTapCollector::reset_staging() {
@@ -128,11 +144,12 @@ void DFlashTapCollector::reset_staging() {
         }
     };
     reset_kind(f32_); reset_kind(bf16_);
+    cv_.notify_all();   // cancelled/reset staging: pending producer waiters reject deterministically
 }
 
 bool DFlashTapCollector::stage(int64_t key, const Slice& slice, int type_bytes, std::string& err) {
     if (!valid_type_bytes(type_bytes)) { err = "dflash tap collect: type_bytes must be 2 (BF16) or 4 (FP32)"; return false; }
-    std::lock_guard<std::mutex> lock(mu_);
+    std::unique_lock<std::mutex> lock(mu_);
     if (!enabled()) { err = "dflash tap collect: not enabled"; return false; }
     Kind& k = kind(type_bytes);
     if (k.rows_cap <= 0) { err = "dflash tap collect: that plane kind is not enabled"; return false; }
@@ -148,7 +165,7 @@ bool DFlashTapCollector::stage(int64_t key, const Slice& slice, int type_bytes, 
         if (plan_.owner[t] != slice.stage) continue;
         if (plan_.tap_device(t) == dev_) continue;   // drafter-device taps: assemble copies them D2D
         if (slot < 0) {
-            slot = acquire(k.slots, key, err);
+            slot = acquire_slot(k, key, err, lock);   // backpressure: waits for the consumer's retire
             if (slot < 0) return false;
             Slot& s = k.slots[slot];
             if (s.rows >= 0 && s.rows != slice.rows) { err = "dflash tap collect: chunk slot rows disagree"; return false; }
@@ -227,6 +244,7 @@ bool DFlashTapCollector::assemble(int64_t key, const Slice* slices, int n_slices
             err = "dflash tap collect: recording the slot's H2D completion event failed";   // pinned reuse needs it
             return false;
         }
+        cv_.notify_all();   // the slot is RETIRED: wake any producer in backpressure
     }
     return true;
 }
