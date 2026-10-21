@@ -193,34 +193,59 @@ Full report: `/mnt/user/dflash2/L8-MULTIGPU-REPORT.md`; parent commands: `PARENT
   the ONE existing stage oracle (`dflash2_stage_parity.py::check_weights`, now source-agnostic —
   GGUF and safetensors feed the same formulas), config→metadata derivation, shape refusals,
   recorded sha256 authority.
-- `tools/test_inco_dflash2_parity.py` — `--selfcheck` (CPU fixtures: independent RoPE via
-  complex exponentials at 0/2047/2048/2049/65536/200000/260000; HC-mean tap geometry [5,15,25,35,45];
-  GQA 32/8/128; symmetric non-causal window 2048 at query lengths 1/2/4/8; dynamic causal conv
-  alignment; selector 256/16 walk with deterministic ties, anchor row excluded, vocab bounds;
-  refusals: missing tap, bad position, malformed dumps; real checkpoint tensors exercised);
+ - `tools/test_inco_dflash2_parity.py` (fixed at 9379c3d5 after parent FAIL at e8edb643) -
+   `--selfcheck` CPU fixtures: RoPE compared at the ENGINE's explicitly-rounded FP32 phases
+   (theta_scale=powf(f32,-2f/hd); inv=powf(scale,pair); ang=f32(pos)*inv; cosf/sinf, per
+   native_rope.cu:222-251) at positions 0/2047/2048/2049/65536/200000/260000, D=128, tolerance
+   UNCHANGED 1e-5; FP64-ideal drift printed as diagnostic only; checkpoint/kernel convention
+   cross-check UNRESOLVED pending a parent GPU reference; HC-mean SYNTHETIC 4-stream fixture at
+   tap layers 5/15/45 (labeled, not target truth); GQA mini 8/2 = the real 32/8 ratio; per-K
+   symmetric non-causal window 2048 with explicit per-row absolute visibility sets and block
+   cutoff; conv per-(row,channel) scalar tap sums on BOTH sides with distinct coefficients
+   (row 0 = current-tap coeff x0, not zero); selector walk with nonzero codebooks, anchor row
+   excluded, predecessor dependence proven, ties resolve to the smaller TOKEN ID, exact-path
+   compare, vocab bounds; exact rmsnorm/fusion fixtures vs FP64-scalar references; refusals on
+   real public helpers only; real checkpoint tensors exercised;
   `--integrity [--hash]`; `--dump-dir DIR` compares REAL engine intermediates (STRATA_DF_PARITY)
   per-row/per-layer abs/rel/cosine at the existing gates (cos≥0.9999, relL2≤0.02 — unchanged,
   not relaxed). Truth: NO head tensors exist in the safetensors (tie_word_embeddings false) →
   head parity NOTRUN → `dflash_head_parity.py` against the target GGUF head; target-side HC-mean
   truth needs an F32 target reference run → NOTRUN. CPU output proves formulas/artifact integrity
   ONLY — never HIP numerics, never an independent SGLang/target claim.
-- `tools/test_inco_dflash2_integration.py` — plan-only preflight: source-cited flag schema
-  (`--mtp`/`--dflash` exclusive 5440; width=min(--dflash-block,--spec-1) 5500 → width 3 =
-  `--spec 4 --dflash-block 3`; `--spec`≤8; serve `--batch` refused 2836; pipeline+split+dflash
-  refused 4214; sampled→target-only 2830), real prod invocation preserved verbatim, prototype
-  config under `/mnt/user/dflash2/config/` (prod config never touched), read-only prod detection,
-  `--execute` REFUSES while production runs absent `--expect-stopped`; no stop/restart ever.
-- `tools/bench_inco_dflash2.py` — plan/report only: modes prod_reference/new_target_only/new_mtp/
-  new_dflash (BF16 primary — no quantized-drafter claims until conversion+parity validated),
-  widths 1..7, contexts 2K/16K/64K/200K(+260K), engine-reported token counts (never char==token),
-  strata_bench metric names (decode_tps, ttft_s, prompt_ms, decode_ms, generated_tokens) with
-  null+reason for unexposed metrics, medians/spread only from recorded repetitions, greedy
-  byte-compare pins `STRATA_IQ_MT_MIN=1` + identical expert-cache, old-vs-new target-only gate
-  FIRST. No GPU in plan mode; execution is parent-owned with the stopped-prod guard.
+ - `tools/test_inco_dflash2_integration.py` (fixed at 9379c3d5) - clones the REAL production
+   serve config `/mnt/user/Strata/prod-config-swift15.json` READ-ONLY: all structured keys
+   preserved (layer_split=32 -> --layer-split via server.py:2604), exe swapped, port moved to
+   8019; writes valid server-schema configs `proto-server-swift15-{target_only,dflash_w3}.json`
+   + `inco-dflash2-plan-manifest.json` under `/mnt/user/dflash2/config/` (prod config never
+   touched); structural flag merge (exactly one --spec=4, one --spec-min-p=0.5, --dflash +
+   --dflash-block 3). prod_reference labeled OBSERVED TARGET-ONLY (prod args carry no
+   --mtp/--dflash; --spec/--spec-min-p are drafter-only per generate.cpp:5445/9176, inert
+   without a drafter); new_mtp NOTAVAILABLE with evidence (no MTP drafter artifact in the model
+   dirs; no --mtp in prod). Guards FAIL-CLOSED: prod engine running OR detection unknown ->
+   refuse; port 8009 refused outright; --confirm-execution required; NO override flag exists;
+   --execute performs real HTTP checks (health, props identity, greedy repeat/reset,
+   sampled-fallback) ONLY against the isolated prototype on 8019 started by the parent; nothing
+   stops/restarts/probes production. Source-cited flag schema kept: drafter exclusive 5440;
+   width=min(--dflash-block,--spec-1) 5500; serve --batch refused 2836; pipeline+split+dflash
+   refused 4214; sampled->target-only 2830/12457.
+ - `tools/bench_inco_dflash2.py` (fixed at 9379c3d5) - plan/report + REAL grouped measurement:
+   modes prod_reference (OBSERVED target-only)/new_target_only/new_dflash w1..7/new_mtp
+   (NOTAVAILABLE with reason - no fake baseline); BF16 primary - no quantized-drafter claims
+   until conversion+parity validated; contexts 2K/16K/64K/200K(+260K); engine-reported token
+   counts (never char==token); per-run JSONs per
+   (mode,context,width,prompt,seed,repeat); --report medians/spread GROUPED per configuration,
+   NEVER one aggregate number; unexposed metrics null WITH REASON; non-finite/bool refused;
+   failed runs recorded and excluded. Greedy byte-compare gate pins caller-supplied EQUAL
+   explicit `--expert-cache N` slots (int slots, generate.cpp:2536; auto is not a pin) +
+   `STRATA_IQ_MT_MIN=1`, old-vs-new target-only FIRST; benchmark mode keeps the production
+   `--expert-cache auto` deployment unchanged. Full hashing gated behind `--offline-guarded`
+   (prod-up 76 GB reads thrash the page cache, #1691); default `--preflight` is a size/mtime
+   fingerprint vs the durable L3/L4 shas. No GPU in plan mode; execution is parent-owned behind
+   the fail-closed stopped-prod guard.
 
 ### Prototype activation config (NOT deployed)
 
-`/mnt/user/dflash2/config/inco-dflash2-prototype.json` (written by the integration harness):
+`/mnt/user/dflash2/config/proto-server-swift15-dflash_w3.json` (written by the integration harness):
 the production serve invocation UNCHANGED (split32, IQ3_XXS native quant, pack, KV int8, 262144
 context, expert-cache auto, ROCm env prefix) plus `--dflash /mnt/user/dflash2/artifacts/inco-dflash2-bf16.gguf --spec 4 --dflash-block 3 --spec-min-p 0.5`, run from the prototype binary
 `/mnt/user/dflash2/Strata-wt/build-gfx906-dflash2/strata`. Exact revert = start production
@@ -234,7 +259,7 @@ parent/user action.
 1. Greedy A/B baseline: old-binary vs new-binary target-only, byte-compare, `STRATA_IQ_MT_MIN=1`,
    identical `--expert-cache auto` (gate before any DFlash diagnosis).
 2. CPU rerun (prod-up, no GPU): `ctest -R '^(dflash_tap_plan_test|dflash_tap_slot_test|dflash_ring_test|dflash_load_test)$'`
-   + `python3 tools/test_dflash2_stage_parity.py` + `python3 tools/test_inco_dflash2_parity.py --selfcheck --integrity --hash`
+   + `python3 tools/test_dflash2_stage_parity.py` + `python3 tools/test_inco_dflash2_parity.py --selfcheck --integrity`  # (--hash only in an offline window)
    + `--selfcheck` of the integration/bench harnesses.
 3. GPU primitives (prod env prefix): `dflash_tap_plan/slot` already CPU; `dflash_tap_collect_test`,
    `dflash2_parity` dump generation → `test_inco_dflash2_parity.py --dump-dir`, `dflash_taps_test`,
@@ -277,7 +302,7 @@ parent/user action.
 | 25 | Target-side HC-mean truth | NOTRUN (needs F32 target reference run) |
 | 26 | Quantized drafter variants | NOT VALIDATED (BF16 primary; conversion+parity required first) |
 | 27 | Host RAM for pinned staging (251.7 MB @8192 → 1.007 GB @32768, 3 foreign taps) | priced in diagnostics; NOTRUN |
-| 28 | Bench baselines (prod_reference/new_target_only/new_mtp/new_dflash) | PLAN ONLY; zero measured numbers |
+| 28 | Bench baselines (prod_reference OBSERVED target-only / new_target_only / new_mtp NOTAVAILABLE with evidence / new_dflash w1..7) | PLAN ONLY; zero measured numbers |
 
 All GPU items require the prod-down window with explicit user approval (2026-10-21 safety rule);
 no script in this program stops, restarts, or probes production.
