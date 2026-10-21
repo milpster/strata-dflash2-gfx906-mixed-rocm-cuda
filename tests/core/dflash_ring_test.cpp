@@ -124,9 +124,10 @@ int main() {
         append(0, 200000, 1);   // materialize the prefilled rows: readable cells must carry
                                 // COMMITTED tags, not the untouched-slot default 0
         // The exhaustive loop mirrors the engine: prefill committed, then at each cycle the
-        // propose writes NOISE rows [pos, pos+K), verify commits a prefix t (0..K-1) as
-        // COMMITTED (re-appending the SAME cells), and the next cycle's readable window
-        // [pos'-W+1, pos'+K) must contain no NOISE below pos' (contamination check).
+        // propose writes NOISE rows [pos, pos+K), verify commits a accepted proposals + the
+        // generated anchor token (a+1 rows, 1..K) as COMMITTED (re-appending the SAME cells),
+        // and the next cycle's readable window [pos'-W+1, pos'+K) must contain no NOISE below
+        // pos' (contamination check).
         int64_t pos = 200000;
         bool clean = true, tag_clean = true;
         for (int cycle = 0; cycle < 40 && pos < 200140; ++cycle) {
@@ -134,7 +135,9 @@ int main() {
             if (!st.propose_allowed(pos, K)) { clean = false; break; }
             st.note_propose(pos, K);
             append(pos, K, 2);                                   // the block's rows (noise included)
-            const int64_t t = cycle % K;                          // accepted prefix (can be 0)
+            // Engine reality: verify commits a accepted proposals + 1 generated token = a+1
+            // rows (the anchor), never zero. a cycles 0..7 so t spans 1..8.
+            const int64_t t = 1 + cycle % K;
             append(pos, t, 1);
             st.note_append(pos, t);
             pos += t;
