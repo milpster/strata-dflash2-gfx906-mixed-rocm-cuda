@@ -607,12 +607,49 @@ bool DFlashDrafter::load_head(const std::string& path, std::string& err) {
     return true;
 }
 
+// Host-staged cross-card copy (parent review 2026-10-21 item 1): the pinned-host hop is
+// the proven path on PCIe-only pairs - a direct cross-device cudaMemcpyAsync presumes
+// peer access we do not probe on gfx906.  The D2H runs in the SOURCE device's context,
+// the H2D on the drafter's stream; the pinned window is temporary and freed here.
+static bool host_staged_copy(const void* src, int src_dev, cudaStream_t cs, uint64_t bytes,
+                             void** out, std::string& err) {
+    void* stage = nullptr;
+    if (cudaHostAlloc(&stage, bytes, cudaHostAllocMapped) != cudaSuccess) {
+        err = "the pinned staging window for the copy does not fit in host RAM";
+        return false;
+    }
+    bool ok = false;
+    {
+        const strata::core::OnDevice on_src(src_dev);
+        ok = cudaMemcpy(stage, src, bytes, cudaMemcpyDeviceToHost) == cudaSuccess;
+    }
+    void* copy = nullptr;
+    ok = ok && cudaMalloc(&copy, bytes) == cudaSuccess;
+    ok = ok && cudaMemcpyAsync(copy, stage, bytes, cudaMemcpyHostToDevice, cs) == cudaSuccess;
+    ok = ok && cudaStreamSynchronize(cs) == cudaSuccess;
+    cudaFreeHost(stage);
+    if (!ok) {
+        if (copy != nullptr) cudaFree(copy);
+        err = "the host-staged copy failed";
+        return false;
+    }
+    *out = copy;
+    return true;
+}
+
 bool DFlashDrafter::bind(const WeightTable& wt, const NativeHead* head, std::string& err, const std::string& vocab_path) {
     head_ = nullptr; emb_ref_ = nullptr;
     if (!cs_ || st_.empty()) { err = "dflash: upload before binding"; return false; }
     const OnDevice on_df(device_);   // the drafter's arena, not the caller's (MTP pattern)
     cudaStreamSynchronize(cs_);
     clear_graphs();
+    // Rebind audit (review item 1): a re-bind replaces the cross-card copies, so free the
+    // old ones (stream drained, graphs cleared) and un-count their vram - never leak/double-count.
+    if (head_dev_ != nullptr) { cudaFree(head_dev_); vram_ -= head_dev_bytes_; head_dev_ = nullptr; head_dev_bytes_ = 0; }
+    if (emb_local_.data != nullptr) {
+        cudaFree((void*) emb_local_.data); vram_ -= emb_local_bytes_;
+        emb_local_ = WeightRef{}; emb_local_bytes_ = 0;
+    }
     if (head_ids_) { cudaFree(head_ids_); head_ids_ = nullptr; vram_ -= (uint64_t) head_rows_ * 4; head_rows_ = 0; }
     const DFlashGeometry& dg = artifact_.geom();
     const NativeHead* next_head = owned_head_ ? owned_head_ : head;
@@ -668,24 +705,25 @@ bool DFlashDrafter::bind(const WeightTable& wt, const NativeHead* head, std::str
                      head_rows_, (long long) dg.vocab, ids.size() * 4.0 / 1048576);
     }
     // ---- cross-card bind (L8 --layer-split): propose's head gemv and the embedding gather
-    // run on cs_ - THIS device - so tables living on the stage-0 card must never be
-    // dereferenced from here.  Copy the read rows ONCE (the MTP cross-card draft-head
-    // pattern).  The pinned-host native embedding is device-agnostic (zero-copy PCIe
-    // gather), so the IQ-form target needs no embedding copy; the head always lives on a card.
+    // run on cs_ - THIS device - so tables living on another card must never be
+    // dereferenced from here.  Copy the read rows ONCE through proven pinned-host staging
+    // (the MTP cross-card draft-head pattern, review 2026-10-21 item 1).  Under the serve
+    // split this path stays dormant: the drafter binds the FINAL stage's head, which
+    // already lives on the drafter's card - the shared head is never duplicated.  The
+    // pinned-host native embedding is device-agnostic (zero-copy PCIe gather), so the
+    // IQ-form target needs no embedding copy; the head always lives on a card.
     if (next_head->device() != device_) {
         const uint64_t hbytes = next_head->weight_bytes();
         void* copy = nullptr;
-        if (cudaMalloc(&copy, hbytes) != cudaSuccess ||
-            cudaMemcpyAsync(copy, next_head->weights(), hbytes, cudaMemcpyDeviceToDevice, cs_) != cudaSuccess ||
-            cudaStreamSynchronize(cs_) != cudaSuccess) {
-            if (copy) cudaFree(copy);
-            err = "dflash: the shared head's rows could not be copied onto the drafter's card";
+        if (!host_staged_copy(next_head->weights(), next_head->device(), cs_, hbytes, &copy, err)) {
+            err = "dflash: the shared head's rows could not be staged onto the drafter's card: " + err;
             return false;
         }
         head_dev_ = copy;
+        head_dev_bytes_ = hbytes;
         vram_ += hbytes;
-        std::fprintf(stderr, "dflash: the shared target head lives on CUDA%d; its rows are copied to CUDA%d "
-                             "for proposing (%.0f MiB)\n", next_head->device(), device_, (double) hbytes / 1048576.0);
+        std::fprintf(stderr, "dflash: the shared target head lives on CUDA%d; its rows are staged via host memory "
+                             "onto CUDA%d for proposing (%.0f MiB)\n", next_head->device(), device_, (double) hbytes / 1048576.0);
     }
     if (strata::core::native_embed() == nullptr) {   // the canonical device table: the gather reads it on cs_
         cudaPointerAttributes attr{};
@@ -693,18 +731,16 @@ bool DFlashDrafter::bind(const WeightTable& wt, const NativeHead* head, std::str
         const int data_dev = known ? (int) attr.device : -1;
         if (known && data_dev != device_) {
             void* copy = nullptr;
-            if (cudaMalloc(&copy, next_embedding->bytes) != cudaSuccess ||
-                cudaMemcpyAsync(copy, next_embedding->data, next_embedding->bytes, cudaMemcpyDeviceToDevice, cs_) !=
-                    cudaSuccess || cudaStreamSynchronize(cs_) != cudaSuccess) {
-                if (copy) cudaFree(copy);
-                err = "dflash: the target embedding could not be copied onto the drafter's card";
+            if (!host_staged_copy(next_embedding->data, data_dev, cs_, next_embedding->bytes, &copy, err)) {
+                err = "dflash: the target embedding could not be staged onto the drafter's card: " + err;
                 return false;
             }
             emb_local_ = *next_embedding;
             emb_local_.data = copy;
+            emb_local_bytes_ = next_embedding->bytes;
             vram_ += next_embedding->bytes;
-            std::fprintf(stderr, "dflash: the target embedding lives on CUDA%d; the gather table is copied to CUDA%d "
-                                 "(%.0f MiB)\n", data_dev, device_, (double) next_embedding->bytes / 1048576.0);
+            std::fprintf(stderr, "dflash: the target embedding lives on CUDA%d; the gather table is staged via host "
+                                 "memory onto CUDA%d (%.0f MiB)\n", data_dev, device_, (double) next_embedding->bytes / 1048576.0);
         }
     }
     head_ = next_head;

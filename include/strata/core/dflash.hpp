@@ -261,7 +261,9 @@ private:
     int head_rows_ = 0;
     const WeightRef* emb_ref_ = nullptr;
     void* head_dev_ = nullptr;      ///< shared head rows copied onto the drafter's card (L8 cross-card bind)
+    uint64_t head_dev_bytes_ = 0;   ///< vram_ accounted for the copy; freed on rebind, never leaked
     WeightRef emb_local_{};         ///< target embedding copied onto the drafter's card (canonical-form targets)
+    uint64_t emb_local_bytes_ = 0;  ///< vram_ accounted for the embedding copy; freed on rebind
     /// The head rows as propose's gemv must see them: the local copy under cross-card bind.
     const void* head_weights() const;   ///< defined in dflash_runtime.cpp (NativeHead completes there)
 
