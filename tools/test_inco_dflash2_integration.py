@@ -1,150 +1,343 @@
 #!/usr/bin/env python3
-"""Parent-owned offline preflight + explicit-execution plan for Inco DFlash2 (L9).
+"""Inco DFlash2 preflight + isolated-server validation (L9, parent executes everything).
 
-PLAN-ONLY by default: it inspects the REAL engine invocation (read-only pgrep), validates the
-flag schema against the source semantics (line-cited), writes a PROTOTYPE config under
-/mnt/user/dflash2/config/ (prod config is never touched), and prints the exact parent
-commands with real paths.  --execute prints the same commands marked parent-owned; this
-script NEVER launches, stops, restarts, or probes the engine/GPU - every GPU case is
-emitted as a command for the parent, guarded: with the production engine detected running,
-execution plans REFUSE unless the caller explicitly passes --expect-stopped (the user's
-approved downtime state).
+What this IS:
+  * A CONFIG CLONER: reads the ACTUAL production server config
+    (/mnt/user/Strata/prod-config-swift15.json, read-only) and writes, under
+    /mnt/user/dflash2/config/, (a) a PLAN MANIFEST (named manifest) and (b) VALID
+    server-schema configs for the isolated prototype server on port 8019 - same schema
+    fields as prod (exe/args/cwd/tokenizer/model_name/log/lib_dirs/vision/env),
+    structurally merged flags (no duplicated --spec strings), production config NEVER
+    touched.
+  * A REAL CLIENT for the isolated prototype server (--execute, parent-run): HTTP checks
+    and case runs against the explicit prototype URL (port 8019; port 8009 - production -
+    is REFUSED outright), with strict guards:
+        - production engine observed RUNNING  -> refuse
+        - detection FAILED/UNKNOWN           -> refuse (fail-closed; no override flag)
+        - --confirm-execution                 -> required explicit acknowledgement
+    Nothing in this file can stop, restart, signal, or probe production.
+  * CPU unit fixtures (--selfcheck) for the cloner/merge/guards (parent runs them).
 
-Source semantics verified in src/program/generate.cpp (read at 9c0223cd, cited per rule):
-  --mtp/--dflash mutually exclusive (5440); --spec in [2, kVerifyMaxT=8] (5445-5454,
-  verify_kernels.hpp:21); effective width dflash_k = min(--dflash-block, --spec-1) (5500) -
-  "width 3" = --spec 4 --dflash-block 3 (1 anchor + 3 candidates); --dflash-block <= trained
-  block 8 (5482; artifact block_size 8); --spec-min-p default 0.5 for dflash2 (5497);
-  dflash2 refuses --dflash-head/--dflash-vocab selector variants (runtime bind 638-640);
-  serve --batch + dflash refused (2836-2842); --pipeline-windows + dflash + split refused
-  (4214); sampled CLI requests fall back to target-only (2830-2834); the split's head lives
-  on the LAST stage (5198) and the drafter binds it (9180-9190).
-
-  python tools/test_inco_dflash2_integration.py            # plan: schema + commands + manifest
-  python tools/test_inco_dflash2_integration.py --execute  # same plan, marked for the parent
+Observed drafter evidence (read-only, 2026-10-21, do not guess):
+  * Production config args contain NO --mtp and NO --dflash -> the production serve is
+    TARGET-ONLY with drafter-verify flags --spec 6 --spec-min-p 0.7 present (source:
+    --spec is consumed only by drafter paths - dflash validation generate.cpp:5445 and the
+    MTP bind at 9176 under use_mtp; with no drafter the flags are inert). prod_reference is
+    therefore labeled OBSERVED TARGET-ONLY, not "MTP".
+  * No MTP drafter artifact exists in the known model dirs (searched /mnt/user/ai for
+    mtp/draft artifacts: none) -> the new_mtp mode is NOTAVAILABLE with this reason,
+    not a fake baseline; unknown MTP flags are never invented.
 """
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import pathlib
 import subprocess
 import sys
+import urllib.parse
+import urllib.request
 
-PROD_BINARY = "/mnt/user/Strata-2966/build-2966/strata"
+PROD_CONFIG = "/mnt/user/Strata/prod-config-swift15.json"
+PROD_BINARY = "/mnt/user/Strata-2966/build-2966/strata"   # observed prod engine (pid cmdline evidence)
 PROTO_BINARY = "/mnt/user/dflash2/Strata-wt/build-gfx906-dflash2/strata"
 ARTIFACT = "/mnt/user/dflash2/artifacts/inco-dflash2-bf16.gguf"
-NATIVE = "/mnt/user/ai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf"
-PACK = "/mnt/user/ai/iq3xxs-15"
-PROFILE = "/mnt/user/Strata/data/expert-profile.bin"
 CONFIG_DIR = pathlib.Path("/mnt/user/dflash2/config")
-PROD_ENV_PREFIX = ("env LD_LIBRARY_PATH=/home/user/rocm-gfx906-xnack/lib:/opt/rocm-6.1.0/lib "
-                   "HSA_ENABLE_SDMA=1 HSA_OVERRIDE_GFX_VERSION=9.0.6 HIP_VISIBLE_DEVICES=0,1 HIP_FORCE_P2P=1")
+PROTO_PORT = 8019
+PROD_PORT = 8009
+PROTO_URL_DEFAULT = f"http://127.0.0.1:{PROTO_PORT}"
 
-# The production serve invocation as observed live (pgrep 2026-10-21) - preserved verbatim.
-PROD_SERVE_ARGS = ("--serve --gpu 0,1 --pack {pack} --native {native} --ple-gguf {native} "
-                   "--expert-profile {profile} --expert-cache auto --prefill 8192 --spec 6 --spec-min-p 0.7 "
-                   "--max-context 262144 --kv int8 --vram-reserve-mib 400 --vram-reserve-later-mib 550 "
-                   "--kv-resident 262144 --pcie-frac 0 --expert-cache-cpu-order --prompt-cache-spread "
-                   "--conversation-cache-mib 2048 --conversation-cache-min-tokens 2048 "
-                   "--conversation-cache-park-gain 4096 --vision --layer-split 32").format(
-                       pack=PACK, native=NATIVE, profile=PROFILE)
-
-SCHEMA = [
-    ("--dflash <gguf>", "drafter artifact; --mtp is refused with it (5440)", "dflash"),
-    ("--dflash-block K", "0< = trained 8; width=min(K,spec-1) (5482,5500)", "dflash"),
-    ("--dflash-window N", "capacity; prompt+max_new must fit (5567)", "dflash"),
-    ("--dflash-mask-token", "CLI override wins over artifact 248077 (5476,5502)", "dflash"),
-    ("--dflash-head/--dflash-vocab", "refused for dflash2 (shared full target head; runtime 638-640)", "dflash"),
-    ("--spec T", "2..8 (kVerifyMaxT; 5445-5454)", "both"),
-    ("--spec-min-p", "default 0.5 for dflash2 (5497)", "dflash"),
-    ("--mtp <gguf>", "mutually exclusive with --dflash (5440); prod reference mode", "mtp"),
-    ("--serve --layer-split 32 --gpu 0,1", "dflash allowed via plan validation at upload (5534); batch refused (2836)", "dflash"),
-    ("--pipeline-windows", "auto-refused with dflash+split (4214)", "dflash"),
-    ("sampled requests", "CLI/serve sampled -> target-only fallback, logged (2830, 12457)", "dflash"),
-]
-
-CASES = [
-    ("greedy-prompt-chain", "serve request, greedy, 512 tokens, --dflash --layer-split 32",
-     "startup line 'cross-GPU tap collection serial on CUDA1: boundary 6<-CUDA0 ... (HC stream mean capture)'; "
-     "no 'stale'/'refus' lines; proposals/accept counters advance", "NOTRUN (GPU, prod-down)"),
-    ("greedy-width3", "--spec 4 --dflash-block 3: width 3 (1 anchor + 3 candidates, 5500)",
-     "engine reports K=3 drafts per cycle", "NOTRUN (GPU, prod-down)"),
-    ("sampled-fallback", "--serve request temperature>0",
-     "explicit 'sampled request uses target-only decoding' line; NEVER a falsely active DFlash claim",
-     "NOTRUN (GPU, prod-down)"),
-    ("repeat-conversation-reset", "two sequential conversations reusing pos0 keys",
-     "reset_staging() at request start: no 'chunk slot rows disagree' on the second request",
-     "NOTRUN (GPU, prod-down)"),
-    ("cancel-restore", "cancel mid-prompt, parked-prefix restore, deep rewind (pos>200K)",
-     "restore validates under OnDevice(drafter); no foreign tap reads; ring retained span respected",
-     "NOTRUN (GPU, prod-down)"),
-    ("eos-stop", "EOS + max_new stop with active drafter",
-     "clean stream drain; collector slots released at release()", "NOTRUN (GPU, prod-down)"),
-]
+# Flags consumed ONLY by drafter paths (source-cited above): inert without --mtp/--dflash.
+DRAFTER_VERIFY_FLAGS = {"--spec": "2", "--spec-min-p": "2"}
 
 
-def prod_running() -> bool:
-    """Read-only detection of the production engine (never touches it)."""
-    try:
-        out = subprocess.run(["pgrep", "-f", "build-2966/strata"], capture_output=True, text=True, check=False)
-        return bool(out.stdout.strip())
-    except OSError:
-        return False
+def load_prod_config(path: str = PROD_CONFIG) -> dict:
+    cfg = json.loads(pathlib.Path(path).read_text())
+    for key in ("exe", "args", "cwd", "tokenizer", "model_name", "log", "env"):
+        if key not in cfg:
+            raise ValueError(f"prod config: key {key} missing - schema drifted, refusing to clone blind")
+    return cfg
 
 
-def build_plan() -> dict:
-    proto_args = (PROD_SERVE_ARGS + " --dflash {artifact} --spec 4 --dflash-block 3 --spec-min-p 0.5").format(
-        artifact=ARTIFACT)
-    plan = {
-        "schema": SCHEMA,
-        "width_semantics": "width 3 = --spec 4 --dflash-block 3 -> dflash_k=min(3,4-1)=3 (generate.cpp:5500); "
-                           "trained block 8 caps --dflash-block (5482); --spec<=8 (5445-5454)",
-        "modes": {
-            "prod_reference_MTP": f"{PROD_ENV_PREFIX} {PROD_BINARY} {PROD_SERVE_ARGS}",
-            "new_target_only": f"{PROD_ENV_PREFIX} {PROTO_BINARY} {PROD_SERVE_ARGS}",
-            "new_dflash": f"{PROD_ENV_PREFIX} {PROTO_BINARY} {proto_args}",
-        },
-        "cases": [{"case": c, "setup": s, "expected": e, "status": st} for c, s, e, st in CASES],
-        "reuse": "GPU gates reuse tools/dflash_sampling.py (greedy/sampled/reset), tools/dflash_cache.py "
-                 "(park/restore), tools/dflash2_stage_parity.py + tools/test_inco_dflash2_parity.py "
-                 "(dump parity) - no parallel frameworks",
-        "rules": ["no --batch with dflash (2836)", "no --pipeline-windows with dflash+split (4214)",
-                  "sampled requests are target-only (2830) - reported explicitly",
-                  "prod config NEVER edited; prototype config lives under /mnt/user/dflash2/config/",
-                  "no script stops/restarts production; execution requires the user-approved downtime state"],
+def merge_flags(args: list[str], replace: dict[str, str], add: list[str]) -> list[str]:
+    """Structural merge over the flag list: each flag appears at most once; replacements
+    update the existing position; additions append. No duplicated '--spec' strings."""
+    out, i = list(args), 0
+    seen = set()
+    while i < len(out):
+        tok = out[i]
+        if tok.startswith("--"):
+            if tok in seen:
+                raise ValueError(f"merge: flag {tok} appears twice in the source args")
+            seen.add(tok)
+            if tok in replace:
+                out[i + 1] = replace[tok]
+            i += 2 if i + 1 < len(out) and not out[i + 1].startswith("--") else 1
+        else:
+            i += 1
+    j = 0
+    while j < len(add):
+        flag = add[j]
+        if flag in seen:
+            raise ValueError(f"merge: refusing to add {flag} twice")
+        seen.add(flag)
+        if flag in DRAFTER_VERIFY_FLAGS:
+            out.extend([flag, add[j + 1]])
+            j += 2
+        else:
+            out.append(flag)
+            j += 1
+    return out
+
+
+def clone_server_config(mode: str, prod: dict) -> dict:
+    """A VALID server-schema config clone for the isolated prototype (parent starts it)."""
+    cfg = copy.deepcopy(prod)
+    cfg["exe"] = PROTO_BINARY
+    cfg["log"] = "logs/engine-prototype-dflash2.log"
+    # server.py derives engine flags from STRUCTURED keys (layer_split -> --layer-split,
+    # server.py:2604): every such key is preserved verbatim by the deep copy; only the port
+    # moves, so the isolated prototype can never collide with production's 8009.
+    if "port" in cfg:
+        cfg["port"] = PROTO_PORT
+    if mode == "target_only":
+        pass  # prod args verbatim: no --dflash/--mtp present (observed); drafter-verify
+              # flags stay inert (source-verified) so the A/B baseline is byte-identical.
+    elif mode == "dflash_w3":
+        cfg["args"] = merge_flags(prod["args"], {"--spec": "4", "--spec-min-p": "0.5"},
+                                  ["--dflash", ARTIFACT, "--dflash-block", "3"])
+    else:
+        raise ValueError(f"mode {mode}: NOTAVAILABLE - no MTP drafter artifact exists "
+                         "(searched model dirs) and production carries no --mtp evidence; "
+                         "unknown MTP flags are never invented")
+    return cfg
+
+
+def plan_manifest(prod: dict) -> dict:
+    modes = {
+        "prod_reference": {"kind": "OBSERVED TARGET-ONLY", "why": "prod args contain no --mtp/--dflash; "
+                           "--spec/--spec-min-p are drafter-only (generate.cpp:5445, 9176) and inert here",
+                           "exe": prod["exe"]},
+        "new_target_only": {"kind": "clone, prod args verbatim", "exe": PROTO_BINARY},
+        "new_mtp": {"kind": "NOTAVAILABLE", "why": "no MTP drafter artifact found in the model dirs; "
+                    "no --mtp in the production config; flags would be invented"},
+        "new_dflash_w3": {"kind": "clone + --dflash artifact + --spec 4 --dflash-block 3",
+                          "why": "width=min(block,spec-1)=3 (generate.cpp:5500); trained block 8 (5482); "
+                                 "spec<=8 (5445-5454, kVerifyMaxT=8)", "exe": PROTO_BINARY},
     }
+    return {
+        "manifest": True,
+        "note": "This is a PLAN MANIFEST, not a server config. Valid cloned configs are the "
+                "proto-server-*.json files written beside it.",
+        "observed_rules": [
+            "sampled requests: CLI target-only fallback (generate.cpp:2830); serve sampled keeps "
+            "target-only decoding with an explicit line (12457) - never claim active DFlash for sampled",
+            "serve --batch + dflash refused (2836); --pipeline-windows + dflash + split refused (4214)",
+            "no script stops/restarts production; detection failure is fail-closed",
+            "isolated prototype ONLY on port 8019; port 8009 (production) is refused outright",
+        ],
+        "cases": [
+            {"case": "health+identity", "setup": "GET /health, GET /props, GET /v1/models",
+             "expected": "server model_name/exe match the cloned config", "status": "PARENT-RUN (--execute)"},
+            {"case": "repeat-conversation", "setup": "same greedy prompt twice (width 3)",
+             "expected": "second request reuses prefix (prompt_tokens reported by engine), no slot-reset errors",
+             "status": "PARENT-RUN (--execute)"},
+            {"case": "reset-new-conversation", "setup": "second unrelated prompt",
+             "expected": "clean new-conversation start (no 'rows disagree' refusals)", "status": "PARENT-RUN (--execute)"},
+            {"case": "sampled-fallback", "setup": "temperature>0 request",
+             "expected": "explicit target-only fallback line in the PROTOTYPE log (read-only grep after)",
+             "status": "PARENT-RUN (--execute)"},
+            {"case": "cancel-restore", "setup": "tools/cancel_park_test.py + tools/dflash_cache.py against 8019",
+             "expected": "park/restore/cancel on the isolated server only", "status": "PARENT-RUN (GPU window)"},
+        ],
+        "modes": modes,
+    }
+
+
+def write_artifacts(prod: dict) -> dict[str, str]:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    path = CONFIG_DIR / "inco-dflash2-prototype.json"
-    path.write_text(json.dumps(plan, indent=2) + "\n")
-    plan["written"] = str(path)
-    return plan
+    paths = {}
+    manifest = CONFIG_DIR / "inco-dflash2-plan-manifest.json"
+    manifest.write_text(json.dumps(plan_manifest(prod), indent=2) + "\n")
+    paths["manifest"] = str(manifest)
+    for mode in ("target_only", "dflash_w3"):
+        cfg = clone_server_config(mode, prod)
+        p = CONFIG_DIR / f"proto-server-swift15-{mode}.json"
+        p.write_text(json.dumps(cfg, indent=2) + "\n")
+        paths[mode] = str(p)
+    if prod["args"] == clone_server_config("target_only", prod)["args"]:
+        paths["identity_note"] = "target_only clone keeps prod args verbatim (byte-identical baseline)"
+    return paths
+
+
+def prod_status() -> str:
+    """'running' | 'absent' | 'unknown'. Any detection error is 'unknown' -> fail-closed."""
+    try:
+        r = subprocess.run(["pgrep", "-f", "build-2966/strata"], capture_output=True, text=True, check=False)
+        if r.returncode == 0:
+            return "running"
+        if r.returncode == 1:
+            return "absent"
+        return "unknown"
+    except OSError:
+        return "unknown"
+
+
+def http_json(url: str, payload: dict | None = None, timeout: float = 120.0) -> dict:
+    req = urllib.request.Request(url, data=None if payload is None else json.dumps(payload).encode(),
+                                 headers={"Content-Type": "application/json"},
+                                 method="GET" if payload is None else "POST")
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode())
+
+
+def guard_execute(url: str, confirm: bool) -> str | None:
+    """Returns None when allowed, else the refusal reason. NO override of detection exists."""
+    parsed = urllib.parse.urlparse(url)
+    if parsed.port == PROD_PORT:
+        return f"REFUSED: port {PROD_PORT} is production; the harness talks ONLY to the isolated prototype ({PROTO_PORT})"
+    if parsed.port != PROTO_PORT:
+        return f"REFUSED: --execute requires the explicit isolated prototype URL on port {PROTO_PORT}"
+    if not confirm:
+        return "REFUSED: --execute requires --confirm-execution (explicit acknowledgement)"
+    status = prod_status()
+    if status != "absent":
+        return (f"REFUSED: production engine detection = {status}. The harness never stops/restarts "
+                "production; execution needs the user-approved downtime with production OBSERVED ABSENT "
+                "(detection failure is fail-closed; there is no override flag)")
+    return None
+
+
+def execute_checks(url: str, identity_cfg: str) -> int:
+    """Real HTTP checks against the isolated prototype (parent-run; cases are claimed ONLY
+    when they executed). No GPU, no production - production was observed absent by the guard."""
+    fails = 0
+    try:
+        health = http_json(f"{url}/health")
+        print(f"health: {json.dumps(health)[:200]}")
+    except OSError as e:
+        print(f"FAIL: /health at {url}: {e} (is the parent's prototype server up on {PROTO_PORT}?)")
+        return 1
+    props = {}
+    try:
+        props = http_json(f"{url}/props")
+        want = json.loads(pathlib.Path(identity_cfg).read_text())
+        if props.get("model_name") not in (None, want["model_name"]):
+            print(f"FAIL: /props model_name {props.get('model_name')!r} != cloned {want['model_name']!r}")
+            fails += 1
+        else:
+            print(f"identity: model_name {want['model_name']} confirmed")
+    except OSError as e:
+        print(f"FAIL: /props identity check: {e}")
+        fails += 1
+    prompt = "Explain, in two short sentences, why layer splitting moves K/V pools per stage."
+    for label, messages in (("repeat-1", prompt), ("repeat-2", prompt), ("reset-new", "Count from 1 to 5.")):
+        body = {"model": "swift-1.5-iq3_xxs", "messages": [{"role": "user", "content": messages}],
+                "max_tokens": 64, "temperature": 0.0, "stream": False}
+        try:
+            resp = http_json(f"{url}/v1/chat/completions", body)
+            usage = resp.get("usage") or {}
+            print(f"{label}: executed; usage={json.dumps(usage)[:160]}")
+        except OSError as e:
+            print(f"FAIL {label}: {e}")
+            fails += 1
+    sampled = {"model": "swift-1.5-iq3_xxs", "messages": [{"role": "user", "content": "Say hi."}],
+               "max_tokens": 8, "temperature": 1.0, "stream": False}
+    try:
+        http_json(f"{url}/v1/chat/completions", sampled)
+        print("sampled-fallback: request executed; the explicit target-only line must appear in the "
+              "prototype log (parent verifies the PROTOTYPE log, read-only)")
+    except OSError as e:
+        print(f"FAIL sampled-fallback: {e}")
+        fails += 1
+    print("Claim discipline: only the cases above were attempted against the isolated server; deeper "
+          "cancel/park/restore gates run via tools/cancel_park_test.py + tools/dflash_cache.py (parent).")
+    return 1 if fails else 0
+
+
+def selfcheck() -> int:
+    fails = 0
+
+    def check(ok: bool, what: str) -> None:
+        nonlocal fails
+        print(f"{'ok  ' if ok else 'FAIL'} {what}")
+        if not ok:
+            fails += 1
+    try:
+        prod = load_prod_config()
+    except (OSError, ValueError) as e:
+        print(f"FAIL: prod config load: {e}")
+        return 1
+    clone = clone_server_config("target_only", prod)
+    check(clone["exe"] == PROTO_BINARY, "clone swaps the engine binary only")
+    check(all(k in clone for k in ("args", "cwd", "tokenizer", "model_name", "log", "env", "vision")),
+          "clone preserves every server-schema field (args/cwd/tokenizer/model/env/vision)")
+    check(clone["args"] == prod["args"], "target-only clone keeps prod args verbatim (byte-identical baseline)")
+    check(clone.get("layer_split") == prod.get("layer_split") and prod.get("layer_split") == "32",
+          "structured layer_split key (server.py:2604 -> --layer-split 32) preserved by the clone")
+    check(clone.get("port") == 8019 == integ.PROTO_PORT, "prototype config moved to port 8019 (never 8009)")
+    check("--dflash" not in prod["args"] and "--mtp" not in prod["args"],
+          "observed: production serve has NO drafter flags (target-only baseline)")
+    merged = clone_server_config("dflash_w3", prod)["args"]
+    check(merged.count("--spec") == 1 and merged[merged.index("--spec") + 1] == "4",
+          "merge: exactly one --spec, replaced to 4 (no duplicated --spec strings)")
+    check(merged.count("--spec-min-p") == 1 and merged[merged.index("--spec-min-p") + 1] == "0.5",
+          "merge: exactly one --spec-min-p = 0.5")
+    check(merged.count("--dflash") == 1 and merged[merged.index("--dflash") + 1] == ARTIFACT
+          and merged[merged.index("--dflash-block") + 1] == "3", "merge: --dflash + --dflash-block 3 (width 3)")
+    check(merged.count("--expert-cache") == 1, "merge preserves the single --expert-cache flag")
+    try:
+        clone_server_config("mtp", prod)
+        check(False, "new_mtp mode was emitted (must be NOTAVAILABLE: no MTP artifact evidence)")
+    except ValueError as e:
+        print(f"refused mtp mode: {e}")
+    r = guard_execute(f"http://127.0.0.1:{PROD_PORT}", True)
+    check(r is not None and "production" in r, "guard: port 8009 (production) refused outright")
+    r = guard_execute(PROTO_URL_DEFAULT, False)
+    check(r is not None, "guard: --execute without --confirm-execution refused")
+    orig = globals()["prod_status"]
+    for status in ("running", "unknown"):
+        globals()["prod_status"] = lambda s=status: s
+        r = guard_execute(PROTO_URL_DEFAULT, True)
+        check(r is not None and status in r, f"guard: prod detection '{status}' refuses execution (fail-closed)")
+    globals()["prod_status"] = orig
+    m = plan_manifest(prod)
+    check(m.get("manifest") is True and m["modes"]["prod_reference"]["kind"].startswith("OBSERVED"),
+          "manifest labeled as manifest; prod_reference labeled OBSERVED TARGET-ONLY (no invented MTP)")
+    check(m["modes"]["new_mtp"]["kind"] == "NOTAVAILABLE", "new_mtp explicitly NOTAVAILABLE with a reason")
+    return 1 if fails else 0
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--execute", action="store_true",
-                    help="mark commands for execution by the PARENT (this script still never runs them)")
-    ap.add_argument("--expect-stopped", action="store_true",
-                    help="declare the user-approved state: production engine is stopped")
+    ap.add_argument("--selfcheck", action="store_true")
+    ap.add_argument("--plan", action="store_true", help="write manifest + valid cloned configs, print plan")
+    ap.add_argument("--execute", action="store_true", help="PARENT-run real checks against the isolated prototype")
+    ap.add_argument("--url", default=PROTO_URL_DEFAULT)
+    ap.add_argument("--identity-config", default=None)
+    ap.add_argument("--confirm-execution", action="store_true")
     a = ap.parse_args()
-    plan = build_plan()
-    running = prod_running()
-    print(f"production engine detected: {'RUNNING' if running else 'not running'} "
-          f"(read-only pgrep -f build-2966/strata)")
-    print(f"prototype config written: {plan['written']} (prod config untouched)")
-    print(json.dumps(plan, indent=2))
+    if a.selfcheck:
+        return selfcheck()
+    prod = load_prod_config()
+    if a.plan:
+        paths = write_artifacts(prod)
+        print(json.dumps({"written": paths, "prod_status_observed": prod_status(),
+                          "note": "manifest is a manifest; proto-server-*.json are valid server-schema "
+                                  "clones for the parent to start on port 8019; prod config untouched"}, indent=2))
+        print("parent start line (isolated ONLY): cd /mnt/user/Strata && .venv/bin/python serve/server.py "
+              f"--config {paths['dflash_w3']} --port {PROTO_PORT}")
+        return 0
     if a.execute:
-        if running and not a.expect_stopped:
-            print("REFUSED: the production engine is RUNNING. This harness never stops/restarts it; every "
-                  "GPU case needs the user-approved prod-down window. Re-run with --expect-stopped only "
-                  "after the user has approved and observed the stopped state.")
+        reason = guard_execute(a.url, a.confirm_execution)
+        if reason is not None:
+            print(reason)
             return 2
-        print("EXECUTION PLAN (parent-owned): run each 'modes' command from the printed prefix; the "
-              "GPU cases above carry their expected observables. This script executed NOTHING.")
-    else:
-        print("plan-only mode: no GPU, no network inference, no process mutation performed")
-    return 0
+        identity = a.identity_config or str(CONFIG_DIR / "proto-server-swift15-dflash_w3.json")
+        return execute_checks(a.url, identity)
+    ap.print_help()
+    return 2
 
 
 if __name__ == "__main__":

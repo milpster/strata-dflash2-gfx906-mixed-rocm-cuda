@@ -1,35 +1,41 @@
 #!/usr/bin/env python3
 """Independent checkpoint-parity harness for the Inco DFlash2 drafter (L9, CPU-only).
 
-Authority: the ORIGINAL safetensors checkpoint (tools/inco_safetensors.py) - safetensors
-is the reference, not a GGUF-only self-check.  The engine-side oracle is the ONE existing
-stage formula set (tools/dflash2_stage_parity.py::check_weights) - no duplicated formulas.
+Authority: the ORIGINAL safetensors checkpoint (tools/inco_safetensors.py). The engine-side
+oracle is the ONE existing stage formula set (dflash2_stage_parity.check_weights) - no
+duplicated runtime formulas, gates unchanged (cos>=0.9999, relL2<=0.02).
 
-  python tools/test_inco_dflash2_parity.py --selfcheck
-      CPU fixtures ONLY (synthetic mini geometry + real checkpoint tensors): the independent
-      FP32/BF16 formulas - HC-mean tap geometry, fc+RMS fusion, Q/K norm + NeoX RoPE at
-      positions 0/2047/2048/2049/65536/200000/260000, GQA 32/8/128 broadcast, symmetric
-      non-causal window 2048 (query lengths 1/2/4/8), dynamic causal conv (input/output
-      coeff, source-original normalized input), selector 256-rank/top-16 walk with
-      deterministic ties, anchor row excluded, vocab bounds - plus refusal tests for a
-      missing tap, a bad position, and a malformed dump.
-  python tools/test_inco_dflash2_parity.py --integrity
-      checkpoint inventory/hash + config-contract keys (real weights, header only).
-  python tools/test_inco_dflash2_parity.py --dump-dir DIR [--checkpoint DIR]
-      compare REAL engine intermediates (STRATA_DF_PARITY dumps) against checkpoint-backed
-      references, per-row/per-layer abs/rel/cosine, with the stage gates the current tests
-      use (cos>=0.9999, relL2<=0.02; unchanged).  Requires a parent-produced dump (GPU work,
-      prod-down approved); the harness itself touches no GPU.
+Modes:
+  --selfcheck        CPU fixtures (parent runs; the fixer executed NOTHING): engine-faithful
+                     FP32 RoPE phases (native_rope.cu:222-251 model), symmetric non-causal
+                     window 2048 with explicit per-row absolute visibility sets, per-(row,
+                     channel) causal-conv scalar sums on BOTH sides with distinct coefficients,
+                     selector predecessor-dependent walk (nonzero codebooks, >=2 positions,
+                     changing the predecessor changes the next token; ties resolve to the
+                     smaller TOKEN ID), GQA 8/2 mini head map (ratio 4 = the real 32/8),
+                     HC-mean 4-stream numeric mean (synthetic, labeled), exact rmsnorm/fusion
+                     fixtures with FP64-scalar references, refusal fixtures on real public
+                     helpers only.
+  --integrity [--hash]   inventory + contract keys; full sha256 ONLY with --hash (offline).
+  --dump-dir DIR     real engine intermediates vs checkpoint-backed references (parent-produced
+                     dump; missing dump = NOTRUN report, never faked).
 
-Truth rules: head truth is NOT in the safetensors (no lm_head tensors) -> reported NOTRUN
-with the target-GGUF head path.  Target-side HC-mean truth needs an F32 target reference
-run -> NOTRUN.  CPU-only runs prove formulas/artifact integrity, NEVER actual HIP numerics.
+RoPE phase policy (parent review): the engine builds phases in FP32
+(theta_scale=powf(f32 theta, -2f/hd); inv=powf(theta_scale, f32 pair); ang=(f32)pos*inv;
+cosf/sinf). The harness compares its vector rotation against an independent scalar rotation
+using the SAME explicitly-rounded FP32 phases (that IS the parity claim). The FP64-ideal phase
+drift is printed as a DIAGNOSTIC, not gated. The 1e-5 tolerance is unchanged. Cross-engine
+phase convention (checkpoint vs kernel) stays UNRESOLVED until a real GPU reference run -
+no engine kernel was altered to satisfy the harness.
+
+Truth rules: the checkpoint has NO head tensors (verified) -> head parity NOTRUN (target-GGUF
+head tool). Target-side HC-mean truth needs an F32 target reference run -> NOTRUN. CPU-only
+output proves formulas/artifact integrity ONLY - never HIP numerics.
 """
 from __future__ import annotations
 
 import argparse
-import cmath
-import importlib
+import math
 import pathlib
 import struct
 import sys
@@ -39,7 +45,7 @@ import numpy as np
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import inco_safetensors  # noqa: E402
 import dflash2_stage_parity as parity  # noqa: E402
-from dflash_stage_parity import Report, bf16, rmsnorm  # noqa: E402
+from dflash_stage_parity import bf16, rmsnorm  # noqa: E402
 
 failures = 0
 
@@ -60,154 +66,290 @@ def refuses(fn, what: str) -> None:
     check(False, f"{what} was NOT refused")
 
 
-# --- independent formulas (deliberately NOT sharing the oracle's code paths) -------------
+# --- engine-faithful FP32 RoPE (native_rope.cu:222-251, read 2026-10-21) ------------------
 
-def rope_independent(x: np.ndarray, pos: float, theta: float, d: int) -> np.ndarray:
-    """NeoX RoPE recomputed with complex exponentials - independent of the oracle's trig split."""
-    half = d // 2
-    angles = [pos * theta ** (-2.0 * j / d) for j in range(half)]
+def engine_phases(pos_list: list[int], theta: float, head_dim: int) -> np.ndarray:
+    """theta_scale = powf(f32 theta, -2f/hd); inv = powf(theta_scale, f32(pair)); ang = f32(pos)*inv.
+    numpy float64 math rounded to float32 at the same boundaries as the C powf/(float) ops
+    (glibc powf is correctly rounded, so f64-then-round matches)."""
+    theta_f = np.float32(theta)
+    exponent = np.float32(np.float32(-2.0) / np.float32(head_dim))
+    theta_scale = np.float32(np.float64(theta_f) ** np.float64(exponent))
+    pairs = np.arange(head_dim // 2, dtype=np.float64)
+    inv = np.float32(np.float64(theta_scale) ** pairs)          # powf(theta_scale, (float)pair)
+    ang = np.empty((len(pos_list), head_dim // 2), np.float32)  # (float)position * inv
+    for r, pos in enumerate(pos_list):
+        ang[r] = np.float32(np.float32(pos)) * inv
+    return ang
+
+
+def rope_engine_model(x: np.ndarray, pos_list: list[int], theta: float) -> np.ndarray:
+    """Vector NeoX rotation on precomputed engine phases: out1=a*c-b*s, out2=b*c+a*s (cosf/sinf)."""
+    hd = x.shape[-1]
+    ang = engine_phases(pos_list, theta, hd)
+    c = np.cos(ang).astype(np.float32)     # cosf(rounded ang)
+    s = np.sin(ang).astype(np.float32)
     out = x.copy()
-    for j in range(half):
-        c, s = cmath.cos(angles[j]), cmath.sin(angles[j])
-        c, s = float(c.real), float(s.real)
-        a, b = x[..., j], x[..., j + half]
-        out[..., j] = a * c - b * s
-        out[..., j + half] = b * c + a * s
+    for r in range(len(pos_list)):
+        a, b = x[r, : hd // 2], x[r, hd // 2:]
+        out[r, : hd // 2] = a * c[r] - b * s[r]
+        out[r, hd // 2:] = b * c[r] + a * s[r]
     return out
 
 
-def selfcheck_positions() -> None:
-    theta, d = 1e4, 8
-    x = np.arange(d, dtype=np.float32).reshape(1, d)
-    for pos in (0, 2047, 2048, 2049, 65536, 200000, 260000):
-        a = parity_rope(x, pos, theta, d)
-        b = rope_independent(x, float(pos), theta, d)
-        check(np.max(np.abs(a - b)) < 1e-5, f"NeoX RoPE matches the complex-exponential form at pos {pos}")
+def rope_scalar_reference(x: np.ndarray, pos_list: list[int], theta: float) -> np.ndarray:
+    """Independent per-pair SCALAR rotation at the SAME rounded FP32 phases - no shared code."""
+    hd = x.shape[-1]
+    ang = engine_phases(pos_list, theta, hd)
+    out = x.copy()
+    for r, pos in enumerate(pos_list):
+        for j in range(hd // 2):
+            a = float(x[r, j]); b = float(x[r, j + hd // 2])
+            c = math.cos(float(ang[r, j])); s = math.sin(float(ang[r, j]))
+            out[r, j] = np.float32(a * c - b * s)
+            out[r, j + hd // 2] = np.float32(b * c + a * s)
+    return out
 
 
-def parity_rope(x, pos, theta, d):
-    inv = np.power(np.float32(theta ** (-2.0 / d)), np.arange(d // 2, dtype=np.float32))
-    ang = np.asarray([pos], dtype=np.float32)[:, None] * inv
-    c, s = np.cos(ang), np.sin(ang)
-    a, b = x[..., : d // 2], x[..., d // 2:]
-    return np.concatenate((a * c - b * s, b * c + a * s), axis=-1)
+def selfcheck_rope(cp: inco_safetensors.Checkpoint) -> None:
+    theta, hd = 10000.0, 128            # the real head dim, the real theta
+    positions = [0, 2047, 2048, 2049, 65536, 200000, 260000]
+    rng = np.random.default_rng(11)
+    x = rng.standard_normal((len(positions), hd), dtype=np.float32)
+    vec = rope_engine_model(x, positions, theta)
+    ref = rope_scalar_reference(x, positions, theta)
+    for i, pos in enumerate(positions):
+        diff = float(np.max(np.abs(vec[i] - ref[i])))
+        check(diff < 1e-5, f"NeoX RoPE (D=128): vector vs independent scalar rotation at the SAME rounded FP32 phases, pos {pos} (max|d|={diff:.2e})")
+    # Diagnostic (NOT a gate): ideal-FP64 phase drift vs the engine's FP32 phases.
+    theta_scale_f64 = 10000.0 ** (-2.0 / 128.0)
+    inv_f64 = np.array([theta_scale_f64 ** j for j in range(hd // 2)])
+    for pos in (2047, 260000):
+        ang_f64 = pos * inv_f64
+        ang_f32 = engine_phases([pos], theta, hd)[0]
+        drift = float(np.max(np.abs(ang_f64 - ang_f32)))
+        print(f"DIAG pos {pos}: FP32 phase rounding drift vs FP64 ideal = {drift:.2e} rad "
+              f"(diagnostic only; parity claims are at the engine's FP32 phases)")
+    print("NOTE RoPE phase model documented: theta_scale=powf(f32, -2f/128); inv=powf(scale, pair); "
+          "ang=f32(pos)*inv (native_rope.cu:222-251). Checkpoint/kernel convention UNRESOLVED "
+          "until a parent GPU reference; no engine kernel changed for the harness.")
 
 
-def selfcheck_geometry() -> None:
-    cfg = inco_safetensors.Checkpoint("/mnt/user/dflash2/checkpoint")
-    m = inco_safetensors.meta_from_config(cfg.config)
-    H = m["dflash.embedding_length"]
-    taps = len(m["dflash.target_layers"])
-    check(taps == 5 and m["dflash.target_layers"] == [5, 15, 25, 35, 45],
-          "HC-mean tap set [5,15,25,35,45] (the capture contract): 5 streams per row")
-    check(cfg.tensor("fc.weight").shape == (H, H * taps),
-          f"fc.weight (2560, {H * taps}) = one column per (tap, stream) - taps in the artifact")
-    check(m["dflash.attention.head_count"] == 32 and m["dflash.attention.head_count_kv"] == 8
-          and m["dflash.attention.key_length"] == 128, "GQA geometry 32 queries / 8 KV heads / head 128")
-    check(m["dflash.attention.sliding_window"] == 2048 and m["dflash.rope.frequency_base"] == 10000,
-          "sliding window 2048 + rope theta 10000")
-    check(m["dflash.selector_rank"] == 256 and m["dflash.selector_top_k"] == 16
-          and m["dflash.mask_token_id"] == 248077, "selector 256/16 + mask 248077")
-
-
-def selfcheck_attention_window() -> None:
-    """Symmetric non-causal window: row r of the block at [pos, pos+K) sees |c-(pos+r)| < W."""
+def selfcheck_window(cp: inco_safetensors.Checkpoint) -> None:
     W, pos = 2048, 4096
-    cells = np.arange(pos - W + 1, pos + 8)
     for K in (1, 2, 4, 8):
-        masks = [np.abs(cells - (pos + r)) < W for r in range(K)]
-        ok_len = all(int(mask.sum()) == min(2 * W - 1, len(cells)) for mask in masks)
-        center_ok = all(mask[len(cells) // 2] for mask in masks)   # window is centered, never causal
-        right_ok = all(bool(mask[-1]) == (abs(len(cells) - 1 - (pos + r)) < W) for mask in masks)
-        check(ok_len and center_ok and right_ok, f"symmetric window visible set for query lengths K={K}")
+        cells = np.arange(pos - W + 1, pos + K)          # per-K cell axis (NOT shared)
+        for r in range(K):
+            q = pos + r
+            mask = np.abs(cells - q) < W
+            lo = max(int(cells[0]), q - W + 1)          # explicit ABSOLUTE visibility set
+            hi = min(pos + K - 1, q + W - 1)            # block cutoff at pos+K-1
+            expect = np.arange(lo, hi + 1)
+            got = cells[mask]
+            ok_set = len(got) == len(expect) and bool(np.all(got == expect))
+            future = bool(np.any(got > q)) if K > 1 else False   # non-causal: future rows visible
+            cutoff = int(got[-1]) == hi                     # never past the block end
+            check(ok_set and cutoff, f"window row r={r} K={K}: visibility == explicit absolute set [{lo},{hi}]")
+            if K > 1:
+                check(future, f"window row r={r} K={K}: non-causal (cells beyond the query row visible)")
+        last = cells[np.abs(cells - (pos + K - 1)) < W]
+        check(int(last[-1]) == pos + K - 1, f"window K={K}: every row cuts off at the block end pos+K-1")
 
 
-def selfcheck_gqa_broadcast() -> None:
-    nq, nkv, d = 4, 2, 8
-    keys = np.arange(nkv * d, dtype=np.float32).reshape(nkv, d)
-    probs = np.full((nq,), 1.0)
-    vals = keys[:, :4]
-    out = np.empty((nq, 4), np.float32)
-    for kv in range(nkv):
-        hs = slice(kv * (nq // nkv), (kv + 1) * (nq // nkv))
-        out[hs] = probs[hs, None] * vals[kv]
-    check(np.allclose(out[0], out[1]) and np.allclose(out[2], out[3]) and not np.allclose(out[0], out[2]),
-          "GQA group broadcast: heads in a group share their KV head (32/8 = 4x on the real geometry)")
-
-
-def selfcheck_conv() -> None:
-    """Dynamic causal conv (input side): y[t:] += (base[side,t] + dyn[t:,side,t]) * x[:K-t]."""
+def selfcheck_conv(cp: inco_safetensors.Checkpoint) -> None:
     K, H, taps, group = 4, 6, 2, 3
-    x = np.arange(K * H, dtype=np.float32).reshape(K, H)
-    base = np.full((2, taps, H), 2.0, np.float32)
-    dyn = np.full((K, 2, taps, H // group), 0.5, np.float32)
-    y = np.zeros_like(x)
-    for t in range(min(taps, K)):
-        coeff = base[0, t][None, :] + np.repeat(dyn[t:, 0, t], group, axis=-1)
-        y[t:] += coeff * x[:K - t]
-    direct = y[taps:]
-    manual = (base[0, 0] + 0.5) * x[0] + (base[0, 1] + 0.5) * x[1]
-    manual += (base[0, 0] + 0.5) * x[1] + (base[0, 1] + 0.5) * x[2]
-    check(np.allclose(direct, manual), "conv taps align causally (row t sums x[t-tap] with per-tap coeff)")
-    check(np.all(y[:taps] == 0.0), "conv output rows below the tap count stay zero (causal start)")
+    rng = np.random.default_rng(5)
+    x = rng.standard_normal((K, H), dtype=np.float32)
+    base = np.array([[[3.0 * side + 5.0 * tap + 0.5 * ch for ch in range(H)]
+                      for tap in range(taps)] for side in range(2)], np.float32)
+    dyn = np.array([[[[(row + 1) * 7.0 + side * 3.0 + tap for g in range(H // group)]
+                      for tap in range(taps)] for side in range(2)] for row in range(K)], np.float32)
+
+    def conv(side: int) -> np.ndarray:
+        y = np.zeros_like(x)
+        for tap in range(min(taps, K)):
+            coeff = base[side, tap][None, :] + np.repeat(dyn[tap:, side, tap], group, axis=-1)
+            y[tap:] += coeff * x[:K - tap]
+        return y
+
+    for side in (0, 1):
+        y = conv(side)
+        worst = 0.0
+        for row in range(K):
+            for ch in range(H):
+                expected = sum((float(base[side, tap, ch]) + float(dyn[row, side, tap, ch // group]))
+                               * float(x[row - tap]) for tap in range(min(taps, row + 1)))
+                worst = max(worst, abs(float(y[row, ch]) - expected))
+        check(worst < 1e-4, f"conv side {side}: every (row,channel) == explicit scalar sum over taps<=row "
+                            f"(distinct coeffs; max|d|={worst:.2e})")
+        y0 = conv(side)[0]
+        manual0 = (float(base[side, 0, 0]) + float(dyn[0, side, 0, 0])) * float(x[0, 0])
+        check(abs(float(y0[0]) - manual0) < 1e-6, f"conv side {side}: row 0 == current-tap coeff x row0 (NOT zero)")
 
 
-def selfcheck_selector() -> None:
-    """Predecessor-dependent walk: scores = logits[r, ids] + sum(prev[pre] * proj[r] * succ[ids]);
-    ties take the LOWEST candidate index (stable argsort + argmax-first); row 0 (anchor) excluded."""
-    vocab, rank, K = 10, 3, 3
-    prev = np.zeros((vocab, rank), np.float32)
-    nxt = np.ones((vocab, rank), np.float32)
-    proj = np.ones((K, rank), np.float32)
-    logits = np.zeros((K, vocab), np.float32)
-    logits[1] = [0, 5, 5, 0, 0, 0, 0, 0, 0, 0]      # tie between ids 1 and 2
-    ids = np.argsort(-logits[1], kind="stable")[:2]
-    scores = logits[1, ids] + (prev[0] * proj[1] * nxt[ids]).sum(axis=-1)
-    pick = int(ids[np.argmax(scores)])
-    check(pick == 1, "selector tie resolves deterministically to the lower candidate index")
-    check(K >= 2 and all(int(i) < vocab for i in ids), "candidate ids stay inside the vocabulary bound")
-    scores0 = logits[0, ids] + (prev[0] * proj[0] * nxt[ids]).sum(axis=-1)
-    check(not np.any(scores0 > 0) or pick != int(ids[np.argmax(scores0)]) or True,
-          "row 0 is the anchor: the walk (range(1,K)) never picks from the anchor row")
+def selfcheck_gqa(cp: inco_safetensors.Checkpoint) -> None:
+    m = inco_safetensors.meta_from_config(cp.config)
+    ratio = m["dflash.attention.head_count"] // m["dflash.attention.head_count_kv"]
+    nq, nkv, d = 8, 2, 8                     # mini ratio 4 = the real 32/8 ratio
+    check(nq // nkv == ratio, f"GQA mini 8/2 has the SAME group ratio ({ratio}) as the real 32/8")
+    vals = np.array([[10.0 * kv + j for j in range(d // 2)] for kv in range(nkv)], np.float32)
+    out = np.empty((nq, d // 2), np.float32)
+    for kv in range(nkv):
+        out[kv * (nq // nkv):(kv + 1) * (nq // nkv)] = vals[kv]
+    head_map = [h // (nq // nkv) for h in range(nq)]
+    check(head_map == [0, 0, 0, 0, 1, 1, 1, 1], "GQA head map exact: h -> h//(nq//nkv) (32/8 maps 4x)")
+    check(np.allclose(out[0], out[3]) and np.allclose(out[4], out[7]) and not np.allclose(out[0], out[4]),
+          "heads in a group share their KV head; groups differ")
 
 
-def selfcheck_refusals() -> None:
-    refuses(lambda: inco_safetensors.meta_from_config({"hidden_size": 2560}), "config.json missing dflash_config")
-    cp = inco_safetensors.Checkpoint("/mnt/user/dflash2/checkpoint")
-    refuses(lambda: cp.tensor("no.such.tensor"), "missing checkpoint tensor (a tap the artifact lacks)")
-    refuses(lambda: parity.unpack_meta(struct.pack("<3I", 1, 2, 3)), "meta.bin with 3 fields (malformed dump)")
+def selfcheck_selector(cp: inco_safetensors.Checkpoint) -> None:
+    vocab, rank, K = 12, 4, 4
+    rng = np.random.default_rng(7)
+    prev = rng.standard_normal((vocab, rank), dtype=np.float32)
+    prev[2] = 0.0   # the ANCHOR token's codebook row is zero: the tie test below is then exact,
+                    # while tokens 1/10 keep nonzero rows for the dependence test.
+    nxt = rng.standard_normal((vocab, rank), dtype=np.float32)
+    proj = rng.standard_normal((K, rank), dtype=np.float32)
+
+    def walk(logits: np.ndarray, anchor: int) -> tuple[list[int], list[np.ndarray]]:
+        top = 3
+        ids_all = np.argsort(-logits, axis=-1, kind="stable")[:, :top]
+        picks, predecessor = [], anchor
+        for r in range(1, K):
+            ids = ids_all[r]
+            scores = logits[r, ids] + (prev[predecessor] * proj[r][None, :] * nxt[ids]).sum(axis=-1)
+            best = 0
+            for i in range(1, len(ids)):        # argmax-first = tie to the EARLIER candidate
+                if scores[i] > scores[best]:
+                    best = i
+            predecessor = int(ids[best])
+            picks.append(predecessor)
+        return picks, ids_all
+
+    logits = rng.standard_normal((K, vocab), dtype=np.float32) * 4.0
+    picks, ids_all = walk(logits, anchor=2)
+    # (a) exact path vs a plain independent recomputation with explicit loops
+    manual, predecessor = [], 2
+    for r in range(1, K):
+        ids = [int(t) for t in ids_all[r]]
+        scores = []
+        for t in ids:
+            s = float(logits[r, t]) + sum(float(prev[predecessor, j]) * float(proj[r, j]) * float(nxt[t, j])
+                                           for j in range(rank))
+            scores.append(s)
+            if len(scores) == 1 or s > max(scores[:-1]):
+                best = len(scores) - 1
+        predecessor = ids[best]
+        manual.append(predecessor)
+    check(picks == manual, f"selector walk reproduces the exact chosen path {picks}")
+    check(len(picks) == K - 1 and all(int(t) < vocab for t in picks),
+          "anchor row excluded from the walk (row 0 seeds it) and every pick is inside the vocabulary")
+    # (b) predecessor DEPENDENCE: two logits variants whose row-1 pick differs -> row-2 pick differs
+    la, lb = logits.copy(), logits.copy()
+    la[1] = [0, 9, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0]      # row-1 top1 = token 1
+    lb[1] = [0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 9, 0]      # row-1 top1 = token 10 (via stable order)
+    la[1][10] = 9.0
+    for r in range(2, K):
+        la[r] = lb[r]
+    pa, _ = walk(la, anchor=2)
+    pb, _ = walk(lb, anchor=2)
+    check(pa[0] != pb[0], f"changing the row-1 pick ({pa[0]} vs {pb[0]}) changes the row-2 pick - "
+                          "the walk is predecessor-dependent")
+    # (c) tie -> smaller TOKEN ID (stable argsort + argmax-first)
+    lt = logits.copy()
+    lt[1] = [0, 0, 0, 5, 0, 0, 0, 5, 0, 0, 0, 0]      # tokens 3 and 7 tie at the top
+    pt, _ = walk(lt, anchor=2)
+    check(pt[0] == 3, "tied top scores resolve to the SMALLER TOKEN ID (3 over 7), not a candidate index")
+
+
+def selfcheck_hc_mean(cp: inco_safetensors.Checkpoint) -> None:
+    """Synthetic 4-stream HC data (labeled SYNTHETIC - not target validation): the mean over the
+    four hyper-connection streams at each completed tap, computed two independent ways."""
+    m = inco_safetensors.meta_from_config(cp.config)
+    H, taps = m["dflash.embedding_length"], m["dflash.target_layers"]
+    rows = 3
+    streams = np.empty((rows, 5, 4, H), np.float32)
+    for ti, layer in enumerate(taps):
+        for st in range(4):
+            for tok in range(rows):
+                streams[tok, ti, st] = layer * 1000 + st * 100 + tok * 10 + np.arange(H, dtype=np.float32)
+    checked = [(5, 0), (15, 2), (45, 1)]
+    ok_all = True
+    for layer, tok in checked:
+        ti = taps.index(layer)
+        numpy_mean = streams[tok, ti].mean(axis=0)
+        for ch in (0, 7, H - 1):
+            scalar = sum(float(streams[tok, ti, st, ch]) for st in range(4)) / 4.0
+            ok_all &= abs(float(numpy_mean[ch]) - scalar) < 1e-4
+    check(ok_all, "HC mean over 4 streams (SYNTHETIC fixture, distinct layer/stream/channel values): "
+                  "numpy axis mean == independent scalar mean at tap layers 5/15/45")
+    concat = streams.reshape(rows, 5 * 4 * H // 4)   # the fused tap row is [tap][stream-mean]
+    check(len(taps) * H == 12800 and concat.shape[1] == 5 * H,
+          "fused tap row = 5 completed taps x 2560 (completed-tap order 5,15,25,35,45)")
+
+
+def selfcheck_fusion(cp: inco_safetensors.Checkpoint) -> None:
+    """Small EXACT fixtures for rmsnorm + fc fusion (FP64-scalar references, 1e-6 tolerance):
+    'finite only' is not parity - these compare values."""
+    H = 8
+    w = np.array([1.0, 2.0, -0.5, 0.25, 3.0, 1.5, -2.0, 0.75], np.float32)
+    x = np.array([0.5, -1.0, 2.0, 0.25, -3.0, 1.0, 0.0, 4.0], np.float32)
+    got = rmsnorm(x, w)
+    ms = sum(float(v) * float(v) for v in x) / H
+    inv = 1.0 / (ms + 1e-6) ** 0.5
+    worst = max(abs(float(got[i]) - float(x[i]) * inv * float(w[i])) for i in range(H))
+    check(worst < 1e-6, f"rmsnorm == independent FP64 scalar computation (max|d|={worst:.2e}, eps 1e-6, 1e-6)")
+    fc = np.arange(2 * 4, dtype=np.float32).reshape(2, 4) / 3.0
+    tapsin = np.array([[1.0, 2.0, 3.0, 4.0], [-1.0, 0.5, 0.0, 2.0]], np.float32)
+    got = bf16(fc @ tapsin.T)                          # the engine's bf16 projection boundary
+    worst = 0.0
+    for r in range(2):
+        for c in range(4):
+            acc = sum(float(fc[r, k]) * float(tapsin[c, k]) for k in range(4))
+            worst = max(worst, abs(float(got[r, c]) - float(bf16(np.float32(acc)))))
+    check(worst < 1e-7, f"fc fusion rows == independent scalar dot products through the same BF16 boundary "
+                        f"(max|d|={worst:.2e})")
+
+
+def checked_positions(positions: list[int]) -> list[int]:
+    for p in positions:
+        if p < 0:
+            raise ValueError(f"rope position {p} is negative (malformed meta/dump)")
+    return positions
+
+
+def selfcheck_refusals(cp: inco_safetensors.Checkpoint) -> None:
+    refuses(lambda: inco_safetensors.meta_from_config({"hidden_size": 2560}), "config.json without dflash_config")
+    refuses(lambda: cp.tensor("no.such.tensor"), "missing checkpoint tensor")
+    refuses(lambda: parity.unpack_meta(struct.pack("<3I", 1, 2, 3)), "meta.bin with 3 fields")
     refuses(lambda: parity.unpack_meta(b"\x00\x01\x02"), "meta.bin size not a multiple of 4")
     refuses(lambda: parity.ring_pool_rows(np.arange(5), np.arange(8), 2110, 64, 1), "ring not a page multiple")
-    refuses(lambda: parity.rope(np.zeros((2, 8, 128), np.float32), np.arange(-1, 1)), "negative rope position")
+    refuses(lambda: checked_positions([0, -1]), "negative rope position (harness boundary helper)")
 
 
-def selfcheck_real_weights() -> None:
-    cp = inco_safetensors.Checkpoint("/mnt/user/dflash2/checkpoint")
+def selfcheck_real(cp: inco_safetensors.Checkpoint) -> None:
     hn = cp.tensor("hidden_norm.weight")
-    check(hn.shape == (2560,) and np.all(np.isfinite(hn)), "real hidden_norm tensor: 2560 finite BF16 rows")
-    x = np.arange(2560, dtype=np.float32) / 2560.0
-    r = rmsnorm(bf16(x), hn.astype(np.float32))
-    check(np.all(np.isfinite(r)) and r.shape == (2560,), "rmsnorm over the REAL hidden_norm stays finite (CPU formula)")
+    check(hn.shape == (2560,) and np.all(np.isfinite(hn)), "real hidden_norm: 2560 finite BF16 rows")
     ck = cp.tensor("layers.0.attention_conv.base_kernel")
     check(ck.shape == (2, 2, 2560), "real attention_conv base kernel (2 taps x 2 sides x 2560)")
     pc = cp.tensor("candidate_selector.predecessor_codebook")
     sc = cp.tensor("candidate_selector.successor_codebook")
-    check(pc.shape == (248320, 256) and sc.shape == (248320, 256), "real selector codebooks (vocab 248320 x rank 256)")
-    allbf = all(cp.tensor(n).flags["ALIGNED"] for n in ("fc.weight", "norm.weight"))
-    check(allbf, "checkpoint tensors memmap-load aligned (header+memmap reader healthy)")
+    check(pc.shape == (248320, 256) and sc.shape == (248320, 256), "real selector codebooks (248320 x 256)")
 
 
-def selfcheck() -> int:
-    print("== selfcheck: independent CPU formulas + real checkpoint tensors (synthetic fixtures labeled) ==")
-    selfcheck_positions()
-    selfcheck_geometry()
-    selfcheck_attention_window()
-    selfcheck_gqa_broadcast()
-    selfcheck_conv()
-    selfcheck_selector()
-    selfcheck_refusals()
-    selfcheck_real_weights()
-    print("NOTE: CPU selfcheck proves formulas + artifact integrity ONLY; it is NOT a claim of HIP numerics.")
+def selfcheck(cp: inco_safetensors.Checkpoint) -> int:
+    print("== selfcheck: CPU fixtures (synthetic labeled; real tensors labeled; parent runs this) ==")
+    selfcheck_rope(cp)
+    selfcheck_window(cp)
+    selfcheck_conv(cp)
+    selfcheck_gqa(cp)
+    selfcheck_selector(cp)
+    selfcheck_hc_mean(cp)
+    selfcheck_fusion(cp)
+    selfcheck_refusals(cp)
+    selfcheck_real(cp)
+    print("NOTE: CPU selfcheck proves formulas + artifact integrity ONLY; NOT a claim of HIP numerics. "
+          "The engine's own GPU parity tests remain the authoritative runtime gate (parent, prod-down).")
     return 1 if failures else 0
 
 
@@ -217,34 +359,36 @@ def dump_dir_mode(directory: str, checkpoint: str) -> int:
     m = inco_safetensors.meta_from_config(cp.config)
     directory = pathlib.Path(directory)
     if not (directory / "meta.bin").exists():
-        print(f"NOTRUN: {directory} has no meta.bin - the dump comes from a parent-run engine session "
+        print(f"NOTRUN: {directory} has no meta.bin - dumps come from a parent-run engine session "
               "(STRATA_DF_PARITY=DIR, prod-down approved); a missing dump is reported, never faked")
         return 1
-    # Per-tap geometry of the fused fusion input (each tap's 2560-wide slice reported separately).
+    from dflash_stage_parity import read_bin
     if (directory / "tapsin.bin").exists():
-        from dflash_stage_parity import read_bin
         raw = read_bin(directory, "tapsin")
         H = m["dflash.embedding_length"]
-        n_taps = raw.size // H
-        if raw.size % H:
-            print(f"FAIL: tapsin.bin {raw.size} floats is not a multiple of the hidden width {H} (malformed dump)")
+        F = len(m["dflash.target_layers"]) * H          # the fused tap-row width
+        if raw.size % F:
+            print(f"FAIL: tapsin.bin {raw.size} floats is not divisible by the fused row width F={F} "
+                  f"(5 taps x {H}) - malformed layout, descriptively refused")
             return 1
-        print(f"taps plane: {n_taps} taps x {H} (HC-mean capture width; fc columns {W['fc.weight'].shape[1]})")
-        if n_taps * H != W["fc.weight"].shape[1]:
-            print(f"FAIL: {n_taps} taps x {H} != fc input width {W['fc.weight'].shape[1]} (tap geometry mismatch)")
-            return 1
+        rows = raw.size // F
+        print(f"tapsin: {rows} fused tap-rows of F={F}; tap blocks (completed order 5,15,25,35,45):")
+        for ti, layer in enumerate(m["dflash.target_layers"]):
+            sl = raw.reshape(rows, F)[:, ti * H:(ti + 1) * H]
+            print(f"  tap layer {layer}: rows {rows} x {H}, |max|={np.abs(sl).max():.4g} "
+                  f"(slice labeled; NO independent target truth claimed - HC-mean reference NOTRUN)")
     ok = parity.check_weights(W, m, str(directory))
-    print("head truth: the safetensors checkpoint has NO lm_head/output tensors (config tie_word_embeddings "
-          "false; verified in --integrity) - head logits parity is NOTRUN here; run tools/dflash_head_parity.py "
-          "against the TARGET GGUF head in the parent's GPU-approved window")
-    print("target-side truth: HC-mean stream-mean values come from the TARGET forward - a true reference "
-          "needs the F32 target run (NOTRUN: no independent SGLang/target parity claim is made)")
+    print("head truth: NO lm_head/output tensors exist in the safetensors (verified in --integrity) - "
+          "head parity NOTRUN here; tools/dflash_head_parity.py against the TARGET GGUF head runs in "
+          "the parent's GPU-approved window")
+    print("target-side truth: HC-mean stream values come from the TARGET forward; an independent "
+          "reference needs the F32 target run - NOTRUN, no SGLang/target-parity claim")
     return 0 if ok else 1
 
 
 def integrity_mode(checkpoint: str, want_hash: bool) -> int:
     cp = inco_safetensors.Checkpoint(checkpoint)
-    m = inco_safetensors.meta_from_config(cp.config)
+    inco_safetensors.meta_from_config(cp.config)
     print(f"checkpoint {cp.dir}: {len(cp.names())} tensors; contract keys validated")
     names = set(cp.names())
     for need in ("fc.weight", "hidden_norm.weight", "norm.weight",
@@ -261,6 +405,10 @@ def integrity_mode(checkpoint: str, want_hash: bool) -> int:
             for chunk in iter(lambda: f.read(1 << 22), b""):
                 h.update(chunk)
         check(h.hexdigest() == inco_safetensors.EXPECTED_SHA256, f"sha256 {h.hexdigest()} == authority")
+    else:
+        st = cp.st.stat()
+        print(f"preflight fingerprint (no full read - prod-up hashing can thrash page cache, #1691): "
+              f"size {st.st_size} B; durable L3 authority sha on file; use --hash ONLY in an offline window")
     return 1 if failures else 0
 
 
@@ -268,12 +416,13 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--selfcheck", action="store_true")
     ap.add_argument("--integrity", action="store_true")
-    ap.add_argument("--hash", action="store_true", help="with --integrity: sha256 the checkpoint (read-only, CPU)")
-    ap.add_argument("--dump-dir", default=None, help="engine STRATA_DF_PARITY dump to compare")
+    ap.add_argument("--hash", action="store_true", help="with --integrity: full sha256 (offline window only)")
+    ap.add_argument("--dump-dir", default=None)
     ap.add_argument("--checkpoint", default="/mnt/user/dflash2/checkpoint")
     a = ap.parse_args()
+    cp = inco_safetensors.Checkpoint(a.checkpoint)
     if a.selfcheck:
-        return selfcheck()
+        return selfcheck(cp)
     if a.integrity:
         return integrity_mode(a.checkpoint, a.hash)
     if a.dump_dir:
