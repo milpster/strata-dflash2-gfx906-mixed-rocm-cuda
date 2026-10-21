@@ -37,9 +37,9 @@ int main() {
     check(p.owner[0] == 0 && p.owner[1] == 0 && p.owner[2] == 0 && p.owner[3] == 1 && p.owner[4] == 1,
           "split32 owners: GPU0 captures boundaries 6,16,26; GPU1 captures 36,46");
     std::array<int, strata::core::kDFlashMaxTaps> foreign{};
-    check(p.foreign_taps(1) == 3 && foreign[0] == 0 && foreign[1] == 1 && foreign[2] == 2,
+    check(p.foreign_taps(1, foreign) == 3 && foreign[0] == 0 && foreign[1] == 1 && foreign[2] == 2,
           "drafter on GPU1: exactly the three GPU0 taps are foreign, in tap order");
-    check(p.foreign_taps(0) == 2 && foreign[0] == 3 && foreign[1] == 4,
+    check(p.foreign_taps(0, foreign) == 2 && foreign[0] == 3 && foreign[1] == 4,
           "a drafter on GPU0 would instead transport the two GPU1 taps");
     check(p.tap_device(0) == 0 && p.tap_device(3) == 1, "tap producers map to their stage devices");
     // Per-window verify rows (FP32): stage 0 ships 3 taps x rows x 2560 x 4 B.
@@ -72,8 +72,9 @@ int main() {
         DFlashTapPlan q;
         const int bounds[5] = {6, 16, 26, 36, 46};
         const int lbs[1] = {0}, les[1] = {48}, devs[1] = {0};
+        std::array<int, strata::core::kDFlashMaxTaps> fq{};
         check(q.build(bounds, 5, lbs, les, devs, 1, 2560, err) && q.owner[0] == 0 && q.owner[4] == 0 &&
-                  q.foreign_taps(1) == 5 && q.foreign_taps(0) == 0,
+                  q.foreign_taps(1, fq) == 5 && q.foreign_taps(0, fq) == 0,
               "CLI single full-layer producer: all five taps, foreign only to a drafter on GPU1");
     }
 
