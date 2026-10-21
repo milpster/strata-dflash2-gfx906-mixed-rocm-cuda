@@ -7,6 +7,7 @@
 #include "strata/kernels/dflash2.hpp"
 #endif
 #include "strata/core/native_head.hpp"
+#include "strata/core/on_device.hpp"
 #include "strata/core/layer.hpp"
 #include "strata/kernels/bf16_gemv.hpp"
 #include "strata/kernels/elementwise.hpp"
@@ -264,6 +265,7 @@ void DFlashDrafter::release() {
     reference_mode_ = false;
     if (device_ >= 0) cudaSetDevice(device_);
     if (cs_) cudaStreamSynchronize(cs_);
+    taps_.disable();   // frees the cross-stage planes + pinned staging (stream drained above)
     df_timing_drain();
     df_timing_dump();
     for (auto e : df_timing().ev) cudaEventDestroy(e);
@@ -272,6 +274,8 @@ void DFlashDrafter::release() {
     clear_graphs();
     auto free_dev = [](void* p) { if (p) cudaFree(p); };
     free_dev(w_); free_dev(head_ids_); head_ids_ = nullptr; head_rows_ = 0;
+    free_dev(head_dev_); head_dev_ = nullptr;
+    free_dev(emb_local_.data); emb_local_ = WeightRef{};
     for (auto& [name, p] : wf_) free_dev((void*) p);
     for (auto& st : st_) {
         qsa_state_release_elastic(st);
@@ -606,6 +610,7 @@ bool DFlashDrafter::load_head(const std::string& path, std::string& err) {
 bool DFlashDrafter::bind(const WeightTable& wt, const NativeHead* head, std::string& err, const std::string& vocab_path) {
     head_ = nullptr; emb_ref_ = nullptr;
     if (!cs_ || st_.empty()) { err = "dflash: upload before binding"; return false; }
+    const OnDevice on_df(device_);   // the drafter's arena, not the caller's (MTP pattern)
     cudaStreamSynchronize(cs_);
     clear_graphs();
     if (head_ids_) { cudaFree(head_ids_); head_ids_ = nullptr; vram_ -= (uint64_t) head_rows_ * 4; head_rows_ = 0; }
@@ -662,7 +667,47 @@ bool DFlashDrafter::bind(const WeightTable& wt, const NativeHead* head, std::str
         std::fprintf(stderr, "dflash: indexed shared head over %d of %lld tokens, %.2f MiB of indices\n",
                      head_rows_, (long long) dg.vocab, ids.size() * 4.0 / 1048576);
     }
-    head_ = next_head; emb_ref_ = next_embedding;
+    // ---- cross-card bind (L8 --layer-split): propose's head gemv and the embedding gather
+    // run on cs_ - THIS device - so tables living on the stage-0 card must never be
+    // dereferenced from here.  Copy the read rows ONCE (the MTP cross-card draft-head
+    // pattern).  The pinned-host native embedding is device-agnostic (zero-copy PCIe
+    // gather), so the IQ-form target needs no embedding copy; the head always lives on a card.
+    if (next_head->device() != device_) {
+        const uint64_t hbytes = next_head->weight_bytes();
+        void* copy = nullptr;
+        if (cudaMalloc(&copy, hbytes) != cudaSuccess ||
+            cudaMemcpyAsync(copy, next_head->weights(), hbytes, cudaMemcpyDeviceToDevice, cs_) != cudaSuccess ||
+            cudaStreamSynchronize(cs_) != cudaSuccess) {
+            if (copy) cudaFree(copy);
+            err = "dflash: the shared head's rows could not be copied onto the drafter's card";
+            return false;
+        }
+        head_dev_ = copy;
+        vram_ += hbytes;
+        std::fprintf(stderr, "dflash: the shared target head lives on CUDA%d; its rows are copied to CUDA%d "
+                             "for proposing (%.0f MiB)\n", next_head->device(), device_, (double) hbytes / 1048576.0);
+    }
+    if (strata::core::native_embed() == nullptr) {   // the canonical device table: the gather reads it on cs_
+        cudaPointerAttributes attr{};
+        if (cudaPointerGetAttributes(&attr, next_embedding->data) == cudaSuccess &&
+            (int) attr.device != device_) {
+            void* copy = nullptr;
+            if (cudaMalloc(&copy, next_embedding->bytes) != cudaSuccess ||
+                cudaMemcpyAsync(copy, next_embedding->data, next_embedding->bytes, cudaMemcpyDeviceToDevice, cs_) !=
+                    cudaSuccess || cudaStreamSynchronize(cs_) != cudaSuccess) {
+                if (copy) cudaFree(copy);
+                err = "dflash: the target embedding could not be copied onto the drafter's card";
+                return false;
+            }
+            emb_local_ = *next_embedding;
+            emb_local_.data = copy;
+            vram_ += next_embedding->bytes;
+            std::fprintf(stderr, "dflash: the target embedding lives on CUDA%d; the gather table is copied to CUDA%d "
+                                 "(%.0f MiB)\n", (int) attr.device, device_, (double) next_embedding->bytes / 1048576.0);
+        }
+    }
+    head_ = next_head;
+    emb_ref_ = emb_local_.data != nullptr ? &emb_local_ : next_embedding;
     return true;
 }
 
@@ -671,6 +716,7 @@ bool DFlashDrafter::bind(const WeightTable& wt, const NativeHead* head, std::str
 bool DFlashDrafter::add_context(const uint16_t* taps, int n_taps, int64_t stride_rows, int64_t pos0, int64_t rows,
                                 std::string& err) {
     if (!cs_ || st_.empty()) { err = "dflash: upload before adding context"; return false; }
+    const OnDevice on_df(device_);   // kernels launch on cs_'s device (MTP pattern)
     if (std::getenv("STRATA_DF_DBG")) std::fprintf(stderr, "dflash dbg: add_context rows=%lld pos0=%lld\n",
                                                    (long long) rows, (long long) pos0);
     // The prompt path's capture: [n_taps][stride_rows][n_embd] bf16.  The fusion wants [rows][F]
@@ -733,6 +779,7 @@ bool DFlashDrafter::add_context(const uint16_t* taps, int n_taps, int64_t stride
 bool DFlashDrafter::add_context_f32(const float* taps, int n_taps, int64_t stride_floats, int64_t pos0, int64_t rows,
                                     std::string& err, bool synchronize) {
     if (!cs_ || st_.empty()) { err = "dflash: upload before adding context"; return false; }
+    const OnDevice on_df(device_);   // kernels launch on cs_'s device (MTP pattern)
     // The verify window's capture: [n_taps][stride_floats] f32 (stride_floats = max_t*n_embd), the
     // rows [0, rows) of each tap valid.  (The prompt path's add_context takes ROWS instead: its
     // tap stride is the chunk capacity in rows.)
@@ -768,6 +815,7 @@ bool DFlashDrafter::add_context_f32(const float* taps, int n_taps, int64_t strid
 
 bool DFlashDrafter::restore_snapshot(const DFlashSnapshotMeta& meta, std::string& err) {
     if (!cs_ || st_.empty()) { err = "dflash: upload before restoring a context"; return false; }
+    const OnDevice on_df(device_);   // pool rows are rewritten on cs_'s device
     // Restoring the ring image (pool order = slot order, clamped by dflash_snapshot_extent)
     // persists the descriptor's EXACT counters - the confirmed end and the newest append end
     // (rejected noise included) - never a length inferred from the live tokens. The graphs keep
@@ -951,6 +999,7 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
     if (!cs_ || st_.empty() || !head_ || !head_->loaded() || !emb_ref_ || !out) {
         err = "dflash: upload and bind a head and embeddings before proposing"; return false;
     }
+    const OnDevice on_df(device_);   // the whole block runs on cs_'s device (MTP pattern)
     using namespace strata::kernels;
     const DFlashGeometry& dg = artifact_.geom();
     const int64_t N = dg.hidden, Q = dg.n_head * dg.head_dim, KVW = dg.n_head_kv * dg.head_dim, I = dg.intermediate;
@@ -1322,12 +1371,12 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
                         strata::kernels::native_q8_1_bytes((int) N, K) / 4, cs_);
         {
             DFlashSection s("out.head");
-            if (head_->type() == 30) bf16_gemv_fp32_mmvf_multi(head_input, N, (const uint16_t*) head_->weights(),
+            if (head_->type() == 30) bf16_gemv_fp32_mmvf_multi(head_input, N, (const uint16_t*) head_weights(),
                                                                          head_output, vocab, N, vocab, head_rows, cs_);
-            else if (head_il) native_mmvq_il(head_->type(), head_->weights(), xq_, head_interleaved,
+            else if (head_il) native_mmvq_il(head_->type(), head_weights(), xq_, head_interleaved,
                                             head_output, (int) N, vocab, head_rows, cs_);
-            else if (head_ids_) native_mmvq_indexed(head_->type(), head_->weights(), xq_, head_output, (int) N, vocab, head_rows, head_ids_, cs_);
-            else native_mmvq(head_->type(), head_->weights(), xq_, head_output, (int) N, vocab, head_rows, cs_);
+            else if (head_ids_) native_mmvq_indexed(head_->type(), head_weights(), xq_, head_output, (int) N, vocab, head_rows, head_ids_, cs_);
+            else native_mmvq(head_->type(), head_weights(), xq_, head_output, (int) N, vocab, head_rows, cs_);
         }
         if (output_parity) {
             parity_dump(parity_dir_, "head_logits", logits_, K * vocab, cs_);

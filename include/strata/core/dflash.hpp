@@ -17,6 +17,7 @@
 
 #include "strata/artifact/gguf_reader.hpp"
 #include "strata/core/dflash_ring.hpp"
+#include "strata/core/dflash_tap_collect.hpp"
 #include "strata/core/session.hpp"
 #include "strata/core/vmm.hpp"
 
@@ -194,6 +195,11 @@ public:
     const std::vector<QsaState>& kv_states() const { return st_; }
     const ModelGeometry& pool_geometry() const { return pool_g_; }
     int device() const { return device_; }
+    /// Cross-stage target-tap collection for --layer-split (docs/DFLASH2.md, L8): when
+    /// enabled, the assembled planes on THIS device carry every target tap for a
+    /// prompt chunk / verify window; the producers' own planes stay stage-local.
+    /// Serial-only; --pipeline-windows + split + dflash is refused at the CLI gate.
+    DFlashTapCollector& tap_collector() { return taps_; }
     /// The bounded SWA ring's physical cells (docs/DFLASH2.md official geometry: window 2048 x
     /// page 64 x block 8 rounds to 2112 cells per pool); 0 = legacy full-capacity pools
     /// (include/strata/core/dflash_ring.hpp). Pool page tables are the identity over these cells; the
@@ -241,6 +247,7 @@ public:
 
 private:
     cudaStream_t cs_ = nullptr;
+    DFlashTapCollector taps_;   ///< enabled only under --layer-split (see tap_collector())
     std::array<cudaGraphExec_t, 18> graph_exec_{};
     std::array<int64_t, 18> graph_chunks_{}, graph_cap_{};
     bool graph_prob_ = false;
@@ -253,6 +260,10 @@ private:
     int32_t* head_ids_ = nullptr;
     int head_rows_ = 0;
     const WeightRef* emb_ref_ = nullptr;
+    void* head_dev_ = nullptr;      ///< shared head rows copied onto the drafter's card (L8 cross-card bind)
+    WeightRef emb_local_{};         ///< target embedding copied onto the drafter's card (canonical-form targets)
+    /// The head rows as propose's gemv must see them: the local copy under cross-card bind.
+    const void* head_weights() const { return head_dev_ != nullptr ? head_dev_ : head_->weights(); }
 
     // weights (device GGML payloads, the GGUF layout) and the rms_norm gammas widened to F32
     uint16_t* w_ = nullptr;

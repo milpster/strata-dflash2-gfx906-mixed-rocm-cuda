@@ -193,6 +193,9 @@ public:
     void set_tap_layers(const int* layers, int n, bool hc_mean = false);
     /// Rows per tap in the device buffer (the chunk capacity); the per-tap stride of `taps`.
     int64_t tap_stride_rows() const;
+    /// The device tap plane itself (tap t's rows at taps_plane() + t * tap_stride_rows() * n_embd):
+    /// the cross-stage tap collector reads each producer stage's own plane (dflash_tap_collect.hpp).
+    const uint16_t* taps_plane() const;
     std::function<bool(const uint16_t* taps, int n_taps, int64_t T, int64_t pos0, std::string& err)> on_taps;
 
     /// Layer split: called by every stage when it has read a chunk, with the position reached, while its own state

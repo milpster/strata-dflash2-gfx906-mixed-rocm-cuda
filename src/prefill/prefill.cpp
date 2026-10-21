@@ -2003,6 +2003,7 @@ bool Prefill::bind_stage_helper(int64_t T) {
 // A borrowed prompt buffer is re-carved for each request's chunk. The tap
 // planes follow that current layout, not the largest chunk accepted at init.
 int64_t Prefill::tap_stride_rows() const { return impl_->T; }
+const uint16_t* Prefill::taps_plane() const { return impl_->taps; }
 
 void Prefill::set_tap_layers(const int* layers, int n, bool hc_mean) {
     Impl& m = *impl_;
