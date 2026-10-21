@@ -275,7 +275,7 @@ void DFlashDrafter::release() {
     auto free_dev = [](void* p) { if (p) cudaFree(p); };
     free_dev(w_); free_dev(head_ids_); head_ids_ = nullptr; head_rows_ = 0;
     free_dev(head_dev_); head_dev_ = nullptr;
-    free_dev(emb_local_.data); emb_local_ = WeightRef{};
+    free_dev((void*) emb_local_.data); emb_local_ = WeightRef{};
     for (auto& [name, p] : wf_) free_dev((void*) p);
     for (auto& st : st_) {
         qsa_state_release_elastic(st);
@@ -689,8 +689,9 @@ bool DFlashDrafter::bind(const WeightTable& wt, const NativeHead* head, std::str
     }
     if (strata::core::native_embed() == nullptr) {   // the canonical device table: the gather reads it on cs_
         cudaPointerAttributes attr{};
-        if (cudaPointerGetAttributes(&attr, next_embedding->data) == cudaSuccess &&
-            (int) attr.device != device_) {
+        const bool known = cudaPointerGetAttributes(&attr, next_embedding->data) == cudaSuccess;
+        const int data_dev = known ? (int) attr.device : -1;
+        if (known && data_dev != device_) {
             void* copy = nullptr;
             if (cudaMalloc(&copy, next_embedding->bytes) != cudaSuccess ||
                 cudaMemcpyAsync(copy, next_embedding->data, next_embedding->bytes, cudaMemcpyDeviceToDevice, cs_) !=
@@ -703,12 +704,18 @@ bool DFlashDrafter::bind(const WeightTable& wt, const NativeHead* head, std::str
             emb_local_.data = copy;
             vram_ += next_embedding->bytes;
             std::fprintf(stderr, "dflash: the target embedding lives on CUDA%d; the gather table is copied to CUDA%d "
-                                 "(%.0f MiB)\n", (int) attr.device, device_, (double) next_embedding->bytes / 1048576.0);
+                                 "(%.0f MiB)\n", data_dev, device_, (double) next_embedding->bytes / 1048576.0);
         }
     }
     head_ = next_head;
     emb_ref_ = emb_local_.data != nullptr ? &emb_local_ : next_embedding;
     return true;
+}
+
+/// The head rows as propose's gemv must see them: under cross-card bind the rows live on
+/// THIS device (the copy made in bind), so no kernel ever dereferences the head's card.
+const void* DFlashDrafter::head_weights() const {
+    return head_dev_ != nullptr ? head_dev_ : head_->weights();
 }
 
 /// One batch of up to 8 rows: ctx = hidden_norm(fc(taps)) into `ctx_`, then each draft layer's

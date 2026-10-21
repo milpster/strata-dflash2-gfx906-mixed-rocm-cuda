@@ -263,7 +263,7 @@ private:
     void* head_dev_ = nullptr;      ///< shared head rows copied onto the drafter's card (L8 cross-card bind)
     WeightRef emb_local_{};         ///< target embedding copied onto the drafter's card (canonical-form targets)
     /// The head rows as propose's gemv must see them: the local copy under cross-card bind.
-    const void* head_weights() const { return head_dev_ != nullptr ? head_dev_ : head_->weights(); }
+    const void* head_weights() const;   ///< defined in dflash_runtime.cpp (NativeHead completes there)
 
     // weights (device GGML payloads, the GGUF layout) and the rms_norm gammas widened to F32
     uint16_t* w_ = nullptr;
