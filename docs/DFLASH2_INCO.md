@@ -220,8 +220,10 @@ Full report: `/mnt/user/dflash2/L8-MULTIGPU-REPORT.md`; parent commands: `PARENT
    touched); structural flag merge (exactly one --spec=4, one --spec-min-p=0.5, --dflash +
    --dflash-block 3). prod_reference labeled OBSERVED TARGET-ONLY (prod args carry no
    --mtp/--dflash; --spec/--spec-min-p are drafter-only per generate.cpp:5445/9176, inert
-   without a drafter); new_mtp NOTAVAILABLE with evidence (no MTP drafter artifact in the model
-   dirs; no --mtp in prod). Guards FAIL-CLOSED: prod engine running OR detection unknown ->
+   without a drafter); new_mtp MTP-candidate UNVALIDATED (MTP artifacts DO exist - parent L1:
+   /home/user/ai/ai/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf, shared Q4/Q8,
+   /home/user/dev/Strata-data/mtp-bf16/mtp-q2_0.gguf - but Swift/Strata loader+pack compat with
+   the current target is NOT validated; not absent, not available). Guards FAIL-CLOSED: prod engine running OR detection unknown ->
    refuse; port 8009 refused outright; --confirm-execution required; NO override flag exists;
    --execute performs real HTTP checks (health, props identity, greedy repeat/reset,
    sampled-fallback) ONLY against the isolated prototype on 8019 started by the parent; nothing
@@ -230,7 +232,7 @@ Full report: `/mnt/user/dflash2/L8-MULTIGPU-REPORT.md`; parent commands: `PARENT
    refused 4214; sampled->target-only 2830/12457.
  - `tools/bench_inco_dflash2.py` (fixed at 9379c3d5) - plan/report + REAL grouped measurement:
    modes prod_reference (OBSERVED target-only)/new_target_only/new_dflash w1..7/new_mtp
-   (NOTAVAILABLE with reason - no fake baseline); BF16 primary - no quantized-drafter claims
+   (MTP-candidate UNVALIDATED - artifacts exist, loader compat unvalidated - not absent, not available, no fake baseline); BF16 primary - no quantized-drafter claims
    until conversion+parity validated; contexts 2K/16K/64K/200K(+260K); engine-reported token
    counts (never char==token); per-run JSONs per
    (mode,context,width,prompt,seed,repeat); --report medians/spread GROUPED per configuration,
@@ -302,7 +304,7 @@ parent/user action.
 | 25 | Target-side HC-mean truth | NOTRUN (needs F32 target reference run) |
 | 26 | Quantized drafter variants | NOT VALIDATED (BF16 primary; conversion+parity required first) |
 | 27 | Host RAM for pinned staging (251.7 MB @8192 → 1.007 GB @32768, 3 foreign taps) | priced in diagnostics; NOTRUN |
-| 28 | Bench baselines (prod_reference OBSERVED target-only / new_target_only / new_mtp NOTAVAILABLE with evidence / new_dflash w1..7) | PLAN ONLY; zero measured numbers |
+| 28 | Bench baselines (prod_reference OBSERVED target-only / new_target_only / new_mtp MTP-candidate UNVALIDATED (artifacts exist; compat unvalidated) / new_dflash w1..7) | PLAN ONLY; zero measured numbers |
 
 All GPU items require the prod-down window with explicit user approval (2026-10-21 safety rule);
 no script in this program stops, restarts, or probes production.

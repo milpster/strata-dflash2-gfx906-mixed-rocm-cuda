@@ -25,7 +25,8 @@ Observed drafter evidence (read-only, 2026-10-21, do not guess):
     MTP bind at 9176 under use_mtp; with no drafter the flags are inert). prod_reference is
     therefore labeled OBSERVED TARGET-ONLY, not "MTP".
   * No MTP drafter artifact exists in the known model dirs (searched /mnt/user/ai for
-    mtp/draft artifacts: none) -> the new_mtp mode is NOTAVAILABLE with this reason,
+    mtp/draft artifacts exist - see new_mtp mode) -> the new_mtp mode is MTP-candidate
+    UNVALIDATED with this reason,
     not a fake baseline; unknown MTP flags are never invented.
 """
 from __future__ import annotations
@@ -99,8 +100,7 @@ def clone_server_config(mode: str, prod: dict) -> dict:
     # server.py derives engine flags from STRUCTURED keys (layer_split -> --layer-split,
     # server.py:2604): every such key is preserved verbatim by the deep copy; only the port
     # moves, so the isolated prototype can never collide with production's 8009.
-    if "port" in cfg:
-        cfg["port"] = PROTO_PORT
+    cfg["port"] = PROTO_PORT
     if mode == "target_only":
         pass  # prod args verbatim: no --dflash/--mtp present (observed); drafter-verify
               # flags stay inert (source-verified) so the A/B baseline is byte-identical.
@@ -108,9 +108,11 @@ def clone_server_config(mode: str, prod: dict) -> dict:
         cfg["args"] = merge_flags(prod["args"], {"--spec": "4", "--spec-min-p": "0.5"},
                                   ["--dflash", ARTIFACT, "--dflash-block", "3"])
     else:
-        raise ValueError(f"mode {mode}: NOTAVAILABLE - no MTP drafter artifact exists "
-                         "(searched model dirs) and production carries no --mtp evidence; "
-                         "unknown MTP flags are never invented")
+        raise ValueError(f"mode {mode}: MTP-candidate UNVALIDATED - MTP artifacts DO exist "
+                         "(/home/user/ai/ai/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf, shared Q4/Q8, "
+                         "/home/user/dev/Strata-data/mtp-bf16/mtp-q2_0.gguf - parent L1 evidence) "
+                         "but Swift 1.5 / Strata loader compatibility with the current pack is NOT "
+                         "validated and the production config carries no --mtp; mode flags would be invented")
     return cfg
 
 
@@ -120,8 +122,11 @@ def plan_manifest(prod: dict) -> dict:
                            "--spec/--spec-min-p are drafter-only (generate.cpp:5445, 9176) and inert here",
                            "exe": prod["exe"]},
         "new_target_only": {"kind": "clone, prod args verbatim", "exe": PROTO_BINARY},
-        "new_mtp": {"kind": "NOTAVAILABLE", "why": "no MTP drafter artifact found in the model dirs; "
-                    "no --mtp in the production config; flags would be invented"},
+        "new_mtp": {"kind": "MTP-candidate UNVALIDATED", "why": "MTP artifacts exist (parent L1: "
+                    "/home/user/ai/ai/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf, shared Q4/Q8, "
+                    "/home/user/dev/Strata-data/mtp-bf16/mtp-q2_0.gguf) but Swift/Strata loader "
+                    "compatibility with the current pack is NOT validated; not active in prod "
+                    "(no --mtp in config); mode not emitted, no fake baseline"},
         "new_dflash_w3": {"kind": "clone + --dflash artifact + --spec 4 --dflash-block 3",
                           "why": "width=min(block,spec-1)=3 (generate.cpp:5500); trained block 8 (5482); "
                                  "spec<=8 (5445-5454, kVerifyMaxT=8)", "exe": PROTO_BINARY},
@@ -274,9 +279,9 @@ def selfcheck() -> int:
     check(all(k in clone for k in ("args", "cwd", "tokenizer", "model_name", "log", "env", "vision")),
           "clone preserves every server-schema field (args/cwd/tokenizer/model/env/vision)")
     check(clone["args"] == prod["args"], "target-only clone keeps prod args verbatim (byte-identical baseline)")
-    check(clone.get("layer_split") == prod.get("layer_split") and prod.get("layer_split") == "32",
-          "structured layer_split key (server.py:2604 -> --layer-split 32) preserved by the clone")
-    check(clone.get("port") == 8019 == integ.PROTO_PORT, "prototype config moved to port 8019 (never 8009)")
+    check(clone.get("layer_split") == prod.get("layer_split"),
+          "structured layer_split key preserved verbatim (server.py:2604 consumes it; value not hardcoded here)")
+    check(clone.get("port") == PROTO_PORT, "prototype config moved to port 8019 (never 8009)")
     check("--dflash" not in prod["args"] and "--mtp" not in prod["args"],
           "observed: production serve has NO drafter flags (target-only baseline)")
     merged = clone_server_config("dflash_w3", prod)["args"]
@@ -289,7 +294,7 @@ def selfcheck() -> int:
     check(merged.count("--expert-cache") == 1, "merge preserves the single --expert-cache flag")
     try:
         clone_server_config("mtp", prod)
-        check(False, "new_mtp mode was emitted (must be NOTAVAILABLE: no MTP artifact evidence)")
+        check(False, "new_mtp mode was emitted (must stay MTP-candidate UNVALIDATED: loader compat unvalidated)")
     except ValueError as e:
         print(f"refused mtp mode: {e}")
     r = guard_execute(f"http://127.0.0.1:{PROD_PORT}", True)
@@ -305,7 +310,8 @@ def selfcheck() -> int:
     m = plan_manifest(prod)
     check(m.get("manifest") is True and m["modes"]["prod_reference"]["kind"].startswith("OBSERVED"),
           "manifest labeled as manifest; prod_reference labeled OBSERVED TARGET-ONLY (no invented MTP)")
-    check(m["modes"]["new_mtp"]["kind"] == "NOTAVAILABLE", "new_mtp explicitly NOTAVAILABLE with a reason")
+    check(m["modes"]["new_mtp"]["kind"] == "MTP-candidate UNVALIDATED",
+          "new_mtp explicitly UNVALIDATED: artifacts exist (parent L1), load compat not validated - not absent, not available")
     return 1 if fails else 0
 
 

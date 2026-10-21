@@ -147,11 +147,12 @@ def selfcheck_window(cp: inco_safetensors.Checkpoint) -> None:
             expect = np.arange(lo, hi + 1)
             got = cells[mask]
             ok_set = len(got) == len(expect) and bool(np.all(got == expect))
-            future = bool(np.any(got > q)) if K > 1 else False   # non-causal: future rows visible
             cutoff = int(got[-1]) == hi                     # never past the block end
             check(ok_set and cutoff, f"window row r={r} K={K}: visibility == explicit absolute set [{lo},{hi}]")
-            if K > 1:
-                check(future, f"window row r={r} K={K}: non-causal (cells beyond the query row visible)")
+            if r < K - 1:   # a non-last row sees cells beyond its own query row (non-causal)
+                check(bool(np.any(got > q)), f"window row r={r} K={K}: non-causal (cells beyond the query row visible)")
+            else:           # the LAST row's block end IS its own row - no future positions exist
+                check(int(got[-1]) == q, f"window last row r={K-1} K={K}: no future current-block positions (block end = own row)")
         last = cells[np.abs(cells - (pos + K - 1)) < W]
         check(int(last[-1]) == pos + K - 1, f"window K={K}: every row cuts off at the block end pos+K-1")
 
@@ -178,7 +179,7 @@ def selfcheck_conv(cp: inco_safetensors.Checkpoint) -> None:
         for row in range(K):
             for ch in range(H):
                 expected = sum((float(base[side, tap, ch]) + float(dyn[row, side, tap, ch // group]))
-                               * float(x[row - tap]) for tap in range(min(taps, row + 1)))
+                               * float(x[row - tap, ch]) for tap in range(min(taps, row + 1)))
                 worst = max(worst, abs(float(y[row, ch]) - expected))
         check(worst < 1e-4, f"conv side {side}: every (row,channel) == explicit scalar sum over taps<=row "
                             f"(distinct coeffs; max|d|={worst:.2e})")
@@ -203,21 +204,33 @@ def selfcheck_gqa(cp: inco_safetensors.Checkpoint) -> None:
 
 
 def selfcheck_selector(cp: inco_safetensors.Checkpoint) -> None:
+    """Deterministic (non-random, exact FP) fixture for the greedy predecessor walk."""
     vocab, rank, K = 12, 4, 4
-    rng = np.random.default_rng(7)
-    prev = rng.standard_normal((vocab, rank), dtype=np.float32)
-    prev[2] = 0.0   # the ANCHOR token's codebook row is zero: the tie test below is then exact,
-                    # while tokens 1/10 keep nonzero rows for the dependence test.
-    nxt = rng.standard_normal((vocab, rank), dtype=np.float32)
-    proj = rng.standard_normal((K, rank), dtype=np.float32)
+    prev = np.zeros((vocab, rank), np.float32)
+    for t in range(vocab):
+        prev[t] = [(t % 3) - 1, (2 * t % 3) - 1, (5 * t % 4) - 2, (7 * t % 3) - 1]
+    prev[2] = 0.0                  # the ANCHOR token's codebook row is zero: the tie fixture is exact
+    prev[1] = [1.0, 0.0, 0.0, 0.0]
+    prev[10] = [0.0, 1.0, 0.0, 0.0]
+    nxt = np.zeros((vocab, rank), np.float32)
+    for t in range(vocab):
+        nxt[t] = [(3 * t % 4) - 1, (5 * t % 3) - 1, (7 * t % 4) - 1, (11 * t % 3) - 1]
+    nxt[3] = [0.0, -1.0, 0.0, 0.0]
+    nxt[7] = [1.0, 0.0, 0.0, 0.0]
+    nxt[5] = [0.0, 0.0, 0.0, 0.0]
+    proj = np.ones((K, rank), np.float32)
+    proj[2] = [4.0, -4.0, 0.0, 0.0]
+    logits = np.zeros((K, vocab), np.float32)
+    logits[1, 1] = 9.0                                    # row-1 top1 = token 1
+    logits[2] = [0, 0, 0, 2.0, 0, 1.8, 0, 1.9, 0, 0, 0, 0]  # row-2 top-3 = tokens 3, 7, 5
 
-    def walk(logits: np.ndarray, anchor: int) -> tuple[list[int], list[np.ndarray]]:
+    def walk(lg: np.ndarray, anchor: int) -> tuple[list[int], list[np.ndarray]]:
         top = 3
-        ids_all = np.argsort(-logits, axis=-1, kind="stable")[:, :top]
+        ids_all = np.argsort(-lg, axis=-1, kind="stable")[:, :top]
         picks, predecessor = [], anchor
         for r in range(1, K):
             ids = ids_all[r]
-            scores = logits[r, ids] + (prev[predecessor] * proj[r][None, :] * nxt[ids]).sum(axis=-1)
+            scores = lg[r, ids] + (prev[predecessor] * proj[r][None, :] * nxt[ids]).sum(axis=-1)
             best = 0
             for i in range(1, len(ids)):        # argmax-first = tie to the EARLIER candidate
                 if scores[i] > scores[best]:
@@ -226,38 +239,37 @@ def selfcheck_selector(cp: inco_safetensors.Checkpoint) -> None:
             picks.append(predecessor)
         return picks, ids_all
 
-    logits = rng.standard_normal((K, vocab), dtype=np.float32) * 4.0
     picks, ids_all = walk(logits, anchor=2)
     # (a) exact path vs a plain independent recomputation with explicit loops
     manual, predecessor = [], 2
     for r in range(1, K):
         ids = [int(t) for t in ids_all[r]]
-        scores = []
-        for t in ids:
-            s = float(logits[r, t]) + sum(float(prev[predecessor, j]) * float(proj[r, j]) * float(nxt[t, j])
-                                           for j in range(rank))
-            scores.append(s)
-            if len(scores) == 1 or s > max(scores[:-1]):
-                best = len(scores) - 1
+        scores = [float(logits[r, t]) + sum(float(prev[predecessor, j]) * float(proj[r, j]) * float(nxt[t, j])
+                                            for j in range(rank)) for t in ids]
+        best = 0
+        for i in range(1, len(ids)):
+            if scores[i] > scores[best]:
+                best = i
         predecessor = ids[best]
         manual.append(predecessor)
     check(picks == manual, f"selector walk reproduces the exact chosen path {picks}")
     check(len(picks) == K - 1 and all(int(t) < vocab for t in picks),
-          "anchor row excluded from the walk (row 0 seeds it) and every pick is inside the vocabulary")
-    # (b) predecessor DEPENDENCE: two logits variants whose row-1 pick differs -> row-2 pick differs
-    la, lb = logits.copy(), logits.copy()
-    la[1] = [0, 9, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0]      # row-1 top1 = token 1
-    lb[1] = [0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 9, 0]      # row-1 top1 = token 10 (via stable order)
-    la[1][10] = 9.0
-    for r in range(2, K):
-        la[r] = lb[r]
+          "anchor row 0 only seeds the walk (row 0 never picked) and every pick is inside the vocabulary")
+    # (b) predecessor DEPENDENCE at row 2: IDENTICAL row-2 logits, hidden and projections; only the
+    # row-1 pick differs. pred=1: dot(prev[1],proj[2])=[4,0,0,0] -> scores 3:2.0 7:1.9+4=5.9 5:1.8
+    # -> 7.  pred=10: dot=[0,-4,0,0] -> scores 3:2.0+4=6.0 7:1.9 5:1.8 -> 3. So pa[1]=7, pb[1]=3.
+    la = logits.copy()
+    la[1] = 0.0
+    la[1, 10] = 9.0                                        # row-1 pick becomes token 10
     pa, _ = walk(la, anchor=2)
-    pb, _ = walk(lb, anchor=2)
-    check(pa[0] != pb[0], f"changing the row-1 pick ({pa[0]} vs {pb[0]}) changes the row-2 pick - "
-                          "the walk is predecessor-dependent")
-    # (c) tie -> smaller TOKEN ID (stable argsort + argmax-first)
+    pb, _ = walk(logits, anchor=2)
+    check(pa[0] == 10 and pb[0] == 1, f"row-1 picks differ by construction: {pa[0]} vs {pb[0]}")
+    check(pa[1] == 3 and pb[1] == 7,
+          f"with IDENTICAL row-2 logits/hidden, the row-2 pick follows the predecessor: {pa[1]} vs {pb[1]}")
+    # (c) tie -> smaller TOKEN ID (stable argsort + argmax-first; anchor codebook is zero so the tie is exact)
     lt = logits.copy()
-    lt[1] = [0, 0, 0, 5, 0, 0, 0, 5, 0, 0, 0, 0]      # tokens 3 and 7 tie at the top
+    lt[1] = 0.0
+    lt[1, 3] = lt[1, 7] = 5.0                              # tokens 3 and 7 tie at the top
     pt, _ = walk(lt, anchor=2)
     check(pt[0] == 3, "tied top scores resolve to the SMALLER TOKEN ID (3 over 7), not a candidate index")
 
