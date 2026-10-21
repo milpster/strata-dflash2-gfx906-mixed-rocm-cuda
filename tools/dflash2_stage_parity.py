@@ -70,7 +70,13 @@ def check(path, directory):
         if t.type_id != 30: raise ValueError('parity requires original BF16 weights')
         raw=np.memmap(path,mode='r',dtype='<u2',offset=g.data_start+t.offset,shape=(int(np.prod(t.shape)),))
         weights[t.name]=(raw.astype('<u4')<<16).view('<f4').reshape(tuple(reversed(t.shape)))
-    W=weights
+    return check_weights(weights, m, directory)
+
+def check_weights(W, m, directory):
+    """The stage oracle over an explicit canonical-weights dict (name -> F32 [out, in]) and a
+    metadata dict with the dflash.* keys.  check() feeds it from the original BF16 GGUF; the
+    safetensors harness (tools/test_inco_dflash2_parity.py) feeds it from the Inco checkpoint -
+    the same formulas, the same gates, no duplicated oracle."""
     H=int(m['dflash.embedding_length']);D=int(m['dflash.attention.key_length'])
     nq=int(m['dflash.attention.head_count']);nkv=int(m['dflash.attention.head_count_kv'])
     taps=int(m['dflash.conv_kernel_size']);group=int(m['dflash.conv_group_size'])

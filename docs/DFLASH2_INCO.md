@@ -1,9 +1,13 @@
 # DFlash2 for the official Inco checkpoint (Qwen3.8-Flash-Next-DFlash2)
 
-This file records the artifact work we have measured. Runtime (engine load, generation, server)
-is **not verified on this machine yet** - DFlash2 compiles only for NVIDIA CUDA today
-(CMakeLists refuses `STRATA_ENABLE_HIP`/`STRATA_HIP_GFX906` with `STRATA_ENABLE_DFLASH2`), so the
-gfx906 port is open work. Nothing in the "runtime" section below is a claim that a run worked.
+Status (2026-10-21): the gfx906 HIP port is COMPILED (prod-matched environment, logs 31/32) and
+the CPU-safe suites have PASSED under parent execution at `69a55085` (all 8 CPU ctests incl.
+`dflash_tap_plan_test`, `dflash_ring_test`, loader + Python ring/stage parity fixtures;
+`/mnt/user/dflash2/logs/parent-l8-cpu-tests.log`). The slot-test binding-order fix `9c0223cd`
+is compiled (try8/try9) and awaits the parent rerun. **All GPU execution — including "synthetic"
+tests — requires the prod-down window with explicit user approval; nothing GPU has run in these
+lanes.** No runtime (engine load, generation, server, acceptance, memory) is claimed anywhere
+below. Production (`/mnt/user/Strata-2966` MTP serve) is untouched by every lane.
 
 ## The checkpoint
 
@@ -160,3 +164,120 @@ the parent owns every run. Commits (branch `inco-dflash2-gfx906`, unpushed, on t
   a larger trained block needs `dflash_ring_capacity` with that width (the helper takes it).
 - Snapshot horizon rejects stale rewinds at propose time; the engine's fresh-prefill path for
   the rejection is exercised by the parent's parked-conversation runs, not by this lane.
+
+## L8 cross-GPU tap collection (2026-10-21, compiled only — parent executes everything)
+
+Under `--serve --layer-split 32 --gpu 0,1` the five target taps are captured by the stage whose
+layer range contains each tap's boundary (split32: GPU0 captures boundaries 6/16/26, the drafter's
+GPU1 captures 36/46) and assembled on the drafter's card by the bounded collector
+(`include/strata/core/dflash_tap_plan.hpp`, `dflash_tap_collect.hpp`): compact rows-only D2H into
+two pinned slots per kind keyed by chunk/window pos0, drafter-stream H2D/D2D, event-drained reuse,
+mutex-serialized bookkeeping (the prefill chain genuinely overlaps stage N+1's producer with
+stage N's assembly — prefill.cpp:4948-4963), fail-closed refusals throughout.
+**Shared head, no extra BF16 copy:** the drafter binds the target's FINAL-STAGE head
+(`last_st->wt`/`last_st->head`, the MTP pattern) — it already lives on the drafter's card. The
+cross-card fallback (head on a foreign card) copies the encoded matrix verbatim through pinned-host
+staging; it stays dormant in the split layout (IQ-form pinned gather → no embedding copy either).
+Ring storage is the DESIGN bound `43,253,760 B` (5 pools × 2112 cells × 8 heads × 128 × 2 × 2 B) —
+a sizing bound fixed before expert-cache auto, NOT a measured VRAM figure. Serial-only:
+`--batch` stays refused; `--pipeline-windows` auto-refuses dflash+split. Sampled requests fall back
+to target-only, explicitly logged. Commits (unpushed): `6d7d3600`→`88dc44a6`→`3602444a`→
+`2f31bf7b`→`65bb8c93`→`69a55085`→`0b5ceadc`→`0096a5b4`→`b1493619`→`9c0223cd`. Build evidence:
+log 31 `SCRIPT_EXIT7=0`, log 32 `SCRIPT_EXIT8=0` (zero errors; prod-matched wrapper, nice19 -j2).
+Full report: `/mnt/user/dflash2/L8-MULTIGPU-REPORT.md`; parent commands: `PARENT-TEST-COMMANDS.md`.
+
+## L9 harnesses (2026-10-21, CPU plan/report only — parent runs all tests)
+
+- `tools/inco_safetensors.py` — safetensors is the AUTHORITY: lazy per-tensor reader
+  (safetensors pkg + stdlib header/memmap fallback, no Torch/ROCm), canonical-name mapping onto
+  the ONE existing stage oracle (`dflash2_stage_parity.py::check_weights`, now source-agnostic —
+  GGUF and safetensors feed the same formulas), config→metadata derivation, shape refusals,
+  recorded sha256 authority.
+- `tools/test_inco_dflash2_parity.py` — `--selfcheck` (CPU fixtures: independent RoPE via
+  complex exponentials at 0/2047/2048/2049/65536/200000/260000; HC-mean tap geometry [5,15,25,35,45];
+  GQA 32/8/128; symmetric non-causal window 2048 at query lengths 1/2/4/8; dynamic causal conv
+  alignment; selector 256/16 walk with deterministic ties, anchor row excluded, vocab bounds;
+  refusals: missing tap, bad position, malformed dumps; real checkpoint tensors exercised);
+  `--integrity [--hash]`; `--dump-dir DIR` compares REAL engine intermediates (STRATA_DF_PARITY)
+  per-row/per-layer abs/rel/cosine at the existing gates (cos≥0.9999, relL2≤0.02 — unchanged,
+  not relaxed). Truth: NO head tensors exist in the safetensors (tie_word_embeddings false) →
+  head parity NOTRUN → `dflash_head_parity.py` against the target GGUF head; target-side HC-mean
+  truth needs an F32 target reference run → NOTRUN. CPU output proves formulas/artifact integrity
+  ONLY — never HIP numerics, never an independent SGLang/target claim.
+- `tools/test_inco_dflash2_integration.py` — plan-only preflight: source-cited flag schema
+  (`--mtp`/`--dflash` exclusive 5440; width=min(--dflash-block,--spec-1) 5500 → width 3 =
+  `--spec 4 --dflash-block 3`; `--spec`≤8; serve `--batch` refused 2836; pipeline+split+dflash
+  refused 4214; sampled→target-only 2830), real prod invocation preserved verbatim, prototype
+  config under `/mnt/user/dflash2/config/` (prod config never touched), read-only prod detection,
+  `--execute` REFUSES while production runs absent `--expect-stopped`; no stop/restart ever.
+- `tools/bench_inco_dflash2.py` — plan/report only: modes prod_reference/new_target_only/new_mtp/
+  new_dflash (BF16 primary — no quantized-drafter claims until conversion+parity validated),
+  widths 1..7, contexts 2K/16K/64K/200K(+260K), engine-reported token counts (never char==token),
+  strata_bench metric names (decode_tps, ttft_s, prompt_ms, decode_ms, generated_tokens) with
+  null+reason for unexposed metrics, medians/spread only from recorded repetitions, greedy
+  byte-compare pins `STRATA_IQ_MT_MIN=1` + identical expert-cache, old-vs-new target-only gate
+  FIRST. No GPU in plan mode; execution is parent-owned with the stopped-prod guard.
+
+### Prototype activation config (NOT deployed)
+
+`/mnt/user/dflash2/config/inco-dflash2-prototype.json` (written by the integration harness):
+the production serve invocation UNCHANGED (split32, IQ3_XXS native quant, pack, KV int8, 262144
+context, expert-cache auto, ROCm env prefix) plus `--dflash /mnt/user/dflash2/artifacts/inco-dflash2-bf16.gguf --spec 4 --dflash-block 3 --spec-min-p 0.5`, run from the prototype binary
+`/mnt/user/dflash2/Strata-wt/build-gfx906-dflash2/strata`. Exact revert = start production
+exactly as `launch-prod.sh` / the live cmdline (no `--dflash`): production flags carry no
+DFlash2 state, so reversion is dropping the prototype binary/flags — no migration to undo.
+No automatic stop/restart is performed by anything in this program; every switch is an explicit
+parent/user action.
+
+### Ready-for-downtime checklist (parent, in order; requires explicit user approval to start)
+
+1. Greedy A/B baseline: old-binary vs new-binary target-only, byte-compare, `STRATA_IQ_MT_MIN=1`,
+   identical `--expert-cache auto` (gate before any DFlash diagnosis).
+2. CPU rerun (prod-up, no GPU): `ctest -R '^(dflash_tap_plan_test|dflash_tap_slot_test|dflash_ring_test|dflash_load_test)$'`
+   + `python3 tools/test_dflash2_stage_parity.py` + `python3 tools/test_inco_dflash2_parity.py --selfcheck --integrity --hash`
+   + `--selfcheck` of the integration/bench harnesses.
+3. GPU primitives (prod env prefix): `dflash_tap_plan/slot` already CPU; `dflash_tap_collect_test`,
+   `dflash2_parity` dump generation → `test_inco_dflash2_parity.py --dump-dir`, `dflash_taps_test`,
+   `dflash_rope_parity`, `dflash_head_bf16_test`, `dflash_owned_kv_test` ring cases.
+4. Engine split run: prototype serve `--dflash --layer-split 32`, width 3; verify the startup line
+   `dflash: cross-GPU tap collection serial on CUDA1: boundary 6<-CUDA0 ... (HC stream mean capture)`.
+5. Server cases: repeat-conversation reset, cancel/parked-restore, deep rewind >200K, EOS/stop,
+   sampled→target-only explicitness (`tools/dflash_sampling.py`, `tools/dflash_cache.py`).
+6. Long-context + bench order per `bench_inco_dflash2.py --plan`; record per-run JSONs; report via
+   `--report DIR`. No perf numbers exist until measured.
+
+## Risk ledger (all 28, status at L9 close — no invented closures)
+
+| # | Risk | Status |
+|---|------|--------|
+| 1 | Element layout (no transposes) | PASS (L4 byte-exact suite 21/21) |
+| 2 | Converter determinism / provenance sha | PASS (re-convert byte-identical, sha in GGUF) |
+| 3 | gfx906 HIP compile of dflash2.cu | PASS (logs 13–16, 21, 31, 32, 33) |
+| 4 | Wave32 half-wave mapping of the shfl butterfly | NOTRUN (measured semantics need GPU window) |
+| 5 | Engine load of the artifact | NOTRUN (loader CPU test 1/1 PASS; engine open NOTRUN) |
+| 6 | Ring math model (2112 cells, wrap, retained span) | PASS CPU (`dflash_ring_test`, fixtures) |
+| 7 | Ring on-device wrap/pool reads | NOTRUN (owned-KV/parity ring cases, prod-down) |
+| 8 | Ring storage bound 43,253,760 B | DESIGN bound (not measured VRAM) |
+| 9 | Snapshot park/restore of ring image | NOTRUN (engine cases, prod-down) |
+| 10 | Tap ownership model (split boundaries) | PASS CPU (`dflash_tap_plan_test` @69a55085) |
+| 11 | Collector slot lifecycle (bind/evict/reset) | PASS CPU @69a55085; fix `9c0223cd` rerun PENDING |
+| 12 | Prefill producer/consumer race (real, evidence prefill.cpp:4948-4963) | serialization COMPILED; GPU overlap test NOTRUN |
+| 13 | Cross-device transport (D2H/H2D, events, pinned) | NOTRUN (2-GPU collect test, prod-down) |
+| 14 | Shared final-stage head (no 1.27 GB duplication) | COMPILED; NOTRUN (engine startup line) |
+| 15 | Cross-card fallback (host-staged, rebind-safe) | COMPILED; dormant in split; NOTRUN |
+| 16 | Embedding gather on drafter card (IQ pinned path) | COMPILED; NOTRUN |
+| 17 | Debug export composition (no foreign add_context) | COMPILED; NOTRUN (parity export run) |
+| 18 | Memory sizing (reachable rows, foreign-only pins) | COMPILED; startup print NOTRUN |
+| 19 | Gates: batch refused, pipeline+split+dflash refused, sampled→target-only | PASS by source/schema; engine lines NOTRUN |
+| 20 | Serve/CLI consumer split (per-stage vs full-plane) | COMPILED (`65bb8c93`); NOTRUN |
+| 21 | Stage-parity fixtures (union span 197896/2112) | PASS (Python fixtures @69a55085) |
+| 22 | Prototype-vs-prod base divergence (`497e4be4` vs `27b65cc8`+stack) | OPEN (greedy A/B gate, prod-down) |
+| 23 | Numerical parity checkpoint→engine (formulas) | CPU fixtures compiled; --dump-dir NOTRUN |
+| 24 | Head truth (no head tensors in checkpoint) | NOTRUN by design (target-GGUF head parity tool ready) |
+| 25 | Target-side HC-mean truth | NOTRUN (needs F32 target reference run) |
+| 26 | Quantized drafter variants | NOT VALIDATED (BF16 primary; conversion+parity required first) |
+| 27 | Host RAM for pinned staging (251.7 MB @8192 → 1.007 GB @32768, 3 foreign taps) | priced in diagnostics; NOTRUN |
+| 28 | Bench baselines (prod_reference/new_target_only/new_mtp/new_dflash) | PLAN ONLY; zero measured numbers |
+
+All GPU items require the prod-down window with explicit user approval (2026-10-21 safety rule);
+no script in this program stops, restarts, or probes production.
