@@ -52,10 +52,30 @@ int DFlashTapCollector::acquire_slot(Kind& k, int64_t key, std::string& err, std
         // Bounded producer wait with the metadata mutex RELEASED.  Every wake source is
         // external to this call: assemble()'s retire, reset_staging(), disable().
         err.clear();
+        const uint64_t epoch = gen_;   // captured under mu_ at wait entry
         cv_.wait(lock);
-        if (!enabled()) { err = "dflash tap collect: staging cancelled (collector reset/disabled)"; return -1; }
+        // Cancellation (L10 review): a reset/disable during the wait MUST reject the
+        // producer even when the collector stays enabled - an old request's producer
+        // never stages into a new request.  Deterministic refusal, no hang.
+        if (!enabled() || gen_ != epoch) {
+            err = "dflash tap collect: staging cancelled (request reset/disabled mid-wait)";
+            return -1;
+        }
     }
 }
+
+bool DFlashTapCollector::acquire_producer(int type_bytes, int64_t key, std::string& err) {
+    std::unique_lock<std::mutex> lock(mu_);
+    Kind& k = kind(type_bytes);
+    return acquire_slot(k, key, err, lock) >= 0;
+}
+
+uint64_t DFlashTapCollector::staging_epoch() {
+    std::lock_guard<std::mutex> lock(mu_);
+    return gen_;
+}
+
+DFlashTapCollector::Kind& DFlashTapCollector::kind_for_test(int type_bytes) { return kind(type_bytes); }
 
 bool DFlashTapCollector::enable(const DFlashTapPlan& plan, int drafter_dev, int64_t f32_rows,
                                 int64_t bf16_rows, std::string& err) {
@@ -109,6 +129,8 @@ bool DFlashTapCollector::enable(const DFlashTapPlan& plan, int drafter_dev, int6
 }
 
 void DFlashTapCollector::disable() {
+    std::lock_guard<std::mutex> lock(mu_);   // every metadata mutation is mu_-guarded (L10 review)
+    gen_ += 1;                               // pending producers reject deterministically
     const OnDevice on_dev(dev_);   // events and device planes live on dev_; drain needs its context
     const auto free_kind = [&](Kind& k) {
         for (int i = 0; i < kSlots; ++i) {
@@ -144,7 +166,8 @@ void DFlashTapCollector::reset_staging() {
         }
     };
     reset_kind(f32_); reset_kind(bf16_);
-    cv_.notify_all();   // cancelled/reset staging: pending producer waiters reject deterministically
+    gen_ += 1;      // new epoch: pending producers of the ABORTED request reject on wake
+    cv_.notify_all();
 }
 
 bool DFlashTapCollector::stage(int64_t key, const Slice& slice, int type_bytes, std::string& err) {

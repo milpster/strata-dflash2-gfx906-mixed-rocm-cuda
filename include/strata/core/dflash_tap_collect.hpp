@@ -32,6 +32,16 @@
 // empty, then oldest retired (caller drains the recorded H2D before host rewrite).  When
 // both slots are STAGED the producer WAITS: the bounded prefill chain (N+2 staged while N
 // is unconsumed) is backpressure, never data loss.  assemble() never waits.
+// CANCELLATION (L10 review): the wait is epoch-guarded.  acquire_slot captures gen_ under
+// mu_ before cv_.wait; reset_staging()/disable() increment gen_ and notify - a producer
+// woken after a reset is REJECTED even though the collector stays enabled, so an old
+// request's producer never stages into a new request.  Every metadata mutation (slots,
+// keys, gen_) runs under mu_, disable() included.
+// LIFETIME (explicit ownership, not magic): the collector object must outlive every thread
+// that may call stage()/assemble().  The engine pipeline guarantees this by JOINS - the
+// prefill stage threads are joined before the session object that owns the collector is
+// torn down (prefill.cpp pipeline ownership); the destructor calls disable() and is only
+// reached after those joins.  Do not destroy the collector while callbacks can fire.
 // Serial-only by design: --pipeline-windows overlap with dflash + split is refused.
 #pragma once
 
@@ -126,17 +136,28 @@ class DFlashTapCollector {
     int64_t device_bytes() const { return plane_bytes_; }
     int64_t pinned_bytes() const { return pin_bytes_; }
 
-  private:
-    /// The slots for one kind; `rows_cap` bounds one tap's staged rows.
+    /// The slots for one kind; `rows_cap` bounds one tap's staged rows.  Public for the
+    /// CPU bookkeeping tests; production reaches slots only through kind()/stage/assemble.
     struct Kind { Slot slots[kSlots]; int64_t rows_cap = 0; int type_bytes = 0; };
+    Kind& kind_for_test(int type_bytes);
+    /// CPU-testable producer path: the exact acquire_slot body (no CUDA call inside it);
+    /// the GPU cancellation-waiter fixture exercises the same path for real.
+    /// The production producer path is stage(); the consumer path is assemble().
+    bool acquire_producer(int type_bytes, int64_t key, std::string& err);
+    /// Current cancellation epoch (mu_-guarded); reset_staging()/disable() increment it.
+    uint64_t staging_epoch();
 
+  private:
     Kind& kind(int type_bytes);
 
     /// Producer entry: static acquire() with the metadata mutex HELD by the caller; when
     /// both slots hold unconsumed staging, the producer WAITS on cv_ (the mutex is
     /// released - never a lock across progress that needs another collector call) and is
     /// woken by assemble()'s retire, by reset_staging(), and by disable().  A woken
-    /// producer against a cancelled/reset/disabled collector returns -1 deterministically.
+    /// producer is REJECTED when the collector was disabled/reset since the wait started:
+    /// the epoch token (captured under mu_ at wait entry) must be unchanged, so a pending
+    /// producer of an OLD request never stages into a NEW request - even while the
+    /// collector stays enabled (reset_staging keeps enabled true on purpose).
     int acquire_slot(Kind& k, int64_t key, std::string& err, std::unique_lock<std::mutex>& lock);
 
     DFlashTapPlan plan_;
@@ -149,6 +170,7 @@ class DFlashTapCollector {
     int64_t plane_bytes_ = 0, pin_bytes_ = 0;
     std::mutex mu_;   ///< serializes slot bookkeeping + transfer enqueue across stage/assemble
     std::condition_variable cv_;   ///< backpressure wake: retire / reset / disable
+    uint64_t gen_ = 0;             ///< cancellation epoch, read/written only under mu_
 };
 
 }  // namespace strata::core
