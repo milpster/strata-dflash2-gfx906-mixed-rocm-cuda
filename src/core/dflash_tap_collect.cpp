@@ -8,6 +8,9 @@
 #include <strata/core/dflash_tap_collect.hpp>
 #include <strata/core/on_device.hpp>
 
+#include <chrono>
+#include <cstdio>
+
 namespace strata::core {
 
 namespace {
@@ -24,6 +27,8 @@ int DFlashTapCollector::acquire(Slot (&slots)[kSlots], int64_t key, std::string&
             if (first_empty < 0) first_empty = i;
             continue;
         }
+        if (slots[i].awaiting) continue;   // L14: the consumer's binding - its chunk is
+                                           // being assembled, no producer re-binds it
         bool staged_live = false;
         for (int t = 0; t < kDFlashMaxTaps; ++t) staged_live |= slots[i].staged[t];
         if (!staged_live && (oldest_retired < 0 || slots[i].key < slots[oldest_retired].key)) oldest_retired = i;
@@ -90,7 +95,7 @@ bool DFlashTapCollector::enable(const DFlashTapPlan& plan, int drafter_dev, int6
         k.rows_cap = rows_cap; k.type_bytes = type_bytes;
         for (int i = 0; i < kSlots; ++i) {
             Slot& s = k.slots[i];
-            s.key = -1; s.rows = -1;
+            s.key = -1; s.rows = -1; s.awaiting = false;
             for (int t = 0; t < plan_.n_taps; ++t) {
                 s.staged[t] = false;
                 if (plan_.tap_device(t) == dev_) continue;   // local taps go D2D: no host staging
@@ -141,7 +146,7 @@ void DFlashTapCollector::disable() {
                 s.pin[t] = nullptr; s.staged[t] = false;
             }
             if (s.ev != nullptr) cudaEventDestroy(s.ev);
-            s.ev = nullptr; s.key = -1; s.rows = -1;
+            s.ev = nullptr; s.key = -1; s.rows = -1; s.awaiting = false;
         }
         k.rows_cap = 0;
     };
@@ -161,7 +166,7 @@ void DFlashTapCollector::reset_staging() {
         for (int i = 0; i < kSlots; ++i) {
             Slot& s = k.slots[i];
             if (s.ev != nullptr) (void) cudaEventSynchronize(s.ev);   // drop nothing mid-H2D
-            s.key = -1; s.rows = -1;
+            s.key = -1; s.rows = -1; s.awaiting = false;
             for (int t = 0; t < kDFlashMaxTaps; ++t) s.staged[t] = false;
         }
     };
@@ -210,13 +215,16 @@ bool DFlashTapCollector::stage(int64_t key, const Slice& slice, int type_bytes, 
         }
         s.staged[t] = true;
     }
+    cv_.notify_all();   // L14: this key now has live staging - wake a consumer in its
+                       // bounded assemble() wait (no copy is enqueued yet: the wake
+                       // only re-checks the flags, under mu_, before any transfer)
     return true;
 }
 
 bool DFlashTapCollector::assemble(int64_t key, const Slice* slices, int n_slices, int64_t rows,
                                   int type_bytes, std::string& err) {
     if (!valid_type_bytes(type_bytes)) { err = "dflash tap collect: type_bytes must be 2 (BF16) or 4 (FP32)"; return false; }
-    std::lock_guard<std::mutex> lock(mu_);
+    std::unique_lock<std::mutex> lock(mu_);
     if (!enabled()) { err = "dflash tap collect: not enabled"; return false; }
     Kind& k = kind(type_bytes);
     if (k.rows_cap <= 0) { err = "dflash tap collect: that plane kind is not enabled"; return false; }
@@ -224,7 +232,10 @@ bool DFlashTapCollector::assemble(int64_t key, const Slice* slices, int n_slices
     int cur = 0;
     if (cudaGetDevice(&cur) != cudaSuccess) { err = "dflash tap collect: querying the current device failed"; return false; }
     if (cur != dev_) { err = "dflash tap collect: assemble must run on the drafter's device"; return false; }
-    int slot = -1;
+    // L14 (the dflash_w3 model window): validate every plan tap's producer slice ONCE
+    // here, including the geometry guard the copy loop used to apply per tap; the
+    // consumer's bounded wait below must re-check nothing that needs a device query.
+    int need[kDFlashMaxTaps] = {};   // tap -> producer slice index, -1: same-device slice (no staging)
     for (int t = 0; t < plan_.n_taps; ++t) {
         int producers = 0, who = -1;
         for (int i = 0; i < n_slices; ++i)
@@ -241,34 +252,91 @@ bool DFlashTapCollector::assemble(int64_t key, const Slice* slices, int n_slices
                   " producer slices - refusing a stale-plane read";
             return false;
         }
-        if (slot < 0) { slot = acquire(k.slots, key, err); if (slot < 0) return false; }
-        Slot& s = k.slots[slot];
-        if (s.rows >= 0 && s.rows != rows) { err = "dflash tap collect: chunk slot rows disagree"; return false; }
-        const int64_t N = plan_.n_embd;
-        const size_t bytes = (size_t) rows * N * type_bytes;
-        uint8_t* plane = type_bytes == 4 ? (uint8_t*) plane_f32_ : (uint8_t*) plane_bf16_;
+        need[t] = plan_.tap_device(t) == dev_ ? -1 : who;
+    }
+    int slot = acquire_slot(k, key, err, lock);   // backpressure refusal stands (the original contract)
+    if (slot < 0) return false;
+    Slot& s = k.slots[slot];
+    if (s.rows >= 0 && s.rows != rows) { err = "dflash tap collect: chunk slot rows disagree"; return false; }
+    // L14 CONSUMER ORDERING: a foreign tap's rows exist in the pinned slot ONLY after
+    // its producer's stage() ran for this key.  The chain's contract is producer-first
+    // (prefill fires on_taps at every stage's chunk end, prefill.cpp's hand-off path);
+    // the collector ENFORCES it instead of failing on a first-comer race.  NO staged
+    // flag for the key means NO producer ran: deterministic refusal, fast, exactly the
+    // original loud failure (the fail-closed tests keep their immediate refusals).
+    // PARTIAL staging means producers are in flight: bind the slot as `awaiting` (no
+    // producer re-binds it) and wait, bounded and epoch-guarded, for the remaining
+    // flags.  stage() notifies; reset_staging()/disable() reject; an expired wait
+    // keeps the original per-tap refusal - a loud failure, never a stale-plane read.
+    int needed = 0, staged_count = 0;
+    for (int t = 0; t < plan_.n_taps; ++t)
+        if (need[t] >= 0) { ++needed; if (s.staged[t]) ++staged_count; }
+    if (needed > 0 && staged_count == 0) {
+        for (int t = 0; t < plan_.n_taps; ++t)
+            if (need[t] >= 0) { err = "dflash tap collect: tap " + std::to_string(t) + " was never staged"; return false; }
+    }
+    if (needed > 0 && staged_count < needed) {
+        s.awaiting = true;
+        const uint64_t epoch = gen_;   // captured under mu_ at wait entry (as acquire_slot does)
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(kAssembleWaitMs);
+        for (;;) {
+            staged_count = 0;
+            for (int t = 0; t < plan_.n_taps; ++t)
+                if (need[t] >= 0 && s.staged[t]) ++staged_count;
+            if (staged_count == needed) break;
+            if (cv_.wait_until(lock, deadline) == std::cv_status::timeout || !enabled() || gen_ != epoch) {
+                // Release the binding on EVERY refusal path (nothing was staged under
+                // it) and wake anyone waiting on this collector.
+                s.awaiting = false;
+                s.key = -1; s.rows = -1;
+                cv_.notify_all();
+                std::fprintf(stderr, "strata serve: dflash tap collect: assemble key %lld - producers did not "
+                                      "stage %d ms after the consumer's chunk (broken prefill tap chain) - refusing\n",
+                             (long long) key, kAssembleWaitMs);
+                if (!enabled() || gen_ != epoch) {
+                    // reset_staging()/disable() since the wait began: the deterministic
+                    // cancellation, exactly the producer backpressure's contract - the
+                    // request's own error path, no per-tap guesswork.
+                    err = "dflash tap collect: staging cancelled (request reset/disabled mid-wait)";
+                    return false;
+                }
+                // The wait EXPIRED with the epoch unchanged: the chain is broken - the
+                // loud original per-tap refusal, never a stale-plane read.
+                for (int t = 0; t < plan_.n_taps; ++t)
+                    if (need[t] >= 0 && !s.staged[t]) { err = "dflash tap collect: tap " + std::to_string(t) + " was never staged"; return false; }
+                err = "dflash tap collect: tap 0 was never staged";   // unreachable: the loop above catches every unstaged foreign tap
+                return false;
+            }
+        }
+        s.awaiting = false;
+    }
+    const int64_t N = plan_.n_embd;
+    const size_t bytes = (size_t) rows * N * type_bytes;
+    uint8_t* plane = type_bytes == 4 ? (uint8_t*) plane_f32_ : (uint8_t*) plane_bf16_;
+    for (int t = 0; t < plan_.n_taps; ++t) {
         uint8_t* dst = plane + (size_t) t * k.rows_cap * N * type_bytes;   // plane rows use the full capacity stride
-        if (plan_.tap_device(t) == dev_) {
+        if (need[t] < 0) {   // drafter-device slice: D2D from the producer's plane
+            int who = -1;
+            for (int i = 0; i < n_slices; ++i)
+                if (plan_.owner[t] == slices[i].stage) who = i;
             const uint8_t* src = (const uint8_t*) slices[who].plane + (size_t) t * slices[who].stride_rows * N * type_bytes;
             if (cudaMemcpyAsync(dst, src, bytes, cudaMemcpyDeviceToDevice, cs_) != cudaSuccess) {
                 err = "dflash tap collect: same-device tap copy failed"; return false;
             }
         } else {
-            if (!s.staged[t]) { err = "dflash tap collect: tap " + std::to_string(t) + " was never staged"; return false; }
             if (cudaMemcpyAsync(dst, s.pin[t], bytes, cudaMemcpyHostToDevice, cs_) != cudaSuccess) {
                 err = "dflash tap collect: H2D of the staged slice failed"; return false;
             }
         }
     }
-    if (slot >= 0) {
-        k.slots[slot].rows = -1;
-        for (int t = 0; t < kDFlashMaxTaps; ++t) k.slots[slot].staged[t] = false;
-        if (k.slots[slot].ev != nullptr && cudaEventRecord(k.slots[slot].ev, cs_) != cudaSuccess) {
-            err = "dflash tap collect: recording the slot's H2D completion event failed";   // pinned reuse needs it
-            return false;
-        }
-        cv_.notify_all();   // the slot is RETIRED: wake any producer in backpressure
+    s.rows = -1;
+    s.awaiting = false;
+    for (int t = 0; t < kDFlashMaxTaps; ++t) s.staged[t] = false;
+    if (s.ev != nullptr && cudaEventRecord(s.ev, cs_) != cudaSuccess) {
+        err = "dflash tap collect: recording the slot's H2D completion event failed";   // pinned reuse needs it
+        return false;
     }
+    cv_.notify_all();   // the slot is RETIRED: wake any producer in backpressure, and a parked consumer
     return true;
 }
 

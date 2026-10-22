@@ -107,6 +107,35 @@ int main() {
               "the rejected producer staged nothing: slots stay cleared after the reset");
     }
 
+    // 7. L14 consumer-binding protection (the dflash_w3 model window: assemble() bound
+    //    a fresh slot for a key whose cross-device producers had not staged; acquire()
+    //    must never bind a new chunk's key OVER the consumer's binding, and the key's
+    //    producers must land ON it - the flags the consumer's bounded wait reads).
+    {
+        DFlashTapCollector tc;
+        auto& kf = tc.kind_for_test(2);
+        std::string e3;
+        // The consumer (assemble) binds chunk key 0 on a fresh collector.
+        int ca = DFlashTapCollector::acquire(kf.slots, 0, e3);
+        kf.slots[ca].awaiting = true;                       // the consumer is waiting for this key's flags
+        int pb = DFlashTapCollector::acquire(kf.slots, 0, e3);
+        check(ca == 0 && pb == 0, "the key's producers acquire the consumer's binding (staging lands where the consumer waits)");
+        int pc = DFlashTapCollector::acquire(kf.slots, 2048, e3);
+        check(pc == 1 && kf.slots[ca].awaiting, "the other chunk binds the free slot; the awaiting binding is untouched");
+        int pd = DFlashTapCollector::acquire(kf.slots, 4096, e3);
+        check(pd == -1 && e3.find("backpressure") != std::string::npos,
+              "an awaiting consumer binding is NOT a reuse victim: a third chunk refuses with backpressure");
+        check(kf.slots[ca].key == 0 && kf.slots[1].key == 2048, "the refusal keeps both bindings standing");
+        // The consumer's chunk retires (assemble completed after its producers staged).
+        kf.slots[ca].awaiting = false;
+        kf.slots[ca].staged[0] = true; kf.slots[ca].rows = 4;   // staged, then assembled: retire
+        kf.slots[ca].rows = -1;
+        for (int t = 0; t < strata::core::kDFlashMaxTaps; ++t) kf.slots[ca].staged[t] = false;
+        int pe = DFlashTapCollector::acquire(kf.slots, 4096, e3);
+        check(pe == 0 && kf.slots[0].key == 4096 && !kf.slots[0].awaiting,
+              "after the consumer's retire the slot re-enters the reuse ring (oldest retired)");
+    }
+
     std::printf(failures == 0 ? "dflash_tap_slot_test: ALL PASS\n" : "dflash_tap_slot_test: %d FAILURES\n",
                 failures == 0 ? 0 : failures);
     return failures == 0 ? 0 : 1;

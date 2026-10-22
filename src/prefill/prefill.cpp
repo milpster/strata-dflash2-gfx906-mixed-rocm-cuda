@@ -4888,6 +4888,19 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
             // Wait only for the DIRECT successor's previous chunk. That successor
             // may already have forwarded its older chunk to later GPUs.
             if (on_stage_chunk && !on_stage_chunk(p0 + T, err)) return false;
+            // L14 (the dflash_w3 model window's "tap 0 was never staged"): a stage WITH a
+            // successor must fire its DFlash tap callback HERE, per chunk - the chain's
+            // producers (sp and every intermediate stage) stage this chunk's foreign tap
+            // slices; the chain's LAST stage assembles the same key at its own chunk end.
+            // The tail block below belongs to the last stage alone (the `continue`), so
+            // the base's on_taps used to never fire on a split and assemble found an
+            // empty slot.  Ordering: the hand-off above drained THIS chunk's stream (the
+            // tap rows are complete), this fires before the successor's chunk is
+            // submitted below - the producer for a key always runs before that key's
+            // consumer, and the collector additionally waits (bounded, epoch-guarded)
+            // for a key's staged flags.  The callback's D2H needs this device current:
+            // run_impl holds `on_device(m.device)` for the whole call.
+            if (on_taps && m.n_taps_ > 0 && !on_taps(m.taps, m.n_taps_, T, p0, err)) return false;
             if (next_run_.valid() && !next_run_.get()) { err = next_err_; return false; }
             next_err_.clear();
             next_->hand_in_ = h;

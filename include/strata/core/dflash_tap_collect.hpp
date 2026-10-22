@@ -31,12 +31,29 @@
 // data - acquire NEVER evicts it), or RETIRED (assembled; H2D queued+recorded).  Reuse =
 // empty, then oldest retired (caller drains the recorded H2D before host rewrite).  When
 // both slots are STAGED the producer WAITS: the bounded prefill chain (N+2 staged while N
-// is unconsumed) is backpressure, never data loss.  assemble() never waits.
+// is unconsumed) is backpressure, never data loss.  assemble() waits ONLY for its own
+// key's producers (bounded, see CONSUMER ORDERING).
 // CANCELLATION (L10 review): the wait is epoch-guarded.  acquire_slot captures gen_ under
 // mu_ before cv_.wait; reset_staging()/disable() increment gen_ and notify - a producer
 // woken after a reset is REJECTED even though the collector stays enabled, so an old
 // request's producer never stages into a new request.  Every metadata mutation (slots,
 // keys, gen_) runs under mu_, disable() included.
+// CONSUMER ORDERING (L14: the dflash_w3 model window's "tap 0 was never staged"): the
+// chain MUST stage a chunk's foreign slices before the final stage assembles the same
+// key - prefill fires on_taps at EVERY stage's chunk end (prefill.cpp: the hand-off
+// path), not only at the chain's last one.  The collector ENFORCES the contract:
+// assemble() for a key with NO staged foreign flag refuses FAST (no producer ran -
+// the original loud failure; the fail-closed refusals stay immediate); with PARTIALLY
+// staged flags it BINDS its slot (marked `awaiting`, so no producer binds a new key
+// over it) and WAITS on cv_ - bounded by kAssembleWaitMs, epoch-guarded exactly like
+// the producer's backpressure (reset_staging/disable reject it), woken by stage()'s
+// flag set.  An expired wait keeps the original per-tap refusal: a loud failure,
+// never a stale-plane read, never an unbounded hang.
+// No deadlock: the consumer waits for a PRODUCER to stage (an independent collector
+// call, the mutex released); only assemble retires, and a producer parked in
+// backpressure holds keys the consumer is NOT waiting for (a parked producer's own key
+// is un-staged, so that key's producer already staged), and the consumer's wait is
+// bounded regardless.
 // LIFETIME (explicit ownership, not magic): the collector object must outlive every thread
 // that may call stage()/assemble().  The engine pipeline guarantees this by JOINS - the
 // prefill stage threads are joined before the session object that owns the collector is
@@ -70,17 +87,26 @@ class DFlashTapCollector {
 
     static constexpr int kSlots = 2;   ///< prefill chains pipeline two chunks
 
+    /// The consumer's (assemble's) bounded wait for its own key's producers, in
+    /// milliseconds.  Generous against a healthy chain (a producer stages at its chunk
+    /// end, microseconds to a chunk's compute before the consumer needs it): expiry
+    /// means a broken producer chain, and the refusal is the loud, original failure.
+    static constexpr int kAssembleWaitMs = 10000;
+
     /// One staging slot of one kind (public + testable: the CPU slot lifecycle in
     /// dflash_tap_plan_test runs the real acquire() with ev == nullptr, no CUDA call).
     struct Slot {
         int64_t key = -1;                              ///< chunk pos0 bound to the slot
         int64_t rows = -1;                             ///< rows staged under that key (geometry guard)
+        bool awaiting = false;                         ///< assemble() bound this slot and waits for its staged flags
         cudaEvent_t ev = nullptr;                      ///< records the slot's last H2D
         uint8_t* pin[kDFlashMaxTaps] = {};             ///< per-tap staging rows (FOREIGN taps only)
         bool staged[kDFlashMaxTaps] = {};              ///< tap staged into this slot
         /// Lifecycle (L10): key<0 = EMPTY; key>=0 with a staged flag = STAGED (unconsumed
         /// producer data - NEVER evicted); key>=0 with no staged flags = RETIRED (assembled:
         /// the H2D is queued on cs_ and `ev` records it; reuse must drain `ev` first).
+        /// L14: `awaiting` marks the consumer's binding (no flags yet, the chunk not
+        /// staged) - acquire() never re-binds it, so the chunk's producers land on it.
     };
 
     /// Pick (and (re)bind) the slot for `key`: an existing binding wins; otherwise an EMPTY

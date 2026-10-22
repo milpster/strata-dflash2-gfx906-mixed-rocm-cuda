@@ -285,6 +285,104 @@ int main() {
         check(tc.stage(6300, s0, 4, err), "after the reset, a NEW request stages cleanly (slots cleared)");
     }
 
+    // L14 consumer-ordering fixture (the dflash_w3 model window's "tap 0 was never
+    // staged"): a THREE-stage plan - stage 0 on dev0 (foreign taps 0,1), stage 1 on the
+    // drafter's dev1 (foreign taps 2,3: staging is required even on the drafter's own
+    // card when the producer is an earlier stage), stage 2 on the drafter (tap 4, D2D).
+    // The consumer (assemble) may arrive while a producer is still in flight: the
+    // collector must WAIT (bounded, epoch-guarded), complete with the exact per-key
+    // tags, and reject deterministically when reset_staging() lands mid-wait.
+    {
+        DFlashTapPlan plan3;
+        const int lbs3[3] = {0, 16, 32}, les3[3] = {16, 32, 48}, devs3[3] = {dev0, drafter, drafter};
+        if (!plan3.build(bounds, 5, lbs3, les3, devs3, 3, kN, err)) {
+            std::printf("FAIL plan3: %s\n", err.c_str());
+            ++failures;
+        }
+        DFlashTapCollector tc3;
+        bool w_ok = plan3.n_taps == 5;
+        if (w_ok) {
+            const OnDevice on(drafter);
+            w_ok = tc3.enable(plan3, drafter, kF32Rows, kPfRows, err);
+        }
+        check(w_ok, "L14: three-stage collector enables (2 staging producers + 1 D2D tap)");
+        if (w_ok) {
+            // tag 100 in every producer plane, rows 0..3 carry the chunk
+            std::vector<float> host((size_t) 5 * kF32Rows * kN), got((size_t) 5 * kF32Rows * kN);
+            const auto fill = [&](int tag) {
+                for (int t = 0; t < 5; ++t)
+                    for (int r = 0; r < kF32Rows; ++r)
+                        for (int c = 0; c < kN; ++c)
+                            host[(size_t) t * kF32Rows * kN + (size_t) r * kN + c] = f32_val(t, r, c, tag);
+                { const OnDevice on(dev0); (void) cudaMemcpy(plane0, host.data(), host.size() * 4, cudaMemcpyHostToDevice); }
+                { const OnDevice on(drafter); (void) cudaMemcpy(plane1, host.data(), host.size() * 4, cudaMemcpyHostToDevice); }
+            };
+            fill(100);
+            const DFlashTapCollector::Slice sl0{0, plane0, kF32Rows, 4};
+            const DFlashTapCollector::Slice sl1{1, plane1, kF32Rows, 4};
+            const DFlashTapCollector::Slice sl2{2, plane1, kF32Rows, 4};
+            const DFlashTapCollector::Slice all3[3] = {sl0, sl1, sl2};
+
+            // (a) The proven failing shape with a healthy producer chain: the consumer
+            //     arrives AFTER one producer staged and BEFORE the lagging one.
+            //     assemble() must block, wake on the lagging stage(), and assemble the
+            //     exact tag-100 plane - the per-key tag discipline is verified.
+            bool a_ok = true;
+            { const OnDevice on(drafter); a_ok = tc3.stage(7000, sl1, 4, err); }   // taps 2,3 staged
+            std::string cerr;
+            bool a_ran = false;
+            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+            std::thread consumer([&] {
+                const OnDevice on(drafter);
+                a_ran = tc3.assemble(7000, all3, 3, 4, 4, cerr);   // parks: tap 0/1 unstaged
+            });
+            std::this_thread::sleep_for(std::chrono::milliseconds(170));
+            { const OnDevice on(dev0); (void) tc3.stage(7000, sl0, 4, err); }      // the lagging producer
+            consumer.join();
+            {   // tag-100 everywhere: taps 0,1 from pinned staging, 2,3 staged, 4 D2D
+                const OnDevice on(drafter);
+                a_ok = a_ok && a_ran && cerr.empty() &&
+                       cudaMemcpy(got.data(), tc3.plane_f32(), got.size() * 4, cudaMemcpyDeviceToHost) == cudaSuccess;
+                for (int t = 0; t < 5 && a_ok; ++t)
+                    for (int r = 0; r < 4 && a_ok; ++r)
+                        for (int c = 0; c < kN && a_ok; c += 127)
+                            a_ok = got[(size_t) t * kF32Rows * kN + (size_t) r * kN + c] == f32_val(t, r, c, 100);
+            }
+            check(a_ok, "L14: assemble blocks for the lagging producer, completes once staged, exact per-key tags");
+
+            // (b) reset_staging() during a consumer's wait: deterministic epoch refusal,
+            //     no hang, no plane touch (enabled() stays true - only the epoch rejects).
+            bool b_ok = true;
+            { const OnDevice on(drafter); b_ok = tc3.stage(7100, sl1, 4, err); }
+            std::string berr("unset");
+            bool b_ran = true;
+            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+            std::thread consumer2([&] {
+                const OnDevice on(drafter);
+                b_ran = tc3.assemble(7100, all3, 3, 4, 4, berr);   // parks: taps 0/1 unstaged
+            });
+            std::this_thread::sleep_for(std::chrono::milliseconds(120));
+            tc3.reset_staging();   // epoch++ + notify: the parked consumer must reject
+            consumer2.join();
+            b_ok = b_ok && !b_ran && berr.find("cancelled") != std::string::npos;
+            check(b_ok, "L14: reset during a consumer's wait rejects deterministically (epoch-guarded, no hang)");
+            tc3.reset_staging();
+
+            // (c) NO producer staged at all: the refusal stays FAST (the fail-closed
+            //     contract - a broken chain fails loudly, the consumer does not park).
+            const auto t0 = std::chrono::steady_clock::now();
+            bool fast = false;
+            {
+                const OnDevice on(drafter);
+                std::string ferr;
+                fast = !tc3.assemble(7200, all3, 3, 4, 4, ferr) && ferr.find("was never staged") != std::string::npos;
+            }
+            const auto ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            check(fast && ms < 2000.0, "L14: zero staged flags for a key refuse immediately (no consumer park)");
+            tc3.disable();
+        }
+    }
+
     tc.disable();
     std::printf(failures == 0 ? "dflash_tap_collect_test: ALL PASS\n" : "dflash_tap_collect_test: %d FAILURES\n",
                 failures);
