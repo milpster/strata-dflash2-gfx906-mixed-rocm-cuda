@@ -6,8 +6,10 @@
 // only for the collector symbol).  Parent review 2026-10-21 item 2/3.
 #include <strata/core/dflash_tap_collect.hpp>
 
+#include <chrono>
 #include <cstdio>
 #include <string>
+#include <thread>
 
 using strata::core::DFlashTapCollector;
 
@@ -78,6 +80,32 @@ int main() {
     int h = DFlashTapCollector::acquire(slots, 2048, err);
     check(g == 0 && h == 1 && slots[0].rows == -1 && slots[1].rows == -1,
           "after a reset, the same keys bind fresh with no inherited rows guard (no false 'rows disagree')");
+
+    // 6. Cancellation contract (L10 review): a producer parked in backpressure on the REAL
+    //    acquire path must REJECT after reset_staging() - the epoch token captured under
+    //    mu_ at wait entry changes, so an old request's producer never stages into a new
+    //    request.  The collector is NOT enabled here (no CUDA call happens); the GPU
+    //    cancellation-waiter fixture in dflash_tap_collect_test covers the enabled case.
+    {
+        DFlashTapCollector tc;
+        auto& kf = tc.kind_for_test(4);
+        std::string e2;
+        int s0 = DFlashTapCollector::acquire(kf.slots, 100, e2);
+        int s1 = DFlashTapCollector::acquire(kf.slots, 200, e2);
+        kf.slots[s0].staged[0] = true; kf.slots[s1].staged[0] = true;   // both STAGED
+        const uint64_t epoch0 = tc.staging_epoch();
+        std::string perr;
+        bool pres = true;
+        std::thread producer([&] { pres = tc.acquire_producer(4, 300, perr); });
+        std::this_thread::sleep_for(std::chrono::milliseconds(80));   // let it park
+        tc.reset_staging();   // new epoch + notify: the parked producer must reject
+        producer.join();
+        check(!pres && perr.find("cancelled") != std::string::npos,
+              "reset during backpressure: pending producer REJECTS deterministically (no hang)");
+        check(tc.staging_epoch() != epoch0, "reset_staging increments the cancellation epoch");
+        check(kf.slots[0].key < 0 && kf.slots[1].key < 0,
+              "the rejected producer staged nothing: slots stay cleared after the reset");
+    }
 
     std::printf(failures == 0 ? "dflash_tap_slot_test: ALL PASS\n" : "dflash_tap_slot_test: %d FAILURES\n",
                 failures == 0 ? 0 : failures);

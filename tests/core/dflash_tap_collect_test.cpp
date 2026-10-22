@@ -9,6 +9,7 @@
 #include <cuda_runtime.h>
 
 #include <array>
+#include <chrono>
 #include <cstdio>
 #include <string>
 #include <thread>
@@ -259,6 +260,29 @@ int main() {
         }
         check(overlap_ok, "overlapping producer staging + drafter assembly keep slots and planes consistent");
         { const OnDevice on(drafter); if (plane1b != nullptr) cudaFree(plane1b); }
+    }
+
+    // L10 cancellation-waiter fixture (real, on the enabled collector): park a producer in
+    // backpressure (both slots STAGED), then reset_staging() - enabled() STAYS true, so
+    // only the epoch token can reject the old request's producer.  The wake must return a
+    // deterministic refusal, never stage the stale chunk, and never hang.
+    {
+        bool cancel_ok = true;
+        cancel_ok = tc.stage(6000, s0, 4, err) && tc.stage(6100, s0, 4, err) && cancel_ok;
+        const uint64_t epoch0 = tc.staging_epoch();
+        std::string perr;
+        bool pres = true;
+        std::thread producer([&] {
+            const OnDevice on(dev0);
+            pres = tc.stage(6200, s0, 4, perr);   // both slots STAGED -> parks on cv_
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds(120));
+        tc.reset_staging();   // epoch++ under mu_ + notify_all: the parked producer must reject
+        producer.join();
+        cancel_ok = cancel_ok && !pres && perr.find("cancelled") != std::string::npos;
+        check(cancel_ok, "parked producer rejects after reset (epoch-guarded, collector still enabled)");
+        check(tc.staging_epoch() != epoch0, "reset_staging increments the cancellation epoch");
+        check(tc.stage(6300, s0, 4, err), "after the reset, a NEW request stages cleanly (slots cleared)");
     }
 
     tc.disable();
