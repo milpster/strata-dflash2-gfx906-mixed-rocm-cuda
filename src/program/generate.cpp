@@ -9075,6 +9075,19 @@ int main(int argc, char** argv) {
                 split_drive.cache_slot_off[st] = drive.d.cache_slot_off;
                 split_drive.pcie_num[st] = pcie_num_of(o.pcie_frac);
             }
+            // L15 (the dflash_w3 decode's "producer plane is null"): the per-stage
+            // verifiers must carry the tap layers BEFORE their init, exactly like the
+            // prefill paths do (8776): the taps plane joins the stage's arena carve, and
+            // the window walk captures the boundary layers that sit in the stage's range
+            // (verify.cpp's `l == tap_layers_[ti]`).  Without this, stage 1+ verifiers
+            // have n_taps_==0: taps() is null, taps 36/46 are captured by NOBODY,
+            // df_collect_f32's stage-1 slice is a null plane (the collector refuses),
+            // and assemble's D2D for the drafter-device taps would read a null source.
+            if (has_dflash)
+                for (int st = 1; st < n_stages; ++st)
+                    stage_ver(st).set_tap_layers(dflash_capture_layers.data(),
+                                                 (int) dflash_capture_layers.size(),
+                                                 dflash.artifact().geom().target_hc_mean);
             for (int st = 1; st < n_stages; ++st) {
                 bool ok_s = false;
                 if (split_same) {
@@ -9330,8 +9343,17 @@ int main(int argc, char** argv) {
             std::vector<strata::core::DFlashTapCollector::Slice> all;
             for (int st = 0; st < n_stages; ++st)
                 all.push_back({st, stage_ver(st).taps(), stage_ver(st).tap_stride() / g.n_embd, rows});
-            for (auto& s : all)
-                if (!tc.stage(key, s, 4, e)) return false;
+            // L15: stage ONLY the slices that own a cross-device tap (the collector's
+            // own ownership rule) - a slice with no foreign taps contributes nothing to
+            // staging and must not reach stage() at all; assemble reads every slice
+            // (the drafter-device taps go D2D from their planes there).
+            const auto& df_plan = tc.plan();
+            for (int st = 0; st < n_stages; ++st) {
+                bool foreign = false;
+                for (int t = 0; t < df_plan.n_taps; ++t)
+                    if (df_plan.owner[t] == st && df_plan.tap_device(t) != tc.drafter_device()) foreign = true;
+                if (foreign && !tc.stage(key, all[(size_t) st], 4, e)) return false;
+            }
             return tc.assemble(key, all.data(), (int) all.size(), rows, 4, e);
         };
         // every graph captured and the drafter's prompt path sized while nothing is in flight (a capture syncs its stream)

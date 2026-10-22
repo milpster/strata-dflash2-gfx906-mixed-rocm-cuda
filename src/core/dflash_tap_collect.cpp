@@ -181,7 +181,10 @@ bool DFlashTapCollector::stage(int64_t key, const Slice& slice, int type_bytes, 
     if (!enabled()) { err = "dflash tap collect: not enabled"; return false; }
     Kind& k = kind(type_bytes);
     if (k.rows_cap <= 0) { err = "dflash tap collect: that plane kind is not enabled"; return false; }
-    if (slice.plane == nullptr) { err = "dflash tap collect: producer plane is null"; return false; }
+    // L15: a NULL plane is only refused when this slice actually owns a FOREIGN tap
+    // (checked inside the ownership loop below).  A slice that owns no foreign taps
+    // contributes nothing to staging - its taps are D2D at assemble - so a verifier
+    // with no carved tap plane must NOT refuse the whole window here.
     if (slice.stage < 0 || slice.stage >= plan_.n_stages) { err = "dflash tap collect: producer stage out of range"; return false; }
     if (slice.rows <= 0 || slice.rows > k.rows_cap || slice.rows > slice.stride_rows) {
         err = "dflash tap collect: producer rows exceed the plane capacity/stride";
@@ -192,6 +195,7 @@ bool DFlashTapCollector::stage(int64_t key, const Slice& slice, int type_bytes, 
     for (int t = 0; t < plan_.n_taps; ++t) {
         if (plan_.owner[t] != slice.stage) continue;
         if (plan_.tap_device(t) == dev_) continue;   // drafter-device taps: assemble copies them D2D
+        if (slice.plane == nullptr) { err = "dflash tap collect: producer plane is null"; return false; }   // L15: a real foreign producer with no plane - loud refusal
         if (slot < 0) {
             slot = acquire_slot(k, key, err, lock);   // backpressure: waits for the consumer's retire
             if (slot < 0) return false;
@@ -242,6 +246,8 @@ bool DFlashTapCollector::assemble(int64_t key, const Slice* slices, int n_slices
             if (plan_.owner[t] == slices[i].stage) {
                 ++producers;
                 who = i;
+                // L15: this guard covers EVERY producer slice, drafter-device (D2D)
+                // included: a null plane is a loud refusal, never a null-source copy.
                 if (slices[i].plane == nullptr || rows > slices[i].stride_rows || rows > slices[i].rows) {
                     err = "dflash tap collect: producer rows do not cover the assembled rows - refusing a stale read";
                     return false;

@@ -382,6 +382,31 @@ int main() {
             }
             const auto ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
             check(fast && ms < 2000.0, "L14: zero staged flags for a key refuse immediately (no consumer park)");
+
+            // (d) L15 null-plane contract (the dflash_w3 decode's "producer plane is
+            //     null"): the slice of the stage that owns ONLY drafter-device taps
+            //     (stage 2, tap 4) must not refuse staging when its verifier never
+            //     carved a tap plane - it contributes nothing to staging.  The slice of
+            //     a stage that owns FOREIGN taps with a null plane (stage 0, taps 0,1)
+            //     keeps the loud refusal, and its taps stay unstaged so assemble also
+            //     refuses (no null-source D2D, no stale-plane read).
+            {
+                const OnDevice on(drafter);
+                const DFlashTapCollector::Slice null_local{2, nullptr, kF32Rows, 4};
+                std::string nerr;
+                check(tc3.stage(7300, null_local, 4, nerr) && nerr.empty(),
+                      "L15: a null-plane slice owning ONLY drafter-device taps does not refuse staging");
+                const DFlashTapCollector::Slice null_foreign{0, nullptr, kF32Rows, 4};
+                nerr.clear();
+                check(!tc3.stage(7300, null_foreign, 4, nerr) && nerr.find("producer plane is null") != std::string::npos,
+                      "L15: a null-plane slice owning FOREIGN taps keeps the loud refusal");
+                const DFlashTapCollector::Slice all_mix[3] = {null_foreign, sl1, null_local};
+                nerr.clear();
+                check(!tc3.assemble(7300, all_mix, 3, 4, 4, nerr) &&
+                      (nerr.find("stale read") != std::string::npos || nerr.find("never staged") != std::string::npos),
+                      "L15: assemble with the null-plane foreign producer refuses (no null-source copy, no stale read)");
+                tc3.reset_staging();
+            }
             tc3.disable();
         }
     }
