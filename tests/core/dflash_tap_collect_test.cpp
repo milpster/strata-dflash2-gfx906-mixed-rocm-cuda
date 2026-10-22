@@ -286,15 +286,18 @@ int main() {
     }
 
     // L14 consumer-ordering fixture (the dflash_w3 model window's "tap 0 was never
-    // staged"): a THREE-stage plan - stage 0 on dev0 (foreign taps 0,1), stage 1 on the
-    // drafter's dev1 (foreign taps 2,3: staging is required even on the drafter's own
-    // card when the producer is an earlier stage), stage 2 on the drafter (tap 4, D2D).
+    // staged"): a THREE-stage plan - stage 0 AND stage 1 both on dev0 (two FOREIGN
+    // producers; taps owned by a stage ON the drafter device never stage - assemble
+    // copies those D2D from the owner's slice, and stage() skips them by
+    // tap_device(t) == dev, dflash_tap_collect.cpp - parent-found in GPU window 4:
+    // the earlier drafter-device stage 1 made the "partial" producer call a no-op and
+    // assemble correctly fast-refused), stage 2 on the drafter (D2D taps).
     // The consumer (assemble) may arrive while a producer is still in flight: the
     // collector must WAIT (bounded, epoch-guarded), complete with the exact per-key
     // tags, and reject deterministically when reset_staging() lands mid-wait.
     {
         DFlashTapPlan plan3;
-        const int lbs3[3] = {0, 16, 32}, les3[3] = {16, 32, 48}, devs3[3] = {dev0, drafter, drafter};
+        const int lbs3[3] = {0, 16, 32}, les3[3] = {16, 32, 48}, devs3[3] = {dev0, dev0, drafter};
         if (!plan3.build(bounds, 5, lbs3, les3, devs3, 3, kN, err)) {
             std::printf("FAIL plan3: %s\n", err.c_str());
             ++failures;
@@ -328,7 +331,7 @@ int main() {
             //     assemble() must block, wake on the lagging stage(), and assemble the
             //     exact tag-100 plane - the per-key tag discipline is verified.
             bool a_ok = true;
-            { const OnDevice on(drafter); a_ok = tc3.stage(7000, sl1, 4, err); }   // taps 2,3 staged
+            { const OnDevice on(drafter); a_ok = tc3.stage(7000, sl1, 4, err); }   // taps 1,2 staged (stage 1, foreign: partial - tap 0 still missing)
             std::string cerr;
             bool a_ran = false;
             std::this_thread::sleep_for(std::chrono::milliseconds(30));
