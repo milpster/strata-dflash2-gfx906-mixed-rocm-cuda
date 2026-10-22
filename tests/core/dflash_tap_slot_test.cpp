@@ -122,6 +122,10 @@ int main() {
         check(ca == 0 && pb == 0, "the key's producers acquire the consumer's binding (staging lands where the consumer waits)");
         int pc = DFlashTapCollector::acquire(kf.slots, 2048, e3);
         check(pc == 1 && kf.slots[ca].awaiting, "the other chunk binds the free slot; the awaiting binding is untouched");
+        kf.slots[pc].staged[0] = true;   // parent-found fixture bug (2026-10-22): a REAL in-flight producer
+        kf.slots[pc].rows = 4;           // chunk has staged flags - bound-but-unstaged is RETIRED by the
+                                         // collector's own lifecycle and rightly reusable. Mark it STAGED
+                                         // so the third chunk below truly faces two live bindings.
         int pd = DFlashTapCollector::acquire(kf.slots, 4096, e3);
         check(pd == -1 && e3.find("backpressure") != std::string::npos,
               "an awaiting consumer binding is NOT a reuse victim: a third chunk refuses with backpressure");
