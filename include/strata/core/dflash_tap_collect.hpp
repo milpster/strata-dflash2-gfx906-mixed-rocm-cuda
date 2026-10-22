@@ -132,6 +132,11 @@ class DFlashTapCollector {
     /// chunk slot `key` (prefill chains key by chunk pos0; decode keys one window).
     /// type_bytes is 4 (FP32 verify) or 2 (BF16 prompt).  Slices produced on the
     /// drafter's own device skip staging; assemble() copies them D2D from the plane.
+    /// L15: a NULL plane refuses ONLY when the slice owns a cross-device tap (a real
+    /// producer with no plane - loud refusal).  A slice owning no foreign taps
+    /// contributes nothing to staging (its taps are D2D at assemble), so a null plane
+    /// must not refuse it - decode verifiers without a carved tap plane are legal
+    /// non-producers.
     bool stage(int64_t key, const Slice& slice, int type_bytes, std::string& err);
 
     /// Phase 2, drafter context: assemble every plan tap for rows [0, rows) into the
