@@ -335,13 +335,35 @@ void conversation_regression(const ModelGeometry& g) {
 #ifdef STRATA_ENABLE_DFLASH2
 void ring_regression(const ModelGeometry& g) {
     using namespace strata::kernels;
-    const QsaShapes s = qsa_real_shapes();
-    const int64_t ring = dflash_ring_capacity(24, 6, s.page_size);   // 29 -> 32 cells
+    // L12 fixture fix (window-2 GPU FAIL "ring attention reads the wrapped rows"): this
+    // section used qsa_real_shapes() - the TARGET shapes (24Q/2KV x head_dim 256) - to
+    // allocate pool/query and build the reference, while dflash2_attention IS the drafter's
+    // attention128_kernel, whose head_dim is fixed at 128 ("Non-causal local attention for
+    // the official 32Q/8KV x 128 drafter", include/strata/kernels/dflash2.hpp:33-38;
+    // src/kernels/cuda/dflash2.cu:257-335 reads q[...*128+d], k[poolrow*128+d]). A
+    // head_dim-256 layout can never match a 128-wide kernel: a guaranteed fixture
+    // mismatch, not kernel evidence. The runtime's drafter pool uses shapes_of(pool_g_) =
+    // qsa_shapes(drafter geometry) - 32Q/8KV/128, page 4 (src/core/dflash_runtime.cpp:
+    // 405-454; include/strata/core/layout.hpp:29), exactly the geometry dflash2_parity
+    // validates (hd=128, heads 32/kv 8). This section now uses the same geometry.
+    ModelGeometry dg = g;
+    dg.n_head = 32; dg.n_head_kv = 8; dg.head_dim = 128;
+    const QsaShapes s = qsa_shapes(dg);   // the shapes the runtime hands the kernel
+    const int hd = (int) s.head_dim, nq = (int) s.n_head, nk = (int) s.n_head_kv, page = (int) s.page_size;
+    // Fixture assertions BEFORE the kernel call (CPU-visible): the drafter geometry the
+    // kernel hardcodes, plus the group/page facts its entry checks enforce.
+    check(nq == 32 && nk == 8 && hd == 128, "ring fixture pins the drafter geometry 32Q/8KV x 128 before the kernel call");
+    check(page == 4 && nq % nk == 0, "ring fixture page size and Q/KV group match the kernel entry checks");
+    const int64_t ring = dflash_ring_capacity(24, 6, page);   // 29 -> 32 cells
     const int rows = 6, window = 24;
-    const int kvw = s.n_head_kv * s.head_dim, qw = s.n_head * s.head_dim;
+    check(ring % page == 0 && ring >= window + rows - 1,
+          "ring is whole pages and covers the widest readable span (kernel-enforced, asserted here too)");
+    const int kvw = nk * hd, qw = nq * hd;
     Owned o;
-    check(o.init(g, ring), "ring pool init");
-    check(o.st.kv_mode == 0 && o.st.n_slots == ring / s.page_size, "ring is a mode-0 pool of ring pages");
+    std::vector<int32_t> table;
+    check(o.init(dg, ring, &table), "ring pool init");   // capture the REAL page table for the reference
+    check(o.st.kv_mode == 0 && o.st.n_slots == ring / page, "ring is a mode-0 pool of ring pages");
+    check((int64_t) table.size() == ring / page, "captured page table covers every ring page");
     cudaStream_t cs;
     cudaStreamCreateWithFlags(&cs, cudaStreamNonBlocking);
     float *kd, *vd, *qd, *out, *scratch;
@@ -350,37 +372,37 @@ void ring_regression(const ModelGeometry& g) {
     cudaMalloc(&vd, ring * kvw * sizeof(float));
     cudaMalloc(&qd, rows * qw * sizeof(float));
     cudaMalloc(&out, rows * qw * sizeof(float));
-    cudaMalloc(&scratch, rows * s.n_head * ((window + rows + 63) / 64) * 130 * sizeof(float));
+    cudaMalloc(&scratch, (size_t) rows * nq * ((window + rows + 63) / 64) * 130 * sizeof(float));
     cudaMalloc(&steps, rows * 4 * sizeof(int32_t));
     cudaMalloc(&attn, rows * 4 * sizeof(int32_t));
-    cudaMalloc(&positions, rows * s.n_head * sizeof(int32_t));
-    std::vector<float> qh(qw * rows);
+    cudaMalloc(&positions, (size_t) rows * nq * sizeof(int32_t));
+    std::vector<float> qh((size_t) qw * rows);
     for (size_t i = 0; i < qh.size(); ++i) qh[i] = (int(i % 29) - 14) * 0.03125f;
     cudaMemcpyAsync(qd, qh.data(), qh.size() * 4, cudaMemcpyHostToDevice, cs);
     // Three full wraps: each round appends `ring` cells at [base, base+ring) and the pool must
     // hold the NEWEST round's content at every mapped row (wrap-safe, duplicate-free writes).
     for (int64_t base : {int64_t{0}, ring, 2 * ring}) {
-        std::vector<float> kh(ring * kvw), vh(ring * kvw);
+        std::vector<float> kh((size_t) ring * kvw), vh((size_t) ring * kvw);
         for (int64_t c = 0; c < ring; ++c)
             for (int i = 0; i < kvw; ++i) {
-                kh[c * kvw + i] = kval(base + c, i / s.head_dim, i % s.head_dim);
-                vh[c * kvw + i] = vval(base + c, i / s.head_dim, i % s.head_dim);
+                kh[(size_t) c * kvw + i] = kval(base + c, (int) (i / hd), (int) (i % hd));
+                vh[(size_t) c * kvw + i] = vval(base + c, (int) (i / hd), (int) (i % hd));
             }
         cudaMemcpyAsync(kd, kh.data(), kh.size() * 4, cudaMemcpyHostToDevice, cs);
         cudaMemcpyAsync(vd, vh.data(), vh.size() * 4, cudaMemcpyHostToDevice, cs);
-        dflash_build_steps(steps, (int) ring, base, s.page_size, cs, ring);
+        dflash_build_steps(steps, (int) ring, base, page, cs, ring);
         kv_append_f16_steps(o.st.k_pool, o.st.v_pool, o.st.page_table, steps, 4, kd, vd, kvw,
                             (int) ring, s, cs);
         cudaStreamSynchronize(cs);
-        std::vector<uint16_t> pool(ring * kvw);
+        std::vector<uint16_t> pool((size_t) ring * kvw);
         for (bool value : {false, true}) {
             cudaMemcpy(pool.data(), value ? o.st.v_pool : o.st.k_pool, pool.size() * 2, cudaMemcpyDeviceToHost);
             for (int64_t c = 0; c < ring; ++c) {
                 const int64_t pc = dflash_ring_cell(base + c, ring);
-                const int row = (int) (pc / s.page_size * s.n_head_kv) * s.page_size + (int) pc % s.page_size;
-                for (int h = 0; h < s.n_head_kv; ++h)
-                    for (int d = 0; d < s.head_dim; ++d)
-                        if (pool[((size_t) row + h * s.page_size) * s.head_dim + d] !=
+                const int row = (int) (pc / page * nk) * page + (int) pc % page;
+                for (int h = 0; h < nk; ++h)
+                    for (int d = 0; d < hd; ++d)
+                        if (pool[((size_t) row + h * page) * hd + d] !=
                             f16_from_f32(value ? vval(base + c, h, d) : kval(base + c, h, d))) {
                             check(false, "ring wrap append lands at the mapped row");
                             return;
@@ -389,71 +411,89 @@ void ring_regression(const ModelGeometry& g) {
         }
     }
     // Absolute RoPE positions are untouched by the ring mapping.
-    dflash_build_positions(positions, rows, s.n_head, 70, cs);
-    std::vector<int32_t> ph(rows * s.n_head);
+    dflash_build_positions(positions, rows, nq, 70, cs);
+    std::vector<int32_t> ph((size_t) rows * nq);
     cudaMemcpyAsync(ph.data(), positions, ph.size() * 4, cudaMemcpyDeviceToHost, cs);
     cudaStreamSynchronize(cs);
     for (size_t i = 0; i < ph.size(); ++i)
-        check(ph[i] == 70 + (int) (i / s.n_head), "ring keeps absolute rope positions");
-    // Attention at an absolute position past two wraps: visible window maps through the ring.
-    const int64_t pos = 70, end = pos + rows;
-    dflash_build_attn_steps(attn, rows, end, s.page_size, cs);
-    dflash2_attention(qd, o.st.k_pool, o.st.v_pool, o.st.page_table, attn, out, scratch, rows,
-                      s.n_head, s.n_head_kv, s.page_size, window + rows, window, cs, (int) ring);
-    cudaStreamSynchronize(cs);
-    std::vector<float> got(rows * qw);
-    cudaMemcpy(got.data(), out, got.size() * 4, cudaMemcpyDeviceToHost);
+        check(ph[i] == 70 + (int) (i / nq), "ring keeps absolute rope positions");
+
     const int64_t through = 3 * ring;   // newest append end after the three wraps
-    check(!dflash_ring_retained(pos, rows, window, ring, through),
+    check(!dflash_ring_retained(70, rows, window, ring, through),
           "host horizon flags the stale deep-rewind window");
     check(dflash_ring_retained(through - rows, rows, window, ring, through),
           "host horizon keeps an in-place propose");
-    for (int r = 0; r < rows; ++r) for (int h = 0; h < s.n_head; ++h) {
-        std::vector<double> scores((size_t) end, -INFINITY);
-        double m = -INFINITY;
-        auto row_of = [&](int64_t c, int head) {
+
+    // L12 reference rewrite: capture the FP16 pool bytes ONCE after sync (bulk D2H) and
+    // compute the host softmax from those bytes at the physical rows the ring mapping +
+    // CAPTURED page table name. No cudaMemcpy inside the (row,head,dim,cell) loop (the
+    // window-2 version did 737k tiny PCIe transfers - unsuitable on gfx906). Two cases:
+    // the deliberate stale deep-rewind window (rows hold the NEWEST wrap's bytes, the
+    // mapping dflash_ring_retained refuses before proposing) and the retained in-place
+    // window (rows hold the logical cells - the valid propose case). Threshold 1e-4 kept.
+    const auto attention_case = [&](int64_t pos, const char* tag, const char* what) {
+        const int64_t end = pos + rows;
+        dflash_build_attn_steps(attn, rows, end, page, cs);
+        dflash2_attention(qd, o.st.k_pool, o.st.v_pool, o.st.page_table, attn, out, scratch, rows,
+                          nq, nk, page, window + rows, window, cs, (int) ring);
+        cudaStreamSynchronize(cs);
+        std::vector<float> got((size_t) rows * qw);
+        cudaMemcpy(got.data(), out, got.size() * 4, cudaMemcpyDeviceToHost);
+        std::vector<uint16_t> kp((size_t) ring * kvw), vp((size_t) ring * kvw);
+        cudaMemcpy(kp.data(), o.st.k_pool, kp.size() * 2, cudaMemcpyDeviceToHost);
+        cudaMemcpy(vp.data(), o.st.v_pool, vp.size() * 2, cudaMemcpyDeviceToHost);
+        const int group = nq / nk;
+        const auto row_of = [&](int64_t c, int h) {
             const int64_t pc = dflash_ring_cell(c, ring);
-            return (pc / s.page_size * s.n_head_kv + head / (s.n_head / s.n_head_kv)) * s.page_size +
-                   pc % s.page_size;
+            const int64_t phys = table[pc / page];   // the REAL page table, captured at init
+            return (phys * nk + h / group) * page + pc % page;
         };
-        for (int64_t c = std::max<int64_t>(0, pos - window + 1); c < end; ++c) {
-            if (std::abs(c - (end - rows + r)) >= window) continue;
-            const int64_t pc = dflash_ring_cell(c, ring);
-            const int64_t pr = (pc / s.page_size * s.n_head_kv + h / (s.n_head / s.n_head_kv)) *
-                                   s.page_size + pc % s.page_size;
-            // The row's content is the NEWEST append that landed there (three full wraps), not
-            // the logical cell the window names - exactly the stale-read condition the runtime's
-            // dflash_ring_retained guard refuses before proposing. The kernel reads rows; the
-            // reference reads the same rows' newest writers.
-            const int64_t newest = pc + ((through - 1 - pc) / ring) * ring;
-            double sc = 0;
-            for (int d = 0; d < s.head_dim; ++d) {
-                const uint16_t bits =
-                    __half_as_ushort(__float2half(kval(newest, h / (s.n_head / s.n_head_kv), d)));
-                sc += (double) qh[(r * s.n_head + h) * s.head_dim + d] * __half2float(__ushort_as_half(bits));
-            }
-            scores[(size_t) c] = sc / std::sqrt((double) s.head_dim);
-            m = std::max(m, scores[(size_t) c]);
-        }
-        double sum = 0;
-        for (double& x : scores) { x = std::exp(x - m); sum += x; }
-        for (int d = 0; d < s.head_dim; ++d) {
-            double acc = 0;
-            for (int64_t c = std::max<int64_t>(0, pos - window + 1); c < end; ++c) {
+        const int64_t lo = std::max<int64_t>(0, pos - window + 1);
+        bool ok = true;
+        double first_abs = 0, max_abs = 0, max_rel = 0, f_want = 0, f_have = 0;
+        int fr = -1, fh = -1, fd = -1;
+        for (int r = 0; r < rows && ok; ++r) for (int h = 0; h < nq && ok; ++h) {
+            std::vector<double> scores((size_t) end, -INFINITY);
+            double m = -INFINITY;
+            for (int64_t c = lo; c < end; ++c) {
                 if (std::abs(c - (end - rows + r)) >= window) continue;
-                const int64_t pr = row_of(c, h);
-                const size_t idx = (size_t) (pr * s.head_dim + d) % (ring * kvw);
-                uint16_t bits = 0;
-                cudaMemcpy(&bits, o.st.v_pool + idx, 2, cudaMemcpyDeviceToHost);
-                acc += scores[(size_t) c] * __half2float(__ushort_as_half(bits));
+                const uint16_t* krow = kp.data() + (size_t) row_of(c, h) * hd;
+                const float* qrow = qh.data() + ((size_t) r * nq + h) * hd;
+                double sc = 0;
+                for (int d = 0; d < hd; ++d)
+                    sc += (double) qrow[d] * __half2float(__ushort_as_half(krow[d]));
+                scores[(size_t) c] = sc / std::sqrt((double) hd);
+                m = std::max(m, scores[(size_t) c]);
             }
-            const double want = acc / sum, have = got[(r * s.n_head + h) * s.head_dim + d];
-            if (std::abs(have - want) > 1e-4) {
-                check(false, "ring attention reads the wrapped rows");
-                return;
+            double sum = 0;
+            for (double& x : scores) { x = std::exp(x - m); sum += x; }
+            for (int d = 0; d < hd; ++d) {
+                double acc = 0;
+                for (int64_t c = lo; c < end; ++c) {
+                    if (std::abs(c - (end - rows + r)) >= window) continue;
+                    const uint16_t* vrow = vp.data() + (size_t) row_of(c, h) * hd;
+                    acc += scores[(size_t) c] * __half2float(__ushort_as_half(vrow[d]));
+                }
+                const double want = acc / sum, have = got[(size_t) r * qw + h * hd + d];
+                const double abse = std::abs(have - want);
+                const double rel = std::abs(want) > 1e-9 ? abse / std::abs(want) : abse;
+                if (abse > max_abs) max_abs = abse;
+                if (rel > max_rel) max_rel = rel;
+                if (abse > 1e-4) { ok = false; first_abs = abse; fr = r; fh = h; fd = d; f_want = want; f_have = have; }
             }
         }
-    }
+        if (!ok) {
+            std::fprintf(stderr,
+                         "ring case %s: first |delta|=%.3e at row %d head %d dim %d (want %.6f have %.6f); "
+                         "max_abs=%.3e max_rel=%.3e; geometry 32Q/8KV x %d page %d ring %lld window %d rows %d\n",
+                         tag, first_abs, fr, fh, fd, f_want, f_have, max_abs, max_rel,
+                         hd, page, (long long) ring, window, rows);
+        }
+        check(ok, what);
+    };
+    attention_case(70, "deep-rewind/stale-mapped", "ring attention reads the wrapped rows (stale newest-writer mapping)");
+    attention_case(through - rows, "in-place/retained", "retained ring attention reads the in-place rows at absolute positions");
+
     cudaFree(kd); cudaFree(vd); cudaFree(qd); cudaFree(out); cudaFree(scratch);
     cudaFree(steps); cudaFree(attn); cudaFree(positions);
     cudaStreamDestroy(cs);
