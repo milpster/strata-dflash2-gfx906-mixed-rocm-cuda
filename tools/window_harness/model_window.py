@@ -90,21 +90,17 @@ import time
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import window as W                                      # reviewed snapshot/stop/restore helpers
 
-# The tree the config's exe points into. Overridable so a parent gate can point the SAME reviewed
-# machinery at another engine tree (e.g. the upstream-integ worktree) without touching the prototype:
-#   STRATA_WINDOW_CLONE, STRATA_WINDOW_PROTO_BINARY, STRATA_WINDOW_PROTO_SERVER
-CLONE = os.environ.get("STRATA_WINDOW_CLONE", "/mnt/user/dflash2/Strata-wt")
-PROTO_BINARY = os.environ.get("STRATA_WINDOW_PROTO_BINARY", f"{CLONE}/build-gfx906-dflash2/strata")
-PROTO_SERVER = os.environ.get("STRATA_WINDOW_PROTO_SERVER", f"{CLONE}/serve/server.py")
+# The production venv python is the proxy's own and is NEVER overridable.
 VENV_PY = "/mnt/user/Strata/.venv/bin/python"          # production venv python (the proxy's own)
 
 
 def _abs_override(env_name: str, default: str) -> str:
     """Opt-in ABSOLUTE path override, default-preserving (an absent/empty env yields the default
     string BYTE-FOR-BYTE). A relative value is REFUSED, never resolved against a cwd: a typo can
-    never make a controller read/write configs in an unselected tree. Same env name and mechanism
-    as the cloner (tools/test_inco_dflash2_integration.py), so the imported clone-provider and the
-    controller always resolve the SAME config dir AND the SAME binary (PROTO_BINARY above)."""
+    never make a controller read/write configs, import tools, or launch a proxy in an unselected
+    tree. Same env names and mechanism as the cloner (tools/test_inco_dflash2_integration.py), so
+    the imported clone-provider and the controller always resolve the SAME clone tree, binary,
+    server and config dir - a relative value fails the import of BOTH, never just one."""
     raw = os.environ.get(env_name)
     if raw is None or not raw.strip():
         return default
@@ -115,8 +111,17 @@ def _abs_override(env_name: str, default: str) -> str:
     return val
 
 
-# The cloner writes here and every controller reads config paths ONLY through mw.CONFIG_DIR
-# (divergence/greedy/regression all use mw.CONFIG_DIR), so this single override covers the lane.
+# The tree the config's exe points into, the prototype binary/server it launches, and the config
+# dir. Overridable so a parent gate can point the SAME reviewed machinery at another engine tree
+# (e.g. the upstream-integ worktree) and a new config dir without touching the prototype:
+#   STRATA_WINDOW_CLONE, STRATA_WINDOW_PROTO_BINARY, STRATA_WINDOW_PROTO_SERVER,
+#   STRATA_WINDOW_CONFIG_DIR
+# ALL FOUR go through _abs_override (no raw os.environ.get on a selected path): the defaults are
+# byte-for-byte the literals the lane used before, PROTO_BINARY/PROTO_SERVER still derive from the
+# selected CLONE, and every controller reads config paths ONLY through mw.CONFIG_DIR.
+CLONE = _abs_override("STRATA_WINDOW_CLONE", "/mnt/user/dflash2/Strata-wt")
+PROTO_BINARY = _abs_override("STRATA_WINDOW_PROTO_BINARY", f"{CLONE}/build-gfx906-dflash2/strata")
+PROTO_SERVER = _abs_override("STRATA_WINDOW_PROTO_SERVER", f"{CLONE}/serve/server.py")
 CONFIG_DIR = pathlib.Path(_abs_override("STRATA_WINDOW_CONFIG_DIR", "/mnt/user/dflash2/config"))
 ARTIFACT = "/mnt/user/dflash2/artifacts/inco-dflash2-bf16.gguf"
 LOGS, OPS = W.LOGS, W.OPS
