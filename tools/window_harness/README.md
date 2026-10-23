@@ -34,6 +34,28 @@ identity/ownership/lineage guard. The isolated-lineage recognition in the cloner
 path under `/mnt/user/dflash2/config/`, so a selected dir must stay inside it (e.g.
 `/mnt/user/dflash2/config/integ-023`); anything else is `unknown` = fail-closed refusal.
 
+## Prompt selection (opt-in; defaults byte-for-byte unchanged)
+
+| flag | selects |
+|---|---|
+| (none) | the ONE default prompt - gate-set position 1 (the existing behavior) |
+| `--prompt-set` | the FULL eight-prompt gate set, in order (the existing behavior) |
+| `--requests N [N ...]` | SUBSET DIAGNOSTIC: ONLY those original ONE-BASED gate-set positions (1..8), in the order given |
+
+`--requests` is valid ONLY with `--prompt-set` and NEVER with `--reenable`; an empty selection, a
+duplicate, `0`, and an out-of-range index are refused BEFORE any snapshot, signal, config read, port
+probe or HTTP action. It changes NO control: the same three arms, pin 2000, chunk 512, no borrowing,
+adaptation off, park/cache off, min-p 0, and `--max-tokens` stays bounded by the class cap (it can only
+lower it). Such a run is labelled **SUBSET DIAGNOSTIC** - never a full eight-prompt correctness pass:
+`full_eight_prompt_gate_established` is false, the standard `gates_ok` stays false, and the separate
+`subset_diagnostic_ok` covers the strict comparisons of the SELECTED responses plus the runtime gates.
+Every plan row and every response records the original full-set index beside the sequential index.
+
+```sh
+python3 tools/window_harness/divergence_window.py --prompt-set --requests 8 --max-tokens 64 --equalize-mib 1372   # DRY RUN
+python3 tools/test_inco_request_selection.py    # CPU fixtures for the selection (writes nothing)
+```
+
 ## Run
 
 ```sh
