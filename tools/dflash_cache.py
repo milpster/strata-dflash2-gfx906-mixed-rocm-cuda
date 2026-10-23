@@ -12,9 +12,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from pathlib import Path
 
 from dflash_sampling import Engine, replace, validate_residency
+
+REPO = Path(os.environ.get("STRATA_REPO", Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(REPO))                       # the prototype's own Python source (L23)
+from serve.server import layer_split_of, layer_split_value
 
 
 def main():
@@ -47,6 +52,13 @@ def main():
                        ("--conversation-cache-mib", "256"), ("--conversation-cache-slots", "4"),
                        ("--conversation-cache-min-tokens", "1"), ("--conversation-cache-park-gain", "0")):
         replace(args, key, value)
+    # L23: this tool narrows the profile to 4096 / spec 2 / block 1, and the REAL two-GPU layer split
+    # stays - the same rule serve/server.py:2871 applies in the server path (the engine gets --serve,
+    # which --layer-split needs). --spec-split is the split VERIFY window (generate.cpp:710), a
+    # different option, and --layer-split is NOT in the forced list above, so replace() never removes
+    # it. A config naming fewer than two GPUs adds nothing: the standalone behavior is unchanged.
+    if layer_split_of(cfg) and "--layer-split" not in args:
+        args += ["--layer-split", layer_split_value(cfg)]
     args.append("--spec-split")
     env = dict(os.environ, STRATA_IQ_MT_MIN="1", STRATA_PREFILL_CPU_SHARE="0",
                STRATA_SPEC_PROB="0", STRATA_SPEC_COUPLED="0", STRATA_SPEC_GUMBEL="0")

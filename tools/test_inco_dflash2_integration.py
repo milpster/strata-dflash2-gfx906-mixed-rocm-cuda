@@ -26,7 +26,9 @@ BASELINE FACT (parent-verified source + runtime logs, 2026-10-22; supersedes the
     suffix_draft=3 is ACTIVE: production is a SUFFIX-LOOKUP baseline. Production logs
     repeat "suffix drafts: N windows, X of Y accepted". --spec 6 alone does NOT enable MTP.
   * Pure target-only (autoregressive) requires EXPLICIT --suffix-draft 0 (plus
-    --lookup-chain 0) and --spec 1 - NOT prod args verbatim. The prod-args-verbatim clone
+    --lookup-chain 0) and --spec 2 - spec 1 is refused for a native (IQ) pack
+    (generate.cpp:3685-3689); with no drafter the extra row is the inert oracle/0
+    fill, so the output is pure AR. The prod-args-verbatim clone
     is therefore the new-binary SUFFIX-LOOKUP clone, named suffix_lookup.
   * READY MTP loader input (parent-verified, read-only, NO conversion/copy needed):
     /home/user/dev/Strata-data/mtp-bf16/rt/ (dense.txt 29 index lines, dense.bin
@@ -123,12 +125,16 @@ def clone_server_config(mode: str, prod: dict) -> dict:
         pass  # prod args verbatim = SUFFIX-LOOKUP baseline on the new binary (suffix_draft
               # default 3, generate.cpp:778 - observed in production logs)
     elif mode == "target_only":
-        cfg["args"] = merge_flags(prod["args"], {"--spec": "1"},
+        # --spec 2, not 1: a native (IQ) pack refuses spec < 2 (generate.cpp:3685-3689).
+        # With every drafter off the window's extra rows come from the oracle/0 fill
+        # (generate.cpp:16772-16779) and verify commits only target-argmax rows, so the
+        # OUTPUT is pure autoregressive; the second row is inert ballast, not a drafter.
+        cfg["args"] = merge_flags(prod["args"], {"--spec": "2"},
                                   ["--suffix-draft", "0", "--lookup-chain", "0"])
     elif mode == "old_target_only":
-        cfg["exe"] = PROD_BINARY            # old binary, pure AR - for the old-vs-new correctness gate
+        cfg["exe"] = PROD_BINARY            # old binary, pure AR - for the old-vs-new pure-AR
         cfg["log"] = f"{LOG_DIR}/engine-oldbinary-target-only.log"
-        cfg["args"] = merge_flags(prod["args"], {"--spec": "1"},
+        cfg["args"] = merge_flags(prod["args"], {"--spec": "2"},
                                   ["--suffix-draft", "0", "--lookup-chain", "0"])
     elif mode == "mtp":
         cfg["args"] = merge_flags(prod["args"],
@@ -194,8 +200,9 @@ def plan_manifest(prod: dict) -> dict:
                            "exe": prod["exe"], "config": "production config as-is"},
         "new_suffix_lookup": {"kind": "clone, prod args verbatim = new-binary SUFFIX-LOOKUP baseline",
                               "exe": PROTO_BINARY, "config": "proto-server-swift15-suffix_lookup.json"},
-        "new_target_only": {"kind": "PURE autoregressive: --suffix-draft 0 --lookup-chain 0 --spec 1 "
-                                     "(no MTP, no DFlash) - NOT prod args verbatim",
+        "new_target_only": {"kind": "PURE autoregressive: --suffix-draft 0 --lookup-chain 0 --spec 2 "
+                                     "(spec 2 because a native IQ pack refuses spec<2, generate.cpp:3685; "
+                                     "no-drafter rows are the oracle/0 fill, 16772-16779 - output is AR)",
                             "exe": PROTO_BINARY, "config": "proto-server-swift15-target_only.json"},
         "old_target_only": {"kind": "PURE autoregressive on the OLD prod binary - old-vs-new pure-AR "
                                      "correctness gate", "exe": PROD_BINARY,
@@ -350,9 +357,22 @@ def guard_execute(url: str, confirm: bool) -> str | None:
     return None
 
 
-def execute_checks(url: str, identity_cfg: str) -> int:
+def execute_checks(url: str, identity_cfg: str, results_path: str | None = None) -> int:
     """Real HTTP checks against the isolated prototype (parent-run; cases are claimed ONLY
-    when they executed). No GPU, no production - production was observed absent by the guard."""
+    when they executed). No GPU, no production - production was observed absent by the guard.
+
+    L22 strengthening (narrow, guards untouched): identity is the EXACT props.model_alias and
+    props.model_path from --native (clones carry --native, never --model), with no None-as-success
+    when the config names the field; every short test states thinking OFF explicitly
+    (reasoning_effort=none + chat_template_kwargs.enable_thinking=false, the shape strata_bench
+    uses); every case emits a FULL structured record (label, ok/error, complete usage, returned
+    text) to stdout and to the optional JSON result path; repeat-2 must report
+    usage.prompt_tokens_details.cached_tokens > 0 and the unrelated reset-new must report
+    cached_tokens == 0 (the field serve/server.py:5335 emits from the engine's reused counter);
+    the cold repeat-1 is never the reset witness; all FOUR requests must COMPLETED, not merely
+    print; the sampled case keeps temperature > 0 and its expected target-only fallback
+    (generate.cpp:12499, stderr -> engine log via serve/server.py:998) is proven from the
+    PROTOTYPE session log by the parent/controller, never claimed here."""
     fails = 0
     try:
         health = http_json(f"{url}/health")
@@ -361,41 +381,92 @@ def execute_checks(url: str, identity_cfg: str) -> int:
         print(f"FAIL: /health at {url}: {e} (is the parent's prototype server up on {PROTO_PORT}?)")
         return 1
     try:
-        props = http_json(f"{url}/props")
         want = json.loads(pathlib.Path(identity_cfg).read_text())
-        want_pack = want["args"][want["args"].index("--model") + 1] if "--model" in want["args"] else None
-        ok_model = props.get("model_alias") in (None, want["model_name"])
-        ok_pack = want_pack is None or props.get("model_path") in (None, want_pack)
+    except (OSError, ValueError) as e:
+        print(f"FAIL: identity config unreadable {identity_cfg}: {e}")
+        return 1
+    a = want.get("args", [])
+    want_pack = a[a.index("--native") + 1] if "--native" in a else (
+        a[a.index("--model") + 1] if "--model" in a else None)
+    model = want.get("model_name") or "swift-1.5-iq3_xxs"
+    cases: list[dict] = []
+
+    def emit(case: dict) -> None:
+        cases.append(case)
+        print(json.dumps(case, ensure_ascii=False)[:4000], flush=True)   # FULL usage + text
+
+    try:
+        props = http_json(f"{url}/props")
+        ok_model = props.get("model_alias") == want.get("model_name")    # exact: a missing alias FAILS
+        ok_pack = want_pack is None or props.get("model_path") == want_pack   # exact when named
         if ok_model and ok_pack:
             print(f"identity: model_alias/model_path match the cloned config "
                   f"({props.get('model_alias')!r}, {props.get('model_path')!r})")
         else:
             print(f"FAIL: /props {props.get('model_alias')!r}/{props.get('model_path')!r} does not match "
-                  f"cloned {want['model_name']!r}/{want_pack!r}")
+                  f"cloned {want.get('model_name')!r}/{want_pack!r} (exact match required, no None-as-success)")
             fails += 1
     except OSError as e:
         print(f"FAIL: /props identity check: {e}")
         fails += 1
-    prompt = "Explain, in two short sentences, why layer splitting moves K/V pools per stage."
-    for label, messages in (("repeat-1", prompt), ("repeat-2", prompt), ("reset-new", "Count from 1 to 5.")):
-        body = {"model": "swift-1.5-iq3_xxs", "messages": [{"role": "user", "content": messages}],
-                "max_tokens": 64, "temperature": 0.0, "stream": False}
+
+    def request(label: str, content: str, temperature: float, max_tokens: int) -> bool:
+        body = {"model": model, "messages": [{"role": "user", "content": content}],
+                "max_tokens": max_tokens, "temperature": temperature, "stream": False,
+                "reasoning_effort": "none", "chat_template_kwargs": {"enable_thinking": False}}
         try:
             resp = http_json(f"{url}/v1/chat/completions", body)
             usage = resp.get("usage") or {}
-            print(f"{label}: executed; usage={json.dumps(usage)[:160]}")
-        except OSError as e:
-            print(f"FAIL {label}: {e}")
+            text = ((resp.get("choices") or [{}])[0].get("message") or {}).get("content")
+            emit({"label": label, "ok": True, "err": None, "temperature": temperature,
+                  "thinking": "off (reasoning_effort=none, enable_thinking=false)",
+                  "usage": usage, "text": text})
+            return True
+        except (OSError, ValueError) as e:
+            emit({"label": label, "ok": False, "err": f"{type(e).__name__}: {e}"[:300],
+                  "temperature": temperature, "usage": None, "text": None})
+            return False
+
+    prompt = "Explain, in two short sentences, why layer splitting moves K/V pools per stage."
+    for label, content in (("repeat-1", prompt), ("repeat-2", prompt), ("reset-new", "Count from 1 to 5.")):
+        if not request(label, content, 0.0, 64):
             fails += 1
-    sampled = {"model": "swift-1.5-iq3_xxs", "messages": [{"role": "user", "content": "Say hi."}],
-               "max_tokens": 8, "temperature": 1.0, "stream": False}
-    try:
-        http_json(f"{url}/v1/chat/completions", sampled)
-        print("sampled-fallback: request executed; the explicit target-only line must appear in the "
-              "prototype log (parent verifies the PROTOTYPE log, read-only)")
-    except OSError as e:
-        print(f"FAIL sampled-fallback: {e}")
+    if not request("sampled", "Say hi.", 1.0, 8):        # sampled keeps temperature > 0 on purpose
         fails += 1
+    by = {c["label"]: c for c in cases}
+
+    def cached(label: str) -> int | None:
+        det = ((by.get(label) or {}).get("usage") or {}).get("prompt_tokens_details")
+        v = det.get("cached_tokens") if isinstance(det, dict) else None
+        return v if isinstance(v, int) else None
+
+    four = all(l in by and by[l]["ok"] for l in ("repeat-1", "repeat-2", "reset-new", "sampled"))
+    if not four:
+        print(f"FAIL: not all four requests COMPLETED: {[(c['label'], c['ok']) for c in cases]} "
+              "- completion is asserted, not printing")
+        fails += 1
+    v2, vz = cached("repeat-2"), cached("reset-new")     # repeat-1 is cold by nature: never the witness
+    if v2 is None:
+        print("FAIL repeat-2: no integer usage.prompt_tokens_details.cached_tokens - repeat reuse NOT proven")
+        fails += 1
+    elif v2 <= 0:
+        print(f"FAIL repeat-2: cached_tokens {v2} is not > 0 - repeat reuse NOT proven")
+        fails += 1
+    if vz is None:
+        print("FAIL reset-new: no integer usage.prompt_tokens_details.cached_tokens - clean reset NOT proven")
+        fails += 1
+    elif vz != 0:
+        print(f"FAIL reset-new: cached_tokens {vz} is not 0 - not a clean new conversation")
+        fails += 1
+    print("sampled: temperature > 0 kept; its expected target-only fallback line (generate.cpp:12499, "
+          "stderr -> engine log) is proven from the PROTOTYPE session log by the parent/controller - "
+          "this tool claims nothing about it")
+    summary = {"url": url, "identity_config": identity_cfg, "model": model, "pack_want": want_pack,
+               "cases": cases, "completed": sum(1 for c in cases if c["ok"]),
+               "repeat_cached": v2, "reset_cached": vz, "fails": fails}
+    if results_path:
+        pathlib.Path(results_path).write_text(json.dumps(summary, indent=2) + "\n")
+        print(f"structured per-case results written: {results_path}")
     print("Claim discipline: only the cases above were attempted against the isolated server; deeper "
           "cancel/park/restore gates run via tools/cancel_park_test.py + tools/dflash_cache.py (parent).")
     return 1 if fails else 0
@@ -430,8 +501,8 @@ def selfcheck() -> int:
           "create files inside the production tree (baseline isolation)")
     ar = clone_server_config("target_only", prod)["args"]
     check(ar[ar.index("--suffix-draft") + 1] == "0" and ar[ar.index("--lookup-chain") + 1] == "0"
-          and ar[ar.index("--spec") + 1] == "1" and "--mtp" not in ar and "--dflash" not in ar,
-          "pure target-only = --suffix-draft 0 --lookup-chain 0 --spec 1, no MTP/DFlash (NOT verbatim prod args)")
+          and ar[ar.index("--spec") + 1] == "2" and "--mtp" not in ar and "--dflash" not in ar,
+          "pure target-only = --suffix-draft 0 --lookup-chain 0 --spec 2 (native pack floor), no MTP/DFlash")
     old = clone_server_config("old_target_only", prod)
     check(old["exe"] == PROD_BINARY and old["args"] == clone_server_config("target_only", prod)["args"],
           "old_target_only = OLD binary + identical pure-AR flags (clean old-vs-new correctness gate)")
@@ -497,6 +568,9 @@ def main() -> int:
     ap.add_argument("--url", default=PROTO_URL_DEFAULT)
     ap.add_argument("--identity-config", default=None)
     ap.add_argument("--confirm-execution", action="store_true")
+    ap.add_argument("--results-json", default=None,
+                    help="optional path for the FULL structured per-case results of --execute "
+                         "(label, ok/error, complete usage, returned text); nothing is claimed from it here")
     a = ap.parse_args()
     if a.selfcheck:
         return selfcheck()
@@ -523,7 +597,7 @@ def main() -> int:
             print(reason)
             return 2
         identity = a.identity_config or str(CONFIG_DIR / "proto-server-swift15-dflash_w3.json")
-        return execute_checks(a.url, identity)
+        return execute_checks(a.url, identity, a.results_json)
     ap.print_help()
     return 2
 

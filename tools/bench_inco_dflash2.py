@@ -11,7 +11,7 @@ show "suffix drafts: N windows, X of Y accepted"; MTP is OFF (use_mtp=!o.mtp.emp
 8344; no --mtp in args). The earlier "TARGET-ONLY" label was WRONG.
   prod_reference   SUFFIX LOOKUP baseline (prod config/args/env verbatim).
   new_suffix_lookup new binary, prod args verbatim (byte-identical suffix-lookup baseline).
-  new_target_only  PURE autoregressive: --suffix-draft 0 --lookup-chain 0 --spec 1.
+  new_target_only  PURE autoregressive: --suffix-draft 0 --lookup-chain 0 --spec 2 (native-pack floor).
   old_target_only  PURE autoregressive on the OLD prod binary (old-vs-new correctness gate).
   new_mtp          READY-RT (config valid; runtime NOTRUN): loader input
                    /home/user/dev/Strata-data/mtp-bf16/rt/ exists (dense.txt 29 lines,
@@ -125,9 +125,10 @@ def validate_mode_flags(mode: str, width: int, args: list[str]) -> str | None:
     if mode in ("target_only", "old_target_only"):
         if "--mtp" in args or "--dflash" in args:
             return f"mode {mode}: pure-AR label carries a drafter flag"
-        if not suffix_off or not chain_off or flag_value(args, "--spec") != "1":
-            return (f"mode {mode}: pure AR requires --suffix-draft 0 --lookup-chain 0 --spec 1 "
-                    "(generate.cpp:778 defaults suffix_draft=3; verbatim prod args are suffix-lookup, not AR)")
+        if not suffix_off or not chain_off or flag_value(args, "--spec") != "2":
+            return (f"mode {mode}: pure AR requires --suffix-draft 0 --lookup-chain 0 --spec 2 "
+                    "(spec 1 is refused for a native IQ pack, generate.cpp:3685; verbatim prod args "
+                    "are suffix-lookup, not AR)")
         return None
     if mode == "mtp":
         if flag_value(args, "--mtp") != integ.RT_DIR:
@@ -158,7 +159,8 @@ def plan_modes(prod: dict) -> dict:
                            "server_config": "production (parent starts as-is, in the downtime window)"},
         "new_suffix_lookup": {"kind": "clone, prod args verbatim = new-binary suffix-lookup baseline",
                               "server_config": str(integ.CONFIG_DIR / "proto-server-swift15-suffix_lookup.json")},
-        "new_target_only": {"kind": "PURE AR: --suffix-draft 0 --lookup-chain 0 --spec 1",
+        "new_target_only": {"kind": "PURE AR: --suffix-draft 0 --lookup-chain 0 --spec 2 "
+                            "(native-pack floor; no-drafter rows are inert oracle/0 fill)",
                             "server_config": str(integ.CONFIG_DIR / "proto-server-swift15-target_only.json")},
         "old_target_only": {"kind": "PURE AR on the OLD prod binary (old-vs-new correctness gate)",
                             "server_config": str(integ.CONFIG_DIR / "proto-server-swift15-old_target_only.json")},
@@ -382,9 +384,9 @@ def selfcheck() -> int:
           "suffix_lookup label = verbatim prod args (suffix_draft DEFAULT 3 is ACTIVE - generate.cpp:778)")
     check(validate_mode_flags("target_only", 3, prod_like) is not None,
           "target_only REFUSED for verbatim prod args - they are a suffix-LOOKUP baseline, not pure AR (the mislabel fix)")
-    ar_ok = ["--spec", "1", "--suffix-draft", "0", "--lookup-chain", "0", "--expert-cache", "auto"]
+    ar_ok = ["--spec", "2", "--suffix-draft", "0", "--lookup-chain", "0", "--expert-cache", "auto"]
     check(validate_mode_flags("target_only", 3, ar_ok) is None and validate_mode_flags("old_target_only", 3, ar_ok) is None,
-          "pure-AR labels require --suffix-draft 0 --lookup-chain 0 --spec 1")
+          "pure-AR labels require --suffix-draft 0 --lookup-chain 0 --spec 2 (native-pack floor)")
     mtp_ok = ["--mtp", integ.RT_DIR, "--spec", "6", "--spec-min-p", "0.7", "--suffix-draft", "0"]
     check(validate_mode_flags("mtp", 3, mtp_ok) is None, "mtp label verified against the READY-RT dir + pure-MTP flags")
     check(validate_mode_flags("mtp", 3, ["--mtp", "/home/user/ai/ai/mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf",
