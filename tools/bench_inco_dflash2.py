@@ -33,7 +33,10 @@ a 200K benchmark.
 
 Measurement reuses the existing client (tools/strata_bench.py: chat() streams, digest()
 extracts the engine's own numbers - decode_tps with source label, ttft_s, total_s,
-prompt_tps, prompt_tokens, generated_tokens, reused_tokens, read_tokens). No invented
+prompt_tps, prompt_tokens, generated_tokens, reused_tokens, read_tokens, drafts_offered,
+drafts_accepted). The draft pair is the engine's own draft_n/draft_n_accepted
+(serve/server.py:5611), which the engine reports ONLY when a drafter ran: a no-drafter arm
+(target-only) records null WITH REASON, never a zeroed acceptance rate. No invented
 metric fields: /slots has only {id,n_ctx,is_processing,n_prompt_tokens}; /props has
 model_alias/model_path/build_info - these are used for IDENTITY, not speed.
   * guard: production OBSERVED ABSENT (detection failure = fail-closed; port 8009 refused;
@@ -94,7 +97,7 @@ PROMPTS = {
 }
 SEED = 20261021
 METRICS = ["decode_tps", "ttft_s", "total_s", "prompt_tps", "generated_tokens",
-           "prompt_tokens", "reused_tokens", "read_tokens"]
+           "prompt_tokens", "reused_tokens", "read_tokens", "drafts_offered", "drafts_accepted"]
 NO_METRIC = "engine did not report this metric for the run (digest left it null, with source)"
 
 
