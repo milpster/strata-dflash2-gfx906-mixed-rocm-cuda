@@ -19,6 +19,8 @@ WHAT IS PROVEN (and what is NOT weakened by the overrides):
     clone, so the two-GPU split contract is untouched.
 
 Run: python3 tools/test_inco_window_paths.py     (exit 0 = all fixtures pass)
+Fixture scratch dirs are created in window.OPS (/mnt/user/dflash2/ops) and removed on exit; the
+relative-override subprocess imports run with cwd = tools/ and PYTHONPATH = tools:window_harness.
 """
 from __future__ import annotations
 
@@ -30,6 +32,7 @@ import pathlib
 import subprocess
 import sys
 import tempfile
+from unittest import mock
 
 HERE = pathlib.Path(__file__).resolve().parent          # tools/
 HARNESS = HERE / "window_harness"                       # the branch-tracked controller copy
@@ -72,7 +75,7 @@ def synth_prod() -> dict:
             "--expert-profile", "/synth/profile.bin",
             "--expert-cache", "auto", "--prefill", "8192", "--spec", "6", "--spec-min-p", "0.7",
             "--max-context", "262144", "--kv", "int8", "--vram-reserve-mib", "896",
-            "--vram-reserve-later-mib", "1000", "--kv-resident", 262144, "--pcie-frac", "0",
+            "--vram-reserve-later-mib", "1000", "--kv-resident", "262144", "--pcie-frac", "0",
             "--expert-cache-cpu-order", "--prompt-cache-spread", "--conversation-cache-mib", "2048",
             "--conversation-cache-min-tokens", "2048", "--conversation-cache-park-gain", "4096",
             "--vision"]
@@ -100,6 +103,9 @@ def fixture_defaults() -> None:
     check(mw.PROTO_SERVER == "/mnt/user/dflash2/Strata-wt/serve/server.py",
           "controller default PROTO_SERVER is the parent's pre-existing literal")
     prod = synth_prod()
+    check(all(isinstance(a, str) for a in prod["args"]),
+          "synthetic argv values are ALL strings (the merge/flags walkers call str.startswith, so an "
+          "int in the fixture would break the real argv contract, not the code under test)")
     exe_ok = all(I.clone_server_config(m, prod)["exe"] == DEF_PROTO for m in MODES if m != "old_target_only")
     check(exe_ok, "with no env every NEW-binary clone still points at the default prototype binary")
     check(all(I.clone_server_config(m, prod)["port"] == 8019 for m in MODES),
@@ -254,14 +260,24 @@ def fixture_guards(td: pathlib.Path) -> None:
 # ------------------------------------------------------------------ 4. relative overrides refused
 def fixture_relative_refused() -> None:
     set_env({})
-    for var in ("STRATA_WINDOW_PROTO_BINARY", "STRATA_WINDOW_CONFIG_DIR"):
-        try:
-            I._abs_override(var, "rel/path")
-            check(False, f"{var}=rel/path: REFUSAL expected, none raised")
-        except ValueError as e:
-            check("REFUSED" in str(e) and "ABSOLUTE" in str(e), f"cloner helper refuses a relative {var}")
+    cases = {"STRATA_WINDOW_PROTO_BINARY": DEF_PROTO, "STRATA_WINDOW_CONFIG_DIR": DEF_CONFIG}
+    for var, abs_default in cases.items():
+        # The OVERRIDE is the env VALUE; the helper's second argument is the DEFAULT it returns when
+        # the variable is ABSENT - so the variable is SET here, and the default is absolute. An
+        # unused default is never the thing under test.
+        with mock.patch.dict(os.environ, {var: "rel/path"}, clear=False):
+            check(os.environ.get(var) == "rel/path", f"{var}: the fixture really sets the relative value")
+            try:
+                got = I._abs_override(var, abs_default)
+                check(False, f"{var}=rel/path: REFUSAL expected, the helper returned {got!r}")
+            except ValueError as e:
+                check("REFUSED" in str(e) and "ABSOLUTE" in str(e),
+                      f"cloner helper refuses a relative {var} while the variable is set")
+        check(I._abs_override(var, abs_default) == abs_default,
+              f"{var}: with the relative value removed the same call returns the absolute default")
+        # Import-time refusal, each variable checked on its OWN (no catch-all weakening).
         for mod in ("test_inco_dflash2_integration", "model_window"):
-            r = subprocess.run([sys.executable, "-c", f"import {mod}"], cwd="/tmp/agent",
+            r = subprocess.run([sys.executable, "-c", f"import {mod}"], cwd=str(HERE),
                                env={**os.environ, var: "rel/path",
                                     "PYTHONPATH": f"{HERE}:{HARNESS}"},
                                capture_output=True, text=True, timeout=60)
@@ -278,7 +294,9 @@ def fixture_relative_refused() -> None:
 
 
 def main() -> int:
-    with tempfile.TemporaryDirectory() as tdname:
+    # Fixture scratch ONLY, in the project's own ops dir (the dir the controllers already write
+    # results into) - never inside the repository, never /tmp. TemporaryDirectory removes it.
+    with tempfile.TemporaryDirectory(dir=str(W.OPS), prefix="tmp-pathfixtures-") as tdname:
         td = pathlib.Path(tdname)
         fixture_defaults()
         fixture_absolute_override(td)
