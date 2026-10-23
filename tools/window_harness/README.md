@@ -56,6 +56,22 @@ python3 tools/window_harness/divergence_window.py --prompt-set --requests 8 --ma
 python3 tools/test_inco_request_selection.py    # CPU fixtures for the selection (writes nothing)
 ```
 
+## Expert-cache pin (opt-in; defaults byte-for-byte unchanged)
+
+| flag | `--expert-cache` on every arm |
+|---|---|
+| (none) | `2000` - the window's proven pin (the existing behavior, byte-identical) |
+| `--pin-expert-cache N` | `N`, a nonnegative integer (`0` = the cache OFF). ONLY with `--prompt-set`, never with `--reenable` |
+| `--pin-expert-cache auto` | the engine's own sizing. Same rules |
+
+The value is recorded as `expert_cache_pin` in the plan and in the result, joins the recorded overrides,
+and appears in `gate_mode`. The residency gates stay fail-closed: a leg enforces cross-arm equality of the
+**observed** fingerprints with the existing strictness (an unproven proof keeps its nonce, undefined-vs-
+defined is a mismatch that fails closed) and records the observed values; it does not require the
+historical 2000-pin constants (2904 slots / the measured checksum), which legitimately differ under `0`/
+`auto` (the CUDA0 cache lines are gated by `expert_cache > 0`), and default runs keep requiring them.
+`--equalize-mib` is unchanged. Fixtures: `python3 tools/test_inco_pin_expert_cache.py` (CPU only).
+
 ## Run
 
 ```sh
