@@ -1,4 +1,4 @@
-#include "strata/kernels/dflash2.hpp"
+#include "strata/kernels/dflash_inco.hpp"
 #include "strata/spec/dflash_policy.hpp"
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>

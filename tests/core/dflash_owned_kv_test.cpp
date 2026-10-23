@@ -20,7 +20,7 @@
 #include "strata/core/dflash_ring.hpp"
 #include "strata/core/session.hpp"
 #include "strata/kernels/f16_bits.hpp"
-#include "strata/kernels/dflash2.hpp"
+#include "strata/kernels/dflash_inco.hpp"
 #include "strata/kernels/qsa.hpp"
 #include "strata/kernels/qsa_decode_attn.hpp"
 #include "strata/spec/dflash_policy.hpp"
@@ -339,8 +339,8 @@ void ring_regression(const ModelGeometry& g) {
     // section used qsa_real_shapes() - the TARGET shapes (24Q/2KV x head_dim 256) - to
     // allocate pool/query and build the reference, while dflash2_attention IS the drafter's
     // attention128_kernel, whose head_dim is fixed at 128 ("Non-causal local attention for
-    // the official 32Q/8KV x 128 drafter", include/strata/kernels/dflash2.hpp:33-38;
-    // src/kernels/cuda/dflash2.cu:257-335 reads q[...*128+d], k[poolrow*128+d]). A
+    // the official 32Q/8KV x 128 drafter", include/strata/kernels/dflash_inco.hpp:31-38;
+    // src/kernels/cuda/dflash_inco.cu:257-335 reads q[...*128+d], k[poolrow*128+d]). A
     // head_dim-256 layout can never match a 128-wide kernel: a guaranteed fixture
     // mismatch, not kernel evidence. The runtime's drafter pool uses shapes_of(pool_g_) =
     // qsa_shapes(drafter geometry) - 32Q/8KV/128, page 4 (src/core/dflash_runtime.cpp:

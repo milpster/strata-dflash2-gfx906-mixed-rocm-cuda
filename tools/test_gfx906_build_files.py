@@ -45,9 +45,21 @@ class Gfx906CMake(unittest.TestCase):
         self.assertIn("set_source_files_properties(${_strata_cu} PROPERTIES LANGUAGE HIP)", tail)
 
     def test_dflash2_off_leaves_the_source_inventory_untouched(self):
-        # dflash2.cu enters strata_kernels only under the option: OFF = default tree unchanged
-        self.assertRegex(TEXT, r"if\(STRATA_ENABLE_DFLASH2\)\n\s+target_sources\(strata_kernels PRIVATE src/kernels/cuda/dflash2.cu\)")
-        self.assertRegex(TEXT, r"if\(STRATA_ENABLE_DFLASH2\)\n\s+add_executable\(dflash2_parity src/kernels/dflash2_parity.cpp\)")
+        # dflash_inco.cu enters strata_kernels only under the option: OFF = default tree unchanged
+        self.assertRegex(TEXT, r"if\(STRATA_ENABLE_DFLASH2\)\n\s+target_sources\(strata_kernels PRIVATE src/kernels/cuda/dflash_inco.cu\)")
+        # the parity target sits under the same option, with its rename note between the two lines
+        self.assertRegex(TEXT, r"if\(STRATA_ENABLE_DFLASH2\)\n(?:[^\n]*\n)*?\s+add_executable\(dflash_inco_parity src/kernels/dflash2_parity.cpp\)")
+
+    def test_the_two_dflash2_runtimes_cannot_be_built_together(self):
+        # Upstream v0.2.3 defines STRATA_HAVE_DFLASH2 unconditionally in the GPU builds; here it is an option,
+        # default ON, and a build with both tap producers is refused at configure time (one tap producer per
+        # verifier), with the compiled runtime(s) printed so no build infers it from a flag file.
+        self.assertRegex(TEXT, r"option\(STRATA_HAVE_DFLASH2 .*ON\)")
+        self.assertRegex(TEXT, r"if\(STRATA_HAVE_DFLASH2 AND STRATA_ENABLE_DFLASH2\)\n\s+message\(FATAL_ERROR ")
+        self.assertRegex(TEXT, r"if\(STRATA_HAVE_DFLASH2\)\n\s+target_compile_definitions\(strata_core PUBLIC STRATA_HAVE_DFLASH2=1\)")
+        self.assertRegex(TEXT, r"message\(STATUS \"DFlash2 runtimes compiled: \$\{_strata_dflash2_runtimes\}\"\)")
+        # upstream's own bench target keeps its name and stays out of the default build
+        self.assertIn("add_executable(dflash2_parity EXCLUDE_FROM_ALL src/core/dflash2_parity.cpp)", TEXT)
 
     def test_qwen36_engine_stays_out_of_the_gfx906_kernel_tree(self):
         # the q36 engine (cuBLAS entry points the compat layer does not map) is built only when NOT gfx906

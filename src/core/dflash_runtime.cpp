@@ -4,7 +4,7 @@
 #include "strata/spec/dflash_policy.hpp"
 #include "strata/core/dflash_ring.hpp"
 #ifdef STRATA_ENABLE_DFLASH2
-#include "strata/kernels/dflash2.hpp"
+#include "strata/kernels/dflash_inco.hpp"
 #endif
 #include "strata/core/native_head.hpp"
 #include "strata/core/on_device.hpp"
