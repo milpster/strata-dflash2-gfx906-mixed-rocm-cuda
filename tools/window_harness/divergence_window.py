@@ -28,6 +28,21 @@ index, --requests without --prompt-set and --requests with --reenable are refuse
 snapshot, signal, config read, port probe or HTTP action.  The default (no --requests) is
 byte-identical to the existing single-prompt and full-eight-prompt behavior, same controls, same gates.
 
+OPT-IN PIN LEG (--pin-expert-cache N|auto, valid ONLY with --prompt-set and NEVER with --reenable): the
+value REPLACES the window's pinned --expert-cache 2000 on EVERY arm and on no other control.  0 = the
+cache OFF (the engine's own default) and 'auto' = the engine's own sizing; both are legal engine values
+(parse generate.cpp:2650-2652, help 1022-1025 'DEFAULT 0', auto sizing 6321).  It is the mechanism/prod-
+shape leg: with the cache off the pinned CUDA0 tier is gone, with auto the arms get production's own
+sizing.  The value is recorded as expert_cache_pin in the dry-run plan and in the result, joins the
+recorded overrides, and appears in gate_mode.  RESIDENCY GATES stay fail-closed and self-consistent: a leg
+enforces CROSS-ARM equality of the OBSERVED residency fingerprints with exactly the existing strictness
+(an unproven proof keeps its per-fingerprint nonce; defined-vs-undefined is a MISMATCH that fails closed)
+and records the observed values, WITHOUT requiring the historical 2000-pin constants (CUDA0 2904 slots /
+the measured checksum), because under 0/auto the CUDA0 cache lines are gated by expert_cache > 0
+(generate.cpp:6697/6781/6785) and are recorded as explicitly UNDEFINED, never invented.  Default runs keep
+requiring them exactly as measured.  Refused BEFORE any action: with --reenable, without --prompt-set, a
+negative, a non-integer, and 2000 (that IS the default pin - omit the flag).  --equalize-mib is unchanged.
+
 WHAT DERIVATION DOES (the clone is the source; production configs are NEVER written):
 Every mode launches a DERIVED config = the CURRENT clone for that mode + ONLY these allowlisted
 overrides, under a unique per-window folder at 0600 with a unique per-window engine log:
@@ -147,6 +162,8 @@ import greedy_gate as G                                   # shared fingerprint r
 
 DW_MODES = [("target_only", 1), ("dflash_w1", 1), ("dflash_w3", 3)]      # this exact order
 DW_PIN = 2000                                             # CUDA0 byte pin (measured 2904 slots)
+DW_PIN_AUTO = "auto"                                    # the engine's own sizing (parse 2650-2652, 6321)
+DW_PIN_UNDEFINED = "UNDEFINED-under-pin-expert-cache-override"   # recorded as undefined, NEVER invented
 DW_CHUNK = 512                                            # the engine's own room remedy (6646-6647)
 DW_MAX_TOKENS = 32                                        # per the mission: at most 32 new tokens
 DW_ENV = dict(G.PIN_ENV)                                   # the proven pin trio, child env only
@@ -257,11 +274,14 @@ def dw_log(window: str, mode: str) -> str:
 
 # ------------------------------------------------------------------ derivation (the clone is the source)
 def derive(window: str, mode: str, cfg: dict, base_dir: pathlib.Path,
-           equalize_mib: int = 0, reenable: str | None = None) -> tuple[pathlib.Path, dict, list[dict]]:
+           equalize_mib: int = 0, reenable: str | None = None,
+           pin: str | None = None) -> tuple[pathlib.Path, dict, list[dict]]:
     """The derived config = the CURRENT clone + ONLY the allowlisted overrides, with the unique
     per-window log.  Overrides are RECORDED (flag/from/to, plus action/effective/citation for the
     ablation).  Valueless flags are added WITHOUT a value (the source parse consumes none,
-    generate.cpp:2579).  `reenable` (None = the passing controlled mode, byte-identical to the
+    generate.cpp:2579).  `pin` (None = the window's pin 2000, byte-identical in every path) replaces ONLY
+     the --expert-cache value on EVERY arm for a --pin-expert-cache residency leg; no other control moves.
+     `reenable` (None = the passing controlled mode, byte-identical to the
     measured runs) turns ONE control group back on, on every arm, from the CURRENT clone for that
     group - a flag the clone does not carry falls back to the SOURCE-VERIFIED default with its
     citation recorded, never a guess.  Every other group stays controlled."""
@@ -315,7 +335,7 @@ def derive(window: str, mode: str, cfg: dict, base_dir: pathlib.Path,
             record(flag, v, v, "restored-from-the-current-clone", v,
                    "the CURRENT production clone for this group (config-currency verified)")
 
-    apply("--expert-cache", str(DW_PIN))                    # controlled in EVERY variant
+    apply("--expert-cache", pin if pin is not None else str(DW_PIN))   # controlled in EVERY variant
     apply("--prefill", str(DW_CHUNK))                       # controlled in EVERY variant
     # the ONLY group-specific changes:
     if reenable == "borrowing":
@@ -467,11 +487,15 @@ def ablation_effective_mode(overrides: list[dict], flag: str) -> str | None:
 
 # ------------------------------------------------------------------ the runtime fingerprint
 def dw_fingerprint(rec: dict, argv_prefill: str | None, argv: dict | None = None,
-                   reenable: str | None = None) -> dict | None:
+                   reenable: str | None = None, pin_override: bool = False) -> dict | None:
     """The mode's startup fingerprint from its CURRENT-session log copy only (mirrors
     greedy_gate.residency_fingerprint, with THIS window's chunk value and the two extra proofs:
     the positive NO-LOAN proof and the ADAPT-OFF proof).  Rounded GiB strings are DIAGNOSTICS:
-    recorded, printed, never compared."""
+    recorded, printed, never compared.  `pin_override` (a --pin-expert-cache leg) changes ONLY how the
+    PIN-DEPENDENT CUDA0 components are recorded when the engine legitimately prints no CUDA0 cache line:
+    an explicit UNDEFINED label instead of a refused fingerprint. Every other proof keeps its nonce and
+    stays fail-closed, and cross-arm equality stays exactly as strict (defined != undefined is a
+    mismatch, so an override run can never weaken a real difference into a pass)."""
     p = (rec.get("engine_log") or {}).get("per_window_copy")
     if not p:
         return None
@@ -491,9 +515,22 @@ def dw_fingerprint(rec: dict, argv_prefill: str | None, argv: dict | None = None
                for m in G.FP_BORROW.finditer(text)]
     rooms = {int(m.group(1)): float(m.group(2)) for m in G.FP_ROOM.finditer(text)}
     if m0 is None or mf is None or not stages:
-        return None                                       # startup residency lines incomplete - fail closed
+        # Under a --pin-expert-cache leg the CUDA0 cache lines are GATED by expert_cache > 0
+        # (slots line 6697, pre-filled line 6781, read-back checksum 6785/6815, generate.cpp), so pin 0
+        # legitimately prints none of them.  An override run records those components as EXPLICITLY
+        # UNDEFINED (a fixed label, no nonce, never an invented number); the DEFAULT run keeps its
+        # fail-closed 'incomplete - no fingerprint' behavior exactly as measured.
+        if not pin_override:
+            return None                                   # startup residency lines incomplete - fail closed
     chk = mc.group(1) if mc else None
-    checksum_proof = ["checksum", chk] if mc else ["checksum-absent-UNPROVEN", os.urandom(8).hex()]
+    if mc:
+        checksum_proof = ["checksum", chk]
+    elif pin_override:
+        checksum_proof = [DW_PIN_UNDEFINED, "no CUDA0 read-back checksum line in this session's copy "
+                                           "(the cache lines are gated by expert_cache > 0, "
+                                           "generate.cpp:6697/6781/6785) - recorded as undefined"]
+    else:
+        checksum_proof = ["checksum-absent-UNPROVEN", os.urandom(8).hex()]
     chunk_final = chunks[-1][1] if chunks else None
     trim = [c for c in chunks if c[1] != c[0]]
     if chunks:
@@ -533,9 +570,16 @@ def dw_fingerprint(rec: dict, argv_prefill: str | None, argv: dict | None = None
         cache_proof = ["cache-off-PROVEN-argv-both-0", "0", "0"]
     else:
         cache_proof = ["cache-UNPROVEN", os.urandom(8).hex()]
-    return {"cuda0": {"slots": int(m0.group(1)), "gib": m0.group(2), "prefilled": int(mf.group(1)),
-                      "prefill_target": int(mf.group(2)), "checksum": chk,
-                      "checksum_proof": checksum_proof},
+    cuda0 = ({"slots": int(m0.group(1)), "gib": m0.group(2), "prefilled": int(mf.group(1)),
+              "prefill_target": int(mf.group(2)), "checksum": chk, "checksum_proof": checksum_proof}
+             if (m0 is not None and mf is not None) else
+             {"slots": DW_PIN_UNDEFINED, "gib": None, "prefilled": DW_PIN_UNDEFINED,
+              "prefill_target": DW_PIN_UNDEFINED, "checksum": None,
+              "checksum_proof": checksum_proof})
+    return {"cuda0": cuda0,
+            "pin_override": bool(pin_override),
+            "cuda0_lines_present": m0 is not None and mf is not None,
+            "stages_present": bool(stages),
             "stages": stages,
             "room_gib": rooms,
             "chunk_requested": chunks[0][0] if chunks else None,
@@ -567,7 +611,10 @@ def dw_key(fp: dict, reenable: str | None = None) -> tuple:
     stage, the final chunk) are still compared exactly, and the ablated group is asserted by its own
     positive proof in the gate (and its geometry compared as the variable being studied).  This
     cannot manufacture a pass: an ablation variant is never allowed to report the standard
-    correctness gate as established."""
+    correctness gate as established.  A --pin-expert-cache leg changes NO rule here: the key is the
+    OBSERVED values, so an override run compares the observed residency identities of the arms with the
+    same strictness, and an undefined CUDA0 component on one arm and a defined one on another is a
+    MISMATCH that fails the window closed."""
     base = G.residency_key(fp)
     proofs = [tuple(fp["no_borrow_proof"]), tuple(fp["adapt_proof"]), tuple(fp["cache_proof"])]
     if reenable == "borrowing":
@@ -577,6 +624,66 @@ def dw_key(fp: dict, reenable: str | None = None) -> tuple:
     elif reenable == "conversation-cache":
         proofs[2] = ("ablation-UNDER-STUDY-cache-group",)
     return base + tuple(proofs)
+
+
+# ------------------------------------------------------------------ the pin override (opt-in)
+def dw_pin_label(pin: str | None) -> str:
+    """The dedicated pin field: '2000(default)' with the flag ABSENT (byte-identical default), the literal
+    value ('0', 'auto', '5') for a --pin-expert-cache leg."""
+    return f"{DW_PIN}(default)" if pin is None else str(pin)
+
+
+def dw_pin_gate_label(pin: str | None) -> str:
+    """The gate_mode words: 'pin2000' unchanged for the default, 'pin<N>(CLI-OVERRIDE)' for a leg."""
+    return f"pin{DW_PIN}" if pin is None else f"pin{pin}(CLI-OVERRIDE)"
+
+
+def dw_overrides_block(pin: str | None) -> dict:
+    """The plan's recorded overrides.  With the flag ABSENT this is byte-identical to the existing block;
+    a leg shows its OBSERVED --expert-cache value and says plainly that it REPLACES the window's pin on
+    every arm (no other control moves)."""
+    all_arms = {"--expert-cache": str(DW_PIN), "--prefill": str(DW_CHUNK),
+                "--no-prefill-borrow": "(flag, valueless)", "--adapt-swaps": "0",
+                "--prompt-cache": "0", "--conversation-cache-mib": "0"}
+    if pin is not None:
+        all_arms["--expert-cache"] = f"{pin} (--pin-expert-cache OVERRIDE replaces the window's pin {DW_PIN})"
+    return {"all arms": all_arms,
+            "dflash arms": {"--spec-min-p": "0 (full proposal width, 14549/14777)",
+                            "--lookup-chain": "0 (sfx_on false, 14338)"},
+            "non-dflash arms with --equalize-mib": {"--vram-reserve-later-mib": "+DELTA (4499-4501)"}}
+
+
+def validate_pin(value: str | None, prompt_set: bool,
+                 reenable: str | None) -> tuple[str | None, str]:
+    """PURE pre-action gate for --pin-expert-cache (CPU only: no snapshot, no signal handler, no config
+    read, no port, no HTTP, no GPU, nothing written).  Returns (pin_value, refusal); a non-empty refusal
+    is printed and the window exits 2 BEFORE any window action.  Rules: the flag is valid ONLY with
+    --prompt-set and NEVER with --reenable; the value is 'auto' (the engine's own sizing) or an integer
+    >= 0; negatives, junk and the window's own pin 2000 are refused (a leg that pins 2000 would claim the
+    relaxed residency recording while measuring the default shape).  Returns (None, "") when the flag is
+    absent - the default, byte-identical in every path."""
+    if value is None:
+        return None, ""
+    if reenable:
+        return None, (f"REFUSE: --pin-expert-cache is not supported together with --reenable {reenable} - "
+                      "unsupported combination (an ablation variant keeps the pinned cache its controls "
+                      "were measured with)")
+    if not prompt_set:
+        return None, ("REFUSE: --pin-expert-cache is valid ONLY with --prompt-set (the residency legs it "
+                      "was designed for)")
+    v = str(value).strip()
+    if v == DW_PIN_AUTO:
+        return DW_PIN_AUTO, ""
+    if not re.fullmatch(r"\d+", v):
+        return None, (f"REFUSE: --pin-expert-cache {value!r} is not 'auto' and not a nonnegative integer - "
+                      "the engine's own --expert-cache accepts N|auto (generate.cpp:2650-2652, help "
+                      "1022-1025 'DEFAULT 0', auto sizing 6321)")
+    n = int(v)
+    if n == DW_PIN:
+        return None, (f"REFUSE: --pin-expert-cache {n} IS the window's default pin - omit the flag. A leg "
+                      "records the OBSERVED residency constants and does not require the historical "
+                      f"{DW_PIN}-pin constants; the default run keeps requiring them exactly as measured")
+    return str(n), ""
 
 
 # ------------------------------------------------------------------ the prompt plan + the requests
@@ -914,7 +1021,11 @@ def ablation_runtime_proof(mode: str, rec: dict, reenable: str, note) -> list[st
 
 def run_dw(snap: dict, record: dict, note, equalize_mib: int = 0,
            prompt_set: bool = False, max_tokens_override: int | None = None,
-           reenable: str | None = None, requests: list[int] | None = None) -> None:
+           reenable: str | None = None, requests: list[int] | None = None,
+           pin: str | None = None) -> None:
+    pin_override = pin is not None                       # a --pin-expert-cache leg (validated in main)
+    record["expert_cache_pin"] = dw_pin_label(pin)
+    record["pin_expert_cache_override"] = pin
     prompts = select_prompts(prompt_set, requests)
     indices = prompt_indices(prompts, requests)
     # The DEFAULT stays exactly the L19 behavior: ONE prompt, 32 tokens.  The gate set uses the
@@ -1005,7 +1116,7 @@ def run_dw(snap: dict, record: dict, note, equalize_mib: int = 0,
             bail(f"{mode}: config currency failed mid-window: {json.dumps(problems)[:400]}")
             return
         cfg = json.loads(pathlib.Path(summary["config"]).read_text())
-        dpath, dcfg, ovr = derive(record["window"], mode, cfg, base_dir, equalize_mib, reenable)
+        dpath, dcfg, ovr = derive(record["window"], mode, cfg, base_dir, equalize_mib, reenable, pin)
         dproblems = validate_derivation(cfg, dcfg, ovr, record["window"], mode, reenable)
         extra_env = child_env_extra(reenable)
         rec = {"mode": mode, "width": width, "source_config": summary["config"],
@@ -1062,7 +1173,8 @@ def run_dw(snap: dict, record: dict, note, equalize_mib: int = 0,
                     gate_ok = False
                 else:
                     rec["startup_evidence"] = (rec.get("engine_log") or {}).get("per_window_copy")
-                fp = dw_fingerprint(rec, argv.get("--prefill"), argv, reenable) if gate_ok else None
+                fp = dw_fingerprint(rec, argv.get("--prefill"), argv, reenable, pin_override) \
+                    if gate_ok else None
                 rec["residency"] = fp
                 if gate_ok and fp is None:
                     bad.append("residency fingerprint incomplete (startup cache/stage lines missing) "
@@ -1101,11 +1213,21 @@ def run_dw(snap: dict, record: dict, note, equalize_mib: int = 0,
                                    "--equalize-mib value for the rerun; it raises --vram-reserve-later-mib on "
                                    "the non-dflash arms only, generate.cpp:4499-4501)")
                         gate_ok = False
-                    if not fp["checksum_present"]:
+                    if not fp["checksum_present"] and not pin_override:
                         bad.append("membership UNPROVEN: no CUDA0 read-back checksum in this session's log "
                                    "(STRATA_VERIFY_COMPLEMENT not in force) - an absent checksum is never "
                                    "an equality success")
                         gate_ok = False
+                    elif not fp["checksum_present"]:
+                        # Under a --pin-expert-cache leg the read-back line is GATED by expert_cache > 0
+                        # (generate.cpp:6785/6815), so its absence is the engine's own shape, not a broken
+                        # proof.  It is RECORDED as undefined; its fingerprint component carries the fixed
+                        # undefined label, so a defined checksum on another arm is still a MISMATCH.
+                        rec["residency_checksum_undefined"] = ("no CUDA0 read-back checksum line (the cache "
+                                                              "lines are gated by expert_cache > 0, "
+                                                              "generate.cpp:6697/6781/6785) - recorded as "
+                                                              "UNDEFINED under the pin override, cross-arm "
+                                                              "equality of the observed key still enforced")
                     if fp["chunk_proof"][0] == "chunk-UNVERIFIED":
                         bad.append(f"final prompt chunk UNVERIFIED: argv --prefill={fp['argv_prefill']!r} is "
                                    f"not {DW_CHUNK} and the log carries no usable chunk line "
@@ -1157,7 +1279,9 @@ def run_dw(snap: dict, record: dict, note, equalize_mib: int = 0,
                                    "default 6 at 729; a 0 budget is OFF at 730). A cache-OFF proof under a "
                                    "cache-ON variant is a CONTRADICTION and fails closed - fail closed")
                         gate_ok = False
-                    rec["residency_checksum"] = "present" if fp["checksum_present"] else "ABSENT - fail closed"
+                    rec["residency_checksum"] = ("present" if fp["checksum_present"]
+                                       else ("UNDEFINED under --pin-expert-cache override (recorded, never "
+                                             "invented)" if pin_override else "ABSENT - fail closed"))
                 if gate_ok:
                     requests_ok = run_dw_request(mode, rec, note, prompts, tokens, indices)
                     ev_ok = mw.draft_evidence(record["window"], dcfg, mode, rec)
@@ -1186,6 +1310,21 @@ def run_dw(snap: dict, record: dict, note, equalize_mib: int = 0,
     controlled_match = ("residency_baseline" in record and
                         len(record["modes"]) == len(DW_MODES) and all(m.get("mode_ok") for m in record["modes"]))
     record["controlled_components_match"] = controlled_match
+    if pin_override:
+        # The OBSERVED residency values of every arm, recorded (nothing is invented), so the parent can
+        # read the leg's own residency identity: the historical 2000-pin constants are NOT required under
+        # a --pin-expert-cache override, and cross-arm equality of the observed key was enforced above.
+        obs = {}
+        for m, _w in DW_MODES:
+            fp = (modes.get(m) or {}).get("residency") or {}
+            obs[m] = {"cuda0": fp.get("cuda0"), "stages": fp.get("stages"),
+                      "checksum_present": fp.get("checksum_present")}
+        record["residency_observed_by_arm"] = obs
+        record["residency_constants_required"] = (
+            "NO (pin override): the historical 2000-pin constants (CUDA0 2904 slots / the measured "
+            "checksum) are not required. Cross-arm equality of the OBSERVED residency keys stays "
+            "enforced with the existing strictness, an unproven proof still carries a nonce, and "
+            "undefined-vs-defined is a mismatch that fails the window closed.")
     # THE DEFAULT GATE IS NOT LOOSENED: an ablation variant can NEVER report the standard correctness
     # gate as established, whatever its text comparison shows.
     established = controlled_match and reenable is None
@@ -1266,7 +1405,7 @@ def run_dw(snap: dict, record: dict, note, equalize_mib: int = 0,
                                   + ("" if not requests else
                                      f"; SUBSET DIAGNOSTIC: ONLY the selected gate-set requests {indices} "
                                      "were run and compared - this is NOT the full eight-prompt gate"))
-    record["gate_mode"] = ((f"divergence-window pin{DW_PIN} chunk{DW_CHUNK} "
+    record["gate_mode"] = ((f"divergence-window {dw_pin_gate_label(pin)} chunk{DW_CHUNK} "
                             + ("no-borrow " if reenable != "borrowing" else "BORROWING-ON(ablation) ")
                             + ("adapt-off " if reenable != "adaptation" else "ADAPTATION-ON(ablation) ")
                             + ("park-off " if reenable != "conversation-cache" else "CACHE-ON(ablation) ")
@@ -1274,7 +1413,7 @@ def run_dw(snap: dict, record: dict, note, equalize_mib: int = 0,
                             f"max tokens {tokens_description(tokens, max_tokens_override)}, "
                             f"equalize +{equalize_mib} MiB on non-dflash arms)")
                            if equalize_mib else
-                           (f"divergence-window pin{DW_PIN} chunk{DW_CHUNK} "
+                           (f"divergence-window {dw_pin_gate_label(pin)} chunk{DW_CHUNK} "
                             + ("no-borrow " if reenable != "borrowing" else "BORROWING-ON(ablation) ")
                             + ("adapt-off " if reenable != "adaptation" else "ADAPTATION-ON(ablation) ")
                             + ("park-off " if reenable != "conversation-cache" else "CACHE-ON(ablation) ")
@@ -1380,6 +1519,25 @@ def main() -> int:
                          "that applies (the class limits 128/96/64 for --prompt-set, 32 for the default "
                          "single prompt); 1..128, refused outside that range. The requested value is "
                          "recorded beside the value used")
+    ap.add_argument("--pin-expert-cache", dest="pin_expert_cache", default=None, metavar="N|auto",
+                    help="OPT-IN residency leg, valid ONLY with --prompt-set and NEVER with --reenable: "
+                         "the value replaces the window's pinned --expert-cache 2000 on EVERY arm. Legal "
+                         "values are what the ENGINE accepts (parse generate.cpp:2650-2652 "
+                         "'auto' -> -1, else atoi; help 1022-1025 'DEFAULT 0'; auto sizing 6321): a "
+                         "nonnegative integer ('0' = the cache OFF, the engine's own default) or the "
+                         "literal 'auto'. Refused BEFORE any action: with --reenable, without --prompt-set, "
+                         "a negative, a non-integer, and 2000 (that IS the default pin - omit the flag). "
+                         "NO other control moves (chunk 512, no borrowing, adaptation off, park/cache off, "
+                         "min-p 0, the child env, the widths, the equalizer). The value is recorded as "
+                         "expert_cache_pin in the plan and in the result, joins the recorded overrides, "
+                         "and appears in gate_mode. RESIDENCY GATES: cross-arm equality of the OBSERVED "
+                         "fingerprints stays exactly as strict (an unproven proof keeps its nonce, and "
+                         "undefined-vs-defined is a mismatch that fails closed); a leg does NOT require "
+                         "the historical 2000-pin constants (2904 slots / the measured checksum), because "
+                         "under 0/auto the CUDA0 cache lines are gated by expert_cache > 0 "
+                         "(generate.cpp:6697/6781/6785) and are recorded as explicitly UNDEFINED, never "
+                         "invented. The default run keeps requiring them exactly as today, and "
+                         "--equalize-mib is unchanged")
     ap.add_argument("--reenable", choices=DW_REENABLE, default=None, metavar="GROUP",
                     help="ABLATION of ONE control group, on all three arms, derived from the CURRENT "
                          "production clone for that group: 'adaptation' (the diagnostic --adapt-swaps 0 is "
@@ -1406,6 +1564,12 @@ def main() -> int:
     requests, refuse = validate_requests(a.requests, a.prompt_set, a.reenable)
     if refuse:
         print(refuse)
+        return 2
+    # THE PIN OVERRIDE IS VALIDATED HERE TOO, before the window label and before any snapshot, signal
+    # handler, config read, port probe, derived file, GPU action or HTTP request.
+    pin, pin_refuse = validate_pin(a.pin_expert_cache, a.prompt_set, a.reenable)
+    if pin_refuse:
+        print(pin_refuse)
         return 2
 
     window = f"divergence-{time.strftime('%Y%m%d-%H%M%S')}"
@@ -1439,6 +1603,25 @@ def main() -> int:
         "modes_in_order": [m for m, _ in DW_MODES],
         "derived_dir_would_be": str(base_dir), "derived_files_mode": "0600 (written at execute only)",
         "selected_requests": requests,
+        "expert_cache_pin": dw_pin_label(pin),
+        "pin_expert_cache_override": (None if pin is None else {
+            "value": pin,
+            "scope": (f"the --expert-cache value on EVERY arm is {pin}, replacing the window's pin {DW_PIN}; "
+                      "no other control moves (chunk 512, no borrowing, adaptation off, park/cache off, "
+                      "min-p 0, the child env, the widths, the equalizer)"),
+            "engine_legality": ("--expert-cache accepts N|auto: parse generate.cpp:2650-2652 ('auto' -> -1, "
+                                "else atoi), help 1022-1025 'DEFAULT 0', auto sizing 6321; the CUDA0 cache "
+                                "lines are gated by expert_cache > 0 (6697/6781/6785)"),
+            "residency_gates": ("CROSS-ARM equality of the OBSERVED residency fingerprints stays exactly as "
+                                "strict (baseline = the first arm's key; an unproven proof keeps its nonce; "
+                                "undefined-vs-defined is a mismatch that fails closed). The historical "
+                                f"{DW_PIN}-pin constants (CUDA0 2904 slots / the measured checksum) are NOT "
+                                "required, because under 0/auto they legitimately differ; absent CUDA0 cache "
+                                "lines are recorded as explicitly UNDEFINED, never invented. The NO-LOAN, "
+                                "ADAPT-OFF, CACHE-OFF and chunk proofs are unchanged, and --equalize-mib "
+                                "is unchanged"),
+            "historical_constants_required": False,
+            "gate_mode_label": dw_pin_gate_label(pin)}),
         "subset_diagnostic": (None if not requests else {
             "scope": (f"SUBSET DIAGNOSTIC ONLY: the selected original gate-set positions {requests} run "
                       "once on each arm's own fresh server and every selected response is compared "
@@ -1485,13 +1668,7 @@ def main() -> int:
                              "not speed, not a safety verdict; the room delta may be retuned from the run's own "
                              "room lines (--equalize-mib)")}),
         "overrides_allowlist": sorted(DW_ALLOW),
-        "overrides": {
-            "all arms": {"--expert-cache": str(DW_PIN), "--prefill": str(DW_CHUNK),
-                         "--no-prefill-borrow": "(flag, valueless)", "--adapt-swaps": "0",
-                         "--prompt-cache": "0", "--conversation-cache-mib": "0"},
-            "dflash arms": {"--spec-min-p": "0 (full proposal width, 14549/14777)",
-                            "--lookup-chain": "0 (sfx_on false, 14338)"},
-            "non-dflash arms with --equalize-mib": {"--vram-reserve-later-mib": "+DELTA (4499-4501)"}},
+        "overrides": dw_overrides_block(pin),
         "runtime_gates": ["residency key equality (CUDA0 slots/prefilled + CHECKSUM proof, every stage's "
                           "layers/slots/filled/pairs, FINAL-CHUNK proof, POSITIVE no-loan proof, ADAPT-OFF "
                           "argv proof) asserted BEFORE any prompt",
@@ -1527,12 +1704,13 @@ def main() -> int:
                     "prompt_set": a.prompt_set, "max_tokens_override": a.max_tokens,
                     "selected_requests": requests,
                     "reenable": a.reenable,
+                    "expert_cache_pin": dw_pin_label(pin), "pin_expert_cache_override": pin,
                     "child_env": sorted(DW_ENV), "equalize_mib": a.equalize_mib,
                     "stop_sent": False, "modes": []}
     exit_code = 1                                          # fail-closed: an unfinished window is never 0
     mw.install_signal_handlers()                          # SIGTERM/SIGINT -> WindowSignal -> cleanup path
     try:
-        run_dw(snap, record, note, a.equalize_mib, a.prompt_set, a.max_tokens, a.reenable, requests)
+        run_dw(snap, record, note, a.equalize_mib, a.prompt_set, a.max_tokens, a.reenable, requests, pin)
     except BaseException as e:
         record["window_error"] = repr(e)[:300]
     finally:
