@@ -266,7 +266,7 @@ bool DFlashTapCollector::assemble(int64_t key, const Slice* slices, int n_slices
     if (s.rows >= 0 && s.rows != rows) { err = "dflash tap collect: chunk slot rows disagree"; return false; }
     // L14 CONSUMER ORDERING: a foreign tap's rows exist in the pinned slot ONLY after
     // its producer's stage() ran for this key.  The chain's contract is producer-first
-    // (prefill fires on_taps at every stage's chunk end, prefill.cpp's hand-off path);
+    // (prefill fires dflash_on_taps at every stage's chunk end, prefill.cpp's hand-off path);
     // the collector ENFORCES it instead of failing on a first-comer race.  NO staged
     // flag for the key means NO producer ran: deterministic refusal, fast, exactly the
     // original loud failure (the fail-closed tests keep their immediate refusals).
