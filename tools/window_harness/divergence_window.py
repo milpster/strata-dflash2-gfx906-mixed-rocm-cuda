@@ -1262,10 +1262,10 @@ def run_dw(snap: dict, record: dict, note, equalize_mib: int = 0,
                                   "control, head, tap or prompt-state claim is made from text"
                                   + ("" if not reenable else
                                      f"; ABLATION '{reenable}': the comparison is EXPLORATORY and the standard "
-                                     "correctness gate is UNESTABLISHED for this variant"
-                                     + ("" if not requests else
-                                        f"; SUBSET DIAGNOSTIC: ONLY the selected gate-set requests {indices} "
-                                        "were run and compared - this is NOT the full eight-prompt gate")))
+                                     "correctness gate is UNESTABLISHED for this variant")
+                                  + ("" if not requests else
+                                     f"; SUBSET DIAGNOSTIC: ONLY the selected gate-set requests {indices} "
+                                     "were run and compared - this is NOT the full eight-prompt gate"))
     record["gate_mode"] = ((f"divergence-window pin{DW_PIN} chunk{DW_CHUNK} "
                             + ("no-borrow " if reenable != "borrowing" else "BORROWING-ON(ablation) ")
                             + ("adapt-off " if reenable != "adaptation" else "ADAPTATION-ON(ablation) ")
@@ -1311,12 +1311,14 @@ def dw_gate_flags(controlled_match: bool, gate_failures: list, reenable: str | N
         comparisons plus the runtime gates ONLY;
       * without --requests the semantics are exactly the existing ones - the default single prompt and
         the full eight-prompt gate keep their own gates_ok, unchanged;
-      * a break_reason (any early exit) or any gate failure clears everything: an unrun comparison is
-        never a pass."""
+      * a break_reason (any early exit) or any gate failure clears every diagnostic flag: an unrun
+        comparison is never a pass.  For an explicit --requests run a break ALSO clears the residency
+        flag, because an aborted subset establishes nothing; the physical residency comparison itself,
+        its per-mode fingerprints and the default (no --requests) reporting are UNCHANGED."""
     established = bool(controlled_match and reenable is None)
-    standard_ok = bool(established and list(gate_failures) == [] and not break_reason)
     subset = bool(requests)
-    return {"residency_gate_established": established,
+    standard_ok = bool(established and list(gate_failures) == [] and not break_reason)
+    return {"residency_gate_established": bool(established and not (subset and break_reason)),
             "gates_ok": bool(standard_ok and not subset),
             "ablation_ok": bool(reenable and controlled_match and not break_reason),
             "subset_diagnostic_ok": bool(subset and standard_ok),
