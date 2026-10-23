@@ -17,6 +17,15 @@ What this IS:
     restarts, signals, or probes production.
   * CPU unit fixtures (--selfcheck) for the cloner/merge/guards/RT-metadata (parent runs).
 
+OPT-IN PATH OVERRIDES (integ-023; the parent's harness lane points the SAME reviewed cloner at
+another engine tree and a NEW config dir, so nothing here hardcodes a worktree):
+  STRATA_WINDOW_PROTO_BINARY  -> PROTO_BINARY (the cloned exe for every NEW-binary arm)
+  STRATA_WINDOW_CONFIG_DIR    -> CONFIG_DIR  (where --plan writes manifest + clones)
+  Absent/empty env = the byte-for-byte defaults below, so every earlier lane is unchanged.
+  A RELATIVE override is REFUSED, never resolved against a cwd. PROD_BINARY (the explicitly OLD
+  production arm) and PROD_CONFIG/LOG_DIR/ports are NEVER overridable, and the lineage/ownership
+  guards keep scanning the ORIGINAL production paths - no guard is loosened by these overrides.
+
 BASELINE FACT (parent-verified source + runtime logs, 2026-10-22; supersedes the earlier
 "TARGET-ONLY" label, which was WRONG):
   * generate.cpp:778 suffix_draft DEFAULT 3; the flag --suffix-draft is only reassigned at
@@ -46,18 +55,38 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import os
 import pathlib
 import subprocess
 import sys
 import urllib.parse
 import urllib.request
 
+
+def _abs_override(env_name: str, default: str) -> str:
+    """Opt-in ABSOLUTE path override, default-preserving: an absent/empty env returns the DEFAULT
+    STRING BYTE-FOR-BYTE (every earlier lane keeps its literal paths). A relative value is REFUSED
+    outright - it is never resolved against a cwd, so a typo can never write configs into a tree
+    nobody selected. Same mechanism and same env names as ops/model_window.py, so the imported
+    clone-provider and the controller always resolve the SAME binary and config dir."""
+    raw = os.environ.get(env_name)
+    if raw is None or not raw.strip():
+        return default
+    val = raw.strip()
+    if not val.startswith("/"):
+        raise ValueError(f"{env_name}={raw!r}: REFUSED - the override must be an ABSOLUTE path "
+                         f"(default {default!r}); a relative override is never resolved against a cwd")
+    return val
+
+
 PROD_CONFIG = "/mnt/user/Strata/prod-config-swift15.json"
 PROD_BINARY = "/mnt/user/Strata-2966/build-2966/strata"   # observed prod engine (pid cmdline evidence)
-PROTO_BINARY = "/mnt/user/dflash2/Strata-wt/build-gfx906-dflash2/strata"
+# The OLD production arm keeps PROD_BINARY always; only the NEW-binary arms follow the override.
+PROTO_BINARY = _abs_override("STRATA_WINDOW_PROTO_BINARY",
+                            "/mnt/user/dflash2/Strata-wt/build-gfx906-dflash2/strata")
 ARTIFACT = "/mnt/user/dflash2/artifacts/inco-dflash2-bf16.gguf"
 RT_DIR = "/home/user/dev/Strata-data/mtp-bf16/rt"         # ready MTP loader input (read-only)
-CONFIG_DIR = pathlib.Path("/mnt/user/dflash2/config")
+CONFIG_DIR = pathlib.Path(_abs_override("STRATA_WINDOW_CONFIG_DIR", "/mnt/user/dflash2/config"))
 LOG_DIR = "/mnt/user/dflash2/logs"                        # absolute: prototype logs NEVER land under prod CWD
 PROTO_PORT = 8019
 PROD_PORT = 8009
@@ -289,7 +318,11 @@ def prod_status() -> str:
     'absent'   = no engine and no server lineage found.
     'unknown'  = anything unreadable/mixed -> fail-closed refusal.
     The old bare pgrep -f build-2966/strata CONFLATED an isolated old-binary run on 8019
-    with production; lineage (config file + port in the server parent's cmdline) fixes that."""
+    with production; lineage (config file + port in the server parent's cmdline) fixes that.
+    OWNERSHIP GUARD, NEVER OVERRIDABLE: an isolated server is recognized ONLY by a config path
+    under /mnt/user/dflash2/config/ plus --port 8019. A STRATA_WINDOW_CONFIG_DIR override stays
+    inside that prefix (e.g. /mnt/user/dflash2/config/integ-023) and is therefore covered; a
+    config dir outside it is 'unknown' = fail-closed refusal, never an accepted lineage."""
     try:
         pids = [p.name for p in pathlib.Path("/proc").iterdir() if p.name.isdigit()]
     except OSError:
