@@ -8722,7 +8722,7 @@ int main(int argc, char** argv) {
 
         if (has_dflash) {
             sp.set_tap_layers(dflash_capture_layers.data(), (int) dflash_capture_layers.size(), dflash.artifact().geom().target_hc_mean);
-            sp.on_taps = [&](const uint16_t* data, int count, int64_t rows, int64_t pos, std::string& e) {
+            sp.dflash_on_taps = [&](const uint16_t* data, int count, int64_t rows, int64_t pos, std::string& e) {
                 if (!df_request) return true;
                 auto& tc = dflash.tap_collector();
                 // L8 --layer-split: sp is the chain's stage-0 producer; the tap callback fires
@@ -9096,7 +9096,7 @@ int main(int argc, char** argv) {
                     st.sp.set_tap_layers(dflash_capture_layers.data(), (int) dflash_capture_layers.size(),
                                          dflash.artifact().geom().target_hc_mean);   // before init: taps join the carve
                     if (dflash.tap_collector().enabled())
-                        st.sp.on_taps = [&, i](const uint16_t* data, int, int64_t rows, int64_t pos, std::string& e) {
+                        st.sp.dflash_on_taps = [&, i](const uint16_t* data, int, int64_t rows, int64_t pos, std::string& e) {
                             if (!df_request) return true;
                             auto& tc = dflash.tap_collector();
                             const strata::core::DFlashTapCollector::Slice slice{(int) i + 1, data, st.sp.tap_stride_rows(), rows};
@@ -16452,7 +16452,7 @@ int main(int argc, char** argv) {
                 if (!tc.assemble(p0, &slice, 1, T, 2, e)) return false;
                 return dflash.add_context(tc.plane_bf16(), tc.plan().n_taps, tc.stride_rows_bf16(), p0, T, e);
             };
-            prefill.on_taps = df_on_taps;
+            prefill.dflash_on_taps = df_on_taps;
         }
         if (const char* taps_path = std::getenv("STRATA_DFLASH_TAPS")) {
             if (!g_tap_dump) g_tap_dump = std::fopen(taps_path, "wb");
@@ -16461,7 +16461,7 @@ int main(int argc, char** argv) {
                 return 1;
             }
             const int64_t tap_n_embd = g.n_embd;
-            prefill.on_taps = [&prefill, tap_n_embd, &dflash, use_dflash, df_on_taps](const uint16_t* taps, int n_taps,
+            prefill.dflash_on_taps = [&prefill, tap_n_embd, &dflash, use_dflash, df_on_taps](const uint16_t* taps, int n_taps,
                                                      int64_t T, int64_t p0, std::string& e) -> bool {
                 if (use_dflash) {
                     // Review 2026-10-21 item 4: the debug export COMPOSES the production
@@ -17457,7 +17457,10 @@ int main(int argc, char** argv) {
                 total_ms += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
                 break;
             }
-            const bool drafted = !use_mtp || (int64_t) produced.size() >= max_new || draft_next(T, a);
+            // Not const (upstream v0.2.3 wrote `const bool drafted`): our --dflash CLI path assigns to it
+            // below at the drafter's proposal (`drafted = dflash.propose(...)` inside the && chain), exactly as
+            // pre-integ-023 (c938100b:16924 + :16963) had it.  Upstream's own use only reads it.
+            bool drafted = !use_mtp || (int64_t) produced.size() >= max_new || draft_next(T, a);
             if (!use_dflash) {   // ours: the CLI --dflash path joins the adaptation thread and checks it in its own block below
                 if (adapt_thr.joinable()) adapt_thr.join();
                 if (!adapt_ok) return 1;

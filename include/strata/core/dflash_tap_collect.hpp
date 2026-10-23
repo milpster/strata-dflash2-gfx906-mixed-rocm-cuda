@@ -20,7 +20,7 @@
 // FOREIGN taps - a drafter-device tap is copied D2D and never touches the host.
 //
 // Concurrency contract (parent review 2026-10-21, evidence: prefill.cpp:4948-4963 -
-// on_taps fires on the stage's host thread after ITS stream sync, and an intermediate
+// dflash_on_taps fires on the stage's host thread after ITS stream sync, and an intermediate
 // stage returns "while later GPUs are still processing the previous chunk"): a producer
 // thread staging chunk N+1 overlaps the final stage's thread assembling chunk N, so all
 // slot bookkeeping and transfer enqueue runs under mu_.  No lock is ever held across a
@@ -40,7 +40,7 @@
 // keys, gen_) runs under mu_, disable() included.
 // CONSUMER ORDERING (L14: the dflash_w3 model window's "tap 0 was never staged"): the
 // chain MUST stage a chunk's foreign slices before the final stage assembles the same
-// key - prefill fires on_taps at EVERY stage's chunk end (prefill.cpp: the hand-off
+// key - prefill fires dflash_on_taps at EVERY stage's chunk end (prefill.cpp: the hand-off
 // path), not only at the chain's last one.  The collector ENFORCES the contract:
 // assemble() for a key with NO staged foreign flag refuses FAST (no producer ran -
 // the original loud failure; the fail-closed refusals stay immediate); with PARTIALLY
