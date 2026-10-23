@@ -152,6 +152,11 @@ template <typename T> inline hipError_t strata_host_alloc(T** p, size_t bytes, u
 #define cudaHostGetDevicePointer hipHostGetDevicePointer
 #define cudaStreamCreate hipStreamCreate
 #define cudaStreamCreateWithFlags hipStreamCreateWithFlags
+// The two priority-aware spellings: HIP declares both with CUDA's signatures (ROCm 6.1 hip_runtime_api.h:2320
+// `hipStreamCreateWithPriority(hipStream_t*, unsigned int, int)` and :2335
+// `hipDeviceGetStreamPriorityRange(int*, int*)`), and libamdhip64 exports both (hip_4.2).
+#define cudaStreamCreateWithPriority hipStreamCreateWithPriority
+#define cudaDeviceGetStreamPriorityRange hipDeviceGetStreamPriorityRange
 #define cudaStreamDestroy hipStreamDestroy
 #define cudaStreamSynchronize hipStreamSynchronize
 #define cudaStreamQuery hipStreamQuery

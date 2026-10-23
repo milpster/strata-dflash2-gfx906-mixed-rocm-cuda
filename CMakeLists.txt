@@ -382,6 +382,9 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   # the DFlash2 drafter (src/core/dflash2.cpp, src/kernels/cuda/dflash2.cu) exists in the CUDA and HIP builds; the Metal and SYCL builds compile without it.
   # It is now an option (STRATA_HAVE_DFLASH2), default ON exactly as upstream v0.2.3 had it, so the build can be made to carry exactly ONE tap producer:
   # this macro gates upstream's in-verify tap capture in src/core/verify.cpp, and STRATA_ENABLE_DFLASH2 gates ours; both ON is refused above.
+  # The option also gates the two SOURCES (src/kernels/cuda/dflash2.cu in strata_kernels, src/core/dflash2.cpp in
+  # strata_engine, and the drafter's EXCLUDE_FROM_ALL tools), so with it OFF the tree compiles no TU of that runtime at
+  # all and the configure-time runtime print above is exactly what the build contains.
   if(STRATA_HAVE_DFLASH2)
     target_compile_definitions(strata_core PUBLIC STRATA_HAVE_DFLASH2=1)
   endif()
@@ -467,11 +470,15 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
                           src/kernels/cuda/dequant_bf16.cu
                           src/kernels/cuda/qsa_select.cu
                           src/kernels/cuda/verify_kernels.cu
-                          src/kernels/cuda/dflash2.cu
                           src/kernels/cuda/iq_kernels.cu
                           src/kernels/ngram.cpp
                           src/ngram/ple_reader.cpp
                           src/platform/direct_file.cpp)
+  # Upstream v0.2.3's drafter kernels enter the build only under their own option: with STRATA_HAVE_DFLASH2=OFF not one
+  # translation unit of upstream's runtime is compiled, which is exactly what the configure-time runtime print above says.
+  if(STRATA_HAVE_DFLASH2)
+    target_sources(strata_kernels PRIVATE src/kernels/cuda/dflash2.cu)
+  endif()
   if(STRATA_ENABLE_DFLASH2)
     target_sources(strata_kernels PRIVATE src/kernels/cuda/dflash_inco.cu)
   endif()
@@ -633,10 +640,21 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   add_library(strata_engine STATIC src/core/layer.cpp src/core/session.cpp src/core/expert_source.cpp src/core/remote_experts.cpp
     src/core/remote_expert_opt.cu
     src/core/expert_cache.cpp src/core/native_head.cpp src/core/native_dense.cpp src/core/verify.cpp src/core/mtp.cpp
-    src/core/dflash2.cpp
     src/core/dflash.cpp src/core/dflash_runtime.cpp src/core/dflash_tap_collect.cpp
     src/core/conversation_snapshot.cpp src/core/conversation_state.cpp src/core/conversation_memory.cpp src/core/peer_experts.cpp
     src/core/arch_defaults.cpp src/core/nv_defaults.cpp src/core/vmm.cpp src/core/conversation_file.cpp)
+  # Upstream's drafter, same rule as its kernels above: OFF means the TU is not compiled at all (see the runtime print).
+  if(STRATA_HAVE_DFLASH2)
+    target_sources(strata_engine PRIVATE src/core/dflash2.cpp)
+  endif()
+  # The gfx906 scheme is STRATA_ENABLE_CUDA=ON with STRATA_ENABLE_HIP=OFF, so - unlike the wave32 HIP build, whose
+  # strata_hip_runtime INTERFACE target (cmake/hip_backend.cmake:98) carries STRATA_USE_HIP - nothing defines that macro
+  # here, and src/core/dflash2.cpp took CUDA's branch for the stream-priority and stream-fork code (its :198 and :446).
+  # On this card the HIP branch is the true one: priority streams only with STRATA_DF2_PRIO=1, one stream by default
+  # (the file's own measurement note). Applied to that one source only; nothing in its include closure gates on the macro.
+  if(STRATA_HAVE_DFLASH2 AND STRATA_HIP_GFX906)
+    set_property(SOURCE src/core/dflash2.cpp APPEND PROPERTY COMPILE_DEFINITIONS STRATA_USE_HIP=1)
+  endif()
   target_include_directories(strata_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_link_libraries(strata_engine PUBLIC strata_core strata_kernels strata_kernels_cpu ${_strata_gpu_runtime_target})
   if(STRATA_BUILD_TESTS AND STRATA_ENABLE_CUDA AND NOT STRATA_HIP_GFX906)
@@ -788,25 +806,30 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   endif()
 
   # DFlash2 drafter tools (not built by default: cmake --build <dir> --target dflash2_parity dflash2_gemm_bench dflash2_attn_bench): the drafter against
-  # the torch port on a synthetic case (needs the pack and a case file, tools/dflash2/mk_parity_case.py), and the timing of its Q8 GEMM and attention
-  add_executable(dflash2_parity EXCLUDE_FROM_ALL src/core/dflash2_parity.cpp)
-  target_include_directories(dflash2_parity PRIVATE ${_strata_gpu_include_directories})
-  target_link_libraries(dflash2_parity PRIVATE strata_engine strata_kernels ${_strata_gpu_runtime_target})
-  add_executable(dflash2_gemm_bench EXCLUDE_FROM_ALL src/core/dflash2_gemm_bench.cpp)
-  target_include_directories(dflash2_gemm_bench PRIVATE ${_strata_gpu_include_directories})
-  target_link_libraries(dflash2_gemm_bench PRIVATE strata_kernels ${_strata_gpu_runtime_target})
-  add_executable(dflash2_launch_bench EXCLUDE_FROM_ALL src/core/dflash2_launch_bench.cu)
-  target_include_directories(dflash2_launch_bench PRIVATE ${_strata_gpu_include_directories})
-  target_link_libraries(dflash2_launch_bench PRIVATE ${_strata_gpu_runtime_target})
-  add_executable(dflash2_bw_bench EXCLUDE_FROM_ALL src/core/dflash2_bw_bench.cu)
-  target_include_directories(dflash2_bw_bench PRIVATE ${_strata_gpu_include_directories})
-  target_link_libraries(dflash2_bw_bench PRIVATE ${_strata_gpu_runtime_target})
-  add_executable(dflash2_small_bench EXCLUDE_FROM_ALL src/core/dflash2_small_bench.cpp)
-  target_include_directories(dflash2_small_bench PRIVATE ${_strata_gpu_include_directories})
-  target_link_libraries(dflash2_small_bench PRIVATE strata_kernels ${_strata_gpu_runtime_target})
-  add_executable(dflash2_attn_bench EXCLUDE_FROM_ALL src/core/dflash2_attn_bench.cpp)
-  target_include_directories(dflash2_attn_bench PRIVATE ${_strata_gpu_include_directories})
-  target_link_libraries(dflash2_attn_bench PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+  # the torch port on a synthetic case (needs the pack and a case file, tools/dflash2/mk_parity_case.py), and the timing of its Q8 GEMM and attention.
+  # They belong to upstream's runtime, so with STRATA_HAVE_DFLASH2=OFF they are not configured at all: dflash2_parity,
+  # dflash2_small_bench, dflash2_gemm_bench and dflash2_attn_bench call its kernels, and dflash2_parity links the drafter
+  # class - with the runtime out of the build they could not link.
+  if(STRATA_HAVE_DFLASH2)
+    add_executable(dflash2_parity EXCLUDE_FROM_ALL src/core/dflash2_parity.cpp)
+    target_include_directories(dflash2_parity PRIVATE ${_strata_gpu_include_directories})
+    target_link_libraries(dflash2_parity PRIVATE strata_engine strata_kernels ${_strata_gpu_runtime_target})
+    add_executable(dflash2_gemm_bench EXCLUDE_FROM_ALL src/core/dflash2_gemm_bench.cpp)
+    target_include_directories(dflash2_gemm_bench PRIVATE ${_strata_gpu_include_directories})
+    target_link_libraries(dflash2_gemm_bench PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+    add_executable(dflash2_launch_bench EXCLUDE_FROM_ALL src/core/dflash2_launch_bench.cu)
+    target_include_directories(dflash2_launch_bench PRIVATE ${_strata_gpu_include_directories})
+    target_link_libraries(dflash2_launch_bench PRIVATE ${_strata_gpu_runtime_target})
+    add_executable(dflash2_bw_bench EXCLUDE_FROM_ALL src/core/dflash2_bw_bench.cu)
+    target_include_directories(dflash2_bw_bench PRIVATE ${_strata_gpu_include_directories})
+    target_link_libraries(dflash2_bw_bench PRIVATE ${_strata_gpu_runtime_target})
+    add_executable(dflash2_small_bench EXCLUDE_FROM_ALL src/core/dflash2_small_bench.cpp)
+    target_include_directories(dflash2_small_bench PRIVATE ${_strata_gpu_include_directories})
+    target_link_libraries(dflash2_small_bench PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+    add_executable(dflash2_attn_bench EXCLUDE_FROM_ALL src/core/dflash2_attn_bench.cpp)
+    target_include_directories(dflash2_attn_bench PRIVATE ${_strata_gpu_include_directories})
+    target_link_libraries(dflash2_attn_bench PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+  endif()
 
   add_executable(strata src/program/generate.cpp)
   strata_utf8_manifest(strata)
