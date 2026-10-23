@@ -16,6 +16,18 @@ recorded VERBATIM.  Plausible text is never correctness evidence.  THIS IS AN EX
 CORRECTNESS-DIAGNOSTIC VARIANT: its timings are NEVER production performance numbers, and the
 window prints that label in every record.
 
+OPT-IN SUBSET (--requests, valid ONLY with --prompt-set and NEVER with --reenable): run ONLY the given
+original ONE-BASED gate-set positions (1..8) of greedy_gate.GATE_PROMPTS, in the ORDER GIVEN, one
+fresh request per prompt on each arm's own server, with the SAME three arms and the SAME runtime
+controls.  It is a SUBSET DIAGNOSTIC ONLY: the FULL eight-prompt gate is NEVER established by it, the
+standard gates_ok stays False, and the separate subset_diagnostic_ok covers the strict comparisons of
+the SELECTED responses plus the runtime gates.  Every plan row and every response records the
+original full-set index beside the sequential index the comparisons use, and the status line says
+SUBSET DIAGNOSTIC PASS/FAIL, never 'ALL OK'.  An empty selection, a duplicate, 0, an out-of-range
+index, --requests without --prompt-set and --requests with --reenable are refused BEFORE any
+snapshot, signal, config read, port probe or HTTP action.  The default (no --requests) is
+byte-identical to the existing single-prompt and full-eight-prompt behavior, same controls, same gates.
+
 WHAT DERIVATION DOES (the clone is the source; production configs are NEVER written):
 Every mode launches a DERIVED config = the CURRENT clone for that mode + ONLY these allowlisted
 overrides, under a unique per-window folder at 0600 with a unique per-window engine log:
@@ -568,10 +580,75 @@ def dw_key(fp: dict, reenable: str | None = None) -> tuple:
 
 
 # ------------------------------------------------------------------ the prompt plan + the requests
-def select_prompts(prompt_set: bool) -> list[tuple[str, str]]:
+def select_prompts(prompt_set: bool, requests: list[int] | None = None) -> list[tuple[str, str]]:
     """ONE fresh prompt (the default, byte-identical to the L19 behavior) or the FULL eight-prompt
-    gate set from greedy_gate.GATE_PROMPTS, in order, one request per prompt, sequentially."""
-    return list(G.GATE_PROMPTS) if prompt_set else [G.GATE_PROMPTS[0]]
+    gate set from greedy_gate.GATE_PROMPTS, in order, one request per prompt, sequentially.
+
+    SUBSET DIAGNOSTIC (opt-in, validated by validate_requests BEFORE any action): `requests` are
+    original ONE-BASED positions in greedy_gate.GATE_PROMPTS (1..8); exactly those prompts are
+    selected, in the REQUESTED order.  With requests is None the selection is byte-identical to the
+    existing default (one prompt) and --prompt-set (the full eight)."""
+    if requests is None:
+        return list(G.GATE_PROMPTS) if prompt_set else [G.GATE_PROMPTS[0]]
+    return [G.GATE_PROMPTS[i - 1] for i in requests]
+
+
+def validate_requests(values: list[int] | None, prompt_set: bool,
+                      reenable: str | None) -> tuple[list[int] | None, str]:
+    """PURE pre-action gate for --requests (CPU only: no snapshot, no signal handler, no config read,
+    no port, no HTTP, no GPU, nothing written).  Returns (selected_indices, refusal); a non-empty
+    refusal is printed and the window exits 2 BEFORE any window action.  Rules: valid ONLY with
+    --prompt-set and NEVER with --reenable; indices are original one-based gate-set positions 1..8;
+    the REQUESTED ORDER is preserved; an empty selection, duplicates, non-integers and out-of-range
+    values are refused.  Returns (None, "") for the default (no --requests)."""
+    if values is None:
+        return None, ""
+    sel = list(values)
+    if not prompt_set:
+        return None, "REFUSE: --requests is valid ONLY with --prompt-set (a subset of the gate set)"
+    if reenable:
+        return None, (f"REFUSE: --requests is not supported together with --reenable {reenable} - "
+                      "unsupported combination (an ablation variant keeps its own selection)")
+    n = len(G.GATE_PROMPTS)
+    if not sel:
+        return None, f"REFUSE: --requests needs at least one 1-based gate-set index (1..{n})"
+    for v in sel:
+        if isinstance(v, bool) or not isinstance(v, int) or not 1 <= v <= n:
+            return None, (f"REFUSE: --requests index {v!r} is not an original gate-set position "
+                          f"(integers 1..{n} only)")
+    dup = sorted({v for v in sel if sel.count(v) > 1})
+    if dup:
+        return None, f"REFUSE: --requests has duplicate indices {dup} - each prompt runs once per arm"
+    return sel, ""
+
+
+def prompt_indices(prompts: list[tuple[str, str]], requests: list[int] | None) -> list[int]:
+    """The ORIGINAL full-set index of every selected prompt, aligned to `prompts` position by
+    position: an explicit subset carries the requested indices in the requested order, and the
+    defaults carry their own (the single default prompt IS gate-set position 1, the full set is 1..8)."""
+    return list(requests) if requests else list(range(1, len(prompts) + 1))
+
+
+def prompt_plan_rows(prompts: list[tuple[str, str]], indices: list[int], tokens: int | None) -> list[dict]:
+    """THE prompt plan, built in ONE place so the dry-run plan and the executed window record are the
+    SAME plan: the sequential index the comparison code uses, the ORIGINAL full-set index of that
+    prompt, its class, its lengths, the bounded max tokens, and the SHA-256 of the prompt text."""
+    return [{"n": i + 1, "class": c, "words": len(t.split()), "chars": len(t),
+             "max_tokens": max_tokens_for(c, tokens),
+             "max_tokens_requested": (tokens if tokens is not None else "class limit"),
+             "sha256": hashlib.sha256(t.encode()).hexdigest(),
+             "full_set_request": indices[i]}
+            for i, (c, t) in enumerate(prompts)]
+
+
+def subset_label(requests: list[int] | None, prompt_set: bool) -> str:
+    """Honest scope words for the plan: an explicit --requests run is a SUBSET DIAGNOSTIC and is
+    NEVER described as the full eight-prompt gate.  Without --requests the words are byte-identical
+    to the existing wording ('1 fresh prompt' / '8-prompt gate set')."""
+    if requests:
+        return (f"SUBSET DIAGNOSTIC: requests {'+'.join(str(i) for i in requests)} of the 8-prompt "
+                "gate set (selected responses ONLY)")
+    return "8-prompt gate set" if prompt_set else "1 fresh prompt"
 
 
 def max_tokens_for(cls: str, override: int | None) -> int:
@@ -595,7 +672,8 @@ def tokens_description(tokens: int | None, override: int | None = None) -> str:
 
 
 def run_dw_request(mode: str, rec: dict, note, prompts: list[tuple[str, str]],
-                   max_tokens_override: int | None = None) -> bool:
+                   max_tokens_override: int | None = None,
+                   indices: list[int] | None = None) -> bool:
     """The greedy requests, thinking explicitly off, via the real bench client: one per prompt, in
     order, each a FRESH request on this arm's own server.  Records verbatim: the request text, the
     engine-observed prompt tokens, usage, timings, ttft, pieces, the full text and every error, and
@@ -607,6 +685,7 @@ def run_dw_request(mode: str, rec: dict, note, prompts: list[tuple[str, str]],
     ok = True
     for n, (cls, text) in enumerate(prompts, 1):
         max_tokens = max_tokens_for(cls, max_tokens_override)
+        full_idx = indices[n - 1] if indices else n          # ORIGINAL gate-set position of this row
         r = chat(base, "", [{"role": "user", "content": text}], max_tokens,
                  think=False, timeout=mw.REQ_TIMEOUT)
         d = digest(r)
@@ -624,8 +703,10 @@ def run_dw_request(mode: str, rec: dict, note, prompts: list[tuple[str, str]],
                                 "reused_tokens": d.get("reused_tokens"), "read_tokens": d.get("read_tokens"),
                                 "drafts_offered": d.get("drafts_offered"),
                                 "drafts_accepted": d.get("drafts_accepted"),
-                                "usage": usage, "timings": r.get("timings"), "text": r.get("text")})
-        note(f"{mode}: request {n}/{len(prompts)} ({cls}) ok={d.get('ok')} err={str(r.get('err'))[:80]} "
+                                "usage": usage, "timings": r.get("timings"), "text": r.get("text"),
+                                "full_set_request": full_idx})
+        note(f"{mode}: request {n}/{len(prompts)} gate-set request {full_idx} ({cls}) "
+             f"ok={d.get('ok')} err={str(r.get('err'))[:80]} "
              f"observed_prompt_tokens={usage.get('prompt_tokens')} "
              f"completion={usage.get('completion_tokens')} "
              f"drafts_offered={d.get('drafts_offered')} drafts_accepted={d.get('drafts_accepted')}")
@@ -833,22 +914,38 @@ def ablation_runtime_proof(mode: str, rec: dict, reenable: str, note) -> list[st
 
 def run_dw(snap: dict, record: dict, note, equalize_mib: int = 0,
            prompt_set: bool = False, max_tokens_override: int | None = None,
-           reenable: str | None = None) -> None:
-    prompts = select_prompts(prompt_set)
+           reenable: str | None = None, requests: list[int] | None = None) -> None:
+    prompts = select_prompts(prompt_set, requests)
+    indices = prompt_indices(prompts, requests)
     # The DEFAULT stays exactly the L19 behavior: ONE prompt, 32 tokens.  The gate set uses the
     # gate's own class limits (128/96/64).  An explicit --max-tokens is BOUNDED: it can only lower
     # the limit that applies (max_tokens_for), never raise it.
     tokens = max_tokens_override if max_tokens_override is not None else (None if prompt_set
                                                                          else DW_MAX_TOKENS)
-    record["prompt_plan"] = [{"n": i + 1, "class": c, "words": len(t.split()), "chars": len(t),
-                              "max_tokens": max_tokens_for(c, tokens),
-                              "max_tokens_requested": (tokens if tokens is not None else "class limit"),
-                              "sha256": hashlib.sha256(t.encode()).hexdigest()}
-                             for i, (c, t) in enumerate(prompts)]
+    # ONE plan builder (prompt_plan_rows) for the dry run AND the executed window, so the plan the
+    # parent reads in the dry run IS the plan the window runs, and every row carries the ORIGINAL
+    # full-set index beside the sequential index the comparisons use.
+    record["prompt_plan"] = prompt_plan_rows(prompts, indices, tokens)
     record["requests_per_arm"] = len(prompts)
     record["prompt_set"] = prompt_set
+    record["selected_requests"] = list(requests) if requests else None
     record["max_tokens_override"] = max_tokens_override
     record["reenable"] = reenable
+    record["full_eight_prompt_gate_established"] = False
+    record["subset_diagnostic_ok"] = False
+    if requests:
+        record["subset_diagnostic"] = {
+            "scope": (f"SUBSET DIAGNOSTIC ONLY: the SELECTED original gate-set positions {indices} run "
+                      "once on each arm's own fresh server, and every selected response is compared "
+                      "byte-exactly with the corresponding response of the other arms. This is NOT a "
+                      "full eight-prompt correctness pass and is NEVER labelled one."),
+            "full_eight_prompt_gate_established": False,
+            "selected_full_set_indices": list(indices),
+            "sequential_to_full_set": {str(r["n"]): r["full_set_request"] for r in record["prompt_plan"]},
+            "standard_gate": ("gates_ok stays False for an explicit --requests run BY DESIGN; the "
+                              "separate subset_diagnostic_ok covers the strict selected-response "
+                              "comparisons and the runtime gates ONLY"),
+        }
     # Status fields exist from the first line of the window, with their fail-closed values. Every
     # path through run_dw ENDS by setting them (the completed-window block at the end), and bail()
     # sets them on every early exit - so a reader never has to guess what an absent key meant.
@@ -888,6 +985,8 @@ def run_dw(snap: dict, record: dict, note, equalize_mib: int = 0,
         # statement. A window that broke has NO correctness pass and NO clean ablation, in words.
         record["gates_ok"] = False
         record["ablation_ok"] = False
+        record["full_eight_prompt_gate_established"] = False
+        record["subset_diagnostic_ok"] = False
         note(reason)
 
     if not W.stop_prod(snap, record, note):        # the SAME verified stop path as every window
@@ -1060,7 +1159,7 @@ def run_dw(snap: dict, record: dict, note, equalize_mib: int = 0,
                         gate_ok = False
                     rec["residency_checksum"] = "present" if fp["checksum_present"] else "ABSENT - fail closed"
                 if gate_ok:
-                    requests_ok = run_dw_request(mode, rec, note, prompts, tokens)
+                    requests_ok = run_dw_request(mode, rec, note, prompts, tokens, indices)
                     ev_ok = mw.draft_evidence(record["window"], dcfg, mode, rec)
                     if not ev_ok:
                         bad.append("engine log evidence unreadable (provenance failed)")
@@ -1099,6 +1198,7 @@ def run_dw(snap: dict, record: dict, note, equalize_mib: int = 0,
             c["pair"] = [a, b]
             c["fail_closing"] = closing
             c["expected_responses"] = len(prompts)
+            c["selected_full_set_indices"] = indices
             comparison[label] = c
             if c["zero_response_refusal"]:
                 failures.append(f"GATE {label}: an arm produced NO responses "
@@ -1162,12 +1262,15 @@ def run_dw(snap: dict, record: dict, note, equalize_mib: int = 0,
                                   "control, head, tap or prompt-state claim is made from text"
                                   + ("" if not reenable else
                                      f"; ABLATION '{reenable}': the comparison is EXPLORATORY and the standard "
-                                     "correctness gate is UNESTABLISHED for this variant"))
+                                     "correctness gate is UNESTABLISHED for this variant"
+                                     + ("" if not requests else
+                                        f"; SUBSET DIAGNOSTIC: ONLY the selected gate-set requests {indices} "
+                                        "were run and compared - this is NOT the full eight-prompt gate")))
     record["gate_mode"] = ((f"divergence-window pin{DW_PIN} chunk{DW_CHUNK} "
                             + ("no-borrow " if reenable != "borrowing" else "BORROWING-ON(ablation) ")
                             + ("adapt-off " if reenable != "adaptation" else "ADAPTATION-ON(ablation) ")
                             + ("park-off " if reenable != "conversation-cache" else "CACHE-ON(ablation) ")
-                            + f"minp0 ({'8-prompt gate set' if prompt_set else '1 fresh prompt'}, "
+                            + f"minp0 ({subset_label(requests, prompt_set)}, "
                             f"max tokens {tokens_description(tokens, max_tokens_override)}, "
                             f"equalize +{equalize_mib} MiB on non-dflash arms)")
                            if equalize_mib else
@@ -1175,7 +1278,7 @@ def run_dw(snap: dict, record: dict, note, equalize_mib: int = 0,
                             + ("no-borrow " if reenable != "borrowing" else "BORROWING-ON(ablation) ")
                             + ("adapt-off " if reenable != "adaptation" else "ADAPTATION-ON(ablation) ")
                             + ("park-off " if reenable != "conversation-cache" else "CACHE-ON(ablation) ")
-                            + f"minp0 ({'8-prompt gate set' if prompt_set else '1 fresh prompt'}, "
+                            + f"minp0 ({subset_label(requests, prompt_set)}, "
                             f"max tokens {tokens_description(tokens, max_tokens_override)}, "
                             "measure-run: no room equalizer)"))
     record["diagnostic_only"] = ("Explicit correctness-diagnostic variant: the timings here are NOT production "
@@ -1185,15 +1288,59 @@ def run_dw(snap: dict, record: dict, note, equalize_mib: int = 0,
                                  + ("" if not reenable else
                                     f"; ABLATION '{reenable}': outputs are ablation evidence, NOT a new "
                                     "correctness pass, NOT a speed claim, NOT a safety verdict"))
-    gates_ok = established and record["gate_failures"] == []
-    record["ablation_ok"] = bool(reenable) and controlled_match and not record.get("break_reason")
     for label, _a, _b, closing in DW_PAIRS:
         v = (record["comparison"] if isinstance(record.get("comparison"), dict)
              else record.get("exploratory_comparison") or {})
         v = v.get(label)
         note(f"GATE {label}: all_equal={v['all_equal'] if v else 'NOT RUN'} fail_closing={closing}"
-             + (" [EXPLORATORY ABLATION]" if reenable else ""))
-    record["gates_ok"] = gates_ok and not record.get("break_reason")
+             + (" [EXPLORATORY ABLATION]" if reenable else "")
+             + (" [SUBSET DIAGNOSTIC]" if requests else ""))
+    record.update(dw_gate_flags(controlled_match, record["gate_failures"], reenable, prompt_set,
+                                requests, record.get("break_reason")))
+
+
+def dw_gate_flags(controlled_match: bool, gate_failures: list, reenable: str | None,
+                  prompt_set: bool, requests: list[int] | None,
+                  break_reason: str | None = None) -> dict:
+    """PURE fail-closed decision of the window's status flags (no /proc, no HTTP, no restore), so the
+    window record is filled from ONE CPU-testable decision and a reader never guesses an absent key.
+
+      * an explicit --requests run is a SUBSET DIAGNOSTIC: the standard correctness gate is NEVER
+        reported as established by it (gates_ok stays False) and the FULL eight-prompt gate is NEVER
+        established by it; the separate subset_diagnostic_ok covers the strict selected-response
+        comparisons plus the runtime gates ONLY;
+      * without --requests the semantics are exactly the existing ones - the default single prompt and
+        the full eight-prompt gate keep their own gates_ok, unchanged;
+      * a break_reason (any early exit) or any gate failure clears everything: an unrun comparison is
+        never a pass."""
+    established = bool(controlled_match and reenable is None)
+    standard_ok = bool(established and list(gate_failures) == [] and not break_reason)
+    subset = bool(requests)
+    return {"residency_gate_established": established,
+            "gates_ok": bool(standard_ok and not subset),
+            "ablation_ok": bool(reenable and controlled_match and not break_reason),
+            "subset_diagnostic_ok": bool(subset and standard_ok),
+            "full_eight_prompt_gate_established": bool(standard_ok and prompt_set and not subset)}
+
+
+def dw_outcome(record: dict, restored: bool) -> tuple[str, int]:
+    """PURE status words + exit code of a completed window (no restore, no /proc, no signals), so BOTH
+    are CPU-testable and fail-closed: an absent key is never a pass, and a window whose production
+    restore did not verify NEVER exits 0.  An explicit --requests run is labelled SUBSET DIAGNOSTIC
+    PASS/FAIL - never 'ALL OK' - because only the SELECTED gate-set requests were compared."""
+    if not restored:
+        return "RESTORE FAILED - PARENT INVESTIGATE NOW", 1
+    if record.get("selected_requests"):
+        ok = bool(record.get("subset_diagnostic_ok"))
+        return ("SUBSET DIAGNOSTIC PASS - selected gate-set requests ONLY, the full eight-prompt gate "
+                "is NOT established by a subset run - see logs" if ok
+                else "SUBSET DIAGNOSTIC FAIL - see logs", 0 if ok else 1)
+    if record.get("gates_ok"):
+        return "ALL OK", 0
+    if record.get("ablation_ok"):
+        return ("RESTORED; ABLATION EVIDENCE ONLY (the standard correctness gate is UNESTABLISHED by "
+                "design for this variant) - see logs", 0)
+    return "RESTORED; gate failures - see logs", 1
 
 
 def main() -> int:
@@ -1213,6 +1360,19 @@ def main() -> int:
                          "(pin 2000, chunk 512, no borrowing, adaptation off, park/cache off, min-p 0). "
                          "Every corresponding response is compared byte-exactly; a missing or failed "
                          "request fails the gate, and zero responses is never all_equal")
+    ap.add_argument("--requests", type=int, nargs="+", metavar="N", default=None,
+                    help="SUBSET DIAGNOSTIC, OPT-IN: valid ONLY with --prompt-set and NEVER with "
+                         f"--reenable. Run ONLY these original ONE-BASED gate-set positions "
+                         f"(1..{len(G.GATE_PROMPTS)}) of greedy_gate.GATE_PROMPTS, in the ORDER GIVEN, "
+                         "one fresh request per prompt on each arm's own server, with the SAME three "
+                         "arms and the SAME runtime controls (pin 2000, chunk 512, no borrowing, "
+                         "adaptation off, park/cache off, min-p 0). An empty selection, a duplicate, 0, "
+                         "an out-of-range index, --requests without --prompt-set and --requests with "
+                         "--reenable are REFUSED BEFORE any snapshot/signal/config/port/HTTP action. "
+                         "This is a SUBSET DIAGNOSTIC ONLY: the full eight-prompt gate is NEVER "
+                         "established by it, the standard gates_ok stays False, and the separate "
+                         "subset_diagnostic_ok covers the SELECTED responses plus the runtime gates. "
+                         "Every plan row and every response records the original full-set index")
     ap.add_argument("--max-tokens", type=int, metavar="N", default=None,
                     help="bounded override of the per-request new-token cap: it can only LOWER the limit "
                          "that applies (the class limits 128/96/64 for --prompt-set, 32 for the default "
@@ -1238,6 +1398,13 @@ def main() -> int:
     if a.max_tokens is not None and not 1 <= a.max_tokens <= 128:
         print(f"REFUSE: --max-tokens {a.max_tokens} is outside the bounded range 1..128")
         return 2
+    # THE SELECTION IS VALIDATED HERE, at the same point as the other refusals: before the window
+    # label, before any directory, before W.snapshot(), before any signal handler, config read, port
+    # probe, derived file, GPU action or HTTP request.  An invalid --requests never reaches an action.
+    requests, refuse = validate_requests(a.requests, a.prompt_set, a.reenable)
+    if refuse:
+        print(refuse)
+        return 2
 
     window = f"divergence-{time.strftime('%Y%m%d-%H%M%S')}"
     LOGS.mkdir(parents=True, exist_ok=True)
@@ -1245,6 +1412,13 @@ def main() -> int:
     results, wlog = OPS / f"{window}-results.json", LOGS / f"{window}.log"
     note = lambda msg: W.note_to(wlog, msg)                                          # noqa: E731
     base_dir = dw_dir_for(window)
+
+    # ONE selection and ONE plan builder for the dry-run plan AND the executed window, so the plan the
+    # parent reads is the plan the window runs, and every occurrence uses the SAME selected list.
+    plan_prompts = select_prompts(a.prompt_set, requests)
+    plan_indices = prompt_indices(plan_prompts, requests)
+    plan_tokens = (a.max_tokens if a.max_tokens is not None
+                   else (None if a.prompt_set else DW_MAX_TOKENS))
 
     snap = W.snapshot()
     prod = json.loads(pathlib.Path(W.PROD_CONFIG).read_text())
@@ -1262,14 +1436,20 @@ def main() -> int:
         "port_8019_listener_now": W.listener_pid(mw.PROTO_PORT),
         "modes_in_order": [m for m, _ in DW_MODES],
         "derived_dir_would_be": str(base_dir), "derived_files_mode": "0600 (written at execute only)",
+        "selected_requests": requests,
+        "subset_diagnostic": (None if not requests else {
+            "scope": (f"SUBSET DIAGNOSTIC ONLY: the selected original gate-set positions {requests} run "
+                      "once on each arm's own fresh server and every selected response is compared "
+                      "byte-exactly with the corresponding response of the other arms. NOT a full "
+                      "eight-prompt correctness pass and never labelled one; gates_ok stays False and "
+                      "subset_diagnostic_ok covers the selected responses ONLY"),
+            "full_eight_prompt_gate_established": False,
+            "selected_full_set_indices": list(requests)}),
         "prompt_plan": (
-            [{"n": i + 1, "class": c, "sha256": hashlib.sha256(t.encode()).hexdigest(),
-              "max_tokens": max_tokens_for(c, (a.max_tokens if a.max_tokens is not None
-                                               else (None if a.prompt_set else DW_MAX_TOKENS)))}
-             for i, (c, t) in enumerate(select_prompts(a.prompt_set))]
-            + [{"note": f"{'FULL 8-prompt gate set' if a.prompt_set else 'ONE fresh prompt'}; greedy; "
+            prompt_plan_rows(plan_prompts, plan_indices, plan_tokens)
+            + [{"note": f"{subset_label(requests, a.prompt_set)}; greedy; "
                         f"reasoning off; one fresh request per prompt per arm; max tokens "
-                        f"{tokens_description(a.max_tokens if a.max_tokens is not None else (None if a.prompt_set else DW_MAX_TOKENS), a.max_tokens)}"}]),
+                        f"{tokens_description(plan_tokens, a.max_tokens)}"}]),
         "child_env": sorted(DW_ENV),
         "ablation": (None if not a.reenable else {
             "group": a.reenable,
@@ -1343,12 +1523,14 @@ def main() -> int:
                     "prod_config_sha256": W.config_sha(), "configs": summaries, "dw_dir": str(base_dir),
                     "prompt_sha256": hashlib.sha256(DW_PROMPT.encode()).hexdigest(),
                     "prompt_set": a.prompt_set, "max_tokens_override": a.max_tokens,
+                    "selected_requests": requests,
                     "reenable": a.reenable,
                     "child_env": sorted(DW_ENV), "equalize_mib": a.equalize_mib,
                     "stop_sent": False, "modes": []}
+    exit_code = 1                                          # fail-closed: an unfinished window is never 0
     mw.install_signal_handlers()                          # SIGTERM/SIGINT -> WindowSignal -> cleanup path
     try:
-        run_dw(snap, record, note, a.equalize_mib, a.prompt_set, a.max_tokens, a.reenable)
+        run_dw(snap, record, note, a.equalize_mib, a.prompt_set, a.max_tokens, a.reenable, requests)
     except BaseException as e:
         record["window_error"] = repr(e)[:300]
     finally:
@@ -1362,12 +1544,7 @@ def main() -> int:
         else:
             record["restore"] = W.restore_and_verify(snap, record, time.time() + 360)
         restored = bool(record["restore"].get("restored"))
-        record["status"] = ("ALL OK" if record.get("gates_ok") and restored
-                            else "RESTORED; ABLATION EVIDENCE ONLY (the standard correctness gate is "
-                                 "UNESTABLISHED by design for this variant) - see logs" if restored
-                                 and record.get("ablation_ok")
-                            else "RESTORED; gate failures - see logs" if restored
-                            else "RESTORE FAILED - PARENT INVESTIGATE NOW")
+        record["status"], exit_code = dw_outcome(record, restored)
         W.note_to(wlog, f"WINDOW_FINAL {record['status']} restore={json.dumps(record['restore'])}")
         results.write_text(json.dumps(record, indent=2) + "\n")
         os.chmod(results, 0o600)
@@ -1377,8 +1554,7 @@ def main() -> int:
               "controlled components matched, the re-enabled group showed its positive proof, and "
               "production was restored. THIS IS NOT a correctness pass, NOT a speed claim and NOT a "
               "safety verdict - the standard correctness gate is UNESTABLISHED for this variant by design.")
-    return 0 if ((record.get("gates_ok") or record.get("ablation_ok"))
-                 and record["restore"].get("restored")) else 1
+    return exit_code
 
 
 if __name__ == "__main__":
