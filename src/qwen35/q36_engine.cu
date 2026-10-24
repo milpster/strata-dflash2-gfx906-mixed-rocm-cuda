@@ -1652,16 +1652,14 @@ struct Engine {
                         std::memcpy(t, u, sizeof(u));
                     }
                     unsigned ds_a, ds_b;
+                    const __half t0h = __float2half(t[0]);   // host side: __half_as_ushort is __device__ only
+                    unsigned short t0bits;
+                    std::memcpy(&t0bits, &t0h, sizeof(t0bits));
                     std::memcpy(&ds_a, &a[o], 4);
                     std::memcpy(&ds_b, &b[o], 4);
-
-                    // gfx906 / ROCm 6.1: __half_as_ushort is not in that HIP's fp16 header (newer ROCm has it); same bits either way.
-                    unsigned short half_bits;
-                    { const __half hf = __float2half(t[0]); std::memcpy(&half_bits, &hf, sizeof half_bits); }
-
                     std::fprintf(stderr, "VDEBUG block %zu: ds new %08x old %08x, qs bytes %s, cpu butterfly sum %.9g (half %04x)\n",
                                  blk, ds_a, ds_b, std::memcmp(&a[o + 4], &b[o + 4], 32) == 0 ? "equal" : "DIFFER", (double) t[0],
-                                 (unsigned) half_bits);
+                                 (unsigned) t0bits);
                     break;
                 }
         }
