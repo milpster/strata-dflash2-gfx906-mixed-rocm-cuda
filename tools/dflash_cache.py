@@ -6,6 +6,14 @@ keep target arithmetic consistent between fresh and cached reads. Writes tokens,
 timings, resolved engine settings and logs to --output. Checks cached answers
 against fresh DFlash and target-only requests with verified fixed expert
 residency. Disk sessions remain unsupported.
+
+--expert-cache is a BYTE budget. The engine reports PHYSICAL slots: expert_slots is the total over the
+primary, staged and remote sets, expert_slots_primary is the primary set alone
+(src/program/generate.cpp:11470-11497), so a budget is never the expected slot count. Supply
+--expected-primary-slots and --expected-total-slots (both together, strictly positive, total >= primary,
+expected primary >= the budget) when a fixture pins the physical counts; every arm is still compared
+fail-closed and against the cached reference, and the expectation is a harness input, never a value
+read back from the observed engine.
 """
 from __future__ import annotations
 
@@ -15,7 +23,8 @@ import os
 import sys
 from pathlib import Path
 
-from dflash_sampling import Engine, replace, validate_residency
+from dflash_sampling import (Engine, replace, validate_residency, add_expected_slot_args,
+                             resolve_expected_slots, residency_evidence_row)
 
 REPO = Path(os.environ.get("STRATA_REPO", Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(REPO))                       # the prototype's own Python source (L23)
@@ -29,10 +38,14 @@ def main():
     ap.add_argument("--output", type=Path, required=True)
     ap.add_argument("--tokens-file", type=Path)
     ap.add_argument("--expert-cache", type=int, default=2000,
-                    help="fixed expert slots, must fit in every arm without automatic shrinking")
+                    help="fixed expert-cache BYTE budget pin, must fit in every arm without automatic "
+                         "shrinking; it is NOT the number of physical expert slots the engine reports")
+    add_expected_slot_args(ap)
     a = ap.parse_args()
     if a.expert_cache < 1:
         ap.error("--expert-cache must be positive")
+    expectations = resolve_expected_slots(a.expected_primary_slots, a.expected_total_slots,
+                                          a.expert_cache, ap)
     out = a.output.resolve()
     out.mkdir(parents=True, exist_ok=True)
     cfg = json.loads(a.config.read_text())
@@ -68,12 +81,17 @@ def main():
     prompts = {}
     infos = {}
     commands = {}
+    residency = {}
     def observe(label, engine):
         infos[label] = engine.info
         commands[label] = [str(a.engine.resolve()), *args, "--serve"]
         (out / "engine-info.json").write_text(json.dumps(infos, indent=2))
         (out / "commands.json").write_text(json.dumps(commands, indent=2))
-        validate_residency(engine.info, a.expert_cache, infos.get("cached") if label != "cached" else None)
+        validate_residency(engine.info, a.expert_cache, infos.get("cached") if label != "cached" else None,
+                           expected_primary_slots=(expectations[0] if expectations else None),
+                           expected_total_slots=(expectations[1] if expectations else None))
+        residency[label] = residency_evidence_row(engine.info, a.expert_cache, expectations)
+        (out / "residency-expectations.json").write_text(json.dumps(residency, indent=2))
     try:
         observe("cached", engine)
         def request(label, tokens, sampling="temperature=0 seed=7 pin=16"):
