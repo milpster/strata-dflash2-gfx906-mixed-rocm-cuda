@@ -987,11 +987,15 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     endif()
   endif()
   if(STRATA_ENABLE_CUDA)
-    # fork F4: the 2-4 column dense projections from the interleaved q8_1 copy, bitwise vs native_mmvq (GPU, synthetic)
-    add_executable(mmvq_il_parity src/kernels/mmvq_il_parity.cpp)
-    target_include_directories(mmvq_il_parity PRIVATE ${_strata_gpu_include_directories})
-    target_link_libraries(mmvq_il_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
-    add_test(NAME mmvq_il_parity COMMAND mmvq_il_parity)
+    # fork F4: the 2-4 column dense projections from the interleaved q8_1 copy, bitwise vs native_mmvq (GPU, synthetic).
+    # CUDA only: native_mmvq.cu builds no interleaved path under HIP (its stubs throw "is CUDA only"), so the parity
+    # test has nothing to compare on the gfx906 compat build
+    if(NOT STRATA_HIP_GFX906)
+      add_executable(mmvq_il_parity src/kernels/mmvq_il_parity.cpp)
+      target_include_directories(mmvq_il_parity PRIVATE ${_strata_gpu_include_directories})
+      target_link_libraries(mmvq_il_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+      add_test(NAME mmvq_il_parity COMMAND mmvq_il_parity)
+    endif()
     # the wide dequant kernels (a thread per 8 values; sm_61's default), bitwise vs the per-group ones (GPU, synthetic,
     # no model; --bench adds old/new timings)
     add_executable(dequant_wide_parity src/kernels/dequant_wide_parity.cpp)
@@ -1086,8 +1090,10 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     add_test(NAME gfx906_gdn_rec_head COMMAND gfx906_gdn_rec_head)
     set_tests_properties(gfx906_gdn_rec_head PROPERTIES TIMEOUT 120)
   endif()
-  if(STRATA_ENABLE_CUDA)
-    # the Volta prompt experts (gemm_iq_f16_grouped, STRATA_PF_WMMA) against a double reference; skipped below sm_70
+  # the Volta prompt experts (gemm_iq_f16_grouped, STRATA_PF_WMMA) against a double reference; skipped below sm_70.
+  # gfx906 has no WMMA and the kernel is not launched there; HIP reports compute capability 9.0, so the test's own
+  # sm_70 check admits the card and it reports "not launched" failures
+  if(STRATA_ENABLE_CUDA AND NOT STRATA_HIP_GFX906)
     add_executable(pf_wmma_parity src/kernels/pf_wmma_parity.cpp)
     target_include_directories(pf_wmma_parity PRIVATE ${_strata_gpu_include_directories})
     target_link_libraries(pf_wmma_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
@@ -1099,7 +1105,8 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_link_libraries(shared_expert_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME shared_expert_parity COMMAND shared_expert_parity --selftest)
   # the split / batched verify-window kernels (from eddoursul's fork), bitwise vs the kernels they replace; CUDA only
-  if(STRATA_ENABLE_CUDA)
+  # (the gfx906 compat build compiles no argmax_rows, and verify_parity exits "not built for this backend")
+  if(STRATA_ENABLE_CUDA AND NOT STRATA_HIP_GFX906)
     add_executable(verify_parity src/kernels/verify_parity.cpp)
     target_include_directories(verify_parity PRIVATE ${_strata_gpu_include_directories})
     target_link_libraries(verify_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
