@@ -4,6 +4,13 @@
 Uses an existing configuration; runs private, sequential native-protocol engines.
 All requested arguments, resolved INFO, RESUME/DONE lines and token IDs are saved.
 Exit 1 means a requirement failed, not an infrastructure failure.
+
+Expert residency: the gate FORCES the --expert-cache byte budget (2000). The engine's INFO counts are
+PHYSICAL slots - expert_slots over the primary, staged and remote sets, expert_slots_primary the primary
+set alone - so --expected-primary-slots/--expected-total-slots (a pair, harness-supplied) may pin the
+physical counts separately. Without them the legacy rule stands (both counts equal the budget). The
+target reference, the cross-arm count equality and every cache/parity requirement stay required in both
+modes; nothing here waives a correctness guard.
 """
 import argparse
 import json
@@ -13,8 +20,14 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT/'tools'))
-from dflash_sampling import Engine, replace
+from dflash_sampling import (Engine, replace, resolve_expected_slots, residency_evidence_row,
+                             slots_match, add_expected_slot_args)
 from strata_tokenizer import Tokenizer
+
+# This gate FORCES --expert-cache 2000 (its own replace list below): a BYTE budget, never a physical
+# slot count. The engine reports expert_slots as the total over the primary, staged and remote sets and
+# expert_slots_primary as the primary set alone (src/program/generate.cpp:11470-11497).
+EXPERT_CACHE_BUDGET = 2000
 
 
 class ObservedEngine(Engine):
@@ -46,13 +59,24 @@ def first_difference(a, b):
                 min(len(a), len(b)) if len(a) != len(b) else None)
 
 
-def evaluate(results, selected, require_cache=True):
+def evaluate(results, selected, require_cache=True, *,
+             expected_primary_slots=None, expected_total_slots=None):
+    """Expected PHYSICAL slot counts are PAIRED harness inputs (primary, total). Without them the legacy
+    rule stands: both reported counts must equal the forced --expert-cache budget. A malformed pair
+    fails every arm - it is never treated as 'no requirement'."""
     checks = {}
+    try:
+        pair = resolve_expected_slots(expected_primary_slots, expected_total_slots, EXPERT_CACHE_BUDGET)
+    except ValueError:
+        pair, expectations_refused = None, True
+    else:
+        pair, expectations_refused = pair, False
+    want_primary, want_total = pair if pair else (EXPERT_CACHE_BUDGET, EXPERT_CACHE_BUDGET)
     for label, arm in results.items():
         records = arm['records']
         status = {}
-        status['fixed_expert_residency'] = all(
-            arm['info'].get(key) == '2000' for key in ('expert_slots', 'expert_slots_primary'))
+        status['fixed_expert_residency'] = (not expectations_refused) and slots_match(
+            arm['info'], want_primary, want_total)
         if require_cache:
             status['cold_control_missed'] = records['cache-cold'].get('reused',-1) == 0
             status['cache_enabled'] = int(arm['info'].get('conversation_cache_mib','0'))==2048
@@ -95,7 +119,10 @@ def main():
     ap.add_argument('--cache-only', action='store_true')
     ap.add_argument('--cache-prefix-token', type=int)
     ap.add_argument('--only', nargs='+')
+    add_expected_slot_args(ap)
     o = ap.parse_args()
+    expectations = resolve_expected_slots(o.expected_primary_slots, o.expected_total_slots,
+                                          EXPERT_CACHE_BUDGET, ap)
     out = o.output.resolve()
     out.mkdir(parents=True, exist_ok=True)
     cfg = json.loads(o.config.read_text())
@@ -118,6 +145,7 @@ def main():
     selected = [] if o.cache_only else [k for k in prompts if not o.only or k in o.only]
     (out/'prompts.json').write_text(json.dumps(prompts, indent=2))
     results = {}
+    residency = {}
     for profile in o.profiles:
         for mode in o.modes:
             label = profile+'-'+mode
@@ -181,7 +209,11 @@ def main():
                 engine.close()
             results[label] = dict(info=engine.info,records=records,protocol=engine.protocol)
             (out/'results.json').write_text(json.dumps(results,indent=2))
-    checks = evaluate(results, selected, o.only is None)
+            residency[label] = residency_evidence_row(engine.info, EXPERT_CACHE_BUDGET, expectations)
+            (out/'residency-expectations.json').write_text(json.dumps(residency,indent=2))
+    checks = evaluate(results, selected, o.only is None,
+                      expected_primary_slots=(expectations[0] if expectations else None),
+                      expected_total_slots=(expectations[1] if expectations else None))
     (out/'checks.json').write_text(json.dumps(checks,indent=2))
     good = all((value['equal'] if isinstance(value,dict) else value)
                for arm in checks.values() for value in arm.values())

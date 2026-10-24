@@ -31,12 +31,95 @@ def replace(args: list[str], key: str, value: str | None) -> None:
         args.extend((key, value))
 
 
-def validate_residency(info, requested, reference=None):
+SLOT_EXPECT_HELP = ("EXPECTED PHYSICAL expert slots the engine must report, as a PAIR (both flags "
+                    "together, both strictly positive integers, total >= primary, primary >= "
+                    "--expert-cache). These are PHYSICAL slot counts, NOT the --expert-cache byte "
+                    "budget: the engine reports expert_slots as the total over the primary, staged and "
+                    "remote sets and expert_slots_primary as the primary set alone "
+                    "(src/program/generate.cpp:11470-11497). They are supplied by the harness as fixture "
+                    "inputs and are never read back from the observed engine. Omit both to keep the "
+                    "legacy rule that BOTH reported counts equal the requested budget.")
+
+
+def add_expected_slot_args(ap: argparse.ArgumentParser) -> None:
+    ap.add_argument("--expected-primary-slots", type=int, default=None, help=SLOT_EXPECT_HELP)
+    ap.add_argument("--expected-total-slots", type=int, default=None, help=SLOT_EXPECT_HELP)
+
+
+def resolve_expected_slots(primary, total, requested, ap=None):
+    """Paired expected PHYSICAL slot counts, checked as a pair; None = the legacy exact-budget rule."""
+    def refuse(msg: str):
+        text = f"expected slot counts refused: {msg}"
+        if ap is not None:
+            ap.error(text)                       # argparse exits 2, before the harness touches anything
+        raise ValueError(text)
+    if (primary is None) != (total is None):
+        refuse("--expected-primary-slots and --expected-total-slots are required together")
+    if primary is None:
+        return None
+    if primary < 1 or total < 1:
+        refuse(f"expected slot counts must be strictly positive integers ({primary}/{total})")
+    if total < primary:
+        refuse(f"--expected-total-slots {total} is below --expected-primary-slots {primary}")
+    if primary < requested:
+        refuse(f"expected primary slots {primary} is below the requested --expert-cache budget "
+               f"{requested}: a clamped (shrunk) resident set is never an accepted fixture")
+    return int(primary), int(total)
+
+
+def slots_match(info, expected_primary, expected_total) -> bool:
+    """True only when BOTH reported physical counts equal the expectation (malformed counts are False)."""
+    for key, want in (("expert_slots", expected_total), ("expert_slots_primary", expected_primary)):
+        raw = (info or {}).get(key)
+        try:
+            observed = int(str(raw))
+        except (TypeError, ValueError):
+            return False
+        if observed != want:
+            return False
+    return True
+
+
+def residency_evidence_row(info, requested, expectations) -> dict:
+    """The requested BUDGET and the expected/observed PHYSICAL counts, kept distinct in the evidence."""
+    primary, total = expectations if expectations else (None, None)
+    info = info or {}
+    return {
+        "requested_expert_cache_budget": requested,
+        "expected_primary_slots": primary,
+        "expected_total_slots": total,
+        "expected_source": ("harness fixture input, never read from the observed engine"
+                            if primary is not None else
+                            "no expectation: legacy rule, both counts must equal the requested budget"),
+        "observed_expert_slots_primary": info.get("expert_slots_primary"),
+        "observed_expert_slots": info.get("expert_slots"),
+    }
+
+
+def validate_residency(info, requested, reference=None, *,
+                       expected_primary_slots=None, expected_total_slots=None):
     """A requested budget is not evidence of identical CPU/GPU expert placement."""
+    try:
+        pair = resolve_expected_slots(expected_primary_slots, expected_total_slots, requested)
+    except ValueError as e:
+        raise AssertionError(str(e)) from None
+    want = {"expert_slots": requested, "expert_slots_primary": requested}
+    if pair is not None:
+        want["expert_slots"], want["expert_slots_primary"] = pair[1], pair[0]
     for key in ("expert_slots", "expert_slots_primary"):
-        if int(info.get(key, -1)) != requested:
-            raise AssertionError(f"{key}={info.get(key)}; requested {requested}. "
-                                 "Reduce --expert-cache so every arm fits without automatic shrinking.")
+        raw = info.get(key)
+        try:
+            observed = int(str(raw))
+        except (TypeError, ValueError):
+            raise AssertionError(f"{key}={raw!r} is not a physical expert slot count; expected "
+                                 f"{want[key]} (requested --expert-cache budget {requested})") from None
+        if observed != want[key]:
+            if pair is None:
+                raise AssertionError(f"{key}={info.get(key)}; requested {requested}. "
+                                     "Reduce --expert-cache so every arm fits without automatic shrinking.")
+            raise AssertionError(f"{key}={raw}: expected physical slots {want[key]} (explicit expectation; "
+                                 f"requested --expert-cache budget {requested}). Reduce --expert-cache so "
+                                 "every arm fits without automatic shrinking.")
     if reference is not None:
         for key in ("context", "kv", "kv_resident", "expert_slots", "expert_slots_primary",
                     "spec", "pcie_frac", "pool_workers"):
@@ -125,10 +208,14 @@ def main() -> None:
     ap.add_argument("--output", required=True, type=Path)
     ap.add_argument("--tokens", default="50,3815,2923,539,2923,13,6558,281,2007,8,283,220,18,87,61,17,471,220,22,87,478,220,17,13")
     ap.add_argument("--count", type=int, default=64)
-    ap.add_argument("--expert-cache", type=int, default=2000)
+    ap.add_argument("--expert-cache", type=int, default=2000,
+                    help="expert-cache BYTE budget pin (not a physical slot count)")
+    add_expected_slot_args(ap)
     a = ap.parse_args()
     if a.expert_cache < 1:
         ap.error("--expert-cache must be positive")
+    expectations = resolve_expected_slots(a.expected_primary_slots, a.expected_total_slots,
+                                          a.expert_cache, ap)
     if a.count < 2 or a.count > 128:
         ap.error("--count must be in 2..128")
     out = a.output.resolve()
@@ -167,13 +254,18 @@ def main() -> None:
     ]
     results = {}
     infos = {}
+    residency = {}
     for name, binary, arm_args in [("target", a.engine, target_args), ("dflash", a.engine, args)] + (
             [("previous", a.baseline, target_args)] if a.baseline else []):
         engine = Engine(binary.resolve(), arm_args, cwd, env, out / f"{name}-engine.txt")
         try:
             infos[name] = engine.info
             (out / "engine-info.json").write_text(json.dumps(infos, indent=2))
-            validate_residency(engine.info, a.expert_cache, infos.get("target"))
+            validate_residency(engine.info, a.expert_cache, infos.get("target"),
+                               expected_primary_slots=(expectations[0] if expectations else None),
+                               expected_total_slots=(expectations[1] if expectations else None))
+            residency[name] = residency_evidence_row(engine.info, a.expert_cache, expectations)
+            (out / "residency-expectations.json").write_text(json.dumps(residency, indent=2))
             records = {}
             if name == "dflash":
                 refused = engine.request(ids, "temperature=0.7 seed=1", 192)

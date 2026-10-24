@@ -400,19 +400,19 @@ def _session(rec: dict) -> str:
 # ownership: pin the tool pid and its engine children by pid + start ticks, signal ONLY those, and
 # refuse the original restore while any of them lives.
 TOOL = {"cancel-park": f"{mw.CLONE}/tools/cancel_park_test.py", "rewind": f"{mw.CLONE}/tools/dflash_cache.py"}
-REWIND_FORCED = {   # dflash_cache.py:40-48 replaces EVERY one of these values, :50 appends --spec-split
-    "--expert-cache": "2000 (tool default, :26-27 + :40)", "--adapt-every": "0 (:40)",
-    "--adapt-swaps": "0 (:40, adaptation stays OFF)", "--pcie-frac": "0 (:41)", "--prefill": "256 (:41)",
-    "--short-read": "4096 (:41)", "--max-context": "4096 (:42)", "--kv-resident": "4096 (:42)",
-    "--dflash-window": "4096 (:43)", "--spec": "2 (:44)", "--dflash-block": "1 (:44)", "--spec-min-p": "0 (:44)",
-    "--suffix-draft": "0 (:45)", "--lookup-chain": "0 (:45)", "--prompt-cache": "16 (:46)",
-    "--prompt-cache-every": "16 (:46)", "--conversation-cache-mib": "256 (:47)",
-    "--conversation-cache-slots": "4 (:47)", "--conversation-cache-min-tokens": "1 (:48)",
-    "--conversation-cache-park-gain": "0 (:48)", "--spec-split": "appended (:50)",
+REWIND_FORCED = {   # dflash_cache.py:58-66 replaces EVERY one of these values, :75 appends --spec-split
+    "--expert-cache": "2000 (tool default, :40-42 + :58)", "--adapt-every": "0 (:58)",
+    "--adapt-swaps": "0 (:58, adaptation stays OFF)", "--pcie-frac": "0 (:59)", "--prefill": "256 (:59)",
+    "--short-read": "4096 (:59)", "--max-context": "4096 (:60)", "--kv-resident": "4096 (:60)",
+    "--dflash-window": "4096 (:61)", "--spec": "2 (:62)", "--dflash-block": "1 (:62)", "--spec-min-p": "0 (:62)",
+    "--suffix-draft": "0 (:63)", "--lookup-chain": "0 (:63)", "--prompt-cache": "16 (:64)",
+    "--prompt-cache-every": "16 (:64)", "--conversation-cache-mib": "256 (:65)",
+    "--conversation-cache-slots": "4 (:65)", "--conversation-cache-min-tokens": "1 (:66)",
+    "--conversation-cache-park-gain": "0 (:66)", "--spec-split": "appended (:75)",
     "--layer-split": "NOT in the tool's forced list - the L23 fix appends it with the server's own rule "
                      "(layer_split_of/layer_split_value) so the 2-GPU split SURVIVES the 4096 narrowing",
     "child env": "STRATA_IQ_MT_MIN=1, STRATA_PREFILL_CPU_SHARE=0, STRATA_SPEC_PROB=0, "
-                 "STRATA_SPEC_COUPLED=0, STRATA_SPEC_GUMBEL=0 (:51-52)"}
+                 "STRATA_SPEC_COUPLED=0, STRATA_SPEC_GUMBEL=0 (:76-77)"}
 PHASES = {
     "cancel-park": {"tool": TOOL["cancel-park"], "timeout": 2400,
                     # the scenario lines the tool itself prints (lines 71-90); PASS alone is NOT accepted
@@ -451,9 +451,14 @@ PHASES = {
                         "real two-GPU --layer-split kept (the tool's L23 fix) - disk sessions UNSUPPORTED "
                         "(its header)",
                "notes": "three sequential engines (cached / fresh / target), each closed in its finally "
-                        "(dflash_sampling.py:99-113: QUIT then kill); engine logs open with mode 'w' under "
+                        "(dflash_sampling.py:182-200: QUIT then kill); engine logs open with mode 'w' under "
                         "--output; the tool writes ONLY under --output; its own commands.json records the "
-                        "argv it used, which the controller compares with the observed /proc argv"},
+                        "argv it used, which the controller compares with the observed /proc argv; the "
+                        "OPTIONAL expected physical slot pair (--expected-primary-slots / "
+                        "--expected-total-slots, a PARENT FIXTURE input, rewind ONLY) is appended to THIS "
+                        "argv BEFORE the launch and recorded in phase_expected_slots - the tool compares it "
+                        "fail-closed and records its OBSERVED counts separately in "
+                        "residency-expectations.json (an expected count is never read back from the engine)"},
 }
 PHASE_ENV = {"STRATA_REPO": mw.CLONE, "PYTHONPATH": f"{mw.CLONE}/tools", "STRATA_KEEP_LEFTOVERS": "1"}
 # Phase-ONLY diagnostic controls.  Measured on the parent's cancel-park window (the engine's own
@@ -463,16 +468,60 @@ PHASE_ENV = {"STRATA_REPO": mw.CLONE, "PYTHONPATH": f"{mw.CLONE}/tools", "STRATA
 # (generate.cpp:9516-9526, the flag parses at 2639) and the re-park gate is
 # park_worth with park_gain (generate.cpp:12879-12887, "0 (the default) parks every turn", parses at
 # 2640).  min-tokens 1 + park-gain 0 are the same two test controls dflash_cache.py forces for its own
-# arms (:47-48).  These apply ONLY to a phase's own derived config, NEVER to the integration profile
+# arms (:65-66).  These apply ONLY to a phase's own derived config, NEVER to the integration profile
 # and NEVER to a production file.
 PHASE_CONTROLS = {
     "cancel-park": {"--conversation-cache-min-tokens": ("1", "size gate, generate.cpp:2639 + 9516-9526"),
                     "--conversation-cache-park-gain": ("0", "re-park gate, generate.cpp:2640 + 12879-12887")},
-    "rewind": {},                       # dflash_cache.py forces its own controls (its :40-48)
+    "rewind": {},                       # dflash_cache.py forces its own controls (its :58-66)
 }
 # What cancel-park must SEE in the engine's own log before its cancellation counts as coverage:
 # the park event and the restore event (generate.cpp:9691 parked / 13075 restored).
 PHASE_EVIDENCE = {"cancel-park": ("parked", "restored"), "rewind": ()}
+
+# The rewind tool FORCES the --expert-cache BYTE budget at its default 2000 (dflash_cache.py:40-42 +
+# :58).  The engine's INFO counts are PHYSICAL slots: expert_slots over the primary, staged and remote
+# sets, expert_slots_primary the primary set alone (src/program/generate.cpp:11470-11497), so a budget
+# is NEVER the expected slot count.  The parent may supply the expected PHYSICAL counts as fixture
+# inputs; they are forwarded to the tool's argv (rewind phase ONLY) and the tool keeps comparing them
+# fail-closed (tools/dflash_sampling.py:validate_residency) - never learned from the observed engine.
+REWIND_EXPERT_CACHE_BUDGET = 2000
+
+
+def check_phase_expectations(phase: str, primary, total) -> tuple[tuple[int, int] | None, list[str]]:
+    """Paired expected PHYSICAL slot counts, rewind phase ONLY, checked BEFORE any service action.
+    Returns (pair, problems): a partial pair, a zero/negative, a reversed pair, a primary below the
+    tool's requested budget, or any pair on a non-rewind phase is a problem, so the driver exits
+    without a snapshot, a stop, a write, a signal or a GPU."""
+    if (primary is None) != (total is None):
+        return None, ["--expected-primary-slots and --expected-total-slots are required together"]
+    if primary is None:
+        return None, []
+    problems: list[str] = []
+    if phase != "rewind":
+        problems.append(f"expected physical slot counts apply ONLY to the rewind phase (phase {phase!r})")
+    if primary < 1 or total < 1:
+        problems.append(f"expected slot counts must be strictly positive integers ({primary}/{total})")
+    elif total < primary:
+        problems.append(f"--expected-total-slots {total} is below --expected-primary-slots {primary}")
+    elif primary < REWIND_EXPERT_CACHE_BUDGET:
+        problems.append(f"expected primary slots {primary} is below the rewind tool's requested "
+                        f"--expert-cache budget {REWIND_EXPERT_CACHE_BUDGET} - a clamped (shrunk) "
+                        "resident set is never an accepted fixture")
+    return (None if problems else (int(primary), int(total))), problems
+
+
+def expected_slots_record(pair) -> dict:
+    """What the plan and the window record about the expectation: budget, expectation, observation are
+    kept as SEPARATE fields, and the record says plainly when no expectation was supplied."""
+    return {"expected_primary_slots": (pair[0] if pair else None),
+            "expected_total_slots": (pair[1] if pair else None),
+            "requested_expert_cache_budget": REWIND_EXPERT_CACHE_BUDGET,
+            "forwarded_to": (TOOL["rewind"] if pair else None),
+            "note": ("parent fixture input, forwarded to the tool's argv and compared fail-closed there; "
+                     "the tool records its observed counts separately in residency-expectations.json"
+                     if pair else "no expectation - the tool keeps its legacy rule that both reported "
+                                  "counts equal the requested budget")}
 
 
 # Controller-surface flag extractor: the phase-controls fixtures assert against R.flag_value.
@@ -510,8 +559,17 @@ def apply_phase_controls(cfg_path: pathlib.Path, phase: str, record: dict) -> No
         "values (min-tokens 2048, park-gain 4096)")
 
 
-def phase_argv(phase: str, cfg_path: pathlib.Path, out_dir: pathlib.Path) -> list[str]:
-    return [mw.VENV_PY, *PHASES[phase]["argv"](cfg_path, out_dir)]
+def phase_argv(phase: str, cfg_path: pathlib.Path, out_dir: pathlib.Path, expectations=None) -> list[str]:
+    """The tool command.  WITHOUT an expectation it is byte-identical to the legacy command.  A PAIR of
+    expected PHYSICAL slot counts is appended for the rewind phase ONLY - the tool compares it
+    fail-closed and never derives it from its own engine."""
+    argv = PHASES[phase]["argv"](cfg_path, out_dir)
+    if expectations:
+        if phase != "rewind":
+            raise SystemExit(f"REFUSE: expected physical slot counts are rewind-only, phase {phase!r}")
+        argv += ["--expected-primary-slots", str(expectations[0]),
+                 "--expected-total-slots", str(expectations[1])]
+    return [mw.VENV_PY, *argv]
 
 
 def phase_out_path(phase: str, window: str) -> pathlib.Path:
@@ -655,7 +713,10 @@ def owned_run(phase: str, cfg_path: pathlib.Path, window: str, record: dict, not
     value: an empty engines[] plus a PASS substring never passes."""
     spec, tlog = PHASES[phase], W.LOGS / f"{window}-{phase}-tool.log"
     out = phase_out_dir(phase, window)
-    argv = phase_argv(phase, cfg_path, out)
+    exp = record.get("phase_expected_slots") or {}
+    pair = ((exp["expected_primary_slots"], exp["expected_total_slots"])
+            if exp.get("expected_primary_slots") and exp.get("expected_total_slots") else None)
+    argv = phase_argv(phase, cfg_path, out, pair)
     cfg = json.loads(cfg_path.read_text())
     want = _want_split(cfg)
     env_before = dict(os.environ)
@@ -721,6 +782,7 @@ def owned_run(phase: str, cfg_path: pathlib.Path, window: str, record: dict, not
           "markers_found": markers, "stdout_tail": text[-12:], "engines": engines,
           "engines_observed": len(engines), "survivors_after": survivors, "outputs": _listing(out),
           "forced_overrides": spec["forced"], "shape": spec["shape"], "notes": spec["notes"],
+          "expected_slots": (record.get("phase_expected_slots") or {}),
           "tool_alive_after": W.same_proc(own_rec["pid"], own_rec["ticks"]),
           "split_wanted": want,
           "split_observed": [{"pid": r["pid"], "argv_split": r["layer_split"], "exe": r["exe"],
@@ -779,7 +841,7 @@ def run_phase_window(phase: str, snap: dict, record: dict, cfg: dict, cfg_path: 
         note(record["break_reason"])
 
 
-def plan(window: str, phase: str = "integration") -> tuple[dict, list[str]]:
+def plan(window: str, phase: str = "integration", expectations=None) -> tuple[dict, list[str]]:
     """The dry-run plan: currency + derivation + source support + the exact parent command."""
     prod = load_prod_config()
     summary, problems = mw.currency(MODE, WIDTH, prod)
@@ -800,8 +862,9 @@ def plan(window: str, phase: str = "integration") -> tuple[dict, list[str]]:
            "runtime_proofs_required": PROOFS, "not_run_here": NOT_RUN_HERE, "phase": phase}
     if phase != "integration":
         spec = PHASES[phase]
-        out["phase_command"] = " ".join(phase_argv(phase, cfg, phase_out_path(phase, window)))
+        out["phase_command"] = " ".join(phase_argv(phase, cfg, phase_out_path(phase, window), expectations))
         out["phase_tool"] = spec["tool"]
+        out["phase_expected_slots"] = expected_slots_record(expectations)
         out["phase_timeout_s"] = spec["timeout"]
         out["phase_markers_required"] = list(spec["markers"])
         out["phase_env_extra"] = PHASE_ENV
@@ -849,7 +912,21 @@ def main() -> int:
     ap.add_argument("--phase", choices=sorted(PHASES) + ["integration"], default="integration",
                     help="integration (default, the 8019 prototype lane) | cancel-park | rewind: the last "
                          "TWO run ONE existing tool subprocess with its OWN engine, no prototype server")
+    ap.add_argument("--expected-primary-slots", type=int,
+                    help="PARENT fixture: expected PHYSICAL primary expert slots (the engine's "
+                         "expert_slots_primary) - NOT the tool's --expert-cache byte budget.  Required "
+                         "together with --expected-total-slots, rewind phase ONLY, total >= primary, "
+                         "expected primary >= the tool's requested budget; validated BEFORE any snapshot, "
+                         "stop, write, signal or GPU")
+    ap.add_argument("--expected-total-slots", type=int,
+                    help="PARENT fixture: expected PHYSICAL TOTAL expert slots (the engine's expert_slots, "
+                         "the primary, staged and remote sets together); paired with "
+                         "--expected-primary-slots, rewind phase ONLY")
     a = ap.parse_args()
+    expectations, exp_problems = check_phase_expectations(a.phase, a.expected_primary_slots,
+                                                          a.expected_total_slots)
+    if exp_problems:
+        ap.error("; ".join(exp_problems))      # exit 2 - no plan, no snapshot, no stop, no write, no GPU
 
     window = f"reg-window-{time.strftime('%Y%m%d-%H%M%S')}-{a.phase}"    # unique per phase, never overwritten
     W.LOGS.mkdir(parents=True, exist_ok=True)
@@ -857,7 +934,7 @@ def main() -> int:
     results, wlog = W.OPS / f"{window}-results.json", W.LOGS / f"{window}.log"
     note = lambda msg: W.note_to(wlog, msg)                        # noqa: E731
 
-    out, problems = plan(window, a.phase)
+    out, problems = plan(window, a.phase, expectations)
     snap = W.snapshot()
     print(json.dumps({"window": window, "production_snapshot": W.display(snap), **out,
                       "problems": problems}, indent=2))
@@ -876,7 +953,7 @@ def main() -> int:
         return 2
     cfg_path = pathlib.Path(out["derived_config_would_be"])
     write_derived_config(cfg_path, derived)                   # unique name, 0600, never an existing config
-    record_extra: dict = {}
+    record_extra: dict = {"phase_expected_slots": expected_slots_record(expectations)}
     apply_phase_controls(cfg_path, a.phase, record_extra)     # phase file ONLY; integration has no controls
 
     record: dict = {"window": window, "started": time.strftime("%FT%T%z"), "phase": a.phase,
