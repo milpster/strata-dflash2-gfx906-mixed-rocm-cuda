@@ -23,6 +23,26 @@
 
 #define STRATA_HIP_GFX906 1
 
+// Host-side fp16 bit casts (hip_fp16.h spells __half_as_ushort / __ushort_as_half only for device code;
+// CUDA's cuda_fp16.h declares them for the host too, and src/kernels/dflash2_parity.cpp builds them on
+// the host as plain C++).  A bit cast is exactly what CUDA documents, so this stays bit-exact.
+// The plain-C++ targets of a gfx906 build define __HIP_PLATFORM_AMD__ (CMake) and NOT __HIPCC__;
+// hipcc TU's get hip_fp16.h's own host+device spellings, untouched.
+#if defined(__HIP_PLATFORM_AMD__) && !defined(__HIPCC__)
+static inline unsigned short strata_half_as_ushort(__half h) {
+    unsigned short u;
+    __builtin_memcpy(&u, &h, 2);
+    return u;
+}
+static inline __half strata_ushort_as_half(unsigned short u) {
+    __half h;
+    __builtin_memcpy(&h, &u, 2);
+    return h;
+}
+#define __half_as_ushort(h) strata_half_as_ushort(h)
+#define __ushort_as_half(u) strata_ushort_as_half(u)
+#endif
+
 // ---- runtime: types and constants ------------------------------------------------------------------------
 #define cudaError_t hipError_t
 #define cudaSuccess hipSuccess
@@ -36,6 +56,8 @@
 #define cudaGraphExec_t hipGraphExec_t
 #define cudaGraphNode_t hipGraphNode_t
 #define cudaDeviceProp hipDeviceProp_t
+#define cudaPointerAttributes hipPointerAttribute_t
+#define cudaPointerGetAttributes hipPointerGetAttributes
 #define cudaMemcpyKind hipMemcpyKind
 #define cudaMemcpyHostToDevice hipMemcpyHostToDevice
 #define cudaMemcpyDeviceToHost hipMemcpyDeviceToHost
@@ -130,8 +152,9 @@ template <typename T> inline hipError_t strata_host_alloc(T** p, size_t bytes, u
 #define cudaHostGetDevicePointer hipHostGetDevicePointer
 #define cudaStreamCreate hipStreamCreate
 #define cudaStreamCreateWithFlags hipStreamCreateWithFlags
-// dflash2.cpp (the drafter) builds the CUDA branch here: STRATA_USE_HIP is the wave32 gate, so its stream
-// priority calls reach the compat layer as the CUDA names.  HIP declares both with CUDA's signatures.
+// The two priority-aware spellings: HIP declares both with CUDA's signatures (ROCm 6.1 hip_runtime_api.h:2320
+// `hipStreamCreateWithPriority(hipStream_t*, unsigned int, int)` and :2335
+// `hipDeviceGetStreamPriorityRange(int*, int*)`), and libamdhip64 exports both (hip_4.2).
 #define cudaStreamCreateWithPriority hipStreamCreateWithPriority
 #define cudaDeviceGetStreamPriorityRange hipDeviceGetStreamPriorityRange
 #define cudaStreamDestroy hipStreamDestroy

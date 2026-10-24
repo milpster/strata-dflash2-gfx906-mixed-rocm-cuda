@@ -11,6 +11,13 @@ cmake_minimum_required(VERSION 3.24)
 project(strata VERSION 0.1.48 LANGUAGES CXX)
 # EXPERIMENTAL: the Intel Arc engine, the SYCL port in sycl/ (PR #423; icpx + oneMKL, docs/INTEL_ARC.md). It is its
 # own project that takes the unported sources from src/; with this on, nothing below is configured.
+option(STRATA_ENABLE_DFLASH2 "Experimental DFlash2 runtime; requires a compatible trained artifact" OFF)
+if(STRATA_ENABLE_DFLASH2)
+  if(STRATA_ENABLE_SYCL)
+    message(FATAL_ERROR "DFlash2 has no SYCL runtime yet")
+  endif()
+  add_compile_definitions(STRATA_ENABLE_DFLASH2=1)
+endif()
 option(STRATA_ENABLE_SYCL "EXPERIMENTAL: build the Intel Arc (SYCL) engine from sycl/ - docs/INTEL_ARC.md" OFF)
 if(STRATA_ENABLE_SYCL)
   if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
@@ -80,6 +87,42 @@ if(STRATA_HIP_GFX906)
   set(STRATA_ENABLE_CUDA ON CACHE BOOL "" FORCE)
 endif()
 option(STRATA_ENABLE_HIP "Build the HIP targets for wave32 AMD GPUs (gfx1100, gfx1201; gfx1012/gfx1030 unvalidated)" OFF)
+# DFlash2 compiles the CUDA-shaped kernels: on NVIDIA CUDA directly, and on the gfx906 build, which compiles
+# every src/*.cu as HIP through the wave64 compat layer (the shuffles keep their 32-lane semantics there, and
+# dflash2.cu uses no cuBLAS, no WMMA, no packed-byte SIMD - audit: docs/DFLASH2_INCO.md).  The wave32 HIP
+# backend has no DFlash2 runtime and stays refused.
+if(STRATA_ENABLE_DFLASH2 AND (NOT STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP))
+  message(FATAL_ERROR "DFlash2 requires the CUDA sources: NVIDIA CUDA, or the gfx906 (HIP wave64) build that compiles them as HIP")
+endif()
+# The SECOND DFlash2 runtime in this tree is upstream v0.2.3's drafter: src/core/dflash2.cpp with
+# src/kernels/cuda/dflash2.cu and include/strata/kernels/dflash2.hpp, whose taps the in-verify producer of
+# src/core/verify.cpp writes (the full-layer verifiers only).  Upstream defines its macro unconditionally in
+# the CUDA and HIP builds; it is an option here so the two runtimes can be switched apart, with the default
+# kept exactly as upstream had it (ON, and Metal / SYCL never define it - the same sources upstream skips).
+# One tap definition per verifier per build is the invariant the upstream-integration review fixed
+# (docs/DFLASH.md: our stage-range taps from the tap plan, docs/DFLASH2.md: upstream's in-verify taps), so a
+# build that compiles both tap producers is refused at configure time rather than resolved by include order.
+option(STRATA_HAVE_DFLASH2 "Build upstream's DFlash2 drafter (src/core/dflash2.cpp): ON in the CUDA and HIP builds, as upstream v0.2.3" ON)
+if(STRATA_HAVE_DFLASH2 AND STRATA_ENABLE_DFLASH2)
+  message(FATAL_ERROR "Two DFlash2 runtimes in one build: STRATA_ENABLE_DFLASH2 (ours: src/kernels/cuda/dflash_inco.cu, the serve / layer-split taps) and STRATA_HAVE_DFLASH2 (upstream's: src/core/dflash2.cpp, the in-verify taps) both write taps, and a verifier may have exactly one tap producer. Keep STRATA_HAVE_DFLASH2=ON for the upstream drafter, or set STRATA_HAVE_DFLASH2=OFF with STRATA_ENABLE_DFLASH2=ON for the gfx906 serve / layer-split runtime.")
+endif()
+# Printed for every configure, so the built runtime is never inferred from a flag file: the gate-1 matrix
+# reads this line (and the two options) to prove which producer a build compiled.  Upstream's runtime counts
+# as compiled only where its sources and its macro are compiled (the CUDA and HIP builds), exactly as the
+# define below does; Metal and SYCL compile neither.
+if(STRATA_ENABLE_DFLASH2)
+  set(_strata_dflash2_runtimes "ours (dflash_inco: src/kernels/cuda/dflash_inco.cu, include/strata/kernels/dflash_inco.hpp)")
+else()
+  set(_strata_dflash2_runtimes "none")
+endif()
+if((STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP) AND STRATA_HAVE_DFLASH2)
+  if(STRATA_ENABLE_DFLASH2)
+    set(_strata_dflash2_runtimes "${_strata_dflash2_runtimes} + upstream (src/core/dflash2.cpp, src/kernels/cuda/dflash2.cu)")
+  else()
+    set(_strata_dflash2_runtimes "upstream (src/core/dflash2.cpp, src/kernels/cuda/dflash2.cu)")
+  endif()
+endif()
+message(STATUS "DFlash2 runtimes compiled: ${_strata_dflash2_runtimes}")
 option(STRATA_PREFILL_MMQ "Build the optional GGML MMQ prefill path for HIP" OFF)
 # MMQ prompt kernels for Q4_K / Q5_K / Q5_1 / Q6_K (Unsloth's UD-Q4/Q5/Q6_K_XL experts; on HIP also the dense GGUF
 # projections, STRATA_DENSE_MMQ).  On by default since MODEL-UPDATE Phase 1: on CUDA they are their own library
@@ -336,8 +379,15 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   add_library(strata_core STATIC src/core/device.cu src/core/pinned.cu src/platform/memory.cpp src/core/graph.cpp src/core/weights.cpp
                                src/core/layout.cpp)
   target_include_directories(strata_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-  # the DFlash2 drafter (src/core/dflash2.cpp, src/kernels/cuda/dflash2.cu) exists in the CUDA and HIP builds; the Metal and SYCL builds compile without it
-  target_compile_definitions(strata_core PUBLIC STRATA_HAVE_DFLASH2=1)
+  # the DFlash2 drafter (src/core/dflash2.cpp, src/kernels/cuda/dflash2.cu) exists in the CUDA and HIP builds; the Metal and SYCL builds compile without it.
+  # It is now an option (STRATA_HAVE_DFLASH2), default ON exactly as upstream v0.2.3 had it, so the build can be made to carry exactly ONE tap producer:
+  # this macro gates upstream's in-verify tap capture in src/core/verify.cpp, and STRATA_ENABLE_DFLASH2 gates ours; both ON is refused above.
+  # The option also gates the two SOURCES (src/kernels/cuda/dflash2.cu in strata_kernels, src/core/dflash2.cpp in
+  # strata_engine, and the drafter's EXCLUDE_FROM_ALL tools), so with it OFF the tree compiles no TU of that runtime at
+  # all and the configure-time runtime print above is exactly what the build contains.
+  if(STRATA_HAVE_DFLASH2)
+    target_compile_definitions(strata_core PUBLIC STRATA_HAVE_DFLASH2=1)
+  endif()
   if(STRATA_ENABLE_CUDA AND STRATA_EXPERIMENTAL_SM60)
     # the runtime device check (src/core/device.cu) admits the cards this build was made for (#236)
     target_compile_definitions(strata_core PRIVATE STRATA_EXPERIMENTAL_SM60=1)
@@ -420,11 +470,18 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
                           src/kernels/cuda/dequant_bf16.cu
                           src/kernels/cuda/qsa_select.cu
                           src/kernels/cuda/verify_kernels.cu
-                          src/kernels/cuda/dflash2.cu
                           src/kernels/cuda/iq_kernels.cu
                           src/kernels/ngram.cpp
                           src/ngram/ple_reader.cpp
                           src/platform/direct_file.cpp)
+  # Upstream v0.2.3's drafter kernels enter the build only under their own option: with STRATA_HAVE_DFLASH2=OFF not one
+  # translation unit of upstream's runtime is compiled, which is exactly what the configure-time runtime print above says.
+  if(STRATA_HAVE_DFLASH2)
+    target_sources(strata_kernels PRIVATE src/kernels/cuda/dflash2.cu)
+  endif()
+  if(STRATA_ENABLE_DFLASH2)
+    target_sources(strata_kernels PRIVATE src/kernels/cuda/dflash_inco.cu)
+  endif()
   target_link_libraries(strata_kernels PUBLIC strata_core strata_artifact)
   # Exact gfx1100 prompt scorer (PR1825 method port): optional standalone test,
   # also available where the published source omits tests/.
@@ -582,9 +639,22 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   # about arithmetic, and this one knows the ORDER the arithmetic happens in.
   add_library(strata_engine STATIC src/core/layer.cpp src/core/session.cpp src/core/expert_source.cpp src/core/remote_experts.cpp
     src/core/remote_expert_opt.cu
-    src/core/expert_cache.cpp src/core/native_head.cpp src/core/native_dense.cpp src/core/verify.cpp src/core/mtp.cpp src/core/dflash2.cpp
+    src/core/expert_cache.cpp src/core/native_head.cpp src/core/native_dense.cpp src/core/verify.cpp src/core/mtp.cpp
+    src/core/dflash.cpp src/core/dflash_runtime.cpp src/core/dflash_tap_collect.cpp
     src/core/conversation_snapshot.cpp src/core/conversation_state.cpp src/core/conversation_memory.cpp src/core/peer_experts.cpp
     src/core/arch_defaults.cpp src/core/nv_defaults.cpp src/core/vmm.cpp src/core/conversation_file.cpp)
+  # Upstream's drafter, same rule as its kernels above: OFF means the TU is not compiled at all (see the runtime print).
+  if(STRATA_HAVE_DFLASH2)
+    target_sources(strata_engine PRIVATE src/core/dflash2.cpp)
+  endif()
+  # The gfx906 scheme is STRATA_ENABLE_CUDA=ON with STRATA_ENABLE_HIP=OFF, so - unlike the wave32 HIP build, whose
+  # strata_hip_runtime INTERFACE target (cmake/hip_backend.cmake:98) carries STRATA_USE_HIP - nothing defines that macro
+  # here, and src/core/dflash2.cpp took CUDA's branch for the stream-priority and stream-fork code (its :198 and :446).
+  # On this card the HIP branch is the true one: priority streams only with STRATA_DF2_PRIO=1, one stream by default
+  # (the file's own measurement note). Applied to that one source only; nothing in its include closure gates on the macro.
+  if(STRATA_HAVE_DFLASH2 AND STRATA_HIP_GFX906)
+    set_property(SOURCE src/core/dflash2.cpp APPEND PROPERTY COMPILE_DEFINITIONS STRATA_USE_HIP=1)
+  endif()
   target_include_directories(strata_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_link_libraries(strata_engine PUBLIC strata_core strata_kernels strata_kernels_cpu ${_strata_gpu_runtime_target})
   if(STRATA_BUILD_TESTS AND STRATA_ENABLE_CUDA AND NOT STRATA_HIP_GFX906)
@@ -736,25 +806,30 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   endif()
 
   # DFlash2 drafter tools (not built by default: cmake --build <dir> --target dflash2_parity dflash2_gemm_bench dflash2_attn_bench): the drafter against
-  # the torch port on a synthetic case (needs the pack and a case file, tools/dflash2/mk_parity_case.py), and the timing of its Q8 GEMM and attention
-  add_executable(dflash2_parity EXCLUDE_FROM_ALL src/core/dflash2_parity.cpp)
-  target_include_directories(dflash2_parity PRIVATE ${_strata_gpu_include_directories})
-  target_link_libraries(dflash2_parity PRIVATE strata_engine strata_kernels ${_strata_gpu_runtime_target})
-  add_executable(dflash2_gemm_bench EXCLUDE_FROM_ALL src/core/dflash2_gemm_bench.cpp)
-  target_include_directories(dflash2_gemm_bench PRIVATE ${_strata_gpu_include_directories})
-  target_link_libraries(dflash2_gemm_bench PRIVATE strata_kernels ${_strata_gpu_runtime_target})
-  add_executable(dflash2_launch_bench EXCLUDE_FROM_ALL src/core/dflash2_launch_bench.cu)
-  target_include_directories(dflash2_launch_bench PRIVATE ${_strata_gpu_include_directories})
-  target_link_libraries(dflash2_launch_bench PRIVATE ${_strata_gpu_runtime_target})
-  add_executable(dflash2_bw_bench EXCLUDE_FROM_ALL src/core/dflash2_bw_bench.cu)
-  target_include_directories(dflash2_bw_bench PRIVATE ${_strata_gpu_include_directories})
-  target_link_libraries(dflash2_bw_bench PRIVATE ${_strata_gpu_runtime_target})
-  add_executable(dflash2_small_bench EXCLUDE_FROM_ALL src/core/dflash2_small_bench.cpp)
-  target_include_directories(dflash2_small_bench PRIVATE ${_strata_gpu_include_directories})
-  target_link_libraries(dflash2_small_bench PRIVATE strata_kernels ${_strata_gpu_runtime_target})
-  add_executable(dflash2_attn_bench EXCLUDE_FROM_ALL src/core/dflash2_attn_bench.cpp)
-  target_include_directories(dflash2_attn_bench PRIVATE ${_strata_gpu_include_directories})
-  target_link_libraries(dflash2_attn_bench PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+  # the torch port on a synthetic case (needs the pack and a case file, tools/dflash2/mk_parity_case.py), and the timing of its Q8 GEMM and attention.
+  # They belong to upstream's runtime, so with STRATA_HAVE_DFLASH2=OFF they are not configured at all: dflash2_parity,
+  # dflash2_small_bench, dflash2_gemm_bench and dflash2_attn_bench call its kernels, and dflash2_parity links the drafter
+  # class - with the runtime out of the build they could not link.
+  if(STRATA_HAVE_DFLASH2)
+    add_executable(dflash2_parity EXCLUDE_FROM_ALL src/core/dflash2_parity.cpp)
+    target_include_directories(dflash2_parity PRIVATE ${_strata_gpu_include_directories})
+    target_link_libraries(dflash2_parity PRIVATE strata_engine strata_kernels ${_strata_gpu_runtime_target})
+    add_executable(dflash2_gemm_bench EXCLUDE_FROM_ALL src/core/dflash2_gemm_bench.cpp)
+    target_include_directories(dflash2_gemm_bench PRIVATE ${_strata_gpu_include_directories})
+    target_link_libraries(dflash2_gemm_bench PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+    add_executable(dflash2_launch_bench EXCLUDE_FROM_ALL src/core/dflash2_launch_bench.cu)
+    target_include_directories(dflash2_launch_bench PRIVATE ${_strata_gpu_include_directories})
+    target_link_libraries(dflash2_launch_bench PRIVATE ${_strata_gpu_runtime_target})
+    add_executable(dflash2_bw_bench EXCLUDE_FROM_ALL src/core/dflash2_bw_bench.cu)
+    target_include_directories(dflash2_bw_bench PRIVATE ${_strata_gpu_include_directories})
+    target_link_libraries(dflash2_bw_bench PRIVATE ${_strata_gpu_runtime_target})
+    add_executable(dflash2_small_bench EXCLUDE_FROM_ALL src/core/dflash2_small_bench.cpp)
+    target_include_directories(dflash2_small_bench PRIVATE ${_strata_gpu_include_directories})
+    target_link_libraries(dflash2_small_bench PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+    add_executable(dflash2_attn_bench EXCLUDE_FROM_ALL src/core/dflash2_attn_bench.cpp)
+    target_include_directories(dflash2_attn_bench PRIVATE ${_strata_gpu_include_directories})
+    target_link_libraries(dflash2_attn_bench PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+  endif()
 
   add_executable(strata src/program/generate.cpp)
   strata_utf8_manifest(strata)
@@ -1129,6 +1204,51 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_link_libraries(gr_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME gr_parity COMMAND gr_parity --selftest)
 
+  if(STRATA_ENABLE_DFLASH2)
+    # Our runtime, renamed dflash_inco (src/kernels/cuda/dflash_inco.cu, include/strata/kernels/dflash_inco.hpp),
+    # so it never shares a path or a target name with upstream's dflash2 drafter and its EXCLUDE_FROM_ALL
+    # dflash2_parity bench (upstream v0.2.3): this one is the gfx906 serve / layer-split parity test.
+    add_executable(dflash_inco_parity src/kernels/dflash2_parity.cpp)
+    target_link_libraries(dflash_inco_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+    add_test(NAME dflash_inco_parity COMMAND dflash_inco_parity)
+    set_tests_properties(dflash_inco_parity PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+  endif()
+
+  # DFlash tap packing: padded planes, 1..8 rows, BF16 and F32 sources.
+  add_executable(dflash_taps_test src/kernels/dflash_taps_test.cpp)
+  target_include_directories(dflash_taps_test PRIVATE ${_strata_gpu_include_directories})
+  target_link_libraries(dflash_taps_test PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+  add_test(NAME dflash_taps_test COMMAND dflash_taps_test)
+  set_tests_properties(dflash_taps_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+
+  add_executable(dflash_head_bf16_test tests/core/dflash_head_bf16_test.cpp)
+  target_include_directories(dflash_head_bf16_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests/core)
+  target_link_libraries(dflash_head_bf16_test PRIVATE strata_engine)
+  add_test(NAME dflash_head_bf16_test COMMAND dflash_head_bf16_test)
+  set_tests_properties(dflash_head_bf16_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+
+  # Cross-device tap transport on a two-device box (include/strata/core/dflash_tap_collect.hpp):
+  # synthetic per-stage planes vs the CPU-expected assembled plane, slot-reuse rounds, refusals.
+  add_executable(dflash_tap_collect_test tests/core/dflash_tap_collect_test.cpp)
+  target_include_directories(dflash_tap_collect_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests/core)
+  target_link_libraries(dflash_tap_collect_test PRIVATE strata_engine)
+  add_test(NAME dflash_tap_collect_test COMMAND dflash_tap_collect_test)
+  set_tests_properties(dflash_tap_collect_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 180)
+
+  # the DFlash drafter's full-head (256-dim) NeoX RoPE against a host reference (docs/DFLASH.md)
+  add_executable(dflash_rope_parity src/kernels/dflash_rope_parity.cpp)
+  target_include_directories(dflash_rope_parity PRIVATE ${_strata_gpu_include_directories})
+  target_link_libraries(dflash_rope_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+  add_test(NAME dflash_rope_parity COMMAND dflash_rope_parity)
+  set_tests_properties(dflash_rope_parity PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+
+  # the DFlash drafter's OWNED K/V state: pools inside the caller's arena, append/readback exact,
+  # elastic non-membership, five independent layers (docs/DFLASH.md)
+  add_executable(dflash_owned_kv_test tests/core/dflash_owned_kv_test.cpp)
+  target_link_libraries(dflash_owned_kv_test PRIVATE strata_engine)
+  add_test(NAME dflash_owned_kv_test COMMAND dflash_owned_kv_test)
+  set_tests_properties(dflash_owned_kv_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+
   add_executable(gdn_parity src/kernels/gdn_parity.cpp)
   target_include_directories(gdn_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(gdn_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
@@ -1455,6 +1575,39 @@ if(STRATA_BUILD_TESTS)
   add_executable(draft_policy_test src/spec/draft_policy_test.cpp)
   target_link_libraries(draft_policy_test PRIVATE strata_spec)
   add_test(NAME draft_policy_test COMMAND draft_policy_test)
+  add_executable(dflash_policy_test src/spec/dflash_policy_test.cpp)
+  target_link_libraries(dflash_policy_test PRIVATE strata_spec)
+  add_test(NAME dflash_policy_test COMMAND dflash_policy_test)
+  # The bounded SWA ring math (src/core/dflash_ring.hpp): pure host arithmetic, no GPU headers,
+  # no link - the CPU proof of the mapping the runtime and the snapshots share (docs/DFLASH.md).
+  add_executable(dflash_ring_test tests/core/dflash_ring_test.cpp)
+  target_include_directories(dflash_ring_test PRIVATE include)
+  add_test(NAME dflash_ring_test COMMAND dflash_ring_test)
+  # The tap-ownership plan under --layer-split (include/strata/core/dflash_tap_plan.hpp): pure
+  # host arithmetic, the same build() the engine runs at drafter upload (docs/DFLASH2.md).
+  add_executable(dflash_tap_plan_test tests/core/dflash_tap_plan_test.cpp)
+  target_include_directories(dflash_tap_plan_test PRIVATE include)
+  add_test(NAME dflash_tap_plan_test COMMAND dflash_tap_plan_test)
+  # The collector's slot lifecycle (acquire/eviction/reset), CPU-safe: ev == nullptr means
+  # the real acquire() makes no CUDA call.  Needs the toolkit headers, so the same guard
+  # as dflash_load_test (parent review 2026-10-21 item 2: prove the lifecycle on CPU).
+  if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
+    add_executable(dflash_tap_slot_test tests/core/dflash_tap_slot_test.cpp)
+    target_include_directories(dflash_tap_slot_test PRIVATE include)
+    target_link_libraries(dflash_tap_slot_test PRIVATE strata_engine)
+    add_test(NAME dflash_tap_slot_test COMMAND dflash_tap_slot_test)
+  endif()
+  # No device work, but the runtime header depends on GPU toolkit headers.
+  # A CPU-only build must not require cuda_runtime.h just to build its tests.
+  if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
+    add_executable(dflash_load_test src/core/dflash_load_test.cpp src/core/dflash.cpp)
+    target_include_directories(dflash_load_test PRIVATE include ${CMAKE_CURRENT_SOURCE_DIR}/tests/core
+      ${CUDAToolkit_INCLUDE_DIRS})
+    # gfx906 (docs/AMD_HIP.md): the toolkit header slots are filled by HIP's own headers - the host runtime
+    # target carries the include dirs (hip_compat first, then hip's), so the test compiles as plain C++
+    target_link_libraries(dflash_load_test PRIVATE ${_strata_gpu_runtime_target})
+    add_test(NAME dflash_load_test COMMAND dflash_load_test)
+  endif()
   add_executable(spec_start_test src/spec/spec_start_test.cpp)
   target_include_directories(spec_start_test PRIVATE include)
   add_test(NAME spec_start_test COMMAND spec_start_test)
