@@ -295,6 +295,11 @@ class WhatARefusalDoesToTheCaller(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         (Path(self.tmp.name) / "engine").mkdir(parents=True, exist_ok=True)
+        # Isolate the first-install/update callers from a developer's real local engine.
+        root = mock.patch.object(setup, "ROOT", Path(self.tmp.name))
+        root.start(); self.addCleanup(root.stop)
+        base = mock.patch.object(setup, "prebuilt_bases", return_value=[str(Path(self.tmp.name) / "dist") + "/"])
+        base.start(); self.addCleanup(base.stop)
         # get_prebuilt looks for the release with a HEAD request before it downloads (0.2.0), and keeps the engine in
         # an engine folder of its own: no network, and never this checkout's engine folder.  A published release answers the probe.
         for patcher in (mock.patch.object(setup, "engine_dir", lambda toolkit=13: Path(self.tmp.name) / "engine"),

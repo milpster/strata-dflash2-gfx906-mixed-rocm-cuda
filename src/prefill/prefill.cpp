@@ -1,3 +1,6 @@
+#ifdef STRATA_ENABLE_DFLASH2
+#include "strata/kernels/dflash_inco.hpp"
+#endif
 // src/prefill/prefill.cpp - see include/strata/prefill/prefill.hpp.
 #include "strata/kernels/fused_gr.hpp"
 #include "strata/prefill/prefill.hpp"
@@ -24,6 +27,7 @@
 #include "strata/kernels/cpu/pool.hpp"
 #include "strata/kernels/native_qsa_indexer.hpp"
 #include "strata/kernels/ngram.hpp"
+#include "strata/kernels/elementwise.hpp"
 #include "strata/kernels/ple.hpp"
 #include "strata/kernels/native_ple_postops.hpp"
 #include "strata/kernels/iq_kernels.hpp"
@@ -703,6 +707,8 @@ struct Stager {
     }
 };
 
+static int g_n_taps = 0;   // set_tap_layers mirrors the Impl count here for the static size counters
+
 // multi-GPU: the peer GPU's share of a prompt chunk's experts.  Per MoE layer the primary copies its normed
 // activations over P2P, the peer quantizes the rows routed to the experts it holds, runs the same MMQ products the
 // primary would (gathered from its own slots), and copies the result rows back into the primary's Dm rows - the rows
@@ -878,6 +884,10 @@ struct Prefill::Impl {
     const core::ExpertCache* cache = nullptr;
     const int32_t* host_res = nullptr;
     int64_t T = 0, T_max = 0;
+    bool tap_hc_mean_ = false;
+    int tap_layers_[8] = {};
+    int n_taps_ = 0;
+    uint16_t* taps = nullptr;  ///< n_taps_ x T_max x n_embd BF16
     bool borrowed = false, borrow_spill = false;
     cudaStream_t cs = nullptr, copy = nullptr;
     Gemm gemm;
@@ -1582,9 +1592,11 @@ bool Prefill::carve(size_t T, void* alloc) {
     m.xn16 = o.take<uint16_t>(T * (D + (hc_pad() ? XN_PAD : 0)), ok); m.lo = o.take<float>(T * LR, ok); m.lo16 = o.take<uint16_t>(T * LR, ok);
     m.gated = o.take<float>(T * D, ok); m.inj = o.take<float>(T * HC, ok);
     m.mixed = o.take<float>(T * N, ok); m.mixed_bf = o.take<uint16_t>(T * N, ok);
+    if (m.n_taps_ > 0) m.taps = o.take<uint16_t>((size_t) m.n_taps_ * (size_t) T * (size_t) N, ok);
     m.mixed_h = o.take<uint16_t>(T * N, ok);
     // Embedding rows are dead after gr_broadcast on m.cs; subsequent half outputs use the same stream.
     m.bo = m.emb;
+
     if (bf16x2_hc(m.f16_io)) { m.xn16_lo = o.take<uint16_t>(T * D, ok); m.lo16_lo = o.take<uint16_t>(T * LR, ok); }
     if (bf16x2(m.f16_io)) m.mixed_bf_lo = o.take<uint16_t>(T * N, ok);
     m.steps_dev = o.take<int32_t>(T * strata::kernels::kStepCount, ok);
@@ -2033,6 +2045,19 @@ bool Prefill::bind_stage_helper(int64_t T) {
     return true;
 }
 
+// A borrowed prompt buffer is re-carved for each request's chunk. The tap
+// planes follow that current layout, not the largest chunk accepted at init.
+int64_t Prefill::tap_stride_rows() const { return impl_->T; }
+const uint16_t* Prefill::taps_plane() const { return impl_->taps; }
+
+void Prefill::set_tap_layers(const int* layers, int n, bool hc_mean) {
+    Impl& m = *impl_;
+    m.tap_hc_mean_ = hc_mean;
+    m.n_taps_ = n > 8 ? 8 : n;
+    for (int i = 0; i < m.n_taps_; ++i) m.tap_layers_[i] = layers[i];
+    g_n_taps = m.n_taps_;   // the static counters (bytes_needed_impl) read this
+}
+
 bool Prefill::set_peer(core::PeerExperts* peer, int64_t cap_rows, std::string& err) {
     Impl& m = *impl_;
     if (peer == nullptr || !peer->valid()) { m.pp.reset(); return true; }
@@ -2359,8 +2384,11 @@ uint64_t Prefill::bytes_needed_impl(const core::ModelGeometry& g, const core::Se
         f(T * N); f(T * D); f(T * D);
     }
     o.take<uint16_t>(T * (D + (hc_pad() ? XN_PAD : 0)), ok); f(T * LR); o.take<uint16_t>(T * LR, ok);
-    f(T * D); f(T * HC); f(T * N); o.take<uint16_t>(T * N, ok); o.take<uint16_t>(T * N, ok);
-    if (!emb_reuse_account()) f(T * N);   // bo: aliases emb in carve; still counted unless STRATA_EMB_REUSE_ACCOUNT=1
+    f(T * D); f(T * HC); f(T * N); o.take<uint16_t>(T * N, ok);
+    if (g_n_taps > 0) o.take<uint16_t>((size_t) g_n_taps * T * (size_t) g.n_embd, ok);
+    o.take<uint16_t>(T * N, ok);
+    if (!emb_reuse_account()) f(T * N);
+
     const bool f16_io = prompt_f16();   // the current device's mode (the stage's), as Prefill::init will decide it
     if (bf16x2_hc(f16_io)) { o.take<uint16_t>(T * D, ok); o.take<uint16_t>(T * LR, ok); }
     if (bf16x2(f16_io)) o.take<uint16_t>(T * N, ok);
@@ -3248,6 +3276,26 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 } else {
                     gr_mix_r(m.R, m.grs, (const float*) wn->data, m.gated, m.mixed, m.mixed_bf, T, m.cs, m.mixed_h,
                              m.mixed_bf_lo);
+                }
+                if (half == 0 && m.n_taps_ > 0) {   // DFlash tap: the attn-half read's contracted residual
+                    const int64_t TN = g.n_embd;
+                    // The same authority binding as src/core/verify.cpp: this writer is compiled only under
+                    // STRATA_ENABLE_DFLASH2, and the mixed-source copy below is inside that gate (it is the
+                    // documented hc_mean=false shape), never an ungated fallback.
+#if defined(STRATA_ENABLE_DFLASH2)
+                    for (int ti = 0; ti < m.n_taps_; ++ti)
+                        if (l == m.tap_layers_[ti]) {
+                            if (m.tap_hc_mean_)
+                                strata::kernels::dflash2_hc_mean(m.R, nullptr,
+                                    m.taps + (size_t) ti * m.T * TN, T, TN, g.hc, m.cs);
+                            else
+                                strata::kernels::f32_to_bf16_bulk(
+                                    m.mixed, m.taps + ((size_t) ti * (size_t) m.T) * (size_t) TN,
+                                    (int64_t) T * TN, m.cs);
+                        }
+#elif defined(STRATA_ENABLE_DFLASH2_UNGATED_TAP_FALLBACK)
+#error "the ungated prompt-tap copy is removed: STRATA_ENABLE_DFLASH2 is the authority macro of this tap writer, and a verifier has exactly one tap producer (upstream-integration gate 1). Enable the runtime, or write the taps in a producer of their own - do not restore an ungated copy."
+#endif
                 }
 
                 if (wd_q8.data) {   // the HC GEMMs that read the scratch are enqueued: the next user waits for them
@@ -4918,6 +4966,19 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
             // Wait only for the DIRECT successor's previous chunk. That successor
             // may already have forwarded its older chunk to later GPUs.
             if (on_stage_chunk && !on_stage_chunk(p0 + T, err)) return false;
+            // L14 (the dflash_w3 model window's "tap 0 was never staged"): a stage WITH a
+            // successor must fire its DFlash tap callback HERE, per chunk - the chain's
+            // producers (sp and every intermediate stage) stage this chunk's foreign tap
+            // slices; the chain's LAST stage assembles the same key at its own chunk end.
+            // The tail block below belongs to the last stage alone (the `continue`), so
+            // the base's dflash_on_taps used to never fire on a split and assemble found an
+            // empty slot.  Ordering: the hand-off above drained THIS chunk's stream (the
+            // tap rows are complete), this fires before the successor's chunk is
+            // submitted below - the producer for a key always runs before that key's
+            // consumer, and the collector additionally waits (bounded, epoch-guarded)
+            // for a key's staged flags.  The callback's D2H needs this device current:
+            // run_impl holds `on_device(m.device)` for the whole call.
+            if (dflash_on_taps && m.n_taps_ > 0 && !dflash_on_taps(m.taps, m.n_taps_, T, p0, err)) return false;
             if (next_run_.valid() && !next_run_.get()) { err = next_err_; return false; }
             next_err_.clear();
             next_->hand_in_ = h;
@@ -4981,7 +5042,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
             if (!on_taps(tap_dev_, tap_rows, p0 + tap_t0, err)) return false;
         }
 #endif
-        if (on_chunk || on_stage_chunk) {
+        if (on_chunk || on_stage_chunk || dflash_on_taps) {
             const auto toc = Clock::now();
             if (cudaStreamSynchronize(m.cs) != cudaSuccess) {
                 err = std::string("prefill: ") + cudaGetErrorString(cudaGetLastError());
@@ -4990,6 +5051,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
             const auto toc2 = Clock::now();
             if (on_stage_chunk && !on_stage_chunk(p0 + T, err)) return false;
             if (on_chunk && !on_chunk(m.R, T, p0, err)) return false;
+            if (dflash_on_taps && m.n_taps_ > 0 && !dflash_on_taps(m.taps, m.n_taps_, T, p0, err)) return false;
             host_sync_ms += std::chrono::duration<double, std::milli>(toc2 - toc).count();
             host_chunk_ms += ms_since(toc2);
         }

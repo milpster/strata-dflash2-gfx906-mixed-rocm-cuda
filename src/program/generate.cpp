@@ -25,6 +25,7 @@
 #include "strata/core/remote_expert_opt.hpp"
 #include "strata/core/expert_cache.hpp"
 #include "strata/core/conversation_snapshot.hpp"
+#include "strata/core/dflash_ring.hpp"
 #include "strata/core/conversation_file.hpp"
 #include "strata/core/session_save_reclaim.hpp"
 #include "strata/core/conversation_memory.hpp"
@@ -66,6 +67,7 @@
 #include "strata/core/native_head.hpp"
 #include "strata/core/verify.hpp"
 #include "strata/core/mtp.hpp"
+#include "strata/core/dflash.hpp"
 #if defined(STRATA_HAVE_DFLASH2)
 #include "strata/core/dflash2.hpp"
 #include "strata/core/draft_cap.hpp"
@@ -86,6 +88,7 @@
 #include "strata/program/draft_kv_plan.hpp"
 #include "strata/program/message_boundary.hpp"
 #include "strata/spec/draft_policy.hpp"
+#include "strata/spec/dflash_policy.hpp"
 #include "strata/spec/draft_source.hpp"
 #include "strata/spec/suffix_drafter.hpp"
 #include "strata/spec/spec_start.hpp"
@@ -679,6 +682,15 @@ struct Options {
     /// Plan v0.3 P6: the MTP draft layer's runtime directory (tools/mtp_rt.py); drafts come from it.
     std::string mtp;
     int64_t mtp_window = 32768;   ///< the draft layer attends to the last N cells (0 = every cell)
+    /// DFlash (docs/DFLASH.md): the standalone block drafter's GGUF; --mtp and --dflash are exclusive.
+    std::string dflash;
+    std::string dflash_vocab;      ///< selected rows of the shared target head, int32 token ids
+    std::string dflash_head;       ///< optional draft-only GGUF output.weight
+    int dflash_block = 0;          ///< cap the candidates per pass below the trained block (0 = min(spec-1, trained))
+    int64_t dflash_window = -1; ///< --dflash-window capacity in cells; -1 = unset: legacy drafter defaults to 32768, the official SWA geometry follows --max-context (include/strata/core/dflash_ring.hpp)
+    int64_t dflash_mask = -1;      ///< the mask token id when the artifact's metadata lacks it
+    bool suffix_draft_set = false; ///< whether --suffix-draft was passed explicitly
+    bool lookup_chain_set = false;
     /// Plan v0.3 P6: the share (0..1) of each layer's distinct missed experts the GPU reads over PCIe from the
     /// pinned arena while the CPU computes the rest (verify windows).
     double pcie_frac = -1.0;   ///< < 0: the model's default (0.2 direct for the Q2_0 pack, 0.55 DMA for native packs)
@@ -703,6 +715,7 @@ struct Options {
     /// Plan v0.3 P6: a draft enters the verify window only while every draft before it (and itself) has at least
     /// this probability under the draft layer; 0 = always --spec-1 drafts.
     double spec_min_p = 0.0;
+    bool spec_min_p_set = false;
     /// Stop when the model emits an end-of-turn token (<|endoftext|> 248044, <|im_end|> 248046, or --eos-ids).
     bool stop_eos = false;
     std::vector<int64_t> eos_ids = {248044, 248046};
@@ -946,6 +959,16 @@ void usage() {
                  "                       (default) or one per stream (llama.cpp's MTP graph)\n"
                  "  --mtp-q4 all|proj|head  opt-in: the draft layer's projections and/or draft head as 4-bit copies\n"
                  "  --mtp-draft-vocab FILE  opt-in: the draft head's token subset (default <mtp>/draft_vocab.bin)\n"
+                 "  --dflash GGUF        experimental: DFlash GGUF (BF16/Q8_0/Q5_0/Q4_0; CLI and server)\n"
+                 "                       instead of the MTP layer; needs --spec 2..8 (the window = 1 anchor + K\n"
+                 "                       candidates, K <= the artifact's trained block) and is exclusive with --mtp\n"
+                 "  --dflash-vocab FILE  draft over these int32 token ids in the shared head (full vocabulary if omitted)\n"
+                 "  --dflash-head GGUF   experimental draft-only BF16 or quantized output.weight; target verification keeps its own head\n"
+                 "  --dflash-block K     fixed candidates per pass; 0 = trained pass with confidence gating\n"
+                 "  --dflash-window N    the drafter's context capacity in cells (docs/DFLASH.md: a capacity limit, not a\n"
+                 "                       rolling window). Unset: legacy drafters use 32768; the official SWA DFlash2\n"
+                 "                       geometry follows --max-context (its pools are bounded rings). 0 = full target context.\n"
+                 "  --dflash-mask-token ID  the mask token when the artifact's metadata lacks it (published artifact: 248077)\n"
                  "  --draft mtp|dflash2  the draft source (default mtp); dflash2 needs --draft-model PACK (tools/dflash2_pack.py)\n"
                  "                       and keeps the MTP layer loaded as the fallback (opt-in, Flash-Next, CUDA / HIP)\n"
                  "  --draft-conf P       with --draft dflash2: end the window where the product of the selector's probabilities falls below P (default 0 = --spec-min-p)\n"
@@ -1124,6 +1147,7 @@ struct Drive {
     /// needs no locking.  `d.layers` is the CURRENT layer on entry (the adapter increments it as it walks the
     /// blob), which is why the layer index comes from there rather than from a counter of our own.
     std::FILE* routing = nullptr;
+
 };
 
 void drive_pool(void* user, const float* x_f, const int32_t* ids, const float* weights, int64_t n_embd, int64_t k,
@@ -1162,6 +1186,7 @@ void drive_pool_multi(void* user, const float* x_f, const int32_t* ids, int64_t 
     t->d.layers = layer;
     const Clock::time_point a = Clock::now();
     strata::core::expert_pool_dispatch_multi(t->d, x_f, ids, n_tok, k, out);
+
     t->cpu_ms += std::chrono::duration<double, std::milli>(Clock::now() - a).count();
     ++t->calls;
     // the routing trace for the serve path: the same record format drive_pool writes (layer, k, ids, weights),
@@ -1518,6 +1543,73 @@ void mem_mark(const char* where) {
                      sync_e == cudaSuccess && last_e == cudaSuccess ? "ok" : "ERROR", where, cudaGetErrorString(sync_e),
                      cudaGetErrorString(last_e));
     }
+}
+
+// STRATA_DFLASH_TAPS=<file> (docs/DFLASH.md's feature-capture fixture, target-only): one raw record
+// per prompt chunk / verify window - magic, source (0 prompt, 1 window), pos0, T, n_taps, n_embd,
+// then the taps as f32 rows [n_taps][T][n_embd].  The device taps are strided per tap
+// (g_tap_stride_bytes; 0 = contiguous), so each tap is copied on its own; `bf16` widens on the way
+// out (the prompt path stores BF16).  The record is written before the window's commit / the next
+// chunk, on `stream`.
+static std::FILE* g_tap_dump = nullptr;
+static size_t g_tap_stride_bytes = 0;
+static bool tap_dump_record(int source, int64_t pos0, int T, int n_taps, const void* dev, int64_t n_embd,
+                            bool bf16, cudaStream_t stream) {
+    if (!g_tap_dump || !dev) return true;
+    uint32_t hdr[7] = {0x31504644u, (uint32_t) source, (uint32_t) pos0, (uint32_t) T,
+                       (uint32_t) n_taps, (uint32_t) n_embd, bf16 ? 1u : 0u};
+    if (std::fwrite(hdr, sizeof hdr, 1, g_tap_dump) != 1) return false;
+    const size_t rn = (size_t) T * (size_t) n_embd;
+    std::vector<float> wide((size_t) n_taps * rn);
+    for (int ti = 0; ti < n_taps; ++ti) {
+        const uint8_t* src = (const uint8_t*) dev + (size_t) ti * g_tap_stride_bytes;
+        if (bf16) {
+            std::vector<uint16_t> host(rn);
+            if (cudaMemcpyAsync(host.data(), src, rn * 2, cudaMemcpyDeviceToHost, stream) != cudaSuccess)
+                return false;
+            if (cudaStreamSynchronize(stream) != cudaSuccess) return false;
+            float* dst = wide.data() + (size_t) ti * rn;
+            for (size_t i = 0; i < rn; ++i) {
+                uint32_t bits = (uint32_t) host[i] << 16;
+                std::memcpy(&dst[i], &bits, 4);
+            }
+        } else {
+            if (cudaMemcpyAsync(wide.data() + (size_t) ti * rn, src, rn * sizeof(float),
+                                cudaMemcpyDeviceToHost, stream) != cudaSuccess) return false;
+        }
+    }
+    if (!bf16 && cudaStreamSynchronize(stream) != cudaSuccess) return false;
+    return std::fwrite(wide.data(), sizeof(float), wide.size(), g_tap_dump) == wide.size();
+}
+
+// Works with Off, MTP and DFlash, in both CLI and server. Capture the target's
+// logits of the kept prefix before commit, excluding rejected speculative rows.
+static bool dflash_target_probe(strata::core::Verifier& ver, int64_t pos, int rows, std::string& err) {
+    static const char* env = std::getenv("STRATA_DF_TARGET_PROBE");
+    static const int64_t wanted = env ? std::atoll(env) : -1;
+    if (!env || wanted < pos || wanted - pos >= rows) return true;
+    std::vector<float> logits((size_t) ver.vocab());
+    if (!ver.copy_logits((int) (wanted - pos), logits.data())) {
+        err = "target probe: copying logits failed";
+        return false;
+    }
+    int best = 0, second = 1;
+    if (logits[second] > logits[best]) std::swap(best, second);
+    for (int i = 2; i < ver.vocab(); ++i) {
+        if (logits[i] > logits[best]) { second = best; best = i; }
+        else if (logits[i] > logits[second]) second = i;
+    }
+    std::fprintf(stderr, "dflash target probe: pos=%lld window_pos=%lld row=%lld top1=%d score=%.9g top2=%d score=%.9g margin=%.9g\n",
+                 (long long) wanted, (long long) pos, (long long) (wanted - pos),
+                 best, logits[best], second, logits[second], logits[best] - logits[second]);
+    if (const char* path = std::getenv("STRATA_DF_TARGET_PROBE_FILE")) {
+        FILE* f = std::fopen(path, "wb");
+        if (!f) { err = "target probe: opening logits file failed"; return false; }
+        const bool written = std::fwrite(logits.data(), sizeof(float), logits.size(), f) == logits.size();
+        const bool closed = std::fclose(f) == 0;
+        if (!written || !closed) { err = "target probe: writing logits failed"; return false; }
+    }
+    return true;
 }
 
 /// #463's A/B: STRATA_ADAPT_NOWAIT=1 lets a verify window start before the adaptive tier's copies have landed (0.1.37)
@@ -2622,12 +2714,18 @@ int main(int argc, char** argv) {
         else if (a == "--window-hashes") o.window_hashes = next("--window-hashes");
         else if (a == "--mtp") o.mtp = next("--mtp");
         else if (a == "--mtp-window") o.mtp_window = std::atoll(next("--mtp-window"));
+        else if (a == "--dflash") o.dflash = next("--dflash");
+        else if (a == "--dflash-vocab") o.dflash_vocab = next("--dflash-vocab");
+        else if (a == "--dflash-head") o.dflash_head = next("--dflash-head");
+        else if (a == "--dflash-block") o.dflash_block = std::max(0, std::atoi(next("--dflash-block")));
+        else if (a == "--dflash-window") o.dflash_window = std::max(0LL, std::atoll(next("--dflash-window")));
+        else if (a == "--dflash-mask-token") o.dflash_mask = std::atoll(next("--dflash-mask-token"));
         else if (a == "--pcie-frac") o.pcie_frac = std::atof(next("--pcie-frac"));
         else if (a == "--adapt-every") { o.adapt_every = std::atoi(next("--adapt-every")); o.adapt_every_given = true; }
         else if (a == "--adapt-decay") o.adapt_decay = (float) std::atof(next("--adapt-decay"));
         else if (a == "--adapt-min-gain") o.adapt_min_gain = (float) std::atof(next("--adapt-min-gain"));
         else if (a == "--adapt-async") o.adapt_async = std::atoi(next("--adapt-async")) != 0 ? 1 : 0;
-        else if (a == "--spec-min-p") o.spec_min_p = std::atof(next("--spec-min-p"));
+        else if (a == "--spec-min-p") { o.spec_min_p = std::atof(next("--spec-min-p")); o.spec_min_p_set = true; }
         else if (a == "--stop-eos") o.stop_eos = true;
         else if (a == "--spec-split") o.spec_split = true;
         else if (a == "--layer-split") o.layer_split = next("--layer-split");
@@ -2669,9 +2767,9 @@ int main(int argc, char** argv) {
         else if (a == "--short-read") o.short_read = std::max(0LL, std::atoll(next("--short-read")));
         else if (a == "--prefill-head-alias") o.prefill_head_alias = true;
         else if (a == "--pipeline-windows") o.pipeline_windows = std::max(0, std::min(2, std::atoi(next("--pipeline-windows"))));
-        else if (a == "--suffix-draft") o.suffix_draft = std::max(0, std::atoi(next("--suffix-draft")));
+        else if (a == "--suffix-draft") { o.suffix_draft = std::max(0, std::atoi(next("--suffix-draft"))); o.suffix_draft_set = true; }
         else if (a == "--mtp-max-t") o.mtp_max_t = std::max(0, std::atoi(next("--mtp-max-t")));
-        else if (a == "--lookup-chain") o.lookup_chain = std::clamp(std::atoi(next("--lookup-chain")), 0, 7);
+        else if (a == "--lookup-chain") { o.lookup_chain = std::clamp(std::atoi(next("--lookup-chain")), 0, 7); o.lookup_chain_set = true; }
         else if (a == "--lookup-chain-min") o.lookup_chain_min = std::max(3, std::atoi(next("--lookup-chain-min")));
         else if (a == "--mtp-hnorm") {
             const std::string v = next("--mtp-hnorm");
@@ -2889,6 +2987,21 @@ int main(int argc, char** argv) {
         } else (void) cudaGetLastError();
     }
 #endif
+    if (!o.dflash.empty() && o.mtp.empty() && !o.serve && !o.greedy && o.temperature > 0.0f) {
+        std::fprintf(stderr, "dflash: sampled CLI requests use target-only decoding\n");
+        o.dflash.clear();
+        o.dflash_head.clear();
+        o.dflash_vocab.clear();
+    }
+    if (!o.dflash.empty() && o.serve) {
+        if (o.batch > 0) {
+            // L8: --layer-split is now served by the cross-GPU tap collector (dflash_tap_collect.hpp);
+            // batched requests are not - the verify windows' tap planes rotate per slot.
+            std::fprintf(stderr, "strata serve: DFlash currently requires serial requests (no --batch)\n");
+            return 2;
+        }
+    }
+
     strata::core::set_coupled_draft(o.coupled_draft);
     {   // --host-core / STRATA_HOST_CORE, before the pool and the session pin any thread
         std::string hc = o.host_core;
@@ -4281,6 +4394,8 @@ int main(int argc, char** argv) {
                         : o.mtp.empty() || o.spec < 2 ? "it needs the MTP drafter (--mtp, --spec)"
                         : o.batch != 0 ? "not with --batch slots"
                         : o.peer_device >= 1 ? "not with --peer-device"
+                        : !o.dflash.empty() && !o.layer_split.empty()
+                            ? "not with --dflash on a layer split (the cross-GPU tap collector is serial)"
                         : helpers ? "not with the helper caches (--expert-cache-device1..3, --remote-expert-opt)"
                         : nullptr;
         if (off != nullptr) {
@@ -5186,6 +5301,7 @@ int main(int argc, char** argv) {
                                  "follows)\n", st.dev, (double) fb / 1073741824.0);
         }
 
+    bool dflash_elastic = false;   // the drafter can grow independently of a streamed target
     // ---- CUDA0's session, and the stages' sessions: sized to each device's own layer range (the carve).  A
     // stage that runs [lb, le) carves only those layers' GDN rows and QSA pools - before the carve every stage
     // held all 48 layers' state whatever layers it ran, which is the same disease the chunked-QSA-prefill PR
@@ -5200,7 +5316,7 @@ int main(int argc, char** argv) {
             bool remote = false;
             for (const int r : o.expert_cache_remote) remote = remote || r > 0;
             const bool asked = ev != nullptr && ev[0] != '\0' ? ev[0] != '0' : o.kv_grow;
-            const bool on = asked && !multi_gpu && o.kv_resident <= 0 &&
+            const bool on = asked && o.dflash.empty() && !multi_gpu && o.kv_resident <= 0 &&
                             !o.expert_profile.empty() && !o.resident_cpu_experts && o.expert_cache != 0 && !remote &&
                             strata::core::vmm_available() &&
                             // the batch slots carve their own K/V and --vram-elastic's cache is not one VMM range
@@ -5210,7 +5326,13 @@ int main(int argc, char** argv) {
                                      "every expert in RAM, no --batch, --vram-elastic or --peer-device)\n");
             const char* iv = std::getenv("STRATA_KV_GROW_INIT");
             strata::core::qsa_set_kv_elastic(on, iv != nullptr && std::atoll(iv) > 0 ? std::atoll(iv) : 16384);
-            strata::core::ExpertCache::set_vmm(on);
+            const char* df_grow = std::getenv("STRATA_DFLASH_KV_GROW");
+            dflash_elastic = (df_grow == nullptr || std::atoi(df_grow) != 0) && !o.dflash.empty() && !multi_gpu && !o.expert_profile.empty() &&
+                             !o.resident_cpu_experts && o.expert_cache != 0 && !remote &&
+                             strata::core::vmm_available() && o.batch == 0 && !o.vram_elastic && o.peer_device < 0;
+            // A fully resident draft cache must not reserve the whole configured
+            // context before any request arrives. Reuse the expert-cache/VMM exchange.
+            strata::core::ExpertCache::set_vmm(on || dflash_elastic);
         }
         if (cudaMalloc(&sbuf, strata::core::session_bytes(g, o.max_context, K, 0, hi0)) != cudaSuccess) {
             std::fprintf(stderr, "strata generate: session state allocation failed\n");
@@ -5543,6 +5665,159 @@ int main(int argc, char** argv) {
             }
         }
     }
+
+    // DFlash (docs/DFLASH.md): the standalone block drafter.  Mutually exclusive with --mtp; the
+    // artifact is parsed and validated HERE, before the expert cache is sized, exactly like the
+    // MTP drafter above, so the cache auto-sizing reserves the drafter's footprint.
+    if ((!o.dflash_head.empty() || !o.dflash_vocab.empty()) && o.dflash.empty()) {
+        std::fprintf(stderr, "strata generate: --dflash-head / --dflash-vocab require --dflash\n");
+        return 2;
+    }
+    strata::core::DFlashDrafter dflash;
+    std::vector<int32_t> dflash_capture_layers;
+    int dflash_k = 0;   // THE effective draft length (1 anchor + dflash_k candidates = the window)
+    if (!o.dflash.empty()) {
+        if (!o.mtp.empty()) {
+            std::fprintf(stderr, "strata generate: --dflash and --mtp are mutually exclusive; "
+                                 "select exactly one drafter\n");
+            return 2;
+        }
+        if (o.spec < 2) {
+            std::fprintf(stderr, "strata generate: --dflash requires --spec T (2 <= T <= %d; the window is "
+                                 "1 anchor + K candidates)\n", strata::kernels::kVerifyMaxT);
+            return 2;
+        }
+        if (o.spec > strata::kernels::kVerifyMaxT) {
+            std::fprintf(stderr, "strata generate: --spec %d exceeds the verify window's %d rows; the DFlash "
+                                 "window is 1 anchor + K candidates\n", o.spec, strata::kernels::kVerifyMaxT);
+            return 2;
+        }
+        if (o.lookup_chain_set && o.lookup_chain > 0) {
+            std::fprintf(stderr, "dflash: --lookup-chain is not supported\n"); return 2;
+        }
+        o.lookup_chain = 0;
+        if (!dflash.load(o.dflash, err)) {
+            std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+            return 1;
+        }
+        const strata::core::DFlashGeometry& dg = dflash.artifact().geom();
+        if (!strata::core::DFlashArtifact::validate_supported(dg, err)) {
+            std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+            return 1;
+        }
+        dflash_capture_layers = dg.target_layers;
+        for (auto& l : dflash_capture_layers) {
+            if (!dg.target_layer_inputs) ++l;   // HF output tap -> next attention input; llama GGUF already uses inputs
+            if (l >= g.n_layers) {
+                std::fprintf(stderr, "dflash: target feature boundary %d is outside the target's layers\n", l);
+                return 2;
+            }
+        }
+        if (dg.mask_token_id < 0 && o.dflash_mask < 0) {
+            std::fprintf(stderr, "strata generate: %s declares no dflash.mask_token_id; pass "
+                                 "--dflash-mask-token (the published artifact uses 248077)\n", o.dflash.c_str());
+            return 1;
+        }
+        const int trained = dflash.max_block();
+        if (o.dflash_block > trained) {
+            std::fprintf(stderr, "strata generate: --dflash-block %d exceeds the artifact's trained block %d\n",
+                         o.dflash_block, trained);
+            return 2;
+        }
+        if (o.spec - 1 > trained) {
+            std::fprintf(stderr, "strata generate: --spec %d asks for %d candidates per pass, above the artifact's "
+                                 "trained block %d; lower --spec or pass --dflash-block (never above %d)\n",
+                         o.spec, o.spec - 1, trained, trained);
+            return 2;
+        }
+        // DFlash2's forward width and confidence gate are independent. A fixed
+        // block must not silently turn off the gate used by setup: uncertain
+        // suffix rows still cost a full target verification even when rejected.
+        // Preserve explicit floors (including zero) and legacy fixed-block use.
+        if ((dg.is_dflash2() || o.dflash_block == 0) && !o.spec_min_p_set) o.spec_min_p = 0.5;
+        // ONE authoritative effective draft length: the startup validation, the propose call, the
+        // verifier window and the statistics below all read this variable
+        dflash_k = o.dflash_block > 0 ? std::min(o.dflash_block, o.spec - 1) : std::min(o.spec - 1, trained);
+        // the effective mask token, resolved once: the CLI override wins over the artifact's metadata
+        const int64_t effective_mask = o.dflash_mask >= 0 ? o.dflash_mask : dg.mask_token_id;
+        if (effective_mask < 0 || effective_mask >= dg.vocab) {
+            std::fprintf(stderr, "strata generate: the DFlash mask token %lld sits outside the vocabulary %lld\n",
+                         (long long) effective_mask, (long long) dg.vocab);
+            return 2;
+        }
+        std::string taps;
+        for (size_t i = 0; i < dg.target_layers.size(); ++i) taps += (i ? "," : "") + std::to_string(dg.target_layers[i]);
+        std::fprintf(stderr,
+                     "dflash: %s: %lld layers, hidden %lld, %lldQ/%lldKV x %lld, MLP %lld, taps [%s], trained block "
+                     "%lld, pass K=%d, mask %lld, rope theta %.3g, %.1f MiB of weights\n",
+                     o.dflash.c_str(), (long long) dg.layers, (long long) dg.hidden, (long long) dg.n_head,
+                     (long long) dg.n_head_kv, (long long) dg.head_dim, (long long) dg.intermediate, taps.c_str(),
+                     (long long) dg.block_size, dflash_k, (long long) effective_mask,
+                     dg.rope_theta, (double) dflash.artifact().weight_bytes() / 1048576.0);
+        std::fprintf(stderr, "dflash: prompt-lookup drafting follows --suffix-draft\n");
+        // The weights and the drafter's K/V pools land BEFORE the expert cache is sized, like the
+        // MTP drafter's; the head/embedding bind follows the native head's load below.
+        {
+            const strata::core::OnDevice on_dflash(last_st ? last_st->dev : -1);
+            int dev = 0;
+            cudaGetDevice(&dev);
+            if (!dflash.upload(g, ss, dev, o.dflash_window, effective_mask, err, dflash_elastic) ||
+                (!o.dflash_head.empty() && !dflash.load_head(o.dflash_head, err))) {
+                std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+                return 1;
+            }
+            // L8 --layer-split: derive tap ownership from the ACTUAL stage ranges and enable the
+            // drafter-device collector BEFORE the expert cache is sized (docs/DFLASH2.md capture
+            // contract; dflash_tap_plan.hpp).  Serve = the layer chain [0, split_at[..]); CLI =
+            // one full-layer producer stage (its experts stream to the peer cards, the layer
+            // loop is single-device, so all taps sit on its plane).
+            if (multi_gpu) {
+                std::vector<int> lbs, les, devs;
+                if (o.serve) {
+                    const int n_st = (int) stages.size() + 1;
+                    for (int st = 0; st < n_st; ++st) {
+                        lbs.push_back(st == 0 ? 0 : (int) split_at[(size_t) st - 1]);
+                        les.push_back(st + 1 < n_st ? (int) split_at[(size_t) st] : (int) g.n_layers);
+                        devs.push_back(st == 0 ? 0 : stages[(size_t) st - 1]->dev);
+                    }
+                } else {
+                    lbs.push_back(0); les.push_back((int) g.n_layers); devs.push_back(0);
+                }
+                strata::core::DFlashTapPlan tap_plan;
+                if (!tap_plan.build(dflash_capture_layers.data(), (int) dflash_capture_layers.size(),
+                                    lbs.data(), les.data(), devs.data(), (int) lbs.size(), g.n_embd, err)) {
+                    std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+                    return 1;
+                }
+                // Review 2026-10-21 item 5: price only the REACHABLE chunk rows for the
+                // selected prefill mode - an inactive --prefill auto must not add its
+                // (default 8192) ceiling to the pinned/plane cost.  6144 is the floor the
+                // window/capacity guard keeps; chunks never exceed max_context.
+                const int64_t reach_rows =
+                    o.prefill_auto ? std::min(o.prefill_auto_max, o.max_context) : o.prefill_chunk;
+                const int64_t bf16_rows = std::max(reach_rows, (int64_t) 6144);
+                if (!dflash.tap_collector().enable(tap_plan, dev, strata::kernels::kVerifyMaxT, bf16_rows, err)) {
+                    std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+                    return 1;
+                }
+                dflash.tap_collector().set_stream(dflash.stream());   // enable() resets the stream slot
+                std::fprintf(stderr, "dflash: cross-GPU tap collection serial on CUDA%d:", dev);
+                for (int t = 0; t < tap_plan.n_taps; ++t)
+                    std::fprintf(stderr, " boundary %d<-CUDA%d", tap_plan.boundary[t], tap_plan.dev[tap_plan.owner[t]]);
+                std::fprintf(stderr, "%s; planes %.1f MiB on CUDA%d, pinned staging %.1f MiB\n",
+                             dflash.artifact().geom().target_hc_mean ? " (HC stream mean capture)" : "",
+                             (double) dflash.tap_collector().device_bytes() / 1048576.0, dev,
+                             (double) dflash.tap_collector().pinned_bytes() / 1048576.0);
+            }
+        }
+        if (!o.serve && ((int64_t)o.tokens.size() > dflash.capacity() ||
+                        o.max_new > dflash.capacity() - (int64_t)o.tokens.size())) {
+            std::fprintf(stderr, "strata generate: prompt + max_new exceeds DFlash capacity; raise --dflash-window\n");
+            return 2;
+        }
+        std::fprintf(stderr, "dflash: %.1f MiB of VRAM held (weights, pools, scratch)\n",
+                     (double) dflash.vram_bytes() / 1048576.0);
+    }
     // THE HEAD BEFORE THE CACHE, AND BEFORE THE ARENA.  The expert cache takes what is free minus the reserve, so
     // everything allocated after it comes out of the reserve.  The native head (~0.5 GB with IQ3_S) was loaded after
     // it and ate most of the 700 MiB: 128K IQ3_S ended with 30 MiB free, the driver paged, and a request stalled for
@@ -5559,7 +5834,12 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: %s%s\n", err.c_str(), vram_free_note().c_str());
             return 1;
         }
-        std::fprintf(stderr, "strata generate: experimental native Q5_K head, %llu bytes, in %.1f s\n",
+        if (!o.dflash.empty() && !dflash.bind(wt, &native_head, err, o.dflash_vocab)) {
+            std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+            return 1;
+        }
+        std::fprintf(stderr, "strata generate: experimental native %s head, %llu bytes, in %.1f s\n",
+                     strata::ggml_type_name(native_head.type()),
                      (unsigned long long) native_head.weight_bytes(),
                      std::chrono::duration<double>(std::chrono::steady_clock::now() - head_t0).count());
     }
@@ -6111,6 +6391,8 @@ int main(int argc, char** argv) {
         if (use_df2 && native_head.loaded()) mtp_bind += (int64_t) mtp.bind_bytes(native_head.row_bytes(), n_vocab) + (48 << 20);   // DFlash2's own draft head and logits, bound after this
 #endif
         const int64_t reserve = (((int64_t) o.vram_reserve_mib + prefill_mib) << 20) + mtp_bind + pipe_first;
+
+
         const int64_t blob = (int64_t) strata::kernels::cpu::expert_layout().max_blob;
         int64_t slots = ((int64_t) free_b - reserve) / blob;
         if (!profile.empty()) slots = std::min<int64_t>(slots, (int64_t) profile.size());
@@ -7867,28 +8149,31 @@ int main(int argc, char** argv) {
         int64_t grows = 0, trims = 0, fresh = 0, evicted = 0, refilled = 0;
     } kvg;
     auto kvg_start = [&](int64_t top) {
-        kvg.on = strata::core::qsa_kv_elastic() && xcache.vmm_range() != nullptr && d_res != nullptr &&
+        kvg.on = (strata::core::qsa_kv_elastic() || dflash_elastic) && xcache.vmm_range() != nullptr && d_res != nullptr &&
                  !host_res.empty() && srcp != nullptr && top > kvg.floor;
         if (!kvg.on) return;
         kvg.top = kvg.lo = top;
-        kvg.cells = strata::core::qsa_kv_elastic_cells();
+        kvg.cells = std::min(strata::core::qsa_kv_elastic_cells(), dflash.scratch_cells());
         if (const char* v = std::getenv("STRATA_KV_GROW_STEP"); v != nullptr && std::atoll(v) > 0) kvg.step = std::atoll(v);
         // tests: the cache keeps this many slots (its size: the K/V grows into new VRAM only)
         if (const char* v = std::getenv("STRATA_KV_GROW_FLOOR"); v != nullptr && std::atoll(v) > 0) kvg.floor = std::atoll(v);
         std::fprintf(stderr, "strata generate: elastic K/V: %lld of %lld cells in VRAM (%.2f of %.2f GiB); the expert "
                              "cache (%lld slots) gives the K/V room below slot %lld as the context grows\n",
                      (long long) kvg.cells, (long long) o.max_context,
-                     (double) strata::core::qsa_kv_elastic_mapped_bytes() / 1073741824.0,
-                     (double) strata::core::qsa_kv_elastic_full_bytes() / 1073741824.0, (long long) xcache.slots(),
+                     (double) (strata::core::qsa_kv_elastic_mapped_bytes() + dflash.scratch_mapped_bytes()) / 1073741824.0,
+                     (double) (strata::core::qsa_kv_elastic_full_bytes() + dflash.scratch_reserved_bytes()) / 1073741824.0, (long long) xcache.slots(),
                      (long long) top);
     };
     // Room for `cells` cells (rounded up to a step).  `quiesce` must leave nothing running on the device and land
     // the adaptive tier's swaps (a swap in flight could still be writing a slot given up here).
     auto kvg_ensure = [&](int64_t cells, const std::function<void()>& quiesce) -> bool {
+        // Draft growth is independent of target streaming. Safety lookahead may
+        // exceed a smaller explicit draft capacity, which needs no backing beyond its end.
+        if (dflash_elastic) cells = std::min(cells, dflash.capacity());
         if (!kvg.on || cells <= kvg.cells) return true;
         const int64_t target = std::min<int64_t>(o.max_context, (cells + kvg.step - 1) / kvg.step * kvg.step);
-        const int64_t need = strata::core::qsa_kv_elastic_need(target);
-        if (need == 0) { kvg.cells = strata::core::qsa_kv_elastic_cells(); return true; }
+        const int64_t need = strata::core::qsa_kv_elastic_need(target) + dflash.scratch_chunks_needed(target);
+        if (need == 0) { kvg.cells = std::min(strata::core::qsa_kv_elastic_cells(), dflash.scratch_cells()); return true; }
         quiesce();
         strata::core::VmmRange& r = *xcache.vmm_range();
         const uint64_t G = strata::core::vmm_granularity();
@@ -7966,18 +8251,20 @@ int main(int argc, char** argv) {
             return false;
         }
         int64_t fresh = 0;
-        const bool ok = strata::core::qsa_kv_elastic_grow(target, [&]() -> strata::core::VmmChunk {
+        auto take_kv_chunk = [&]() -> strata::core::VmmChunk {
             if (kvg.spare.empty()) { ++fresh; return 0; }   // the cache is at its floor: new memory
             const strata::core::VmmChunk h = kvg.spare.back();
             kvg.spare.pop_back();
             return h;
-        });
+        };
+        const bool ok = strata::core::qsa_kv_elastic_grow(target, take_kv_chunk) &&
+                        dflash.grow_scratch(target, take_kv_chunk);
         kvg.fresh += fresh;
-        kvg.cells = strata::core::qsa_kv_elastic_cells();
+        kvg.cells = std::min(strata::core::qsa_kv_elastic_cells(), dflash.scratch_cells());
         ++kvg.grows;
         std::fprintf(stderr, "strata: K/V grown to %lld cells (%.2f GiB); the expert cache gave %lld slots for it, "
                              "%lld hotter experts moved to colder ones' slots (%lld of %lld slots hold experts)%s\n",
-                     (long long) kvg.cells, (double) strata::core::qsa_kv_elastic_mapped_bytes() / 1073741824.0,
+                     (long long) kvg.cells, (double) (strata::core::qsa_kv_elastic_mapped_bytes() + dflash.scratch_mapped_bytes()) / 1073741824.0,
                      (long long) gave, (long long) moved, (long long) (kvg.lo + (xcache.slots() - kvg.top)),
                      (long long) xcache.slots(),
                      fresh > 0 ? " - and new VRAM, the cache being at its floor" : "");
@@ -7996,8 +8283,10 @@ int main(int argc, char** argv) {
         const int64_t want = std::max<int64_t>(cells, hold);
         const int64_t target = std::max<int64_t>(kvg.step, (want + kvg.step - 1) / kvg.step * kvg.step);
         if (kvg.cells < target + 2 * kvg.step || kvg.lo >= kvg.top) return true;
-        strata::core::qsa_kv_elastic_shrink(target, [&](strata::core::VmmChunk h) { kvg.spare.push_back(h); });
-        kvg.cells = strata::core::qsa_kv_elastic_cells();
+        auto give_kv_chunk = [&](strata::core::VmmChunk h) { kvg.spare.push_back(h); };
+        strata::core::qsa_kv_elastic_shrink(target, give_kv_chunk);
+        dflash.shrink_scratch(target, give_kv_chunk);
+        kvg.cells = std::min(strata::core::qsa_kv_elastic_cells(), dflash.scratch_cells());
         strata::core::VmmRange& r = *xcache.vmm_range();
         const uint64_t G = strata::core::vmm_granularity();
         const int64_t c1 = (int64_t) (xcache.slot_offset(kvg.top) / G);
@@ -8427,6 +8716,24 @@ int main(int argc, char** argv) {
                          (long long) xcache.slots(), (long long) (g.n_layers * g.n_expert));
         if (share_pool && stages.empty() && !multi_gpu && share_has_work && !share_default_ok()) share_has_work = false;   // H11
         strata::prefill::Prefill::arm_cpu_share(share_pool, share_pool && stages.empty() && !multi_gpu && share_has_work);
+        const bool has_dflash = !o.dflash.empty();
+        bool df_request = false;   // set before prefill; for both greedy and sampled requests
+
+
+        if (has_dflash) {
+            sp.set_tap_layers(dflash_capture_layers.data(), (int) dflash_capture_layers.size(), dflash.artifact().geom().target_hc_mean);
+            sp.dflash_on_taps = [&](const uint16_t* data, int count, int64_t rows, int64_t pos, std::string& e) {
+                if (!df_request) return true;
+                auto& tc = dflash.tap_collector();
+                // L8 --layer-split: sp is the chain's stage-0 producer; the tap callback fires
+                // after this stage's stream sync, so its rows are stable for a compact D2H.
+                // The chain's LAST stage finishes the chunk (stages + assemble + add_context).
+                if (!tc.enabled()) return dflash.add_context(data, count, sp.tap_stride_rows(), pos, rows, e);
+                const strata::core::DFlashTapCollector::Slice slice{0, data, sp.tap_stride_rows(), rows};
+                return tc.stage(pos, slice, 2, e);
+            };
+        }
+
         void* borrow = nullptr;
         uint64_t borrow_bytes = 0;
         int32_t lend_first = -1;          // the first slot the prompt path may borrow (its largest chunk)
@@ -8781,6 +9088,28 @@ int main(int argc, char** argv) {
             for (size_t i = 0; i < stages.size(); ++i) {
                 GpuStage& st = *stages[i];
                 st.sp.set_stage(st.lb, i + 1 < stages.size() ? st.le : -1, i + 1 < stages.size() ? &stages[i + 1]->sp : nullptr);
+                if (has_dflash) {
+                    // L8 --layer-split: this stage captures ONLY the taps whose boundary layer sits
+                    // in [st.lb, st.le) (the plane's other slices stay stale, never read); its
+                    // callback stages the compact rows and the chain's LAST stage assembles the
+                    // chunk on the drafter's device (dflash_tap_collect.hpp, docs/DFLASH2.md).
+                    st.sp.set_tap_layers(dflash_capture_layers.data(), (int) dflash_capture_layers.size(),
+                                         dflash.artifact().geom().target_hc_mean);   // before init: taps join the carve
+                    if (dflash.tap_collector().enabled())
+                        st.sp.dflash_on_taps = [&, i](const uint16_t* data, int, int64_t rows, int64_t pos, std::string& e) {
+                            if (!df_request) return true;
+                            auto& tc = dflash.tap_collector();
+                            const strata::core::DFlashTapCollector::Slice slice{(int) i + 1, data, st.sp.tap_stride_rows(), rows};
+                            if (!tc.stage(pos, slice, 2, e)) return false;
+                            if (i + 1 < stages.size()) return true;   // the next stage completes this chunk
+                            const strata::core::OnDevice on_df(dflash.device());
+                            std::vector<strata::core::DFlashTapCollector::Slice> all{{0, sp.taps_plane(), sp.tap_stride_rows(), rows}};
+                            for (size_t k = 0; k < stages.size(); ++k)
+                                all.push_back({(int) k + 1, stages[k]->sp.taps_plane(), stages[k]->sp.tap_stride_rows(), rows});
+                            if (!tc.assemble(pos, all.data(), (int) all.size(), rows, 2, e)) return false;
+                            return dflash.add_context(tc.plane_bf16(), tc.plan().n_taps, tc.stride_rows_bf16(), pos, rows, e);
+                        };
+                }
                 const strata::core::OnDevice on(st.dev);
                 void* sb = nullptr;              // this stage's own loan, out of its own cache
                 uint64_t sbb = 0;
@@ -9065,6 +9394,19 @@ int main(int argc, char** argv) {
                 split_drive.cache_slot_off[st] = drive.d.cache_slot_off;
                 split_drive.pcie_num[st] = pcie_num_of(o.pcie_frac);
             }
+            // L15 (the dflash_w3 decode's "producer plane is null"): the per-stage
+            // verifiers must carry the tap layers BEFORE their init, exactly like the
+            // prefill paths do (8776): the taps plane joins the stage's arena carve, and
+            // the window walk captures the boundary layers that sit in the stage's range
+            // (verify.cpp's `l == tap_layers_[ti]`).  Without this, stage 1+ verifiers
+            // have n_taps_==0: taps() is null, taps 36/46 are captured by NOBODY,
+            // df_collect_f32's stage-1 slice is a null plane (the collector refuses),
+            // and assemble's D2D for the drafter-device taps would read a null source.
+            if (has_dflash)
+                for (int st = 1; st < n_stages; ++st)
+                    stage_ver(st).set_tap_layers(dflash_capture_layers.data(),
+                                                 (int) dflash_capture_layers.size(),
+                                                 dflash.artifact().geom().target_hc_mean);
             for (int st = 1; st < n_stages; ++st) {
                 bool ok_s = false;
                 if (split_same) {
@@ -9164,10 +9506,24 @@ int main(int argc, char** argv) {
         ver.set_remote_expert_opt(remote_opt.get());
         if (pcie_balance() && n_stages == 1) ver.set_pcie_balance(&drive.d.pcie_model);
         if (batch_mtp) ver.set_batch_graph_limit(64);   // --batch-mtp only: slot rotation makes many layouts (LRU); 0.1.39 keeps all
+        if (has_dflash) {
+            ver.set_tap_layers(dflash_capture_layers.data(), (int) dflash_capture_layers.size(), dflash.artifact().geom().target_hc_mean);
+        }
         if (!ver.init(wt, g, ss, vh, native_head.loaded() || prefill_head_alias_bound ? &native_head : nullptr,
                       batch_mtp ? strata::kernels::kVerifyMaxT : std::max(o.spec, std::min(o.batch, (int) strata::kernels::kVerifyMaxT)), err) ||
             (use_mtp && !prefill_head_alias_bound && !mtp.bind(last_st && !mtp_first ? last_st->wt : wt, last_st ? &last_st->head : &native_head,
                                   pipe ? pl_mtp_R : ver.final_R_all(), err))) {
+            std::fprintf(stderr, "strata serve: %s\n", err.c_str());
+            return 1;
+        }
+        // L8 --layer-split (review 2026-10-21 item 1): the drafter binds the TARGET's
+        // FINAL-STAGE head and weight table, exactly like the MTP bind below - the head
+        // already lives on the drafter's card, so the shared target head is SHARED,
+        // never duplicated (no 1.27 GB copy on the memory-sensitive pair).  The bind
+        // runs after the final stage's head load; single-GPU binds at the native head
+        // load above, unchanged.
+        if (has_dflash && last_st &&
+            !dflash.bind(last_st->wt, &last_st->head, err, o.dflash_vocab)) {
             std::fprintf(stderr, "strata serve: %s\n", err.c_str());
             return 1;
         }
@@ -9295,6 +9651,30 @@ int main(int argc, char** argv) {
         cudaEvent_t pl_mtp_ev[2] = {nullptr, nullptr};
         bool pl_mtp_live[2] = {false, false};
         bool pl_prepared = false;
+        // L8 --layer-split: collect every stage's captured FP32 tap slice for one verify window
+        // onto the drafter's device (dflash_tap_collect.hpp).  The window chain has completed by
+        // the time a decode consumer runs (the handoff chain completes stage k before the final
+        // stage ends), so each producer's rows are stable for a compact host-staged D2H; the key
+        // is the window's position.  Serve-level scope: the request lambdas below use it.
+        auto df_collect_f32 = [&](int64_t key, int64_t rows, std::string& e) -> bool {
+            auto& tc = dflash.tap_collector();
+            const strata::core::OnDevice on_df(dflash.device());
+            std::vector<strata::core::DFlashTapCollector::Slice> all;
+            for (int st = 0; st < n_stages; ++st)
+                all.push_back({st, stage_ver(st).taps(), stage_ver(st).tap_stride() / g.n_embd, rows});
+            // L15: stage ONLY the slices that own a cross-device tap (the collector's
+            // own ownership rule) - a slice with no foreign taps contributes nothing to
+            // staging and must not reach stage() at all; assemble reads every slice
+            // (the drafter-device taps go D2D from their planes there).
+            const auto& df_plan = tc.plan();
+            for (int st = 0; st < n_stages; ++st) {
+                bool foreign = false;
+                for (int t = 0; t < df_plan.n_taps; ++t)
+                    if (df_plan.owner[t] == st && df_plan.tap_device(t) != tc.drafter_device()) foreign = true;
+                if (foreign && !tc.stage(key, all[(size_t) st], 4, e)) return false;
+            }
+            return tc.assemble(key, all.data(), (int) all.size(), rows, 4, e);
+        };
         // every graph captured and the drafter's prompt path sized while nothing is in flight (a capture syncs its stream)
         auto pl_prepare = [&](std::string& e) -> bool {
             if (pl_prepared) return true;
@@ -9551,6 +9931,21 @@ int main(int argc, char** argv) {
                 err.clear();
             }
             estimate += stage_estimate;
+            if (has_dflash) {
+                estimate += dflash.kv_states().size() * sizeof(strata::core::ConversationKv);
+                for (const auto& state : dflash.kv_states()) {
+                    // The bounded SWA ring parks its PHYSICAL image, never the live length
+                    // (include/strata/core/dflash_ring.hpp): the ring rows in slot order are the whole
+                    // retained history. Legacy full-capacity states keep the old extent.
+                    const int64_t extent = strata::core::dflash_snapshot_extent(
+                        (int64_t) live.size(), state.max_cells);
+                    size_t bytes = 0;
+                    if (!strata::core::conversation_kv_capture_bytes({}, state, dflash.pool_geometry(),
+                            extent, false, bytes, err)) return false;
+                    if (bytes > SIZE_MAX - estimate) { err = "DFlash snapshot size overflow"; return false; }
+                    estimate += bytes;
+                }
+            }
             // A park carrying its own retained K/V replaces memory the cache
             // already held, so capacity is make_room's call - it runs next either
             // way, and put()'s accounting still bounds the budget. The with-reuse
@@ -9601,6 +9996,19 @@ int main(int argc, char** argv) {
                 size_t reused_bytes = 0;
                 if (!strata::core::conversation_snapshot_save(image, view, ss, g, draft0, err,
                         std::move(reuse), &reused_bytes)) return false;
+                if (has_dflash) {
+                    const strata::core::OnDevice on_df(dflash.device());   // the pools live on the drafter's card
+                    image.dflash_kv.resize(dflash.kv_states().size());
+                    for (size_t j = 0; j < image.dflash_kv.size(); ++j)
+                        if (!strata::core::conversation_kv_save(image.dflash_kv[j], dflash.kv_states()[j],
+                                dflash.pool_geometry(),
+                                strata::core::dflash_snapshot_extent((int64_t) live.size(),
+                                                                    dflash.kv_states()[j].max_cells),
+                                false, err)) return false;
+                    // The drafter's exact horizon travels with the image: confirmed end and
+                    // newest append end (rejected noise included), never inferred from tokens.
+                    image.dflash_meta = dflash.snapshot_meta();
+                }
                 for (size_t k = 0; k < n_st; ++k) {   // the later stages (the last one with the draft layer's K/V)
                     auto& st = stages[k];
                     const strata::core::OnDevice on(st->dev);
@@ -11078,7 +11486,7 @@ int main(int argc, char** argv) {
             std::printf("INFO logit_bias=1 context=%lld kv=%s kv_resident=%lld expert_slots=%lld expert_cache_mib=%lld "
                         "expert_slots_primary=%lld expert_cache_primary_mib=%lld spec=%d "
                         "mtp_max=%d lookup=%d vram_free_mib=%lld cvec=%s arena_mib=%lld pool_workers=%d pcie_frac=%.2f "
-                        "spec_min_p=%.2f conversation_cache_mib=%lld conversation_cache_slots=%d "
+                        "spec_min_p=%.2f dflash_block=%d dflash_max=%d conversation_cache_mib=%lld conversation_cache_slots=%d "
                         "conversation_cache_min_free_mib=%lld conversation_cache_min_tokens=%lld "
                         "tail_role_token=%lld vram_elastic=%d "
                         "prefill_cap=%lld prefill_stages=%d stream_all_min=%lld prefill_pipe=%g%s engine=" STRATA_VERSION "\n",
@@ -11091,7 +11499,7 @@ int main(int argc, char** argv) {
                         o.suffix_draft, (long long) (free_b >> 20), cvec_summary.c_str(),
                         (long long) ((o.mmap_experts ? src.resident_bytes() : strata::kernels::cpu::expert_layout().total) >> 20),
                         pool.workers(), o.pcie_frac,
-                        o.spec_min_p, (long long) o.conversation_cache_mib, o.conversation_cache_slots,
+                        o.spec_min_p, dflash_k, has_dflash ? std::min(o.spec - 1, dflash.max_block()) : 0, (long long) o.conversation_cache_mib, o.conversation_cache_slots,
                         (long long) o.conversation_cache_min_free_mib, (long long) o.conversation_cache_min_tokens,
                         (long long) o.tail_role_token, xcache.segmented() ? 1 : 0,
                         // the prompt path: its chunk cap (the VRAM command's relend can lower it later), the stages a
@@ -11941,6 +12349,7 @@ int main(int argc, char** argv) {
                 if (!pump(false)) return false;
             return true;
         };
+        strata::spec::DFlashPolicy df_policy(dflash_k);
         for (;;) {
             line_drain_ms = 0.0;
             if (batch_on() || (piped && pipe_inflight())) {
@@ -12093,6 +12502,7 @@ int main(int argc, char** argv) {
                 };
                 strata::core::progress_at(save ? "saving a session" : "restoring a session");
                 if (path.empty()) { refuse("missing path"); continue; }
+                if (has_dflash) { refuse("DFlash supports in-memory conversation caching; disk sessions are not supported"); continue; }
                 if (!stages.empty() || multi_gpu) { refuse("session files do not support --layer-split"); continue; }
                 if (o.peer_device >= 1) { refuse("session files do not support --peer-device"); continue; }
                 if (o.batch > 0) { refuse("session files do not support --batch (parallel requests)"); continue; }
@@ -12322,6 +12732,10 @@ int main(int argc, char** argv) {
             // embedding floats, so a picture encoded again with other bits still matches.  Absent: the embeddings' hash.
             std::vector<uint64_t> req_img_keys;
             bool req_pcie_set = false;   // the request names its own share (the measured one holds meanwhile)
+            int req_dflash_k = dflash_k;
+            bool req_dflash_block_set = false, bad_dflash_block = false, bad_tune = false;
+            bool req_df2_reference = false, bad_df2_reference = false;
+
             if (endp != nullptr) {   // GENI takes the same keys (#75: image requests were always greedy); its
                                      // embedding file path is the first token without an =
                 for (;;) {
@@ -12347,8 +12761,15 @@ int main(int argc, char** argv) {
                     else if (key == "penalty_freq") req_penalty_freq = fv;
                     else if (key == "penalty_present") req_penalty_present = fv;
                     else if (key == "seed") req_seed = std::strtoull(tok.c_str() + eq + 1, nullptr, 10);
-                    else if (key == "pcie_frac") { req_pcie_frac = std::clamp((double) fv, 0.0, 1.0); req_pcie_set = true; }
-                    else if (key == "spec_min_p") req_spec_min_p = std::clamp((double) fv, 0.0, 1.0);
+                    else if (key == "pcie_frac" || key == "spec_min_p") {
+                        char* tail = nullptr;
+                        const double value = std::strtod(tok.c_str() + eq + 1, &tail);
+                        bad_tune = bad_tune || (has_dflash && (tail == tok.c_str() + eq + 1 || *tail != '\0' ||
+                                   !std::isfinite(value) || value < 0.0 || value > 1.0));
+                        const double tune_value = has_dflash ? value : std::clamp((double) fv, 0.0, 1.0);
+                        if (key == "pcie_frac") { req_pcie_frac = tune_value; req_pcie_set = true; }
+                        else req_spec_min_p = tune_value;
+                    }
                     else if (key == "pipe") req_pipe = std::max(0.0, (double) fv);
                     else if (key == "aux_cpus") req_aux_cpus = std::atoi(tok.c_str() + eq + 1) != 0 ? 1 : 0;
                     else if (key == "img_keys") {
@@ -12362,16 +12783,48 @@ int main(int argc, char** argv) {
                             q = *qe == ',' ? qe + 1 : qe;
                             if (*qe != ',' && *qe != '\0') { req_img_keys.clear(); break; }
                         }
+
+                    }
+                    else if (key == "dflash2_reference") {
+                        const std::string value = tok.substr(eq + 1);
+                        bad_df2_reference = bad_df2_reference || !has_dflash ||
+                            !dflash.artifact().geom().is_dflash2() || (value != "0" && value != "1");
+                        req_df2_reference = value == "1";
+                    }
+                    else if (key == "dflash_block") {
+                        char* tail = nullptr;
+                        errno = 0;
+                        const long value = std::strtol(tok.c_str() + eq + 1, &tail, 10);
+                        bad_dflash_block = bad_dflash_block || errno == ERANGE || tail == tok.c_str() + eq + 1 ||
+                            *tail != '\0' || !has_dflash || value < 1 ||
+                            value > std::min(o.spec - 1, dflash.max_block());
+                        if (!bad_dflash_block) req_dflash_k = (int) value;
+                        req_dflash_block_set = true;
+
                     }
                     // unknown keys are skipped: the ids start at the first token without '='
                 }
             }
             strata::prefill::Prefill::set_pipe_request(req_pipe);   // every request sets it: none carries over
+            if (bad_df2_reference) {
+                std::printf("ERR dflash2_reference requires DFlash2 and a value of 0 or 1\n");
+                continue;
+            }
             std::vector<float> req_bias;
             std::string bias_error;
             if (req_bias_present && (o.batch > 0 ||
                 !strata::core::parse_logit_bias(req_bias_text, (int) n_vocab, req_bias, bias_error))) {
                 std::printf("ERR logit_bias: %s\n", o.batch > 0 ? "continuous batching is not supported" : bias_error.c_str());
+                continue;
+            }
+            if (bad_tune) {
+                std::printf("ERR bad request: calibration parameter\n");
+
+                continue;
+            }
+            if (bad_dflash_block) {
+                std::printf("ERR bad request: dflash_block\n");
+
                 continue;
             }
             std::string emb_path;
@@ -12387,6 +12840,22 @@ int main(int argc, char** argv) {
                 continue;
             }
             const int64_t n = (int64_t) ids.size();
+            // Speculative target windows failed the seeded-output parity gate.
+            // Keep sampling target-only while that discrepancy is investigated.
+            // Still maintain draft context for a later greedy continuation.
+            const bool req_dflash = has_dflash && req_temperature <= 0.0f;
+            if (has_dflash) dflash.set_reference_mode(req_df2_reference);
+            df_request = has_dflash;
+            // Review 2026-10-21 item 2: a new request must not inherit slot bindings,
+            // rows guards, or staged flags an aborted request left under the same keys.
+            if (has_dflash && dflash.tap_collector().enabled()) dflash.tap_collector().reset_staging();
+            if (has_dflash && !req_dflash)
+                std::fprintf(stderr, "dflash: sampled request uses target-only decoding\n");
+            if (has_dflash && (n > dflash.capacity() || max_new > dflash.capacity() - n)) {
+                std::printf("ERR prompt + max_new exceeds the DFlash capacity (%lld); raise --dflash-window\n",
+                            (long long) dflash.capacity());
+                continue;
+            }
             req_imgs.clear();
             if (geni && !o.vision) { std::printf("ERR this engine was started without --vision\n"); continue; }
             if (geni || !mrope_identity) {
@@ -12482,7 +12951,7 @@ int main(int argc, char** argv) {
                 mrope_identity = !geni;
             }
             sp.embd_rows = geni ? row_ptr.data() : nullptr;
-            if (n + max_new + 8 > o.max_context) {
+            if (n > o.max_context || max_new > o.max_context - n - 8) {
                 std::printf("ERR prompt (%lld tokens) + max_new (%lld) exceeds the context (%lld)\n", (long long) n,
                             (long long) max_new, (long long) o.max_context);
                 continue;
@@ -12538,6 +13007,7 @@ int main(int argc, char** argv) {
             }
             auto kv_quiesce = adapt_quiesce;
             if (kvg.on) {   // the elastic K/V: this prompt's cells (it gives back what it does not need below)
+
                 // a failed growth may leave the tier half-changed: the engine stops (as for any CUDA failure)
                 if (!kvg_ensure(n + 256, kv_quiesce)) {
                     std::printf("ERR the K/V cannot grow to this prompt: no VRAM is left\n");
@@ -12687,7 +13157,7 @@ int main(int argc, char** argv) {
             // own next turn (ConversationCache::borrows).  Everything else is taken whole, as before.
             // (a layer split restores whole stage images only, so it never borrows; a batch slot that holds a longer
             // start of this prompt wins as before)
-            bool borrow = stages.empty() && parked.tokens > std::max(resume, slot_tokens) &&
+            bool borrow = !has_dflash && stages.empty() && parked.tokens > std::max(resume, slot_tokens) &&
                           conversations.borrows(parked);
             if (parked.tokens > std::max(resume, slot_tokens) && !borrow)
                 incoming.emplace(conversations.take(parked.index));
@@ -12725,6 +13195,33 @@ int main(int argc, char** argv) {
                     borrow = false;
                     err.clear();
                 }
+            }
+            if (incoming && has_dflash) {
+                const strata::core::OnDevice on_df(dflash.device());   // geometry checks read the pools' state
+                bool valid = incoming->dflash_kv.size() == dflash.kv_states().size();
+                for (size_t j = 0; valid && j < incoming->dflash_kv.size(); ++j)
+                    valid = strata::core::conversation_kv_validate(incoming->dflash_kv[j], dflash.kv_states()[j],
+                        dflash.pool_geometry(),
+                        strata::core::dflash_snapshot_extent((int64_t) incoming->live.ids.size(),
+                                                             dflash.kv_states()[j].max_cells),
+                        false, err);
+                // The captured end must sit inside this drafter's logical capacity (a foreign
+                // artifact's extent is refused; geometry/size checks above reject foreign rings).
+                if (valid && (int64_t) incoming->live.ids.size() > dflash.capacity()) valid = false;
+                if (valid && incoming->dflash_kv.empty()) valid = false;
+                // The descriptor must be present, match this drafter's layout, and be internally
+                // consistent - a same-geometry image with corrupt/absent horizon metadata is
+                // rejected before ANY restore (include/strata/core/dflash_ring.hpp).
+                if (valid) {
+                    const strata::core::DFlashSnapshotMeta mine = dflash.snapshot_meta();
+                    const strata::core::DFlashSnapshotMeta& m = incoming->dflash_meta;
+                    valid = m.committed_end >= 0 && m.appended_through >= m.committed_end &&
+                            m.committed_end <= mine.capacity && m.appended_through <= mine.capacity &&
+                            m.ring_cells == mine.ring_cells && m.window == mine.window &&
+                            m.capacity == mine.capacity &&
+                            (int64_t) incoming->live.ids.size() >= m.committed_end;
+                }
+                if (!valid) { incoming.reset(); err.clear(); }
             }
             // Preserve the outgoing branch before any checkpoint rewind, reset,
             // or incoming restore overwrites the positional state it requires.
@@ -12861,6 +13358,25 @@ int main(int argc, char** argv) {
             }
             if (incoming) {
                 const auto t0 = Clock::now();
+                if (has_dflash) {
+                    const strata::core::OnDevice on_df(dflash.device());   // the pool rows are written on the drafter's card
+                    for (size_t j = 0; j < incoming->dflash_kv.size(); ++j)
+                        if (!strata::core::conversation_kv_restore(incoming->dflash_kv[j], dflash.kv_states()[j],
+                                dflash.pool_geometry(),
+                                strata::core::dflash_snapshot_extent((int64_t) incoming->live.ids.size(),
+                                                                    dflash.kv_states()[j].max_cells),
+                                false, err)) {
+                            std::printf("ERR restoring DFlash conversation: %s\n", err.c_str());
+                            return 1;
+                        }
+                    // The restored ring's horizon: the image captured at this absolute end, so
+                    // propose/rewind guards can tell retained from overwritten history.
+                    if (!dflash.restore_snapshot(incoming->dflash_meta, err)) {
+                        std::printf("ERR restoring DFlash conversation: %s\n", err.c_str());
+                        return 1;
+                    }
+                    if (!dflash.idle(err)) { std::printf("ERR %s\n", err.c_str()); return 1; }
+                }
                 if (strata::core::conversation_snapshot_restore(*incoming, ss, g,
                         use_mtp && (stages.empty() || mtp_first) ? &mtp.kv_state() : nullptr, err) !=
                     strata::core::ConversationRestore::restored) {
@@ -12966,8 +13482,31 @@ int main(int argc, char** argv) {
                         if ((int64_t) k.ids.size() == resume && starts_with(k.ids, k.imgs)) { c = &k; lent = true; }
                 if (!lent) lent_slot = -1;
                 if (c != nullptr) c->used = ++check_clock;   // mounting through it is the use LRU counts
+                // The bounded draft ring (include/strata/core/dflash_ring.hpp): a rewind whose
+                // readable window reaches cells newer appends overwrote must not mount stale
+                // draft history. The target restore below stays valid; this request re-reads
+                // the prompt (the fresh-prefill path), which rebuilds the draft context.
+                // Legacy full-capacity drafters (ring 0) always retain.
+                const bool ring_ok = !has_dflash || dflash.context_retained(resume, dflash.max_block() + 1);
                 static const bool reread = std::getenv("STRATA_CKPT_REREAD") != nullptr;
-                if (reread && c != nullptr) {
+                if (c != nullptr && !ring_ok) {
+                    // A deep rewind on the bounded ring: the draft window this resume reads was
+                    // overwritten. Never mount stale draft history: rebuild like STRATA_CKPT_REREAD -
+                    // zero the target session and read the resume tokens again from 0 (the prompt
+                    // path re-fuses the draft context and resets the horizon logically). The
+                    // request recovers; the serving process keeps running.
+                    std::fprintf(stderr, "strata serve: the draft ring no longer retains a rewind to "
+                                         "%lld; reading the prompt again (%lld tokens) instead of restoring\n",
+                                 (long long) resume, (long long) resume);
+                    strata::core::session_zero(ss, g, nullptr, main_cs);
+                    cudaStreamSynchronize(main_stream);
+                    for (auto& st : stages) {
+                        const strata::core::OnDevice on(st->dev);
+                        strata::core::session_zero(st->ss, g, nullptr, (void*) st->stream);
+                        cudaStreamSynchronize(st->stream);
+                    }
+                    reread_to = resume;
+                } else if (reread && c != nullptr) {
                     // THE CHECK OF THE CHECKPOINT: instead of restoring it, read its tokens again from position 0 in
                     // one run (below, with the prompt path's slots lent like any read) - the same chunks the request
                     // that saved it read them in, when that request started at 0.  With the VRAM expert set fixed
@@ -13239,6 +13778,18 @@ int main(int argc, char** argv) {
                     if (logpos != nullptr && !ver.window_logprobs(nxt.data(), T, q, logpos_extra, logpos, e))
                         return false;
                     if (!ver.commit(T, e) || (use_mtp && !mtp.prefill(ver.final_R_all(), nxt.data(), T, q, e))) return false;
+                    if (has_dflash) {
+                        // L8 --layer-split: under collection the verify window's taps arrive from
+                        // every stage's verifier; the single-GPU path below is byte-identical.
+                        auto& tc = dflash.tap_collector();
+                        const bool collected = tc.enabled();
+                        if (collected && !df_collect_f32(q, T, e)) return false;
+                        if (!dflash.add_context_f32(collected ? tc.plane_f32() : ver.taps(),
+                                                    collected ? tc.plan().n_taps : ver.n_taps(),
+                                                    collected ? tc.stride_rows_f32() * g.n_embd : ver.tap_stride(),
+                                                    q, T, e))
+                            return false;
+                    }
                     q += T;
                     pp_reached = q;   // #471
                     pp_exact = true;
@@ -14182,6 +14733,12 @@ int main(int argc, char** argv) {
                 for (int64_t t : ids) { const int32_t t32 = (int32_t) t; extra_sources_append(&t32, 1); }
             }
             bool first_window = true;
+            bool dflash_ready = false;
+            const bool df_auto = req_dflash && o.dflash_block == 0 && !req_dflash_block_set && req_spec_min_p <= 0.0;
+            df_policy.reset();
+            int df_pending_k = 0;
+            double df_pending_ms = 0;
+            int64_t df_windows[8] = {};
             int64_t produced_n = 0, sfx_windows = 0, sfx_drafts = 0, sfx_ok = 0;
             int64_t chain_windows = 0, chain_drafts = 0, chain_ok = 0;   // --lookup-chain's own counts
             int64_t t2_rej[8] = {}, t2_hit[8] = {};   // STRATA_MTP_TOP2: rejections inside the MTP drafts by depth, runner-up hits
@@ -14878,7 +15435,7 @@ int main(int argc, char** argv) {
                 }
             }
             while (!pl_ran && !cancelled && produced_n < max_new) {
-                int T = use_mtp ? S_mtp : 1;   // no --mtp: one token a round unless a lookup draft fires
+                int T = req_dflash && dflash_ready ? df_pending_k + 1 : use_mtp ? S_mtp : 1;   // no --mtp: one token a round unless a lookup draft fires
                 policy.set_context(p);
                 if (use_mtp && spec_cost && !first_window) {
                     T = std::clamp(chain_rows, 1, S_mtp);
@@ -14896,7 +15453,7 @@ int main(int argc, char** argv) {
                 if (o.suffix_draft > 0 && !first_window) {
                     const int k = sfx.propose(S - 1, sbuf.data());
                     sfx_match = sfx.last_match();
-                    if (k > 0 && (!use_mtp || sbuf[0] == drafts[0])) {
+                    if (k > 0 && (!(use_mtp || (req_dflash && dflash_ready)) || sbuf[0] == drafts[0])) {
                         const strata::spec::DraftPolicy::Pick pk = policy.choose(T, k, sfx_match);
                         if (pk.lookup) { T = pk.t; from_sfx = true; }
                     }
@@ -15077,6 +15634,7 @@ int main(int argc, char** argv) {
                 // the elastic K/V: the window's cells and the drafter's beyond them
                 if (kvg.on && p + T + 64 > kvg.cells &&
                     !kvg_ensure(p + T + 64, adapt_quiesce)) {
+
                     std::printf("ERR the K/V cannot grow: no VRAM is left\n");
                     return 1;
                 }
@@ -15107,6 +15665,20 @@ int main(int argc, char** argv) {
                 }
                 int a = merged ? T - 1 : 0;   // a merged window commits every row, as the prompt windows do
                 while (a < T - 1 && window[(size_t) a + 1] == outv[(size_t) a]) ++a;
+                if (has_dflash && !merged) {
+                    // Do not cache accepted rows whose outputs were never emitted.
+                    // The last emitted token remains the next request's unconsumed anchor.
+                    a = (int) std::min<int64_t>(a, max_new - produced_n - 1);
+                    for (int i = 0; i < a; ++i)
+                        if (std::find(o.eos_ids.begin(), o.eos_ids.end(), (int64_t) outv[(size_t) i]) != o.eos_ids.end()) {
+                            a = i;
+                            break;
+                        }
+                }
+                if (!dflash_target_probe(ver, p, a + 1, err)) {
+                    std::printf("ERR %s\n", err.c_str());
+                    return 1;
+                }
                 if (from_sfx) { ++sfx_windows; sfx_drafts += T - 1; sfx_ok += a; }
                 if (chain_n > 0) { ++chain_windows; chain_drafts += chain_n; chain_ok += std::max(0, a - (T_mtp - 1)); }
                 if (!from_sfx && !first_window)
@@ -15141,6 +15713,31 @@ int main(int argc, char** argv) {
                     std::printf("ERR %s\n", err.c_str());
                     return 1;
                 }
+                // Opt-in parity fixture: dump only an EMITTED target row at an absolute
+                // position, before any later window can overwrite its logits.
+                static const char* target_probe = std::getenv("STRATA_DF_TARGET_PROBE");
+                static const char* target_dump = std::getenv("STRATA_DF_TARGET_LOGITS");
+                if (target_probe && target_dump) {
+                    const int64_t at = std::atoll(target_probe);
+                    const int row = at >= p && at <= p + a ? (int)(at - p) : -1;
+                    const int64_t output_index = produced_n + (merged ? 0 : row);
+                    bool after_eos = false;
+                    for (int i = 0; !merged && i < row; ++i)
+                        after_eos = after_eos || std::find(o.eos_ids.begin(), o.eos_ids.end(),
+                                                         (int64_t)outv[(size_t)i]) != o.eos_ids.end();
+                    if (row >= 0 && (!merged || row == a) && output_index < max_new && !after_eos) {
+                        std::vector<float> logits((size_t)ver.vocab());
+                        const int64_t header[] = {ver.vocab(), at, p, row, output_index, outv[(size_t)row]};
+                        FILE* f = ver.copy_logits(row, logits.data()) ? std::fopen(target_dump, "ab") : nullptr;
+                        const bool ok = f && std::fwrite(header, sizeof(int64_t), 6, f) == 6 &&
+                            std::fwrite(logits.data(), sizeof(float), logits.size(), f) == logits.size();
+                        if (f) std::fclose(f);
+                        if (!ok) {
+                            if (adapt_thr.joinable()) adapt_thr.join();
+                            std::printf("ERR writing target logit fixture\n"); return 1;
+                        }
+                    }
+                }
                 // the window's first a + 1 tokens are in the session now (the last output is not: it is next x)
                 for (int i = 0; i <= a; ++i) consumed.push_back(window[(size_t) i]);
                 if (!merged) {   // (a merged window's rows are prompt tokens, not drafts)
@@ -15165,8 +15762,54 @@ int main(int argc, char** argv) {
                 // commit, outv[a] is its row 0) - the drafts extend it on the device as the verify rows will
                 if (use_mtp && hist_n > 0 && mtp.coupled() && !eos && produced_n < max_new)
                     mtp.set_draft_history(consumed.data(), (int64_t) consumed.size(), outv[(size_t) a]);
-                const bool drafted = !use_mtp || eos || produced_n >= max_new ||
+                bool drafted = !use_mtp || eos || produced_n >= max_new ||
                                      mtp.draft(T, outv.data(), p, a, drafts.data(), err, dprob.data(), (float) req_spec_min_p);
+                if (has_dflash) {
+                    if (adapt_thr.joinable()) adapt_thr.join();
+                    // The next proposal waits on this same stream. Keep an explicit wait when
+                    // there is no proposal or the ungated policy needs the completed context time.
+                    const bool sync_context = !req_dflash || df_auto || eos || produced_n >= max_new || !strata::spec::dflash_proposal_fits(
+                        p + a + 1, req_dflash_k, dflash.artifact().geom().is_dflash2(),
+                        o.max_context, dflash.capacity());
+                    // L8 --layer-split: the serve request decode - under collection this window's
+                    // taps arrive from every stage's verifier (df_collect_f32, docs/DFLASH2.md).
+                    auto& df_tc = dflash.tap_collector();
+                    const bool df_collected = df_tc.enabled();
+                    if (df_collected && !df_collect_f32(p, a + 1, err)) {
+                        std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+                        return 1;
+                    }
+                    drafted = dflash.add_context_f32(df_collected ? df_tc.plane_f32() : ver.taps(),
+                                                     df_collected ? df_tc.plan().n_taps : ver.n_taps(),
+                                                     df_collected ? df_tc.stride_rows_f32() * g.n_embd
+                                                                  : ver.tap_stride(),
+                                                     p, a + 1, err, sync_context);
+                    const auto ctx_done = Clock::now();
+                    if (df_auto && rounds > 1 && !from_sfx) {
+                        const double ms = std::chrono::duration<double, std::milli>(ctx_done - tw0).count();
+                        df_policy.observe(T - 1, a + 1, ms + df_pending_ms);
+                    }
+                    ++df_windows[T - 1];
+                    df_pending_k = df_auto ? df_policy.choose() : req_dflash_k;
+                    // Finish near the context limit with target-only windows rather than
+                    // proposing a block which the next verification window cannot fit.
+                    dflash_ready = req_dflash && drafted && !eos && produced_n < max_new && df_pending_k > 0 &&
+                                   strata::spec::dflash_proposal_fits(p + a + 1, df_pending_k,
+                                       dflash.artifact().geom().is_dflash2(), o.max_context, dflash.capacity());
+                    const bool proposed = dflash_ready;
+                    if (dflash_ready)
+                        drafted = dflash.propose(outv[(size_t) a], p + a + 1, df_pending_k, drafts.data(), err,
+                                                 req_spec_min_p > 0 ? dprob.data() : nullptr);
+                    if (dflash_ready && drafted && req_spec_min_p > 0) {
+                        const float min_p = (float) req_spec_min_p;
+                        int prefix = 0;
+                        while (prefix < df_pending_k && dprob[(size_t) prefix] >= min_p) ++prefix;
+                        df_pending_k = prefix;
+                        dflash_ready = prefix > 0;
+                    }
+                    df_pending_ms = proposed ?
+                        std::chrono::duration<double, std::milli>(Clock::now() - ctx_done).count() : 0;
+                }
                 {
                     const Clock::time_point tw3 = Clock::now();
                     auto msd = [](Clock::time_point a0, Clock::time_point b0) { return std::chrono::duration<double, std::milli>(b0 - a0).count(); };
@@ -15204,6 +15847,12 @@ int main(int argc, char** argv) {
             if (!ver.wait_commit(err)) {
                 std::printf("ERR %s\n", err.c_str());
                 return 1;
+            }
+            if (df_auto) {
+                std::fprintf(stderr, "dflash: adaptive windows (K:rounds):");
+                for (int k = 0; k <= dflash_k; ++k)
+                    if (df_windows[k] > 0) std::fprintf(stderr, " %d:%lld", k, (long long) df_windows[k]);
+                std::fprintf(stderr, "\n");
             }
             if (dec_timing && dec_windows > 0) {
                 const DecSnap d1 = dec_snap();
@@ -15703,6 +16352,8 @@ int main(int argc, char** argv) {
         !multi_gpu && !o.no_pool && o.batch <= 0 &&
         strata::prefill::share_rules::default_share_has_work((int64_t) xcache.slots(), (int64_t) (g.n_layers * g.n_expert)) &&
         share_default_ok());   // H11   // before the chunk below sizes the loan
+    const bool use_dflash = !o.dflash.empty();
+
     bool kvg_started = false;   // the elastic K/V took this run's cells
     double prefill_batched_ms = 0;
     std::FILE* final_r = o.dump_final_r.empty() ? nullptr : std::fopen(o.dump_final_r.c_str(), "wb");
@@ -15781,6 +16432,57 @@ int main(int argc, char** argv) {
         if (borrow == nullptr)
             std::fprintf(stderr, "strata generate: prompt path allocates its own buffers (no cache slots to borrow)\n");
         if (!multi_gpu && !o.no_pool) prefill.set_cpu_pool(&pool);
+        if ((use_dflash && std::getenv("STRATA_DF_NOPF") == nullptr) ||
+            (o.dflash.empty() && std::getenv("STRATA_DFLASH_TAPS") != nullptr)) {
+            const auto taps = use_dflash ? dflash_capture_layers : std::vector<int32_t>{4, 16, 24, 36, 44};
+            prefill.set_tap_layers(taps.data(), (int) taps.size(), use_dflash && dflash.artifact().geom().target_hc_mean);   // before init: the taps join the buffer carve
+        }
+        std::function<bool(const uint16_t*, int, int64_t, int64_t, std::string&)> df_on_taps;
+        if (use_dflash && std::getenv("STRATA_DF_NOPF") == nullptr) {
+            // the prompt's context cells: the fusion runs per chunk over the BF16 taps
+            df_on_taps = [&dflash, &prefill](const uint16_t* taps, int n_taps, int64_t T, int64_t p0,
+                                             std::string& e) -> bool {
+                auto& tc = dflash.tap_collector();
+                // L8 --layer-split: the CLI prompt path is the single producer stage (full layer
+                // loop on its own GPU); the compact slice moves to the drafter's card per chunk.
+                if (!tc.enabled()) return dflash.add_context(taps, n_taps, prefill.tap_stride_rows(), p0, T, e);
+                const strata::core::OnDevice on_df(dflash.device());
+                const strata::core::DFlashTapCollector::Slice slice{0, taps, prefill.tap_stride_rows(), T};
+                if (!tc.stage(p0, slice, 2, e)) return false;
+                if (!tc.assemble(p0, &slice, 1, T, 2, e)) return false;
+                return dflash.add_context(tc.plane_bf16(), tc.plan().n_taps, tc.stride_rows_bf16(), p0, T, e);
+            };
+            prefill.dflash_on_taps = df_on_taps;
+        }
+        if (const char* taps_path = std::getenv("STRATA_DFLASH_TAPS")) {
+            if (!g_tap_dump) g_tap_dump = std::fopen(taps_path, "wb");
+            if (!g_tap_dump) {
+                std::fprintf(stderr, "strata generate: cannot write STRATA_DFLASH_TAPS file %s\n", taps_path);
+                return 1;
+            }
+            const int64_t tap_n_embd = g.n_embd;
+            prefill.dflash_on_taps = [&prefill, tap_n_embd, &dflash, use_dflash, df_on_taps](const uint16_t* taps, int n_taps,
+                                                     int64_t T, int64_t p0, std::string& e) -> bool {
+                if (use_dflash) {
+                    // Review 2026-10-21 item 4: the debug export COMPOSES the production
+                    // callback - a raw producer-plane add_context is a foreign-device
+                    // pointer under --layer-split.  The parity harness's target-tap export
+                    // keeps working through the same collector on every layout.
+                    if (df_on_taps) {
+                        if (!df_on_taps(taps, n_taps, T, p0, e)) return false;
+                    } else if (!dflash.add_context(taps, n_taps, prefill.tap_stride_rows(), p0, T, e)) {
+                        e = "dflash: " + e;
+                        return false;
+                    }
+                }
+                g_tap_stride_bytes = (size_t) prefill.tap_stride_rows() * (size_t) tap_n_embd * 2;
+                if (!tap_dump_record(0, p0, (int) T, n_taps, taps, tap_n_embd, /*bf16=*/true, nullptr)) {
+                    e = "tap dump failed";
+                    return false;
+                }
+                return true;
+            };
+        }
         if (!prefill.init(wt, g, ss, srcp, o.expert_cache > 0 ? &xcache : nullptr,
                           host_res.empty() ? nullptr : host_res.data(), o.prefill_chunk, main_cs, err, borrow,
                           borrow_bytes)) {
@@ -16118,6 +16820,15 @@ int main(int argc, char** argv) {
         // --spec-follow: the run ends with the continuation
         const int64_t max_new = follow.empty() ? o.max_new : std::min<int64_t>(o.max_new, (int64_t) follow.size());
         int64_t follow_differ = 0, follow_emitted = 0;
+        // Optional cycle evidence for prefix-survival analysis. No I/O when disabled.
+        const char* df_trace_path = use_dflash ? std::getenv("STRATA_DF_CYCLES") : nullptr;
+        const auto close_trace = [](FILE* f) { std::fclose(f); };
+        std::unique_ptr<FILE, decltype(close_trace)> df_trace(
+            df_trace_path ? std::fopen(df_trace_path, "w") : nullptr, close_trace);
+        if (df_trace_path && !df_trace) {
+            std::fprintf(stderr, "strata generate: cannot open STRATA_DF_CYCLES %s\n", df_trace_path);
+            return 1;
+        }
         if (thits.d_res == nullptr) {
             std::fprintf(stderr, "strata generate: --spec needs the device residency table (--expert-profile, "
                                  "--expert-cache and the token graph)\n");
@@ -16133,6 +16844,17 @@ int main(int argc, char** argv) {
         vh.slot_off = xcache.slot_offsets();   // E-6: the device plan's pointers
         vh.n_slots = xcache.slots();
         if (pcie_balance()) ver.set_pcie_balance(&drive.d.pcie_model);
+        if (use_dflash || (o.dflash.empty() && std::getenv("STRATA_DFLASH_TAPS") != nullptr)) {
+            const auto taps = use_dflash ? dflash_capture_layers : std::vector<int32_t>{4, 16, 24, 36, 44};
+            ver.set_tap_layers(taps.data(), (int) taps.size(), use_dflash && dflash.artifact().geom().target_hc_mean);   // before init: the tap buffer joins the arena carve
+        }
+        if (const char* taps_path = std::getenv("STRATA_DFLASH_TAPS")) {
+            if (!g_tap_dump) g_tap_dump = std::fopen(taps_path, "wb");
+            if (!g_tap_dump) {
+                std::fprintf(stderr, "strata generate: cannot write STRATA_DFLASH_TAPS file %s\n", taps_path);
+                return 1;
+            }
+        }
 #if defined(STRATA_HAVE_DFLASH2)
         if (use_df2) ver.set_taps(df2.tap_layers());
 #endif
@@ -16407,7 +17129,11 @@ int main(int argc, char** argv) {
         std::vector<int64_t> t_cycle_n((size_t) o.spec + 1, 0), t_cycle_seen((size_t) o.spec + 1, 0);
         // plan v0.3 P6: with a native pack the first window is the last prompt token alone (it produces the first
         // generated token and the MTP's first cell); otherwise the token loop already did that.
-        bool first_window = native_pack;
+        // DFlash always bootstraps this way: the target's own pick is the first generated token and
+        // becomes the anchor; its tap row seeds the anchor's context cell (docs/DFLASH.md).
+        bool first_window = native_pack || use_dflash;
+        double ms_dflash = 0;
+        int64_t dflash_proposes = 0;
         if (use_mtp && !first_window &&
             !mtp.draft_first(o.spec, ss.R, x, p - 1, drafts.data(), err, dprob.data(), (float) o.spec_min_p)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
@@ -16468,6 +17194,7 @@ int main(int argc, char** argv) {
         }
         const double pool_ms0 = drive.cpu_ms;
         const int64_t misses0 = drive.d.multi_misses, entries0 = drive.d.multi_entries;
+        bool dflash_ready = false;   // ours: the CLI --dflash drafter's block is ready after its first draft
         // STRATA_SPEC_WATCH=<seconds> (diagnostics, off by default): the serve watchdog for this loop.  A run whose verify
         // windows and prompt chunks stop beating for that long prints the stage it is in and the stall report, then ends.
         if (const char* sw = std::getenv("STRATA_SPEC_WATCH"); sw != nullptr && std::atoi(sw) > 0) {
@@ -16491,7 +17218,7 @@ int main(int argc, char** argv) {
                 }
             }).detach();
         }
-        // the next round's drafts after a commit: the MTP chain, or the DFlash2 block from the committed rows' taps
+        // the next round's drafts after a commit: the MTP chain, the CLI --dflash block, or the DFlash2 block from the committed rows' taps
         auto draft_next = [&](int T_, int a_) -> bool {
 #if defined(STRATA_HAVE_DFLASH2)
             if (use_df2) {
@@ -16533,13 +17260,14 @@ int main(int argc, char** argv) {
             const Clock::time_point t0 = Clock::now();
         retry_round:
             strata::core::progress_at("spec loop: choosing the window", (int64_t) produced.size());
-            int T = S_mtp;
+            int T = use_dflash ? (dflash_ready ? dflash_k + 1 : 1) : S_mtp;
             policy.set_context(p);
             if (use_mtp && spec_cost && !first_window) {
                 T = std::clamp(chain_rows, 1, S_mtp);
-            } else if (use_mtp && o.spec_min_p > 0.0) {
+            } else if ((use_mtp || use_dflash) && o.spec_min_p > 0.0) {
+                const int max_t = use_dflash ? (dflash_ready ? dflash_k + 1 : 1) : S_mtp;
                 T = 1;
-                while (T < S_mtp && dprob[(size_t) T - 1] >= (float) o.spec_min_p) ++T;
+                while (T < max_t && dprob[(size_t) T - 1] >= (float) o.spec_min_p) ++T;
             }
 #if defined(STRATA_HAVE_DFLASH2)
             if (use_df2 && o.draft_conf > 0.0) {   // DFlash2's own confidence: the chance that every draft so far holds, from the selector's probabilities
@@ -16556,7 +17284,7 @@ int main(int argc, char** argv) {
             if (o.suffix_draft > 0 && !first_window) {
                 const int k = sfx.propose(o.spec - 1, sbuf.data());
                 sfx_match = sfx.last_match();
-                if (k > 0 && (!use_mtp || sbuf[0] == drafts[0])) {
+                if (k > 0 && (!(use_mtp || use_dflash) || (use_dflash && T == 1) || sbuf[0] == drafts[0])) {
                     const strata::spec::DraftPolicy::Pick pk = policy.choose(T, k, sfx_match);
                     if (pk.lookup) { T = pk.t; from_sfx = true; }
                 }
@@ -16591,11 +17319,24 @@ int main(int argc, char** argv) {
             window[0] = x;
             for (int i = 1; i < T; ++i) {
                 const size_t at = produced.size() - 1 + (size_t) i;
-                int32_t d = from_sfx ? sbuf[(size_t) i - 1] : use_mtp ? drafts[(size_t) i - 1]
+                // DFlash drafts ride the same slot as the MTP's: with neither drafter the window
+                // is the --spec-oracle fixture (token 0 past its end) - the path a --dflash run
+                // took, silently verifying [x, 0, 0, ...] and accepting nothing
+                int32_t d = from_sfx ? sbuf[(size_t) i - 1]
+                                     : (use_mtp || use_dflash) ? drafts[(size_t) i - 1]
                                                     : at < oracle.size() ? (int32_t) oracle[at] : 0;
                 if (i >= T_mtp) d = cbuf[(size_t) (i - T_mtp)];
                 if (o.spec_corrupt > 0 && (++corrupt_counter % o.spec_corrupt) == 0) d = (d + 1) % (int32_t) n_vocab;
                 window[(size_t) i] = d;
+            }
+            if (use_dflash && !from_sfx && o.spec_corrupt <= 0) {   // candidate[i] MUST be verify_window[i+1]: the window
+                                // once filled with token 0 here and accepted nothing, silently
+                for (int i = 1; i < T; ++i)
+                    if (window[(size_t) i] != drafts[(size_t) i - 1]) {
+                        std::fprintf(stderr, "strata generate: internal error: DFlash draft %d never reached "
+                                             "the verify window\n", i - 1);
+                        return 2;
+                    }
             }
             drive.d.layers = 0;
             drive.d.experts = 0;
@@ -16618,6 +17359,14 @@ int main(int argc, char** argv) {
                 }
                 std::fprintf(stderr, "strata generate: %s\n", err.c_str());
                 return 1;
+            }
+            // STRATA_DFLASH_TAPS: the window's tap rows [0, T) go to the fixture file before the commit
+            if (g_tap_dump != nullptr && ver.n_taps() > 0) {
+                g_tap_stride_bytes = (size_t) ver.tap_stride() * 4;
+                if (!tap_dump_record(1, p, T, ver.n_taps(), ver.taps(), g.n_embd, /*bf16=*/false, ver.stream())) {
+                    std::fprintf(stderr, "strata generate: the tap dump failed\n");
+                    return 1;
+                }
             }
             if (drive.d.failed) {
                 std::fprintf(stderr, "strata generate: the expert pool failed at layer %lld expert %lld: %s\n",
@@ -16645,6 +17394,24 @@ int main(int argc, char** argv) {
             }
             int a = 0;
             while (a < T - 1 && window[(size_t) a + 1] == outv[(size_t) a]) ++a;
+            if (!dflash_target_probe(ver, p, a + 1, err)) {
+                std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+                return 1;
+            }
+            if (df_trace) {
+                std::fprintf(df_trace.get(), "{\"anchor_pos\":%lld,\"K\":%d,\"L\":%d,\"bootstrap\":%s,\"correction\":%d,\"emitted\":%lld,\"draft\":[",
+                             (long long) p, T - 1, a, first_window ? "true" : "false", outv[(size_t) a],
+                             (long long) std::min<int64_t>(a + 1, max_new - produced.size()));
+                for (int i = 1; i < T; ++i) std::fprintf(df_trace.get(), "%s%d", i > 1 ? "," : "", window[(size_t) i]);
+                std::fprintf(df_trace.get(), "],\"target\":[");
+                for (int i = 0; i < T; ++i) std::fprintf(df_trace.get(), "%s%d", i ? "," : "", outv[(size_t) i]);
+                std::fprintf(df_trace.get(), "]}\n");
+            }
+            if (use_dflash && std::getenv("STRATA_DF_DBG") != nullptr) {
+                std::fprintf(stderr, "df dbg: window picks:");
+                for (int i = 0; i < T; ++i) std::fprintf(stderr, " %d", outv[(size_t) i]);
+                std::fprintf(stderr, "\n");
+            }
             if (first_window) {
                 first_window = false;
                 ttft_ms = std::chrono::duration<double, std::milli>(Clock::now() - t_start).count();
@@ -16690,15 +17457,62 @@ int main(int argc, char** argv) {
                 total_ms += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
                 break;
             }
-            const bool drafted = !use_mtp || (int64_t) produced.size() >= max_new || draft_next(T, a);
-            if (adapt_thr.joinable()) adapt_thr.join();
-            if (!adapt_ok) return 1;
-            if (!drafted) {
-                std::fprintf(stderr, "strata generate: %s\n", err.c_str());
-                return 1;
+            // Not const (upstream v0.2.3 wrote `const bool drafted`): our --dflash CLI path assigns to it
+            // below at the drafter's proposal (`drafted = dflash.propose(...)` inside the && chain), exactly as
+            // pre-integ-023 (c938100b:16924 + :16963) had it.  Upstream's own use only reads it.
+            bool drafted = !use_mtp || (int64_t) produced.size() >= max_new || draft_next(T, a);
+            if (!use_dflash) {   // ours: the CLI --dflash path joins the adaptation thread and checks it in its own block below
+                if (adapt_thr.joinable()) adapt_thr.join();
+                if (!adapt_ok) return 1;
+                if (!drafted) {
+                    std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+                    return 1;
+                }
             }
             x = outv[(size_t) a];
             p += a + 1;
+            if (use_dflash) {
+                if (adapt_thr.joinable()) adapt_thr.join();
+                if (!adapt_ok) return 1;
+                // the committed rows' context cells from this window's taps (the rejected rows'
+                // cells are simply overwritten by the next block's queries), then the next block
+                if ((int64_t) produced.size() < max_new) {
+                    const Clock::time_point td = Clock::now();
+                    dflash_ready = strata::spec::dflash_proposal_fits(p, dflash_k,
+                        dflash.artifact().geom().is_dflash2(), o.max_context, dflash.capacity());
+                    // L8 --layer-split: the CLI greedy decode's taps come from the single
+                    // full-layer producer plane (ver on GPU0); its compact FP32 slice moves
+                    // per window to the drafter's card (dflash_tap_collect.hpp).
+                    auto& tc = dflash.tap_collector();
+                    const bool df_collected = tc.enabled();
+                    if (df_collected) {
+                        const strata::core::OnDevice on_df(dflash.device());
+                        const strata::core::DFlashTapCollector::Slice slice{0, ver.taps(),
+                                                                            ver.tap_stride() / g.n_embd, a + 1};
+                        if (!tc.stage(p, slice, 4, err) || !tc.assemble(p, &slice, 1, a + 1, 4, err)) {
+                            std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+                            return 1;
+                        }
+                    }
+                    const bool ok = dflash.add_context_f32(df_collected ? tc.plane_f32() : ver.taps(),
+                                                           df_collected ? tc.plan().n_taps : ver.n_taps(),
+                                                           df_collected ? tc.stride_rows_f32() * g.n_embd : ver.tap_stride(),
+                                                           p - (a + 1), a + 1, err, !dflash_ready) &&
+                                    (!dflash_ready || (drafted = dflash.propose(x, p, dflash_k, drafts.data(), err,
+                                                                o.spec_min_p > 0 ? dprob.data() : nullptr)));
+                    if (ok && dflash_ready && std::getenv("STRATA_DF_DBG") != nullptr) {
+                        std::fprintf(stderr, "df dbg: anchor=%d at %lld proposals:", x, (long long) p);
+                        for (int i = 0; i < dflash_k; ++i) std::fprintf(stderr, " %d", drafts[(size_t) i]);
+                        std::fprintf(stderr, "\n");
+                    }
+                    ms_dflash += std::chrono::duration<double, std::milli>(Clock::now() - td).count();
+                    if (dflash_ready) ++dflash_proposes;
+                    if (!ok) {
+                        std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+                        return 1;
+                    }
+                }
+            }
             const double round_ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
             total_ms += round_ms;
             if (spec_trace != nullptr && timed_round) {
@@ -16728,6 +17542,10 @@ int main(int argc, char** argv) {
                     "speculation", (long long) rounds, o.spec, (long long) drafts_ok, (long long) drafts_total,
                     drafts_total > 0 ? (double) drafts_ok / (double) drafts_total : 0.0,
                     rounds > 0 ? (double) (drafts_ok + rounds) / (double) rounds : 0.0);
+        if (use_dflash && dflash_proposes > 0)
+            std::printf("%-24s %lld proposes, %.2f ms per pass (context+draft), mean %.3f emitted per cycle\n",
+                        "dflash", (long long) dflash_proposes, ms_dflash / (double) dflash_proposes,
+                        rounds > 0 ? (double) (drafts_ok + rounds) / (double) rounds : 0.0);
         if (!follow.empty())
             std::printf("%-24s %lld of %lld emitted tokens differ from the argmax\n", "follow",
                         (long long) follow_differ, (long long) follow_emitted);

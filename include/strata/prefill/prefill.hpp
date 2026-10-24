@@ -192,6 +192,23 @@ public:
     void clear_taps();
     std::function<bool(const float* taps, int64_t rows, int64_t pos0, std::string& err)> on_taps;
 
+    /// DFlash feature taps (docs/DFLASH.md): at each listed boundary layer, capture the ATTN-HALF HC
+    /// read's contracted residual (n_embd BF16 per row - the fusion's input precision) for every row
+    /// of each chunk.  Before init.  Buffer: [n_taps x chunk x n_embd] bf16, rows [0, T) of the last
+    /// chunk; delivered by dflash_on_taps right after on_chunk (same synchronization).
+    /// hc_mean=true captures the completed raw HC stream mean before the learned HC read.
+    void set_tap_layers(const int* layers, int n, bool hc_mean = false);
+    /// Rows per tap in the device buffer (the chunk capacity); the per-tap stride of `taps`.
+    int64_t tap_stride_rows() const;
+    /// The device tap plane itself (tap t's rows at taps_plane() + t * tap_stride_rows() * n_embd):
+    /// the cross-stage tap collector reads each producer stage's own plane (dflash_tap_collect.hpp).
+    const uint16_t* taps_plane() const;
+    /// OUR tap-plane collector (the serve / --layer-split path, docs/DFLASH.md, dflash_tap_collect.hpp).
+    /// A distinct name on purpose: upstream v0.2.3's DFlash2 prompt taps keep `on_taps` above with their
+    /// float* staging buffer (rows, pos0), and a verifier has exactly one tap producer (gate 1), so the
+    /// two callbacks are two members and neither side's signature is touched.
+    std::function<bool(const uint16_t* taps, int n_taps, int64_t T, int64_t pos0, std::string& err)> dflash_on_taps;
+
     /// Layer split: called by every stage when it has read a chunk, with the position reached, while its own state
     /// is still at that chunk's end (its stream synchronized; the last stage calls it just before `on_chunk`).  An
     /// earlier stage is a chunk or more ahead of the last one by the time `on_chunk` runs, so this is where a

@@ -1438,6 +1438,10 @@ class StrataEngine:
             ac = tune.get("aux_cpus")
             if isinstance(ac, bool) or (isinstance(ac, (int, float)) and ac in (0, 1)):
                 keys += f" aux_cpus={int(ac)}"
+            block = tune.get("dflash_block")
+            if isinstance(block, int) and not isinstance(block, bool) and 1 <= block <= 7:
+                keys += f" dflash_block={block}"
+
         # "strata_checkpoint": false - a one-shot call (a classification, a probe) whose turn no later request
         # extends: no conversation checkpoint for it (#830).  It still reuses a cached prefix.  Absent = as before.
         if sampling.get("strata_checkpoint") is False:
@@ -3065,6 +3069,15 @@ def engine_args(cfg: dict) -> list[str]:
     config: "auto" by default, or the first layer of each later GPU's share, e.g. "18" or "16,32"; see
     layer_split_value)."""
     args = list(cfg["args"])
+    # Our --dflash drafter reads --spec-min-p (src/program/generate.cpp, the window gate), and that flag sits in
+    # strata_control/draft_layer.py's MTP_FLAGS set: both "no draft layer" paths below - "drafting": "off" (which the
+    # chooser turns into "mtp": false) and a plain "mtp": false - would take it with the MTP draft layer.  A config that
+    # serves DFlash keeps it in every path: those switches are about the MTP layer, never about the drafter the config chose.
+    dflash_spec_min_p = None
+    if "--dflash" in args and "--spec-min-p" in args:
+        _i = args.index("--spec-min-p")
+        if _i + 1 < len(args) and not str(args[_i + 1]).startswith("--"):
+            dflash_spec_min_p = str(args[_i + 1])
     # "user_args" (strata_control/user_args.py): the options the person set by hand, over the generated ones at every start,
     # so a setup run or the app rewriting "args" cannot undo them (#3216 #3215 #3270)
     if cfg.get("user_args"):
@@ -3086,6 +3099,10 @@ def engine_args(cfg: dict) -> list[str]:
         args, removed = draft_layer.strip(args)
         if removed:
             print(f'[strata] "mtp": false - starting without the draft layer ({" ".join(removed)} left out)', flush=True)
+    if dflash_spec_min_p is not None and "--spec-min-p" not in args:
+        args += ["--spec-min-p", dflash_spec_min_p]
+        print('[strata] the draft layer is out: --spec-min-p goes back, this config serves --dflash and its window gate reads the flag',
+              flush=True)
     # #1322: a config with a "vision" section but without --vision in its args (written by an older setup run, or edited by
     # hand) advertised images and then refused every picture ("this engine was started without --vision").  The section
     # says images are wanted: start the engine with them, and keep the encoder's VRAM free as setup does for a GPU encoder
