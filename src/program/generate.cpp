@@ -2987,8 +2987,9 @@ int main(int argc, char** argv) {
         } else (void) cudaGetLastError();
     }
 #endif
-    if (!o.dflash.empty() && o.mtp.empty() && !o.serve && !o.greedy && o.temperature > 0.0f) {
-        std::fprintf(stderr, "dflash: sampled CLI requests use target-only decoding\n");
+    if (!o.dflash.empty() && o.mtp.empty() && !o.serve && !o.greedy && o.temperature > 0.0f
+        && std::getenv("STRATA_DFLASH_SAMPLED") == nullptr) {
+        std::fprintf(stderr, "dflash: sampled CLI requests use target-only decoding (STRATA_DFLASH_SAMPLED=1 enables drafting)\n");
         o.dflash.clear();
         o.dflash_head.clear();
         o.dflash_vocab.clear();
@@ -12840,17 +12841,21 @@ int main(int argc, char** argv) {
                 continue;
             }
             const int64_t n = (int64_t) ids.size();
-            // Speculative target windows failed the seeded-output parity gate.
-            // Keep sampling target-only while that discrepancy is investigated.
-            // Still maintain draft context for a later greedy continuation.
-            const bool req_dflash = has_dflash && req_temperature <= 0.0f;
+            // Sampled requests decode target-only by default: speculative windows once
+            // failed the seeded-output parity gate (a multi-row logits effect, not the
+            // sampler).  STRATA_DFLASH_SAMPLED=1 opts in: acceptance is exact-match
+            // against each row's position-keyed sample, so every emitted token keeps
+            // the target's marginal, and a seed still replays the same text whatever
+            // the drafts were.  Draft context is kept for a greedy continuation.
+            static const bool dflash_sampled_ok = std::getenv("STRATA_DFLASH_SAMPLED") != nullptr;
+            const bool req_dflash = has_dflash && (req_temperature <= 0.0f || dflash_sampled_ok);
             if (has_dflash) dflash.set_reference_mode(req_df2_reference);
             df_request = has_dflash;
             // Review 2026-10-21 item 2: a new request must not inherit slot bindings,
             // rows guards, or staged flags an aborted request left under the same keys.
             if (has_dflash && dflash.tap_collector().enabled()) dflash.tap_collector().reset_staging();
             if (has_dflash && !req_dflash)
-                std::fprintf(stderr, "dflash: sampled request uses target-only decoding\n");
+                std::fprintf(stderr, "dflash: sampled request uses target-only decoding (STRATA_DFLASH_SAMPLED=1 enables drafting)\n");
             if (has_dflash && (n > dflash.capacity() || max_new > dflash.capacity() - n)) {
                 std::printf("ERR prompt + max_new exceeds the DFlash capacity (%lld); raise --dflash-window\n",
                             (long long) dflash.capacity());

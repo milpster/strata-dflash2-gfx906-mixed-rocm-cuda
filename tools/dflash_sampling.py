@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""GPU integration gate for DFlash's sampled target-only fallback.
+"""GPU integration gate for DFlash's sampled decoding: the target-only fallback by
+default, drafting when STRATA_DFLASH_SAMPLED=1.
 
 No downloads. Supply an existing DFlash run configuration and a directory outside
 the checkout for logs. Uses the native serve protocol and CLI, fixed expert
@@ -233,16 +234,19 @@ def main() -> None:
     for key, value in (("--expert-cache", str(a.expert_cache)), ("--adapt-every", "100000"),
                        ("--adapt-swaps", "0"), ("--pcie-frac", "0"), ("--prefill", "256"),
                        ("--max-context", "512"), ("--kv-resident", "512"),
-                       ("--spec", "8"), ("--dflash-block", "4"), ("--spec-min-p", "0"),
+                       ("--spec", "8"), ("--spec-min-p", "0"),
                        ("--dflash-window", "192"), ("--suffix-draft", "0"),
                        ("--lookup-chain", "0"), ("--prompt-cache", "0")):
         replace(args, key, value)
+    if "--dflash-block" not in args:
+        args.extend(("--dflash-block", "4"))   # a config may pin its artifact's own block size
     target_args = args.copy()
     for key in ("--dflash", "--dflash-block", "--dflash-window", "--dflash-vocab", "--dflash-head", "--dflash-mask-token"):
         replace(target_args, key, None)
     cwd = Path(cfg.get("cwd", root)).resolve()
     env = dict(os.environ, STRATA_IQ_MT_MIN="1", STRATA_PREFILL_CPU_SHARE="0",
                STRATA_SPEC_PROB="0", STRATA_SPEC_COUPLED="0", STRATA_SPEC_GUMBEL="0")
+    sampled_ok = os.environ.get("STRATA_DFLASH_SAMPLED") == "1"
     cases = [
         ("greedy", "temperature=0 seed=1234"),
         ("cold", "temperature=0.3 seed=1234 top_k=20 top_p=0.95"),
@@ -280,6 +284,8 @@ def main() -> None:
                 if name == "dflash":
                     if label.startswith("greedy"):
                         assert record["offered"] > 0, "DFlash was silently bypassed"
+                    elif sampled_ok:
+                        assert record["offered"] > 0, "STRATA_DFLASH_SAMPLED=1 but the sampled request drafted nothing"
                     else:
                         assert record["offered"] == 0, "sampled request bypassed the target-only fallback"
                 records[label] = record
@@ -289,7 +295,13 @@ def main() -> None:
         finally:
             engine.close()
     for label, _ in cases:
-        assert results["dflash"][label]["tokens"] == results["target"][label]["tokens"], f"sampled target parity: {label}"
+        if label.startswith("greedy"):
+            assert results["dflash"][label]["tokens"] == results["target"][label]["tokens"], f"greedy target parity: {label}"
+        elif not sampled_ok:
+            assert results["dflash"][label]["tokens"] == results["target"][label]["tokens"], f"sampled target parity: {label}"
+        else:
+            dr = results["dflash"][label]
+            assert 0 < dr["accepted"] <= dr["offered"], f"sampled acceptance out of range: {label}"
     for name in ("target", "dflash"):
         assert results[name]["greedy"]["tokens"] == results[name]["greedy_again"]["tokens"], name
         assert results[name]["filtered"]["tokens"] == results[name]["filtered_repeat"]["tokens"], name
@@ -312,10 +324,16 @@ def main() -> None:
         line = next(line for line in path.read_text().splitlines() if line.startswith("output  :"))
         return [int(t) for t in line.split(":", 1)[1].split()]
     cli_tokens = cli_output(out / "cli.txt")
-    assert len(cli_tokens) == a.count and cli_tokens == cli_output(out / "cli-target.txt"), "CLI sampled target parity"
-    assert "sampled CLI requests use target-only decoding" in (out / "cli.txt").read_text()
-    assert not trace.exists() or not trace.read_text().strip(), "sampled CLI ran the drafter"
-    print("DFlash sampled fallback, target token parity, request reset and greedy regression: PASS")
+    assert len(cli_tokens) == a.count, "CLI output length"
+    if sampled_ok:
+        assert "sampled CLI requests use target-only decoding" not in (out / "cli.txt").read_text(), "opted-in CLI still fell back"
+        assert trace.exists() and trace.read_text().strip(), "opted-in sampled CLI did not run the drafter"
+    else:
+        assert cli_tokens == cli_output(out / "cli-target.txt"), "CLI sampled target parity"
+        assert "sampled CLI requests use target-only decoding" in (out / "cli.txt").read_text()
+        assert not trace.exists() or not trace.read_text().strip(), "sampled CLI ran the drafter"
+    mode = "sampled drafting" if sampled_ok else "sampled fallback"
+    print(f"DFlash {mode}, greedy target parity, request reset and greedy regression: PASS")
 
 
 if __name__ == "__main__":
