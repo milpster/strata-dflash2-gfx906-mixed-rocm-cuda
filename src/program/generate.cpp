@@ -16353,6 +16353,18 @@ int main(int argc, char** argv) {
         strata::prefill::share_rules::default_share_has_work((int64_t) xcache.slots(), (int64_t) (g.n_layers * g.n_expert)) &&
         share_default_ok());   // H11   // before the chunk below sizes the loan
     const bool use_dflash = !o.dflash.empty();
+    // The DFlash taps are device buffers of EVERY chunk: `carve` takes n_taps x T x n_embd BF16, and
+    // `bytes_needed` prices the same bytes from `set_tap_layers`.  The loan below is sized by
+    // `bytes_needed`, so the tap layers have to be set before it - serving does (the tap layers are set at the
+    // top of the serve block, before its lend regions); the one-shot path set them after, and the loan came out
+    // n_taps * T * n_embd * 2 short: a 5-tap drafter at an 8192-token chunk under-priced the borrow by 200 MiB
+    // and `init` failed with "device buffers for a chunk of 8192 tokens do not fit" on a region exactly as
+    // large as the tap-less carve.
+    if ((use_dflash && std::getenv("STRATA_DF_NOPF") == nullptr) ||
+        (o.dflash.empty() && std::getenv("STRATA_DFLASH_TAPS") != nullptr)) {
+        const auto taps = use_dflash ? dflash_capture_layers : std::vector<int32_t>{4, 16, 24, 36, 44};
+        prefill.set_tap_layers(taps.data(), (int) taps.size(), use_dflash && dflash.artifact().geom().target_hc_mean);   // sizes the loan AND the carve
+    }
 
     bool kvg_started = false;   // the elastic K/V took this run's cells
     double prefill_batched_ms = 0;
@@ -16432,11 +16444,6 @@ int main(int argc, char** argv) {
         if (borrow == nullptr)
             std::fprintf(stderr, "strata generate: prompt path allocates its own buffers (no cache slots to borrow)\n");
         if (!multi_gpu && !o.no_pool) prefill.set_cpu_pool(&pool);
-        if ((use_dflash && std::getenv("STRATA_DF_NOPF") == nullptr) ||
-            (o.dflash.empty() && std::getenv("STRATA_DFLASH_TAPS") != nullptr)) {
-            const auto taps = use_dflash ? dflash_capture_layers : std::vector<int32_t>{4, 16, 24, 36, 44};
-            prefill.set_tap_layers(taps.data(), (int) taps.size(), use_dflash && dflash.artifact().geom().target_hc_mean);   // before init: the taps join the buffer carve
-        }
         std::function<bool(const uint16_t*, int, int64_t, int64_t, std::string&)> df_on_taps;
         if (use_dflash && std::getenv("STRATA_DF_NOPF") == nullptr) {
             // the prompt's context cells: the fusion runs per chunk over the BF16 taps
