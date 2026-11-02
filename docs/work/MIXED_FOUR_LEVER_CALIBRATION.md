@@ -207,3 +207,46 @@ and pinned-file checks passed with attached supervisor 1747129 and context
 262,144; no old production process remained. All twelve raw sample records,
 their plan lines, four startup reports and comparator arithmetic were rechecked
 in `ppc1-review1.log`. Earlier short-fixture PP results are not controls for this run.
+
+## Nearby layer splits (`lsp1`)
+
+All twelve requests completed on the same two Radeon VIIs and RTX 3080. Each
+read **10,464 fresh prompt tokens and generated 512 tokens**, using the longer
+fixture. Only the split point changed; stage trim and prefill-pipe stayed off.
+
+| Arm | PP rates (tok/s) | TG rates (tok/s) |
+| --- | --- | --- |
+| Initial canonical (`32`) | 223.3, 235.1, 235.2 | 34.0, 35.9, 36.3 |
+| Split `30` | 200.6, 210.3, 206.9 | 33.4, 35.0, 35.5 |
+| Split `34` | 251.0, 263.6, 263.9 | 33.8, 34.9, 35.0 |
+| Final canonical (`32`) | 223.6, 235.2, 235.4 | 33.9, 35.9, 36.4 |
+
+Pooled control medians were **235.15 PP / 35.9 TG tok/s**. Split `30` gave
+**206.9 PP (−12.0%) / 35.0 TG (−2.5%)**. Split `34` gave
+**263.6 PP (+12.1%) / 34.9 TG (−2.8%)**. Control ratios were 1.0004 PP and
+1.000 TG. Split `34` cleared the PP timing threshold, not the output gate.
+
+The startup logs confirmed contiguous, non-overlapping stage ranges and cache
+accounting. Helper eligibility excluded the experts held by either Radeon cache.
+
+| Split | Radeon layers | Radeon cache slots | Eligible / held pairs | Helper fill slots |
+| --- | --- | --- | --- | --- |
+| `32` (both controls) | 0–31 / 32–47 | 6,069 / 4,780 | 13,727 / 10,849 | 4,093 |
+| `30` | 0–29 / 30–47 | 6,351 / 4,598 | 13,627 / 10,949 | 3,993 |
+| `34` | 0–33 / 34–47 | 5,980 / 4,829 | 13,767 / 10,809 | 4,025 |
+
+Every helper fill stopped at the unchanged 6,400 MiB budget under the 4,200-slot
+cap. DFlash stayed at effective width 4, floor 0.5, with cross-GPU taps bound.
+Every sample recorded drafting and helper work without reported timeouts or
+fallbacks. Prompt-channel request counts were 192, 180, 204 and 192 across the arms.
+
+The canonical output messages repeated exactly for all three prompts. All six
+candidate outputs differed from their matched controls. Both verdicts are
+**OUTPUT_MISMATCH**. Split `34` is a PP timing signal, not an accepted gain;
+neither split is selected for confirmation or adoption.
+
+Canonical recovery returned `ready`. Fresh health, actual engine arguments and
+environment, helper fill, prompt channel, loaded libraries and pinned files passed
+with attached supervisor 2295355 and context 262,144. No old production process
+or private helper/server survived. All twelve raw request/reply/metric records,
+four startup reports and comparator arithmetic were rechecked in `lsp1-review1.log`.
