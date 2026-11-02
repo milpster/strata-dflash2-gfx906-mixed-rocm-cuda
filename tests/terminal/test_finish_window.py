@@ -177,12 +177,12 @@ def test_exclusive_dir_refuses_existing(tmp_path):
         fw.exclusive_dir(tmp_path / "new")
 
 
-def test_unimplemented_phases_refused():
-    for phase in ("longctx", "capacity"):
-        rc = subprocess.run([sys.executable, str(Path(fw.__file__).resolve()),
-                             phase, "--family", "x", "--expected-supervisor", "1"],
-                            capture_output=True, text=True, timeout=60)
-        assert rc.returncode != 0 and phase in rc.stderr
+def test_capacity_phase_refused():
+    # longctx is implemented; the capacity arm alone was dropped by the user
+    rc = subprocess.run([sys.executable, str(Path(fw.__file__).resolve()),
+                         "capacity", "--family", "x", "--expected-supervisor", "1"],
+                        capture_output=True, text=True, timeout=60)
+    assert rc.returncode != 0 and "dropped" in rc.stderr
 
 
 # ---------------- per-window evidence names + layer windows ----------------
@@ -236,6 +236,60 @@ def test_measure_cli_validates_window():
                          "--report-name", "measure-L36-39.json"],
                         capture_output=True, text=True, timeout=60)
     assert rc.returncode == 0 and "Plan [measure/win1]" in rc.stdout
+
+
+# ---------------- longctx: prompt, verdict, request, CLI ----------------
+
+def test_longctx_prompt_sizes_with_headroom_and_is_deterministic():
+    text, meta = fw.longctx_prompt(80000)
+    # estimate with headroom must exceed the target so the ACTUAL count clears 80k
+    assert meta["est_tokens"] >= 85600
+    assert meta["chars"] == len(text)
+    assert text.startswith("You are a maintenance-log analysis assistant.")
+    assert "### LOG END" in text and text.rstrip().endswith("do not stop early.")
+    again, meta2 = fw.longctx_prompt(80000)
+    assert again == text and meta2["sha256"] == meta["sha256"]
+    smaller, small_meta = fw.longctx_prompt(80000, chars_per_token=2.0)
+    assert small_meta["chars"] < meta["chars"]          # fewer chars/token -> fewer chars
+
+
+def test_longctx_verdict_uses_actual_usage_only():
+    good = fw.longctx_verdict(200, {"prompt_tokens": 80001, "completion_tokens": 5000}, "x")
+    assert good["passed"] and good["prompt_tokens_ok"] and good["completion_tokens_ok"]
+    assert fw.longctx_verdict(200, {"prompt_tokens": 79999, "completion_tokens": 5000}, "x")["passed"] is False
+    assert fw.longctx_verdict(200, {"prompt_tokens": 80001, "completion_tokens": 4999}, "x")["passed"] is False
+    assert not fw.longctx_verdict(200, {"prompt_tokens": 90000, "completion_tokens": 6000}, "")["passed"]
+    assert not fw.longctx_verdict(500, {"prompt_tokens": 90000, "completion_tokens": 6000}, "x")["passed"]
+    none = fw.longctx_verdict(200, None, "x")           # missing usage never passes
+    assert not none["passed"] and none["prompt_tokens"] is None
+
+
+def test_longctx_request_shape():
+    body = json.loads(fw.longctx_request("hello", 6000))
+    assert body["model"] == "swift-1.5-iq3_xxs"
+    assert body["messages"] == [{"role": "user", "content": "hello"}]
+    assert body["max_tokens"] == 6000 and body["temperature"] == 0
+    assert body["reasoning_budget_tokens"] == 0
+    assert body["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+def test_longctx_cli_validation_and_plan():
+    f = str(Path(fw.__file__).resolve())
+    rc = subprocess.run([sys.executable, f, "longctx", "--family", "x",
+                         "--expected-supervisor", "1", "--ctx-tokens", "79999"],
+                        capture_output=True, text=True, timeout=60)
+    assert rc.returncode != 0 and "80000" in rc.stderr
+    rc = subprocess.run([sys.executable, f, "longctx", "--family", "x",
+                         "--expected-supervisor", "1", "--out-tokens", "5000"],
+                        capture_output=True, text=True, timeout=60)
+    assert rc.returncode != 0 and "5000" in rc.stderr
+    rc = subprocess.run([sys.executable, f, "longctx", "--family", "longctx1",
+                         "--expected-supervisor", "1"], capture_output=True, text=True, timeout=60)
+    assert rc.returncode == 0 and "Plan [longctx/longctx1]" in rc.stdout
+    assert "NO outage" in rc.stdout and "actual usage tokens" in rc.stdout
+    rc = subprocess.run([sys.executable, f, "capacity", "--family", "x",
+                         "--expected-supervisor", "1"], capture_output=True, text=True, timeout=60)
+    assert rc.returncode != 0 and "dropped" in rc.stderr
 
 
 def test_plan_mode_touches_nothing():
