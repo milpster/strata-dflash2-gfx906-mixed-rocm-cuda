@@ -28,6 +28,9 @@ This is an in-progress snapshot, not a release or numerical signoff.
 
 Canonical production recovery remains
 `/mnt/user/Strata/launch-prod-swift15-dflash-w4-q4_0-mixed.sh --recover`.
+Recovery on 2026-11-02 was verified with `/v1/models` HTTP 200, a separate
+content smoke returning `READY`, 4093 helper slots and the second channel attached.
+The initial 16-token smoke returned reasoning only; that result was retained.
 Use the custom `~/rocm-gfx906-xnack` rocBLAS before `/opt/rocm-6.1.0`.
 Do not overwrite protected build trees, relax numerical limits, install/download
 dependencies, reload the GPU driver or automatically adopt candidates.
