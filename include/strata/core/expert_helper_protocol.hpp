@@ -82,6 +82,7 @@ inline constexpr int64_t kMaxFallbackRowsTotal = 4096;   // tiled same-layer fal
 inline constexpr uint32_t kFeaturePromptRows = 1u;       // HelloAck.features bit 0 (the tier exists)
 inline constexpr uint32_t kFeaturePromptF32 = 2u;        // HelloAck.features bit 1 (fp32 activations, M4c (b))
 inline constexpr uint32_t kFeatureDraft = 4u;            // HelloAck.features bit 2 (M7: the drafter lane)
+inline constexpr uint32_t kFeatureDraftBf16 = 8u;        // HelloAck.features bit 3 (L8: bf16 draft taps)
 
 // Frame types.  Exactly one request is outstanding: the engine sends hello, fill, and a begin; each
 // expect a reply of the named type with the same request id.  A frame with an unexpected type, version,
@@ -110,6 +111,13 @@ enum FrameType : uint32_t {
     kDraftAck = 12,    // helper -> engine: the empty ack of kDraftCtx
     kDraftReq = 13,    // engine -> helper: one round - the committed window rows' taps + the anchor
     kDraftReply = 14,  // helper -> engine: the block's draft picks and their probabilities
+    // L8 (drafter wire v2, default OFF - the engine's STRATA_DRAFT_TAP_BF16): the SAME taps on
+    // HALF the wire - the rows of kDraftCtx/kDraftReq travel as bf16 (2 bytes per tap) instead of
+    // fp32, same DraftCtxReq/DraftReq headers.  The SAME extension rule as kBeginP and the M7
+    // lane above: a new frame type, sent only to a peer that advertised kFeatureDraftBf16, so a
+    // mixed build answers with this transport's own typed refusal, never a silent misparse.
+    kDraftCtxBf16 = 15,   // engine -> helper: kDraftCtx's rows as bf16
+    kDraftReqBf16 = 16,   // engine -> helper: kDraftReq's rows as bf16
 };
 
 // Frame limits the reader enforces before allocating anything.
