@@ -93,4 +93,36 @@ four protected hashes matched and no old production process survived cleanup.
 Evidence is retained under `build-mixed-gpu/cap1-validation/trm1-*` and the raw
 `/mnt/user/Strata/logs/window-trm1-b-*` helper/server logs.
 
-A single fresh-family retry is planned with unchanged settings and timeouts.
+## Stage trim: unchanged retry (`trm2`)
+
+The retry completed all nine requests. Every request read 9,185 fresh prompt
+tokens and generated 512 tokens. These are measurements on the same two Radeon
+VIIs and RTX 3080; the first failed window above is retained separately.
+
+| Arm | PP rates (tok/s) | TG rates (tok/s) |
+| --- | --- | --- |
+| Initial canonical | 225.6, 236.5, 235.7 | 34.1, 35.1, 36.8 |
+| Stage trim | 255.6, 270.7, 272.2 | 34.4, 36.0, 35.4 |
+| Final canonical | 226.0, 236.8, 235.7 | 33.9, 34.9, 36.9 |
+
+Against the pooled controls, median PP rose **235.7 → 270.7 tok/s (+14.8%)**.
+Median TG was **35.0 → 35.4 tok/s (+1.1%)**, below the 5% candidate threshold.
+Final/initial control ratios were 1.000 for PP and 0.994 for TG.
+
+The initial and final canonical output messages matched exactly for all three
+prompts. **All three trimmed outputs differed.** For example, the first reply's
+second checklist entry changed from a routing-frequency “counter” to a “profiler”.
+This is actual output divergence, not a different response timestamp or ID. It
+does not by itself establish a quality loss, but it fails this test's output gate.
+The verdict is **OUTPUT_MISMATCH**, not an accepted speed improvement.
+
+The startup residency increase above repeated. All successful samples reported
+helper work and drafting, with zero reported helper timeouts or fallbacks. Each
+arm's prompt channel recorded 192 requests. No settings were adopted, and no
+further trim run is planned in this sweep.
+
+Canonical recovery returned `ready`. A fresh check verified HTTP 200, loaded,
+context 262,144, attached supervisor 418189, helper fill, prompt-channel connection,
+custom gfx906/ROCm 6.1 library mappings and unchanged pinned files. No old production
+process remained. Raw requests, replies and comparator arithmetic were rechecked
+against the status file; see `trm2-review1.log` and `trm2-*` in the evidence directory.
