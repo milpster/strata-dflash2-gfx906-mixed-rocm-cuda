@@ -200,23 +200,32 @@ def probe(label, rep, state, *, config_path=CONFIG, base_url="http://127.0.0.1:8
     if len(metrics) != 1:
         raise RuntimeError(f"Expected one serve line, got {len(metrics)}; inspect saved log")
     metric = metrics[0]
+    helper_less = state.get("helper_pid") == 0   # helper-off A/B arms: no helper process
     reply = json.loads(raw)
     ct = reply["usage"]["completion_tokens"]
     finish = reply["choices"][0]["finish_reason"]
+    # The helper engagement gate inverts for helper-less arms (helper reqs null/0 is the
+    # proof the engine really ran helper-free); None (json null in the serve line) reads
+    # as 0 so a normal arm reporting null fails the gate instead of raising TypeError.
+    reqs = metric.get("helper_reqs") or 0
     valid = (status == 200 and finish in ("stop", "length") and type(ct) is int
              and 0 < ct <= metric["generated"] and metric["generated"] >= 8
-             and metric["reused"] == 0 and metric.get("helper_reqs", 0) > 0
-             and metric.get("helper_timeouts") == 0 and metric.get("helper_fallbacks") == 0)
+             and metric["reused"] == 0 and (reqs == 0 if helper_less else reqs > 0)
+             and (metric.get("helper_timeouts") or 0) == 0
+             and (metric.get("helper_fallbacks") or 0) == 0)
     if not valid:
         raise RuntimeError(f"Invalid recovery probe {label}/{rep}: {metric}")
     if require_remote_draft:
         failures = re.findall(r"strata draft-helper:[^\n]*(?:failed|refused|drafting stays|names)[^\n]*", segment)
         if failures or metric.get("offered", 0) <= 0:
             raise RuntimeError(f"Remote drafter did not remain active in {tag}/{rep}: {failures}")
-    if not pair.alive(state["helper_pid"], state["helper_start"]):
+    if not helper_less and not pair.alive(state["helper_pid"], state["helper_start"]):
         raise RuntimeError("Helper died during the probe")
     result = dict(label=label, rep=rep, http=status, elapsed_s=elapsed, finish=finish,
                   completion_tokens=ct, request_sha256=hashlib.sha256(body).hexdigest(), size=size, **metric)
+    for key in ("helper_reqs", "helper_timeouts", "helper_fallbacks"):
+        if result.get(key) is None:
+            result[key] = 0
     print(json.dumps(result), flush=True)
     return result
 

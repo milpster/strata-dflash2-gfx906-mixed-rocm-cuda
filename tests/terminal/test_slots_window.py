@@ -478,6 +478,13 @@ def _helper_off_rows(off_rates, on_rate, *, off_reqs=0, on_reqs=250):
             arm("c", off_rates[3:], True, off_reqs)]
 
 
+def test_helper_off_comparison_treats_null_helper_counters_as_zero():
+    rows = _helper_off_rows([28.0] * 6, 33.0, off_reqs=None)
+    out = slots_window.helper_off_comparison(rows)
+    assert out["off_helper_reqs_total"] == 0
+    assert out["verdict"] == "HELPER_GAIN_CONFIRMED"
+
+
 def test_helper_off_comparison_verdicts():
     assert slots_window.helper_off_comparison(
         _helper_off_rows([28.0] * 6, 33.0))["verdict"] == "HELPER_GAIN_CONFIRMED"
