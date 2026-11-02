@@ -38,11 +38,45 @@ def replace_regex_once(text, pattern, new):
     return re.sub(pattern, lambda _match: new, text, count=1)
 
 
+def apply_tuning(config, tuning):
+    """One named four-lever experiment on a PRIVATE config; no generic overrides."""
+    if not isinstance(tuning, dict) or len(tuning) != 1:
+        raise ValueError("Tuning requires exactly one approved lever")
+    name, value = next(iter(tuning.items()))
+    args = config["args"]
+    if name == "stage_trim" and value is True:
+        config.setdefault("env", {})["STRATA_STAGE_TRIM"] = "1"
+    elif name == "dflash" and isinstance(value, (list, tuple)) and len(value) == 3:
+        spec, block, floor = value
+        if (type(spec) is not int or type(block) is not int or
+                type(floor) not in (int, float) or not 2 <= spec <= 8 or
+                not 1 <= block <= min(spec - 1, 7) or not 0 < floor <= 1):
+            raise ValueError("DFlash tuning needs spec 2..8, block <= spec-1 and floor (0,1]")
+        for flag, replacement in zip(("--spec", "--dflash-block", "--spec-min-p"), value):
+            if args.count(flag) != 1:
+                raise ValueError(f"Tuning requires exactly one {flag}")
+            args[args.index(flag) + 1] = str(replacement)
+    elif name == "prefill_pipe" and type(value) is int and value in (1, 3072, 6144):
+        if "--prefill-pipe" in args:
+            raise ValueError("Production already carries --prefill-pipe")
+        args += ["--prefill-pipe", str(value)]
+    elif name == "layer_split" and type(value) is int and value in (30, 34):
+        if config.get("layer_split") != "32" or "--layer-split" in args:
+            raise ValueError("Split tuning requires the explicit production split 32")
+        config["layer_split"] = str(value)
+    else:
+        raise ValueError("Unsupported four-lever tuning")
+
+
 def prepare(family, *, slots=4000, fill_mib=6400, port=18080, evidence=EVIDENCE,
             prod_config=PROD_CONFIG, prod_launcher=PROD_LAUNCHER,
             engine=None, helper=None, rpc_profile=False, draft_helper=None, knob=None,
             prefill_timing=False, helper_streams=False, draft_tap_bf16=False,
-            split_overlap=False, helper_off=False):
+            split_overlap=False, helper_off=False, tuning=None):
+    if tuning is not None and (knob is not None or engine is not None or helper is not None or
+                               draft_helper is not None or rpc_profile or prefill_timing or
+                               helper_streams or draft_tap_bf16 or split_overlap or helper_off):
+        raise ValueError("Four-lever tuning cannot compose with other experiments")
     if prefill_timing is not None and type(prefill_timing) is not bool:
         raise ValueError("Prefill timing override must be True, False, or None")
     if helper_streams is not None and type(helper_streams) is not bool:
@@ -134,6 +168,8 @@ def prepare(family, *, slots=4000, fill_mib=6400, port=18080, evidence=EVIDENCE,
             del args[args.index(f"--{name}")]
         else:
             raise ValueError(f"Flag knob --{name} takes only on/off")
+    if tuning is not None:
+        apply_tuning(config, tuning)
     text = Path(prod_launcher).read_text()
     text = replace_once(text, 'CONFIG="$ROOT/prod-config-swift15-dflash-w4-q4_0-mixed.json"',
                         f"CONFIG={shlex.quote(str(config_path))}")
@@ -239,7 +275,8 @@ def prepare(family, *, slots=4000, fill_mib=6400, port=18080, evidence=EVIDENCE,
                     helper=str(helper) if helper is not None else "production",
                     rpc_profile=rpc_profile, draft_helper=draft_helper, prefill_timing=prefill_timing,
                     helper_streams=helper_streams, draft_tap_bf16=draft_tap_bf16,
-                    split_overlap=split_overlap, helper_off=helper_off,
+                     split_overlap=split_overlap, helper_off=helper_off,
+                     tuning=tuning,
                     knob=None if knob is None else dict(name=knob[0], value=str(knob[1])),
                     config=str(config_path), launcher=str(launcher_path),
                     socket=str(socket), socket2=str(socket2), state=str(state_path))
