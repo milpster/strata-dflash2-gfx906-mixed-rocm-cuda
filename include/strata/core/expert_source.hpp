@@ -673,6 +673,65 @@ void set_tail_skip_rank(int r);
 void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32_t* ids, int64_t n_tok, int64_t k,
                                 float* out);
 
+/// R2 (opt-in, the out-of-process CUDA expert helper; src/core/expert_helper_fallback.cpp): recompute
+/// EXACTLY the claimed (token,k) rows on the CPU after the helper's finish failed.  `claimed` lists
+/// routing indices in (0, n_tok*k); `x_f` is the window's (n_tok, n_embd) activation the dispatch
+/// already holds.  The quantizer choice and the pool call are the dispatch's own (act_quant_any /
+/// native_quant_act / act_quant_q8_1 + run_split_multi[_native]) - no new semantics: a recomputed row
+/// is what a CPU-served row always was.  Quantizes the activations of the tokens that own claimed
+/// rows EVEN when the window had no CPU work at all.  True when every claimed row was written; false
+/// names the failure in `d.fail` (a source failure latches `d.failed` as the dispatch's own paths do).
+bool expert_helper_recompute_claimed(ExpertDispatch& d, const float* x_f, const int32_t* ids, int64_t n_tok,
+                                      int64_t k, const int32_t* claimed, int64_t n_claimed, bool native,
+                                      int64_t layer, float* out);
+
+/// R5 P1 (r5-three-gpu-design.md §2, "Same-layer fallback, bounded"): the tile state - the staged rows
+/// of one ≤MAXT-token tile (owned, allocated once) and the budget counters the caps are checked
+/// against.  `rows_layer` is per-layer (the caller resets it at each layer), `rows_total` per request.
+struct ExpertHelperPromptFallback {
+    std::vector<float> stage;    // MAXT*10 rows of the tile's staged output (the shipped contract's window)
+    int64_t rows_layer = 0;
+    int64_t rows_total = 0;
+    void start_layer() { rows_layer = 0; }
+};
+
+/// R5 P1: the MAXT=8 tiling as a REUSABLE library path for the PROMPT tier's deficit - the rows a
+/// kBeginP reply did not answer.  This is the design's requirement stated in code: the shipped window
+/// contract (n_tok ≤ 8, k = 10, ≤ 80 entries, per-expert nt ≤ 8) is NEVER widened; the deficit's
+/// SELECTED tokens partition into tiles of ≤ cpu::MAXT tokens, each tile is ONE exact call of
+/// expert_helper_recompute_claimed - per-expert nt ≤ tile size ≤ 8, so the job-slot guard at
+/// expert_helper_fallback.cpp's :111 (the `jb.nt >= MAXT` skip) cannot fire and no row is dropped -
+/// and the tile's rows land at the caller's per-entry destinations.
+///
+/// Contract:
+///   * `x_sel` is the TIER'S OWN pinned activation buffer (the design's `ext_x`; never the engine's
+///     `cpu_x`, which does not exist on the canonical stream_all path): `n_sel` fp32 rows of n_embd,
+///     in the SAME ascending token order as `sel` (the prompt plan's token list).
+///   * `sel` is that ascending token list; `ids` the FULL layer's routing ids (T*k, routing order);
+///     `claims` the FULL-window entry indices (t*k + j) the helper did not answer - exactly the
+///     deficit, one entry per row, no duplicates.  A tile is a contiguous slice of `sel` (≤ MAXT
+///     positions), so its window is real: the shipped function's `x_f + t*H` and `out + i*H` indexing
+///     lands on the right rows with NO contiguity assumption on the tokens themselves.
+///   * `dst[c]` is the destination row of `claims[c]` (the Dm row for that entry).  The tile writes
+///     into the library's own stage; each row is then copied out to its own `dst[c]` - one row, once.
+///   * Budget: a tile that would breach `max_rows_per_layer` (rows_layer) or `max_rows_total`
+///     (rows_total) is NOT run: returns false with `budget_exceeded = true` and `d.failed` NOT set -
+///     the request keeps its local compute and the caller disables the tier for the rest of the
+///     request (the design's notice policy; P2's call site prints it).  Rows already written stay:
+///     complete, correct, CPU-served rows.
+///   * A blob the source cannot produce is the shipped function's own failure (d.failed with the
+///     source's message, exactly the CPU share's `err` at the combine join): never a silent zero,
+///     never a partial block.
+///   * Threading: this calls `d.src->blob` per tile and the prefill source is not thread-safe
+///     (prefill.cpp:3915-3920) - the caller runs the whole call on the prefill caller thread with no
+///     other source call interleaved, the shipped function's own rule inherited unchanged.
+bool expert_helper_recompute_prompt_rows(ExpertDispatch& d, const float* x_sel, const int32_t* sel,
+                                          int64_t n_sel, const int32_t* ids, int64_t k,
+                                          const int32_t* claims, int64_t n_claims, float* const* dst,
+                                          bool native, int64_t layer, int64_t max_rows_per_layer,
+                                          int64_t max_rows_total, ExpertHelperPromptFallback& fb,
+                                          bool& budget_exceeded);
+
 /// **THE HITS, LAUNCHED AFTER THE MISSES ARE STAGED AND BEFORE `post[l]`.**  Same shape as `PoolFn` and for the
 /// same reason: `session_loop` owns the ORDER and this owns the work, so the loop needs to know nothing about
 /// expert caches.  Returns immediately when there are no hits, which is every layer until the cache is warm.

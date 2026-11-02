@@ -13,6 +13,14 @@ in both the server and command-line generation paths.
 ## Use
 
 Set `STRATA_DISJOINT_ADAPT=1` before starting the engine. It is off by default.
+With the out-of-process socket helper (`--expert-helper-socket`) registered, the check is ON by
+default: its bytes are all-layer, so a swap onto a pair it owns is a real double residency. Set
+`STRATA_DISJOINT_ADAPT=0` to opt out; `=1` keeps the opt-in for the in-process helper tiers, and a
+run with no helper is unchanged. A proxy whose channel closed (the helper died, the connect failed,
+the engine closed it) is not consulted, so local promotions stay possible after the helper's loss.
+A proxy disabled inside the current request is still consulted: its helper process is alive with
+its slots allocated, so its pairs stay out of the primary's candidates, and the next request's
+boundary re-arms its compute.
 It leaves the existing peer-tier check and expert arithmetic unchanged.
 The check is live: each promotion candidate is asked of the helper's own cache (`RemoteExperts::holds`), so an expert
 the helper's tier swaps in or out later is followed (a mask copied at load would go stale). Needs the helper-share

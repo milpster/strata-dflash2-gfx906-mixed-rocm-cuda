@@ -16,6 +16,7 @@
 #pragma once
 
 #include "strata/artifact/gguf_reader.hpp"
+#include "strata/core/dflash_refusal.hpp"
 #include "strata/core/dflash_ring.hpp"
 #include "strata/core/dflash_tap_collect.hpp"
 #include "strata/core/session.hpp"
@@ -225,6 +226,11 @@ public:
     }
     /// The mask token id this drafter proposes with (metadata, or the CLI override set at upload).
     int64_t mask_token() const { return mask_; }
+    /// The classification of the LAST propose() call (include/strata/core/dflash_refusal.hpp):
+    /// cleared at propose()'s entry, set ONLY by the vocabulary check on the host candidates.
+    /// Call sites use THIS to tell the recoverable numeric refusal from every fatal failure -
+    /// never the error text.  Meaningful only after a propose() that returned false.
+    DflashRefusal last_refusal() const { return last_refusal_; }
 
 private:
     /// ctx = hidden_norm(fc(tapin_)) for `rows` rows already staged in `tapin_` ([rows][F] bf16),
@@ -252,6 +258,7 @@ private:
     std::array<int64_t, 18> graph_chunks_{}, graph_cap_{};
     bool graph_prob_ = false;
     bool reference_mode_ = false;
+    DflashRefusal last_refusal_ = DflashRefusal::kNone;   ///< the last propose()'s failure class
     void clear_graphs();
 
     // the target's shared modules

@@ -461,7 +461,7 @@ void ring_regression(const ModelGeometry& g) {
                 const float* qrow = qh.data() + ((size_t) r * nq + h) * hd;
                 double sc = 0;
                 for (int d = 0; d < hd; ++d)
-                    sc += (double) qrow[d] * __half2float(__ushort_as_half(krow[d]));
+                    sc += (double) qrow[d] * (double) strata::kernels::f32_from_f16(krow[d]);
                 scores[(size_t) c] = sc / std::sqrt((double) hd);
                 m = std::max(m, scores[(size_t) c]);
             }
@@ -472,7 +472,7 @@ void ring_regression(const ModelGeometry& g) {
                 for (int64_t c = lo; c < end; ++c) {
                     if (std::abs(c - (end - rows + r)) >= window) continue;
                     const uint16_t* vrow = vp.data() + (size_t) row_of(c, h) * hd;
-                    acc += scores[(size_t) c] * __half2float(__ushort_as_half(vrow[d]));
+                    acc += scores[(size_t) c] * (double) strata::kernels::f32_from_f16(vrow[d]);
                 }
                 const double want = acc / sum, have = got[(size_t) r * qw + h * hd + d];
                 const double abse = std::abs(have - want);

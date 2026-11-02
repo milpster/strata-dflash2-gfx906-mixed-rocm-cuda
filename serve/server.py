@@ -2272,6 +2272,7 @@ class StrataEngine:
                         pass
                 elif line.startswith("DONE"):
                     self._parse_done(line)
+                    self._last_done = line   # mixed-GPU acceptance: keep the raw line (helper= tail) for the done log
                     done = True
                     if self.last.get("finish") == "nonfinite":   # #879
                         raise EngineNonFinite("the engine's logits became non-finite (#879)")
@@ -3129,7 +3130,43 @@ def engine_args(cfg: dict) -> list[str]:
             args += ["--vram-segment-mib", str(seg)]
     args += parallel_args(cfg, args)
     args += pool_cores_args(cfg, args)
+    args += expert_helper_args(cfg, args)
     return learned_profile_args(cfg, args)
+
+
+def expert_helper_args(cfg: dict, args: list[str]) -> list[str]:
+    """R2 (opt-in, docs/MIXED_GPU_HELPER.md): "expert_helper_socket": "<path>" in the config starts the
+    engine with --expert-helper-socket, the out-of-process CUDA expert helper's AF_UNIX channel.  The
+    helper process itself is started BY HAND before the server (the engine never spawns it; absent, the
+    engine warns and the CPU path serves its rows for the whole run).  Optional keys:
+    "expert_helper_layers", "expert_helper_slots", "expert_helper_reserve_mib",
+    "expert_helper_timeout".  Opt-in "expert_helper_socket2": "<path>" adds the prompt tier's own
+    second channel (the helper's --socket2).  Without the keys - the default, every shipped config -
+    the engine's arguments are the config's, unchanged.
+
+    Like parallel_args/pool_cores_args this returns ONLY the new flags (the caller composes with
+    `args += expert_helper_args(cfg, args)`, serve/server.py:3132): returning the accumulated list
+    here would send the engine every argument TWICE (R2 gate M1 - a repeated --lora loads the
+    adapter twice, which is a different model, and accumulating flags lose last-value-wins)."""
+    sock = cfg.get("expert_helper_socket")
+    if not isinstance(sock, str) or not sock.strip() or "--expert-helper-socket" in args:
+        return []
+    delta = ["--expert-helper-socket", sock.strip()]
+    # Opt-in SECOND channel ("expert_helper_socket2": "<path>", the helper's --socket2): the prompt
+    # tier's own socket, so the window tier and the prompt tier stop queueing behind each other's
+    # in-flight request.  Absent (the default, every shipped config) the engine keeps one channel.
+    sock2 = cfg.get("expert_helper_socket2")
+    if (isinstance(sock2, str) and sock2.strip() and sock2.strip() != sock.strip()
+            and "--expert-helper-socket2" not in args):
+        delta += ["--expert-helper-socket2", sock2.strip()]
+    for key, flag in (("expert_helper_layers", "--expert-helper-layers"),
+                      ("expert_helper_slots", "--expert-helper-slots"),
+                      ("expert_helper_reserve_mib", "--expert-helper-reserve-mib"),
+                      ("expert_helper_timeout", "--expert-helper-timeout-ms")):
+        v = cfg.get(key)
+        if isinstance(v, int) and not isinstance(v, bool) and v >= 0 and flag not in args:
+            delta += [flag, str(v)]
+    return delta
 
 
 PARALLEL_MAX = 8      # the engine's batch window holds at most 8 rows (kVerifyMaxT); --batch-mtp waves more through it
@@ -5479,8 +5516,14 @@ class Service:
                             if hit_msg and pcie_share:
                                 hit_msg += f" (+{pcie_share*100:.1f}% of the routed experts over PCIe)"
                             rate_txt = f"{rate:.1f} tok/s" if rate is not None else "no speed"
+                            # mixed-GPU acceptance (worktree-only instrumentation): the engine's DONE line carries
+                            # the helper's per-request evidence as " helper=reqs=.. rows=.. bytes=.. timeouts=..
+                            # fallbacks=.." at its tail - surface it here so the counters are observable in the log.
+                            done_line = getattr(self.engine, "_last_done", "") or ""
+                            helper_at = done_line.find(" helper=")
+                            helper_msg = done_line[helper_at:] if helper_at >= 0 else ""
                             print(f"[strata] done: {n} tokens in {el:.0f} s ({rate_txt}) "
-                                  f"({finish}, cancel={cancel.is_set()}){hit_msg}", flush=True)
+                                  f"({finish}, cancel={cancel.is_set()}){hit_msg}{helper_msg}", flush=True)
                             if finish == "length" and parser.state in ("reasoning", "rcall"):   # #530
                                 print("[strata] the reply reached max tokens while still thinking, so it has no "
                                       "answer: a thinking budget (reasoning_budget_tokens, in the request or in "

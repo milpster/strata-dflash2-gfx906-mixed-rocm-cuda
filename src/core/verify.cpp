@@ -489,18 +489,20 @@ std::string released_note(bool drained) {
     return drained ? "; its GPU waits were released and the GPU finished (#267)"
                    : "; its GPU waits were released but the GPU did not finish within 5 s (#267)";
 }
+constexpr auto kGpuProgressTimeout = std::chrono::seconds(40);
+constexpr double kGpuProgressTimeoutMs = std::chrono::duration<double, std::milli>(kGpuProgressTimeout).count();
 // #267 test hook: STRATA_TEST_VERIFY_STALL=N withholds the last layer's flag in the N-th window (1-based), so the
 // GPU spins on a flag nobody raises - the bounded window wait and the release are then what ends it.  Unset: never.
 const int64_t g_test_stall = [] {
     const char* e = std::getenv("STRATA_TEST_VERIFY_STALL");
     return e != nullptr ? (int64_t) std::atoll(e) : (int64_t) 0;
 }();
-// The overlapped split's hand-off wait on the GPU is bounded: STRATA_SPLIT_WAIT_MS (default 30000, 0 = no bound).
-// The host's own per-layer wait (20 s, #267) normally ends a stalled window first; this bound is the backstop for
+// The overlapped split's hand-off wait on the GPU is bounded: STRATA_SPLIT_WAIT_MS (default 50000, 0 = no bound).
+// The host's own per-layer wait (40 s, #267) and 5 s cleanup normally end a stalled window first; this is the backstop for
 // a host that is gone (a killed process must not leave a kernel spinning on its card).
 const unsigned long long g_split_wait_ns = [] {
     const char* e = std::getenv("STRATA_SPLIT_WAIT_MS");
-    return (unsigned long long) (e != nullptr ? std::atoll(e) : 30000) * 1000000ull;
+    return (unsigned long long) (e != nullptr ? std::atoll(e) : 50000) * 1000000ull;
 }();
 // test hook: STRATA_TEST_HANDOFF_DROP=N - the writing stage's N-th window (1-based) leaves its hand-off flag down, as
 // if the publish were lost; the reading stage's bounded wait (or the host's) must then end the window cleanly.
@@ -2833,14 +2835,14 @@ void Verifier::accumulate_profile_inner(const unsigned long long* stamps) {
 }
 
 // 0.1.43 (STRATA_ADAPT_OVERLAP): hold the host until the adaptive tier's copies up to `layer` have landed.  The wait
-// is a spin on an atomic the copy stream's host functions raise (no driver call here); 20 s is the window's own limit.
+// is a spin on an atomic the copy stream's host functions raise (no driver call here); it shares the window's 40 s limit.
 bool Verifier::adapt_gate_wait(int32_t layer, std::string& err) {
     const Clock::time_point t0 = Clock::now();
     uint32_t spins = 0;
     while (adapt_gate_->reached() < layer) {
         _mm_pause();
         if ((++spins & 1023u) != 0) continue;
-        if (Clock::now() - t0 > std::chrono::seconds(20)) {
+        if (Clock::now() - t0 > kGpuProgressTimeout) {
             err = "verify: the adaptive tier's copies for layer " + std::to_string(layer) + " never landed" +
                   released_note(release_gpu_waits(5000));
             return false;
@@ -3053,7 +3055,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
                     return false;
                 }
             }
-            if (now - a > std::chrono::seconds(20)) {
+            if (now - a > kGpuProgressTimeout) {
                 // #267: the caller ends the engine; no spin kernel may outlive it
 #if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
                 trace_ev("TIMEOUT", k, l, (int64_t) (launch_o ? launch_o->query() : cudaStreamQuery(cs_)));
@@ -3822,7 +3824,7 @@ bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, cons
     // #646: a stage whose every expert is resident plans on the device and raises no host doorbells, so the
     // per-layer spin below has nothing to wait for: without the PLE flag the graph finishes with the ring silent
     // ("verify batch: layer K never rang (graph finished)" - K is that stage's first layer), and with it the graph
-    // sits on the PLE wait until the 20 s timeout.  As run() does: raise the PLE flag the graph's first wait reads,
+    // sits on the PLE wait until the 40 s timeout.  As run() does: raise the PLE flag the graph's first wait reads,
     // let the graph run to the end, and skip the host's per-layer service (there is nothing to serve).
     // #646 + #871: the skip is per-window (ar_on), not per-process (all_resident_): a stage that was 100%
     // resident at init takes the doorbell graph while a prompt loan/shrink/swap is in flight (ar_off_), and that
@@ -3866,7 +3868,7 @@ bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, cons
                     return false;
                 }
             }
-            if (now - a > std::chrono::seconds(20)) {
+            if (now - a > kGpuProgressTimeout) {
                 err = "verify batch: timed out at layer " + std::to_string(l) + released_note(release_gpu_waits(5000));
                 return false;
             }
@@ -4049,7 +4051,7 @@ int Verifier::batch_serve(PoolMultiFn pool, void* user) {
 int Verifier::batch_poll(PoolMultiFn pool, void* user, std::string& err) {
     if (!b_running_) return 1;
     // set_external_serve: another thread serves the doorbells (batch_serve) and this one only checks for a window that
-    // will not finish, as below: its graph ended (or failed) with a layer still to ring, or no layer rang for 20 s.
+    // will not finish, as below: its graph ended (or failed) with a layer still to ring, or no layer rang for 40 s.
     // The stream query can wait for the driver's lock while a read's call holds it; the doorbells go on meanwhile.
     // The served count is read before the query and the ring count after it: a layer served in between rang first.
     if (ext_serve_.load(std::memory_order_acquire) && !ar_on()) {
@@ -4067,7 +4069,7 @@ int Verifier::batch_poll(PoolMultiFn pool, void* user, std::string& err) {
                 b_running_ = false;
                 return -1;
             }
-            if (now - last_ring() > std::chrono::seconds(20)) {
+            if (now - last_ring() > kGpuProgressTimeout) {
                 err = "verify batch: timed out at layer " + std::to_string(lb_ + k) +
                       released_note(release_gpu_waits(5000));
                 b_running_ = false;
@@ -4090,7 +4092,7 @@ int Verifier::batch_poll(PoolMultiFn pool, void* user, std::string& err) {
                 b_running_ = false;
                 return -1;
             }
-            if (now - last_ring() > std::chrono::seconds(20)) {
+            if (now - last_ring() > kGpuProgressTimeout) {
                 err = "verify batch: timed out at layer " + std::to_string(lb_ + b_k_) +
                       released_note(release_gpu_waits(5000));
                 b_running_ = false;
@@ -4305,7 +4307,7 @@ int Verifier::service(PoolMultiFn pool, void* user, std::string& err) {
     // on it (0.1.41, Windows, an RTX 3060 + RTX 5070 Ti split).  The same answer as the loop below gives.
     if (!ar_on() && *(volatile uint32_t*) h_seq_ < (uint32_t) (fl_k_ + 1)) {
         const double now = now_ms();
-        if (now - fl_flush_ms_ <= 2.0 && now - fl_since_ms_ <= 20000.0) return 0;
+        if (now - fl_flush_ms_ <= 2.0 && now - fl_since_ms_ <= kGpuProgressTimeoutMs) return 0;
     }
     const OnDevice on_device(device_);
     const ModelGeometry& g = *g_;
@@ -4347,7 +4349,7 @@ int Verifier::service(PoolMultiFn pool, void* user, std::string& err) {
                 }
                 (void) cudaStreamQuery(cs_);
             }
-            if (now - fl_since_ms_ > 20000.0) {   // #267: no spin kernel may outlive the engine
+            if (now - fl_since_ms_ > kGpuProgressTimeoutMs) {   // #267: no spin kernel may outlive the engine
                 trace_ev("TIMEOUT", fl_k_, l, 0);
                 err = "verify: timed out at layer " + std::to_string(l) + released_note(release_gpu_waits(5000));
                 return -1;
@@ -4395,7 +4397,7 @@ bool Verifier::done(std::string& err) {
     if (q == cudaErrorNotReady) {
         const double now = now_ms();
         if (now - fl_flush_ms_ > 2.0) { fl_flush_ms_ = now; (void) cudaStreamQuery(cs_); }
-        if (now - fl_since_ms_ > 20000.0) {   // every layer served, and the graph still runs: #267 as above
+        if (now - fl_since_ms_ > kGpuProgressTimeoutMs) {   // every layer served, and the graph still runs: #267 as above
             err = "verify: the window never finished" + released_note(release_gpu_waits(5000));
         }
         return false;

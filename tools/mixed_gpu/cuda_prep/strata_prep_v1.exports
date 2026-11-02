@@ -1,0 +1,15 @@
+/* tools/mixed_gpu/cuda_prep/strata_prep_v1.exports - the linker export list for the PREPARATION ABI v1. */
+/* Only these C symbols leave a strata_prep_*.so.  With -fvisibility=hidden everything else (the kernels' */
+/* C++ symbols, the CUDA and HIP runtime names, cudart internals, ggml) stays local: no engine symbol and */
+/* no backend symbol is exported, so the CUDA library and the HIP library cannot interpose on each other. */
+{
+    global:
+        strata_prep_v1_abi_version;
+        strata_prep_v1_get_info;
+        strata_prep_v1_strerror;
+        strata_prep_v1_supported;
+        strata_prep_v1_expert;
+        strata_prep_v1_combine;
+    local:
+        *;
+};

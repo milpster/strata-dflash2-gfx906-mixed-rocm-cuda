@@ -131,6 +131,13 @@ option(STRATA_PREFILL_MMQ "Build the optional GGML MMQ prefill path for HIP" OFF
 # HIP a code object loads on first use, so they cost other models nothing there (R9700: the same slots).  Used at run
 # time with STRATA_MMQ_KQ=1 (opt-in: it changes the prompt's rounding against the FP16 path).
 option(STRATA_MMQ_TQ_OVERLAY "Gyro trellis MMQ prompt kernels on an upstream llama.cpp: an overlay of its ggml-cuda headers written at configure time (cmake/strata_ggml_tq_overlay.cmake)" ON)
+# R2 (opt-in, docs/MIXED_GPU_HELPER.md): build the CUDA-only `strata-expert-helper` sidecar next to the
+# engine.  OFF (the default) compiles NOTHING of it: no extra target, no extra TU, the engine's own
+# binary keeps its sidecar-free shape - the proxy client inside the engine is always compiled (CPU-only
+# code, no device call), the helper is a separate process a user starts by hand.  The helper is CUDA
+# only: under the gfx906 HIP scheme it is refused with a named reason (the sidecar owns all NVIDIA
+# memory; the HIP engine process runs the client with no CUDA runtime mapped at all).
+option(STRATA_BUILD_EXPERT_HELPER "Build the CUDA-only strata-expert-helper sidecar (opt-in; docs/MIXED_GPU_HELPER.md)" OFF)
 option(STRATA_MMQ_KQUANTS "Build the MMQ prompt kernels for Q4_K / Q5_K / Q5_1 / Q6_K: the experts of Unsloth's K-quant files, and on HIP the dense GGUF projections (STRATA_DENSE_MMQ)" ON)
 # Q6_K gate/up in the grouped expert kernels (Unsloth's UD-Q6_K_XL, and layer 2 of UD-Q5_K_XL; docs/QUANTS.md).  On by
 # default since MODEL-UPDATE Phase 1: one more instance per grouped kernel in iq_kernels.cu, +19 KB of sm_60 code,
@@ -642,7 +649,16 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     src/core/expert_cache.cpp src/core/native_head.cpp src/core/native_dense.cpp src/core/verify.cpp src/core/mtp.cpp
     src/core/dflash.cpp src/core/dflash_runtime.cpp src/core/dflash_tap_collect.cpp
     src/core/conversation_snapshot.cpp src/core/conversation_state.cpp src/core/conversation_memory.cpp src/core/peer_experts.cpp
-    src/core/arch_defaults.cpp src/core/nv_defaults.cpp src/core/vmm.cpp src/core/conversation_file.cpp)
+    src/core/arch_defaults.cpp src/core/nv_defaults.cpp src/core/vmm.cpp src/core/conversation_file.cpp
+    # R2 (opt-in CUDA helper): the engine-side proxy client and the CPU recompute of the helper's
+    # claimed rows.  Both are CPU-only sources - no device call, no CUDA kernel - and the frame
+    # transport is the SAME file the CUDA helper compiles (tools/mixed_gpu/sidecar/helper_frame.cpp),
+    # shared verbatim: one transport, two processes.
+    # M1 (capacity): expert_helper_candidates.cpp is the same kind of source - the helper's eligibility,
+    # its byte-budget arithmetic and the promotion gate, over masks and profile data, with no device call.
+    src/core/expert_helper_socket.cpp src/core/expert_helper_fallback.cpp
+    src/core/expert_helper_candidates.cpp
+    tools/mixed_gpu/sidecar/helper_frame.cpp)
   # Upstream's drafter, same rule as its kernels above: OFF means the TU is not compiled at all (see the runtime print).
   if(STRATA_HAVE_DFLASH2)
     target_sources(strata_engine PRIVATE src/core/dflash2.cpp)
@@ -681,6 +697,77 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     set_tests_properties(memory_guard_test PROPERTIES TIMEOUT 60)
   endif()
 
+  # R2 (opt-in CUDA expert helper): the host-IPC fault tests for the engine's proxy client and the
+  # CPU recompute of the helper's claimed rows.  Linux only (AF_UNIX) and CPU-only BY CONSTRUCTION:
+  # the two sources they compile (expert_helper_socket.cpp, helper_frame.cpp, expert_helper_fallback
+  # .cpp) call no device function - the proof is nm on the objects, not a flag - and neither test
+  # links a GPU library.  The microbench times the framed transport itself (no GPU in sight) so a
+  # GPU measurement can subtract the channel's cost.
+  if(STRATA_BUILD_TESTS AND CMAKE_SYSTEM_NAME STREQUAL "Linux"
+     AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/expert_helper_socket_test.cpp")
+    add_executable(expert_helper_socket_test
+      tests/core/expert_helper_socket_test.cpp src/core/expert_helper_socket.cpp
+      tools/mixed_gpu/sidecar/helper_frame.cpp)
+    target_include_directories(expert_helper_socket_test PRIVATE include)
+    # the q8_1 quantizer's golden pins (quantize_q8_1_cpu, R2 gate M2) need ggml's fp16 conversion:
+    # ggml-base is CPU-only (no device, no ggml-cpu/ggml-cuda/ggml-hip) and carries ggml.h.
+    target_link_libraries(expert_helper_socket_test PRIVATE ggml-base)
+    add_test(NAME expert_helper_socket_test COMMAND expert_helper_socket_test)
+    set_tests_properties(expert_helper_socket_test PROPERTIES TIMEOUT 120)
+
+    add_executable(expert_helper_fallback_test tests/core/expert_helper_fallback_test.cpp
+      src/core/expert_helper_fallback.cpp)
+    target_include_directories(expert_helper_fallback_test PRIVATE include)
+    target_link_libraries(expert_helper_fallback_test PRIVATE strata_kernels_cpu)
+    add_test(NAME expert_helper_fallback_test COMMAND expert_helper_fallback_test)
+    set_tests_properties(expert_helper_fallback_test PROPERTIES TIMEOUT 300)
+
+    add_executable(helper_microbench tools/mixed_gpu/sidecar/helper_microbench.cpp
+      tools/mixed_gpu/sidecar/helper_frame.cpp)
+    target_include_directories(helper_microbench PRIVATE include)
+    add_test(NAME helper_microbench COMMAND helper_microbench 200)
+    set_tests_properties(helper_microbench PROPERTIES TIMEOUT 120)
+  endif()
+
+  # M1 (capacity, capacity-first-design.md §2): the helper's candidate eligibility, its byte-budget
+  # arithmetic and the adaptive-promotion gate, pinned as PURE data arithmetic - masks and profile
+  # pairs in, candidate lists / slot counts / aligned byte totals out.  CPU-only BY CONSTRUCTION: the
+  # two sources it compiles (expert_helper_candidates.cpp, the test) call no device function and open
+  # no socket, and the test links NO library at all - not a GPU runtime, not ggml, not strata_kernels.
+  # Linux only (the helper's own path); the guard keeps a worktree without the test file configuring.
+  if(STRATA_BUILD_TESTS AND CMAKE_SYSTEM_NAME STREQUAL "Linux"
+     AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/expert_helper_candidates_test.cpp")
+    add_executable(expert_helper_candidates_test
+      tests/core/expert_helper_candidates_test.cpp src/core/expert_helper_candidates.cpp)
+    target_include_directories(expert_helper_candidates_test PRIVATE include)
+    # the STATIC section reads the real sources it wires (text contract, printed as STATIC, SKIPPED
+    # when unreadable) - the path is the source tree, defined here, exactly as the dflash test does
+    target_compile_definitions(expert_helper_candidates_test PRIVATE
+      STRATA_HELPER_CAND_SOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}")
+    add_test(NAME expert_helper_candidates_test COMMAND expert_helper_candidates_test)
+    set_tests_properties(expert_helper_candidates_test PROPERTIES TIMEOUT 60)
+  endif()
+
+  # R5 P2 (the gate MEASUREMENT): the CPU-only validation of the deviation harness's own halves - the
+  # metric against hand-computed references, the percentile rule, the pinned fixtures, the selection's
+  # determinism and caps, the JSON's byte stability, and a framing smoke against an IN-PROCESS fake
+  # helper over a socketpair.  CPU-only BY CONSTRUCTION exactly like the R2 suites above: the sources
+  # it compiles (p2_measure.cpp, expert_helper_socket.cpp, helper_frame.cpp) call no device function,
+  # and the test links no GPU library (strata_kernels_cpu is the CPU expert pool; ggml-base is CPU).
+  # Linux only (AF_UNIX).  It runs WITHOUT a GPU, WITHOUT a helper process and WITHOUT a pack.
+  if(STRATA_BUILD_TESTS AND CMAKE_SYSTEM_NAME STREQUAL "Linux"
+     AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/mixed_gpu/p2_measure/p2_measure_test.cpp")
+    add_executable(p2_measure_test
+      tools/mixed_gpu/p2_measure/p2_measure_test.cpp
+      tools/mixed_gpu/p2_measure/p2_measure.cpp
+      src/core/expert_helper_socket.cpp
+      tools/mixed_gpu/sidecar/helper_frame.cpp)
+    target_include_directories(p2_measure_test PRIVATE include)
+    target_link_libraries(p2_measure_test PRIVATE strata_kernels_cpu ggml-base)
+    add_test(NAME p2_measure_test COMMAND p2_measure_test)
+    set_tests_properties(p2_measure_test PROPERTIES TIMEOUT 120)
+  endif()
+
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/file_expert_source_test.cpp")
     enable_testing()
     add_executable(file_expert_source_test tests/core/file_expert_source_test.cpp)
@@ -691,6 +778,18 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_link_libraries(vmm_test PRIVATE strata_engine)
     add_test(NAME vmm_test COMMAND vmm_test)
     set_tests_properties(vmm_test PROPERTIES TIMEOUT 60)
+    # M1 (capacity, parent correction 2): the helper proxy's RESIDENCY lifecycle - registered fill,
+    # mid-request disable (residency KEPT, the gate must still consult), per-request re-arm, channel
+    # death (residency RELEASED, the gate must recover).  Proxy mode makes no device call (the
+    # helper owns the device; on HIP no CUDA runtime is mapped), so this drives the real
+    # RemoteExperts state over a fake AF_UNIX helper with no GPU work.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/expert_helper_ownership_test.cpp"
+       AND CMAKE_SYSTEM_NAME STREQUAL "Linux")   # AF_UNIX: Linux only, like the helper's own path
+      add_executable(expert_helper_ownership_test tests/core/expert_helper_ownership_test.cpp)
+      target_link_libraries(expert_helper_ownership_test PRIVATE strata_engine)
+      add_test(NAME expert_helper_ownership_test COMMAND expert_helper_ownership_test)
+      set_tests_properties(expert_helper_ownership_test PROPERTIES TIMEOUT 120)
+    endif()
     # The resident RAM mode with a layer split: the copy keeps each stage's lend region, and the experts the
     # prompt path borrows are served from RAM (the file source reads none of them).  The device calls are
     # wrapped - conversation_transfer_test's pattern - and `pin = false` keeps the copy pageable, so this
@@ -841,6 +940,49 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     # C++ runtime sit beside the exe (tools/hip/package_windows.py) and stay normal imports.
     target_link_libraries(strata PRIVATE delayimp)
     target_link_options(strata PRIVATE "LINKER:/DELAYLOAD:hipblas.dll" "LINKER:/DELAYLOAD:libhipblaslt.dll" "LINKER:/DELAYLOAD:rocblas.dll")
+  endif()
+
+  # R2 (opt-in, default OFF above): the CUDA-only expert helper.  A SEPARATE PROCESS that owns all
+  # NVIDIA memory; the engine talks to it over the framed AF_UNIX channel only.  CUDA builds with the
+  # native-expert pack (the helper computes native blobs, the same kernels strata_kernels carries);
+  # refused under the gfx906 HIP scheme with a named reason, never silently skipped.
+  if(STRATA_BUILD_EXPERT_HELPER)
+    if(STRATA_HIP_GFX906)
+      message(FATAL_ERROR "STRATA_BUILD_EXPERT_HELPER is refused under STRATA_HIP_GFX906: the sidecar is CUDA-only (NVIDIA). Build it in a CUDA tree; the HIP engine runs its proxy client unchanged.")
+    endif()
+    if(NOT STRATA_NATIVE_EXPERTS)
+      message(FATAL_ERROR "STRATA_BUILD_EXPERT_HELPER requires STRATA_NATIVE_EXPERTS=ON: the helper computes native (IQ) expert blobs.")
+    endif()
+    add_executable(strata-expert-helper
+      tools/mixed_gpu/sidecar/helper_main.cpp
+      tools/mixed_gpu/sidecar/helper_frame.cpp)
+    # helper_main.cpp includes <cuda_runtime.h>: compile it with the CUDA language (nvcc), exactly
+    # as remote_expert_opt.cu is compiled.  helper_frame.cpp stays plain C++ - it links no GPU
+    # runtime; the CUDA runtime symbols arrive through ${_strata_gpu_runtime_target}.
+    set_property(SOURCE tools/mixed_gpu/sidecar/helper_main.cpp PROPERTY LANGUAGE CUDA)
+    set_property(SOURCE tools/mixed_gpu/sidecar/helper_main.cpp PROPERTY CUDA_STANDARD 17)
+    target_include_directories(strata-expert-helper PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(strata-expert-helper PRIVATE
+      strata_engine strata_kernels_cpu strata_warnings ${_strata_gpu_runtime_target})
+
+    # R5 P2 (the gate MEASUREMENT, r5-three-gpu-design.md §2 + line 81): the standalone helper-vs-MMQ
+    # prompt-row deviation harness.  A SEPARATE PROCESS that links the same MMQ library the engine links
+    # (the precedent is mmq_nvfp4_parity below: a tool driving the real producer against real blob bytes,
+    # no engine call site) and the engine's OWN socket client for the helper side.  It wires NO dispatch:
+    # src/prefill/prefill.cpp and src/program/generate.cpp are untouched, and it measures - it carries no
+    # tolerance, no band, no verdict (the band is the user's, applied by the parent after the run).
+    # p2_measure_main.cpp includes <cuda_runtime.h>: the CUDA-language property, as helper_main.cpp above.
+    add_executable(p2_measure_harness
+      tools/mixed_gpu/p2_measure/p2_measure_main.cpp
+      tools/mixed_gpu/p2_measure/p2_measure.cpp
+      src/core/expert_helper_socket.cpp
+      tools/mixed_gpu/sidecar/helper_frame.cpp)
+    set_property(SOURCE tools/mixed_gpu/p2_measure/p2_measure_main.cpp PROPERTY LANGUAGE CUDA)
+    set_property(SOURCE tools/mixed_gpu/p2_measure/p2_measure_main.cpp PROPERTY CUDA_STANDARD 17)
+    target_include_directories(p2_measure_harness PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(p2_measure_harness PRIVATE
+      strata_mmq strata_kernels strata_kernels_cpu strata_core ggml-base strata_warnings
+      ${_strata_gpu_runtime_target})
   endif()
 
   # NEW-MODELS-PLAN.md T1: Qwen3.6-35B-A3B's reference path (one GPU, the model resident, plain kernels), checked
@@ -1583,6 +1725,16 @@ if(STRATA_BUILD_TESTS)
   add_executable(dflash_ring_test tests/core/dflash_ring_test.cpp)
   target_include_directories(dflash_ring_test PRIVATE include)
   add_test(NAME dflash_ring_test COMMAND dflash_ring_test)
+  # The draft proposal's failure classification (include/strata/core/dflash_refusal.hpp): pure host
+  # predicate, classification and validate-then-copy handoff - the same functions the emitter calls
+  # and both decode call sites consume.  No GPU headers, no link.  STRATA_DFLASH_SOURCE_ROOT lets the
+  # test pin the serve/CLI latch statements in the REAL source text (static contract checks, printed
+  # as static - never claimed as runtime evidence).
+  add_executable(dflash_refusal_test tests/core/dflash_refusal_test.cpp)
+  target_include_directories(dflash_refusal_test PRIVATE include)
+  target_compile_definitions(dflash_refusal_test PRIVATE
+    STRATA_DFLASH_SOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}")
+  add_test(NAME dflash_refusal_test COMMAND dflash_refusal_test)
   # The tap-ownership plan under --layer-split (include/strata/core/dflash_tap_plan.hpp): pure
   # host arithmetic, the same build() the engine runs at drafter upload (docs/DFLASH2.md).
   add_executable(dflash_tap_plan_test tests/core/dflash_tap_plan_test.cpp)
