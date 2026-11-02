@@ -139,6 +139,18 @@ def test_capture_request_disables_thinking():
     assert body["messages"] == [{"role": "user", "content": "hello"}]
 
 
+def test_reference_env_is_engine_parity():
+    # The fin1 att1 refusal: session env CUDA_VISIBLE_DEVICES='' and
+    # HSA_OVERRIDE_GFX_VERSION=9.0.0 -> hipGetDeviceCount rc=100 n_dev=0.
+    env = fw.reference_env(base={"CUDA_VISIBLE_DEVICES": "", "PATH": "/x",
+                                 "HSA_OVERRIDE_GFX_VERSION": "9.0.0"})
+    assert env["CUDA_VISIBLE_DEVICES"] == "0,1"
+    assert env["HSA_OVERRIDE_GFX_VERSION"] == "9.0.6"
+    assert env["HSA_ENABLE_SDMA"] == "1" and env["HIP_FORCE_P2P"] == "1"
+    assert env["LD_LIBRARY_PATH"] == fw.ROCM_LIBS
+    assert env["PATH"] == "/x"                                  # rest inherited
+
+
 def test_helper_and_reference_argv(tmp_path):
     av = fw.helper_argv(Path("/h"), Path("/s.sock"))
     assert av[0] == "/h" and "--device" in av and av[av.index("--device") + 1] == "0"

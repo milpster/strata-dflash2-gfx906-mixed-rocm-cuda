@@ -156,6 +156,19 @@ def helper_argv(helper: Path, socket: Path, *, device: int = 0, slots: int = 340
             "--begin-timeout", "600000", "--timeout", "600000"]
 
 
+def reference_env(base: dict | None = None) -> dict:
+    """Engine-parity GPU env for the gfx906 reference process.  The session can
+    carry CUDA_VISIBLE_DEVICES='' and a wrong HSA_OVERRIDE_GFX_VERSION (probe
+    2026-11-02 fin1-measure-env-probe.log: inherited env -> hipGetDeviceCount
+    rc=100, n_dev=0, the harness's REFUSAL (device); engine-parity mask ->
+    rc=0, n_dev=2).  Both are therefore set explicitly, never inherited."""
+    env = dict(os.environ if base is None else base)
+    env.update(LD_LIBRARY_PATH=ROCM_LIBS, CUDA_VISIBLE_DEVICES="0,1",
+               HSA_OVERRIDE_GFX_VERSION="9.0.6", HIP_FORCE_P2P="1",
+               HSA_ENABLE_SDMA="1")
+    return env
+
+
 def reference_argv(out_json: Path, socket: Path, capdir: Path, *, device: int = 0,
                    max_device_mib: int = 3000) -> list[str]:
     return [str(HIP_REFERENCE), "--pack", str(PACK), "--socket", str(socket),
@@ -372,7 +385,11 @@ def phase_measure(args, result: dict) -> None:
         else:
             raise RuntimeError("helper socket/listening deadline expired")
 
-        env_hip = dict(os.environ, LD_LIBRARY_PATH=ROCM_LIBS)
+        env_hip = reference_env()
+        result["measure"]["reference_env"] = {k: env_hip[k] for k in
+                                             ("LD_LIBRARY_PATH", "CUDA_VISIBLE_DEVICES",
+                                              "HSA_OVERRIDE_GFX_VERSION", "HIP_FORCE_P2P",
+                                              "HSA_ENABLE_SDMA")}
         with (ev / "reference.log").open("wb") as rlog:
             ref = subprocess.run(reference_argv(out_json, socket_path, capdir),
                                  env=env_hip, stdout=rlog,
