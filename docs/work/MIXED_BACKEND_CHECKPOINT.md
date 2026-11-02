@@ -18,12 +18,11 @@ This is an in-progress snapshot, not a release or numerical signoff.
   0.005 limit. Its maximum, 0.014444641279, was below the 0.02 limit.
 - M5 covered eight fixtures, layers 32–35 and three of ten format pairs. It did
   not establish complete layer/format coverage or tensor NMSE.
-- The new NMSE/reporting tools remain under review. Legacy recovery is removed;
-  the auditor now requires full schema-v2 JSON. Reporting changes still need real
-  CMake CPU tests and fresh backend builds. CPU tests do not establish GPU accuracy.
-- The latest backend build was cancelled during HIP configuration. It produced
-  no completed backend build or real CMake test result. All four protected binary
-  hashes and all five pinned source hashes still matched on 2026-11-02.
+- Legacy recovery is removed; the auditor requires full schema-v2 JSON. The real
+  CMake CPU test passed, followed by 50 Python regressions against that binary.
+  Fresh full CUDA/HIP builds remain pending. CPU tests do not establish GPU accuracy.
+- The earlier full-backend build was cancelled during HIP configuration; its
+  partial tree and log are retained. All four protected binary hashes still match.
 - Actual 80k-context plus 5k-output acceptance and a practical larger-model or
   constrained-host-RAM comparison remain open.
 
