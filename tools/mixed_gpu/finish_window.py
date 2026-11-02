@@ -12,6 +12,11 @@ Two bounded phases over ONE exclusive evidence family, never the legacy runners:
   measure - with a complete capture, stop production, start the CUDA helper on the
             3080 over a private socket, run the gfx906 HIP reference harness on a
             Radeon VII against the SAME dumps, audit the strict-v2 report, restore.
+  longctx - NO outage: the live canonical production IS the mixed system under
+            test.  Identity-check the supervisor, send ONE deterministic
+            ~80k-token prompt with thinking off and a >=5k-token generation
+            request, and accept only on the server's ACTUAL usage.prompt_tokens
+            and usage.completion_tokens (never the prompt-size estimate).
 
 Both phases ALWAYS restore the canonical --recover launcher in ``finally`` and
 verify models/fill/thinking-off content before reporting success.  No phase edits
@@ -216,6 +221,93 @@ def parse_layers(text: str) -> tuple[int, int]:
     if lo > hi:
         raise ValueError(f"--layers wants A<=B, got {text!r}")
     return lo, hi
+
+
+PROD_MODEL = "swift-1.5-iq3_xxs"          # the canonical production model name
+LONGCTX_MIN_PROMPT = 80000                 # acceptance floors live here, once
+LONGCTX_MIN_COMPLETION = 5000
+
+
+def longctx_prompt(target_tokens: int, chars_per_token: float = 4.0) -> tuple[str, dict]:
+    """Deterministic prompt whose ACTUAL token count the server reports back; the
+    estimate here only sizes the text (with headroom) and is never the verdict."""
+    head = ("You are a maintenance-log analysis assistant. The document below is a long "
+            "plant cooling-loop maintenance log. Read all of it, then do the task at the "
+            "very end.\n\n### LOG START\n\n")
+    tail = ("\n### LOG END\n\nTASK: Using the whole log above, write a detailed chronological "
+            "digest with one bullet per 500-section block (quote each block's first section "
+            "number), then a table of recurring part failures with dates, then a paragraph on "
+            "flow-rate trends, then a proposed maintenance schedule for the next year. Be "
+            "exhaustive and specific; do not summarize briefly and do not stop early.")
+    sentences = [
+        "The maintenance log records every cooling loop service with dates, part numbers and measured flow rates.",
+        "Each pump service lists the replaced seal kit, the measured shaft runout and the motor current draw.",
+        "Filter cartridges were swapped on a rotating schedule and the pressure drop across each bank was logged.",
+        "Nightly telemetry captured loop temperatures, reservoir levels and the glycol concentration readings.",
+        "Technicians noted every alarm with its code, the responding shift and the corrective action taken.",
+        "Quarterly borescope inspections photographed the heat-exchanger plates and logged the fouling estimate.",
+        "The spares inventory tracked every issued part against its storage rack and its supplier lot number.",
+        "Seasonal load tests ran both loops at full capacity and recorded the bypass valve positions throughout.",
+    ]
+    want = int(target_tokens * chars_per_token * 1.07) + 2048
+    parts, total, index = [head], len(head), 0
+    while total < want:
+        line = (f"[sec {index:06d}] {sentences[index % len(sentences)]} Loop {index % 9}; "
+                f"flow 3.{index % 10 + 1} l/min; filter P{index % 7}; "
+                f"serviced day {index % 28 + 1}.\n")
+        parts.append(line)
+        total += len(line)
+        index += 1
+    text = "".join(parts) + tail
+    meta = dict(target_tokens=target_tokens, chars_per_token=chars_per_token,
+                headroom=1.07, chars=len(text), est_tokens=round(len(text) / chars_per_token),
+                sections=index,
+                sha256=hashlib.sha256(text.encode()).hexdigest())
+    return text, meta
+
+
+def longctx_request(prompt: str, max_tokens: int, model: str = PROD_MODEL) -> bytes:
+    """One thinking-OFF deterministic completion; same request shape as the
+    capture/restore smokes (temp 0, budget 0)."""
+    return json.dumps({"model": model,
+                       "messages": [{"role": "user", "content": prompt}],
+                       "max_tokens": int(max_tokens), "temperature": 0,
+                       "reasoning_budget_tokens": 0,
+                       "chat_template_kwargs": {"enable_thinking": False}}).encode()
+
+
+def longctx_verdict(http_code: int, usage: dict | None, content,
+                    *, min_prompt: int = LONGCTX_MIN_PROMPT,
+                    min_completion: int = LONGCTX_MIN_COMPLETION) -> dict:
+    """Acceptance on the server-reported ACTUAL usage only; no estimate ever
+    substitutes for prompt_tokens/completion_tokens."""
+    usage = usage or {}
+    prompt_tokens, completion_tokens = usage.get("prompt_tokens"), usage.get("completion_tokens")
+    checks = dict(http_ok=http_code == 200,
+                  prompt_tokens_ok=type(prompt_tokens) is int and prompt_tokens >= min_prompt,
+                  completion_tokens_ok=type(completion_tokens) is int and completion_tokens >= min_completion,
+                  content_ok=bool(content))
+    return dict(**checks, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
+                thresholds=dict(min_prompt_tokens=min_prompt, min_completion_tokens=min_completion),
+                passed=all(checks.values()))
+
+
+def expect_production(pid: int) -> dict:
+    """The stop_production identity check WITHOUT stopping anything: argv, state
+    file and liveness must all name this exact attached supervisor."""
+    argv = runtime.command(pid)
+    required = [str(runtime.WORK / "tools/mixed_gpu/pair_supervisor.py"),
+                str(runtime.LAUNCHER), str(runtime.STATE)]
+    if not all(value in argv for value in required):
+        raise RuntimeError("Production supervisor identity mismatch; refusing longctx")
+    state = json.loads(runtime.STATE.read_text())
+    if state["supervisor_pid"] != pid:
+        raise RuntimeError("Production state belongs to another supervisor")
+    if state.get("state") != "attached":
+        raise RuntimeError("Production state is not attached")
+    if not pair.alive(pid, pair.process_token(pid)[1]):
+        raise RuntimeError("Expected supervisor is not alive")
+    return state
 
 
 # ------------------------------------------------------------------ lifecycle
@@ -465,6 +557,70 @@ def phase_measure(args, result: dict) -> None:
         restore_canonical(result, args.family)
 
 
+def phase_longctx(args, result) -> None:
+    """Real-world speed acceptance against the LIVE canonical production (the
+    mixed system under test).  NO outage, NO restore: nothing is stopped.  The
+    supervisor identity is verified before AND after; the verdict uses only the
+    server-reported actual usage tokens."""
+    ev = exclusive_dir(EV_ROOT / args.family)
+    state = expect_production(args.expected_supervisor)
+    with urllib.request.urlopen("http://127.0.0.1:8009/v1/models", timeout=30) as response:
+        if response.status != 200:
+            raise RuntimeError(f"models endpoint HTTP {response.status}")
+    prompt, meta = longctx_prompt(args.ctx_tokens)
+    body = longctx_request(prompt, args.out_tokens)
+    (ev / "prompt.txt").write_text(prompt, encoding="utf-8")
+    (ev / "request-meta.json").write_text(json.dumps(meta, indent=1) + "\n", encoding="utf-8")
+    (ev / "request.json").write_bytes(body)
+    result["longctx"] = dict(family=args.family, model=PROD_MODEL,
+                             expected_supervisor=args.expected_supervisor,
+                             supervisor=dict(supervisor_pid=state["supervisor_pid"],
+                                             helper_pid=state.get("helper_pid"),
+                                             server_pid=state.get("server_pid")),
+                             prompt=meta, max_tokens=args.out_tokens)
+    try:
+        request = urllib.request.Request("http://127.0.0.1:8009/v1/chat/completions",
+                                         data=body,
+                                         headers={"Content-Type": "application/json"})
+        started = time.monotonic()
+        with urllib.request.urlopen(request, timeout=args.window_timeout) as response:
+            raw = response.read()
+            code = response.status
+        wall_s = time.monotonic() - started
+        (ev / "reply.json").write_bytes(raw)
+        reply = json.loads(raw)
+        content = (reply.get("choices") or [{}])[0].get("message", {}).get("content")
+        verdict = longctx_verdict(code, reply.get("usage"), content)
+        usage = reply.get("usage") or {}
+        completion_tokens = verdict["completion_tokens"] or 0
+        prompt_tokens = verdict["prompt_tokens"] or 0
+        result["longctx"].update(
+            http=code, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
+            total_tokens=usage.get("total_tokens"), wall_s=round(wall_s, 3),
+            prompt_plus_output_tok_per_s=round((prompt_tokens + completion_tokens) / wall_s, 3)
+            if prompt_tokens and completion_tokens else None,
+            output_tok_per_s_wall=round(completion_tokens / wall_s, 3) if completion_tokens else None,
+            verdict=verdict)
+        if not verdict["passed"]:
+            failed = [k for k, ok in verdict.items() if k in
+                      ("http_ok", "prompt_tokens_ok", "completion_tokens_ok", "content_ok")
+                      and not ok]
+            raise RuntimeError(f"longctx acceptance failed: {failed}; verdict={verdict}")
+        after = expect_production(args.expected_supervisor)      # still the same pair
+        result["longctx"]["post_supervisor"] = dict(
+            supervisor_pid=after["supervisor_pid"], state=after.get("state"))
+        print(f"[longctx] prompt={prompt_tokens} completion={completion_tokens} "
+              f"wall={wall_s:.1f}s", flush=True)
+    except urllib.error.HTTPError as exc:
+        body_text = exc.read().decode(errors="replace")[:4000]
+        (ev / "reply-error.json").write_text(json.dumps(
+            dict(http=exc.code, body=body_text), indent=1) + "\n", encoding="utf-8")
+        raise RuntimeError(f"longctx request HTTP {exc.code}: {body_text[:200]}") from exc
+
+
+PHASES = {"capture": phase_capture, "measure": phase_measure, "longctx": phase_longctx}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("phase", choices=("capture", "measure", "longctx", "capacity"))
@@ -484,6 +640,10 @@ def main() -> int:
                     help="layer window for the measure phase, e.g. 36-39")
     ap.add_argument("--report-name", default="measure.json",
                     help="measure.json or measure-L<A>-<B>.json (its own logs/result)")
+    ap.add_argument("--ctx-tokens", type=int, default=80000,
+                    help="longctx: target context size (actual usage is the verdict)")
+    ap.add_argument("--out-tokens", type=int, default=6000,
+                    help="longctx: requested generation cap; acceptance needs >=5000 actual")
     args = ap.parse_args()
     if not re.fullmatch(r"[a-z][a-z0-9-]{0,20}", args.family):
         raise SystemExit("invalid family name")
@@ -492,10 +652,21 @@ def main() -> int:
         window_paths(EV_ROOT / args.family, args.report_name)
     except ValueError as exc:
         raise SystemExit(f"invalid window: {exc}")
-    if args.phase in ("longctx", "capacity"):
-        raise SystemExit(f"phase '{args.phase}' is planned (finish-window-v2.md) but not implemented")
+    if args.phase == "capacity":
+        raise SystemExit("phase 'capacity' was dropped by the user (2026-11-02 18:10); "
+                         "speed-side work only")
+    if args.phase == "longctx":
+        if args.ctx_tokens < LONGCTX_MIN_PROMPT:
+            raise SystemExit(f"--ctx-tokens wants >= {LONGCTX_MIN_PROMPT} (acceptance floor)")
+        if args.out_tokens <= LONGCTX_MIN_COMPLETION:
+            raise SystemExit(f"--out-tokens wants > {LONGCTX_MIN_COMPLETION} so the "
+                             f"actual >= {LONGCTX_MIN_COMPLETION} floor is requestable")
     plan = {"capture": "stop production; 8 fixture boots; 32-47 dumps; restore",
-            "measure": "stop production; CUDA helper on 3080; gfx906 reference on VII 0; audit; restore"}
+            "measure": "stop production; CUDA helper on 3080; gfx906 reference on VII 0; audit; restore",
+            "longctx": "NO outage: identity-check the live supervisor; one thinking-off "
+                       f"~{args.ctx_tokens}-token prompt with a {args.out_tokens}-token "
+                       "generation request against canonical production; accept only on "
+                       "actual usage tokens; verify the supervisor after"}
     if not args.execute:
         print(f"Plan [{args.phase}/{args.family}]: {plan[args.phase]} (--execute to run)")
         return 0
@@ -504,9 +675,10 @@ def main() -> int:
     result = {"started": time.time(), "phase": args.phase, "family": args.family,
               "success": False}
     out = (EV_ROOT / args.family / "capture-result.json" if args.phase == "capture"
+           else EV_ROOT / args.family / "longctx-result.json" if args.phase == "longctx"
            else window_paths(EV_ROOT / args.family, args.report_name)["result"])
     try:
-        (phase_capture if args.phase == "capture" else phase_measure)(args, result)
+        PHASES[args.phase](args, result)
         result["success"] = True
     except BaseException as exc:                       # retained, never hidden
         result["error"] = f"{type(exc).__name__}: {exc}"
