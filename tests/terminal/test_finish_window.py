@@ -162,6 +162,8 @@ def test_helper_and_reference_argv(tmp_path):
     assert rv[0] == str(fw.HIP_REFERENCE)
     assert rv[rv.index("--activations") + 1] == "/cap"
     assert rv[rv.index("--device") + 1] == "0"
+    assert rv[rv.index("--slots") + 1] == "3400"          # att2: slots<=0 refused
+    assert rv[rv.index("--reserve-mib") + 1] == "4000"
     assert "--arm-groups" in rv
     assert fw.ROCM_LIBS == "/home/user/rocm-gfx906-xnack/lib:/opt/rocm-6.1.0/lib"
 
