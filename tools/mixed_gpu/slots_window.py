@@ -198,6 +198,31 @@ def l2_comparison(rows):
                        "repeated evidence.")
 
 
+def l8_wire_comparison(rows):
+    """OFF(local)/ON(remote fp32)/ON(remote bf16)/OFF(local) wire verdict; bf16 taps are
+    lossy, so draft acceptance must not get worse alongside any decode gain."""
+    med = lambda arm: statistics.median(p["gen_rate"] for p in arm)
+    acc = lambda arm: (sum(p["accepted"] for p in arm) / sum(p["offered"] for p in arm)
+                       if sum(p["offered"] for p in arm) else 0.0)
+    local = [p for row in rows if not row["draft_helper"] for p in row["probes"]]
+    f32 = [p for row in rows if row["draft_helper"] and not row.get("bf16_taps")
+           for p in row["probes"]]
+    bf16 = [p for row in rows if row.get("bf16_taps") for p in row["probes"]]
+    drift = med(rows[-1]["probes"]) / med(rows[0]["probes"])
+    ratio = med(bf16) / med(f32)
+    return dict(local_decode_median=med(local), remote_f32_decode_median=med(f32),
+                remote_bf16_decode_median=med(bf16), bf16_f32_decode_ratio=ratio,
+                bf16_local_decode_ratio=med(bf16) / med(local), control_drift=drift,
+                local_acceptance=acc(local), f32_acceptance=acc(f32), bf16_acceptance=acc(bf16),
+                verdict=("INCONCLUSIVE_CONTROL_DRIFT" if not 0.9 <= drift <= 1.1 else
+                         "L8_WIRE_GAIN" if ratio >= 1.05 and acc(bf16) >= acc(f32) - 0.02 else
+                         "L8_NO_GAIN"),
+                limits="Wire-only OFF(local)/ON(f32)/ON(bf16)/OFF(local) bracket on the l8 "
+                       "binaries, ON arms remote-only so only the wire differs between b and "
+                       "c; the >=+5% gate is c-vs-b decode with the acceptance guard (bf16 not "
+                       "worse than f32 by more than 2 points); no adoption.")
+
+
 # ---- L7 (progressive degradation diagnosis): local resource samplers, best-effort ----
 
 try:
@@ -307,6 +332,11 @@ def run(args):
             overrides = dict(engine=window_pair.WORK / "build-mixed-gpu/rpcw-hip-l19/strata",
                              helper=window_pair.WORK / "build-mixed-gpu/rpcw-cuda-l19/strata-expert-helper",
                              prefill_timing=True)
+        if args.draft_l8:
+            # L8: the bf16 tap wire binaries; both ON arms draft remote-only (the L1W10
+            # shape) so ONLY the wire differs between b (fp32) and c (bf16).
+            overrides = dict(engine=window_pair.WORK / "build-mixed-gpu/rpcw-hip-l8/strata",
+                             helper=window_pair.WORK / "build-mixed-gpu/rpcw-cuda-l8/strata-expert-helper")
     elif args.knob_probe is not None:
         name, _, value = args.knob_probe.partition("=")
         knob = (name, value)
@@ -327,11 +357,12 @@ def run(args):
         schedule = [("a", 4200, 6400), ("b", 4800, 6800), ("c", 4800, 7000), ("d", 4200, 6400)]
     else:
         schedule = [("a", 4000, 6400), ("b", 4200, 6400), ("c", 4400, 6400), ("d", 4000, 6400)]
-    draft_remote_only = ("dflash-remote-only", "on") if args.draft_l19 else None
+    draft_remote_only = ("dflash-remote-only", "on") if (args.draft_l19 or args.draft_l8) else None
     # Prepare every file and syntax check BEFORE the first outage.
     private = [window_pair.prepare(f"{args.family}-{label}", slots=slots, fill_mib=fill,
                                   draft_helper=(label in "bc") if args.draft_probe else None,
                                   helper_streams=(label == "b") if args.l2_streams else False,
+                                  draft_tap_bf16=(label == "c") if args.draft_l8 else False,
                                    knob=knob if (knob is not None and label == "b") else
                                    (draft_remote_only if (draft_remote_only is not None and label in "bc") else None),
                                    **overrides)
@@ -370,6 +401,8 @@ def run(args):
                 row["knob"] = config.knob
             if args.l2_streams:
                 row["l2_streams"] = bool(config.helper_streams)
+            if args.draft_l8:
+                row["bf16_taps"] = bool(config.draft_tap_bf16)
             if row["fill"]["slots"] > slots:
                 raise RuntimeError("Actual fill exceeded the requested slot cap")
             result["pairs"].append(row)
@@ -421,8 +454,14 @@ def run(args):
             result["knob_comparison"] = knob_comparison(result["pairs"])
         if args.l2_streams:
             result["l2_comparison"] = l2_comparison(result["pairs"])
+        if args.draft_l8:
+            result["l8_wire_comparison"] = l8_wire_comparison(result["pairs"])
         result["success"] = True
-        result["limits"] = ("Bracketed remote-draft execution A/B; no VRAM displacement or automatic adoption."
+        result["limits"] = ("L8 wire A/B on the l8 binaries: OFF(local)/ON(remote fp32)/ON(remote "
+                        "bf16)/OFF(local), ON arms remote-only so only the wire differs; "
+                        "decode-median c-vs-b vs the >=+5% gate with the draft-acceptance "
+                        "guard; no adoption." if args.draft_probe and args.draft_l8 else
+                        "Bracketed remote-draft execution A/B; no VRAM displacement or automatic adoption."
                             if args.draft_probe else
                             "L6 config-knob OFF/ON/OFF engine-argv A/B at the canonical 4200/6400 "
                             "identity; decode-median verdict plus the L7 slow-prefill fraction; "
@@ -482,6 +521,11 @@ def main():
                              "+ L9); the ON arms draft remote-only so the VII's local drafter "
                              "footprint is recovered, and every arm logs the L7 per-chunk "
                              "prefill spans")
+    parser.add_argument("--draft-l8", action="store_true",
+                        help="with --draft-probe: run the l8 scratch binaries (bf16 draft tap "
+                             "wire); arms OFF(local)/ON(remote fp32)/ON(remote bf16)/OFF(local), "
+                             "ON arms remote-only so only the wire differs between b and c; the "
+                             "verdict is c-vs-b decode vs the >=+5% gate with the acceptance guard")
     parser.add_argument("--degrade-probe", action="store_true",
                         help="L7 diagnosis: one arm at the canonical config on the l3 candidate "
                              "binaries with STRATA_RPC_PROFILE=1; repeated varied-nonce long probes "
@@ -512,6 +556,10 @@ def main():
             parser.error("--knob-probe needs NAME=VALUE (on/off for flag knobs)")
     if args.draft_l19 and not args.draft_probe:
         parser.error("--draft-l19 requires --draft-probe")
+    if args.draft_l8 and not args.draft_probe:
+        parser.error("--draft-l8 requires --draft-probe")
+    if args.draft_l8 and args.draft_l19:
+        parser.error("--draft-l8 and --draft-l19 are exclusive")
     if args.degrade_probe and not 3 <= args.reps <= 12:
         parser.error("--reps must be 3..12 with --degrade-probe")
     if not args.execute:
@@ -521,7 +569,10 @@ def main():
                   "at max_tokens128/thinking-off/budget0; reject remote-lane failures, verify draft counters, "
                   "request SHA parity and control drift; always restore supervised canonical. No adoption."
                   + (" L1+L9 l19 binaries; ON arms --dflash-remote-only with the upload-absence "
-                     "proof; every arm logs the L7 per-chunk prefill spans." if args.draft_l19 else ""))
+                     "proof; every arm logs the L7 per-chunk prefill spans." if args.draft_l19 else
+                     " L8 l8 binaries; ON arms --dflash-remote-only, arm c rides the bf16 tap "
+                     "wire (STRATA_DRAFT_TAP_BF16=1 engine-side); the verdict is c-vs-b decode "
+                     "vs the >=+5% gate with the draft-acceptance guard." if args.draft_l8 else ""))
             return 0
         if args.knob_probe is not None:
             print("Plan: exact production identity stop; private18080 OFF/ON/OFF engine-argv knob "

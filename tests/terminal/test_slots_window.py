@@ -405,3 +405,36 @@ def test_l2_comparison_verdicts():
     assert slots_window.l2_comparison(_l2_rows([30.0] * 6, [31.0] * 3))["verdict"] == "L2_NO_GAIN"
     drift = slots_window.l2_comparison(_l2_rows([30.0] * 3 + [22.0] * 3, [33.0] * 3))
     assert drift["verdict"] == "INCONCLUSIVE_CONTROL_DRIFT"
+
+
+# ---- L8 bf16 tap-wire comparison ----
+
+
+def _l8_rows(local_rates, f32_rates, bf16_rates, *, bf16_acc=None):
+    def arm(label, rates, on, bf16, acc):
+        probes = [dict(rep=i + 1, gen_rate=rate, elapsed_s=1.0, read_ms=50000.0,
+                       offered=100, accepted=(acc if acc is not None else 43))
+                  for i, rate in enumerate(rates)]
+        return dict(label=label, draft_helper=on, bf16_taps=bf16, probes=probes)
+
+    return [arm("a", local_rates, False, False, None), arm("b", f32_rates, True, False, None),
+            arm("c", bf16_rates, True, True, bf16_acc), arm("d", local_rates, False, False, None)]
+
+
+def test_l8_wire_comparison_gain_guard_and_drift():
+    rows = _l8_rows([30.0] * 3, [28.0] * 3, [30.0] * 3)
+    out = slots_window.l8_wire_comparison(rows)
+    assert out["verdict"] == "L8_WIRE_GAIN"
+    assert out["bf16_f32_decode_ratio"] == pytest.approx(30.0 / 28.0)
+    assert out["control_drift"] == pytest.approx(1.0)
+    assert out["bf16_acceptance"] == pytest.approx(0.43)
+    # acceptance drops more than 2 points: no adoption even with the decode gain
+    worse = _l8_rows([30.0] * 3, [28.0] * 3, [30.0] * 3, bf16_acc=38)
+    assert slots_window.l8_wire_comparison(worse)["verdict"] == "L8_NO_GAIN"
+    # no decode gain
+    flat = _l8_rows([30.0] * 3, [28.0] * 3, [28.5] * 3)
+    assert slots_window.l8_wire_comparison(flat)["verdict"] == "L8_NO_GAIN"
+    # control drift outside 0.9-1.1
+    drift_rows = _l8_rows([30.0] * 3, [28.0] * 3, [30.0] * 3)
+    drift_rows[3]["probes"] = [dict(p, gen_rate=22.0) for p in drift_rows[3]["probes"]]
+    assert slots_window.l8_wire_comparison(drift_rows)["verdict"] == "INCONCLUSIVE_CONTROL_DRIFT"
