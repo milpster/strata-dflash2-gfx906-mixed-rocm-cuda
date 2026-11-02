@@ -170,11 +170,17 @@ def reference_env(base: dict | None = None) -> dict:
 
 
 def reference_argv(out_json: Path, socket: Path, capdir: Path, *, device: int = 0,
-                   max_device_mib: int = 3000) -> list[str]:
+                   max_device_mib: int = 3000, slots: int = 3400,
+                   reserve_mib: int = 4000) -> list[str]:
+    """The harness hello must carry an EXPLICIT slot budget: the helper refuses
+    any hello with slots <= 0 (sidecar/helper_main.cpp:1046 -> kErrGeometry, the
+    fin1 att2 refusal), so the harness default --slots 0 is unusable; 3400/4000
+    mirror helper_argv and the proven M5 harness invocation."""
     return [str(HIP_REFERENCE), "--pack", str(PACK), "--socket", str(socket),
             "--activations", str(capdir), "--out", str(out_json),
             "--arm-groups", "--device", str(device),
-            "--max-device-mib", str(max_device_mib)]
+            "--max-device-mib", str(max_device_mib),
+            "--slots", str(slots), "--reserve-mib", str(reserve_mib)]
 
 
 # ------------------------------------------------------------------ lifecycle
