@@ -239,3 +239,35 @@ def test_bad_helper_streams_type(tmp_path, value):
     with pytest.raises(ValueError, match="Helper-stream override"):
         window_pair.prepare("tl2b", evidence=tmp_path, helper_streams=value)
     assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.skipif(not window_pair.PROD_LAUNCHER.exists(), reason="local production fixture unavailable")
+def test_draft_tap_bf16_env_engine_side_only(tmp_path):
+    result = window_pair.prepare("tb1", slots=4200, evidence=tmp_path,
+                                  draft_helper=True, draft_tap_bf16=True)
+    config = json.loads(Path(result.config).read_text())
+    assert config["env"]["STRATA_DRAFT_TAP_BF16"] == "1"
+    # Engine-side only: the env rides the config's env (the server applies it to the
+    # engine); the helper follows the frame kind, so the launcher never carries it.
+    assert "STRATA_DRAFT_TAP_BF16" not in Path(result.launcher).read_text()
+    assert result.draft_tap_bf16 is True
+
+
+@pytest.mark.skipif(not window_pair.PROD_LAUNCHER.exists(), reason="local production fixture unavailable")
+def test_draft_tap_bf16_default_absent(tmp_path):
+    result = window_pair.prepare("tb2", slots=4200, evidence=tmp_path, draft_helper=True)
+    assert "STRATA_DRAFT_TAP_BF16" not in json.loads(Path(result.config).read_text())["env"]
+    assert result.draft_tap_bf16 is False
+
+
+def test_draft_tap_bf16_needs_draft_lane(tmp_path):
+    with pytest.raises(ValueError, match="needs the remote draft lane"):
+        window_pair.prepare("tb3", evidence=tmp_path, draft_tap_bf16=True)
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("value", [1, "1", [], {}])
+def test_bad_draft_tap_bf16_type(tmp_path, value):
+    with pytest.raises(ValueError, match="bf16 override"):
+        window_pair.prepare("tb4", evidence=tmp_path, draft_helper=True, draft_tap_bf16=value)
+    assert not list(tmp_path.iterdir())
