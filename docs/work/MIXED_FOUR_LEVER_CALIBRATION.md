@@ -81,15 +81,18 @@ Disjointness accounting and cross-GPU DFlash tap binding passed the startup chec
 This establishes startup residency only, not usable throughput or model capacity.
 
 The first trimmed request lost its HTTP connection before completing. The helper
-log reports `second channel: request failed: helper timeout` after 35 prompt row
-requests. The engine reports a closed prompt-helper channel and CPU fallback.
-The underlying cause is not established; the failure is not discarded as noise.
+log reports `second channel: request failed: helper timeout`; at teardown it had
+served 35 prompt row requests in total and no windows. The engine reports a
+closed prompt-helper channel and CPU fallback. The underlying cause is not
+established; the failure is not discarded as noise.
 
 Canonical production was restored automatically. A completion returned `ready`,
 and a subsequent health check returned HTTP 200, loaded, with context 262,144.
 Supervisor 4169738 was attached; helper fill and the prompt channel were restored.
 The loaded libraries were the custom gfx906 rocBLAS and ROCm 6.1 libraries. All
-four protected hashes matched and no old production process survived cleanup.
+four protected hashes were unchanged during the window: the status file records
+the pinned fingerprint and no restore error, and the harness aborts on any pin
+change. No old production process survived cleanup.
 Evidence is retained under `build-mixed-gpu/cap1-validation/trm1-*` and the raw
 `/mnt/user/Strata/logs/window-trm1-b-*` helper/server logs.
 
@@ -170,8 +173,10 @@ the prefill and split tests. Their actual prompt lengths must come from engine
 summaries, and their comparisons use fresh controls with the same longer inputs.
 Earlier requests and results remain unchanged. Do not compare PP rates across
 the different fixtures. Context capacity, output length and all gates stay fixed.
-The focused 240 CPU checks, syntax checks and four protected hashes passed again
-after this adjustment (`perf-pipe-fixture-gate1.log`, 4.69 seconds).
+The focused 240 CPU checks passed again after this adjustment
+(`perf-pipe-fixture-gate1.log`, 4.69 seconds). The adjustment (`416246f`)
+changed only the Python harness and tests, so the earlier protected-hash checks
+and backend builds still stand.
 
 ## Prompt-pipeline chunk sizing (`ppc1`)
 
@@ -236,7 +241,9 @@ accounting. Helper eligibility excluded the experts held by either Radeon cache.
 | `34` | 0–33 / 34–47 | 5,980 / 4,829 | 13,767 / 10,809 | 4,025 |
 
 Every helper fill stopped at the unchanged 6,400 MiB budget under the 4,200-slot
-cap. DFlash stayed at effective width 4, floor 0.5, with cross-GPU taps bound.
+cap from the engine argv. (The window arm config files carry an unused
+`expert_helper_slots: 3,400` field; the argv value governs.) DFlash stayed at
+effective width 4, floor 0.5, with cross-GPU taps bound.
 Every sample recorded drafting and helper work without reported timeouts or
 fallbacks. Prompt-channel request counts were 192, 180, 204 and 192 across the arms.
 
