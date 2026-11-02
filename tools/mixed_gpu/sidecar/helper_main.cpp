@@ -58,7 +58,9 @@
 #include <cstring>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <set>
+#include <shared_mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -206,6 +208,14 @@ struct Helper {
     Socket listener2;
     Socket sock2;
     std::mutex gpu_mtx;
+    // L2 (opt-in STRATA_HELPER_STREAMS, default OFF = exactly the single-mutex behaviour above):
+    // ON turns kFill into the gate's only WRITER and every served frame into a reader, so
+    // channel A's window/draft frames and channel B's prompt frames overlap on their OWN
+    // streams (the mirror reads are read-only after fill); each frame still excludes fill, and
+    // fill fences both streams because a frame releases the gate only after its sync + reply.
+    std::shared_mutex gpu_gate;
+    cudaStream_t stream_p = nullptr;      // ON: the prompt tier's own stream
+    bool streams_split = false;           // set once in main; never mutated afterwards
     std::thread chan2;
     ExpertCache cache;
     MappedPack pack;
@@ -245,6 +255,7 @@ struct Helper {
     ~Helper() { release(); }
     void release() {
         if (stream) cudaStreamSynchronize(stream);
+        if (stream_p) cudaStreamSynchronize(stream_p);   // L2: fence the prompt tier's stream too
         // M7: the drafter's own resources first (its release() synchronizes its stream), then the
         // pinned embedding the bind borrowed (clear the process global before the table dies).
         draft.release();
@@ -266,6 +277,7 @@ struct Helper {
         if (d_out_p) cudaFree(d_out_p);
         if (d_scratch_p) cudaFree(d_scratch_p);
         if (stream) cudaStreamDestroy(stream);
+        if (stream_p) cudaStreamDestroy(stream_p);
         h_meta = nullptr; d_meta = nullptr; d_q8 = nullptr; d_out = nullptr; d_scratch = nullptr;
         h_meta_p = nullptr; d_meta_p = nullptr; d_q8_p = nullptr; d_out_p = nullptr; d_scratch_p = nullptr;
         stream = nullptr;
@@ -294,7 +306,15 @@ int serve_fill(Helper& hp, const std::vector<uint8_t>& body, uint32_t req_id, ui
     // The fill mutates the shared cache (and the card's free memory the budget reads), so it is
     // serialized against every served frame: the two-channel engine sends kFill on ONE channel only,
     // and the other channel's tiers must not launch while slots are being allocated.
-    std::lock_guard<std::mutex> gpu_lk(hp.gpu_mtx);
+    std::optional<std::lock_guard<std::mutex>> gpu_lk_off;
+    std::optional<std::unique_lock<std::shared_mutex>> gpu_lk_fill;
+    if (hp.streams_split) {
+        gpu_lk_fill.emplace(hp.gpu_gate);     // L2: fill is the gate's only writer
+        if (hp.stream_p) cudaStreamSynchronize(hp.stream_p);   // idle by construction (frames
+                                                               // drained before the gate was taken)
+    } else {
+        gpu_lk_off.emplace(hp.gpu_mtx);
+    }
     if (body.size() < sizeof(FillReq)) return kErrShort;
     FillReq req;
     std::memcpy(&req, body.data(), sizeof(req));
@@ -491,7 +511,9 @@ int serve_begin(Helper& hp, const std::vector<uint8_t>& body, uint32_t req_id, u
     const auto p_entry = prof ? std::chrono::steady_clock::now()
                               : std::chrono::steady_clock::time_point{};
     std::unique_lock<std::mutex> gpu_lk(hp.gpu_mtx, std::defer_lock);
-    gpu_lk.lock();
+    std::optional<std::shared_lock<std::shared_mutex>> gpu_lk_on;
+    if (hp.streams_split) gpu_lk_on.emplace(hp.gpu_gate);   // L2: a served frame is a reader
+    else gpu_lk.lock();
     const int64_t p_queue_us = prof ? std::chrono::duration_cast<std::chrono::microseconds>(
                                           std::chrono::steady_clock::now() - p_entry).count() : 0;
     if (body.size() < sizeof(BeginReq)) return kErrShort;
@@ -630,6 +652,12 @@ int serve_begin(Helper& hp, const std::vector<uint8_t>& body, uint32_t req_id, u
 // the same q8_1 activation contract), the tier's OWN staging buffers sized by the protocol caps, the
 // H14 pre-zero clears and the finite-row scan, and the rows back with the ORIGINAL pair indices.
 // Every cap is checked BEFORE anything is allocated; every refusal is this transport's typed status.
+// L2: the prompt tier rides its OWN stream only when the split is on; the window tier, the
+// fill epoch and the default OFF path keep the one historical stream, byte for byte.
+static inline cudaStream_t prompt_stream(const Helper& hp) {
+    return hp.streams_split ? hp.stream_p : hp.stream;
+}
+
 int serve_prompt(Helper& hp, const std::vector<uint8_t>& body, uint32_t req_id, uint32_t seq, std::string& err,
                  Socket& out) {
     // The prompt tier's OWN staging (h_meta_p/d_meta_p/d_q8_p/d_out_p/scratch_p) and the grouped
@@ -643,7 +671,9 @@ int serve_prompt(Helper& hp, const std::vector<uint8_t>& body, uint32_t req_id, 
     const auto p_entry = prof ? std::chrono::steady_clock::now()
                               : std::chrono::steady_clock::time_point{};
     std::unique_lock<std::mutex> gpu_lk(hp.gpu_mtx, std::defer_lock);
-    gpu_lk.lock();
+    std::optional<std::shared_lock<std::shared_mutex>> gpu_lk_on;
+    if (hp.streams_split) gpu_lk_on.emplace(hp.gpu_gate);   // L2: a served frame is a reader
+    else gpu_lk.lock();
     const int64_t p_queue_us = prof ? std::chrono::duration_cast<std::chrono::microseconds>(
                                           std::chrono::steady_clock::now() - p_entry).count() : 0;
     if (body.size() < sizeof(BeginPReq)) return kErrShort;
@@ -731,27 +761,27 @@ int serve_prompt(Helper& hp, const std::vector<uint8_t>& body, uint32_t req_id, 
                                hp.h_q8_p_scratch.data() + (size_t) r * (size_t) (H / 32) * 36);
         img = hp.h_q8_p_scratch.data();
     }
-    if (!cuda_check(cudaMemcpyAsync(hp.d_q8_p, img, up_bytes, cudaMemcpyHostToDevice, hp.stream),
+    if (!cuda_check(cudaMemcpyAsync(hp.d_q8_p, img, up_bytes, cudaMemcpyHostToDevice, prompt_stream(hp)),
                     "prompt q8 upload", err)) return kErrInternal;
     std::memcpy(hp.h_meta_p->ptr, grp_ptr.data(), grp_ptr.size() * sizeof(grp_ptr[0]));
     std::memcpy(hp.h_meta_p->start, start.data(), start.size() * sizeof(start[0]));
     std::memcpy(hp.h_meta_p->dst, dst.data(), dst.size() * sizeof(dst[0]));
     std::memcpy(hp.h_meta_p->tok, tok.data(), tok.size() * sizeof(tok[0]));
     hp.h_meta_p->count = groups;
-    if (!cuda_check(cudaMemcpyAsync(hp.d_meta_p, hp.h_meta_p, sizeof(GroupMetaP), cudaMemcpyHostToDevice, hp.stream),
+    if (!cuda_check(cudaMemcpyAsync(hp.d_meta_p, hp.h_meta_p, sizeof(GroupMetaP), cudaMemcpyHostToDevice, prompt_stream(hp)),
                     "prompt meta upload", err)) return kErrInternal;
     const auto L = strata::kernels::native_expert_layout(fmt.gu_type, fmt.d_type, fmt.n_embd, fmt.n_ff);
     // H14, mirrored: clear the output rows and the scratch first - a stale value from a window, from
     // the warmup, or cudaMalloc junk carrying NaN fp16 patterns must never reach a reply row.
-    if (!cuda_check(cudaMemsetAsync(hp.d_out_p, 0, (size_t) dst.size() * (size_t) H * 4, hp.stream),
+    if (!cuda_check(cudaMemsetAsync(hp.d_out_p, 0, (size_t) dst.size() * (size_t) H * 4, prompt_stream(hp)),
                     "prompt output clear", err)) return kErrInternal;
-    if (!cuda_check(cudaMemsetAsync(hp.d_scratch_p, 0, (size_t) hp.prompt_scratch_bytes, hp.stream),
+    if (!cuda_check(cudaMemsetAsync(hp.d_scratch_p, 0, (size_t) hp.prompt_scratch_bytes, prompt_stream(hp)),
                     "prompt scratch clear", err)) return kErrInternal;
     strata::kernels::native_expert_grouped(L, hp.d_meta_p->ptr, hp.d_meta_p->start, &hp.d_meta_p->count,
                                            hp.d_meta_p->dst, hp.d_meta_p->tok, groups, (int64_t) dst.size(),
-                                           (const uint8_t*) hp.d_q8_p, hp.d_scratch_p, hp.d_out_p, hp.stream);
+                                           (const uint8_t*) hp.d_q8_p, hp.d_scratch_p, hp.d_out_p, prompt_stream(hp));
     if (!cuda_check(cudaGetLastError(), "native_expert_grouped prompt launch", err)) return kErrInternal;
-    if (!cuda_check(cudaStreamSynchronize(hp.stream), "prompt row sync", err)) return kErrInternal;
+    if (!cuda_check(cudaStreamSynchronize(prompt_stream(hp)), "prompt row sync", err)) return kErrInternal;
 
     // H14's finite-row scan, mirrored: prove the rows before the engine refuses them.
     for (int32_t i = 0; i < (int32_t) compact_claim.size(); ++i) {
@@ -818,7 +848,10 @@ int serve_draft_ctx(Helper& hp, const std::vector<uint8_t>& body, uint32_t req_i
                     Socket& out) {
     // The drafter's ring, its tap staging (h_taps) and its forward are shared device state too: a
     // draft frame on channel A and a prompt frame on channel B can reach the device together.
-    std::lock_guard<std::mutex> gpu_lk(hp.gpu_mtx);
+    std::optional<std::lock_guard<std::mutex>> gpu_lk_off;
+    std::optional<std::shared_lock<std::shared_mutex>> gpu_lk_on;
+    if (hp.streams_split) gpu_lk_on.emplace(hp.gpu_gate);   // L2: draft frames are readers too
+    else gpu_lk_off.emplace(hp.gpu_mtx);
     if (body.size() < sizeof(DraftCtxReq)) return kErrShort;
     DraftCtxReq req;
     std::memcpy(&req, body.data(), sizeof(req));
@@ -845,7 +878,10 @@ int serve_draft_ctx(Helper& hp, const std::vector<uint8_t>& body, uint32_t req_i
 
 int serve_draft_round(Helper& hp, const std::vector<uint8_t>& body, uint32_t req_id, uint32_t seq,
                       std::string& err, Socket& out) {
-    std::lock_guard<std::mutex> gpu_lk(hp.gpu_mtx);
+    std::optional<std::lock_guard<std::mutex>> gpu_lk_off;
+    std::optional<std::shared_lock<std::shared_mutex>> gpu_lk_on;
+    if (hp.streams_split) gpu_lk_on.emplace(hp.gpu_gate);   // L2: draft frames are readers too
+    else gpu_lk_off.emplace(hp.gpu_mtx);
     if (body.size() < kDraftReqLegacyBytes) return kErrShort;
     DraftReq req;
     std::memcpy(&req, body.data(), kDraftReqLegacyBytes);   // the legacy prefix; n_drafts stays 0
@@ -1264,6 +1300,13 @@ int main(int argc, char** argv) {
         strata::kernels::native_expert_scratch_bytes(CAP, FF));
     hp.buffers_bytes = (int64_t) (CAP * (H / 32) * 36 + CAP * H * 4 + sizeof(GroupMeta) + (2u << 20));
     if (!cuda_check(cudaStreamCreateWithFlags(&hp.stream, cudaStreamNonBlocking), "stream", err)) return fail("buffers", err);
+    if (std::getenv("STRATA_HELPER_STREAMS")) {             // L2: opt-in, default OFF
+        if (!cuda_check(cudaStreamCreateWithFlags(&hp.stream_p, cudaStreamNonBlocking), "stream_p", err))
+            return fail("buffers", err);
+        hp.streams_split = true;
+        std::fprintf(stderr, "expert-helper: L2 stream split on (window/draft on the primary "
+                             "stream, prompt on its own; fill fences both)\n");
+    }
     if (!cuda_check(cudaHostAlloc((void**) &hp.h_meta, sizeof(GroupMeta), cudaHostAllocPortable | cudaHostAllocMapped),
                     "meta staging", err)) return fail("buffers", err);
     // H10: the launch below reads d_meta's FIELDS on the host (->ptr/->start/...), so d_meta must be
