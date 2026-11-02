@@ -294,6 +294,8 @@ int ExpertHelperClient::hello(int64_t n_layers, int64_t n_expert, int64_t n_embd
                   (ack.features & expert_helper::kFeaturePromptF32) != 0;   // M4c (b)
     draft_ = (body.size() >= sizeof(expert_helper::HelloAck)) &&
              (ack.features & expert_helper::kFeatureDraft) != 0;   // M7: the drafter lane
+    draft_bf16_ = (body.size() >= sizeof(expert_helper::HelloAck)) &&
+                  (ack.features & expert_helper::kFeatureDraftBf16) != 0;   // L8: bf16 taps
     seq_ = head.seq;
     s.release();
     return expert_helper::kOk;
@@ -689,6 +691,22 @@ int ExpertHelperClient::draft_set_geometry(int64_t n_planes, int64_t taps_hidden
     return kOk;
 }
 
+// L8: pack the drafter's fp32 tap rows for the wire - fp32 verbatim (today's bytes), or bf16
+// (round-to-nearest-even on the 16-bit truncation) when the caller chose the halved wire.
+static void pack_draft_rows(uint8_t* dst, const float* src, size_t n, bool bf16) {
+    if (!bf16) {
+        std::memcpy(dst, src, n * sizeof(float));
+        return;
+    }
+    uint16_t* out = (uint16_t*) dst;
+    for (size_t i = 0; i < n; ++i) {
+        uint32_t bits;
+        std::memcpy(&bits, src + i, 4);
+        bits += 0x7fffu + ((bits >> 16) & 1u);   // round to nearest, ties to even
+        out[i] = (uint16_t) (bits >> 16);
+    }
+}
+
 int ExpertHelperClient::draft_context(const float* rows, int64_t n_rows, int64_t pos0, int reset,
                                       int64_t timeout_ms) {
     using namespace expert_helper;
@@ -703,10 +721,15 @@ int ExpertHelperClient::draft_context(const float* rows, int64_t n_rows, int64_t
     if (reset != 0 && reset != 1) return kErrGeometry;
     if (reset == 1 && pos0 != 0) return kErrGeometry;   // the ring empties at position 0 only
     const int64_t row_floats = draft_planes_ * draft_hidden_;
+    // L8 (default OFF): STRATA_DRAFT_TAP_BF16 together with the peer's kFeatureDraftBf16 halves
+    // the tap wire - the rows leave as bf16 on the new frame kinds; unset, or a peer without the
+    // bit, sends exactly today's fp32 bytes on today's frame kinds.
+    static const bool tap_bf16_env = std::getenv("STRATA_DRAFT_TAP_BF16") != nullptr;
+    const bool use_bf16 = tap_bf16_env && draft_bf16_;
     int64_t done = 0;
     while (done < n_rows) {
         const int64_t nr = std::min<int64_t>(kMaxDraftCtxRows, n_rows - done);
-        const size_t total = sizeof(DraftCtxReq) + (size_t) nr * row_floats * sizeof(float);
+        const size_t total = sizeof(DraftCtxReq) + (size_t) nr * row_floats * (use_bf16 ? 2u : 4u);
         if (total > kMaxFramePayload) return kErrGeometry;   // a frame the reader would refuse
         std::vector<uint8_t> payload(total, 0);
         DraftCtxReq req;
@@ -716,8 +739,8 @@ int ExpertHelperClient::draft_context(const float* rows, int64_t n_rows, int64_t
         req.reset = (done == 0) ? reset : 0;   // the request's FIRST frame carries the reset
         req.pos0 = pos0 + done;
         std::memcpy(payload.data(), &req, sizeof(req));
-        std::memcpy(payload.data() + sizeof(req), rows + (size_t) done * row_floats,
-                    (size_t) nr * row_floats * sizeof(float));
+        pack_draft_rows(payload.data() + sizeof(req), rows + (size_t) done * row_floats,
+                        (size_t) nr * row_floats, use_bf16);
         // M7 (sect12a, BUG E): ship this frame only when the shared channel holds no in-flight
         // request, and keep io_mtx_ held from the write through the ack's pairing test.  The frame's
         // identity is req_id_, and the ack echoes it; with a layer split the prompt tier's
@@ -736,7 +759,7 @@ int ExpertHelperClient::draft_context(const float* rows, int64_t n_rows, int64_t
         expert_helper::Socket s;
         s.adopt(fd_);
         const int64_t deadline = rel(timeout_ms, kDeadlineDraftMs);
-        int rc = s.write_frame(kDraftCtx, ++req_id_, payload.data(), total, deadline);
+        int rc = s.write_frame(use_bf16 ? kDraftCtxBf16 : kDraftCtx, ++req_id_, payload.data(), total, deadline);
         if (rc != kOk) {
             std::fprintf(stderr, "expert-helper: draft ctx frame at pos %lld failed to send: %s; "
                                  "closing the channel\n", (long long) req.pos0, status_name(rc));
@@ -819,7 +842,10 @@ int ExpertHelperClient::draft_round(const float* rows, int64_t n_new, int64_t po
     // was fatal only because the request could not carry the cap.
     if (out_cap < 1 || out_cap > kMaxDraftPicks) return kErrGeometry;
     const int64_t row_floats = draft_planes_ * draft_hidden_;
-    const size_t total = sizeof(DraftReq) + (size_t) n_new * row_floats * sizeof(float);
+    // L8 (default OFF): the same gate as draft_context - the env AND the peer's feature bit.
+    static const bool tap_bf16_env = std::getenv("STRATA_DRAFT_TAP_BF16") != nullptr;
+    const bool use_bf16 = tap_bf16_env && draft_bf16_;
+    const size_t total = sizeof(DraftReq) + (size_t) n_new * row_floats * (use_bf16 ? 2u : 4u);
     if (total > kMaxFramePayload) return kErrGeometry;
     std::vector<uint8_t> payload(total, 0);
     DraftReq req;
@@ -830,7 +856,7 @@ int ExpertHelperClient::draft_round(const float* rows, int64_t n_new, int64_t po
     req.pos0 = pos0;
     req.n_drafts = out_cap;
     std::memcpy(payload.data(), &req, sizeof(req));
-    std::memcpy(payload.data() + sizeof(req), rows, (size_t) n_new * row_floats * sizeof(float));
+    pack_draft_rows(payload.data() + sizeof(req), rows, (size_t) n_new * row_floats, use_bf16);
     // M7 (sect12a, BUG E): the same gate and the same held lock as draft_context - this frame
     // shares the channel with the pipelined window/prompt tiers, and its reply is paired by
     // req_id, so it goes on the wire only with nothing else in flight.
@@ -847,7 +873,7 @@ int ExpertHelperClient::draft_round(const float* rows, int64_t n_new, int64_t po
     expert_helper::Socket s;
     s.adopt(fd_);
     const int64_t deadline = rel(timeout_ms, kDeadlineDraftMs);
-    int rc = s.write_frame(kDraftReq, ++req_id_, payload.data(), total, deadline);
+    int rc = s.write_frame(use_bf16 ? kDraftReqBf16 : kDraftReq, ++req_id_, payload.data(), total, deadline);
     if (rc != kOk) {
         std::fprintf(stderr, "expert-helper: draft round at pos %lld failed to send: %s; closing "
                              "the channel\n", (long long) pos0, status_name(rc));

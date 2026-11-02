@@ -187,6 +187,7 @@ public:
     /// False for every helper that loaded no --dflash: the draft methods refuse by name and no
     /// kDraftCtx/kDraftReq is ever put on the wire.
     bool draft_supported() const { return draft_; }
+    bool draft_tap_bf16_supported() const { return draft_bf16_; }   // L8: bf16 taps on the wire
     /// The engine's LOCAL parse of the DFlash artifact, handed down once before any frame: the
     /// geometry every frame carries and every size check runs against (n_planes = the artifact's
     /// target_layers.size(), taps_hidden = the target's n_embd).  A geometry the peer's own
@@ -282,6 +283,7 @@ private:
     bool prompt_rows_ = false;                      // the peer advertised kFeaturePromptRows
     bool prompt_f32_ = false;                       // the peer advertised kFeaturePromptF32 (M4c (b))
     bool draft_ = false;                            // the peer advertised kFeatureDraft (M7)
+    bool draft_bf16_ = false;                       // the peer advertised kFeatureDraftBf16 (L8 wire v2)
     int64_t draft_planes_ = 0, draft_hidden_ = 0;   // the draft geometry the engine pinned
     uint64_t draft_frames_ = 0, draft_rounds_ = 0, draft_rows_ = 0;   // the drafter lane's counters
     void* ext_x_ = nullptr;                         // the tier's OWN pinned rows (never cpu_x)

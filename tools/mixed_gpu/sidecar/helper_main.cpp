@@ -836,16 +836,26 @@ int serve_prompt(Helper& hp, const std::vector<uint8_t>& body, uint32_t req_id, 
 // Every size is checked BEFORE anything is written, like every other tier here; every refusal is this
 // transport's typed status, written with the echoed sequence.  The tap COLLECTOR stays engine-side
 // (generate.cpp attaches it to the verifier): the helper only consumes the rows that arrive on the wire.
-void stage_draft_rows(Helper& hp, const uint8_t* wire, int64_t rows) {
+void stage_draft_rows(Helper& hp, const uint8_t* wire, int64_t rows, bool bf16) {
     const int64_t N = hp.tap_hidden, P = hp.tap_planes;
     const float* src = (const float*) wire;
+    const uint16_t* src16 = (const uint16_t*) wire;
     for (int64_t r = 0; r < rows; ++r)
-        for (int64_t p = 0; p < P; ++p)
-            std::memcpy(hp.h_taps + p * rows * N + r * N, src + (r * P + p) * N, (size_t) N * 4);
+        for (int64_t p = 0; p < P; ++p) {
+            float* dst = hp.h_taps + p * rows * N + r * N;
+            const int64_t off = (r * P + p) * N;
+            if (!bf16)
+                std::memcpy(dst, src + off, (size_t) N * 4);
+            else
+                for (int64_t n = 0; n < N; ++n) {   // L8: expand bf16 -> f32 (the low 16 bits are zero)
+                    const uint32_t bits = (uint32_t) src16[off + n] << 16;
+                    std::memcpy(dst + n, &bits, 4);
+                }
+        }
 }
 
-int serve_draft_ctx(Helper& hp, const std::vector<uint8_t>& body, uint32_t req_id, uint32_t seq, std::string& err,
-                    Socket& out) {
+int serve_draft_ctx(Helper& hp, const std::vector<uint8_t>& body, uint32_t req_id, uint32_t seq, bool bf16_taps,
+                    std::string& err, Socket& out) {
     // The drafter's ring, its tap staging (h_taps) and its forward are shared device state too: a
     // draft frame on channel A and a prompt frame on channel B can reach the device together.
     std::optional<std::lock_guard<std::mutex>> gpu_lk_off;
@@ -863,8 +873,9 @@ int serve_draft_ctx(Helper& hp, const std::vector<uint8_t>& body, uint32_t req_i
     if (req.reset == 1 && req.pos0 != 0) return kErrGeometry;
     if (req.pos0 < 0 || req.n_rows > hp.draft.capacity() - req.pos0) return kErrGeometry;
     const int64_t row_floats = (int64_t) req.n_planes * hp.tap_hidden;
-    if (body.size() != sizeof(req) + (size_t) req.n_rows * row_floats * 4u) return kErrShort;
-    stage_draft_rows(hp, body.data() + sizeof(req), req.n_rows);
+    if (body.size() != sizeof(req) + (size_t) req.n_rows * row_floats * (bf16_taps ? 2u : 4u))
+        return kErrShort;
+    stage_draft_rows(hp, body.data() + sizeof(req), req.n_rows, bf16_taps);
     for (int64_t r0 = 0; r0 < req.n_rows; r0 += 8) {   // the forward's width: 8 rows per call
         const int64_t nr = std::min<int64_t>(8, req.n_rows - r0);
         if (!hp.draft.add_context_f32(hp.h_taps + r0 * hp.tap_hidden, (int) req.n_planes,
@@ -877,7 +888,7 @@ int serve_draft_ctx(Helper& hp, const std::vector<uint8_t>& body, uint32_t req_i
 }
 
 int serve_draft_round(Helper& hp, const std::vector<uint8_t>& body, uint32_t req_id, uint32_t seq,
-                      std::string& err, Socket& out) {
+                      bool bf16_taps, std::string& err, Socket& out) {
     std::optional<std::lock_guard<std::mutex>> gpu_lk_off;
     std::optional<std::shared_lock<std::shared_mutex>> gpu_lk_on;
     if (hp.streams_split) gpu_lk_on.emplace(hp.gpu_gate);   // L2: draft frames are readers too
@@ -890,10 +901,12 @@ int serve_draft_round(Helper& hp, const std::vector<uint8_t>& body, uint32_t req
     if (req.pos0 < 0 || req.n_new > hp.draft.capacity() - req.pos0) return kErrGeometry;
     if (req.anchor < 0) return kErrGeometry;
     const int64_t row_floats = (int64_t) req.n_planes * hp.tap_hidden;
-    const size_t rows_bytes = (size_t) req.n_new * row_floats * 4u;
+    const size_t rows_bytes = (size_t) req.n_new * row_floats * (bf16_taps ? 2u : 4u);
     // L1 (l1w2's 7-vs-5 mismatch): the current wire form appends int32 n_drafts after pos0 -
     // the engine's reply cap; the helper never proposes wider than it.  The 24-byte form is the
-    // legacy request (no n_drafts): the helper chooses the block, exactly as before.
+    // legacy request (no n_drafts): the helper chooses the block, exactly as before.  L8's
+    // kDraftReqBf16 has NO legacy form: an engine that sends the bf16 kind always writes
+    // n_drafts, so only the full-header size matches.
     int block = (int) std::min<int64_t>(hp.draft.max_block(), kMaxDraftPicks);
     size_t header_bytes = kDraftReqLegacyBytes;
     if (body.size() == sizeof(DraftReq) + rows_bytes) {
@@ -901,10 +914,10 @@ int serve_draft_round(Helper& hp, const std::vector<uint8_t>& body, uint32_t req
         std::memcpy(&req.n_drafts, body.data() + offsetof(DraftReq, n_drafts), sizeof(req.n_drafts));
         if (req.n_drafts < 0 || req.n_drafts > (int32_t) kMaxDraftPicks) return kErrGeometry;
         if (req.n_drafts > 0) block = std::min(block, (int) req.n_drafts);
-    } else if (body.size() != kDraftReqLegacyBytes + rows_bytes) {
+    } else if (bf16_taps || body.size() != kDraftReqLegacyBytes + rows_bytes) {
         return kErrShort;
     }
-    stage_draft_rows(hp, body.data() + header_bytes, req.n_new);
+    stage_draft_rows(hp, body.data() + header_bytes, req.n_new, bf16_taps);
     if (!hp.draft.add_context_f32(hp.h_taps, (int) req.n_planes, req.n_new * hp.tap_hidden,
                                   req.pos0, (int64_t) req.n_new, err))
         return kErrRequest;
@@ -1097,7 +1110,7 @@ accept_peer:
                     // bound - a peer that never advertised kFeatureDraft never sends kDraftCtx/kDraftReq,
                     // and one that did gets this transport's typed refusal if it sends them to a helper
                     // without a drafter (the frame types exist, the service does not).
-                    if (hp.draft_ready) ack.features |= kFeatureDraft;
+                    if (hp.draft_ready) ack.features |= kFeatureDraft | kFeatureDraftBf16;   // L8: bf16 taps too
                     size_t free_b = 0, total_b = 0;
                     cudaMemGetInfo(&free_b, &total_b);
                     ack.free_mib = (int64_t) free_b / 1048576ll;
@@ -1170,7 +1183,10 @@ accept_peer:
             if (o.once) { std::fprintf(stderr, "expert-helper: --once: one prompt row request served, exiting\n"); break; }
             continue;
         }
-        if (head.type == kDraftCtx || head.type == kDraftReq) {
+        if (head.type == kDraftCtx || head.type == kDraftReq ||
+            head.type == kDraftCtxBf16 || head.type == kDraftReqBf16) {
+            // L8: the bf16 kinds carry the same headers with the taps as bf16 (half the bytes).
+            const bool bf16_taps = head.type == kDraftCtxBf16 || head.type == kDraftReqBf16;
             // M7 (the drafter lane): served ONLY after the engine's own gate - this helper advertised
             // kFeatureDraft in its kHelloAck, and a client that saw no bit never sends these frames.
             // A refusal answers with the transport's typed kError (the engine disables drafting for
@@ -1178,8 +1194,9 @@ accept_peer:
             // which releases the card and unlinks only this helper's own socket - never a crash,
             // never a hang.
             if (!filled || !hp.draft_ready) { rc = kErrRequest; err = "no drafter is loaded"; }
-            else if (head.type == kDraftCtx) rc = serve_draft_ctx(hp, body, head.req_id, head.seq, err, out);
-            else rc = serve_draft_round(hp, body, head.req_id, head.seq, err, out);
+            else if (head.type == kDraftCtx || head.type == kDraftCtxBf16)
+                rc = serve_draft_ctx(hp, body, head.req_id, head.seq, bf16_taps, err, out);
+            else rc = serve_draft_round(hp, body, head.req_id, head.seq, bf16_taps, err, out);
             if (rc != kOk) {
                 ErrResp e;
                 e.status = rc;
