@@ -49,3 +49,17 @@ MMQ product agreement does not establish complete task-output equivalence.
 
 Do not use the legacy measurement scripts unchanged: their process cleanup and
 production restoration do not meet the current supervised canonical contract.
+
+## Measured result — 2026-11-02 (fin1, the first fresh same-input reference run)
+
+Real inputs: the 8 pinned fixtures' first-chunk dumps, all layers 32-47 (128 files,
+sha256-pinned). Reference: gfx906 HIP on a Radeon VII; candidate: the CUDA helper
+on the RTX 3080. Strict-v2 audit passed (rc 0). 125,350 of 125,350 rows measured,
+0 skipped, 8/8 fixtures. Against the rule above: relative p99.9 = 0.00599 FAILS
+(> 0.005), relative max = 0.01348 passes (<= 0.02). Separately: absolute p99.9 =
+0.00120, absolute max = 0.00254, tensor NMSE = 4.228e-06 (energy error 2.342 /
+reference energy 554,050). Coverage: rows only in layers 32-35 — the helper held
+1,596 of 7,198 requested expert pairs — and 3 of 7 format pairs; both gaps stay
+visible in the report notes. Evidence: `build-mixed-gpu/p2-finish/fin1/`
+(measure.json sha256 8557a2e6..., audit.log, per-attempt att1-3 preserved).
+MMQ product agreement still does not establish task-output equivalence.
