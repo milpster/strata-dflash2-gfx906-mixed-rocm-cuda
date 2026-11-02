@@ -156,7 +156,11 @@ def supervise(args: argparse.Namespace) -> int:
                                 owned.setdefault(path, token)
                         if record.exists() and peers is None:
                             peers = json.loads(record.read_text())
-                            for name in ("helper", "server"):
+                            # helper_pid 0 = a helper-off A/B arm: no helper process
+                            # exists, so its identity/dead checks are skipped and attach
+                            # keys on the server's own "ready: http://" line instead.
+                            peer_names = ("server",) if peers.get("helper_pid") == 0 else ("helper", "server")
+                            for name in peer_names:
                                 pid = peers[f"{name}_pid"]
                                 start = peers[f"{name}_start"]
                                 try:
@@ -167,22 +171,28 @@ def supervise(args: argparse.Namespace) -> int:
                             publish.update(peers, state="monitoring")
                             write_json(args.state, publish)
                         if peers is not None:
-                            dead = [name for name in ("helper", "server")
+                            dead = [name for name in
+                                    (("server",) if peers.get("helper_pid") == 0 else ("helper", "server"))
                                     if not alive(peers[f"{name}_pid"], peers[f"{name}_start"])]
                             if dead:
                                 reason = ", ".join(dead) + " exited"
                                 break
-                            helper_log = Path(peers["helper_log"]).read_text(errors="replace")
-                            # A lost secondary channel can leave the helper process alive.
-                            if any(mark in helper_log for mark in (
-                                "channel:", "request failed:", "the engine said bye; exiting",
-                                "the engine idled past the timeout; exiting",
-                            )):
-                                reason = "helper channel ended"
-                                break
-                            attached = "expert-helper: filled " in helper_log
-                            if len(args.socket) > 1:
-                                attached &= "second-channel engine connected" in helper_log
+                            if peers.get("helper_pid") == 0:
+                                log_path = Path(peers["engine_log"])
+                                attached = ("ready: http://" in log_path.read_text(errors="replace")
+                                            if log_path.exists() else False)
+                            else:
+                                helper_log = Path(peers["helper_log"]).read_text(errors="replace")
+                                # A lost secondary channel can leave the helper process alive.
+                                if any(mark in helper_log for mark in (
+                                    "channel:", "request failed:", "the engine said bye; exiting",
+                                    "the engine idled past the timeout; exiting"
+                                )):
+                                    reason = "helper channel ended"
+                                    break
+                                attached = "expert-helper: filled " in helper_log
+                                if len(args.socket) > 1:
+                                    attached &= "second-channel engine connected" in helper_log
                             if attached and not healthy:
                                 healthy = True
                                 publish.update(state="attached", attached_at=time.time())
@@ -238,7 +248,13 @@ def main() -> int:
         peers = {
             key: getattr(args, key) for key in ("helper_pid", "server_pid", "engine_log", "helper_log")
         }
+        # helper-less pairs (the helper-off A/B arms) record helper_pid 0: no process
+        # token exists for a helper that was never started. Production always passes a
+        # real pid, so this branch is unreachable on the canonical path.
         for name in ("helper", "server"):
+            if name == "helper" and peers["helper_pid"] == 0:
+                peers["helper_start"] = 0
+                continue
             token = process_token(peers[f"{name}_pid"])
             if token is None or token[0] == "Z":
                 raise RuntimeError(f"{name} exited before publication")

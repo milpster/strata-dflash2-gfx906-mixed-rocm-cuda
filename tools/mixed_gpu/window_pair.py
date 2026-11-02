@@ -42,13 +42,19 @@ def prepare(family, *, slots=4000, fill_mib=6400, port=18080, evidence=EVIDENCE,
             prod_config=PROD_CONFIG, prod_launcher=PROD_LAUNCHER,
             engine=None, helper=None, rpc_profile=False, draft_helper=None, knob=None,
             prefill_timing=False, helper_streams=False, draft_tap_bf16=False,
-            split_overlap=False):
+            split_overlap=False, helper_off=False):
     if prefill_timing is not None and type(prefill_timing) is not bool:
         raise ValueError("Prefill timing override must be True, False, or None")
     if helper_streams is not None and type(helper_streams) is not bool:
         raise ValueError("Helper-stream override must be True or False")
     if type(split_overlap) is not bool:
         raise ValueError("Split-overlap override must be True or False")
+    if type(helper_off) is not bool:
+        raise ValueError("Helper-off override must be True or False")
+    if helper_off and (draft_helper or draft_tap_bf16 or helper is not None):
+        raise ValueError("Helper-off cannot combine with the remote draft lane or a helper binary")
+    if helper_off and (rpc_profile or helper_streams):
+        raise ValueError("Helper-off arms start no helper, so helper-side env injection has no seam")
     if type(draft_tap_bf16) is not bool:
         raise ValueError("Draft tap bf16 override must be True or False")
     if draft_tap_bf16 and not draft_helper:
@@ -95,10 +101,18 @@ def prepare(family, *, slots=4000, fill_mib=6400, port=18080, evidence=EVIDENCE,
     failures = helper_ab.check_arm_pair(prod, config, off, subs)
     if failures:
         raise ValueError(f"Production parity failed: {failures}")
+    if helper_off:
+        # The user-queued helper-off arm: reuse helper_ab's VALIDATED OFF derivation
+        # verbatim (both socket keys popped - "the shipped byte-identical default path:
+        # the engine never creates the helper client"). check_arm_pair has already
+        # accepted it; the --expert-helper-slots argv pair stays production's (inert
+        # with no socket key to inject the connection).
+        config = off
     args = config["args"]
-    if args.count("--expert-helper-slots") != 1:
-        raise ValueError("Expected one explicit engine slot cap")
-    args[args.index("--expert-helper-slots") + 1] = str(slots)
+    if not helper_off:
+        if args.count("--expert-helper-slots") != 1:
+            raise ValueError("Expected one explicit engine slot cap")
+        args[args.index("--expert-helper-slots") + 1] = str(slots)
     if knob is not None:
         # L6: engine argv only. Exactly one occurrence is enforced so a silent change
         # in the production argv cannot make the knob land somewhere unexpected.
@@ -127,8 +141,28 @@ def prepare(family, *, slots=4000, fill_mib=6400, port=18080, evidence=EVIDENCE,
     text = replace_once(text, 'SOCKET2="$ROOT/run/prod-mixed2.sock"', f"SOCKET2={shlex.quote(str(socket2))}")
     text = replace_once(text, '--state "$ROOT/run/prod-mixed-supervisor.json"',
                         f"--state {shlex.quote(str(state_path))}")
-    text = replace_regex_once(text, r"--device 0 --slots \d+", f"--device 0 --slots {slots}")
-    text = replace_regex_once(text, r"--fill-mib \d+ --socket2", f"--fill-mib {fill_mib} --socket2")
+    if helper_off:
+        # Strip the helper start and its readiness gates (the launcher would otherwise
+        # refuse on sockets nothing creates) and record helper_pid 0, the supervisor's
+        # helper-less convention (the production launcher never passes 0, so the
+        # canonical path is untouched; pair_supervisor then attaches on the server's
+        # own "ready: http://" line instead of the helper's fill line).
+        start_marker = 'env -i PATH="$PATH" HOME="$HOME"'
+        end_marker = 'Second channel socket missing: $SOCKET2" >&2; exit 1; }\n'
+        if text.count(start_marker) != 1 or text.count(end_marker) != 1:
+            raise ValueError("Helper block markers not unique for the helper-off strip")
+        start, end = text.index(start_marker), text.index(end_marker) + len(end_marker)
+        if start >= end:
+            raise ValueError("Helper block markers out of order")
+        text = (text[:start]
+                + "# helper-off arm: no RPC expert helper is started; the engine runs the\n"
+                + "# shipped helper-less default path (helper_ab's OFF derivation)\n"
+                + text[end:])
+        text = replace_once(text, 'record "$helper_pid" "$server_pid"',
+                            'record 0 "$server_pid"')
+    else:
+        text = replace_regex_once(text, r"--device 0 --slots \d+", f"--device 0 --slots {slots}")
+        text = replace_regex_once(text, r"--fill-mib \d+ --socket2", f"--fill-mib {fill_mib} --socket2")
     if draft_helper is not None:
         # Explicit OFF cannot inherit an ambient remote-draft flag. None leaves
         # the existing derivation unchanged, including the production env.
@@ -205,7 +239,7 @@ def prepare(family, *, slots=4000, fill_mib=6400, port=18080, evidence=EVIDENCE,
                     helper=str(helper) if helper is not None else "production",
                     rpc_profile=rpc_profile, draft_helper=draft_helper, prefill_timing=prefill_timing,
                     helper_streams=helper_streams, draft_tap_bf16=draft_tap_bf16,
-                    split_overlap=split_overlap,
+                    split_overlap=split_overlap, helper_off=helper_off,
                     knob=None if knob is None else dict(name=knob[0], value=str(knob[1])),
                     config=str(config_path), launcher=str(launcher_path),
                     socket=str(socket), socket2=str(socket2), state=str(state_path))

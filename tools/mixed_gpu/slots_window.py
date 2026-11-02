@@ -246,6 +246,40 @@ def overlap_comparison(rows):
                        "proof; no adoption without its own repeated evidence.")
 
 
+def helper_off_comparison(rows):
+    """Helper-less vs canonical A/B: the user-asked measurement of what the RPC expert
+    helper actually adds (infill = read_rate tok/s, TG = gen_rate tok/s). OFF arms are
+    helper_ab's validated OFF derivation; engagement gates prove the split (OFF arms zero
+    helper traffic, ON arm positive). Pure measurement - production is already canonical,
+    so the verdicts describe the helper's value, never an adoption."""
+    off = [p for row in rows if row["helper_off"] for p in row["probes"]]
+    on = [p for row in rows if not row["helper_off"] for p in row["probes"]]
+    off_rows = [row for row in rows if row["helper_off"]]
+    med = lambda probes, key: statistics.median(p[key] for p in probes)
+    drift = med(off_rows[-1]["probes"], "gen_rate") / med(off_rows[0]["probes"], "gen_rate")
+    off_reqs = sum(p.get("helper_reqs", 0) for p in off)
+    on_reqs = sum(p.get("helper_reqs", 0) for p in on)
+    decode_ratio = med(on, "gen_rate") / med(off, "gen_rate")
+    engagement = "HELPER_ENGAGEMENT_BROKEN" if off_reqs or not on_reqs else "OK"
+    verdict = ("INCONCLUSIVE_CONTROL_DRIFT" if not 0.9 <= drift <= 1.1 else
+               engagement if engagement != "OK" else
+               "HELPER_GAIN_CONFIRMED" if decode_ratio >= 1.05 else
+               "HELPER_GAIN_SMALL" if decode_ratio >= 1.0 else "HELPER_SLOWER")
+    return dict(off_decode_median=med(off, "gen_rate"), on_decode_median=med(on, "gen_rate"),
+                on_off_decode_ratio=decode_ratio,
+                off_infill_median=med(off, "read_rate"), on_infill_median=med(on, "read_rate"),
+                on_off_infill_ratio=med(on, "read_rate") / med(off, "read_rate"),
+                off_read_ms_median=med(off, "read_ms"), on_read_ms_median=med(on, "read_ms"),
+                off_elapsed_median=med(off, "elapsed_s"), on_elapsed_median=med(on, "elapsed_s"),
+                control_drift=drift, off_helper_reqs_total=off_reqs, on_helper_reqs_total=on_reqs,
+                verdict=verdict,
+                limits="Measurement A/B, no adoption: OFF arms are helper_ab's validated OFF "
+                       "derivation with the helper never started (supervisor helper_pid 0, "
+                       "attach on the server's ready line); ON is the canonical supervised "
+                       "pair; infill = read_rate, TG = gen_rate; request-SHA parity still "
+                       "required (greedy tokens must not change).")
+
+
 # ---- L7 (progressive degradation diagnosis): local resource samplers, best-effort ----
 
 try:
@@ -378,6 +412,12 @@ def run(args):
         # byte-identical production controls at the canonical 4200/6400 identity, and
         # the ON arm's engine log carries '(overlapped: STRATA_SPLIT_OVERLAP=1)'.
         schedule = [(label, 4200, 6400) for label in "abc"]  # OFF/ON/OFF
+    elif args.helper_off:
+        # The user-asked helper measurement: a/c run helper_ab's validated OFF derivation
+        # (no helper process at all - the shipped helper-less default path), b runs the
+        # canonical supervised pair. Same production binaries; only the helper's presence
+        # differs. infill = read_rate, TG = gen_rate; pure measurement, no adoption.
+        schedule = [(label, 4200, 6400) for label in "abc"]  # OFF(helper-less)/ON/OFF
     elif args.l3_profile or args.degrade_probe:
         overrides = dict(engine=window_pair.WORK / "build-mixed-gpu/rpcw-hip-l3/strata",
                          helper=window_pair.WORK / "build-mixed-gpu/rpcw-cuda-l3/strata-expert-helper",
@@ -394,6 +434,7 @@ def run(args):
                                   helper_streams=(label == "b") if args.l2_streams else False,
                                   draft_tap_bf16=(label == "c") if args.draft_l8 else False,
                                   split_overlap=(label == "b") if args.split_overlap else False,
+                                  helper_off=(label != "b") if args.helper_off else False,
                                    knob=knob if (knob is not None and label == "b") else
                                    (draft_remote_only if (draft_remote_only is not None and label in "bc") else None),
                                    **overrides)
@@ -414,7 +455,8 @@ def run(args):
                 state, engine=json.loads(Path(config.config).read_text())["exe"])
             known = pair.descendants(active.pid, {active.pid: pair.process_token(active.pid)[1]})
             row = dict(label=label, requested_slots=slots, fill_mib=fill, state=state,
-                        fill=fill_report(Path(state["helper_log"]).read_text()), probes=[])
+                        fill=None if (args.helper_off and label != "b") else
+                        fill_report(Path(state["helper_log"]).read_text()), probes=[])
             if args.draft_probe:
                 row["draft_helper"] = config.draft_helper
                 engine_text = Path(json.loads(Path(config.config).read_text())["log"]).read_text()
@@ -436,7 +478,9 @@ def run(args):
                 row["bf16_taps"] = bool(config.draft_tap_bf16)
             if args.split_overlap:
                 row["split_overlap"] = bool(config.split_overlap)
-            if row["fill"]["slots"] > slots:
+            if args.helper_off:
+                row["helper_off"] = bool(config.helper_off)
+            if row["fill"] is not None and row["fill"]["slots"] > slots:
                 raise RuntimeError("Actual fill exceeded the requested slot cap")
             result["pairs"].append(row)
             probe_options = (dict(max_tokens=128, reasoning_budget_tokens=0, enable_thinking=False,
@@ -460,9 +504,14 @@ def run(args):
             log = Path(json.loads(Path(config.config).read_text())["log"]).read_text()
             closes = [match for match in helper_ab.PROMPT_TIER_CLOSE_RE.finditer(log)
                       if match["path"] == config.socket2 and int(match["reqs"]) > 0]
-            if len(closes) != 1:
-                raise RuntimeError("Missing unique positive prompt-channel service proof")
-            row["prompt_channel"] = dict(requests=int(closes[0]["reqs"]), rows=int(closes[0]["rows"]))
+            if args.helper_off and config.helper_off:
+                if closes:
+                    raise RuntimeError("Helper-less arm unexpectedly served prompt-tier traffic")
+                row["prompt_channel"] = None
+            else:
+                if len(closes) != 1:
+                    raise RuntimeError("Missing unique positive prompt-channel service proof")
+                row["prompt_channel"] = dict(requests=int(closes[0]["reqs"]), rows=int(closes[0]["rows"]))
             if args.draft_probe:
                 row["draft_service"] = draft_report(log, Path(state["helper_log"]).read_text(), config.draft_helper)
             if args.l3_profile or args.degrade_probe:
@@ -491,8 +540,16 @@ def run(args):
             result["l8_wire_comparison"] = l8_wire_comparison(result["pairs"])
         if args.split_overlap:
             result["overlap_comparison"] = overlap_comparison(result["pairs"])
+        if args.helper_off:
+            result["helper_off_comparison"] = helper_off_comparison(result["pairs"])
         result["success"] = True
-        result["limits"] = ("Engine-env OFF/ON/OFF STRATA_SPLIT_OVERLAP A/B on the production "
+        result["limits"] = ("Helper-less vs canonical measurement A/B (user ask): OFF arms are "
+                        "helper_ab's validated OFF derivation with the helper never started "
+                        "(supervisor helper_pid 0), ON is the canonical supervised pair; infill "
+                        "= read_rate, TG = gen_rate; SHA parity required; pure measurement, "
+                        "no adoption."
+                        if args.helper_off else
+                        "Engine-env OFF/ON/OFF STRATA_SPLIT_OVERLAP A/B on the production "
                         "binaries, no rebuild and no helper change; decode-median verdict "
                         "vs the >=+5% lever gate; the ON arm's engine log carries the "
                         "'(overlapped: ...)' line; no adoption."
@@ -584,6 +641,12 @@ def main():
                              "split's overlapped hand-off); arms OFF/ON/OFF at the canonical "
                              "4200/6400 identity on the PRODUCTION binaries - no rebuild, no "
                              "helper change; 3 matched long probes/arm vs the >=+5% decode gate")
+    parser.add_argument("--helper-off", action="store_true",
+                        help="user-asked measurement A/B: arms OFF(helper-less)/ON(canonical)/"
+                             "OFF - the OFF arms reuse helper_ab's validated OFF derivation "
+                             "(no helper process at all, supervisor helper_pid 0) on the "
+                             "production binaries; measures infill (read_rate) and TG "
+                             "(gen_rate); pure measurement, no adoption")
     parser.add_argument("--reps", type=int, default=6,
                         help="probe count for --degrade-probe (3-12, default 6)")
     parser.add_argument("--execute", action="store_true")
@@ -592,9 +655,10 @@ def main():
         parser.error("give exactly one of --expected-supervisor (supervised pair) "
                      "or --expected-server (direct launcher pair)")
     if sum((args.l3_profile, args.fill_probe, args.draft_probe, args.degrade_probe,
-            args.knob_probe is not None, args.l2_streams, args.split_overlap)) > 1:
+            args.knob_probe is not None, args.l2_streams, args.split_overlap,
+            args.helper_off)) > 1:
         parser.error("--l3-profile, --fill-probe, --draft-probe, --degrade-probe, "
-                     "--knob-probe, --l2-streams and --split-overlap are exclusive")
+                     "--knob-probe, --l2-streams, --split-overlap and --helper-off are exclusive")
     if args.knob_probe is not None:
         name, sep, value = args.knob_probe.partition("=")
         if not (sep and name and value):
@@ -646,6 +710,16 @@ def main():
                   "L7 slow-prefill fraction vs the >=+5% lever gate (upstream measured "
                   "+24-32% on 2x gfx1100, unmeasured on gfx906); always restore supervised "
                   "canonical. No adoption.")
+            return 0
+        if args.helper_off:
+            print("Plan: exact production identity stop; private18080 helper measurement at "
+                  "the canonical 4200/6400 identity; arms a/c run helper_ab's validated OFF "
+                  "derivation (NO helper process: launcher helper block stripped, record 0, "
+                  "supervisor attaches on the server's ready line, zero helper traffic "
+                  "enforced), arm b runs the canonical supervised pair untouched; 3 matched "
+                  "long probes/arm; request-SHA parity across arms (greedy must not change); "
+                  "infill (read_rate) and TG (gen_rate) medians; always restore supervised "
+                  "canonical. Pure measurement, no adoption.")
             return 0
         if args.degrade_probe:
             print("Plan: exact production identity stop; private18080 single arm 4200 slots/fill6400 "

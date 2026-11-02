@@ -298,3 +298,37 @@ def test_bad_split_overlap_type(tmp_path, value):
     with pytest.raises(ValueError, match="Split-overlap override"):
         window_pair.prepare("tovb", evidence=tmp_path, split_overlap=value)
     assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.skipif(not window_pair.PROD_LAUNCHER.exists(), reason="local production fixture unavailable")
+def test_helper_off_strips_helper_everywhere(tmp_path):
+    result = window_pair.prepare("tho", slots=4200, evidence=tmp_path, helper_off=True)
+    cfg = json.loads(Path(result.config).read_text())
+    assert "expert_helper_socket" not in cfg and "expert_helper_socket2" not in cfg
+    text = Path(result.launcher).read_text()
+    assert "env -i PATH=" not in text                      # no helper start block
+    assert "Second channel socket missing" not in text     # no readiness refusal
+    assert 'record 0 "$server_pid"' in text                # supervisor helper-less convention
+    assert result.helper_off is True
+    assert result.parity_failures == []
+
+
+@pytest.mark.skipif(not window_pair.PROD_LAUNCHER.exists(), reason="local production fixture unavailable")
+def test_helper_off_default_absent(tmp_path):
+    result = window_pair.prepare("thoo", slots=4200, evidence=tmp_path)
+    text = Path(result.launcher).read_text()
+    assert 'record 0 "$server_pid"' not in text
+    assert "env -i PATH=" in text                          # the canonical helper start remains
+    assert result.helper_off is False
+
+
+@pytest.mark.parametrize("kwargs", [dict(helper_off=1), dict(helper_off="1"),
+                                    dict(helper_off=True, draft_helper=True),
+                                    dict(helper_off=True, draft_helper=True, draft_tap_bf16=True),
+                                    dict(helper_off=True, rpc_profile=True),
+                                    dict(helper_off=True, helper_streams=True),
+                                    dict(helper_off=True, helper="/nonexistent")])
+def test_bad_helper_off_inputs(tmp_path, kwargs):
+    with pytest.raises(ValueError):
+        window_pair.prepare("thob", evidence=tmp_path, **kwargs)
+    assert not list(tmp_path.iterdir())
