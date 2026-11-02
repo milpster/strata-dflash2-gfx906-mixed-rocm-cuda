@@ -16,8 +16,9 @@ import argparse
 from collections import Counter, defaultdict
 import json
 import math
+import os
 import sys
-from typing import Any
+from typing import Any, Optional
 
 PROG = "p2_report_audit.py"
 SCHEMA_V2 = "strata.p2_row_measure.v2"

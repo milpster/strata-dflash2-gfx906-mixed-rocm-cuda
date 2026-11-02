@@ -20,9 +20,13 @@ This is an in-progress snapshot, not a release or numerical signoff.
   not establish complete layer/format coverage or tensor NMSE.
 - Legacy recovery is removed; the auditor requires full schema-v2 JSON. The real
   CMake CPU test passed, followed by 50 Python regressions against that binary.
-  Fresh full CUDA/HIP builds remain pending. CPU tests do not establish GPU accuracy.
+  Full CUDA and gfx906-HIP builds passed, with five helper tests in each tree and
+  the HIP CPU-report test. CPU tests do not establish GPU accuracy.
 - The earlier full-backend build was cancelled during HIP configuration; its
   partial tree and log are retained. All four protected binary hashes still match.
+- The fresh build's final source guard caught two added Python imports. The failed
+  guard was retained. Compiled inputs matched; the current auditor passed all 50
+  regressions against the HIP CMake binary. No backend rebuild was needed for imports.
 - Actual 80k-context plus 5k-output acceptance and a practical larger-model or
   constrained-host-RAM comparison remain open.
 
