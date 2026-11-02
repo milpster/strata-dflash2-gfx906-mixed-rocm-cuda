@@ -257,8 +257,8 @@ def helper_off_comparison(rows):
     off_rows = [row for row in rows if row["helper_off"]]
     med = lambda probes, key: statistics.median(p[key] for p in probes)
     drift = med(off_rows[-1]["probes"], "gen_rate") / med(off_rows[0]["probes"], "gen_rate")
-    off_reqs = sum(p.get("helper_reqs", 0) for p in off)
-    on_reqs = sum(p.get("helper_reqs", 0) for p in on)
+    off_reqs = sum(p.get("helper_reqs") or 0 for p in off)
+    on_reqs = sum(p.get("helper_reqs") or 0 for p in on)
     decode_ratio = med(on, "gen_rate") / med(off, "gen_rate")
     engagement = "HELPER_ENGAGEMENT_BROKEN" if off_reqs or not on_reqs else "OK"
     verdict = ("INCONCLUSIVE_CONTROL_DRIFT" if not 0.9 <= drift <= 1.1 else
