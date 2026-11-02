@@ -63,3 +63,33 @@ reference energy 554,050). Coverage: rows only in layers 32-35 — the helper he
 visible in the report notes. Evidence: `build-mixed-gpu/p2-finish/fin1/`
 (measure.json sha256 8557a2e6..., audit.log, per-attempt att1-3 preserved).
 MMQ product agreement still does not establish task-output equivalence.
+
+## Measured result — 2026-11-02 (layers 36-47 completed, pooled 32-47 verdict)
+
+The user approved completing the 36-47 coverage with three 4-layer windows over the same
+fin1 capture (no recapture; the IQ3_S capacity arm was dropped). Each window ran the same
+supervised outage → helper → HIP reference → strict-v2 audit → restore contract, each with
+its own report, logs and result file, each restored and smoke-verified before the next:
+
+- W1 36-39: 128,551 rows, 0 skipped, 8/8 fixtures, audit rc 0 (measure-L36-39.json,
+  sha256 73b71b6c...). rel p99.9 0.00627 FAILS, rel max 0.02480 FAILS. Separately: abs
+  p99.9 0.00279, abs max 0.01182, NMSE 4.332e-06 (9.581 / 2,211,791).
+- W2 40-43: 128,383 rows, 0 skipped, 8/8 fixtures, audit rc 0 (measure-L40-43.json,
+  sha256 45d1d99e...). rel p99.9 0.00656 FAILS, rel max 0.01696 passes. Separately: abs
+  p99.9 0.00284, abs max 0.00643, NMSE 4.534e-06 (8.607 / 1,898,552).
+- W3 44-47: 128,195 rows, 0 skipped, 8/8 fixtures, audit rc 0 (measure-L44-47.json,
+  sha256 469cfda6...). rel p99.9 0.00693 FAILS, rel max 0.01805 passes. Separately: abs
+  p99.9 0.00693, abs max 0.03142, NMSE 4.298e-06 (11.899 / 2,768,492).
+
+`tools/mixed_gpu/pool_p2_reports.py` (7 CPU tests) pooled the four audited reports with
+the audit's own percentile method, row-identity uniqueness across reports, and energies
+summed as one document would (510,479 rows, all layers 32-47, 0 ref-zero, 0 nonfinite;
+`pooled-L32-47.json`). Pooled against the unchanged rule: relative p99.9 = 0.00648 FAILS
+(> 0.005) **and** relative max = 0.02480 FAILS (> 0.02). Separately: absolute p99.9 =
+0.00421, absolute max = 0.03142, tensor NMSE = 4.363e-06 (32.430 / 7,432,884).
+
+Verdict: the original relative-error gate FAILS for the completed 32-47 coverage and stays
+in force unchanged. The gate is not relaxed; absolute error and NMSE are reported
+separately and never substituted. MMQ product agreement still does not establish
+task-output equivalence. Evidence: `build-mixed-gpu/p2-finish/fin1/` (per-window reports,
+audit logs, results, preflight/verify logs) and `build-mixed-gpu/p2-finish/fin1-pooled.log`.
