@@ -381,3 +381,27 @@ def test_knob_comparison_no_gain_and_drift_gate():
     assert slots_window.knob_comparison(rows)["verdict"] == "KNOB_NO_GAIN"
     rows = _knob_rows([30.0, 30.0, 30.0, 22.0, 22.0, 22.0], [33.0, 33.0, 33.0])
     assert slots_window.knob_comparison(rows)["verdict"] == "INCONCLUSIVE_CONTROL_DRIFT"
+
+
+# ---- L2 helper-stream-split comparison ----
+
+
+def _l2_rows(off_rates, on_rates):
+    def arm(label, rates, on):
+        probes = [dict(rep=i + 1, gen_rate=rate, elapsed_s=1.0, read_ms=50000.0)
+                  for i, rate in enumerate(rates)]
+        return dict(label=label, l2_streams=on, probes=probes)
+
+    return [arm("a", off_rates[:3], False), arm("b", on_rates, True),
+            arm("c", off_rates[3:], False)]
+
+
+def test_l2_comparison_verdicts():
+    rows = _l2_rows([30.0] * 6, [33.0] * 3)
+    out = slots_window.l2_comparison(rows)
+    assert out["verdict"] == "L2_CANDIDATE"
+    assert out["on_off_decode_ratio"] == pytest.approx(1.1)
+    assert out["control_drift"] == pytest.approx(1.0)
+    assert slots_window.l2_comparison(_l2_rows([30.0] * 6, [31.0] * 3))["verdict"] == "L2_NO_GAIN"
+    drift = slots_window.l2_comparison(_l2_rows([30.0] * 3 + [22.0] * 3, [33.0] * 3))
+    assert drift["verdict"] == "INCONCLUSIVE_CONTROL_DRIFT"

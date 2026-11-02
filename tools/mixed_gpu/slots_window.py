@@ -176,6 +176,28 @@ def knob_comparison(rows):
                        "its own repeated evidence.")
 
 
+def l2_comparison(rows):
+    """OFF/ON/OFF helper-stream-split verdict on the same l2 binary; the gate is the
+    lever's >=+5% long-arm decode median; the L7 slow-prefill fraction stays visible."""
+    off = [p for row in rows if not row["l2_streams"] for p in row["probes"]]
+    on = [p for row in rows if row["l2_streams"] for p in row["probes"]]
+    med = lambda probes, key: statistics.median(p[key] for p in probes)
+    slow = lambda probes: sum(p["read_ms"] > 120000 for p in probes) / len(probes)
+    drift = med(rows[-1]["probes"], "gen_rate") / med(rows[0]["probes"], "gen_rate")
+    ratio = med(on, "gen_rate") / med(off, "gen_rate")
+    return dict(off_decode_median=med(off, "gen_rate"), on_decode_median=med(on, "gen_rate"),
+                on_off_decode_ratio=ratio, control_drift=drift,
+                off_read_ms_median=med(off, "read_ms"), on_read_ms_median=med(on, "read_ms"),
+                off_slow_prefill_fraction=slow(off), on_slow_prefill_fraction=slow(on),
+                off_elapsed_median=med(off, "elapsed_s"), on_elapsed_median=med(on, "elapsed_s"),
+                verdict=("INCONCLUSIVE_CONTROL_DRIFT" if not 0.9 <= drift <= 1.1 else
+                         "L2_CANDIDATE" if ratio >= 1.05 else "L2_NO_GAIN"),
+                limits="Helper-env OFF/ON/OFF A/B on the rpcw-cuda-l2 helper binary "
+                       "(engine byte-reused); the OFF arms are the env-unset "
+                       "behaviour-identity control; no adoption without its own "
+                       "repeated evidence.")
+
+
 # ---- L7 (progressive degradation diagnosis): local resource samplers, best-effort ----
 
 try:
@@ -289,6 +311,13 @@ def run(args):
         name, _, value = args.knob_probe.partition("=")
         knob = (name, value)
         schedule = [(label, 4200, 6400) for label in "abc"]  # OFF/ON/OFF
+    elif args.l2_streams:
+        # L2: every arm runs the SAME l2 helper binary (engine byte-reused); only arm
+        # b's launcher injects STRATA_HELPER_STREAMS=1 helper-side. The OFF arms are
+        # the behaviour-identity control: env gate unset = the pre-L2 single-mutex,
+        # single-stream path, at the adopted canonical 4200/6400 identity.
+        overrides = dict(helper=window_pair.WORK / "build-mixed-gpu/rpcw-cuda-l2/strata-expert-helper")
+        schedule = [(label, 4200, 6400) for label in "abc"]  # OFF/ON/OFF
     elif args.l3_profile or args.degrade_probe:
         overrides = dict(engine=window_pair.WORK / "build-mixed-gpu/rpcw-hip-l3/strata",
                          helper=window_pair.WORK / "build-mixed-gpu/rpcw-cuda-l3/strata-expert-helper",
@@ -302,6 +331,7 @@ def run(args):
     # Prepare every file and syntax check BEFORE the first outage.
     private = [window_pair.prepare(f"{args.family}-{label}", slots=slots, fill_mib=fill,
                                   draft_helper=(label in "bc") if args.draft_probe else None,
+                                  helper_streams=(label == "b") if args.l2_streams else False,
                                    knob=knob if (knob is not None and label == "b") else
                                    (draft_remote_only if (draft_remote_only is not None and label in "bc") else None),
                                    **overrides)
@@ -338,6 +368,8 @@ def run(args):
             elif config.knob is not None:
                 row["knob_on"] = True
                 row["knob"] = config.knob
+            if args.l2_streams:
+                row["l2_streams"] = bool(config.helper_streams)
             if row["fill"]["slots"] > slots:
                 raise RuntimeError("Actual fill exceeded the requested slot cap")
             result["pairs"].append(row)
@@ -387,12 +419,18 @@ def run(args):
             result["draft_comparison"] = draft_comparison(result["pairs"])
         if args.knob_probe is not None:
             result["knob_comparison"] = knob_comparison(result["pairs"])
+        if args.l2_streams:
+            result["l2_comparison"] = l2_comparison(result["pairs"])
         result["success"] = True
         result["limits"] = ("Bracketed remote-draft execution A/B; no VRAM displacement or automatic adoption."
                             if args.draft_probe else
                             "L6 config-knob OFF/ON/OFF engine-argv A/B at the canonical 4200/6400 "
                             "identity; decode-median verdict plus the L7 slow-prefill fraction; "
                             "no adoption." if args.knob_probe is not None else
+                            "L2 helper-env OFF/ON/OFF A/B on the rpcw-cuda-l2 helper binary, "
+                            "engine byte-reused; OFF arms are the env-unset behaviour-identity "
+                            "control; decode-median verdict vs the >=+5% lever gate; no adoption."
+                            if args.l2_streams else
                             "L7 diagnostic window: repeated long probes with per-probe local resource "
                             "sampling on the L3 candidate binaries; diagnosis only, no adoption."
                             if args.degrade_probe else
@@ -452,6 +490,11 @@ def main():
                         help="L6: engine-argv config-knob A/B; arms OFF/ON/OFF at the canonical "
                              "4200/6400 identity, 3 matched long probes/arm; NAME from the approved "
                              "sweep set, VALUE a replacement value or on/off for flag knobs")
+    parser.add_argument("--l2-streams", action="store_true",
+                        help="L2: helper-env A/B; arms OFF/ON/OFF at the canonical 4200/6400 "
+                             "identity, every arm on the rpcw-cuda-l2 helper binary (engine "
+                             "byte-reused), only arm b injects STRATA_HELPER_STREAMS=1 "
+                             "helper-side; 3 matched long probes/arm vs the >=+5% decode gate")
     parser.add_argument("--reps", type=int, default=6,
                         help="probe count for --degrade-probe (3-12, default 6)")
     parser.add_argument("--execute", action="store_true")
@@ -460,9 +503,9 @@ def main():
         parser.error("give exactly one of --expected-supervisor (supervised pair) "
                      "or --expected-server (direct launcher pair)")
     if sum((args.l3_profile, args.fill_probe, args.draft_probe, args.degrade_probe,
-            args.knob_probe is not None)) > 1:
-        parser.error("--l3-profile, --fill-probe, --draft-probe, --degrade-probe "
-                     "and --knob-probe are exclusive")
+            args.knob_probe is not None, args.l2_streams)) > 1:
+        parser.error("--l3-profile, --fill-probe, --draft-probe, --degrade-probe, "
+                     "--knob-probe and --l2-streams are exclusive")
     if args.knob_probe is not None:
         name, sep, value = args.knob_probe.partition("=")
         if not (sep and name and value):
@@ -486,6 +529,16 @@ def main():
                   "probes/arm; request SHA parity, zero-reuse, socket2 and control-drift gates; "
                   "decode median plus L7 slow-prefill fraction; always restore supervised "
                   "canonical. No adoption.")
+            return 0
+        if args.l2_streams:
+            print("Plan: exact production identity stop; private18080 OFF/ON/OFF helper "
+                  "stream split at 4200 slots/fill6400, both sockets; every arm runs the "
+                  "rpcw-cuda-l2 helper (engine byte-reused), only arm b injects "
+                  "STRATA_HELPER_STREAMS=1 helper-side so the OFF arms prove env-unset "
+                  "behaviour identity; 3 matched long probes/arm; request SHA parity, "
+                  "socket2 and control-drift gates; decode median plus L7 slow-prefill "
+                  "fraction vs the >=+5% lever gate; always restore supervised canonical. "
+                  "No adoption.")
             return 0
         if args.degrade_probe:
             print("Plan: exact production identity stop; private18080 single arm 4200 slots/fill6400 "

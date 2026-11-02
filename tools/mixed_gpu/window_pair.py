@@ -41,9 +41,11 @@ def replace_regex_once(text, pattern, new):
 def prepare(family, *, slots=4000, fill_mib=6400, port=18080, evidence=EVIDENCE,
             prod_config=PROD_CONFIG, prod_launcher=PROD_LAUNCHER,
             engine=None, helper=None, rpc_profile=False, draft_helper=None, knob=None,
-            prefill_timing=False):
+            prefill_timing=False, helper_streams=False):
     if prefill_timing is not None and type(prefill_timing) is not bool:
         raise ValueError("Prefill timing override must be True, False, or None")
+    if helper_streams is not None and type(helper_streams) is not bool:
+        raise ValueError("Helper-stream override must be True or False")
     if draft_helper is not None and type(draft_helper) is not bool:
         raise ValueError("Draft override must be True, False, or None")
     if knob is not None:
@@ -166,6 +168,12 @@ def prepare(family, *, slots=4000, fill_mib=6400, port=18080, evidence=EVIDENCE,
                             f"export {' '.join(exports)}\nmkdir -p \"$ROOT/run\" \"$ROOT/logs\"")
     if rpc_profile:
         text = replace_once(text, 'env -i PATH="$PATH"', 'env -i STRATA_RPC_PROFILE=1 PATH="$PATH"')
+    if helper_streams:
+        # L2: HELPER-side only (the engine never reads STRATA_HELPER_STREAMS) - the same
+        # env -i seam rpc_profile uses. The helper binary's own default is OFF, so an
+        # unset env is exactly the pre-L2 single-mutex, single-stream behaviour; only an
+        # ON arm's launcher carries the injection.
+        text = replace_once(text, 'env -i PATH="$PATH"', 'env -i STRATA_HELPER_STREAMS=1 PATH="$PATH"')
     text = "# Generated private measurement launcher; production comments below are historical.\n" + text.replace("8009", str(port))
     Path(evidence).mkdir(parents=True, exist_ok=True)
     config_path.write_text(json.dumps(config, indent=2) + "\n")
@@ -176,6 +184,7 @@ def prepare(family, *, slots=4000, fill_mib=6400, port=18080, evidence=EVIDENCE,
                     engine=str(engine) if engine is not None else prod["exe"],
                     helper=str(helper) if helper is not None else "production",
                     rpc_profile=rpc_profile, draft_helper=draft_helper, prefill_timing=prefill_timing,
+                    helper_streams=helper_streams,
                     knob=None if knob is None else dict(name=knob[0], value=str(knob[1])),
                     config=str(config_path), launcher=str(launcher_path),
                     socket=str(socket), socket2=str(socket2), state=str(state_path))

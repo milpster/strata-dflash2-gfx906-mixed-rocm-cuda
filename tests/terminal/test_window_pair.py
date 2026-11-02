@@ -214,3 +214,28 @@ def test_rpc_profile_and_prefill_timing_combine(tmp_path):
     assert "export STRATA_RPC_PROFILE=1 STRATA_PREFILL_TIMING=1" in text
     assert 'env -i STRATA_RPC_PROFILE=1 PATH="$PATH"' in text
     assert result.rpc_profile is True and result.prefill_timing is True
+
+
+@pytest.mark.skipif(not window_pair.PROD_LAUNCHER.exists(), reason="local production fixture unavailable")
+def test_l2_helper_streams_env_injection_helper_side_only(tmp_path):
+    result = window_pair.prepare("tl2", slots=4200, evidence=tmp_path, helper_streams=True)
+    text = Path(result.launcher).read_text()
+    assert 'env -i STRATA_HELPER_STREAMS=1 PATH="$PATH"' in text
+    assert "export STRATA_HELPER_STREAMS" not in text   # helper-side only: no engine export
+    assert result.helper_streams is True
+    assert result.parity_failures == []
+
+
+@pytest.mark.skipif(not window_pair.PROD_LAUNCHER.exists(), reason="local production fixture unavailable")
+def test_l2_helper_streams_default_is_unset(tmp_path):
+    result = window_pair.prepare("tl2o", slots=4200, evidence=tmp_path)
+    text = Path(result.launcher).read_text()
+    assert "STRATA_HELPER_STREAMS" not in text
+    assert result.helper_streams is False
+
+
+@pytest.mark.parametrize("value", [1, "1", [], {}])
+def test_bad_helper_streams_type(tmp_path, value):
+    with pytest.raises(ValueError, match="Helper-stream override"):
+        window_pair.prepare("tl2b", evidence=tmp_path, helper_streams=value)
+    assert not list(tmp_path.iterdir())
