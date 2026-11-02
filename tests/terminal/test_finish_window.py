@@ -185,6 +185,59 @@ def test_unimplemented_phases_refused():
         assert rc.returncode != 0 and phase in rc.stderr
 
 
+# ---------------- per-window evidence names + layer windows ----------------
+
+def test_window_paths_default_and_per_window():
+    p = fw.window_paths(Path("/ev"))
+    assert p["report"].name == "measure.json"                    # att4 continuity
+    assert p["reference_log"].name == "reference.log"
+    assert p["helper_log"].name == "helper.log"
+    assert p["audit_log"].name == "audit.log"
+    assert p["result"].name == "measure-result.json"
+    q = fw.window_paths(Path("/ev"), "measure-L36-39.json")
+    assert q["report"].name == "measure-L36-39.json"             # each window its own
+    assert q["reference_log"].name == "reference-L36-39.log"     # reference is 'wb'
+    assert q["helper_log"].name == "helper-L36-39.log"
+    assert q["audit_log"].name == "audit-L36-39.log"
+    assert q["result"].name == "measure-result-L36-39.json"
+    assert q["socket"].name == "measure.sock"                    # sequential reuse
+    for bad in ("other.json", "measure-L31-39.json", "measure-L36-48.json",
+                "measure-L39-36.json", "measure.json.bak"):
+        with pytest.raises(ValueError):
+            fw.window_paths(Path("/ev"), bad)
+
+
+def test_parse_layers_window_validation():
+    assert fw.parse_layers("32-47") == (32, 47)
+    assert fw.parse_layers("36-39") == (36, 39)
+    assert fw.parse_layers("44-44") == (44, 44)
+    for bad in ("30-39", "36-48", "39-36", "", "36", "x-y", "036-39"):
+        with pytest.raises(ValueError):
+            fw.parse_layers(bad)
+
+
+def test_reference_argv_carries_window():
+    rv = fw.reference_argv(Path("/o"), Path("/s"), Path("/c"), layers="40-43")
+    assert rv[rv.index("--layers") + 1] == "40-43"
+
+
+def test_measure_cli_validates_window():
+    f = str(Path(fw.__file__).resolve())
+    rc = subprocess.run([sys.executable, f, "measure", "--family", "x",
+                         "--expected-supervisor", "1", "--layers", "30-39"],
+                        capture_output=True, text=True, timeout=60)
+    assert rc.returncode != 0 and "32..47" in rc.stderr
+    rc = subprocess.run([sys.executable, f, "measure", "--family", "x",
+                         "--expected-supervisor", "1", "--report-name", "zzz.json"],
+                        capture_output=True, text=True, timeout=60)
+    assert rc.returncode != 0
+    rc = subprocess.run([sys.executable, f, "measure", "--family", "win1",
+                         "--expected-supervisor", "1", "--layers", "36-39",
+                         "--report-name", "measure-L36-39.json"],
+                        capture_output=True, text=True, timeout=60)
+    assert rc.returncode == 0 and "Plan [measure/win1]" in rc.stdout
+
+
 def test_plan_mode_touches_nothing():
     rc = subprocess.run([sys.executable, str(Path(fw.__file__).resolve()),
                          "capture", "--family", "plan1", "--expected-supervisor", "1"],

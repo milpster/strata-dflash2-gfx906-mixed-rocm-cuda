@@ -187,6 +187,37 @@ def reference_argv(out_json: Path, socket: Path, capdir: Path, *, device: int = 
             "--slots", str(slots), "--reserve-mib", str(reserve_mib)]
 
 
+def window_paths(ev: Path, report_name: str = "measure.json") -> dict[str, Path]:
+    """Per-window evidence names: each 4-layer window gets its own report, logs,
+    audit and result file so sequential windows never overwrite each other (the
+    reference log is opened 'wb').  The default names match the att4 evidence."""
+    m = re.fullmatch(r"measure(?:-L(3[2-9]|4[0-7])-(3[2-9]|4[0-7]))?\.json", report_name)
+    if not m:
+        raise ValueError(f"report name must be measure.json or measure-L<A>-<B>.json "
+                         f"with A,B in 32..47: {report_name}")
+    if m.group(1) is not None and int(m.group(1)) > int(m.group(2)):
+        raise ValueError(f"report window wants A<=B: {report_name}")
+    stem = report_name[:-len(".json")]
+    sfx = "" if stem == "measure" else "-" + stem[len("measure-"):]
+    return {"report": ev / report_name,
+            "reference_log": ev / f"reference{sfx}.log",
+            "helper_log": ev / f"helper{sfx}.log",
+            "audit_log": ev / f"audit{sfx}.log",
+            "result": ev / f"measure-result{sfx}.json",
+            "socket": ev / "measure.sock"}
+
+
+def parse_layers(text: str) -> tuple[int, int]:
+    """Validate a LO-HI window inside the capture's 32..47 span."""
+    m = re.fullmatch(r"(3[2-9]|4[0-7])-(3[2-9]|4[0-7])", text or "")
+    if not m:
+        raise ValueError(f"--layers wants A-B with A,B in 32..47, got {text!r}")
+    lo, hi = int(m.group(1)), int(m.group(2))
+    if lo > hi:
+        raise ValueError(f"--layers wants A<=B, got {text!r}")
+    return lo, hi
+
+
 # ------------------------------------------------------------------ lifecycle
 
 def exclusive_dir(path: Path) -> Path:
@@ -364,13 +395,16 @@ def phase_measure(args, result: dict) -> None:
     for binary in (CUDA_HELPER, HIP_REFERENCE):
         if not binary.is_file() or not os.access(binary, os.X_OK):
             raise RuntimeError(f"measure binary missing: {binary}")
-    out_json = ev / "measure.json"
+    paths = window_paths(ev, getattr(args, "report_name", "measure.json"))
+    out_json = paths["report"]
     if out_json.exists():
         raise RuntimeError(f"refusing to overwrite an existing report: {out_json}")
-    socket_path = ev / "measure.sock"
+    socket_path = paths["socket"]
     if socket_path.exists() or socket_path.is_symlink():
         raise RuntimeError(f"refusing an existing measure socket path: {socket_path}")
-    result["measure"] = dict(family=args.family, socket=str(socket_path),
+    layers = getattr(args, "layers", "32-47")
+    parse_layers(layers)                                    # validated again in main()
+    result["measure"] = dict(family=args.family, layers=layers, socket=str(socket_path),
                              helper_sha256=sha256_file(CUDA_HELPER),
                              reference_sha256=sha256_file(HIP_REFERENCE),
                              helper_device=0, reference_device=0,
@@ -378,7 +412,7 @@ def phase_measure(args, result: dict) -> None:
 
     slots_window.stop_production(args.expected_supervisor, result)
     helper = None
-    helper_log = (ev / "helper.log").open("ab")
+    helper_log = paths["helper_log"].open("ab")
     try:
         env_clean = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"),
                      "HOME": os.environ.get("HOME", "/home/user"), "TERM": "dumb"}
@@ -387,7 +421,7 @@ def phase_measure(args, result: dict) -> None:
                                   start_new_session=True)
         deadline = time.monotonic() + 600
         while time.monotonic() < deadline:
-            if socket_path.exists() and "listening" in (ev / "helper.log").read_text(errors="replace"):
+            if socket_path.exists() and "listening" in paths["helper_log"].read_text(errors="replace"):
                 break
             if helper.poll() is not None:
                 raise RuntimeError(f"helper died rc={helper.returncode}")
@@ -400,8 +434,8 @@ def phase_measure(args, result: dict) -> None:
                                              ("LD_LIBRARY_PATH", "CUDA_VISIBLE_DEVICES",
                                               "HSA_OVERRIDE_GFX_VERSION", "HIP_FORCE_P2P",
                                               "HSA_ENABLE_SDMA")}
-        with (ev / "reference.log").open("wb") as rlog:
-            ref = subprocess.run(reference_argv(out_json, socket_path, capdir),
+        with paths["reference_log"].open("wb") as rlog:
+            ref = subprocess.run(reference_argv(out_json, socket_path, capdir, layers=layers),
                                  env=env_hip, stdout=rlog,
                                  stderr=subprocess.STDOUT, timeout=args.window_timeout)
         result["measure"]["reference_rc"] = ref.returncode
@@ -410,7 +444,7 @@ def phase_measure(args, result: dict) -> None:
         result["measure"]["report_sha256"] = sha256_file(out_json)
         audit = subprocess.run([sys.executable, str(AUDIT), str(out_json)],
                                capture_output=True, text=True, timeout=120)
-        (ev / "audit.log").write_bytes(audit.stdout.encode() + audit.stderr.encode())
+        (paths["audit_log"]).write_bytes(audit.stdout.encode() + audit.stderr.encode())
         result["measure"]["audit_rc"] = audit.returncode
         print(audit.stdout, flush=True)
     finally:
@@ -446,9 +480,18 @@ def main() -> int:
     ap.add_argument("--load-timeout", type=int, default=900)
     ap.add_argument("--req-timeout", type=int, default=600)
     ap.add_argument("--window-timeout", type=int, default=7200)
+    ap.add_argument("--layers", default="32-47",
+                    help="layer window for the measure phase, e.g. 36-39")
+    ap.add_argument("--report-name", default="measure.json",
+                    help="measure.json or measure-L<A>-<B>.json (its own logs/result)")
     args = ap.parse_args()
     if not re.fullmatch(r"[a-z][a-z0-9-]{0,20}", args.family):
         raise SystemExit("invalid family name")
+    try:
+        parse_layers(args.layers)
+        window_paths(EV_ROOT / args.family, args.report_name)
+    except ValueError as exc:
+        raise SystemExit(f"invalid window: {exc}")
     if args.phase in ("longctx", "capacity"):
         raise SystemExit(f"phase '{args.phase}' is planned (finish-window-v2.md) but not implemented")
     plan = {"capture": "stop production; 8 fixture boots; 32-47 dumps; restore",
@@ -460,7 +503,8 @@ def main() -> int:
         signal.signal(sig, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     result = {"started": time.time(), "phase": args.phase, "family": args.family,
               "success": False}
-    out = EV_ROOT / args.family / f"{args.phase}-result.json"
+    out = (EV_ROOT / args.family / "capture-result.json" if args.phase == "capture"
+           else window_paths(EV_ROOT / args.family, args.report_name)["result"])
     try:
         (phase_capture if args.phase == "capture" else phase_measure)(args, result)
         result["success"] = True
