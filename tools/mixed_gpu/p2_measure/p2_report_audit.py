@@ -152,8 +152,9 @@ def _nmse_from(diffs: list) -> dict:
     if result["rows_nonfinite"]:
         result.update(state="invalid_nonfinite_rows", energy_error=None, energy_ref=None)
         return result
-    error = sum(d["sum_sq_err"] for d in diffs)
-    reference = sum(d["sum_sq_ref"] for d in diffs)
+    # Match the C++ double accumulator even when JSON used integer syntax.
+    error = sum(float(d["sum_sq_err"]) for d in diffs)
+    reference = sum(float(d["sum_sq_ref"]) for d in diffs)
     ratio = error / reference if reference else None
     if not math.isfinite(error) or not math.isfinite(reference) or (ratio is not None and not math.isfinite(ratio)):
         result.update(state="invalid_energy", energy_error=None, energy_ref=None)

@@ -425,3 +425,16 @@ def test_invalid_explicit_binary_never_falls_back(monkeypatch, tmp_path):
     monkeypatch.setenv("STRATA_P2_MEASURE_TEST", str(tmp_path / "absent"))
     with pytest.raises(AssertionError, match="invalid explicit CPU executable"):
         _exe()
+
+
+def test_population_integer_energy_overflow_is_a_typed_error(docs, tmp_path):
+    doc = json.loads(docs["ok"].read_text(encoding="utf-8"))
+    # JSON permits integer syntax for energies. Accumulate as the emitter's doubles,
+    # not Python's unbounded integers (which can otherwise raise during comparison).
+    for row in doc["rows"][:2]:
+        row["a_vs_b"]["sum_sq_err"] = 10 ** 308
+    path = tmp_path / "integer-energy-overflow.json"
+    path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+    result = _audit(path)
+    assert result.returncode == 2, result.stderr
+    assert "AUDIT ERROR" in result.stderr and "Traceback" not in result.stderr
