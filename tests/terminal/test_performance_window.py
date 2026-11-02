@@ -81,6 +81,7 @@ def test_sustained_request_is_arm_independent():
     assert body["reasoning_budget_tokens"] == 0
     assert body["chat_template_kwargs"] == {"enable_thinking": False}
     assert "120 numbered" in body["messages"][0]["content"]
+    assert body["messages"][0]["content"].count(perf.PARAGRAPH) == 320
     assert "one focused paragraph" not in body["messages"][0]["content"]
 
 
