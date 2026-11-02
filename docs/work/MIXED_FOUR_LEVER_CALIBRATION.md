@@ -172,3 +172,38 @@ Earlier requests and results remain unchanged. Do not compare PP rates across
 the different fixtures. Context capacity, output length and all gates stay fixed.
 The focused 240 CPU checks, syntax checks and four protected hashes passed again
 after this adjustment (`perf-pipe-fixture-gate1.log`, 4.69 seconds).
+
+## Prompt-pipeline chunk sizing (`ppc1`)
+
+All twelve requests completed with the revised fixture: **10,465 fresh prompt
+tokens and 512 output tokens** each. Both modes engaged. For every candidate
+request, the plan log reported a 10,458-token pipeline section in **5,376-token
+chunks over two stages**. The 8,192-token prefill capacity stayed fixed.
+
+| Arm | PP rates (tok/s) | TG rates (tok/s) |
+| --- | --- | --- |
+| Initial canonical | 223.4, 235.5, 234.5 | 33.8, 38.1, 36.3 |
+| `--prefill-pipe 1` | 232.1, 243.0, 243.1 | 34.8, 37.3, 35.9 |
+| `--prefill-pipe 6144` | 231.1, 215.1, 53.5 | 34.9, 29.2, 34.7 |
+| Final canonical | 223.8, 235.4, 229.6 | 33.7, 37.9, 36.4 |
+
+Pooled control medians were **232.05 PP / 36.35 TG tok/s**. Mode `1` gave
+**243.0 PP (+4.7%) / 35.9 TG (−1.2%)**. Mode `6144` gave
+**215.1 PP (−7.3%) / 34.7 TG (−4.5%)**. Neither met the 5% timing threshold.
+Control ratios were 0.979 PP and 1.003 TG.
+
+The 53.5 tok/s PP sample took 195.733 seconds to read its prompt and is retained.
+Its cause is not established. Since both modes produced the same chunk geometry
+and matched each other's three output messages exactly, their different timings
+do not establish a planner-specific effect.
+
+Canonical outputs repeated exactly for all three prompts, but every candidate
+output differed from its controls. Both verdicts are **OUTPUT_MISMATCH**. There
+is no selected setting or confirmation run. Every sample recorded drafting and
+helper activity with zero reported helper timeouts or fallbacks.
+
+Canonical recovery returned `ready`. Fresh health, fill, prompt-channel, library
+and pinned-file checks passed with attached supervisor 1747129 and context
+262,144; no old production process remained. All twelve raw sample records,
+their plan lines, four startup reports and comparator arithmetic were rechecked
+in `ppc1-review1.log`. Earlier short-fixture PP results are not controls for this run.
