@@ -271,3 +271,30 @@ def test_bad_draft_tap_bf16_type(tmp_path, value):
     with pytest.raises(ValueError, match="bf16 override"):
         window_pair.prepare("tb4", evidence=tmp_path, draft_helper=True, draft_tap_bf16=value)
     assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.skipif(not window_pair.PROD_LAUNCHER.exists(), reason="local production fixture unavailable")
+def test_split_overlap_export_engine_side_only(tmp_path):
+    result = window_pair.prepare("tov", slots=4200, evidence=tmp_path, split_overlap=True)
+    text = Path(result.launcher).read_text()
+    assert "export STRATA_SPLIT_OVERLAP=1" in text   # the export seam, engine-side
+    # The env rides the launcher export (the server passes it to the engine through its
+    # own environment); the config's env dict stays production-identical, and the
+    # helper never reads it, so no env -i injection exists.
+    assert "STRATA_SPLIT_OVERLAP" not in json.loads(Path(result.config).read_text()).get("env", {})
+    assert result.split_overlap is True
+    assert result.parity_failures == []
+
+
+@pytest.mark.skipif(not window_pair.PROD_LAUNCHER.exists(), reason="local production fixture unavailable")
+def test_split_overlap_default_absent(tmp_path):
+    result = window_pair.prepare("tovo", slots=4200, evidence=tmp_path)
+    assert "STRATA_SPLIT_OVERLAP" not in Path(result.launcher).read_text()
+    assert result.split_overlap is False
+
+
+@pytest.mark.parametrize("value", [1, "1", [], {}])
+def test_bad_split_overlap_type(tmp_path, value):
+    with pytest.raises(ValueError, match="Split-overlap override"):
+        window_pair.prepare("tovb", evidence=tmp_path, split_overlap=value)
+    assert not list(tmp_path.iterdir())

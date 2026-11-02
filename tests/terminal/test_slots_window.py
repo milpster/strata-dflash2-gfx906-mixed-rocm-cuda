@@ -438,3 +438,27 @@ def test_l8_wire_comparison_gain_guard_and_drift():
     drift_rows = _l8_rows([30.0] * 3, [28.0] * 3, [30.0] * 3)
     drift_rows[3]["probes"] = [dict(p, gen_rate=22.0) for p in drift_rows[3]["probes"]]
     assert slots_window.l8_wire_comparison(drift_rows)["verdict"] == "INCONCLUSIVE_CONTROL_DRIFT"
+
+
+# ---- split-overlap comparison ----
+
+
+def _overlap_rows(off_rates, on_rates):
+    def arm(label, rates, on):
+        probes = [dict(rep=i + 1, gen_rate=rate, elapsed_s=1.0, read_ms=50000.0)
+                  for i, rate in enumerate(rates)]
+        return dict(label=label, split_overlap=on, probes=probes)
+
+    return [arm("a", off_rates[:3], False), arm("b", on_rates, True),
+            arm("c", off_rates[3:], False)]
+
+
+def test_overlap_comparison_verdicts():
+    rows = _overlap_rows([30.0] * 6, [33.0] * 3)
+    out = slots_window.overlap_comparison(rows)
+    assert out["verdict"] == "OVERLAP_CANDIDATE"
+    assert out["on_off_decode_ratio"] == pytest.approx(1.1)
+    assert out["control_drift"] == pytest.approx(1.0)
+    assert slots_window.overlap_comparison(_overlap_rows([30.0] * 6, [31.0] * 3))["verdict"] == "OVERLAP_NO_GAIN"
+    drift = slots_window.overlap_comparison(_overlap_rows([30.0] * 3 + [22.0] * 3, [33.0] * 3))
+    assert drift["verdict"] == "INCONCLUSIVE_CONTROL_DRIFT"

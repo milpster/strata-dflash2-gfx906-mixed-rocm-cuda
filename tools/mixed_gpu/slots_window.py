@@ -223,6 +223,29 @@ def l8_wire_comparison(rows):
                        "worse than f32 by more than 2 points); no adoption.")
 
 
+def overlap_comparison(rows):
+    """OFF/ON/OFF split-overlap verdict on the production binaries; the gate is the
+    lever's >=+5% long-arm decode median (upstream measured +24-32% decode on 2x
+    gfx1100; unmeasured on gfx906); the L7 slow-prefill fraction stays visible."""
+    off = [p for row in rows if not row["split_overlap"] for p in row["probes"]]
+    on = [p for row in rows if row["split_overlap"] for p in row["probes"]]
+    med = lambda probes, key: statistics.median(p[key] for p in probes)
+    slow = lambda probes: sum(p["read_ms"] > 120000 for p in probes) / len(probes)
+    drift = med(rows[-1]["probes"], "gen_rate") / med(rows[0]["probes"], "gen_rate")
+    ratio = med(on, "gen_rate") / med(off, "gen_rate")
+    return dict(off_decode_median=med(off, "gen_rate"), on_decode_median=med(on, "gen_rate"),
+                on_off_decode_ratio=ratio, control_drift=drift,
+                off_read_ms_median=med(off, "read_ms"), on_read_ms_median=med(on, "read_ms"),
+                off_slow_prefill_fraction=slow(off), on_slow_prefill_fraction=slow(on),
+                off_elapsed_median=med(off, "elapsed_s"), on_elapsed_median=med(on, "elapsed_s"),
+                verdict=("INCONCLUSIVE_CONTROL_DRIFT" if not 0.9 <= drift <= 1.1 else
+                         "OVERLAP_CANDIDATE" if ratio >= 1.05 else "OVERLAP_NO_GAIN"),
+                limits="Engine-env OFF/ON/OFF A/B on the production binaries (no rebuild, "
+                       "no helper change); only the ON arm exports STRATA_SPLIT_OVERLAP=1 "
+                       "and its engine log carries '(overlapped: ...)' as the engagement "
+                       "proof; no adoption without its own repeated evidence.")
+
+
 # ---- L7 (progressive degradation diagnosis): local resource samplers, best-effort ----
 
 try:
@@ -348,6 +371,13 @@ def run(args):
         # single-stream path, at the adopted canonical 4200/6400 identity.
         overrides = dict(helper=window_pair.WORK / "build-mixed-gpu/rpcw-cuda-l2/strata-expert-helper")
         schedule = [(label, 4200, 6400) for label in "abc"]  # OFF/ON/OFF
+    elif args.split_overlap:
+        # Lane 2 (the VII alternation): production binaries BOTH arms - the lever is
+        # engine-env only (STRATA_SPLIT_OVERLAP=1 through the launcher's export seam),
+        # so there is no rebuild and no helper change. Only arm b exports it; a/c are
+        # byte-identical production controls at the canonical 4200/6400 identity, and
+        # the ON arm's engine log carries '(overlapped: STRATA_SPLIT_OVERLAP=1)'.
+        schedule = [(label, 4200, 6400) for label in "abc"]  # OFF/ON/OFF
     elif args.l3_profile or args.degrade_probe:
         overrides = dict(engine=window_pair.WORK / "build-mixed-gpu/rpcw-hip-l3/strata",
                          helper=window_pair.WORK / "build-mixed-gpu/rpcw-cuda-l3/strata-expert-helper",
@@ -363,6 +393,7 @@ def run(args):
                                   draft_helper=(label in "bc") if args.draft_probe else None,
                                   helper_streams=(label == "b") if args.l2_streams else False,
                                   draft_tap_bf16=(label == "c") if args.draft_l8 else False,
+                                  split_overlap=(label == "b") if args.split_overlap else False,
                                    knob=knob if (knob is not None and label == "b") else
                                    (draft_remote_only if (draft_remote_only is not None and label in "bc") else None),
                                    **overrides)
@@ -403,6 +434,8 @@ def run(args):
                 row["l2_streams"] = bool(config.helper_streams)
             if args.draft_l8:
                 row["bf16_taps"] = bool(config.draft_tap_bf16)
+            if args.split_overlap:
+                row["split_overlap"] = bool(config.split_overlap)
             if row["fill"]["slots"] > slots:
                 raise RuntimeError("Actual fill exceeded the requested slot cap")
             result["pairs"].append(row)
@@ -456,8 +489,15 @@ def run(args):
             result["l2_comparison"] = l2_comparison(result["pairs"])
         if args.draft_l8:
             result["l8_wire_comparison"] = l8_wire_comparison(result["pairs"])
+        if args.split_overlap:
+            result["overlap_comparison"] = overlap_comparison(result["pairs"])
         result["success"] = True
-        result["limits"] = ("L8 wire A/B on the l8 binaries: OFF(local)/ON(remote fp32)/ON(remote "
+        result["limits"] = ("Engine-env OFF/ON/OFF STRATA_SPLIT_OVERLAP A/B on the production "
+                        "binaries, no rebuild and no helper change; decode-median verdict "
+                        "vs the >=+5% lever gate; the ON arm's engine log carries the "
+                        "'(overlapped: ...)' line; no adoption."
+                        if args.split_overlap else
+                        "L8 wire A/B on the l8 binaries: OFF(local)/ON(remote fp32)/ON(remote "
                         "bf16)/OFF(local), ON arms remote-only so only the wire differs; "
                         "decode-median c-vs-b vs the >=+5% gate with the draft-acceptance "
                         "guard; no adoption." if args.draft_probe and args.draft_l8 else
@@ -539,6 +579,11 @@ def main():
                              "identity, every arm on the rpcw-cuda-l2 helper binary (engine "
                              "byte-reused), only arm b injects STRATA_HELPER_STREAMS=1 "
                              "helper-side; 3 matched long probes/arm vs the >=+5% decode gate")
+    parser.add_argument("--split-overlap", action="store_true",
+                        help="lane 2: engine-env A/B of STRATA_SPLIT_OVERLAP=1 (the layer "
+                             "split's overlapped hand-off); arms OFF/ON/OFF at the canonical "
+                             "4200/6400 identity on the PRODUCTION binaries - no rebuild, no "
+                             "helper change; 3 matched long probes/arm vs the >=+5% decode gate")
     parser.add_argument("--reps", type=int, default=6,
                         help="probe count for --degrade-probe (3-12, default 6)")
     parser.add_argument("--execute", action="store_true")
@@ -547,9 +592,9 @@ def main():
         parser.error("give exactly one of --expected-supervisor (supervised pair) "
                      "or --expected-server (direct launcher pair)")
     if sum((args.l3_profile, args.fill_probe, args.draft_probe, args.degrade_probe,
-            args.knob_probe is not None, args.l2_streams)) > 1:
+            args.knob_probe is not None, args.l2_streams, args.split_overlap)) > 1:
         parser.error("--l3-profile, --fill-probe, --draft-probe, --degrade-probe, "
-                     "--knob-probe and --l2-streams are exclusive")
+                     "--knob-probe, --l2-streams and --split-overlap are exclusive")
     if args.knob_probe is not None:
         name, sep, value = args.knob_probe.partition("=")
         if not (sep and name and value):
@@ -590,6 +635,17 @@ def main():
                   "socket2 and control-drift gates; decode median plus L7 slow-prefill "
                   "fraction vs the >=+5% lever gate; always restore supervised canonical. "
                   "No adoption.")
+            return 0
+        if args.split_overlap:
+            print("Plan: exact production identity stop; private18080 OFF/ON/OFF split "
+                  "overlap at 4200 slots/fill6400, both sockets; every arm runs the "
+                  "PRODUCTION binaries untouched, only arm b's launcher exports "
+                  "STRATA_SPLIT_OVERLAP=1 (engine-side; the arm's engine log must carry "
+                  "'(overlapped: ...)' as the engagement proof); 3 matched long probes/arm; "
+                  "request SHA parity, socket2 and control-drift gates; decode median plus "
+                  "L7 slow-prefill fraction vs the >=+5% lever gate (upstream measured "
+                  "+24-32% on 2x gfx1100, unmeasured on gfx906); always restore supervised "
+                  "canonical. No adoption.")
             return 0
         if args.degrade_probe:
             print("Plan: exact production identity stop; private18080 single arm 4200 slots/fill6400 "

@@ -41,11 +41,14 @@ def replace_regex_once(text, pattern, new):
 def prepare(family, *, slots=4000, fill_mib=6400, port=18080, evidence=EVIDENCE,
             prod_config=PROD_CONFIG, prod_launcher=PROD_LAUNCHER,
             engine=None, helper=None, rpc_profile=False, draft_helper=None, knob=None,
-            prefill_timing=False, helper_streams=False, draft_tap_bf16=False):
+            prefill_timing=False, helper_streams=False, draft_tap_bf16=False,
+            split_overlap=False):
     if prefill_timing is not None and type(prefill_timing) is not bool:
         raise ValueError("Prefill timing override must be True, False, or None")
     if helper_streams is not None and type(helper_streams) is not bool:
         raise ValueError("Helper-stream override must be True or False")
+    if type(split_overlap) is not bool:
+        raise ValueError("Split-overlap override must be True or False")
     if type(draft_tap_bf16) is not bool:
         raise ValueError("Draft tap bf16 override must be True or False")
     if draft_tap_bf16 and not draft_helper:
@@ -168,6 +171,15 @@ def prepare(family, *, slots=4000, fill_mib=6400, port=18080, evidence=EVIDENCE,
         # spans in the engine log (prefill.cpp) - engine-side only, so unlike the RPC
         # profile it needs no env -i injection for the helper.
         exports.append("STRATA_PREFILL_TIMING=1")
+    if split_overlap:
+        # Lane 2 (the VII-alternation lever): STRATA_SPLIT_OVERLAP=1 overlaps the layer
+        # split's per-window hand-off (generate.cpp reads it at serve start; the only
+        # exclusion is beside --pipeline-windows, which the RPC helper scope forbids
+        # anyway, generate.cpp's helper_scope_bad).  Engine-side only, so like the
+        # prefill spans it needs no env -i for the helper; the OFF arms export nothing
+        # and stay byte-identical to production, and the engine's startup line prints
+        # "(overlapped: STRATA_SPLIT_OVERLAP=1)" so the ON arm self-documents.
+        exports.append("STRATA_SPLIT_OVERLAP=1")
     if exports:
         # The export reaches the engine through the server (its env starts from
         # dict(os.environ), serve/server.py:3525); the helper needs its own injection
@@ -193,6 +205,7 @@ def prepare(family, *, slots=4000, fill_mib=6400, port=18080, evidence=EVIDENCE,
                     helper=str(helper) if helper is not None else "production",
                     rpc_profile=rpc_profile, draft_helper=draft_helper, prefill_timing=prefill_timing,
                     helper_streams=helper_streams, draft_tap_bf16=draft_tap_bf16,
+                    split_overlap=split_overlap,
                     knob=None if knob is None else dict(name=knob[0], value=str(knob[1])),
                     config=str(config_path), launcher=str(launcher_path),
                     socket=str(socket), socket2=str(socket2), state=str(state_path))
