@@ -26,6 +26,7 @@
 #include "strata/core/expert_cache.hpp"
 #include "strata/core/conversation_snapshot.hpp"
 #include "strata/core/dflash_ring.hpp"
+#include "strata/kernels/bf16_bits.hpp"   // M7 (the drafter lane): the remote draft feed widens the bf16 tap plane host-side
 #include "strata/core/conversation_file.hpp"
 #include "strata/core/session_save_reclaim.hpp"
 #include "strata/core/conversation_memory.hpp"
@@ -36,6 +37,7 @@
 #include "strata/core/pin_budget.hpp"
 #include "strata/core/uma_cache.hpp"
 #include "strata/core/remote_experts.hpp"
+#include "strata/core/expert_helper_candidates.hpp"
 #include "strata/core/on_device.hpp"
 #include "strata/core/peer_experts.hpp"
 #include "strata/core/layer.hpp"
@@ -561,6 +563,28 @@ struct Options {
     int expert_cache = 0;
     std::array<int, 3> expert_cache_remote{}; ///< CUDA1..3 slots; CUDA0 keeps dense/state/MTP
     std::array<bool, 3> expert_cache_remote_auto{};
+    /// R2 (opt-in, docs/MIXED_GPU_HELPER.md): the out-of-process CUDA expert helper.  The engine
+    /// keeps its own device (any backend it was built for, HIP included) and talks to the helper
+    /// over a framed AF_UNIX channel; the helper owns ALL NVIDIA memory.  Empty socket = off, and
+    /// off is the default: nothing in the default path reads these fields.  `helper_slots` is the
+    /// exact slot count asked for (the helper fills its own budget in the engine's rank order and
+    /// reports what fit); `helper_reserve_mib` is what the helper leaves free on its card;
+    /// `helper_timeout_ms` bounds the per-window begin/finish exchanges (the decode loop never
+    /// waits longer: a late helper is a CPU window, not a stall).
+    std::string expert_helper_socket;
+    /// The PROMPT tier's own channel (opt-in, the helper's --socket2): a second helper socket for
+    /// kBeginP/kRowsP only, so the window tier and the prompt tier stop queueing behind each other's
+    /// in-flight request.  Empty = one channel, today's behaviour byte for byte.
+    std::string expert_helper_socket2;
+    int64_t expert_helper_layers = 0;   ///< the helper's top layer (inclusive); 0 = every layer no stage owns
+    int64_t expert_helper_slots = 0;    ///< EXPLICIT slot-count upper bound (0: none - the budget decides)
+    /// M1 (capacity-first-design.md §2): an UPPER BOUND on the ALIGNED RESIDENT SLOT BYTES the helper is
+    /// asked to hold - not its process memory, and not `bytes / max_blob`.  0 (the default) = AUTO: ask for
+    /// every eligible pair and let the helper's own free-VRAM budget fill what fits.  There is no implicit
+    /// slot count anywhere on this path: with no byte cap and no slot cap, the card's budget is the cap.
+    int64_t expert_helper_mib = 0;
+    int64_t expert_helper_reserve_mib = 512;
+    int64_t expert_helper_timeout_ms = 20;
     bool remote_expert_opt = false; ///< optional optimization of the existing remote-expert decode path
     std::string expert_cache_remote_placement = "stripe"; ///< stripe experts or assign complete layers to CUDA1..3
     bool expert_cache_cpu_order = false;
@@ -689,6 +713,11 @@ struct Options {
     int dflash_block = 0;          ///< cap the candidates per pass below the trained block (0 = min(spec-1, trained))
     int64_t dflash_window = -1; ///< --dflash-window capacity in cells; -1 = unset: legacy drafter defaults to 32768, the official SWA geometry follows --max-context (include/strata/core/dflash_ring.hpp)
     int64_t dflash_mask = -1;      ///< the mask token id when the artifact's metadata lacks it
+    /// L9 --dflash-remote-only: never upload the local drafter; drafting happens ONLY on the
+    /// helper's lane (STRATA_DRAFT_HELPER at serve) and stays OFF without it.  Frees the VII's
+    /// drafter footprint; needs the layer-split tap collector (multi-GPU).  A run whose helper
+    /// lacks the lane is draftless - never a failed request, never wrong output.
+    bool dflash_remote_only = false;
     bool suffix_draft_set = false; ///< whether --suffix-draft was passed explicitly
     bool lookup_chain_set = false;
     /// Plan v0.3 P6: the share (0..1) of each layer's distinct missed experts the GPU reads over PCIe from the
@@ -1037,6 +1066,39 @@ void usage() {
                  "  --peer-adapt-swaps N  peer cache swaps per adaptation step (default: --adapt-swaps)\n"
                  "  --peer-prefill-rows N  prompt rows per layer the peer computes (default half of chunk x top-k;\n"
                  "                       0 = the prompt path stays on the primary)\n"
+                 "  --expert-helper-socket PATH  R2 opt-in: use the CUDA-only `strata-expert-helper'\n"
+                 "                       process (started by hand BEFORE the engine, docs/MIXED_GPU_HELPER.md)\n"
+                 "                       as an out-of-process expert tier: it owns all NVIDIA memory, the\n"
+                 "                       engine keeps its own device (a HIP engine runs the client with no\n"
+                 "                       CUDA runtime at all), and rows return over a local socket.  The\n"
+                 "                       helper is optional: absent at start, the engine warns and keeps the\n"
+                 "                       CPU path for the whole run.  Serve mode with a native (IQ) expert\n"
+                 "                       pack and --expert-profile + --expert-cache only; not with --batch,\n"
+                 "                       --pipeline-windows>=2, --peer-device, --expert-cache-device1..3.\n"
+                 "  --expert-helper-socket2 PATH  opt-in SECOND helper socket (the helper's --socket2):\n"
+                 "                       the prompt tier (bulk prompt rows) rides it while the window tier\n"
+                 "                       (decode/verify rows) and the drafter lane stay on\n"
+                 "                       --expert-helper-socket, so neither tier queues behind the other's\n"
+                 "                       in-flight request.  Same frames and same handshake on both\n"
+                 "                       sockets, one fill, one mirrored expert set.  Each channel fails\n"
+                 "                       on its own: a dead prompt channel falls the prompt tier back to\n"
+                 "                       local recompute and the window tier keeps serving (and the other\n"
+                 "                       way round).  Absent = one channel, exactly as before.\n"
+                 "  --expert-helper-layers N  the helper's top layer, inclusive (default: every layer no\n"
+                 "                       split stage owns).  Every layer is ELIGIBLE: the candidates are the\n"
+                 "                       profile's global rank order over all layers, minus what a cache owns.\n"
+                 "  --expert-helper-slots N  EXPLICIT upper bound on the slot COUNT asked for (its budget\n"
+                 "                       decides the fill; the reply is authoritative).  No implicit count:\n"
+                 "                       absent, the byte cap below or the card's budget binds.\n"
+                 "  --expert-helper-mib N  upper bound on the helper's ALIGNED RESIDENT SLOT BYTES (MiB).\n"
+                 "                       0/absent (default) = AUTO: ask for every eligible pair and let the\n"
+                 "                       helper's free VRAM (less --expert-helper-reserve-mib, its scratch,\n"
+                 "                       its window buffers and its headroom) decide.  Exact aligned slot\n"
+                 "                       bytes are summed in rank order - not bytes/max_blob - and a budget\n"
+                 "                       too small for one slot is a named refusal, never a forced slot.\n"
+                 "  --expert-helper-reserve-mib N  VRAM the helper leaves free on its card (default 512)\n"
+                 "  --expert-helper-timeout-ms N  the per-window begin/finish bound (default 20; a late\n"
+                 "                       helper is a CPU window, never a stall)\n"
                  "  --expert-cache-per-layer  R4.2g: give each layer its OWN slots instead of letting the first\n"
                  "                       position take all of them.  The default policy fills in arrival order\n"
                  "                       from one shared counter, so 256 slots went to ~26 layers of position 0\n"
@@ -2398,6 +2460,28 @@ static void prime_hw_queues() {
 }
 #endif
 
+// ---- M7 (the drafter lane, docs/work/MIXED_BACKEND_RPC_PLAN.md sect12/12a): the remote drafter's
+// row packing.  The draft wire packs ONE ROW = n_planes planes of taps_hidden fp32, planes packed
+// CONTIGUOUSLY (plane p at row*n_planes + p) - the protocol struct's comment
+// (include/strata/core/expert_helper_protocol.hpp, DraftCtxReq) and the helper's own staging
+// (tools/mixed_gpu/sidecar/helper_main.cpp: stage_draft_rows).  The engine's tap sources are
+// TAP-MAJOR: plane p's row r at taps[p*stride + r*hidden] (include/strata/core/verify.hpp:205,
+// dflash_tap_collect.hpp:161 - the layout add_context_f32 takes).  df_wire_rows is the exact
+// inverse, so every row crosses the socket once and the helper transposes back on its side.
+// Reached only on the remote-draft path (STRATA_DRAFT_HELPER=1 + the peer's kFeatureDraft).
+static void df_wire_rows(float* dst, const float* taps, int64_t n_planes, int64_t hidden,
+                         int64_t stride, int64_t rows) {
+    for (int64_t r = 0; r < rows; ++r)
+        for (int64_t p = 0; p < n_planes; ++p)
+            std::memcpy(dst + ((size_t) r * (size_t) n_planes + (size_t) p) * (size_t) hidden,
+                        taps + (size_t) p * (size_t) stride + (size_t) r * (size_t) hidden,
+                        (size_t) hidden * sizeof(float));
+}
+// The draft wire's row staging (the biggest frame the lane sends: the prompt window's rows).
+// thread_local: the batch slots' request threads each own their staging, like every other buffer
+// the serve path touches from a slot thread.
+static thread_local std::vector<float> g_df_wire;
+
 int main(int argc, char** argv) {
     // **UNBUFFERED, BECAUSE THE INTERESTING OUTPUT IS THE OUTPUT BEFORE A CRASH.**  `stdout` redirected to a
     // pipe or a file is block-buffered, so a program that dies loses every line it had already printed - which
@@ -2660,6 +2744,22 @@ int main(int argc, char** argv) {
         else if (a == "--remote-expert-opt") o.remote_expert_opt = true;
         else if (a == "--expert-cache-remote-placement")
             o.expert_cache_remote_placement = next("--expert-cache-remote-placement");
+        else if (a == "--expert-helper-socket") o.expert_helper_socket = next("--expert-helper-socket");
+        else if (a == "--expert-helper-socket2") o.expert_helper_socket2 = next("--expert-helper-socket2");
+        else if (a == "--expert-helper-layers") o.expert_helper_layers = std::atoll(next("--expert-helper-layers"));
+        else if (a == "--expert-helper-slots") o.expert_helper_slots = std::atoll(next("--expert-helper-slots"));
+        else if (a == "--expert-helper-mib") {
+            // STRICT: an unrepresentable byte budget is not a budget.  atoll would accept "12x" as 12 and
+            // wrap a huge value in silence; this path spends real VRAM, so the value is checked by name.
+            const std::string v = next("--expert-helper-mib");
+            std::string why;
+            if (strata::core::expert_helper::parse_mib(v, o.expert_helper_mib, why) != strata::core::expert_helper::kOk) {
+                std::fprintf(stderr, "strata generate: --expert-helper-mib: %s\n", why.c_str());
+                return 2;
+            }
+        }
+        else if (a == "--expert-helper-reserve-mib") o.expert_helper_reserve_mib = std::atoll(next("--expert-helper-reserve-mib"));
+        else if (a == "--expert-helper-timeout-ms") o.expert_helper_timeout_ms = std::atoll(next("--expert-helper-timeout-ms"));
         else if (a == "--vram-reserve-mib") { o.vram_reserve_mib = std::atoi(next("--vram-reserve-mib")); o.vram_reserve_given = true; }
         else if (a == "--vram-reserve-later-mib")
             o.vram_reserve_later_mib = std::atoi(next("--vram-reserve-later-mib"));
@@ -2720,6 +2820,7 @@ int main(int argc, char** argv) {
         else if (a == "--dflash-block") o.dflash_block = std::max(0, std::atoi(next("--dflash-block")));
         else if (a == "--dflash-window") o.dflash_window = std::max(0LL, std::atoll(next("--dflash-window")));
         else if (a == "--dflash-mask-token") o.dflash_mask = std::atoll(next("--dflash-mask-token"));
+        else if (a == "--dflash-remote-only") o.dflash_remote_only = true;
         else if (a == "--pcie-frac") o.pcie_frac = std::atof(next("--pcie-frac"));
         else if (a == "--adapt-every") { o.adapt_every = std::atoi(next("--adapt-every")); o.adapt_every_given = true; }
         else if (a == "--adapt-decay") o.adapt_decay = (float) std::atof(next("--adapt-decay"));
@@ -3622,6 +3723,37 @@ int main(int argc, char** argv) {
         }
     }
     const bool native_pack = strata::kernels::cpu::expert_layout().native;
+    // R2 (opt-in, --expert-helper-socket): the scope the design accepts, checked where the pack's
+    // shape is known.  The helper computes native (IQ) expert blobs for the decode windows of a
+    // serial serve path; every excluded mode is named, never silently ignored, and with the option
+    // absent nothing below runs at all (the default path is byte-identical).
+    if (!o.expert_helper_socket.empty()) {
+        const char* helper_scope_bad = nullptr;
+        if (!o.serve) helper_scope_bad = "--serve is required (the helper serves the decode's windows)";
+        else if (!native_pack) helper_scope_bad = "a native (IQ) expert pack is required (the helper computes native blobs)";
+        else if (o.expert_profile.empty()) helper_scope_bad = "--expert-profile is required (the fill order is the profile's rank order)";
+        else if (o.expert_cache == 0) helper_scope_bad = "--expert-cache is required (the tiers must be disjoint from the primary's; 'auto' counts: it sizes the primary tier before the helper opens)";
+        else if (o.batch > 0) helper_scope_bad = "--batch is excluded (one channel, one outstanding request)";
+        else if (o.pipeline_windows >= 2) helper_scope_bad = "--pipeline-windows>=2 is excluded (two decode stages, one channel)";
+        else if (o.peer_device >= 1) helper_scope_bad = "--peer-device is excluded (the helper is the tier on the other card)";
+        else if (o.expert_cache_remote[0] > 0 || o.expert_cache_remote[1] > 0 || o.expert_cache_remote[2] > 0)
+            helper_scope_bad = "--expert-cache-device1..3 is excluded (the in-process tiers own that device's VRAM)";
+        else if (o.remote_expert_opt) helper_scope_bad = "--remote-expert-opt is excluded (it optimizes the in-process tiers)";
+        else if (o.expert_helper_slots < 0 || o.expert_helper_reserve_mib < 0 || o.expert_helper_timeout_ms < 1)
+            helper_scope_bad = "--expert-helper-slots/-reserve-mib must be >= 0 and --expert-helper-timeout-ms >= 1";
+        else if (o.expert_helper_mib < 0)
+            helper_scope_bad = "--expert-helper-mib must be >= 0 (0 = AUTO: the helper's card budget decides)";
+        else if (o.expert_helper_reserve_mib > strata::core::expert_helper::kMaxMiB)
+            helper_scope_bad = "--expert-helper-reserve-mib is past the largest representable byte count";
+        else if (!o.split_device.empty() && o.split_device.find('0') != std::string::npos)
+            helper_scope_bad = "--split-device 0 (a same-GPU split stage) is excluded with the helper";
+        else if (!o.expert_helper_socket2.empty() && o.expert_helper_socket2 == o.expert_helper_socket)
+            helper_scope_bad = "--expert-helper-socket2 must name a DIFFERENT path than --expert-helper-socket (the helper binds two distinct sockets)";
+        if (helper_scope_bad != nullptr) {
+            std::fprintf(stderr, "strata generate: --expert-helper-socket: %s\n", helper_scope_bad);
+            return 2;
+        }
+    }
     // STRATA_MMQ_DIRECT: the room each sized expert slot keeps after its blob (0 unless it is on: the slot costs and
     // the arena are then today's, byte for byte)
     const int64_t slot_guard = native_pack ? (int64_t) strata::prefill::Prefill::slot_guard_bytes() : 0;
@@ -5674,6 +5806,14 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata generate: --dflash-head / --dflash-vocab require --dflash\n");
         return 2;
     }
+    if (o.dflash_remote_only && (o.dflash.empty() || !multi_gpu)) {
+        // Without the tap collector the prompt-path fallback would feed an unloaded local
+        // drafter; refuse at startup instead.  Drafting is speculative - refusing here costs
+        // nothing correct.
+        std::fprintf(stderr, "strata generate: --dflash-remote-only requires --dflash and the "
+                             "layer-split tap collector (multi-GPU)\n");
+        return 2;
+    }
     strata::core::DFlashDrafter dflash;
     std::vector<int32_t> dflash_capture_layers;
     int dflash_k = 0;   // THE effective draft length (1 anchor + dflash_k candidates = the window)
@@ -5758,11 +5898,18 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "dflash: prompt-lookup drafting follows --suffix-draft\n");
         // The weights and the drafter's K/V pools land BEFORE the expert cache is sized, like the
         // MTP drafter's; the head/embedding bind follows the native head's load below.
+        // L9 --dflash-remote-only skips them: the helper carries the drafter (asserted at serve
+        // by STRATA_DRAFT_HELPER + the peer's draft lane; without it the run is draftless), so
+        // the VII keeps the VRAM the local drafter would have taken.  The tap collector below
+        // still runs - the engine must keep shipping taps.
         {
             const strata::core::OnDevice on_dflash(last_st ? last_st->dev : -1);
             int dev = 0;
             cudaGetDevice(&dev);
-            if (!dflash.upload(g, ss, dev, o.dflash_window, effective_mask, err, dflash_elastic) ||
+            if (o.dflash_remote_only) {
+                std::fprintf(stderr, "dflash: remote-only: local drafter not uploaded (the helper "
+                                     "serves drafts; without its lane drafting stays off)\n");
+            } else if (!dflash.upload(g, ss, dev, o.dflash_window, effective_mask, err, dflash_elastic) ||
                 (!o.dflash_head.empty() && !dflash.load_head(o.dflash_head, err))) {
                 std::fprintf(stderr, "strata generate: %s\n", err.c_str());
                 return 1;
@@ -5811,8 +5958,12 @@ int main(int argc, char** argv) {
                              (double) dflash.tap_collector().pinned_bytes() / 1048576.0);
             }
         }
-        if (!o.serve && ((int64_t)o.tokens.size() > dflash.capacity() ||
-                        o.max_new > dflash.capacity() - (int64_t)o.tokens.size())) {
+        // L9 --dflash-remote-only: capacity() is the LOCAL pools' window; the pools are never
+        // uploaded under remote-only, and the CLI lane is serve-only (no remote drafting), so
+        // this gate would reject every CLI prompt against a zero capacity.
+        if (!o.serve && !o.dflash_remote_only &&
+            ((int64_t)o.tokens.size() > dflash.capacity() ||
+             o.max_new > dflash.capacity() - (int64_t)o.tokens.size())) {
             std::fprintf(stderr, "strata generate: prompt + max_new exceeds DFlash capacity; raise --dflash-window\n");
             return 2;
         }
@@ -6746,6 +6897,7 @@ int main(int argc, char** argv) {
         }
         const auto fill_t0 = std::chrono::steady_clock::now();
         uint64_t fill_bytes = 0;
+        std::pair<int32_t, int32_t> verified_pair = profile.empty() ? std::pair<int32_t, int32_t>() : profile.front();
         for (int64_t i = 0; i < want; ++i) {
             if (!per_layer && srcp == &src && src.unbuffered() && i % 64 == 0) {
                 if (ahead.valid()) ahead.get();
@@ -6767,14 +6919,15 @@ int main(int argc, char** argv) {
             }
             fill_bytes += strata::kernels::cpu::expert_layout().blob_bytes(profile[(size_t) i].first);
             ++prefilled;
+            if (prefilled == 1) verified_pair = profile[(size_t) i];   // H6: profile[0] may be the helper's now
         }
         const double fill_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - fill_t0).count();
         // **AND ONE SLOT IS READ BACK AND COMPARED.**  A residency table that is right about indices and wrong
         // about bytes produces a plausible token, which is this project's most expensive failure mode; the
         // cache's own `verify_slot` is the check and it costs one 1.38 MB D2H at startup.
-        if (prefilled > 0 && !xcache.verify_slot(xcache.slot_of(profile[0].first, profile[0].second),
-                                srcp->blob_stable(profile[0].first, profile[0].second), err,
-                                (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(profile[0].first))) {
+        if (prefilled > 0 && !xcache.verify_slot(xcache.slot_of(verified_pair.first, verified_pair.second),
+                                srcp->blob_stable(verified_pair.first, verified_pair.second), err,
+                                (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(verified_pair.first))) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }
@@ -6943,6 +7096,10 @@ int main(int argc, char** argv) {
     }
 
     std::array<strata::core::RemoteExperts, 3> remote_experts;
+    /// R2 (opt-in, --expert-helper-socket): the out-of-process CUDA helper's tier.  Registered as a
+    /// remote tier, and FIRST in `drive.d.remote` (the dispatch's per-layer note_request_start
+    /// re-arm reads index 0, the layer-0 boundary of every request).
+    strata::core::RemoteExperts helper_tier;
     std::unique_ptr<strata::core::RemoteExpertOpt> remote_opt;
     if (o.remote_expert_opt && o.expert_cache_remote[0] > 0) remote_opt = std::make_unique<strata::core::RemoteExpertOpt>();
     const bool multi_remote = o.expert_cache_remote[1] > 0 || o.expert_cache_remote[2] > 0;
@@ -7030,6 +7187,109 @@ int main(int argc, char** argv) {
         }
     }
 
+    // ---- R2 (opt-in, --expert-helper-socket): the out-of-process CUDA expert helper.  NO device
+    // call happens here: the proxy opener connects the channel, handshakes, and takes the helper's
+    // authoritative fill report.  Absent helper = a warning and the CPU path, never a fatal error
+    // (the helper is optional by design; the engine starts the same with it or without it).
+    //
+    // M1 (capacity-first-design.md §2) changes WHICH PAIRS may be filled and HOW MANY are asked for,
+    // and nothing else: every layer is eligible (the last-stage fence is gone), the candidates come
+    // from the canonical GLOBAL ranking in its own rank order (not one stage's share), and the request
+    // is sized by EXACT aligned slot BYTES (`--expert-helper-mib`) with the implicit 256-slot magic
+    // count removed.  `--expert-helper-slots` keeps its meaning as an explicit count cap.  The
+    // helper's own live `cudaMemGetInfo` budget (free VRAM less the reserve, its scratch, its window
+    // buffers and the context's headroom) stays authoritative: it fills what fits, reports what it
+    // filled, and the engine mirrors that report - exactly as it always has.
+    strata::core::RemoteExperts* helper_tier_p = nullptr;
+    if (!o.expert_helper_socket.empty()) {
+        const int64_t hlo = 0;   // M1: every layer is eligible (was: the last stage's first layer)
+        const int64_t hhi = o.expert_helper_layers > 0 ? std::min<int64_t>(o.expert_helper_layers, g.n_layers - 1)
+                                                       : g.n_layers - 1;
+        const auto& hlay = strata::kernels::cpu::expert_layout();
+        // The ranking the candidates come from: the WHOLE profile, hottest first, as it was before the
+        // layer split filtered each stage's share out of it (`profile_all`); with no split, `profile` IS
+        // that ranking.  Referenced, never copied, and only inside this block: the helper-OFF path
+        // allocates and prints nothing here, byte for byte as before.  H6's reason for taking the LAST
+        // stage's share (a split's `profile` names no pair in the helper's old range) does not apply to
+        // the global ranking, which names pairs in every layer - that is the whole point of M1.
+        const std::vector<std::pair<int32_t, int32_t>>& hprof = multi_gpu ? profile_all : profile;
+        // The owner mask: the primary's cache AND every stage cache, byte per pair (flat
+        // layer*n_expert+expert).  One source of truth for fill-time disjointness, and the same bytes
+        // go on the wire as the helper's claimed bitmap (the unchanged hello contract).
+        std::vector<uint8_t> howned((size_t) g.n_layers * (size_t) g.n_expert, 0);
+        for (int64_t l = 0; l < g.n_layers; ++l)
+            for (int64_t e = 0; e < g.n_expert; ++e)
+                if (xcache.slot_of(l, e) >= 0) howned[(size_t) (l * g.n_expert + e)] = 1;
+        for (auto& st : stages)
+            for (const auto& pr : st->profile)
+                if (st->cache.slot_of(pr.first, pr.second) >= 0)
+                    howned[(size_t) pr.first * (size_t) g.n_expert + (size_t) pr.second] = 1;
+        std::vector<uint8_t> hhad((size_t) g.n_layers, 0);
+        std::vector<int64_t> hblob((size_t) g.n_layers, 0);
+        for (int64_t l = 0; l < g.n_layers; ++l) {
+            const auto& hf = hlay.fmt[(size_t) l];
+            hhad[(size_t) l] = (hf.had_gu || hf.had_d) ? 1 : 0;   // APR Hadamard layers: the rotation
+            hblob[(size_t) l] = (int64_t) hlay.blob_bytes(l);     // path is the in-process tier's scope
+        }
+        std::vector<std::pair<int32_t, int32_t>> hranked;
+        strata::core::expert_helper::CandidateStats hstats;
+        std::string hwhy;
+        const int hcand = strata::core::expert_helper::build_candidates(hprof, howned, hhad, g.n_layers,
+                                                                       g.n_expert, hlo, hhi, hranked, hstats, hwhy);
+        if (hstats.hadamard > 0)            std::fprintf(stderr, "strata generate: expert-helper: %lld ranked pairs skipped (Hadamard-folded "
+                                 "layers, out of the helper's scope)\n", (long long) hstats.hadamard);
+        if (hcand != strata::core::expert_helper::kOk) {
+            std::fprintf(stderr, "strata generate: expert-helper: %s; the helper is not started\n", hwhy.c_str());
+        } else {
+            std::fprintf(stderr, "strata generate: expert-helper: %lld of %lld ranked pairs eligible in layers "
+                                 "%lld..%lld (%lld held by a cache, %lld outside the window, %lld outside the "
+                                 "geometry, %lld repeated, %lld Hadamard-folded)\n",
+                         (long long) hstats.kept, (long long) hstats.considered, (long long) hlo, (long long) hhi,
+                         (long long) hstats.owned, (long long) hstats.outside_window, (long long) hstats.invalid,
+                         (long long) hstats.duplicates, (long long) hstats.hadamard);
+            // The byte budget is EXACT aligned slot bytes (the same expression the helper spends), never
+            // a `mib / max_blob` estimate; 0 asks for every eligible pair and lets the card's budget bind.
+            const int64_t hbudget = o.expert_helper_mib > 0 ? o.expert_helper_mib * 1048576ll : 0;
+            strata::core::expert_helper::FillPlan hplan;
+            const int hplan_rc = strata::core::expert_helper::plan_fill(hranked, hblob, hbudget,
+                                                                        o.expert_helper_slots,
+                                                                        strata::core::expert_helper::kMaxPairs,
+                                                                        hplan, hwhy);
+            if (hplan_rc != strata::core::expert_helper::kOk) {
+                std::fprintf(stderr, "strata generate: expert-helper: %s; the helper is not started\n", hwhy.c_str());
+            } else if (hplan.slots <= 0) {
+                std::fprintf(stderr, "strata generate: expert-helper: %s; the helper is not started and the CPU "
+                                     "path keeps serving its rows\n", hwhy.c_str());
+                if (hranked.empty())
+                    std::fprintf(stderr, "strata generate: expert-helper: the profile names no pair in layers "
+                                         "%lld..%lld outside the caches; the helper is not started\n",
+                                 (long long) hlo, (long long) hhi);
+            } else {
+                std::fprintf(stderr, "strata generate: expert-helper: asking %lld slots = %lld B aligned of %lld "
+                                     "eligible (%s%s%s); the helper's own free-VRAM budget decides the fill and "
+                                     "its report is authoritative\n",
+                             (long long) hplan.slots, (long long) hplan.bytes, (long long) hplan.candidates,
+                             hplan.auto_budget ? "no byte cap: AUTO"
+                                               : ("the --expert-helper-mib " + std::to_string(o.expert_helper_mib) +
+                                                  " MiB cap").c_str(),
+                             hplan.slot_cap_bounded ? ", bounded by --expert-helper-slots" : "",
+                             hplan.ceiling_bounded ? ", bounded by the fill frame's ceiling" : "");
+                if (!helper_tier.open_socket(o.expert_helper_socket, hplan.slots, g.n_layers, g.n_expert, g.n_embd,
+                                             strata::kernels::cpu::FF, hlo, hhi,
+                                             o.expert_helper_reserve_mib, o.expert_helper_timeout_ms, hranked,
+                                             howned, err, o.expert_helper_socket2)) {
+                    std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+                    std::fprintf(stderr, "strata generate: the expert helper is absent; the CPU path serves its rows for "
+                                         "the whole run (start strata-expert-helper BEFORE the engine: docs/MIXED_GPU_HELPER.md)\n");
+                } else {
+                    helper_tier_p = &helper_tier;
+                    std::fprintf(stderr, "strata generate: expert-helper proxy: %lld experts on %s, %.2f GiB (fill report)\n",
+                                 (long long) helper_tier.resident(), o.expert_helper_socket.c_str(), helper_tier.gib());
+                }
+            }
+        }
+    }
+
     // ---- Multi-GPU: the second GPU's expert tier, filled with the ranked pairs the primary does not hold
     strata::core::PeerExperts peer;
     if (o.peer_device >= 1) {
@@ -7051,18 +7311,40 @@ int main(int argc, char** argv) {
 
     if (remote_opt && !remote_opt->init(err)) { std::fprintf(stderr, "strata generate: %s\n", err.c_str()); return 1; }
     Drive drive;
-    // #731 (opt-in, STRATA_DISJOINT_ADAPT=1): the adaptive tiers leave an expert a helper GPU holds out of the primary's
-    // promotion candidates (it would sit in both caches).  Asked live, from the helper's own cache (RemoteExperts::holds,
-    // #854), so an expert the helper's tier swaps in or out later is followed - never a copy taken at load.
-    const bool disjoint_adapt = [] { const char* v = std::getenv("STRATA_DISJOINT_ADAPT"); return v != nullptr && std::atoi(v) != 0; }();
+    // #731 + M1 (capacity-first-design.md §2): the adaptive tiers leave an expert a helper GPU holds out of the
+    // primary's promotion candidates (it would sit in both caches).  M1 makes the gate ON BY DEFAULT when a helper
+    // proxy registered: with the helper's bytes all-layer, an adaptive swap onto a pair the helper owns is a real
+    // double residency, not a rare edge.  `STRATA_DISJOINT_ADAPT` keeps its precedence - =0 opts out (the pre-M1
+    // default), =1 opts in (the pre-M1 opt-in), and with the variable UNSET the gate follows the registered proxy,
+    // so a run with no helper is the old behavior byte for byte.  Asked LIVE, from each tier's own cache
+    // (RemoteExperts::holds, #854): what the helper's tier holds now is followed, never a copy taken at load.  The
+    // question is RESIDENCY (proxy_residency_live), not dispatch (helper_usable): a proxy disabled for the rest of
+    // this request by a mid-request finish failure still has its helper process alive with its slots allocated, so
+    // its pairs stay out of the primary's candidates; the re-arm at the next request boundary restores dispatch,
+    // and the ownership protection was never needed to drop in between.  Only a CLOSED channel (the helper died,
+    // the connect failed, close()) releases its residency - then the gate stops consulting it, which is what lets
+    // the primary promote its pairs and recover after the helper's permanent loss.
+    const bool disjoint_adapt = strata::core::expert_helper::disjoint_adapt_enabled(
+        std::getenv("STRATA_DISJOINT_ADAPT"), helper_tier_p != nullptr && helper_tier_p->is_proxy());
     auto helper_holds = [&](int64_t l, int32_t e) -> bool {
         if (!disjoint_adapt) return false;
-        for (int r = 0; r < drive.d.remote_count; ++r)
-            if (drive.d.remote[r]->holds(l, e)) return true;
+        for (int r = 0; r < drive.d.remote_count; ++r) {
+            const strata::core::RemoteExperts* t = drive.d.remote[(size_t) r];
+            if (t->is_proxy() && !t->proxy_residency_live()) continue;   // closed channel: residency released
+            if (t->holds(l, e)) return true;
+        }
         return false;
     };
     for (int r = 0; r < 3; ++r) if (o.expert_cache_remote[(size_t) r] > 0)
         drive.d.remote[drive.d.remote_count++] = &remote_experts[(size_t) r];
+    if (helper_tier_p != nullptr)   // R2: appended LAST (after any in-process tier above).  The finish seam
+        // re-arms through d.remote[0] (src/core/expert_source.cpp:5221), so the proxy must BE index 0 for the
+        // layer-0 re-arm to reach it.  It is index 0 today only because the scope refusals exclude
+        // --expert-cache-device1..3 (generate.cpp:3672-3673), the only producers of the in-process tiers
+        // above.  TRAP: a future config that registers an in-process tier AND the helper puts the re-arm on
+        // the in-process tier and the proxy never re-arms - insert at index 0 (or read all tiers) if that
+        // combination is ever allowed.
+        drive.d.remote[drive.d.remote_count++] = helper_tier_p;
     drive.d.peer = peer.valid() ? &peer : nullptr;
     drive.d.hit_cpu_order = o.expert_cache_cpu_order;
     drive.d.split_rows = !o.no_split_rows;
@@ -8660,7 +8942,9 @@ int main(int argc, char** argv) {
         // Everything else - the fallback's batched unbuffered reads, its pinned RAM copy, the prompt path's own
         // decisions - is forwarded unchanged.  Default off: the prompt path's source is srcp, exactly as before.
         std::vector<strata::core::RemoteExperts*> prefill_helpers;
-        for (int r = 0; r < drive.d.remote_count; ++r) prefill_helpers.push_back(drive.d.remote[r]);
+        for (int r = 0; r < drive.d.remote_count; ++r)
+            if (!drive.d.remote[r]->is_proxy())   // R2: the out-of-process helper serves decode rows only;
+                prefill_helpers.push_back(drive.d.remote[r]);   // the prompt path reads its blobs from the files
         std::unique_ptr<strata::core::RemotePrefillSource> prefill_helper_src;
         strata::core::ExpertSource* prefill_src = srcp;
         uint64_t helper_blobs_before = 0, helper_bytes_before = 0;
@@ -8719,6 +9003,57 @@ int main(int argc, char** argv) {
         strata::prefill::Prefill::arm_cpu_share(share_pool, share_pool && stages.empty() && !multi_gpu && share_has_work);
         const bool has_dflash = !o.dflash.empty();
         bool df_request = false;   // set before prefill; for both greedy and sampled requests
+
+        // M7 (the drafter lane, docs/work/MIXED_BACKEND_RPC_PLAN.md sect12/12a): the REMOTE drafter.
+        // The gate is exactly the design's: STRATA_DRAFT_HELPER=1 (default unset) AND the connected
+        // helper advertised kFeatureDraft (its --dflash drafter loaded) AND this run carries --dflash.
+        // Then the three serve seam sites (the prompt context, the round's context, the propose)
+        // draft on the helper; without the env, or without the feature bit, draft_tier_p stays null
+        // and every seam below is byte-identical to today.  The GEOMETRY comes from the engine's
+        // LOCAL parse of the artifact (metadata only, no upload, no device work): n_planes is the
+        // artifact's tap-layer count, taps_hidden is the target's n_embd - the same numbers the
+        // helper derived from its own --dflash, and the peer's geometry check is the last word.
+        strata::core::RemoteExperts* draft_tier_p = nullptr;
+        int64_t df_wire_planes = 0;
+        // L9 --dflash-remote-only: every local capacity() read below (the request gate, the
+        // proposal-fit checks) would see the unuploaded pools' 0 and silently kill drafting.
+        // The helper's drafter window is the real limit; the engine's --max-context bounds
+        // every request the same way (the configs pair them), and the helper's own check has
+        // the last word at the wire. Non-remote runs keep dflash.capacity() exactly.
+        const int64_t df_eff_cap = o.dflash_remote_only ? o.max_context : dflash.capacity();
+        // M7 (the drafter lane): this request's remote-draft latch, declared at the serve scope so
+        // the prompt-path tap callback (init_prompt_paths) and the decode/verify seams share ONE
+        // latch.  A kDraftCtx/kDraftReq failure sets it and drafting stays OFF for the rest of the
+        // request; re-set to false at every request start (next to `df_request = has_dflash`).
+        bool df_draft_dead = false;
+        static const bool draft_helper_env = [] {
+            const char* v = std::getenv("STRATA_DRAFT_HELPER");
+            return v != nullptr && std::atoi(v) != 0;
+        }();
+        if (draft_helper_env && has_dflash && helper_tier_p != nullptr && helper_tier_p->draft_capable()) {
+            df_wire_planes = (int64_t) dflash.artifact().geom().target_layers.size();
+            const int drc = helper_tier_p->draft_set_geometry(df_wire_planes, g.n_embd);
+            if (drc == strata::core::expert_helper::kOk) {
+                draft_tier_p = helper_tier_p;
+                std::fprintf(stderr, "strata draft-helper: drafting on the helper: %lld planes x %lld hidden "
+                                     "(artifact %s, target capacity %lld), pick cap %d\n", (long long) df_wire_planes,
+                             (long long) g.n_embd, o.dflash.c_str(), (long long) df_eff_cap,
+                             (int) strata::core::expert_helper::kMaxDraftPicks);
+            } else {
+                std::fprintf(stderr, "strata draft-helper: geometry %lld x %lld refused (%s); drafting stays "
+                                     "local\n", (long long) df_wire_planes, (long long) g.n_embd,
+                             strata::core::expert_helper::status_name(drc));
+                df_wire_planes = 0;
+                if (o.dflash_remote_only)
+                    std::fprintf(stderr, "strata draft-helper: --dflash-remote-only: no local drafter "
+                                         "was uploaded, so drafting stays off\n");
+            }
+        } else if (draft_helper_env && has_dflash && helper_tier_p != nullptr) {
+            std::fprintf(stderr, "strata draft-helper: STRATA_DRAFT_HELPER=1 but the connected helper "
+                                 "advertised no drafter lane (start it with --dflash); drafting stays %s\n",
+                         o.dflash_remote_only ? "off (--dflash-remote-only: no local drafter was "
+                                                "uploaded)" : "local");
+        }
 
 
         if (has_dflash) {
@@ -9108,7 +9443,52 @@ int main(int argc, char** argv) {
                             for (size_t k = 0; k < stages.size(); ++k)
                                 all.push_back({(int) k + 1, stages[k]->sp.taps_plane(), stages[k]->sp.tap_stride_rows(), rows});
                             if (!tc.assemble(pos, all.data(), (int) all.size(), rows, 2, e)) return false;
-                            return dflash.add_context(tc.plane_bf16(), tc.plan().n_taps, tc.stride_rows_bf16(), pos, rows, e);
+                            // M7 (plan sect12/12a, BUG A): the chunked prefill feeds the drafter's
+                            // ring at chunk finish.  On the REMOTE lane (STRATA_DRAFT_HELPER=1 + the
+                            // peer's kFeatureDraft) the ring lives on the helper, so the local
+                            // drafter is NOT fed - ship the collected taps as fp32 wire rows.  The
+                            // assembled plane is tap-major bf16 on the drafter device (plane stride =
+                            // stride_rows_bf16 * n_embd); widen it host-side to fp32 tap-major (plane
+                            // stride = rows * n_embd) and transpose to the wire's row-major layout,
+                            // then feed the helper with kDraftCtx (sub-chunked to kMaxDraftCtxRows,
+                            // reset=1 on the request's FIRST frame at pos 0).  The local path (no
+                            // remote lane) is byte-identical to the single add_context below.
+                            if (draft_tier_p == nullptr)
+                                return dflash.add_context(tc.plane_bf16(), tc.plan().n_taps, tc.stride_rows_bf16(), pos, rows, e);
+                            if (df_draft_dead) return true;   // drafting off for this request: pure no-draft
+                            const int64_t df_n_taps = (int64_t) tc.plan().n_taps;
+                            const int64_t df_stride = tc.stride_rows_bf16();
+                            if (df_n_taps != df_wire_planes || df_stride < rows) {
+                                df_draft_dead = true;
+                                std::fprintf(stderr, "strata draft-helper: prompt taps at pos %lld name %lld planes "
+                                                     "(the artifact carries %lld); drafting off for the rest of this "
+                                                     "request\n", (long long) pos, (long long) df_n_taps,
+                                             (long long) df_wire_planes);
+                                return true;
+                            }
+                            // assemble() queued the plane on the drafter's stream: sync it before the D2H.
+                            if (cudaStreamSynchronize(dflash.stream()) != cudaSuccess) {
+                                e = "dflash: the prompt tap plane sync failed"; return false;
+                            }
+                            std::vector<uint16_t> df_hbf((size_t) df_n_taps * (size_t) rows * (size_t) g.n_embd);
+                            for (int64_t t = 0; t < df_n_taps; ++t)
+                                if (cudaMemcpy(df_hbf.data() + (size_t) t * (size_t) rows * (size_t) g.n_embd,
+                                               tc.plane_bf16() + (size_t) t * (size_t) df_stride * (size_t) g.n_embd,
+                                               (size_t) rows * (size_t) g.n_embd * 2u, cudaMemcpyDeviceToHost) != cudaSuccess) {
+                                    e = "dflash: the prompt tap plane copy failed"; return false;
+                                }
+                            std::vector<float> df_hf(df_hbf.size());
+                            for (size_t v = 0; v < df_hbf.size(); ++v) df_hf[v] = strata::kernels::f32_from_bf16(df_hbf[v]);
+                            g_df_wire.assign((size_t) rows * (size_t) df_n_taps * (size_t) g.n_embd, 0.0f);
+                            df_wire_rows(g_df_wire.data(), df_hf.data(), df_n_taps, g.n_embd, rows * (int64_t) g.n_embd, rows);
+                            const int drc = draft_tier_p->draft_context(g_df_wire.data(), rows, pos, pos == 0 ? 1 : 0);
+                            if (drc != strata::core::expert_helper::kOk) {
+                                df_draft_dead = true;
+                                std::fprintf(stderr, "strata draft-helper: prompt context at pos %lld failed (%s); "
+                                                     "drafting off for the rest of this request\n", (long long) pos,
+                                             strata::core::expert_helper::status_name(drc));
+                            }
+                            return true;
                         };
                 }
                 const strata::core::OnDevice on(st.dev);
@@ -9214,6 +9594,17 @@ int main(int argc, char** argv) {
         if (peer.valid() && o.peer_prefill_rows != 0) {
             const int64_t rows = o.peer_prefill_rows > 0 ? o.peer_prefill_rows : o.prefill_chunk * K / 2;
             if (!sp.set_peer(&peer, rows, err)) {
+                std::fprintf(stderr, "strata serve: %s - the prompt path stays on the primary GPU\n", err.c_str());
+                err.clear();
+            }
+        }
+        // M2 (STRATA_PREFILL_HELPER=1, opt-in, default OFF - docs/work/MIXED_BACKEND_RPC_PLAN.md): the
+        // out-of-process helper's prompt tier on the serve path's prompt reader.  No env, no injection:
+        // the prompt path stays as it was.  set_prompt_helper itself soft-declines (a notice, never a
+        // failed start) when the helper cannot serve prompt rows.
+        if (const char* const hp_env = std::getenv("STRATA_PREFILL_HELPER");
+            hp_env != nullptr && std::atoi(hp_env) == 1 && helper_tier.prompt_capable()) {
+            if (!sp.set_prompt_helper(&helper_tier, err)) {
                 std::fprintf(stderr, "strata serve: %s - the prompt path stays on the primary GPU\n", err.c_str());
                 err.clear();
             }
@@ -9523,10 +9914,18 @@ int main(int argc, char** argv) {
         // never duplicated (no 1.27 GB copy on the memory-sensitive pair).  The bind
         // runs after the final stage's head load; single-GPU binds at the native head
         // load above, unchanged.
-        if (has_dflash && last_st &&
-            !dflash.bind(last_st->wt, &last_st->head, err, o.dflash_vocab)) {
-            std::fprintf(stderr, "strata serve: %s\n", err.c_str());
-            return 1;
+        // L9 --dflash-remote-only: bind() requires upload()'s device state (it errors
+        // "dflash: upload before binding"), and remote-only never uploads locally - the
+        // HELPER's drafter binds the target head/embedding for drafting.  Skip the local
+        // bind; the df_request gate below keeps the local propose path off.
+        if (has_dflash && last_st) {
+            if (o.dflash_remote_only) {
+                std::fprintf(stderr, "strata serve: dflash: remote-only: local bind skipped "
+                                     "(the helper's bound drafter serves; no local head/embedding copy)\n");
+            } else if (!dflash.bind(last_st->wt, &last_st->head, err, o.dflash_vocab)) {
+                std::fprintf(stderr, "strata serve: %s\n", err.c_str());
+                return 1;
+            }
         }
         if (prefill_head_alias_bound) mtp.set_window_R(ver.final_R_all());
         if (pipe) mtp.set_source_R(ver.final_R_all());   // the serial decode's rows (the last stage's even verifier)
@@ -9659,7 +10058,12 @@ int main(int argc, char** argv) {
         // is the window's position.  Serve-level scope: the request lambdas below use it.
         auto df_collect_f32 = [&](int64_t key, int64_t rows, std::string& e) -> bool {
             auto& tc = dflash.tap_collector();
-            const strata::core::OnDevice on_df(dflash.device());
+            // L9 --dflash-remote-only: the guard must be the COLLECTOR's device - it is what
+            // assemble() asserts.  The local drafter's device() is unset when it was never
+            // uploaded (l1w6: "assemble must run on the drafter's device" on the first decode
+            // window); in the local lane the two are the same value (the collector is enabled
+            // on the drafter's device), so this is byte-identical there.
+            const strata::core::OnDevice on_df(tc.drafter_device());
             std::vector<strata::core::DFlashTapCollector::Slice> all;
             for (int st = 0; st < n_stages; ++st)
                 all.push_back({st, stage_ver(st).taps(), stage_ver(st).tap_stride() / g.n_embd, rows});
@@ -12850,13 +13254,26 @@ int main(int argc, char** argv) {
             static const bool dflash_sampled_ok = std::getenv("STRATA_DFLASH_SAMPLED") != nullptr;
             const bool req_dflash = has_dflash && (req_temperature <= 0.0f || dflash_sampled_ok);
             if (has_dflash) dflash.set_reference_mode(req_df2_reference);
-            df_request = has_dflash;
+            // L9: with --dflash-remote-only there IS no local drafter (never uploaded);
+            // drafting exists only on the helper's lane, and without it the request runs
+            // draftless (T=1 target-only windows) rather than touching an unloaded drafter.
+            df_request = has_dflash && (!o.dflash_remote_only || draft_tier_p != nullptr);
+            // M7 (the drafter lane): re-arm this request's remote-draft latch (declared at the
+            // serve scope, shared with the prompt-path tap callback).  A kDraftCtx/kDraftReq
+            // failure sets it and drafting stays OFF for the rest of this request - the same
+            // permanent-loss rule the prefill claims use (plan sect12): drafts are speculative, the
+            // verify path alone is correct, so the request never fails and the window tier keeps
+            // serving.  Re-armed here: the next request evaluates the drafter fresh.
+            df_draft_dead = false;
             // Review 2026-10-21 item 2: a new request must not inherit slot bindings,
             // rows guards, or staged flags an aborted request left under the same keys.
             if (has_dflash && dflash.tap_collector().enabled()) dflash.tap_collector().reset_staging();
             if (has_dflash && !req_dflash)
                 std::fprintf(stderr, "dflash: sampled request uses target-only decoding (STRATA_DFLASH_SAMPLED=1 enables drafting)\n");
-            if (has_dflash && (n > dflash.capacity() || max_new > dflash.capacity() - n)) {
+            // L9 --dflash-remote-only: capacity() is the local pools' window (0 unuploaded);
+            // the helper's drafter window is the limit and its wire-side check has the last word.
+            if (has_dflash && !o.dflash_remote_only &&
+                (n > dflash.capacity() || max_new > dflash.capacity() - n)) {
                 std::printf("ERR prompt + max_new exceeds the DFlash capacity (%lld); raise --dflash-window\n",
                             (long long) dflash.capacity());
                 continue;
@@ -13201,7 +13618,11 @@ int main(int argc, char** argv) {
                     err.clear();
                 }
             }
-            if (incoming && has_dflash) {
+            // L9 --dflash-remote-only: the ring lives on the helper - no local pools to validate
+            // against (kv_states() is empty; the capacity test at 0 would discard the whole
+            // conversation). Keep the conversation; the helper rebuilds its draft context per
+            // request through the context exchange.
+            if (incoming && has_dflash && !o.dflash_remote_only) {
                 const strata::core::OnDevice on_df(dflash.device());   // geometry checks read the pools' state
                 bool valid = incoming->dflash_kv.size() == dflash.kv_states().size();
                 for (size_t j = 0; valid && j < incoming->dflash_kv.size(); ++j)
@@ -13363,7 +13784,7 @@ int main(int argc, char** argv) {
             }
             if (incoming) {
                 const auto t0 = Clock::now();
-                if (has_dflash) {
+                if (has_dflash && !o.dflash_remote_only) {   // L9: the ring lives on the helper; no local pools to restore
                     const strata::core::OnDevice on_df(dflash.device());   // the pool rows are written on the drafter's card
                     for (size_t j = 0; j < incoming->dflash_kv.size(); ++j)
                         if (!strata::core::conversation_kv_restore(incoming->dflash_kv[j], dflash.kv_states()[j],
@@ -13789,11 +14210,38 @@ int main(int argc, char** argv) {
                         auto& tc = dflash.tap_collector();
                         const bool collected = tc.enabled();
                         if (collected && !df_collect_f32(q, T, e)) return false;
-                        if (!dflash.add_context_f32(collected ? tc.plane_f32() : ver.taps(),
-                                                    collected ? tc.plan().n_taps : ver.n_taps(),
-                                                    collected ? tc.stride_rows_f32() * g.n_embd : ver.tap_stride(),
-                                                    q, T, e))
-                            return false;
+                        if (draft_tier_p != nullptr && !df_draft_dead) {
+                            // M7 remote drafter: the window's taps ship as kDraftCtx frames (reset=1
+                            // on the request's first frame at pos 0).  A failure disables drafting
+                            // for the rest of this request - the prompt path NEVER fails for a
+                            // draft frame - and the local drafter is not fed behind the remote ring.
+                            const float* src = collected ? tc.plane_f32() : ver.taps();
+                            const int64_t n_planes = collected ? (int64_t) tc.plan().n_taps : (int64_t) ver.n_taps();
+                            const int64_t stride = collected ? tc.stride_rows_f32() * g.n_embd : ver.tap_stride();
+                            if (n_planes != df_wire_planes || stride < (int64_t) T * g.n_embd) {
+                                df_draft_dead = true;   // the window's taps are not the frames' geometry
+                                std::fprintf(stderr, "strata draft-helper: context at pos %lld names %lld "
+                                                     "planes (the artifact carries %lld); drafting off for the "
+                                                     "rest of this request\n", (long long) q, (long long) n_planes,
+                                             (long long) df_wire_planes);
+                            } else {
+                                g_df_wire.assign((size_t) T * (size_t) n_planes * (size_t) g.n_embd, 0.0f);
+                                df_wire_rows(g_df_wire.data(), src, n_planes, g.n_embd, stride, T);
+                                const int drc = draft_tier_p->draft_context(g_df_wire.data(), T, q, q == 0 ? 1 : 0);
+                                if (drc != strata::core::expert_helper::kOk) {
+                                    df_draft_dead = true;
+                                    std::fprintf(stderr, "strata draft-helper: context at pos %lld failed (%s); "
+                                                         "drafting off for the rest of this request\n",
+                                                 (long long) q, strata::core::expert_helper::status_name(drc));
+                                }
+                            }
+                        } else if (draft_tier_p == nullptr) {
+                            if (!dflash.add_context_f32(collected ? tc.plane_f32() : ver.taps(),
+                                                        collected ? tc.plan().n_taps : ver.n_taps(),
+                                                        collected ? tc.stride_rows_f32() * g.n_embd : ver.tap_stride(),
+                                                        q, T, e))
+                                return false;
+                        }
                     }
                     q += T;
                     pp_reached = q;   // #471
@@ -14739,6 +15187,10 @@ int main(int argc, char** argv) {
             }
             bool first_window = true;
             bool dflash_ready = false;
+            // A candidate-ids refusal (include/strata/core/dflash_refusal.hpp) disables the drafter
+            // for the REST of THIS request: request scope, re-declared per request, so the next
+            // request evaluates the drafter fresh.  No engine-wide drafter-off, no graph reset.
+            bool df_numeric_refusal = false;
             const bool df_auto = req_dflash && o.dflash_block == 0 && !req_dflash_block_set && req_spec_min_p <= 0.0;
             df_policy.reset();
             int df_pending_k = 0;
@@ -14780,6 +15232,13 @@ int main(int argc, char** argv) {
             const uint64_t file_bytes0 = src.file_read_bytes();
             const int64_t decode_look0 = drive.d.cache_hits + drive.d.cache_admitted + drive.d.cache_refused;
             const int64_t offload0 = drive.d.offload_entries;   // #588
+            // R2 (opt-in CUDA helper): the helper's cumulative counters at this request's start;
+            // the DONE line prints the deltas.
+            const uint64_t helper_req0 = helper_tier_p ? helper_tier_p->helper_requests() : 0;
+            const uint64_t helper_row0 = helper_tier_p ? helper_tier_p->helper_rows() : 0;
+            const uint64_t helper_byte0 = helper_tier_p ? helper_tier_p->helper_bytes() : 0;
+            const uint64_t helper_to0 = helper_tier_p ? helper_tier_p->helper_timeouts() : 0;
+            const uint64_t helper_fb0 = helper_tier_p ? helper_tier_p->helper_fallbacks() : 0;
             pcie_auto.mark(drive.d.ms_run, drive.d.multi_misses);   // the prompt's windows are not the decode's
             if (cancelled) finish = nf_hit ? "nonfinite" : "cancel";
             // ======== --pipeline-windows 2: the decode windows with the two cards overlapped ========
@@ -15773,9 +16232,13 @@ int main(int argc, char** argv) {
                     if (adapt_thr.joinable()) adapt_thr.join();
                     // The next proposal waits on this same stream. Keep an explicit wait when
                     // there is no proposal or the ungated policy needs the completed context time.
-                    const bool sync_context = !req_dflash || df_auto || eos || produced_n >= max_new || !strata::spec::dflash_proposal_fits(
+                    // A latched round has NO following propose, so it must synchronize too: an
+                    // unsynchronized add_context_f32 requires an immediate propose()/idle() before
+                    // the caller reuses the taps (include/strata/core/dflash.hpp:183), and the next
+                    // verify window overwrites ver.taps(). Same rule as the CLI's !dflash_ready.
+                    const bool sync_context = df_numeric_refusal || !req_dflash || df_auto || eos || produced_n >= max_new || !strata::spec::dflash_proposal_fits(
                         p + a + 1, req_dflash_k, dflash.artifact().geom().is_dflash2(),
-                        o.max_context, dflash.capacity());
+                        o.max_context, df_eff_cap);
                     // L8 --layer-split: the serve request decode - under collection this window's
                     // taps arrive from every stage's verifier (df_collect_f32, docs/DFLASH2.md).
                     auto& df_tc = dflash.tap_collector();
@@ -15784,35 +16247,155 @@ int main(int argc, char** argv) {
                         std::fprintf(stderr, "strata generate: %s\n", err.c_str());
                         return 1;
                     }
-                    drafted = dflash.add_context_f32(df_collected ? df_tc.plane_f32() : ver.taps(),
-                                                     df_collected ? df_tc.plan().n_taps : ver.n_taps(),
-                                                     df_collected ? df_tc.stride_rows_f32() * g.n_embd
-                                                                  : ver.tap_stride(),
-                                                     p, a + 1, err, sync_context);
+                    // M7 (the drafter lane, plan sect12/12a): the remote round ships the committed
+                    // window rows AND the anchor in ONE kDraftReq - the helper runs add_context_f32
+                    // and propose back-to-back, which is the pairing contract the comment above
+                    // states (an unsynchronized append requires an immediate propose): satisfied BY
+                    // CONSTRUCTION, no synchronize decision on this path.  It runs only where the
+                    // local path would feed the rows AND propose; a window that only feeds context
+                    // (the request ending, a block that will not fit) needs no round, and the local
+                    // drafter is never fed on the remote path (the ring lives on the helper).
+                    const bool df_remote = draft_tier_p != nullptr && !df_draft_dead;
+                    const bool df_would_round = !df_numeric_refusal && req_dflash && !eos &&
+                        produced_n < max_new && strata::spec::dflash_proposal_fits(
+                            p + a + 1, req_dflash_k, dflash.artifact().geom().is_dflash2(),
+                            o.max_context, df_eff_cap);
+                    bool df_remote_round = df_remote && df_would_round;
+                    int32_t df_remote_nout = 0;
+                    if (df_remote_round) {
+                        const float* src = df_collected ? df_tc.plane_f32() : ver.taps();
+                        const int64_t n_planes = df_collected ? (int64_t) df_tc.plan().n_taps : (int64_t) ver.n_taps();
+                        const int64_t stride = df_collected ? df_tc.stride_rows_f32() * g.n_embd : ver.tap_stride();
+                        if (n_planes != df_wire_planes || stride < (int64_t) (a + 1) * g.n_embd) {
+                            df_draft_dead = true;   // the window's taps are not the frames' geometry
+                            df_remote_round = false;
+                            std::fprintf(stderr, "strata draft-helper: round at pos %lld names %lld planes "
+                                                 "(the artifact carries %lld); drafting off for the rest of "
+                                                 "this request\n", (long long) p, (long long) n_planes,
+                                         (long long) df_wire_planes);
+                        } else {
+                            g_df_wire.assign((size_t) (a + 1) * (size_t) n_planes * (size_t) g.n_embd, 0.0f);
+                            df_wire_rows(g_df_wire.data(), src, n_planes, g.n_embd, stride, a + 1);
+                            int32_t n_out = 0;
+                            const int drc = draft_tier_p->draft_round(g_df_wire.data(), a + 1, p,
+                                                                      outv[(size_t) a], drafts.data(),
+                                                                      req_spec_min_p > 0 ? dprob.data() : nullptr,
+                                                                      (int32_t) drafts.size(), n_out);
+                            if (drc == strata::core::expert_helper::kOk) {
+                                df_remote_nout = n_out;
+                                drafted = true;   // the block is in drafts[]; the window's rows stand
+                            } else {
+                                // Plan sect12's failure rule: drafting OFF for the rest of this
+                                // request, the window's verified rows stand, the request never
+                                // fails.  The same latch the numeric refusal uses: the gate stays
+                                // false and T = 1 target-only windows take over.
+                                df_draft_dead = true;
+                                df_remote_round = false;
+                                df_numeric_refusal = true;
+                                df_pending_k = 0;
+                                df_pending_ms = 0;
+                                drafted = true;
+                                err.clear();
+                                std::fprintf(stderr, "strata draft-helper: the draft round at pos %lld failed "
+                                                     "(%s); remote drafting is off for the rest of this "
+                                                     "request and the model keeps generating from the "
+                                                     "verified tokens (the next request tries the drafter "
+                                                     "again)\n", (long long) (p + a + 1),
+                                             strata::core::expert_helper::status_name(drc));
+                            }
+                        }
+                    } else if (df_remote) {
+                        drafted = true;   // no round this window (target-only); the local drafter stays unfed
+                    } else if (draft_tier_p == nullptr) {
+                        drafted = dflash.add_context_f32(df_collected ? df_tc.plane_f32() : ver.taps(),
+                                                         df_collected ? df_tc.plan().n_taps : ver.n_taps(),
+                                                         df_collected ? df_tc.stride_rows_f32() * g.n_embd
+                                                                     : ver.tap_stride(),
+                                                         p, a + 1, err, sync_context);
+                    } else {
+                        // M7 (plan sect12/12a, BUG C): the remote lane engaged and drafting is off
+                        // (the latch).  On the remote lane the local drafter's ring is empty by
+                        // design - feeding it from the verify window would hit the "verify append
+                        // leaves a gap past the confirmed draft context" invariant and exit the
+                        // engine.  Run pure no-draft: the window's verified rows stand, no local
+                        // append, no propose (df_pending_k is 0 on this latch).  The byte-identical
+                        // local path (no remote lane) keeps the add_context_f32 branch above.
+                        drafted = true;
+                    }
                     const auto ctx_done = Clock::now();
                     if (df_auto && rounds > 1 && !from_sfx) {
                         const double ms = std::chrono::duration<double, std::milli>(ctx_done - tw0).count();
                         df_policy.observe(T - 1, a + 1, ms + df_pending_ms);
                     }
                     ++df_windows[T - 1];
-                    df_pending_k = df_auto ? df_policy.choose() : req_dflash_k;
+                    df_pending_k = df_numeric_refusal ? 0 : (df_auto ? df_policy.choose() : req_dflash_k);
+                    // The remote block's width is what the HELPER returned (its own max_block),
+                    // never more than the policy's choice: the next window is 1 + df_pending_k rows.
+                    if (df_remote_round) df_pending_k = std::min(df_pending_k, df_remote_nout);
                     // Finish near the context limit with target-only windows rather than
                     // proposing a block which the next verification window cannot fit.
-                    dflash_ready = req_dflash && drafted && !eos && produced_n < max_new && df_pending_k > 0 &&
+                    // A latched request (numeric refusal) never re-arms: the gate stays false for
+                    // the rest of the request, so T = 1 target-only windows take over.
+                    dflash_ready = !df_numeric_refusal && !df_draft_dead && req_dflash && drafted && !eos && produced_n < max_new && df_pending_k > 0 &&
                                    strata::spec::dflash_proposal_fits(p + a + 1, df_pending_k,
-                                       dflash.artifact().geom().is_dflash2(), o.max_context, dflash.capacity());
+                                       dflash.artifact().geom().is_dflash2(), o.max_context, df_eff_cap);
                     const bool proposed = dflash_ready;
-                    if (dflash_ready)
+                    // The remote round already carries the block in drafts[]: the local propose
+                    // runs on the local path only (the byte-identical default).
+                    if (dflash_ready && !df_remote_round) {
                         drafted = dflash.propose(outv[(size_t) a], p + a + 1, df_pending_k, drafts.data(), err,
                                                  req_spec_min_p > 0 ? dprob.data() : nullptr);
-                    if (dflash_ready && drafted && req_spec_min_p > 0) {
+                        // The recoverable class, decided by the SHARED classification function
+                        // (include/strata/core/dflash_refusal.hpp): the candidate ids left the
+                        // vocabulary.  The window's verified rows stand, so this request continues
+                        // target-only and the ERR fatal below is NOT reached.  Every other failure
+                        // leaves drafted false and stays fatal, exactly as before (tap collector,
+                        // append, adapt, target, MTP).  The latch makes this branch run at most
+                        // once per request, so the notice below is once per refused request.
+                        // M7 (sect12a, BUG D): on the REMOTE lane the local drafter is unfed by
+                        // design, so ANY local propose failure is a lane fault, never a request
+                        // fault - the same rule the draft round's failure uses (the never-exit
+                        // policy of sect12: the window's verified rows stand, drafting goes off,
+                        // the request finishes).  The byte-identical local path (no remote lane,
+                        // draft_tier_p == nullptr) keeps the fatal classification untouched.
+                        if (!drafted && (draft_tier_p != nullptr ||
+                                          !strata::core::dflash_refusal_is_fatal(dflash.last_refusal()))) {
+                            df_numeric_refusal = true;
+                            df_pending_k = 0;
+                            dflash_ready = false;
+                            drafted = true;
+                            df_pending_ms = 0;
+                            if (draft_tier_p != nullptr) {
+                                // The remote lane: name the drafter's own refusal (the ring's
+                                // invariant, a geometry bound, ...).  The engine never exits on it.
+                                std::fprintf(stderr, "strata draft-helper: the local drafter refused the "
+                                                     "proposal at position %lld (%s); remote drafting is "
+                                                     "off for the rest of this request and the model keeps "
+                                                     "generating from the verified tokens (the next request "
+                                                     "tries the drafter again)\n", (long long) (p + a + 1),
+                                             err.empty() ? "no reason given" : err.c_str());
+                                err.clear();
+                            } else {
+                                err.clear();   // a consumed numeric refusal leaves no stale message behind
+                                std::fprintf(stderr, "strata generate: at position %lld the drafter returned "
+                                                     "candidate tokens outside the vocabulary; drafting is off "
+                                                     "for the rest of this request and the model keeps "
+                                                     "generating from the verified tokens (the next request "
+                                                     "tries the drafter again)\n", (long long) (p + a + 1));
+                            }
+                        }
+                    }
+                    // A refused proposal never filled dprob (the probabilities are copied after the
+                    // vocabulary check), so truncation must not read the PREVIOUS round's numbers
+                    // and re-arm df_pending_k.
+                    if (dflash_ready && drafted && req_spec_min_p > 0 && !df_numeric_refusal) {
                         const float min_p = (float) req_spec_min_p;
                         int prefix = 0;
                         while (prefix < df_pending_k && dprob[(size_t) prefix] >= min_p) ++prefix;
                         df_pending_k = prefix;
                         dflash_ready = prefix > 0;
                     }
-                    df_pending_ms = proposed ?
+                    df_pending_ms = (proposed && !df_numeric_refusal) ?
                         std::chrono::duration<double, std::milli>(Clock::now() - ctx_done).count() : 0;
                 }
                 {
@@ -16012,6 +16595,20 @@ int main(int argc, char** argv) {
             const int64_t req_hits = drive.d.cache_hits - decode_hits0;
             const int64_t req_look = (drive.d.cache_hits + drive.d.cache_admitted + drive.d.cache_refused) - decode_look0;
             const int64_t req_offload = drive.d.offload_entries - offload0;
+            // R2 (opt-in CUDA helper): the helper's evidence for THIS request, key=value at the
+            // line's tail: reqs/rows/bytes the helper answered, the begin/finish timeouts it hit,
+            // and the CPU fallbacks the dispatch ran because a helper reply failed.  Zero and
+            // absent-meaningful when no helper is registered (the field always prints: a missing
+            // field would be indistinguishable from a helper that answered nothing).
+            char helper_txt[192] = "";
+            if (helper_tier_p != nullptr)
+                std::snprintf(helper_txt, sizeof(helper_txt),
+                              " helper=reqs=%lld rows=%lld bytes=%lld timeouts=%lld fallbacks=%lld",
+                              (long long) (helper_tier_p->helper_requests() - helper_req0),
+                              (long long) (helper_tier_p->helper_rows() - helper_row0),
+                              (long long) (helper_tier_p->helper_bytes() - helper_byte0),
+                              (long long) (helper_tier_p->helper_timeouts() - helper_to0),
+                              (long long) (helper_tier_p->helper_fallbacks() - helper_fb0));
             // #471: the prompt tokens this request read - all the fresh ones, or as far as the prompt pass got when a
             // cancel stopped it part-way (a cancelled request used to be logged and counted as having read them all)
             const int64_t fresh = n - resume;
@@ -16032,14 +16629,14 @@ int main(int argc, char** argv) {
                               (long long) chain_drafts, (long long) sfx_ok, (long long) sfx_drafts, (long long) dec_windows);
             if (yielded_at >= 0) std::printf("YIELDED %d %lld\n", yielded_slot, (long long) yielded_at);
             std::printf("DONE %lld %lld %.1f %.1f %s %lld %lld %lld %lld %lld %lld %lld %.1f %lld %lld%s chunk=%lld "
-                        "experts_streamed=%lld\n",
+                        "experts_streamed=%lld%s\n",
                         (long long) produced_n,
                         (long long) n, prompt_ms, decode_ms, finish, (long long) draft_accepted, (long long) draft_offered,
                         (long long) resume, (long long) req_hits, (long long) req_look,
                         (long long) (src.ram_reads() - ram0), (long long) (src.file_reads() - files0),
                         (double) (src.file_read_bytes() - file_bytes0) / 1e6, (long long) read_n,
                         (long long) req_offload, chain_txt, (long long) req_chunk,
-                        (long long) (sp.chain_experts_streamed() - streamed0));
+                        (long long) (sp.chain_experts_streamed() - streamed0), helper_txt);
             std::fflush(stdout);
             if (admit_slot >= 0) {   // --batch: BADM <slot> <1 = continues in the batch windows | 0 = done>
                 bool cont = !cancelled && produced_n == 1 && admit_max_new > 1 && std::strcmp(finish, "length") == 0 &&
@@ -16148,11 +16745,11 @@ int main(int argc, char** argv) {
             else
                 std::snprintf(read_txt, sizeof(read_txt), "%lld", (long long) fresh);
             std::fprintf(stderr, "strata serve: prompt %lld tokens = %lld reused + %s read in %.0f ms (%.1f tok/s), "
-                                 "%lld generated in %.0f ms (%.1f tok/s), drafts accepted %lld of %lld, %zu checkpoints%s\n",
+                                 "%lld generated in %.0f ms (%.1f tok/s), drafts accepted %lld of %lld, %zu checkpoints%s%s\n",
                          (long long) n, (long long) resume, read_txt, prompt_ms,
                          prompt_ms > 0 ? 1000.0 * read_n / prompt_ms : 0.0, (long long) produced_n, decode_ms,
                          decode_ms > 0 ? 1000.0 * produced_n / decode_ms : 0.0, (long long) draft_accepted,
-                         (long long) draft_offered, checks.size(), cancelled ? " (cancelled)" : "");
+                         (long long) draft_offered, checks.size(), cancelled ? " (cancelled)" : "", helper_txt);
             if (serve_adapt_drain_ms >= 1.0)
                 std::fprintf(stderr, "strata serve: the request first waited %.0f ms for the adaptive tier's round in flight\n",
                              serve_adapt_drain_ms);
@@ -16449,6 +17046,9 @@ int main(int argc, char** argv) {
         if (borrow == nullptr)
             std::fprintf(stderr, "strata generate: prompt path allocates its own buffers (no cache slots to borrow)\n");
         if (!multi_gpu && !o.no_pool) prefill.set_cpu_pool(&pool);
+        if (const char* const hp_env = std::getenv("STRATA_PREFILL_HELPER");   // M2: the same opt-in on the CLI path
+            hp_env != nullptr && std::atoi(hp_env) == 1 && helper_tier.prompt_capable())
+            prefill.set_prompt_helper(&helper_tier, err);   // soft-declines inside: a notice, never a failed run
         std::function<bool(const uint16_t*, int, int64_t, int64_t, std::string&)> df_on_taps;
         if (use_dflash && std::getenv("STRATA_DF_NOPF") == nullptr) {
             // the prompt's context cells: the fusion runs per chunk over the BF16 taps
@@ -17207,6 +17807,10 @@ int main(int argc, char** argv) {
         const double pool_ms0 = drive.cpu_ms;
         const int64_t misses0 = drive.d.multi_misses, entries0 = drive.d.multi_entries;
         bool dflash_ready = false;   // ours: the CLI --dflash drafter's block is ready after its first draft
+        // A candidate-ids refusal (include/strata/core/dflash_refusal.hpp) disables the drafter for
+        // the REST of THIS request: request scope, re-declared per request.  No engine-wide
+        // drafter-off, no graph reset; T stays target-only while the latch holds (:17421's rule).
+        bool df_numeric_refusal = false;
         // STRATA_SPEC_WATCH=<seconds> (diagnostics, off by default): the serve watchdog for this loop.  A run whose verify
         // windows and prompt chunks stop beating for that long prints the stage it is in and the stall report, then ends.
         if (const char* sw = std::getenv("STRATA_SPEC_WATCH"); sw != nullptr && std::atoi(sw) > 0) {
@@ -17470,8 +18074,8 @@ int main(int argc, char** argv) {
                 break;
             }
             // Not const (upstream v0.2.3 wrote `const bool drafted`): our --dflash CLI path assigns to it
-            // below at the drafter's proposal (`drafted = dflash.propose(...)` inside the && chain), exactly as
-            // pre-integ-023 (c938100b:16924 + :16963) had it.  Upstream's own use only reads it.
+            // below at the drafter's proposal (`drafted = dflash.propose(...)` behind the append/proposal
+            // guard), exactly as pre-integ-023 (c938100b:16924 + :16963) had it.  Upstream's own use only reads it.
             bool drafted = !use_mtp || (int64_t) produced.size() >= max_new || draft_next(T, a);
             if (!use_dflash) {   // ours: the CLI --dflash path joins the adaptation thread and checks it in its own block below
                 if (adapt_thr.joinable()) adapt_thr.join();
@@ -17490,7 +18094,7 @@ int main(int argc, char** argv) {
                 // cells are simply overwritten by the next block's queries), then the next block
                 if ((int64_t) produced.size() < max_new) {
                     const Clock::time_point td = Clock::now();
-                    dflash_ready = strata::spec::dflash_proposal_fits(p, dflash_k,
+                    dflash_ready = !df_numeric_refusal && strata::spec::dflash_proposal_fits(p, dflash_k,
                         dflash.artifact().geom().is_dflash2(), o.max_context, dflash.capacity());
                     // L8 --layer-split: the CLI greedy decode's taps come from the single
                     // full-layer producer plane (ver on GPU0); its compact FP32 slice moves
@@ -17506,12 +18110,38 @@ int main(int argc, char** argv) {
                             return 1;
                         }
                     }
-                    const bool ok = dflash.add_context_f32(df_collected ? tc.plane_f32() : ver.taps(),
+                    const bool ctx_ok = dflash.add_context_f32(df_collected ? tc.plane_f32() : ver.taps(),
                                                            df_collected ? tc.plan().n_taps : ver.n_taps(),
                                                            df_collected ? tc.stride_rows_f32() * g.n_embd : ver.tap_stride(),
-                                                           p - (a + 1), a + 1, err, !dflash_ready) &&
-                                    (!dflash_ready || (drafted = dflash.propose(x, p, dflash_k, drafts.data(), err,
+                                                           p - (a + 1), a + 1, err, !dflash_ready);
+                    // The ORIGINAL short-circuit, spelled out: propose() runs ONLY when the append
+                    // succeeded and a proposal is due.  An append failure keeps ctx_ok false, never
+                    // reaches propose(), keeps the debug print and the accounting below intact, and
+                    // stays fatal - a stale last_refusal() can never mask it (the recovery below
+                    // requires ctx_ok AND a proposal that actually ran).
+                    bool drafted_ok = !dflash_ready || (ctx_ok && (drafted = dflash.propose(x, p, dflash_k, drafts.data(), err,
                                                                 o.spec_min_p > 0 ? dprob.data() : nullptr)));
+                    // The recoverable class, decided by the SHARED classification function
+                    // (include/strata/core/dflash_refusal.hpp): the candidate ids left the vocabulary.
+                    // The window's verified rows stand, so the rest of this request decodes target-only
+                    // (dflash_ready stays false, T = 1) and the failure report below is NOT reached.
+                    // Every other propose failure keeps ok false and is reported exactly as before.
+                    // The latch makes this branch run at most once per request: one notice per refused
+                    // request, with the proposal's position from the loop's own local.
+                    if (ctx_ok && dflash_ready && !drafted &&
+                        !strata::core::dflash_refusal_is_fatal(dflash.last_refusal())) {
+                        df_numeric_refusal = true;
+                        dflash_ready = false;
+                        drafted = true;
+                        drafted_ok = true;
+                        err.clear();   // a consumed numeric refusal leaves no stale message behind
+                        std::fprintf(stderr, "strata generate: at position %lld the drafter returned "
+                                             "candidate tokens outside the vocabulary; drafting is off "
+                                             "for the rest of this request and the model keeps "
+                                             "generating from the verified tokens (the next request "
+                                             "tries the drafter again)\n", (long long) p);
+                    }
+                    const bool ok = ctx_ok && drafted_ok;
                     if (ok && dflash_ready && std::getenv("STRATA_DF_DBG") != nullptr) {
                         std::fprintf(stderr, "df dbg: anchor=%d at %lld proposals:", x, (long long) p);
                         for (int i = 0; i < dflash_k; ++i) std::fprintf(stderr, " %d", drafts[(size_t) i]);

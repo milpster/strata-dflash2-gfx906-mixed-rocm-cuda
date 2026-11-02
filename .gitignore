@@ -85,3 +85,15 @@ node_modules/
 # screenshots and checkpoints from the Mac rebuild live outside git (StrataSplit\evidence-archive)
 /apps/host/docs/evidence/
 /apps/host/docs/checkpoints/
+
+# BEGIN oh-my-opencode-slim worktrees
+worktrees/
+worktrees.json
+# END oh-my-opencode-slim worktrees
+.slim/deepwork/
+
+# Local agent caches and standalone compiler scratch objects, not project source.
+/.omem/
+.tldr/
+.tldrignore
+/*.o

@@ -49,6 +49,7 @@
 #include "strata/prefill/moe_fused_iq.hpp"
 #include "strata/prefill/moe_mmq.hpp"
 #include "strata/core/peer_experts.hpp"
+#include "strata/core/remote_experts.hpp"   // M2: the prompt tier's proxy handle (set_prompt_helper)
 #include "strata/prefill/kernels.hpp"
 
 #include <cuda_runtime.h>
@@ -1020,6 +1021,44 @@ struct Prefill::Impl {
     // layer split: the next stage's GPU as a stream-only peer (set_stage_helper); its buffers are that stage's own
     // prompt buffers, bound per prompt, and it takes the place of `pp` for a run it helps
     std::unique_ptr<PeerPrefill> help_pp;
+    // M2 (STRATA_PREFILL_HELPER): the out-of-process helper's prompt tier (set_prompt_helper).  The handle is
+    // borrowed (generate owns it); one pinned block carved into the reply's PAIR-indexed target (hp_rows), the
+    // block-ordered H2D source for off[]'s helper block (hp_stage) and row_sd ones (hp_ones - the helper's native
+    // rows carry s_down already, like the CPU pool's); and the CPU fallback's activations and jobs.
+    core::RemoteExperts* hp = nullptr;
+    float* hp_rows = nullptr;
+    float* hp_stage = nullptr;
+    float* hp_ones = nullptr;
+    size_t hp_rows_n = 0;
+    cudaStream_t hp_cs = nullptr;   // M4b: the send's OWN copy tier - m.cs is never drained for it
+    cudaEvent_t hp_ev = nullptr;    // M4b: gates hp_cs on the m.cs position where the input is final
+    std::vector<uint8_t> hp_nact;
+    std::vector<kernels::cpu::ActQ> hp_actq;
+    std::vector<kernels::cpu::ExpertJobMulti> hp_jobs;
+    // M6 (STRATA_PREFILL_HELPER_PIPE=1, plan §11): the async claim lane. A claim for layer N+1
+    // cannot be SELECTED before combine N, so exactly one claim is ever in flight - by the
+    // dependency law, not by policy. The lane worker owns every blocking step of the claim
+    // cycle (the hp_cs sync, begin_prompt, finish_prompt, the gather, the block H2D + E2) so
+    // the walk thread never sleeps on the copy tier or the socket. Protocol untouched.
+    struct HpLane {
+        bool live = false;      // a claim is published (selection done, D2H enqueued by the walk)
+        bool done = false;      // the worker finished; sent/ok_rows below are final
+        bool sent = false;      // begin_prompt succeeded
+        bool ok_rows = false;   // reply whole: gathered, H2D enqueued on hp_cs, E2 recorded
+        int32_t layer = 0;
+        int64_t rows = 0;
+        int64_t r0h = 0;
+        int64_t n_embd = 0;
+        core::ExpertHelperPromptPlan plan;
+        std::vector<int32_t> pos;      // pair index -> the block's GLOBAL row (m.off based)
+        std::vector<int32_t> claims;   // the reply validator's identity list
+    };
+    HpLane hp_lane;
+    std::thread hp_lane_worker;
+    std::mutex hp_lane_mtx;
+    std::condition_variable hp_lane_cv_work, hp_lane_cv_done;
+    bool hp_lane_stop = false;
+    cudaEvent_t hp_ev2 = nullptr;      // recorded on hp_cs after the worker's block H2D
 };
 
 namespace {
@@ -1087,6 +1126,14 @@ void Prefill::reset() {
 void Prefill::release() {
     if (!impl_) return;
     impl_->hand_worker.reset();   // idle here (run drains the chain before it returns); joins its thread
+    {   // M6: the claim lane - idle here (every combine consumed its outcome, or the walk errored
+        // past it); the join also waits a worker still finishing a live claim's tail
+        std::lock_guard<std::mutex> lk(impl_->hp_lane_mtx);
+        impl_->hp_lane_stop = true;
+    }
+    impl_->hp_lane_cv_work.notify_all();
+    if (impl_->hp_lane_worker.joinable()) impl_->hp_lane_worker.join();
+    if (impl_->hp_cs) cudaStreamSynchronize(impl_->hp_cs);
     if (impl_->cs) cudaStreamSynchronize(impl_->cs);
     if (impl_->copy) cudaStreamSynchronize(impl_->copy);
     if (impl_->kv_copy) cudaStreamSynchronize(impl_->kv_copy);
@@ -2058,6 +2105,34 @@ void Prefill::set_tap_layers(const int* layers, int n, bool hc_mean) {
     g_n_taps = m.n_taps_;   // the static counters (bytes_needed_impl) read this
 }
 
+// ================= M2 (STRATA_PREFILL_HELPER, docs/work/MIXED_BACKEND_RPC_PLAN.md): the out-of-process
+// helper as a PROMPT claimant =================
+bool Prefill::set_prompt_helper(core::RemoteExperts* helper, std::string& err) {
+    (void) err;   // every decline below is a NOTICE, never a failed start: the default path must not change
+    Impl& m = *impl_;
+    m.hp = nullptr;
+    if (helper == nullptr) return true;   // the plain clear: nothing claimed, nothing changed
+    if (!helper->prompt_usable() || !helper->prompt_capable()) {
+        // A proxy whose helper never advertised the prompt tier (an R2 binary), or one that is not
+        // usable at all: the prompt path stays exactly as it was.  `prompt_usable()` is the prompt
+        // tier's OWN gate - with the second channel (the engine's --expert-helper-socket2) it is
+        // channel B's state, so a window-channel failure never stops the prompt tier and a
+        // prompt-channel failure never stops the window tier.
+        std::fprintf(stderr, "strata: prefill helper: the helper cannot serve prompt rows; prefill stays local\n");
+        return true;
+    }
+    const int rc = helper->prompt_buffer_ensure((int64_t) N);
+    if (rc != core::expert_helper::kOk) {
+        // the client's own documented policy: a tier that cannot map its buffer is disabled with a
+        // notice and full local compute
+        std::fprintf(stderr, "strata: prefill helper: the tier's pinned buffer could not be mapped (%s); prefill stays local\n",
+                     core::expert_helper::status_name(rc));
+        return true;
+    }
+    m.hp = helper;
+    return true;
+}
+
 bool Prefill::set_peer(core::PeerExperts* peer, int64_t cap_rows, std::string& err) {
     Impl& m = *impl_;
     if (peer == nullptr || !peer->valid()) { m.pp.reset(); return true; }
@@ -2623,6 +2698,18 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
     core::SessionState& ss = *m.ss;
     const auto t_start = Clock::now();
     const int64_t LB = stage_lb_, LE = stage_le_;
+    // M6 (plan §11): PIPE mode's walk-entry settle. The M5 det evidence: the helper's
+    // connect/hello lands asynchronously, so which early chunks claim depends on hello timing
+    // (two cold runs, same request: 386 vs 348 claim events, layers 0-2 claimed in one and not
+    // the other, zero fallbacks). PIPE resolves attach ONCE here - a bounded 250 ms settle,
+    // then the walk proceeds; a mid-walk death still flips prompt_usable() off at the gate.
+    // Legacy ON keeps today's behavior byte for byte.
+    const bool hp_pipe = [] { const char* v = std::getenv("STRATA_PREFILL_HELPER_PIPE");
+                              return v ? std::atoi(v) != 0 : false; }();
+    if (hp_pipe && m.hp != nullptr && !m.hp->prompt_usable()) {
+        for (int i = 0; i < 25 && !m.hp->prompt_usable(); ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
     // The direct successor's future lives on the Prefill object. Intermediate
     // stages therefore do not drain the complete remaining GPU chain here.
     double host_sync_ms = 0, host_chunk_ms = 0, host_setup_ms = 0;   // STRATA_PREFILL_TIMING: the host's share
@@ -2759,6 +2846,12 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         ++stats_.chunks;
         pt.mark(kPfStart, cs);
         const auto tsetup = Clock::now();
+        // L7: per-chunk host-span profile (same gate as the run summary): the deltas of the run
+        // accumulators name which phase ate a slow chunk - the l7w1 evidence placed the 3-5x
+        // host CPU burn inside the first 8192-chunk, but not in which loop.
+        const double pf_eh0 = stats_.ms_experts_host, pf_ple0 = stats_.ms_ple;
+        const double pf_su0 = host_setup_ms, pf_sy0 = host_sync_ms, pf_ck0 = host_chunk_ms;
+        const auto pf_w0 = Clock::now();
         // ---- embeddings, broadcast to the four streams - or, in a later stage of a layer split, the rows the
         // previous stage handed on
         if (hand_in_ != nullptr && hand_ev_ != nullptr) {
@@ -3700,6 +3793,16 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     double cpu_ms = 0;                    // the thread's time (the measured share)
                     std::future<bool> cpu_fut;
                     int64_t rows_cpu = 0, n_cpu = 0, n_stream = 0;
+                    // M2 (STRATA_PREFILL_HELPER): this layer's helper claim, declared at the CPU share's own
+                    // level so the combine tail (a brace level up from the walk) reads it too
+                    std::vector<char> on_helper;
+                    core::ExpertHelperPromptPlan hp_plan;
+                    std::vector<int32_t> hp_claims, hp_pos;   // pair index -> the helper block's row
+                    int64_t rows_helper = 0;
+                    bool hp_sent = false;
+                     // L3 (STRATA_RPC_PROFILE=1): per-claim send phases, filled at the send site and read at
+                     // the combine's reply (same walk scope); zero unless the env is set.
+                     int64_t hp_d2h_us = 0, hp_begin_us = 0;
                     bool cpu_arm = true;                  // auto: this layer may share (false: the arm without)
                     int cpu_set = -1;                     // auto: the wall events' set, -1 when not measured
                     bool cpu_cold = false;                // auto: one-time costs in the window (no reading)
@@ -3895,12 +3998,65 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             if (e < 0 || e >= m.g->n_expert) { err = "prefill: routed id out of range"; return false; }
                             ++m.cnt[(size_t) e];
                         }
+                        // ================= M2 (STRATA_PREFILL_HELPER): the helper's prompt claim - the FOURTH claimant =================
+                        // Whole experts the out-of-process helper HOLDS (the M1 mirror), the primary does not hold
+                        // resident, routed this window, with stable blobs (the same-layer fallback's own precondition)
+                        // and inside the protocol caps - P1's tested rule.  APR-folded layers and non-native packs
+                        // never claim: serve_prompt refuses exactly those, and unrotated `mixed` is what the helper
+                        // must see.  The claim runs BEFORE the CPU share, so the helper takes precedence over host
+                        // streaming - that is the capacity point of the tier.
+                        on_helper.clear();
+                        rows_helper = 0;
+                        hp_plan.clear();
+                        hp_sent = false;
+                        const bool hp_l = m.hp != nullptr && m.hp->prompt_usable() && m.host_res != nullptr &&
+                                          cpu_pool_ != nullptr && lay.native &&
+                                          !lay.fmt[(size_t) l].had_gu && !lay.fmt[(size_t) l].had_d;
+                        if (hp_l) {
+                            std::vector<int32_t> toks((size_t) (T * K));   // per-expert token lists, EXPERT order
+                            {
+                                std::vector<int32_t> hp_cur((size_t) m.g->n_expert);
+                                int64_t hp_acc = 0;
+                                for (int32_t e = 0; e < m.g->n_expert; ++e) { hp_cur[(size_t) e] = (int32_t) hp_acc; hp_acc += m.cnt[(size_t) e]; }
+                                for (int64_t i = 0; i < T * K; ++i) toks[(size_t) hp_cur[(size_t) ids_h[(size_t) i]]++] = (int32_t) (i / K);
+                            }
+                            std::vector<uint8_t> hp_holds((size_t) m.g->n_expert), hp_stable((size_t) m.g->n_expert);
+                            for (int32_t e = 0; e < m.g->n_expert; ++e) {
+                                hp_holds[(size_t) e] = m.hp->holds(l, e) ? 1 : 0;
+                                hp_stable[(size_t) e] = m.src->blob_stable(l, e) != nullptr ? 1 : 0;
+                            }
+                            // M4c (a): the size-adaptive claim. The M4b re-measure found the crossover -
+                            // deep claims WON at small chunks (+19.8% at 222 tok) and LOST above (-22.7% at
+                            // 2443, -30.7% at 10443) because the send-path staging (q8 image, per-row D2H,
+                            // reply gather) scales with claim depth. Above the crossover the claim falls
+                            // back to the run-1 shallow caps (256/256/64) so big prompts keep run-1
+                            // behavior byte for byte; the threshold is env-overridable for tuning.
+                            static const int64_t hp_deep_tok = [] { const char* v = std::getenv("STRATA_PREFILL_HELPER_DEEP_TOK");
+                                                                    return v == nullptr ? (int64_t) 2048 : std::atoll(v); }();
+                            const bool hp_deep = T <= hp_deep_tok;
+                            const int64_t hp_cap_e = hp_deep ? core::expert_helper::kMaxRowsPerExpert : 64;
+                            const int64_t hp_cap_l = hp_deep ? core::expert_helper::kMaxRowsPerLayer : 256;
+                            const int64_t hp_cap_s = hp_deep ? core::expert_helper::kMaxSelTok : 256;
+                            const int hp_rc = core::select_prompt_rows(m.cnt.data(), toks.data(), m.host_res, l,
+                                                                       hp_holds.data(), hp_stable.data(), m.g->n_expert, K,
+                                                                       hp_cap_e,
+                                                                       hp_cap_l,
+                                                                       hp_cap_s, hp_plan);
+                            if (hp_rc == core::expert_helper::kOk && hp_plan.rows() > 0) {
+                                on_helper.assign((size_t) m.g->n_expert, 0);
+                                rows_helper = hp_plan.rows();
+                                for (int64_t p = 0; p < rows_helper; ++p) on_helper[(size_t) hp_plan.pair_expert[(size_t) p]] = 1;
+                            } else {
+                                hp_plan.clear();   // a refusal means "no claim": the layer stays with the other three
+                            }
+                        }
                         if (cpu_maybe) {
                             std::vector<std::pair<int32_t, int32_t>> cand;   // (tokens, expert)
                             int64_t nstream = 0;
                             for (int32_t e = 0; e < m.g->n_expert; ++e) {
                                 const int32_t c = m.cnt[(size_t) e];
-                                if (c == 0 || (m.host_res && m.cache && m.host_res[(size_t) l * m.g->n_expert + e] >= 0))
+                                if (c == 0 || (!on_helper.empty() && on_helper[(size_t) e]) ||
+                                    (m.host_res && m.cache && m.host_res[(size_t) l * m.g->n_expert + e] >= 0))
                                     continue;
                                 ++nstream;
                                 // a blob the CPU reads from RAM: page-locked, or any other that is not assembled into a
@@ -3937,6 +4093,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             on_peer.assign((size_t) m.g->n_expert, 0);
                             for (int32_t e = 0; e < m.g->n_expert; ++e) {
                                 const int32_t c = m.cnt[(size_t) e];
+                                if (!on_helper.empty() && on_helper[(size_t) e]) continue;   // M2: the helper claimed it
                                 if (c > 0 && !m.pp->ps_flag.empty() && m.pp->ps_flag[(size_t) l * m.g->n_expert + e]) {   // peer-streamed
                                     on_peer[(size_t) e] = 2;
                                     rows_peer += c;
@@ -3951,10 +4108,12 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             }
                             rows_local = T * K - rows_peer;
                         }
+                        rows_local -= rows_helper;   // M2: the helper's block leaves the local one
                         {
                             int32_t r = 0;
                             for (int32_t e = 0; e < m.g->n_expert; ++e)
-                                if ((on_peer.empty() || !on_peer[(size_t) e]) && (on_cpu.empty() || !on_cpu[(size_t) e])) {
+                                if ((on_peer.empty() || !on_peer[(size_t) e]) && (on_cpu.empty() || !on_cpu[(size_t) e]) &&
+                                    (on_helper.empty() || !on_helper[(size_t) e])) {
                                     m.off[(size_t) e] = r;
                                     r += m.cnt[(size_t) e];
                                 }
@@ -3962,6 +4121,8 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             for (int kind = 1; kind <= 2 && !on_peer.empty(); ++kind)
                                 for (int32_t e = 0; e < m.g->n_expert; ++e)
                                     if (on_peer[(size_t) e] == kind) { m.off[(size_t) e] = r; r += m.cnt[(size_t) e]; }
+                            for (int32_t e = 0; e < m.g->n_expert && !on_helper.empty(); ++e)   // M2: the helper's block
+                                if (on_helper[(size_t) e]) { m.off[(size_t) e] = r; r += m.cnt[(size_t) e]; }
                             for (int32_t e = 0; e < m.g->n_expert && !on_cpu.empty(); ++e)   // the CPU's block, last
                                 if (on_cpu[(size_t) e]) { m.off[(size_t) e] = r; r += m.cnt[(size_t) e]; }
                             m.off[(size_t) m.g->n_expert] = r;
@@ -3978,7 +4139,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         std::vector<int32_t> order, order_peer;
                         for (int32_t e = 0; e < m.g->n_expert; ++e)
                             if (m.cnt[(size_t) e] > 0 && (on_peer.empty() || on_peer[(size_t) e] != 2) &&
-                                (on_cpu.empty() || !on_cpu[(size_t) e]))
+                                (on_cpu.empty() || !on_cpu[(size_t) e]) && (on_helper.empty() || !on_helper[(size_t) e]))
                                 (!on_peer.empty() && on_peer[(size_t) e] ? order_peer : order).push_back(e);
                         for (int32_t e = 0; e < m.g->n_expert && !on_peer.empty(); ++e)   // the peer-streamed ones last:
                             if (on_peer[(size_t) e] == 2) order_peer.push_back(e);        // their copies get the most time
@@ -3992,7 +4153,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         const bool sort_all = detail::mmq_resident_sort_requested();
                         const bool sort_full = !sort_all && use_mmq && mmq_plan().group_sort[(size_t) l] &&
                                                order.size() >= (size_t) MMQ_GROUP;
-                        if (detail::mmq_resident_sort_eligible((sort_all || sort_full) && on_peer.empty(), use_mmq, lay.native,
+                        if (detail::mmq_resident_sort_eligible((sort_all || sort_full) && on_peer.empty() && on_helper.empty(), use_mmq, lay.native,
                                 m.cache != nullptr, m.host_res ? m.host_res + (size_t) l * m.g->n_expert : nullptr,
                                 m.g->n_expert, stream_all, !stream_all || seq_start[(size_t) l] == seq_start[(size_t) l + 1]))
                             detail::mmq_resident_sort_rows(ids_h, T * K, (int32_t) K, m.cnt, m.off, order, slot_h, src_h,
@@ -4005,6 +4166,147 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                 m.up_ring.h2d(m.src_dev, m.src_host.data(), (size_t) T * K * 4, m.cs) != cudaSuccess) {
                                 err = "prefill: the routing tables' upload failed";
                                 return false;
+                            }
+                        }
+                        // ================= M2 (STRATA_PREFILL_HELPER): the send =================
+                        if (!on_helper.empty()) {
+                            // the block row of each pair (expert-contiguous inside the block, whatever the plan's order)
+                            hp_pos.resize((size_t) rows_helper);
+                            std::vector<int32_t> within((size_t) m.g->n_expert, 0);
+                            for (int64_t p = 0; p < rows_helper; ++p) {
+                                const int32_t e = hp_plan.pair_expert[(size_t) p];
+                                hp_pos[(size_t) p] = m.off[(size_t) e] + within[(size_t) e]++;
+                            }
+                            hp_claims.resize((size_t) rows_helper);
+                            for (int64_t p = 0; p < rows_helper; ++p) hp_claims[(size_t) p] = (int32_t) p;
+                            // one pinned block, carved: the pair-indexed reply target (hp_rows), the block-ordered H2D
+                            // source (hp_stage), row_sd ones (hp_ones - the helper's native rows carry s_down already,
+                            // exactly like the CPU pool's)
+                            const size_t capr = (size_t) core::expert_helper::kMaxRowsPerLayer;
+                            if (m.hp_rows == nullptr) {
+                                if (cudaHostAlloc((void**) &m.hp_rows, capr * (2 * (size_t) N + 1) * sizeof(float),
+                                                  cudaHostAllocDefault) != cudaSuccess) {
+                                    err = "prefill: cannot allocate the helper prompt rows";
+                                    return false;
+                                }
+                                m.hp_stage = m.hp_rows + capr * (size_t) N;
+                                m.hp_ones = m.hp_stage + capr * (size_t) N;
+                                std::fill(m.hp_ones, m.hp_ones + capr, 1.0f);
+                                m.hp_rows_n = capr;
+                            }
+                            // the selected tokens' activations into the tier's OWN buffer (row r = plan.tokens[r]; the
+                            // client's caller-fills contract - the const_cast is its designated-writer rule), then the
+                            // send: the helper computes while this GPU does its own rows
+                            float* hxd = const_cast<float*>(m.hp->prompt_buffer_data());
+                            hp_sent = false;
+                            if (hxd != nullptr) {
+                                // M4b: the D2H rides its OWN stream, gated by an event recorded on m.cs at
+                                // the claim point (the input image is final there).  m.cs is never DRAINED
+                                // for the send - its kernels keep flowing while the host stages, quantizes
+                                // and sends; only the copy chain itself is waited for.
+                                if (m.hp_cs == nullptr) {
+                                    if (cudaStreamCreateWithFlags(&m.hp_cs, cudaStreamNonBlocking) != cudaSuccess ||
+                                        cudaEventCreateWithFlags(&m.hp_ev, cudaEventDisableTiming) != cudaSuccess) {
+                                        m.hp_cs = nullptr;
+                                        err = "prefill: cannot create the helper copy tier";
+                                        return false;
+                                    }
+                                }
+                                cudaEventRecord(m.hp_ev, m.cs);
+                                cudaStreamWaitEvent(m.hp_cs, m.hp_ev, 0);
+                                for (int64_t r = 0; r < hp_plan.n_sel_tok(); ++r)
+                                    cudaMemcpyAsync(hxd + (size_t) r * N, m.mixed + (size_t) hp_plan.tokens[(size_t) r] * N,
+                                                    (size_t) N * sizeof(float), cudaMemcpyDeviceToHost, m.hp_cs);
+                                if (hp_pipe) {
+                                    // M6: the walk stops blocking here. The worker owns the sync, the send,
+                                    // the reply wait, the gather and the block H2D; selection (the ExpertSource
+                                    // reads) stays on this thread per the :4015 single-writer rule. r0h is final:
+                                    // rows_cpu settled at the CPU-share selection above, the off[] build ran.
+                                    if (m.hp_ev2 == nullptr)
+                                        cudaEventCreateWithFlags(&m.hp_ev2, cudaEventDisableTiming);
+                                    if (!m.hp_lane_worker.joinable())
+                                        m.hp_lane_worker = std::thread([&m]() {
+                                            for (;;) {
+                                                decltype(m.hp_lane) c;
+                                                {
+                                                    std::unique_lock<std::mutex> lk(m.hp_lane_mtx);
+                                                    m.hp_lane_cv_work.wait(lk, [&m] { return m.hp_lane_stop || m.hp_lane.live; });
+                                                    if (m.hp_lane_stop && !m.hp_lane.live) return;
+                                                    c = std::move(m.hp_lane);
+                                                    m.hp_lane.live = false;
+                                                }
+                                                bool sent = false, okr = false;
+                                                if (cudaStreamSynchronize(m.hp_cs) == cudaSuccess) {
+                                                    const int rc_b = m.hp->begin_prompt(c.layer, c.plan, m.host_res, 3000);
+                                                    sent = rc_b == core::expert_helper::kOk;
+                                                    if (!sent)
+                                                        std::fprintf(stderr, "strata: prefill helper: send failed (%s); the claimed rows fall back to the CPU\n",
+                                                                     core::expert_helper::status_name(rc_b));
+                                                } else {
+                                                    std::fprintf(stderr, "strata: prefill helper: activation download failed; the claimed rows fall back to the CPU\n");
+                                                }
+                                                if (sent) {
+                                                    static const int64_t lane_to = [] { const char* v = std::getenv("STRATA_PREFILL_HELPER_TIMEOUT_MS");
+                                                                                        return v == nullptr ? (int64_t) 10000 : std::atoll(v); }();
+                                                    int32_t got = 0;
+                                                    const int rc_f = m.hp->finish_prompt(m.hp_rows, c.n_embd, c.claims, lane_to, got);
+                                                    okr = rc_f == core::expert_helper::kOk && got == (int32_t) c.rows;
+                                                    if (!okr)
+                                                        std::fprintf(stderr, "strata: prefill helper: the rows did not come back whole; the claimed rows fall back to the CPU\n");
+                                                    if (okr) {   // pair-indexed reply -> block-ordered staging (the M3 -r0h law)
+                                                        for (int64_t p = 0; p < c.rows; ++p)
+                                                            std::memcpy(m.hp_stage + (size_t) (c.pos[(size_t) p] - c.r0h) * (size_t) c.n_embd,
+                                                                        m.hp_rows + (size_t) p * (size_t) c.n_embd,
+                                                                        (size_t) c.n_embd * sizeof(float));
+                                                        cudaMemcpyAsync(m.Dm + (size_t) c.r0h * (size_t) c.n_embd, m.hp_stage,
+                                                                        (size_t) c.rows * (size_t) c.n_embd * sizeof(float),
+                                                                        cudaMemcpyHostToDevice, m.hp_cs);
+                                                        cudaEventRecord(m.hp_ev2, m.hp_cs);
+                                                    }
+                                                }
+                                                {
+                                                    std::unique_lock<std::mutex> lk(m.hp_lane_mtx);
+                                                    m.hp_lane.sent = sent;
+                                                    m.hp_lane.ok_rows = okr;
+                                                    m.hp_lane.done = true;
+                                                }
+                                                m.hp_lane_cv_done.notify_one();
+                                            }
+                                        });
+                                    {
+                                        std::unique_lock<std::mutex> lk(m.hp_lane_mtx);
+                                        m.hp_lane_cv_done.wait(lk, [&m] { return !m.hp_lane.live; });
+                                        m.hp_lane.done = false;   // consume any outcome an errored walk left behind
+                                        m.hp_lane.live = true;
+                                        m.hp_lane.layer = (int32_t) l;
+                                        m.hp_lane.rows = rows_helper;
+                                        m.hp_lane.r0h = T * K - rows_cpu - rows_helper;
+                                        m.hp_lane.n_embd = N;
+                                        m.hp_lane.plan = hp_plan;
+                                        m.hp_lane.pos = hp_pos;
+                                        m.hp_lane.claims = hp_claims;
+                                    }
+                                    m.hp_lane_cv_work.notify_one();
+                                } else {
+                                    // L3 (STRATA_RPC_PROFILE=1): d2h = the image download wait (incl. the m.cs backlog the hp_ev gate rode)
+                                    static const bool hp_prof = std::getenv("STRATA_RPC_PROFILE") != nullptr;
+                                    const auto hp_t0 = hp_prof ? std::chrono::steady_clock::now()
+                                                               : std::chrono::steady_clock::time_point{};
+                                    if (cudaStreamSynchronize(m.hp_cs) != cudaSuccess) { err = "prefill: helper activation download failed"; return false; }
+                                    hp_d2h_us = hp_prof ? (int64_t) std::chrono::duration_cast<std::chrono::microseconds>(
+                                        std::chrono::steady_clock::now() - hp_t0).count() : 0;
+                                    const auto hp_t1 = hp_prof ? std::chrono::steady_clock::now()
+                                                               : std::chrono::steady_clock::time_point{};
+                                    const int rc_b = m.hp->begin_prompt((int32_t) l, hp_plan, m.host_res, 3000);
+                                    hp_begin_us = hp_prof ? (int64_t) std::chrono::duration_cast<std::chrono::microseconds>(
+                                        std::chrono::steady_clock::now() - hp_t1).count() : 0;
+                                    hp_sent = rc_b == core::expert_helper::kOk;
+                                    if (!hp_sent)   // the tier latched itself: the claimed rows recompute at the combine
+                                        std::fprintf(stderr, "strata: prefill helper: send failed (%s); the claimed rows fall back to the CPU\n",
+                                                     core::expert_helper::status_name(rc_b));
+                                }
+                            } else {
+                                std::fprintf(stderr, "strata: prefill helper: no activation buffer; the claimed rows fall back to the CPU\n");
                             }
                         }
                         // Diagnostics: STRATA_DUMP_MOE_INPUT=path, STRATA_DUMP_MOE_LAYER=l - the first chunk's MoE input
@@ -4080,18 +4382,26 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                         strata::kernels::cpu::native_quant_act(cf, m.cpu_x + (size_t) t * N,
                                                                                m.cpu_nact.data() + (size_t) t * AB);
                                 m.cpu_jobs.clear();
+                                // MAXT-chunked, like the helper fallback below: cnt[e] can far exceed the
+                                // pool's 8-token job cap (the same overflow, latent here because the share
+                                // is 0 in the mixed configs - fixed before it ever fires).
+                                constexpr int cpu_chunk = (int) strata::kernels::cpu::MAXT;
                                 for (int32_t e = 0; e < m.g->n_expert; ++e) {
                                     if (!on_cpu[(size_t) e]) continue;
-                                    strata::kernels::cpu::ExpertJobMulti j;
-                                    j.blob = cpu_blob[(size_t) e];
-                                    j.nt = m.cnt[(size_t) e];
-                                    for (int r = 0; r < j.nt; ++r) {
-                                        const int64_t p = (int64_t) m.off[(size_t) e] + r;
-                                        if (q2) j.act[r] = &m.cpu_actq[(size_t) src_h[(size_t) p]];
-                                        else j.nact[r] = m.cpu_nact.data() + (size_t) src_h[(size_t) p] * AB;
-                                        j.out[r] = m.cpu_rows + (size_t) (p - r0c) * N;
+                                    const int nt = m.cnt[(size_t) e];
+                                    for (int b = 0; b < nt; b += cpu_chunk) {
+                                        const int bend = b + cpu_chunk < nt ? b + cpu_chunk : nt;
+                                        strata::kernels::cpu::ExpertJobMulti j;
+                                        j.blob = cpu_blob[(size_t) e];
+                                        j.nt = bend - b;
+                                        for (int r = b; r < bend; ++r) {
+                                            const int64_t p = (int64_t) m.off[(size_t) e] + r;
+                                            if (q2) j.act[r - b] = &m.cpu_actq[(size_t) src_h[(size_t) p]];
+                                            else j.nact[r - b] = m.cpu_nact.data() + (size_t) src_h[(size_t) p] * AB;
+                                            j.out[r - b] = m.cpu_rows + (size_t) (p - r0c) * N;
+                                        }
+                                        m.cpu_jobs.push_back(j);
                                     }
-                                    m.cpu_jobs.push_back(j);
                                 }
                                 cpu_pool_->run_split_multi_native(cf, m.cpu_jobs.data(), (int) m.cpu_jobs.size());
                                 cpu_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
@@ -4811,6 +5121,102 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                             cudaMemcpyHostToDevice, m.cs);
                         stats_.experts_cpu += n_cpu;
                     }
+                    if (!on_helper.empty()) {   // M2 (STRATA_PREFILL_HELPER): the reply, or the same-layer CPU fallback
+                        // hp_pos holds GLOBAL off[] rows; hp_stage is a rows_helper-row staging block. Every hp_stage
+                        // index must subtract r0h (the block's start row, == rows_local + rows_peer, because
+                        // local+peer+helper+cpu == T*K) or the gather writes megabytes past the pinned allocation
+                        // (the M3 real-3080 HSA illegal-instruction crash: host OOB corrupted the runtime).
+                        const int64_t r0h = T * K - rows_cpu - rows_helper;
+                        static const int64_t hp_to = [] { const char* v = std::getenv("STRATA_PREFILL_HELPER_TIMEOUT_MS");
+                                                         return v == nullptr ? (int64_t) 10000 : std::atoll(v); }();
+                        int32_t hp_got = 0;
+                        bool ok_rows = false;
+                        if (hp_pipe) {   // M6: the worker already ran the tail; read its outcome, chain m.cs on E2
+                            std::unique_lock<std::mutex> lk(m.hp_lane_mtx);
+                            m.hp_lane_cv_done.wait(lk, [&m] { return m.hp_lane.done; });
+                            hp_sent = m.hp_lane.sent;
+                            ok_rows = m.hp_lane.ok_rows;
+                            m.hp_lane.done = false;   // the slot is idle for the next publish
+                        } else if (hp_sent) {
+                            // L3 (STRATA_RPC_PROFILE=1): reply span = finish_prompt (helper queue+compute+transfer); pairs
+                            // with the helper-side 'rpcprofile: serve tier=p' line of the same claim.
+                            static const bool hp_prof2 = std::getenv("STRATA_RPC_PROFILE") != nullptr;
+                            const auto hp_t2 = hp_prof2 ? std::chrono::steady_clock::now()
+                                                        : std::chrono::steady_clock::time_point{};
+                            const int rc_f = m.hp->finish_prompt(m.hp_rows, N, hp_claims, hp_to, hp_got);
+                            ok_rows = rc_f == core::expert_helper::kOk && hp_got == (int32_t) rows_helper;
+                            if (!ok_rows)
+                                std::fprintf(stderr, "strata: prefill helper: the rows did not come back whole; the claimed rows fall back to the CPU\n");
+                            if (hp_prof2)   // L3: one line per claim, sync path only (PIPE stays on the worker)
+                                std::fprintf(stderr, "rpcprofile: claim layer=%lld rows=%lld sel=%lld d2h_us=%lld begin_us=%lld "
+                                                     "reply_us=%lld img_kb=%lld reply_kb=%lld fallback=%d\n",
+                                             (long long) l, (long long) rows_helper,
+                                             (long long) hp_plan.n_sel_tok(), (long long) hp_d2h_us,
+                                             (long long) hp_begin_us,
+                                             (long long) std::chrono::duration_cast<std::chrono::microseconds>(
+                                                 std::chrono::steady_clock::now() - hp_t2).count(),
+                                             (long long) (hp_plan.n_sel_tok() * N * 4 / 1024),
+                                             (long long) (rows_helper * N * 4 / 1024), ok_rows ? 0 : 1);
+                        }
+                        if (ok_rows && hp_pipe) {   // M6: the worker gathered and enqueued the block H2D on hp_cs
+                            cudaStreamWaitEvent(m.cs, m.hp_ev2, 0);
+                        } else if (ok_rows) {   // the reply is pair-indexed; the block is expert-contiguous: one host gather
+                            for (int64_t p = 0; p < rows_helper; ++p)
+                                std::memcpy(m.hp_stage + (size_t) (hp_pos[(size_t) p] - r0h) * N,
+                                            m.hp_rows + (size_t) p * N, (size_t) N * sizeof(float));
+                        } else {   // EXACTLY the claimed experts' rows, quantized from the tier's own ext_x buffer
+                            const strata::kernels::cpu::NativeFmt& cf = lay.fmt[(size_t) l];
+                            constexpr size_t AB = strata::kernels::cpu::kNativeActBytes;
+                            const bool q2 = strata::kernels::cpu::q2_native_kernels(cf.gu_type);
+                            const float* hx = m.hp->prompt_buffer_data();
+                            const int64_t nsel = hp_plan.n_sel_tok();
+                            if (q2) { if (m.hp_actq.size() < (size_t) nsel) m.hp_actq.resize((size_t) nsel); }
+                            else { if (m.hp_nact.size() < (size_t) (nsel * (int64_t) AB)) m.hp_nact.resize((size_t) (nsel * (int64_t) AB)); }
+                            for (int64_t r = 0; r < nsel; ++r)
+                                if (q2) strata::kernels::cpu::act_quant_any(hx + (size_t) r * N, (int) N, m.hp_actq[(size_t) r]);
+                                else strata::kernels::cpu::native_quant_act(cf, hx + (size_t) r * N,
+                                                                             m.hp_nact.data() + (size_t) r * AB);
+                            std::vector<std::vector<int32_t>> pairs_of((size_t) m.g->n_expert);
+                            for (int64_t p = 0; p < rows_helper; ++p)
+                                pairs_of[(size_t) hp_plan.pair_expert[(size_t) p]].push_back((int32_t) p);
+                            m.hp_jobs.clear();
+                            // THE POOL'S PER-JOB CAP: ExpertJobMulti's act/out/nact and the pool's SplitBufMulti
+                            // are [MAXT]=8 (the verify-window contract), and run_split_multi_native iterates
+                            // t < nt straight into them.  The M5 fault window crashed here (silent SIGSEGV,
+                            // exit -11): a 256-row claim gives experts up to 64 pairs, and one job per expert
+                            // overran the 8-entry arrays.  Chunk every expert's pairs into MAXT-sized jobs.
+                            constexpr int hp_chunk = (int) strata::kernels::cpu::MAXT;
+                            for (int32_t e = 0; e < m.g->n_expert; ++e) {
+                                const std::vector<int32_t>& ps = pairs_of[(size_t) e];
+                                if (ps.empty()) continue;
+                                for (size_t b = 0; b < ps.size(); b += (size_t) hp_chunk) {
+                                    const size_t bend = std::min(b + (size_t) hp_chunk, ps.size());
+                                    strata::kernels::cpu::ExpertJobMulti j;
+                                    j.blob = m.src->blob_stable(l, e);
+                                    if (j.blob == nullptr) { err = "prefill: the helper fallback lost a blob"; return false; }
+                                    j.nt = (int32_t) (bend - b);
+                                    for (size_t r = b; r < bend; ++r) {
+                                        const int32_t p = ps[r];
+                                        const int32_t ir = hp_plan.image_row(hp_plan.pair_token[(size_t) p]);
+                                        if (q2) j.act[r - b] = &m.hp_actq[(size_t) ir];
+                                        else j.nact[r - b] = m.hp_nact.data() + (size_t) ir * AB;
+                                        j.out[r - b] = m.hp_stage + (size_t) (hp_pos[(size_t) p] - r0h) * N;
+                                    }
+                                    m.hp_jobs.push_back(j);
+                                }
+                            }
+                            cpu_pool_->run_split_multi_native(cf, m.hp_jobs.data(), (int) m.hp_jobs.size());
+                        }
+                        if (!(hp_pipe && ok_rows))   // M6: the worker's hp_cs copy replaced this in PIPE mode
+                            cudaMemcpyAsync(m.Dm + (size_t) r0h * N, m.hp_stage, (size_t) rows_helper * N * sizeof(float),
+                                            cudaMemcpyHostToDevice, m.cs);
+                        if (use_mmq && !fused_l && lay.native && lay.fmt[(size_t) l].tail_off)
+                            cudaMemcpyAsync(m.row_sd + r0h, m.hp_ones, (size_t) rows_helper * sizeof(float),
+                                            cudaMemcpyHostToDevice, m.cs);
+                        if (static const bool dbg_hp = std::getenv("STRATA_DBG_PROMPT_HELPER") != nullptr; dbg_hp)
+                            std::fprintf(stderr, "prefill helper: layer %lld, %lld rows (%s)\n", (long long) l,
+                                         (long long) rows_helper, ok_rows ? "helper" : "cpu fallback");
+                    }
                     // no reading from a layer the share could not change (nothing taken) or with one-time costs
                     if (cpu_set >= 0 && n_stream > 0 && (!cpu_arm || n_cpu > 0) && !cpu_cold) {
                         cudaEventRecord(m.cpu_wall[2 * cpu_set + 1], m.cs);
@@ -4938,6 +5344,13 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         stats_.tokens += T;
         core::progress_at("reading the prompt (batched): finishing the chunk from token", p0);
         pt.mark(kPfStart, cs);
+        if (pt.on)
+            std::fprintf(stderr, "strata prefill timing: chunk %lld tokens %lld wall %.0f ms | "
+                                 "experts_host %.0f, PLE %.0f, host setup %.0f, host sync %.0f, "
+                                 "host after %.0f\n",
+                         (long long) stats_.chunks, (long long) T, ms_since(pf_w0),
+                         stats_.ms_experts_host - pf_eh0, stats_.ms_ple - pf_ple0,
+                         host_setup_ms - pf_su0, host_sync_ms - pf_sy0, host_chunk_ms - pf_ck0);
         if (next_ != nullptr) {
             // The current hand-off slot was used two chunks ago.
             float* h = m.hand[hand_buf_];

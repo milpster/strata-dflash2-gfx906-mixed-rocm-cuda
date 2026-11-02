@@ -4636,6 +4636,7 @@ void expert_pool_dispatch(void* user, const float* x_f, const int32_t* ids, cons
     if (d.failed) return;   // a previous layer already failed; do not make it worse
 
     using namespace strata::kernels::cpu;
+    static thread_local std::vector<int32_t> helper_claims;   // R2 proxy claims (see the begin seam)
     // Clause 3: the blob's internal offsets are compile-time constants, so a mismatched geometry does not
     // produce a wrong answer - it produces a walk off the end of the blob into the next expert's bytes, which
     // is finite and plausible.  Refuse, name the number, and let the driver report it.
@@ -4682,10 +4683,19 @@ void expert_pool_dispatch(void* user, const float* x_f, const int32_t* ids, cons
                 ? d.host_res[(size_t) d.layers * (size_t) d.n_expert + (size_t) ids[i]] >= 0
                 : d.is_hit[(size_t) i] != 0) ? 0 : -1;
         static thread_local std::string remote_error;
-        for (int r = 0; r < d.remote_count; ++r)
-            if (!d.remote[r]->begin(d.layers, x_f, ids, 1, k, kind, d.host_res, remote_error)) {
+        // R2 (opt-in CUDA helper): the proxy tier's claims arrive as a list (a native pack never
+        // reaches this path - single-token dispatch refuses it at the top - so with the helper on
+        // this list is empty by construction; it is wired for the same contract the verify window
+        // uses, never a second semantics).  `helper_claims` is declared above, where the row-skip
+        // loop below reads it.
+        helper_claims.clear();
+        for (int r = 0; r < d.remote_count; ++r) {
+            std::vector<int32_t> claimed_rows;
+            if (!d.remote[r]->begin(d.layers, x_f, ids, 1, k, kind, d.host_res, remote_error, claimed_rows)) {
                 d.failed = true; d.fail = remote_error.c_str(); d.fail_layer = d.layers; return;
             }
+            for (const int32_t i : claimed_rows) if (i >= 0 && i < k) helper_claims.push_back(i);
+        }
     }
 
     for (int64_t i = 0; i < k; ++i) {
@@ -4722,6 +4732,7 @@ void expert_pool_dispatch(void* user, const float* x_f, const int32_t* ids, cons
 
         bool remote_owns = false;
         for (int r = 0; r < d.remote_count; ++r) remote_owns |= d.remote[r]->owns(i);
+        for (const int32_t hc : helper_claims) remote_owns |= (hc == i);   // R2 proxy claim (empty on a native pack: this path refuses it)
         if (remote_owns) {
             std::memset(out + (size_t) i * (size_t) n_embd, 0, (size_t) n_embd * sizeof(float));
             continue;
@@ -4744,6 +4755,22 @@ void expert_pool_dispatch(void* user, const float* x_f, const int32_t* ids, cons
         static thread_local std::string remote_error;
         for (int r = 0; r < d.remote_count; ++r)
             if (!d.remote[r]->finish(out, remote_error)) {
+                // R2 (opt-in CUDA helper): a proxy finish that FAILED left its claimed rows
+                // unwritten (the CPU skipped them as remote-owned above, like an in-process tier's
+                // owns()).  Recompute EXACTLY those rows on the CPU (the activation is the shared
+                // d.act quantized at the top: this path has no native pack), disable the tier for
+                // the rest of the request, continue.  In-process tiers keep the historical path.
+                if (d.remote[r]->is_proxy() && !helper_claims.empty()) {
+                    std::vector<int32_t> ids1(k);
+                    for (int64_t i = 0; i < k; ++i) ids1[(size_t) i] = ids[i];
+                    if (expert_helper_recompute_claimed(d, x_f, ids1.data(), 1, k, helper_claims.data(),
+                                                        (int64_t) helper_claims.size(), false, d.layers, out)) {
+                        d.remote[r]->note_failure();
+                        d.remote[r]->note_fallback();
+                        helper_claims.clear();
+                        continue;
+                    }
+                }
                 d.failed = true; d.fail = remote_error.c_str(); d.fail_layer = d.layers; return;
             }
     }
@@ -4779,6 +4806,10 @@ void set_tail_skip_rank(int r) { g_tail_skip_rank.store(r > 0 && r < 10 ? r : 0,
 void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32_t* ids, int64_t n_tok, int64_t k,
                                 float* out) {
     using namespace strata::kernels::cpu;
+    // R2 (opt-in CUDA helper): the (token,k) rows the proxy tiers claimed THIS layer, read by the
+    // begin seam (which marks them kind 2) and by the finish seam (which recomputes exactly them
+    // when a proxy finish failed).  In-process tiers never fill it.
+    static thread_local std::vector<int32_t> helper_claims;
     if (d.failed) return;
     if (n_tok < 1 || n_tok > MAXT) {
         d.failed = true;
@@ -4979,11 +5010,17 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     }
     if (d.remote_count > 0) {
         static thread_local std::string remote_error;
+        // R2 (opt-in CUDA helper): the proxy tier records the (token,k) rows it claimed; a failed
+        // helper finish recomputes EXACTLY those rows on the CPU below.  In-process tiers leave
+        // this list empty and keep answering through owns(), exactly as before.
+        helper_claims.clear();
         for (int r = 0; r < d.remote_count; ++r) {
-            if (!d.remote[r]->begin(d.layers, x_f, ids, n_tok, k, kind, d.host_res, remote_error)) {
+            std::vector<int32_t> claimed_rows;
+            if (!d.remote[r]->begin(d.layers, x_f, ids, n_tok, k, kind, d.host_res, remote_error, claimed_rows)) {
                 d.failed = true; d.fail = remote_error.c_str(); d.fail_layer = d.layers; return;
             }
             for (int64_t i = 0; i < n; ++i) if (d.remote[r]->owns(i)) kind[i] = 2;
+            for (const int32_t i : claimed_rows) { if (i >= 0 && i < n) kind[i] = 2; helper_claims.push_back(i); }
         }
     }
     static const bool dec_batch = [] { const char* v = std::getenv("STRATA_DEC_BATCH"); return v == nullptr || std::atoi(v) != 0; }();
@@ -5180,10 +5217,36 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     }
     if (d.remote_count > 0) {
         static thread_local std::string remote_error;
-        for (int r = 0; r < d.remote_count; ++r)
+        for (int r = 0; r < d.remote_count; ++r) {
+            // R2 (R2 gate M4): note_request_start() is documented as the PER-REQUEST boundary
+            // (include/strata/core/remote_experts.hpp:50-53), never mid-request, so it runs at the LAYER-0
+            // window only - the same seam the look-ahead uses for its own per-request window (d.layers == 0,
+            // expert_source.cpp:4822).  It was called at every window finish, which is inert today only
+            // because no path makes the tier healthy again mid-request (healthy_ = true exists at open_socket
+            // alone, every failure closes the channel); add a reconnect and a mid-request call would become
+            // a mid-request re-arm.  No behavior change with the gate.
+            if (d.remote[r]->is_proxy() && r == 0 && d.layers == 0) d.remote[r]->note_request_start();
             if (!d.remote[r]->finish(out, remote_error)) {
+                // R2 (opt-in CUDA helper): a proxy finish that FAILED left the rows it claimed
+                // unwritten.  Recompute EXACTLY those (token,expert) rows on the CPU through the
+                // same job assembly the CPU misses use (no new dispatch semantics: the same
+                // quantizer choice, the same pool call), disable the tier for the rest of the
+                // request, and continue.  A source failure inside the recompute keeps the
+                // dispatch's own latching failure path (`d.failed`) - the request stops as it
+                // always did.  In-process tiers keep the historical behavior unchanged.
+                if (d.remote[r]->is_proxy() && !helper_claims.empty()) {
+                    const int64_t nc = (int64_t) helper_claims.size();
+                    if (expert_helper_recompute_claimed(d, x_f, ids, n_tok, k, helper_claims.data(), nc,
+                                                        native, d.layers, out)) {
+                        d.remote[r]->note_failure();
+                        d.remote[r]->note_fallback();
+                        helper_claims.clear();
+                        continue;
+                    }
+                }
                 d.failed = true; d.fail = remote_error.c_str(); d.fail_layer = d.layers; return;
             }
+        }
     }
     if (d.peer != nullptr) {                 // multi-GPU: the second GPU's rows, into the same mapped rows
         std::string perr;

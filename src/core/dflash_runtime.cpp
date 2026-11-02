@@ -1039,6 +1039,12 @@ bool DFlashDrafter::fusion_rows(int64_t pos0, int rows, std::string& err) {
 }
 
 bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std::string& err, float* probabilities) {
+    // Per-call classification: every return false below carries THIS call's class.  Only the
+    // host-candidate vocabulary check at the end sets kNonFiniteCandidates; the geometry, ring,
+    // capacity, staging, graph, stream and sync failures keep kNone, which the call sites treat
+    // as fatal.  Clearing the message too: a consumed refusal never leaves a stale error behind.
+    last_refusal_ = DflashRefusal::kNone;
+    err.clear();
     if (!cs_ || st_.empty() || !head_ || !head_->loaded() || !emb_ref_ || !out) {
         err = "dflash: upload and bind a head and embeddings before proposing"; return false;
     }
@@ -1491,11 +1497,20 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
     }
     df_timing_drain();
     ++cycle_;
-    std::memcpy(out, h_out_, (size_t) block * 4);
-    for (int i = 0; i < block; ++i) {
-        if (out[i] < 0 || out[i] >= dg.vocab) { err = "dflash: non-finite candidate scores"; return false; }
+    // The host handoff (include/strata/core/dflash_refusal.hpp): the same vocabulary check the
+    // emitter has always run on the mapped host picks, now BEFORE the caller's out/probability
+    // writes.  A refusal writes nothing, so the caller's drafts/probabilities keep their previous
+    // bytes and the call site's latch makes sure nothing reads them; a pass copies identical bytes
+    // to the previous copy-then-check order (the check ran on the same values).
+    if (dflash_candidates_refused(h_out_, block, dg.vocab)) {
+        last_refusal_ = DflashRefusal::kNonFiniteCandidates;
+        err = "dflash: non-finite candidate scores";
+        return false;
     }
-    if (probabilities) std::memcpy(probabilities, h_out_ + max_rows_, (size_t) block * 4);
+    if (!dflash_emit_candidates(h_out_, block, dg.vocab, out, h_out_ + max_rows_, probabilities)) {
+        err = "dflash: the candidate handoff is malformed";   // unreachable: block, h_out_ and the
+        return false;                                          // vocabulary are validated above
+    }
     return true;
 }
 

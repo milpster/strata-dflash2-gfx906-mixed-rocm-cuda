@@ -22,7 +22,7 @@
 #include <memory>
 #include <string>
 
-namespace strata::core { class PeerExperts; }
+namespace strata::core { class PeerExperts; class RemoteExperts; }
 namespace strata::kernels::cpu { class ExpertPool; }
 
 namespace strata::prefill {
@@ -179,6 +179,15 @@ public:
     /// rows per layer; the rest of the peer's experts are read by this GPU over P2P).  Allocates the peer's buffers for
     /// chunks of up to init's `chunk` tokens.  Needs P2P between the two cards.
     bool set_peer(core::PeerExperts* peer, int64_t cap_rows, std::string& err);
+
+    /// M2 (STRATA_PREFILL_HELPER=1, opt-in, default OFF - docs/work/MIXED_BACKEND_RPC_PLAN.md): the
+    /// out-of-process CUDA helper computes WHOLE experts' routed rows for every prompt chunk on its
+    /// own card, over the proxy's prompt channel (the P1 tier: begin_prompt / finish_prompt).  The
+    /// claim rule is P1's select_prompt_rows (helper-held, primary-non-resident, stable blobs,
+    /// protocol caps); a failed send or reply runs the same-layer CPU fallback for EXACTLY the
+    /// claimed rows.  A null or non-prompt-capable helper changes nothing: the prompt path stays
+    /// as it was.  Needs the CPU pool set (the fallback's arm).
+    bool set_prompt_helper(core::RemoteExperts* helper, std::string& err);
 
     /// Plan v0.3 P6: called after every chunk with the chunk's final multi-stream residual rows (device,
     /// T x hc*n_embd, valid until the next chunk) and the chunk's first position; the MTP draft layer builds its
