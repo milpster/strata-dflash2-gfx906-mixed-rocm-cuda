@@ -326,7 +326,7 @@ def audit(text: str, path: str) -> dict:
                          "format_pairs_zero_rows": sorted(set(formats.values()) - set(format_counts)),
                          "counts": counts}, "percentiles": percentiles, "aggregate_checks": checks,
             "nmse": {"available": True, "populations": diagnostics},
-            "verdict": "none: document consistency only; no numerical acceptance limit or pass/fail"}
+            "verdict": "none: document consistency only; no numerical acceptance limit; no pass/fail"}
 
 
 def _fmt(value: Any) -> str:
