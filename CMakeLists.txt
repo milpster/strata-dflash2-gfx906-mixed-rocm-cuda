@@ -138,6 +138,7 @@ option(STRATA_MMQ_TQ_OVERLAY "Gyro trellis MMQ prompt kernels on an upstream lla
 # only: under the gfx906 HIP scheme it is refused with a named reason (the sidecar owns all NVIDIA
 # memory; the HIP engine process runs the client with no CUDA runtime mapped at all).
 option(STRATA_BUILD_EXPERT_HELPER "Build the CUDA-only strata-expert-helper sidecar (opt-in; docs/MIXED_GPU_HELPER.md)" OFF)
+option(STRATA_P2_DIAGNOSTICS "Build the gfx906 MMQ reference harness and multi-layer input capture (measurement only)" OFF)
 option(STRATA_MMQ_KQUANTS "Build the MMQ prompt kernels for Q4_K / Q5_K / Q5_1 / Q6_K: the experts of Unsloth's K-quant files, and on HIP the dense GGUF projections (STRATA_DENSE_MMQ)" ON)
 # Q6_K gate/up in the grouped expert kernels (Unsloth's UD-Q6_K_XL, and layer 2 of UD-Q5_K_XL; docs/QUANTS.md).  On by
 # default since MODEL-UPDATE Phase 1: one more instance per grouped kernel in iq_kernels.cu, +19 KB of sm_60 code,
@@ -176,6 +177,9 @@ option(STRATA_WERROR "Treat compiler warnings as errors" OFF)
 # #2027: defined here, before the GPU section reads it to register the native-expert tests (it was defined at the
 # native-experts section far below, so a first configure registered four tests fewer than the second)
 option(STRATA_NATIVE_EXPERTS "Native (IQ) expert support through ggml-cpu" ON)
+if(STRATA_P2_DIAGNOSTICS AND (NOT STRATA_HIP_GFX906 OR NOT STRATA_NATIVE_EXPERTS))
+  message(FATAL_ERROR "STRATA_P2_DIAGNOSTICS requires STRATA_HIP_GFX906 and STRATA_NATIVE_EXPERTS; the helper remains a separate CUDA build")
+endif()
 
 if(STRATA_BUILD_CONVERSATION_TESTS)
   enable_testing()
@@ -983,6 +987,23 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_link_libraries(p2_measure_harness PRIVATE
       strata_mmq strata_kernels strata_kernels_cpu strata_core ggml-base strata_warnings
       ${_strata_gpu_runtime_target})
+  endif()
+
+  # Measurement only: the same harness on the primary's actual gfx906 MMQ library.
+  # No CUDA runtime or helper is linked into this process. OFF adds no engine code.
+  if(STRATA_P2_DIAGNOSTICS)
+    add_executable(p2_measure_hip_reference
+      tools/mixed_gpu/p2_measure/p2_measure_main.cpp
+      tools/mixed_gpu/p2_measure/p2_measure.cpp
+      src/core/expert_helper_socket.cpp
+      tools/mixed_gpu/sidecar/helper_frame.cpp)
+    set_property(SOURCE tools/mixed_gpu/p2_measure/p2_measure_main.cpp PROPERTY LANGUAGE HIP)
+    target_include_directories(p2_measure_hip_reference PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/include ${_strata_gpu_include_directories})
+    target_link_libraries(p2_measure_hip_reference PRIVATE
+      strata_mmq strata_kernels strata_kernels_cpu strata_core ggml-base strata_warnings
+      ${_strata_gpu_runtime_target})
+    target_compile_definitions(strata_prefill PRIVATE STRATA_P2_DIAGNOSTICS=1)
   endif()
 
   # NEW-MODELS-PLAN.md T1: Qwen3.6-35B-A3B's reference path (one GPU, the model resident, plain kernels), checked

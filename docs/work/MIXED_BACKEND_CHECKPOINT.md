@@ -27,6 +27,9 @@ This is an in-progress snapshot, not a release or numerical signoff.
 - The fresh build's final source guard caught two added Python imports. The failed
   guard was retained. Compiled inputs matched; the current auditor passed all 50
   regressions against the HIP CMake binary. No backend rebuild was needed for imports.
+- An opt-in gfx906 reference target and multi-layer input capture are now built and
+  CPU-tested. `STRATA_P2_DIAGNOSTICS=OFF` keeps the engine and helper byte-identical
+  to the preceding validated build. This is measurement tooling, not GPU signoff.
 - Actual 80k-context plus 5k-output acceptance and a practical larger-model or
   constrained-host-RAM comparison remain open.
 

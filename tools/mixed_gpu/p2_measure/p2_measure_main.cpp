@@ -125,7 +125,7 @@ void usage() {
         "  --fill-timeout-ms N the fill reply deadline (default 600000)\n"
         "  --summary-only      emit the aggregates and the worst rows, not every row record\n"
         "  --worst N           rows in the human table's worst list (default 20)\n"
-        "  --device N          the CUDA device this harness computes on (default 0)\n");
+        "  --device N          this build's reference GPU ordinal (default 0; CUDA or gfx906 HIP)\n");
 }
 
 struct Opts {
@@ -706,11 +706,11 @@ int main(int argc, char** argv) {
         rep.meta.formats.push_back({(int32_t) l, ft.gu_type, ft.d_type});
     }
 
-    // ---- the CUDA device ----
+    // ---- the reference device (CUDA, or gfx906 HIP in the opt-in target) ----
     int n_dev = 0;
-    if (cudaGetDeviceCount(&n_dev) != cudaSuccess || o.device >= n_dev) {
+    if (cudaGetDeviceCount(&n_dev) != cudaSuccess || o.device < 0 || o.device >= n_dev) {
         cudaGetLastError();
-        std::fprintf(stderr, "p2_measure_harness: REFUSAL (device): no CUDA device %lld (nvidia-smi; the "
+        std::fprintf(stderr, "p2_measure_harness: REFUSAL (device): no reference GPU %lld (the "
                              "helper runs on a device the engine does not use)\n", (long long) o.device);
         return 4;
     }
@@ -720,6 +720,18 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "p2_measure_harness: REFUSAL (device): %s\n", derr.c_str());
         return 4;
     }
+    cudaDeviceProp reference_props{};
+    if (!ck(cudaGetDeviceProperties(&reference_props, (int) o.device), "reference properties", derr)) {
+        std::fprintf(stderr, "p2_measure_harness: REFUSAL (device): %s\n", derr.c_str());
+        return 4;
+    }
+#ifdef STRATA_HIP_GFX906
+    rep.meta.notes.push_back("reference_backend=gfx906-HIP; device=" + std::to_string(o.device) +
+                             "; name=" + reference_props.name + "; arch=" + reference_props.gcnArchName);
+#else
+    rep.meta.notes.push_back("reference_backend=CUDA; device=" + std::to_string(o.device) +
+                             "; name=" + reference_props.name);
+#endif
     cudaStream_t cs = nullptr;
     if (!ck(cudaStreamCreateWithFlags(&cs, cudaStreamNonBlocking), "stream", derr)) {
         std::fprintf(stderr, "p2_measure_harness: REFUSAL (device): %s\n", derr.c_str());
