@@ -44,8 +44,10 @@ def digest(data):
 
 def request_body(family, rep):
     """Fresh multi-chunk PP plus sustained TG; bytes are arm-independent."""
+    # 280 copies left only 993 tokens after the 8192 chunk: below pipe=1's
+    # 1024-token stream-all guard. Keep a longer tail so that lever can engage.
     text = (f"Performance window {family}, repetition {rep}; independent cold request.\n"
-            + PARAGRAPH * 280
+            + PARAGRAPH * 320
             + "\nWrite 120 numbered engineering checklist entries about implementing and "
               "validating the system described above. Each entry must be a full sentence "
               "with at least twelve words. Start with 1. Do not summarize or stop early.")

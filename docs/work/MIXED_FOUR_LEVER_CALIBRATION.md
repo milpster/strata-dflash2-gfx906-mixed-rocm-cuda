@@ -160,3 +160,15 @@ library checks passed with attached supervisor 1007911 and context 262,144.
 No old production process remained. All twelve raw request/reply/metric records,
 four startup reports and the comparator arithmetic were rechecked; see
 `dfc1-review1.log` and the retained `dfc1-*` evidence.
+
+## Fixture adjustment before the remaining tests
+
+Source review found that `prefill-pipe 1` would leave the original fixture
+unchanged: its 993-token final chunk is below the 1,024-token streaming threshold.
+The benchmark paragraph count is therefore increased from 280 to 320 before
+the prefill and split tests. Their actual prompt lengths must come from engine
+summaries, and their comparisons use fresh controls with the same longer inputs.
+Earlier requests and results remain unchanged. Do not compare PP rates across
+the different fixtures. Context capacity, output length and all gates stay fixed.
+The focused 240 CPU checks, syntax checks and four protected hashes passed again
+after this adjustment (`perf-pipe-fixture-gate1.log`, 4.69 seconds).
