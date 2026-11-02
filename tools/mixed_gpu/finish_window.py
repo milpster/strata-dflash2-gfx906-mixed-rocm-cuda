@@ -234,11 +234,16 @@ def longctx_prompt(target_tokens: int, chars_per_token: float = 4.0) -> tuple[st
     head = ("You are a maintenance-log analysis assistant. The document below is a long "
             "plant cooling-loop maintenance log. Read all of it, then do the task at the "
             "very end.\n\n### LOG START\n\n")
-    tail = ("\n### LOG END\n\nTASK: Using the whole log above, write a detailed chronological "
-            "digest with one bullet per 500-section block (quote each block's first section "
-            "number), then a table of recurring part failures with dates, then a paragraph on "
-            "flow-rate trends, then a proposed maintenance schedule for the next year. Be "
-            "exhaustive and specific; do not summarize briefly and do not stop early.")
+    tail_template = ("\n### LOG END\n\nTASK: The log above has sections [sec 000000] through [sec {last:06d}]. "
+                     "Split it into {blocks} consecutive blocks of 50 sections each (the final block may "
+                     "be shorter). For EACH block, write one paragraph of at least 130 words that "
+                     "summarizes that block's entries, quoting the block's first and last section "
+                     "numbers. Number your paragraphs 'Block 1 of {blocks}' through 'Block {blocks} of "
+                     "{blocks}'. After the last block paragraph, add: (a) a table of recurring part "
+                     "failures with dates, (b) a paragraph on flow-rate trends across the whole log, "
+                     "(c) a proposed 12-month maintenance schedule with one line per month. Your reply "
+                     "must be at least 5,500 words. Complete every block paragraph and all three final "
+                     "parts; never summarize multiple blocks together and never stop early.")
     sentences = [
         "The maintenance log records every cooling loop service with dates, part numbers and measured flow rates.",
         "Each pump service lists the replaced seal kit, the measured shaft runout and the motor current draw.",
@@ -258,10 +263,11 @@ def longctx_prompt(target_tokens: int, chars_per_token: float = 4.0) -> tuple[st
         parts.append(line)
         total += len(line)
         index += 1
-    text = "".join(parts) + tail
+    blocks = (index + 49) // 50
+    text = "".join(parts) + tail_template.format(last=index - 1, blocks=blocks)
     meta = dict(target_tokens=target_tokens, chars_per_token=chars_per_token,
                 headroom=1.07, chars=len(text), est_tokens=round(len(text) / chars_per_token),
-                sections=index,
+                sections=index, blocks=blocks,
                 sha256=hashlib.sha256(text.encode()).hexdigest())
     return text, meta
 
