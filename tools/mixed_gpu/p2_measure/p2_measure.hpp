@@ -80,8 +80,8 @@ inline constexpr double kEpsDefault = 1e-12;
 //
 // THE ZERO-REFERENCE CASES, EXACTLY (this is the code, not a description of it):
 //   max_rel: the denominator is max(row_amax, eps) and row_amax takes the largest magnitude of BOTH
-//            sides, so a zero-reference, nonzero-candidate row gives max_abs/max(max_abs, eps) = 1 - it
-//            is never "a huge error divided by eps", and a zero row gives 0.
+//            sides, so a zero-reference, nonzero-candidate row gives max_abs/max(max_abs, eps): 1 at or
+//            above eps, clamped below eps. A zero row gives 0.
 //   l2_rel : THE CODE returns 0 when sum_sq_ref == 0 (`nrm > 0 ? l2/nrm : 0`).  It is NOT the eps clamp
 //            this header's v1 text claimed.  The numeric value is kept EXACTLY as v1 emitted it - a
 //            band metric is not redefined here - and the row's `ref_zero` flag says what that 0 means:
@@ -129,11 +129,13 @@ uint64_t fnv64(const void* data, size_t bytes);
 //                             NULL - unbounded, never 0, never a large finite number
 //   invalid_nonfinite        at least one row carried a NaN/Infinity: NULL, with the count of such rows
 //                             (the energies of a nonfinite row are NaN, so a partial sum is refused)
+//   invalid_energy           invalid/missing row energies or population overflow: NULL, without inventing
+//                             nonfinite input rows. Invalid population energies also emit null, not 0.
 inline constexpr const char* kNmseDefinition =
     "sum over the population of (a_i - b_i)^2, divided by sum over the population of a_i^2; "
     "reference side a; energy-weighted, not a mean of per-row ratios; no threshold applied";
 
-enum class NmseState { kEmpty, kOk, kZeroRefExact, kZeroRefUnbounded, kInvalidNonfinite };
+enum class NmseState { kEmpty, kOk, kZeroRefExact, kZeroRefUnbounded, kInvalidNonfinite, kInvalidEnergy };
 const char* nmse_state_name(NmseState s);   // the exact strings above
 
 struct NmseDiag {
@@ -142,8 +144,8 @@ struct NmseDiag {
     int64_t rows = 0;              // rows in the population
     int64_t rows_ref_zero = 0;     // rows with no reference energy
     int64_t rows_nonfinite = 0;    // rows carrying a NaN/Infinity
-    double energy_error = 0.0;     // the numerator (raw double accumulation)
-    double energy_ref = 0.0;       // the denominator
+    double energy_error = 0.0;     // the numerator; NaN/null for an invalid population, never a fake 0
+    double energy_ref = 0.0;       // the denominator; NaN/null for an invalid population
     double nmse = 0.0;             // meaningful only when has_value
 };
 NmseDiag nmse_diagnostic(const std::vector<RowDiff>& population);
@@ -343,11 +345,8 @@ struct Report {
 /// The canonical sort (fixture index, layer, pair) - the harness emits rows in this order, always.
 void sort_rows(Report& r);
 std::string json_escape(const std::string& s);
-/// `emit_v1_document_defects` reproduces the v1 document's defects in a SELF-TEST document only, so the
-/// audit's legacy path is tested against a real malformed, energy-less document: the malformed buckets
-/// (`"max_abs": "v": {...}`), the energy-less row shape, no `nmse` block, and the v1 schema string.
-/// The default is the fixed v2 emission; a run's report never sets it.
-std::string to_json(const Report& r, bool emit_v1_document_defects = false);
+/// Fixed schema-v2 JSON only. Malformed legacy emission is not part of the report API.
+std::string to_json(const Report& r);
 std::string to_table(const Report& r, int64_t worst_n);
 
 /// ---- 5b. the CPU SELF-TEST document (schema v2, 2026-11-01) ----
@@ -364,8 +363,6 @@ std::string to_table(const Report& r, int64_t worst_n);
 ///   "zero-ref-nonzero"  every row has zero reference and nonzero candidate: null, named unbounded
 ///   "zero-ref-exact"    every row is all zeros: 0, named
 ///   "nonfinite"         one row carries a NaN and one an Infinity: null, named, counted
-///   "legacy"            the document with the v1 BUCKET EMITTER DEFECT reproduced ("max_abs": "v": {...}),
-///                       so the audit's legacy path is tested against a real malformed document
 /// 0 = built, 3 = typed refusal in `err` (an unknown variant).
 inline constexpr const char* kSelfTestNote = "CPU self-test document: synthetic rows, no measurement";
 int make_cpu_selftest_report(const std::string& variant, Report& out, std::string& err);

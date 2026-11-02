@@ -278,8 +278,28 @@ void section_nmse() {
     const NmseDiag nf = nmse_diagnostic(std::vector<RowDiff>{d0, dn, di});
     check(nf.state == NmseState::kInvalidNonfinite && !nf.has_value && nf.rows_nonfinite == 2,
           "a population with nonfinite rows: refused, counted 2, no finite value");
-    check(nf.energy_error == 0.0 && nf.energy_ref == 0.0,
-          "the refused population reports no energies (a partial sum of a NaN is not a measurement)");
+    check(std::isnan(nf.energy_error) && std::isnan(nf.energy_ref),
+          "invalid population energies are NaN/null, not fabricated zeros");
+    check(std::isnan(dn.max_abs) && std::isnan(dn.max_rel) && std::isnan(di.max_abs),
+          "fmax must not hide nonfinite inputs as finite row metrics");
+    const RowDiff zero_bad = diff_rows(z, nrow, k, 1e-12);
+    const NmseDiag mixed = nmse_diagnostic({d0, zero_bad});
+    check(mixed.rows_ref_zero == 1 && mixed.rows_nonfinite == 1,
+          "zero-reference counts remain truthful even when the population is invalid");
+    const Agg invalid_aggregate = aggregate({0.0, std::nan(""), 1.0});
+    check(invalid_aggregate.count == 3 && !invalid_aggregate.empty &&
+              std::isnan(invalid_aggregate.p50) && std::isnan(invalid_aggregate.p999) &&
+              std::isnan(invalid_aggregate.max) && std::isnan(invalid_aggregate.mean),
+          "nonfinite percentile population is refused before sorting, retaining its count");
+    RowDiff large = d0;
+    large.sum_sq_err = large.sum_sq_ref = (std::numeric_limits<double>::max)();
+    const NmseDiag overflow = nmse_diagnostic({large, large});
+    check(overflow.state == NmseState::kInvalidEnergy && !overflow.has_value &&
+              overflow.rows_nonfinite == 0 && std::isnan(overflow.energy_error),
+          "energy overflow is invalid_energy, not invented nonfinite input rows");
+    const NmseDiag absent = nmse_diagnostic({RowDiff{}});
+    check(absent.state == NmseState::kInvalidEnergy && !absent.has_value,
+          "a zero-length placeholder is not a measured exact-match row");
 
     // the v1 band metrics stay exactly as they were
     check(near(d1.max_rel, 1.0 / 11.0, 1e-12) && near(d1.l2_rel, 0.1, 1e-12),
@@ -2977,8 +2997,7 @@ int main(int argc, char** argv) {
     if (argc == 4 && std::strcmp(argv[1], "--emit-selftest") == 0) {
         Report r;
         std::string err;
-        const bool legacy = std::strcmp(argv[2], "legacy") == 0;
-        if (make_cpu_selftest_report(legacy ? "legacy" : argv[2], r, err) != 0) {
+        if (make_cpu_selftest_report(argv[2], r, err) != 0) {
             std::fprintf(stderr, "p2_measure_test: %s\n", err.c_str());
             return 3;
         }
@@ -2987,7 +3006,7 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "p2_measure_test: cannot write %s\n", argv[3]);
             return 4;
         }
-        const std::string j = to_json(r, legacy);
+        const std::string j = to_json(r);
         const size_t written = std::fwrite(j.data(), 1, j.size(), f);
         std::fclose(f);
         return written == j.size() ? 0 : 4;
