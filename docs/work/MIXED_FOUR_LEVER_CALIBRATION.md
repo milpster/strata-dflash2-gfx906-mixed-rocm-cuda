@@ -126,3 +126,37 @@ context 262,144, attached supervisor 418189, helper fill, prompt-channel connect
 custom gfx906/ROCm 6.1 library mappings and unchanged pinned files. No old production
 process remained. Raw requests, replies and comparator arithmetic were rechecked
 against the status file; see `trm2-review1.log` and `trm2-*` in the evidence directory.
+
+## Joint DFlash2 settings (`dfc1`)
+
+All twelve requests completed: 9,185 fresh prompt tokens and 512 output tokens
+each, on the same two Radeon VIIs and RTX 3080. Only the joint spec/block/floor
+setting changed. Effective draft widths were 4, 3, 6 and 4 across the four arms.
+
+| Arm (spec/block/floor) | PP rates (tok/s) | TG rates (tok/s) | Drafts accepted/offered |
+| --- | --- | --- | --- |
+| Initial canonical (`5/5/0.5`) | 225.8, 235.4, 234.6 | 34.5, 36.1, 37.6 | 820/1392 |
+| `4/3/0.7` | 225.9, 235.6, 235.8 | 34.2, 36.7, 37.1 | 697/898 |
+| `7/6/0.3` | 226.2, 235.7, 235.6 | 26.3, 30.4, 29.2 | 914/2937 |
+| Final canonical (`5/5/0.5`) | 222.8, 235.7, 235.4 | 34.4, 35.9, 37.7 | 820/1392 |
+
+Pooled control medians were **235.0 PP / 36.0 TG tok/s**. Both candidates'
+median PP was 235.6 tok/s (+0.3%). Median TG was **36.7 (+1.9%)** for
+`4/3/0.7` and **29.2 (−18.9%)** for `7/6/0.3`. Neither met the 5% timing
+candidate threshold. Final/initial control ratios were 1.003 PP and 0.994 TG.
+
+The higher acceptance fraction at `4/3/0.7` (77.6%, against 58.9% for each
+control) did not establish a qualifying throughput gain. These are joint
+settings, not isolated measurements of draft width or confidence floor.
+
+Canonical output messages repeated exactly for all three prompts. Every
+candidate output differed from its matched controls. Both verdicts are
+**OUTPUT_MISMATCH**; neither setting is adopted or selected for confirmation.
+All samples recorded drafting and helper work, with no reported helper timeouts
+or fallbacks. Cache residency and helper fill stayed at the canonical values.
+
+Recovery returned `ready`. Fresh health, fill, prompt-channel, pinned-file and
+library checks passed with attached supervisor 1007911 and context 262,144.
+No old production process remained. All twelve raw request/reply/metric records,
+four startup reports and the comparator arithmetic were rechecked; see
+`dfc1-review1.log` and the retained `dfc1-*` evidence.
