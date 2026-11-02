@@ -65,4 +65,32 @@ On 2026-11-02, the focused CPU checks passed: **240 tests** across
 `test_performance_window`, `test_window_pair`, `test_slots_window`,
 `test_pair_supervisor` and `test_helper_ab`. Syntax checks and four dry-runs
 passed. All four protected binary hashes matched. No backend source changed,
-so no backend rebuild was run. Hardware results are not yet recorded here.
+so no backend rebuild was run.
+
+## Stage trim: first attempt (`trm1`)
+
+The run did **not** complete. There is no speed comparison or output-equivalence
+result. All three baseline requests generated 512 tokens from fresh 9,185-token
+prompts. Their TG rates were **34.3, 4.9 and 35.6 tok/s**; the slow sample is
+retained. Prompt rates were **222.2, 235.9 and 223.2 tok/s**.
+
+Trimming engaged at startup. The two Radeon expert caches increased from
+6,069/4,780 to **6,800/5,939 slots**: 1,890 more resident experts in total.
+The helper filled 4,116 slots instead of 4,093 under the same 6,400 MiB cap.
+Disjointness accounting and cross-GPU DFlash tap binding passed the startup checks.
+This establishes startup residency only, not usable throughput or model capacity.
+
+The first trimmed request lost its HTTP connection before completing. The helper
+log reports `second channel: request failed: helper timeout` after 35 prompt row
+requests. The engine reports a closed prompt-helper channel and CPU fallback.
+The underlying cause is not established; the failure is not discarded as noise.
+
+Canonical production was restored automatically. A completion returned `ready`,
+and a subsequent health check returned HTTP 200, loaded, with context 262,144.
+Supervisor 4169738 was attached; helper fill and the prompt channel were restored.
+The loaded libraries were the custom gfx906 rocBLAS and ROCm 6.1 libraries. All
+four protected hashes matched and no old production process survived cleanup.
+Evidence is retained under `build-mixed-gpu/cap1-validation/trm1-*` and the raw
+`/mnt/user/Strata/logs/window-trm1-b-*` helper/server logs.
+
+A single fresh-family retry is planned with unchanged settings and timeouts.
