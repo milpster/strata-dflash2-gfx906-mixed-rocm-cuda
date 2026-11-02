@@ -462,3 +462,32 @@ def test_overlap_comparison_verdicts():
     assert slots_window.overlap_comparison(_overlap_rows([30.0] * 6, [31.0] * 3))["verdict"] == "OVERLAP_NO_GAIN"
     drift = slots_window.overlap_comparison(_overlap_rows([30.0] * 3 + [22.0] * 3, [33.0] * 3))
     assert drift["verdict"] == "INCONCLUSIVE_CONTROL_DRIFT"
+
+
+# ---- helper-off comparison ----
+
+
+def _helper_off_rows(off_rates, on_rate, *, off_reqs=0, on_reqs=250):
+    def arm(label, rates, on, reqs):
+        probes = [dict(rep=i + 1, gen_rate=r, read_rate=200.0, elapsed_s=45.0,
+                       read_ms=44000.0, helper_reqs=reqs) for i, r in enumerate(rates)]
+        return dict(label=label, helper_off=on, probes=probes)
+
+    return [arm("a", off_rates[:3], True, off_reqs),
+            arm("b", [on_rate] * 3, False, on_reqs),
+            arm("c", off_rates[3:], True, off_reqs)]
+
+
+def test_helper_off_comparison_verdicts():
+    assert slots_window.helper_off_comparison(
+        _helper_off_rows([28.0] * 6, 33.0))["verdict"] == "HELPER_GAIN_CONFIRMED"
+    assert slots_window.helper_off_comparison(
+        _helper_off_rows([32.0] * 6, 33.0))["verdict"] == "HELPER_GAIN_SMALL"
+    assert slots_window.helper_off_comparison(
+        _helper_off_rows([34.0] * 6, 33.0))["verdict"] == "HELPER_SLOWER"
+    assert slots_window.helper_off_comparison(
+        _helper_off_rows([28.0] * 6, 33.0, off_reqs=5))["verdict"] == "HELPER_ENGAGEMENT_BROKEN"
+    assert slots_window.helper_off_comparison(
+        _helper_off_rows([28.0] * 6, 33.0, on_reqs=0))["verdict"] == "HELPER_ENGAGEMENT_BROKEN"
+    assert slots_window.helper_off_comparison(
+        _helper_off_rows([30.0] * 3 + [22.0] * 3, 33.0))["verdict"] == "INCONCLUSIVE_CONTROL_DRIFT"
