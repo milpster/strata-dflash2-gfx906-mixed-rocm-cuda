@@ -246,9 +246,12 @@ def test_longctx_prompt_sizes_with_headroom_and_is_deterministic():
     assert meta["est_tokens"] >= 85600
     assert meta["chars"] == len(text)
     assert text.startswith("You are a maintenance-log analysis assistant.")
-    assert "### LOG END" in text and text.rstrip().endswith("do not stop early.")
+    assert "### LOG END" in text and text.rstrip().endswith("never stop early.")
     again, meta2 = fw.longctx_prompt(80000)
     assert again == text and meta2["sha256"] == meta["sha256"]
+    # the tail must structurally demand output well past the 5k-token floor
+    assert meta["blocks"] >= 40 and f"Block {meta['blocks']} of {meta['blocks']}" in text
+    assert "at least 130 words" in text and "at least 5,500 words" in text
     smaller, small_meta = fw.longctx_prompt(80000, chars_per_token=2.0)
     assert small_meta["chars"] < meta["chars"]          # fewer chars/token -> fewer chars
 
