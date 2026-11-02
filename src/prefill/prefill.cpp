@@ -4,6 +4,9 @@
 // src/prefill/prefill.cpp - see include/strata/prefill/prefill.hpp.
 #include "strata/kernels/fused_gr.hpp"
 #include "strata/prefill/prefill.hpp"
+#ifdef STRATA_P2_DIAGNOSTICS
+#include "strata/prefill/moe_input_dump.hpp"
+#endif
 #if defined(STRATA_HAVE_DFLASH2)
 #include "strata/kernels/dflash2.hpp"
 #endif
@@ -4309,6 +4312,28 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                 std::fprintf(stderr, "strata: prefill helper: no activation buffer; the claimed rows fall back to the CPU\n");
                             }
                         }
+#ifdef STRATA_P2_DIAGNOSTICS
+                        // Opt-in measurement build only. Capture the same first-chunk
+                        // input at every reference-window layer, once per process.
+                        // PREFIX.<layer>.bin uses exclusive creation, never replacement.
+                        static const char* dump_prefix = std::getenv("STRATA_P2_DUMP_PREFIX");
+                        static uint32_t dump_seen = 0;
+                        static std::mutex dump_mutex;
+                        if (dump_prefix && *dump_prefix && l >= 32 && l <= 47) {
+                            std::lock_guard<std::mutex> lock(dump_mutex);
+                            const uint32_t bit = uint32_t(1) << (l - 32);
+                            if (!(dump_seen & bit)) {
+                                dump_seen |= bit;
+                                const std::string path = std::string(dump_prefix) + "." + std::to_string(l) + ".bin";
+                                std::vector<float> x((size_t) (T * N));
+                                const bool copied = cudaMemcpyAsync(x.data(), m.mixed, x.size() * sizeof(float),
+                                    cudaMemcpyDeviceToHost, m.cs) == cudaSuccess && cudaStreamSynchronize(m.cs) == cudaSuccess;
+                                const bool written = copied && write_moe_input_dump(path.c_str(), T, N, K, x.data(), ids_h);
+                                std::fprintf(stderr, "strata: p2 input capture: layer=%lld T=%lld path=%s %s\n",
+                                    (long long) l, (long long) T, path.c_str(), written ? "written" : "REFUSED");
+                            }
+                        }
+#endif
                         // Diagnostics: STRATA_DUMP_MOE_INPUT=path, STRATA_DUMP_MOE_LAYER=l - the first chunk's MoE input
                         // of layer l ({T, N, K} int64, T x N floats, T x K expert ids) for testing products on real rows
                         static const char* dump_moe = std::getenv("STRATA_DUMP_MOE_INPUT");
