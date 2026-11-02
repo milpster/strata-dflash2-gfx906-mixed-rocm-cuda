@@ -18,8 +18,9 @@ This is an in-progress snapshot, not a release or numerical signoff.
   0.005 limit. Its maximum, 0.014444641279, was below the 0.02 limit.
 - M5 covered eight fixtures, layers 32–35 and three of ten format pairs. It did
   not establish complete layer/format coverage or tensor NMSE.
-- The new NMSE/reporting tools remain under review. The optional legacy auditor
-  has known validation defects. Passing CPU tests do not establish GPU accuracy.
+- The new NMSE/reporting tools remain under review. Legacy recovery is removed;
+  the auditor now requires full schema-v2 JSON. Reporting changes still need real
+  CMake CPU tests and fresh backend builds. CPU tests do not establish GPU accuracy.
 - The latest backend build was cancelled during HIP configuration. It produced
   no completed backend build or real CMake test result. All four protected binary
   hashes and all five pinned source hashes still matched on 2026-11-02.

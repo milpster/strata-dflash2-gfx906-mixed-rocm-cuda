@@ -13,17 +13,15 @@ WHAT IS TESTED HERE, all on CPU with no GPU, no helper, no pack, no network:
      unweighted mean of the per-row ratios (the rows have deliberately unequal reference energies),
   3. every non-numeric state is explicit: empty -> null, zero reference + nonzero error -> null,
      zero reference + zero error -> 0 with its name, nonfinite input -> null with its count,
-  4. `tools/mixed_gpu/p2_measure/p2_report_audit.py` audits a v2 document clean, recovers a legacy
-     malformed document by strict section boundaries, says `unavailable` for NMSE when the raw energies
-     are absent, never derives a global NMSE from `l2_rel`, refuses a corrupted/nonfinite/count-mismatched
-     file with its typed exit 2, and never writes to the file it audits,
-  5. the retained raw v1 evidence, when present, audits clean with the ORIGINAL absolute/relative
-     percentiles recomputed from its own rows.
+   4. the file-only auditor checks strict v2 JSON, duplicate keys, typed shapes, every aggregate field,
+      both populations and nonfinite states. It applies no numerical acceptance threshold.
+   5. legacy v1 reports are refused, not recovered or rewritten. Their historical results remain
+      separate evidence; missing energies cannot be reconstructed from l2_rel.
 
 The executable seam: the CPU test binary `p2_measure_test` (the CMake target that compiles
 p2_measure.cpp with no GPU code) run as `--emit-selftest <variant> <path>`.  Point the suite at it with
 STRATA_P2_MEASURE_TEST=/path/to/p2_measure_test; without it the suite SKIPS with that instruction,
-because this tree has no ggml source to build the target from.
+when no built target is available. An explicit executable is authoritative and cannot fall back.
 """
 
 from __future__ import annotations
@@ -41,7 +39,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 AUDIT = ROOT / "tools" / "mixed_gpu" / "p2_measure" / "p2_report_audit.py"
-VARIANTS = ("ok", "empty", "zero-ref-nonzero", "zero-ref-exact", "nonfinite", "legacy")
+VARIANTS = ("ok", "empty", "zero-ref-nonzero", "zero-ref-exact", "nonfinite")
 
 sys.path.insert(0, str(AUDIT.parent))
 import p2_report_audit as audit_mod                                            # noqa: E402
@@ -60,12 +58,12 @@ def _emit(variant: str, out: Path) -> None:
 def _exe() -> str:
     """The CPU seam: an executable supporting `--emit-selftest`.  Explicit env first, then the build
     trees.  A binary that cannot emit is refused with the instruction, never a silent skip."""
-    cand = []
     env = os.environ.get("STRATA_P2_MEASURE_TEST")
     if env:
-        cand.append(Path(env))
-    for name in ("p2_measure_test", "nmse_probe"):
-        cand += sorted(ROOT.glob(f"build*/**/{name}"))[:10]
+        path = Path(env)
+        assert path.is_file() and os.access(path, os.X_OK), f"invalid explicit CPU executable: {env}"
+        return str(path.resolve())
+    cand = sorted(ROOT.glob("build*/**/p2_measure_test"))
     for c in cand:
         if c.is_file() and os.access(c, os.X_OK):
             return str(c)
@@ -205,8 +203,14 @@ def test_nonfinite_inputs_are_refused_and_counted(docs):
     assert n["state"] == "invalid_nonfinite_rows"
     assert n["nmse"] is None
     assert n["rows_nonfinite"] == 2
+    assert n["energy_error"] is None and n["energy_ref"] is None
     flagged = [r for r in doc["rows"] if r["a_vs_b"]["nonfinite"]]
     assert len(flagged) == 2
+    for row in flagged:
+        assert all(row["a_vs_b"][key] is None for key in audit_mod.DIFF_KEYS)
+    for metric in ("max_abs", "max_rel"):
+        assert all(doc["aggregate"]["mmq_vs_helper"][metric][key] is None
+                   for key in ("p50", "p90", "p99", "p999", "max", "mean"))
 
 
 # ---------- 4. the audit tool ----------
@@ -232,18 +236,16 @@ def test_audit_reports_nmse_availability_per_population(docs):
     assert "state empty nmse -" in r2.stdout
 
 
-def test_legacy_document_is_not_valid_json_and_the_audit_recovers_it(docs):
-    text = docs["legacy"].read_text(encoding="utf-8")
-    with pytest.raises(Exception):
-        json.loads(text, parse_constant=_refuse)          # the v1 defect: NOT JSON
-    r = _audit(docs["legacy"])
-    assert r.returncode == 0, r.stderr[:400]
-    assert "v1 legacy" in r.stdout
-    assert "UNAVAILABLE" in r.stdout                       # no energies in v1 rows
-    assert "NOT a tensor NMSE" in r.stdout                 # and l2_rel is never converted into one
-    assert "layers with rows: 2" in r.stdout
-    assert "format pairs" in r.stdout and "IQ3_S+Q2_0" in r.stdout
-    assert "fixtures        : 2" in r.stdout
+def test_valid_legacy_schema_is_refused_without_recovery(docs, tmp_path):
+    doc = json.loads(docs["ok"].read_text(encoding="utf-8"))
+    doc["schema"] = "strata.p2_row_measure.v1"
+    path = tmp_path / "legacy.json"
+    path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+    before = path.read_bytes()
+    result = _audit(path)
+    assert result.returncode == 2, result.stderr
+    assert "legacy" in result.stderr.lower()
+    assert path.read_bytes() == before
 
 
 def test_audit_refuses_a_count_mismatch(docs, tmp_path):
@@ -274,11 +276,9 @@ def test_audit_refuses_a_nonfinite_token(docs, tmp_path):
 
 
 def test_audit_never_writes_to_the_report_it_audits(docs):
-    before = hashlib.sha256(docs["legacy"].read_bytes()).hexdigest()
-    assert _audit(docs["legacy"]).returncode == 0
-    assert hashlib.sha256(docs["legacy"].read_bytes()).hexdigest() == before
-    res = audit_mod.audit(docs["legacy"].read_text(encoding="utf-8"), str(docs["legacy"]))
-    assert res["mode"].startswith("v1 legacy")
+    before = hashlib.sha256(docs["ok"].read_bytes()).hexdigest()
+    assert _audit(docs["ok"]).returncode == 0
+    assert hashlib.sha256(docs["ok"].read_bytes()).hexdigest() == before
 
 
 # ---------- 5. the retained raw v1 evidence, read-only ----------
@@ -287,23 +287,19 @@ def test_audit_never_writes_to_the_report_it_audits(docs):
     ROOT / "build-mixed-gpu/p2-measure-window1/measure.json",
     ROOT / "build-mixed-gpu/p2-measure-harness/measure.json",
 ])
-def test_retained_raw_v1_reports_audit_clean(raw: Path):
+def test_retained_raw_v1_reports_are_refused_unchanged(raw: Path):
     if not raw.is_file():
         pytest.skip(f"{raw} is retained evidence from a measurement window; it is not in this tree")
     text = raw.read_text(encoding="utf-8")
     digest_before = hashlib.sha256(raw.read_bytes()).hexdigest()
     with pytest.raises(Exception):
         json.loads(text, parse_constant=_refuse)          # the raw file stays malformed, unchanged
-    res = audit_mod.audit(text, str(raw))
-    assert res["schema"] == "strata.p2_row_measure.v1"
-    assert res["nmse"]["available"] is False
-    assert "l2_rel" in res["nmse"]["l2_rel_is_not_nmse"]
-    assert res["coverage"]["counts"]["rows_retained"] > 0
-    assert res["coverage"]["layers_measured"], "a retained report with no rows is not quantitative evidence"
+    with pytest.raises(audit_mod.AuditError):
+        audit_mod.audit(text, str(raw))
     assert hashlib.sha256(raw.read_bytes()).hexdigest() == digest_before
     r = _audit(raw)
-    assert r.returncode == 0, r.stderr[:400]
-    assert "all equal" in r.stdout                        # rows recompute the emitted percentiles
+    assert r.returncode == 2, r.stderr[:400]
+    assert "Traceback" not in r.stderr
 
 
 def test_audit_module_is_read_only_by_construction():
@@ -322,3 +318,110 @@ def test_json_output_cannot_overwrite_its_input(docs, tmp_path):
                             timeout=120)
     assert result.returncode == 3, result.stderr
     assert report.read_bytes() == before
+
+
+def test_audit_accepts_compact_strict_json(docs, tmp_path):
+    path = tmp_path / "compact.json"
+    path.write_text(json.dumps(json.loads(docs["ok"].read_text())), encoding="utf-8")
+    result = _audit(path)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("needle", ['"schema":', '"rows_retained":'])
+def test_audit_refuses_duplicate_keys(docs, tmp_path, needle):
+    text = docs["ok"].read_text(encoding="utf-8")
+    value = '"strata.p2_row_measure.v2"' if needle == '"schema":' else "3"
+    path = tmp_path / "duplicate.json"
+    path.write_text(text.replace(needle, f"{needle} {value}, {needle}", 1), encoding="utf-8")
+    result = _audit(path)
+    assert result.returncode == 2, result.stderr
+    assert "duplicate" in result.stderr.lower()
+    assert "Traceback" not in result.stderr
+
+
+@pytest.mark.parametrize("mutation", [
+    "missing-recompose-count", "boolean-count", "string-row-metric", "zero-row-length",
+    "nonboolean-row-state", "inconsistent-ref-zero", "missing-aggregate-field",
+    "duplicate-bucket", "wrong-nmse-ref-zero-count", "wrong-nmse-nonfinite-count",
+    "corrupt-recompose-bucket", "summary-only", "nonobject-counts", "nonarray-formats",
+    "negative-energy", "row-outside-layer-window", "undeclared-format-pair",
+])
+def test_audit_refuses_malformed_shapes_and_incomplete_checks(docs, tmp_path, mutation):
+    doc = json.loads(docs["ok"].read_text(encoding="utf-8"))
+    if mutation == "missing-recompose-count":
+        del doc["counts"]["recompose_retained"]
+    elif mutation == "boolean-count":
+        doc["counts"]["rows_skipped"] = False
+    elif mutation == "string-row-metric":
+        doc["rows"][0]["a_vs_b"]["max_abs"] = "0"
+    elif mutation == "zero-row-length":
+        doc["rows"][0]["a_vs_b"]["n"] = 0
+    elif mutation == "nonboolean-row-state":
+        doc["rows"][0]["a_vs_b"]["nonfinite"] = 0
+    elif mutation == "inconsistent-ref-zero":
+        doc["rows"][0]["a_vs_b"]["ref_zero"] = True
+    elif mutation == "missing-aggregate-field":
+        del doc["aggregate"]["mmq_vs_helper"]["max_abs"]["p999"]
+    elif mutation == "duplicate-bucket":
+        doc["buckets"].append(doc["buckets"][0])
+    elif mutation == "wrong-nmse-ref-zero-count":
+        doc["nmse"]["mmq_vs_helper"]["rows_ref_zero"] = 123
+    elif mutation == "wrong-nmse-nonfinite-count":
+        doc["nmse"]["mmq_vs_helper"]["rows_nonfinite"] = 123
+    elif mutation == "corrupt-recompose-bucket":
+        next(b for b in doc["buckets"] if b["key"].startswith("recompose:"))["max_abs"]["p999"] = 123
+    elif mutation == "summary-only":
+        doc["summary_only"] = True
+    elif mutation == "nonobject-counts":
+        doc["counts"] = []
+    elif mutation == "nonarray-formats":
+        doc["formats"] = 3
+    elif mutation == "negative-energy":
+        doc["rows"][0]["a_vs_b"]["sum_sq_ref"] = -30
+    elif mutation == "row-outside-layer-window":
+        doc["layer_window"] = [0, 1]
+    elif mutation == "undeclared-format-pair":
+        doc["formats"] = []
+    path = tmp_path / f"{mutation}.json"
+    path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+    result = _audit(path)
+    assert result.returncode == 2, f"{mutation}: {result.stderr}"
+    assert "AUDIT ERROR" in result.stderr and "Traceback" not in result.stderr
+
+
+def test_audit_refuses_numeric_overflow_outside_rows(docs, tmp_path):
+    path = tmp_path / "overflow.json"
+    text = docs["ok"].read_text(encoding="utf-8")
+    path.write_text(text.replace('"eps": 1e-12', '"eps": 1e400', 1), encoding="utf-8")
+    result = _audit(path)
+    assert result.returncode == 2, result.stderr
+    assert "Traceback" not in result.stderr
+
+
+@pytest.mark.parametrize("payload", ["[]", "null", "{}", '{"schema": "strata.p2_row_measure.v2"}'])
+def test_malformed_top_level_is_a_typed_error(tmp_path, payload):
+    path = tmp_path / "shape.json"
+    path.write_text(payload, encoding="utf-8")
+    result = _audit(path)
+    assert result.returncode == 2
+    assert "AUDIT ERROR" in result.stderr and "Traceback" not in result.stderr
+
+
+@pytest.mark.parametrize("missing", ["row-metric", "population-energy"])
+def test_missing_nullable_field_is_not_silently_null(docs, tmp_path, missing):
+    doc = json.loads(docs["nonfinite"].read_text(encoding="utf-8"))
+    if missing == "row-metric":
+        del doc["rows"][1]["a_vs_b"]["max_abs"]
+    else:
+        del doc["nmse"]["mmq_vs_helper"]["energy_ref"]
+    path = tmp_path / "missing-nullable.json"
+    path.write_text(json.dumps(doc), encoding="utf-8")
+    result = _audit(path)
+    assert result.returncode == 2
+    assert "Traceback" not in result.stderr
+
+
+def test_invalid_explicit_binary_never_falls_back(monkeypatch, tmp_path):
+    monkeypatch.setenv("STRATA_P2_MEASURE_TEST", str(tmp_path / "absent"))
+    with pytest.raises(AssertionError, match="invalid explicit CPU executable"):
+        _exe()

@@ -72,6 +72,10 @@ RowDiff diff_rows(const float* a, const float* b, int64_t n, double eps) {
     d.l2_rel = nrm > 0.0 ? l2 / nrm : 0.0;
     d.a_fnv = fnv64(a, (size_t) n * sizeof(float));
     d.b_fnv = fnv64(b, (size_t) n * sizeof(float));
+    if (d.nonfinite) {
+        // fmax can hide a NaN input. No derived metric from an invalid row may look like agreement.
+        d.max_abs = d.row_amax = d.max_rel = d.mean_abs = d.l2_rel = d.a_amax = d.b_amax = std::nan("");
+    }
     return d;
 }
 
@@ -84,6 +88,7 @@ const char* nmse_state_name(NmseState s) {
         case NmseState::kZeroRefExact: return "zero_reference_exact_match";
         case NmseState::kZeroRefUnbounded: return "zero_reference_nonzero_error_unbounded";
         case NmseState::kInvalidNonfinite: return "invalid_nonfinite_rows";
+        case NmseState::kInvalidEnergy: return "invalid_energy";
     }
     return "invalid_state";
 }
@@ -95,6 +100,7 @@ NmseDiag nmse_diagnostic(const std::vector<RowDiff>& population) {
     // partial sum would be a made-up finite number.
     for (const RowDiff& d : population) {
         if (d.nonfinite) ++s.rows_nonfinite;
+        if (d.ref_zero) ++s.rows_ref_zero;
     }
     s.state = NmseState::kEmpty;
     s.has_value = false;
@@ -102,18 +108,22 @@ NmseDiag nmse_diagnostic(const std::vector<RowDiff>& population) {
     if (population.empty()) return s;                       // count 0, null: an empty population says "no rows"
     if (s.rows_nonfinite > 0) {                             // never silently finite, never 0
         s.state = NmseState::kInvalidNonfinite;
+        s.energy_error = s.energy_ref = std::nan("");
         return s;
     }
     for (const RowDiff& d : population) {
-        if (d.ref_zero) ++s.rows_ref_zero;
+        if (d.n <= 0 || !std::isfinite(d.sum_sq_err) || !std::isfinite(d.sum_sq_ref) ||
+            d.sum_sq_err < 0.0 || d.sum_sq_ref < 0.0 || d.ref_zero != (d.sum_sq_ref == 0.0)) {
+            s.state = NmseState::kInvalidEnergy;
+            s.energy_error = s.energy_ref = std::nan("");
+            return s;
+        }
         s.energy_error += d.sum_sq_err;
         s.energy_ref += d.sum_sq_ref;
     }
     if (!std::isfinite(s.energy_error) || !std::isfinite(s.energy_ref)) {
-        s.state = NmseState::kInvalidNonfinite;             // a NaN/Infinity energy: refused, not reported
-        s.rows_nonfinite = s.rows;
-        s.energy_error = 0.0;
-        s.energy_ref = 0.0;
+        s.state = NmseState::kInvalidEnergy;               // overflow is not a count of nonfinite inputs
+        s.energy_error = s.energy_ref = std::nan("");
         return s;
     }
     if (s.energy_ref == 0.0) {
@@ -126,9 +136,14 @@ NmseDiag nmse_diagnostic(const std::vector<RowDiff>& population) {
         }
         return s;
     }
+    s.nmse = s.energy_error / s.energy_ref;
+    if (!std::isfinite(s.nmse)) {
+        s.state = NmseState::kInvalidEnergy;
+        s.energy_error = s.energy_ref = std::nan("");
+        return s;
+    }
     s.state = NmseState::kOk;
     s.has_value = true;
-    s.nmse = s.energy_error / s.energy_ref;
     return s;
 }
 
@@ -147,6 +162,11 @@ Agg aggregate(std::vector<double> v) {
     a.count = (int64_t) v.size();
     a.empty = v.empty();
     if (v.empty()) return a;
+    if (std::any_of(v.begin(), v.end(), [](double value) { return !std::isfinite(value); })) {
+        // Reject before sorting: NaNs do not define the ordering a percentile needs.
+        a.p50 = a.p90 = a.p99 = a.p999 = a.max = a.mean = std::nan("");
+        return a;
+    }
     std::sort(v.begin(), v.end());
     a.p50 = percentile(v, 0.50);
     a.p90 = percentile(v, 0.90);
@@ -746,8 +766,7 @@ std::string nmse_json(const char* population, const char* reference, const NmseD
     return o;
 }
 
-/// The energy-less v1 row shape (schema v2 fields dropped): the shape of the retained raw v1 evidence.
-std::string diff_json(const RowDiff& d, bool v1_shape) {
+std::string diff_json(const RowDiff& d) {
     std::string o;
     o += "{\"max_abs\": " + num(d.max_abs);
     o += ", \"row_amax\": " + num(d.row_amax);
@@ -758,10 +777,6 @@ std::string diff_json(const RowDiff& d, bool v1_shape) {
     o += ", \"b_amax\": " + num(d.b_amax);
     o += ", \"a_fnv\": \"" + hex64(d.a_fnv) + "\"";
     o += ", \"b_fnv\": \"" + hex64(d.b_fnv) + "\"";
-    if (v1_shape) {
-        o += "}";
-        return o;
-    }
     // schema v2, additive: the retained energies and the row's state.  A NaN energy is null, never 0.
     o += ", \"n\": " + std::to_string(d.n);
     o += ", \"sum_sq_err\": " + num(d.sum_sq_err);
@@ -777,6 +792,9 @@ struct TopRow {
     double value = 0.0;
 };
 bool by_value_then_key(const TopRow& a, const TopRow& b) {
+    const bool a_finite = std::isfinite(a.value), b_finite = std::isfinite(b.value);
+    if (a_finite != b_finite) return !a_finite;  // invalid rows stay visible, ordered deterministically
+    if (!a_finite) return a.key < b.key;
     if (a.value != b.value) return a.value > b.value;
     return a.key < b.key;
 }
@@ -803,13 +821,12 @@ void collect_buckets(const Report& r, Buckets& b) {
     }
 }
 
-std::string to_json(const Report& r, bool emit_v1_document_defects) {
+std::string to_json(const Report& r) {
     Report s = r;
     sort_rows(s);
     std::string o;
     o += "{\n";
-    o += "  \"schema\": \"" + std::string(emit_v1_document_defects ? "strata.p2_row_measure.v1"
-                                                                   : kReportSchemaV2) + "\",\n";
+    o += "  \"schema\": \"" + std::string(kReportSchemaV2) + "\",\n";
     o += "  \"harness_version\": \"" + json_escape(s.meta.harness_version) + "\",\n";
     o += "  \"argv\": \"" + json_escape(s.meta.argv_joined) + "\",\n";
     o += "  \"pack_dir\": \"" + json_escape(s.meta.pack_dir) + "\",\n";
@@ -886,7 +903,7 @@ std::string to_json(const Report& r, bool emit_v1_document_defects) {
     agg_json(o, "max_rel", aggregate(rec_rel));
     o += "}\n  },\n";
 
-    if (!emit_v1_document_defects) {
+    {
         // The energy-weighted tensor NMSE of the SAME two populations the aggregate above describes.  This
         // is sum(energy)/sum(energy) over the rows, NOT a mean of the per-row l2_rel, and no threshold.
         std::vector<RowDiff> pop_ab, pop_arm;
@@ -897,7 +914,7 @@ std::string to_json(const Report& r, bool emit_v1_document_defects) {
         o += "  \"nmse\": {\n";
         o += "    \"definition\": \"" + std::string(kNmseDefinition) + "\",\n";
         o += "    \"states\": \"empty | ok | zero_reference_exact_match | "
-             "zero_reference_nonzero_error_unbounded | invalid_nonfinite_rows\",\n";
+             "zero_reference_nonzero_error_unbounded | invalid_nonfinite_rows | invalid_energy\",\n";
         o += "    \"note\": \"diagnostic only - no threshold, no verdict; a null nmse is a named "
              "non-numeric state, never agreement\",\n";
         o += "    \"mmq_vs_helper\": " +
@@ -914,17 +931,9 @@ std::string to_json(const Report& r, bool emit_v1_document_defects) {
         for (const auto& kv : b.ab) {
             if (i++) o += ", ";
             o += "{\"key\": \"" + json_escape(kv.first) + "\", \"max_abs\": ";
-            if (emit_v1_document_defects) {   // the v1 emitter's defect, reproduced for the audit's legacy path
-                agg_json(o, "v", aggregate(kv.second));
-            } else {
-                agg_json_body(o, aggregate(kv.second));   // v2: the value IS the aggregate object
-            }
+            agg_json_body(o, aggregate(kv.second));
             o += ", \"max_rel\": ";
-            if (emit_v1_document_defects) {
-                agg_json(o, "v", aggregate(b.rel[kv.first]));
-            } else {
-                agg_json_body(o, aggregate(b.rel[kv.first]));
-            }
+            agg_json_body(o, aggregate(b.rel[kv.first]));
             o += "}";
         }
     }
@@ -966,8 +975,8 @@ std::string to_json(const Report& r, bool emit_v1_document_defects) {
                  ", \"expert\": " + std::to_string(rr.expert) + ", \"token\": " + std::to_string(rr.token) +
                  ", \"pair\": " + std::to_string(rr.pair) + ", \"gu_type\": " + std::to_string(rr.gu_type) +
                  ", \"d_type\": " + std::to_string(rr.d_type) + ", \"has_arm\": " +
-                 std::string(rr.has_arm ? "true" : "false") + ", \"a_vs_b\": " + diff_json(rr.a_vs_b, emit_v1_document_defects) +
-                 ", \"arm_vs_a\": " + diff_json(rr.arm_vs_a, emit_v1_document_defects) + "}";
+                 std::string(rr.has_arm ? "true" : "false") + ", \"a_vs_b\": " + diff_json(rr.a_vs_b) +
+                 ", \"arm_vs_a\": " + diff_json(rr.arm_vs_a) + "}";
         }
         o += "\n  ],\n  \"recompose\": [";
         for (size_t i = 0; i < s.recompose.size(); ++i) {
@@ -977,7 +986,7 @@ std::string to_json(const Report& r, bool emit_v1_document_defects) {
                  std::to_string(rr.fixture_index) + ", \"layer\": " + std::to_string(rr.layer) +
                  ", \"expert\": " + std::to_string(rr.expert) + ", \"token\": " + std::to_string(rr.token) +
                  ", \"pair\": " + std::to_string(rr.pair) + ", \"gu_type\": " + std::to_string(rr.gu_type) +
-                 ", \"d_type\": " + std::to_string(rr.d_type) + ", \"arm_vs_a\": " + diff_json(rr.arm_vs_a, emit_v1_document_defects) + "}";
+                 ", \"d_type\": " + std::to_string(rr.d_type) + ", \"arm_vs_a\": " + diff_json(rr.arm_vs_a) + "}";
         }
         o += "\n  ]";
     }
@@ -1197,19 +1206,20 @@ int make_cpu_selftest_report(const std::string& variant, Report& out, std::strin
         st_row(out.rows, "pinned-sample", 0, 33, 9, 1, 1, 21, 42, a0, n0, k, false);
         st_row(out.rows, "decode-list", 2, 34, 3, 0, 2, 17, 20, i0, a0, k, false);
         out.meta.notes.push_back("selftest: nonfinite inputs, the ratio must be refused, never reported 0");
-    } else if (variant == "legacy") {
-        // the "ok" rows, emitted through the v1 bucket defect by to_json(r, true).
-        const float a1[k] = {10.f, 0.f, 0.f, 0.f}, b1[k] = {11.f, 0.f, 0.f, 0.f};
-        st_row(out.rows, "pinned-sample", 0, 32, 7, 0, 0, 21, 42, a1, b1, k, false);
-        st_row(out.rows, "decode-list", 2, 33, 9, 1, 1, 17, 20, a1, b1, k, false);
     } else {
         err = "selftest: unknown variant '" + variant + "' (ok|empty|zero-ref-nonzero|zero-ref-exact|"
-              "nonfinite|legacy)";
+              "nonfinite)";
         return 3;
     }
-    st_format(out, 32, 21, 42);
-    st_format(out, 33, 21, 42);
-    st_format(out, 34, 17, 20);
+    // The declaration must match the actual rows, including variants with different layer/format pairs.
+    for (const auto* population : {&out.rows, &out.recompose}) {
+        for (const RowRec& rr : *population) {
+            const bool present = std::any_of(out.meta.formats.begin(), out.meta.formats.end(),
+                [&](const FormatInfo& f) { return f.layer == rr.layer && f.gu_type == rr.gu_type &&
+                                                 f.d_type == rr.d_type; });
+            if (!present) st_format(out, rr.layer, rr.gu_type, rr.d_type);
+        }
+    }
     // fixtures_used: per fixture, (tokens this self-test uses, gate rows retained for that fixture)
     for (const RowRec& rr : out.rows) {
         auto it = out.meta.fixtures_used.find(rr.fixture);
