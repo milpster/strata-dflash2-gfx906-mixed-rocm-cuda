@@ -996,6 +996,13 @@ def test_helper_off_startup_report_proofs(tmp_path, monkeypatch):
     assert report["first_cache_slots"] == 6069 and report["later_cache_slots"] == 4780
     assert report["effective_k"] == 4 and report["fp16_prompt_line"] is True
     assert report["ready_context"] == 262144
+    # the engine-started banner echoing the inert --expert-helper-slots argv pair is
+    # NOT a client line (iso2 evidence: the only match in a clean OFF arm)
+    banner = ("[strata] 2026-11-03 12:12:33 engine started: /mixed/strata --serve --gpu 0,1 "
+              "--expert-helper-slots 4200 --layer-split 32\n")
+    Path(json.loads(path.read_text())["log"]).write_text(STOCK_STARTUP + banner)
+    perf.helper_off_startup_report(SimpleNamespace(config=path),
+                                   {"engine_log": str(console)})
 
 
 @pytest.mark.parametrize("mutate_cfg,mutate_log,match", [
@@ -1006,6 +1013,8 @@ def test_helper_off_startup_report_proofs(tmp_path, monkeypatch):
     (lambda c: c["env"].pop("STRATA_PREFILL_HELPER"), None, "OFF derivation"),
     (None, lambda s: s + "expert-helper: 4093 rows on /x.sock (mirrored 4093/4200 slots)\n",
      "expert-helper client"),
+    (None, lambda s: s + "strata generate: expert-helper: 13727 of 24576 ranked pairs "
+                       "eligible in layers 0..47\n", "expert-helper client"),
     (None, lambda s: s.replace("CUDA1 runs layers 32-47", "CUDA1 runs layers 30-47")
                       .replace("CUDA0 runs layers 0-31", "CUDA0 runs layers 0-29"), "layer-split"),
     (None, lambda s: "".join(line + "\n" for line in s.splitlines()
