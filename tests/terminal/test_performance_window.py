@@ -185,7 +185,8 @@ def test_startup_proof(tmp_path, monkeypatch, trim):
             perf.startup_report(config, {"helper_log": str(helper)})
 
 
-def run_world(monkeypatch, tmp_path, *, fail_probe=False, fail_restore=False, iq_mt_min=False):
+def run_world(monkeypatch, tmp_path, *, fail_probe=False, fail_restore=False,
+              iq_mt_min=False, adapt_off=False):
     """No processes/HTTP/signals; isolate new runner's finally and ownership logic."""
     monkeypatch.setattr(perf.runtime, "EV", tmp_path)
     source = tmp_path / "production.json"
@@ -197,7 +198,8 @@ def run_world(monkeypatch, tmp_path, *, fail_probe=False, fail_restore=False, iq
     def prepare(family, **kwargs):
         path = tmp_path / f"{family}.json"
         path.write_text(json.dumps(dict(log=str(tmp_path / "engine.log"))))
-        prepared.append((family, kwargs.get("iq_mt_min")))
+        prepared.append(dict(family=family, iq_mt_min=kwargs.get("iq_mt_min"),
+                             adapt_off=kwargs.get("adapt_off")))
         return SimpleNamespace(family=family, config=path, launcher="launcher", state="state",
                                base_url="url", socket2="socket2", tuning=kwargs.get("tuning"))
 
@@ -235,7 +237,7 @@ def run_world(monkeypatch, tmp_path, *, fail_probe=False, fail_restore=False, iq
     monkeypatch.setattr(perf, "probe", probe)
     return events, SimpleNamespace(family="unit", lever="trim", candidate=None,
                                    expected_supervisor=1, execute=True,
-                                   iq_mt_min=iq_mt_min), prepared
+                                   iq_mt_min=iq_mt_min, adapt_off=adapt_off), prepared
 
 
 @pytest.mark.parametrize("restore_fails", [False, True])
@@ -321,6 +323,23 @@ def test_iq_mt_min_flag_reaches_every_arm_and_the_record(monkeypatch, tmp_path):
         rep=rep, gen_rate=30, read_rate=200, request_sha256=f"req{rep}",
         message_sha256=f"out{rep}", plans=[]))
     assert perf.run(args) == 0
-    assert [iq for _, iq in prepared] == [True, True, True]  # controls and candidates alike
+    assert [row["iq_mt_min"] for row in prepared] == [True, True, True]  # controls and candidates alike
+    assert [row["adapt_off"] for row in prepared] == [False, False, False]
     result = json.loads((tmp_path / "unit-perf-status.json").read_text())
     assert result["iq_mt_min"] is True
+    assert result["adapt_off"] is False
+
+
+def test_adapt_off_flag_reaches_every_arm_and_the_record(monkeypatch, tmp_path):
+    events, args, prepared = run_world(monkeypatch, tmp_path, adapt_off=True)
+    (tmp_path / "engine.log").write_text(
+        "the prompt tier's channel (socket2) closed after 3 prompt requests / 9 prompt rows\n")
+    monkeypatch.setattr(perf.lifecycle, "graceful_stop", lambda *_: events.append("arm_stop"))
+    monkeypatch.setattr(perf, "probe", lambda cfg, state, family, rep: dict(
+        rep=rep, gen_rate=30, read_rate=200, request_sha256=f"req{rep}",
+        message_sha256=f"out{rep}", plans=[]))
+    assert perf.run(args) == 0
+    assert [row["adapt_off"] for row in prepared] == [True, True, True]  # controls and candidates alike
+    assert [row["iq_mt_min"] for row in prepared] == [False, False, False]
+    result = json.loads((tmp_path / "unit-perf-status.json").read_text())
+    assert result["adapt_off"] is True

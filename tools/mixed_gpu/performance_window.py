@@ -232,17 +232,17 @@ def run(args):
     if not args.execute:
         print(json.dumps(dict(family=args.family, schedule=schedule, reps=3,
                               max_tokens=512, minimum_output=MIN_OUTPUT,
-                              iq_mt_min=args.iq_mt_min,
+                              iq_mt_min=args.iq_mt_min, adapt_off=args.adapt_off,
                               restore=str(runtime.LAUNCHER) + " --recover", pins=fingerprint), indent=2))
         return 0
     private = []
     for i, tuning in enumerate(schedule):
         config = window_pair.prepare(f"{args.family}-{chr(97 + i)}", slots=4200, tuning=tuning,
-                                     iq_mt_min=args.iq_mt_min)
+                                     iq_mt_min=args.iq_mt_min, adapt_off=args.adapt_off)
         config.label = chr(97 + i)
         private.append(config)
     result = dict(started=time.time(), lever=args.lever, iq_mt_min=args.iq_mt_min,
-                  pairs=[], success=False, pins=fingerprint)
+                  adapt_off=args.adapt_off, pairs=[], success=False, pins=fingerprint)
     pair.write_json(status, result)  # durable intent before any production signal
     active, known = None, {}
     old_handlers = {sig: signal.signal(sig, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
@@ -325,6 +325,10 @@ def main():
                         help="baseline env STRATA_IQ_MT_MIN=1 on EVERY arm (issue #152: "
                              "drafting-independent CPU IQ expert rounding; controls and "
                              "candidates alike, so the window still measures one lever)")
+    parser.add_argument("--adapt-off", action="store_true",
+                        help="baseline argv --adapt-swaps 0 on EVERY arm (freeze both adaptive "
+                             "tiers at the deterministic initial fill, so placement stops "
+                             "following the lever's timing; controls and candidates alike)")
     args = parser.parse_args()
     if args.candidate is not None and not 1 <= args.candidate <= len(MATRIX[args.lever]):
         parser.error("candidate outside the bounded matrix")

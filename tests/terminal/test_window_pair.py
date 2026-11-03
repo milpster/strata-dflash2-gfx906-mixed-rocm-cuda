@@ -366,3 +366,35 @@ def test_bad_iq_mt_min_type(tmp_path, value):
     with pytest.raises(ValueError, match="IQ-MT-MIN baseline override"):
         window_pair.prepare("tibq", evidence=tmp_path, iq_mt_min=value)
     assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.skipif(not window_pair.PROD_LAUNCHER.exists(), reason="local production fixture unavailable")
+@pytest.mark.parametrize("tuning", [None, {"dflash": [7, 6, 0.3]}])
+def test_adapt_off_baseline_on_every_arm(tmp_path, tuning):
+    prod = json.loads(window_pair.PROD_CONFIG.read_text())
+    result = window_pair.prepare(f"taoa{0 if tuning is None else 1}", slots=4200,
+                                 evidence=tmp_path, tuning=tuning, adapt_off=True)
+    cfg = json.loads(Path(result.config).read_text())
+    expected_args = list(prod["args"])
+    expected_args[expected_args.index("--expert-helper-slots") + 1] = "4200"
+    expected_args += ["--adapt-swaps", "0"]
+    if tuning:
+        for flag, value in zip(("--spec", "--dflash-block", "--spec-min-p"), tuning["dflash"]):
+            expected_args[expected_args.index(flag) + 1] = str(value)
+    assert cfg["args"] == expected_args
+    assert "adapt" not in cfg.get("env", {})  # argv-only baseline; no env seam
+    assert result.parity_failures == []
+
+
+@pytest.mark.skipif(not window_pair.PROD_LAUNCHER.exists(), reason="local production fixture unavailable")
+def test_adapt_off_default_absent(tmp_path):
+    result = window_pair.prepare("taoo", slots=4200, evidence=tmp_path)
+    args = json.loads(Path(result.config).read_text())["args"]
+    assert "--adapt-swaps" not in args
+
+
+@pytest.mark.parametrize("value", [1, "1", [], {}])
+def test_bad_adapt_off_type(tmp_path, value):
+    with pytest.raises(ValueError, match="Adaptive-off baseline override"):
+        window_pair.prepare("taoq", evidence=tmp_path, adapt_off=value)
+    assert not list(tmp_path.iterdir())

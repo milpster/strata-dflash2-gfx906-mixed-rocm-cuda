@@ -72,7 +72,7 @@ def prepare(family, *, slots=4000, fill_mib=6400, port=18080, evidence=EVIDENCE,
             prod_config=PROD_CONFIG, prod_launcher=PROD_LAUNCHER,
             engine=None, helper=None, rpc_profile=False, draft_helper=None, knob=None,
             prefill_timing=False, helper_streams=False, draft_tap_bf16=False,
-            split_overlap=False, helper_off=False, iq_mt_min=False, tuning=None):
+            split_overlap=False, helper_off=False, iq_mt_min=False, adapt_off=False, tuning=None):
     if tuning is not None and (knob is not None or engine is not None or helper is not None or
                                draft_helper is not None or rpc_profile or prefill_timing or
                                helper_streams or draft_tap_bf16 or split_overlap or helper_off):
@@ -87,6 +87,8 @@ def prepare(family, *, slots=4000, fill_mib=6400, port=18080, evidence=EVIDENCE,
         raise ValueError("Helper-off override must be True or False")
     if type(iq_mt_min) is not bool:
         raise ValueError("IQ-MT-MIN baseline override must be True or False")
+    if type(adapt_off) is not bool:
+        raise ValueError("Adaptive-off baseline override must be True or False")
     if helper_off and (draft_helper or draft_tap_bf16 or helper is not None):
         raise ValueError("Helper-off cannot combine with the remote draft lane or a helper binary")
     if helper_off and (rpc_profile or helper_streams):
@@ -159,6 +161,21 @@ def prepare(family, *, slots=4000, fill_mib=6400, port=18080, evidence=EVIDENCE,
         # by design and is engine-side only (the CUDA helper has no CPU IQ kernels),
         # and an unset value keeps the shipped default byte-identical.
         config.setdefault("env", {})["STRATA_IQ_MT_MIN"] = "1"
+    if adapt_off:
+        # Adaptive-placement identity probe: --adapt-swaps 0 on EVERY arm freezes both
+        # adaptive tiers at the deterministic initial fill (--peer-adapt-swaps defaults
+        # to --adapt-swaps). The swap cadence is keyed to verify rounds with a
+        # spec-dependent warm interval (generate.cpp's STRATA_SPEC_ADAPT_WARM/EVERY),
+        # so draft timing changes the residency trajectory - which backend computes an
+        # expert - and with it the rounding. The engine's own contract: with
+        # --adapt-swaps 0 "the answer must match the restored one token for token".
+        # A BASELINE like iq_mt_min: controls and candidates alike, composes with the
+        # tuning by design; refused when production already carries the flag so a
+        # baseline cannot silently duplicate or edit it.
+        args = config["args"]
+        if "--adapt-swaps" in args:
+            raise ValueError("Adaptive-off baseline requires production argv without --adapt-swaps")
+        args += ["--adapt-swaps", "0"]
     if knob is not None:
         # L6: engine argv only. Exactly one occurrence is enforced so a silent change
         # in the production argv cannot make the knob land somewhere unexpected.
