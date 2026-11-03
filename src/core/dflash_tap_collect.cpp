@@ -249,7 +249,13 @@ bool DFlashTapCollector::assemble(int64_t key, const Slice* slices, int n_slices
                 // L15: this guard covers EVERY producer slice, drafter-device (D2D)
                 // included: a null plane is a loud refusal, never a null-source copy.
                 if (slices[i].plane == nullptr || rows > slices[i].stride_rows || rows > slices[i].rows) {
-                    err = "dflash tap collect: producer rows do not cover the assembled rows - refusing a stale read";
+                    err = "dflash tap collect: producer rows do not cover the assembled rows - refusing a stale read "
+                          "(tap " + std::to_string(t) + " owner " + std::to_string(plan_.owner[t]) +
+                          " slice stage " + std::to_string(slices[i].stage) +
+                          " plane " + (slices[i].plane == nullptr ? "NULL" : "ok") +
+                          " rows " + std::to_string(rows) +
+                          " > stride_rows " + std::to_string(slices[i].stride_rows) +
+                          " or slice rows " + std::to_string(slices[i].rows) + ")";
                     return false;
                 }
             }
