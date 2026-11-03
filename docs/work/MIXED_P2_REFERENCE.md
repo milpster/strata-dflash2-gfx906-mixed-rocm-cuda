@@ -380,3 +380,34 @@ compares the two stacks end to end, not the same rows under two formats.
 Limits: three prompts, one machine; the refused first attempt (q8k-sp1,
 gate-correct) matches q8k-id1 stock exactly; the wire stays default OFF —
 this documents the cost of turning it on and claims no gain.
+
+## First-token KL: stock helper, Q8_K wire, helper-less (q8k-kl1)
+
+Driver `identity_q8k_arms.py --first-logits`; evidence
+`build-mixed-gpu/p2-finish/q8k-kl1/`. The engine dumps the full-vocabulary
+float32 logits of the row that decided each request's FIRST generated token
+(config env `STRATA_DUMP_FIRST_LOGITS`, vocabulary 248,320; the machinery is
+`performance_window`'s, recorded as evidence only). Three arms — stock
+helper, Q8_K wire, helper-less — the same three frozen prompts; engagement
+gates green everywhere (helper arms 6,588–7,224 helper requests, 0 timeouts,
+0 fallbacks; helper-less arm 0), and the returned-message hashes reproduce
+q8k-id1/q8k-id2 exactly. KL is the stable full-softmax KL in nats.
+
+| pair | mean KL forward / reverse | per-rep KL forward | max abs logit delta |
+|---|---:|---:|---:|
+| stock vs Q8_K wire | 5.5e-4 / 5.4e-4 | 2.2e-4 – 7.7e-4 | 1.2 – 1.4 |
+| stock vs helper-less | 3.4e-3 / 4.8e-3 | 3.2e-3 – 3.8e-3 | 1.8 – 2.5 |
+| Q8_K wire vs helper-less | 3.6e-3 / 5.2e-3 | 2.7e-3 – 4.7e-3 | 2.1 – 2.9 |
+
+The two helper stacks agree with each other far more closely — about 6–9×
+smaller KL — than either agrees with the helper-less system. Distribution
+parity with stock is close: 5.5e-4 nats between wire and stock, against the
+3.4e-3/4.8e-3 the stock system itself shows against its own helper-less
+configuration. The sizeable max-abs logit deltas (1.2–2.9) sit on
+low-probability tokens; the probability mass barely moves, which is why the
+KL stays small.
+
+Limits: the first generated token only, three prompts, one machine,
+temperature 0; evidence only, never a gate. This does not contradict the
+message-level divergence — 512 autoregressive steps amplify distribution
+differences of exactly this size.
