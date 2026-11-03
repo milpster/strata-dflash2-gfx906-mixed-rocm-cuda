@@ -1,0 +1,82 @@
+{
+ "probe": {
+  "tag": "probe",
+  "wall": 8.666403532028198,
+  "usage": {
+   "prompt_tokens": 203,
+   "completion_tokens": 102,
+   "total_tokens": 305,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "text": "Your sentence is cut off \u2014 \"keeps the\" what? (e.g., \"keeps the output distribution identical,\" \"keeps the latency low,\" \"keeps the acceptance rate high\"?) Let me know the full prompt and I'll write the paragraph."
+ },
+ "pp16384": {
+  "tag": "pp16384",
+  "wall": 59.97528648376465,
+  "usage": {
+   "prompt_tokens": 18233,
+   "completion_tokens": 8,
+   "total_tokens": 18241,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "text": ""
+ },
+ "tg1024": [
+  {
+   "tag": "tg1024.0",
+   "wall": 34.228500843048096,
+   "usage": {
+    "prompt_tokens": 225,
+    "completion_tokens": 1024,
+    "total_tokens": 1249,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "text": "**Diary \u2014 2026-03-14 \u2014 Porting the CUDA engine to HIP on gfx906**\n\nToday I moved the core CUDA engine over to HIP targeting **gfx906** (Vega 20 / MI50-class). The goal was not a full rewrite, just a clean port of the runtime, kernels, and launch path so the engine runs natively on ROCm.\n\n---\n\n### 1. Build setup\n\nI started by isolating the CUDA-specific layer into a thin shim:\n\n```cpp\n// engine_backend.h\n#ifdef __HIPCC__\n#include <hip/hip_runtime.h>\n#define ENGINE_DEVICE __device__\n#define ENGINE_GLOBAL __global__\n#define ENGINE_SHARED __shared__\n#define ENGINE_SYNC __syncthreads()\n#define ENGINE_LAUNCH(kernel, grid, block, shared, stream) \\\n    kernel<<<grid, block, shared, stream>>>\n#else\n#include <cuda_runtime.h>\n#define ENGINE_DEVICE __device__\n#define ENGINE_GLOBAL __global__\n#define ENGINE_SHARED __shared__\n#define ENGINE_SYNC __syncthreads()\n#define ENGINE_LAUNCH(kernel, grid, block, shared, stream) \\\n    kernel<<<grid, block, shared, stream>>>\n#endif\n```\n\nFor the HIP build I used:\n\n```bash\nhipcc -O3 -march=gfx906 \\\n  -Iinclude \\\n  -o engine_hip \\\n  src/engine.cpp src/kernels.cu\n```\n\nOn newer ROCm stacks, the equivalent is:\n\n```bash\nhipcc -O3 --offload-arch=gfx906 \\\n  -Iinclude \\\n  -o engine_hip \\\n  src/engine.cpp src/kernels.cu\n```\n\nI kept the source extension as `.cu` for now because the CUDA engine already used CUDA-style kernel launches and device intrinsics. HIP accepts that syntax.\n\n---\n\n### 2. Runtime API translation\n\nThe first pass was mechanical:\n\n| CUDA | HIP |\n|---|---|\n| `cudaMalloc` | `hipMalloc` |\n| `cudaFree` | `hipFree` |\n| `cudaMemcpy` | `hipMemcpy` |\n| `cudaMemcpyAsync` | `hipMemcpyAsync` |\n| `cudaStream_t` |"
+  },
+  {
+   "tag": "tg1024.1",
+   "wall": 31.079041957855225,
+   "usage": {
+    "prompt_tokens": 225,
+    "completion_tokens": 1024,
+    "total_tokens": 1249,
+    "prompt_tokens_details": {
+     "cached_tokens": 220
+    }
+   },
+   "text": "**Diary \u2014 2026-03-14 \u2014 Porting the CUDA engine to HIP on gfx906**\n\nToday I moved the core CUDA engine over to HIP targeting AMD `gfx906` (Vega 20 / MI50-class). The goal was not a toy demo: I wanted the existing CUDA kernel pipeline to compile, run, and produce bit-compatible output on ROCm.\n\n### 1. Build setup\n\nI started from the CUDA CMake layout and replaced the CUDA toolchain with HIP.\n\n```cmake\nfind_package(hip REQUIRED)\n\nhip_add_executable(engine_hip\n    src/engine.cpp\n    src/kernels.hip\n)\n\ntarget_compile_options(engine_hip PRIVATE\n    -O3\n    -march=gfx906\n    -std=c++17\n)\n\ntarget_link_libraries(engine_hip PRIVATE hip::device)\n```\n\nThe important flag was:\n\n```bash\nhipcc -O3 -march=gfx906 -std=c++17 src/kernels.hip -o kernels.o\n```\n\nWithout `-march=gfx906`, the compiler emitted generic code and the kernels ran, but performance was poor. Once I pinned the target, the generated ISA became much more predictable.\n\n### 2. Runtime API translation\n\nThe CUDA engine used the usual runtime calls. I replaced them mechanically:\n\n```cpp\n// CUDA\ncudaMalloc(&d_x, n * sizeof(float));\ncudaMemcpy(d_x, h_x, n * sizeof(float), cudaMemcpyHostToDevice);\ncudaMemset(d_y, 0, n * sizeof(float));\ncudaDeviceSynchronize();\n\n// HIP\nhipMalloc(&d_x, n * sizeof(float));\nhipMemcpy(d_x, h_x, n * sizeof(float), hipMemcpyHostToDevice);\nhipMemset(d_y, 0, n * sizeof(float));\nhipDeviceSynchronize();\n```\n\nI also replaced:\n\n```cpp\ncudaStream_t\ncudaEvent_t\ncudaLaunchKernel\ncudaGetLastError\ncudaFree\n```\n\nwith:\n\n```cpp\nhipStream_t\nhipEvent_t\nhipLaunchKernelGGL\nhipGetLastError\nhipFree\n```\n\nThe kernel launch syntax was the biggest annoyance. CUDA allowed:\n\n```cpp\nkernel<<<grid, block, sm"
+  },
+  {
+   "tag": "tg1024.2",
+   "wall": 31.296831130981445,
+   "usage": {
+    "prompt_tokens": 225,
+    "completion_tokens": 1024,
+    "total_tokens": 1249,
+    "prompt_tokens_details": {
+     "cached_tokens": 220
+    }
+   },
+   "text": "**Diary \u2014 2026-02-18 \u2014 Porting the CUDA engine to HIP on gfx906**\n\nTarget: AMD Vega 10 / MI50, ISA `gfx906`, ROCm 6.2.  \nEngine: CUDA particle N-body solver with 3 kernels, 2 streams, pinned host buffers, cuBLAS for the covariance step.\n\n**What I changed**\n\n1. **Build**\n\nCUDA:\n```bash\nnvcc -O3 -arch=sm_70 -std=c++17 -o engine_cuda engine.cu\n```\n\nHIP:\n```bash\nhipcc -O3 -std=c++17 -march=gfx906 -o engine_hip engine.hip\n```\n\nI renamed `.cu` to `.hip`, replaced CUDA headers with HIP headers, and kept the kernel syntax mostly intact:\n\n```cpp\n#include <hip/hip_runtime.h>\n\n__global__ void integrate(float* pos, float* vel, float* acc, int n, float dt) {\n    int i = blockIdx.x * blockDim.x + threadIdx.x;\n    if (i >= n) return;\n\n    vel[i] += acc[i] * dt;\n    pos[i] += vel[i] * dt;\n}\n```\n\nLaunch:\n\n```cpp\nint block = 256;\nint grid = (n + block - 1) / block;\nintegrate<<<grid, block, 0, stream>>>(pos, vel, acc, n, dt);\n```\n\n2. **Memory API**\n\nReplaced:\n\n```cpp\ncudaMalloc\ncudaFree\ncudaMemcpy\ncudaMemcpyAsync\ncudaHostAlloc\ncudaDeviceSynchronize\ncudaStreamCreate\ncudaEventCreate\ncudaEventRecord\ncudaEventSynchronize\n```\n\nwith HIP equivalents:\n\n```cpp\nhipMalloc\nhipFree\nhipMemcpy\nhipMemcpyAsync\nhipHostMalloc\nhipDeviceSynchronize\nhipStreamCreate\nhipEventCreate\nhipEventRecord\nhipEventSynchronize\n```\n\nExample:\n\n```cpp\nhipStream_t s0, s1;\nhipEvent_t start, stop;\n\nhipStreamCreate(&s0);\nhipStreamCreate(&s1);\nhipEventCreate(&start);\nhipEventCreate(&stop);"
+  }
+ ],
+ "infill80k": {
+  "tag": "infill80k",
+  "wall": 186.9899251461029,
+  "usage": {
+   "prompt_tokens": 87879,
+   "completion_tokens": 155,
+   "total_tokens": 88034,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "text": "watch memory quick the through dog quick."
+ }
+}
