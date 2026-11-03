@@ -60,6 +60,20 @@ Production was restored by the runner and re-audited: health 200, context 262144
 loaded, canonical engine environment (`STRATA_HIP_PROMPT_F16=1`,
 `STRATA_PREFILL_HELPER=1`), supervisor attached, no leftover ports or processes.
 
+## Interrupted confirmation (`iso4`)
+
+The user stopped a second confirmation run on 2026-11-03. Its retained status,
+`build-mixed-gpu/cap1-validation/iso4-perf-status.json`, records all three probes
+for stock arm a and helper-off arm b, plus one probe for closing stock arm c.
+The recorded request and message hashes match between a and b for all three
+requests; c's one recorded probe also matches. Each completed probe returned
+512 tokens from the same frozen `ppf1` requests.
+
+This is partial confirmation, **not a completed bracket**. The status has
+`success: false`, no final comparison and no restoration record. The partial
+files are retained. Production remained down with the user's permission after
+the interruption; this run does not establish successful automatic recovery.
+
 ## What this settles, and what it does not
 
 Settled (measured, this window):
