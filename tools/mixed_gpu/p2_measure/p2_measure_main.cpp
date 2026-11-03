@@ -437,16 +437,18 @@ int run_expert_only(const Opts& o, const std::vector<std::string>& fixtures_used
             const size_t scratch_bytes = strata::kernels::native_expert_scratch_bytes(1, kFF);
             const size_t fa = ((size_t) kFF * 4 + 255) & ~(size_t) 255;
             const size_t xqb = (size_t) kN / 32 * 36, hqb = (size_t) kFF / 32 * 36;
-            const size_t need = f.bytes + scratch_bytes + xqb + (size_t) kN * 4 + 64;
+            const size_t q8kb = (size_t) kN / 256 * 292;   // ggml's Q8_K image: FP32 d + qs[256] per 256 values
+            const size_t need = f.bytes + scratch_bytes + xqb + q8kb + (size_t) kN * 4 + 64;
             if (need > (uint64_t) o.max_device_mib * 1048576 || 3 * fa + hqb > scratch_bytes) return 4;
             DevMem mem;
             uint8_t* db = (uint8_t*) mem.take(f.bytes, err);
             uint8_t* scratch = (uint8_t*) mem.take(scratch_bytes, err);
             void* xq = mem.take(xqb, err);
+            void* xq8k = mem.take(q8kb, err);
             float* out = (float*) mem.take((size_t) kN * 4, err);
             auto* ptr = (unsigned long long*) mem.take(8, err);
             auto* meta = (int32_t*) mem.take(5 * 4, err);
-            if (!db || !scratch || !xq || !out || !ptr || !meta) return 4;
+            if (!db || !scratch || !xq || !xq8k || !out || !ptr || !meta) return 4;
             const unsigned long long address = (unsigned long long) db;
             const int32_t host_meta[5] = {0, 1, 1, 0, 0}; // starts, count, dst, tok
             if (!ck(cudaMemcpyAsync(ptr, &address, 8, cudaMemcpyHostToDevice, cs), "expert pointer", err) ||
@@ -463,6 +465,20 @@ int run_expert_only(const Opts& o, const std::vector<std::string>& fixtures_used
                               "matched down activation", err)) return false;
                 strata::kernels::native_expert_grouped(L, ptr, meta, meta + 2, meta + 3, meta + 4,
                                                        1, 1, xq, scratch, out, cs);
+                s.h.resize((size_t) kFF); s.y.resize((size_t) kN);
+                return ck(cudaMemcpyAsync(s.h.data(), scratch + 2 * fa, (size_t) kFF * 4,
+                                           cudaMemcpyDeviceToHost, cs), "expert hidden", err) &&
+                       ck(cudaMemcpyAsync(s.y.data(), out, (size_t) kN * 4, cudaMemcpyDeviceToHost, cs),
+                          "expert readback", err) && ck(cudaStreamSynchronize(cs), "expert sync", err);
+            };
+            // The CPU reference's own Q8_K activation image, verbatim (its FP32 scales intact), through the
+            // Q8_K gate/up kernel: the arithmetic contract the CPU-offloaded rows would have run.
+            auto gpu_q8k = [&](const std::vector<uint8_t>& q8k, Snapshot& s) {
+                if (!ck(cudaMemcpyAsync(xq8k, q8k.data(), q8kb, cudaMemcpyHostToDevice, cs), "expert q8_k input", err) ||
+                    !ck(cudaMemsetAsync(scratch, 0, scratch_bytes, cs), "expert scratch", err) ||
+                    !ck(cudaMemsetAsync(out, 0, (size_t) kN * 4, cs), "expert output", err)) return false;
+                strata::kernels::native_expert_grouped_q8k(L, ptr, meta, meta + 2, meta + 3, meta + 4,
+                                                           1, 1, xq8k, scratch, out, cs);
                 s.h.resize((size_t) kFF); s.y.resize((size_t) kN);
                 return ck(cudaMemcpyAsync(s.h.data(), scratch + 2 * fa, (size_t) kFF * 4,
                                            cudaMemcpyDeviceToHost, cs), "expert hidden", err) &&
@@ -496,10 +512,11 @@ int run_expert_only(const Opts& o, const std::vector<std::string>& fixtures_used
                     std::memcpy(&dh, b, 2);
                     helper_x[(size_t) j] = ggml_fp16_to_fp32(dh) * ((const int8_t*) (b + 4))[j % 32];
                 }
-                Snapshot actual, repeat, observable, cx, ch;
+                Snapshot actual, repeat, observable, cx, ch, q8k, q8k_repeat;
                 if (!gpu(helper, false, nullptr, actual) || !gpu(helper, false, nullptr, repeat) ||
                     !gpu(helper, true, nullptr, observable) || !gpu(matched_x, true, nullptr, cx) ||
-                    !gpu(helper, true, &matched_h, ch)) {
+                    !gpu(helper, true, &matched_h, ch) ||
+                    !gpu_q8k(ca, q8k) || !gpu_q8k(ca, q8k_repeat)) {
                     std::fprintf(stderr, "expert-only: REFUSAL: %s\n", err.c_str()); return 4;
                 }
                 if (!first) report << ',';
@@ -509,28 +526,36 @@ int run_expert_only(const Opts& o, const std::vector<std::string>& fixtures_used
                        << ",\"gu_activation\":" << f.gu_act << ",\"down_activation\":" << f.d_act
                        << ",\"input_fnv\":\"" << fnv64(x, (size_t) kN * 4) << "\",\"blob_fnv\":\""
                        << fnv64(weights.data(), weights.size()) << "\",\"helper_repeat_equal\":"
-                       << (std::memcmp(actual.y.data(), repeat.y.data(), (size_t) kN * 4) == 0 ? "true" : "false");
+                       << (std::memcmp(actual.y.data(), repeat.y.data(), (size_t) kN * 4) == 0 ? "true" : "false")
+                       << ",\"q8k_repeat_equal\":"
+                       << (std::memcmp(q8k.y.data(), q8k_repeat.y.data(), (size_t) kN * 4) == 0 ? "true" : "false");
                 if (!metric("input_cpu_vs_helper", cpu_x, helper_x) ||
                     !metric("hidden_cpu_vs_helper", cpu_h, observable.h) ||
                     !metric("hidden_cpu_vs_matched_input", cpu_h, cx.h) ||
                     !metric("output_cpu_vs_helper", cpu_y, actual.y) ||
                     !metric("output_cpu_vs_matched_input", cpu_y, cx.y) ||
                     !metric("output_cpu_vs_matched_down", cpu_y, ch.y) ||
-                    !metric("output_default_vs_observable", actual.y, observable.y)) {
+                    !metric("output_default_vs_observable", actual.y, observable.y) ||
+                    !metric("hidden_cpu_vs_q8k", cpu_h, q8k.h) ||
+                    !metric("output_cpu_vs_q8k", cpu_y, q8k.y)) {
                     std::fprintf(stderr, "expert-only: REFUSAL: %s\n", err.c_str()); return 5;
                 }
                 report << '}';
-                std::printf("expert-only: %s L%lld T%lld E%lld hidden_rel=%g matched=%g output_rel=%g down_matched=%g\n",
+                std::printf("expert-only: %s L%lld T%lld E%lld hidden_rel=%g matched=%g q8k=%g output_rel=%g "
+                            "down_matched=%g q8k=%g\n",
                             fid.c_str(), (long long) l, (long long) t, (long long) e,
                             diff_rows(cpu_h.data(), observable.h.data(), kFF).max_rel,
                             diff_rows(cpu_h.data(), cx.h.data(), kFF).max_rel,
+                            diff_rows(cpu_h.data(), q8k.h.data(), kFF).max_rel,
                             diff_rows(cpu_y.data(), actual.y.data(), kN).max_rel,
-                            diff_rows(cpu_y.data(), ch.y.data(), kN).max_rel);
+                            diff_rows(cpu_y.data(), ch.y.data(), kN).max_rel,
+                            diff_rows(cpu_y.data(), q8k.y.data(), kN).max_rel);
                 std::fflush(stdout);
             }
         }
     }
-    report << "],\"note\":\"Diagnostic interventions, not a production fix. Matched Q8_K scales still round to half. "
+    report << "],\"note\":\"Diagnostic interventions, not a production fix. Matched Q8_K scales still round to half; "
+              "the q8k arm keeps the CPU's Q8_K image (FP32 scales) through a Q8_K gate/up kernel. "
               "No complete inference, numerical acceptance or timing claim.\"}\n";
     const std::string text = report.str();
     std::FILE* output = std::fopen(o.out.c_str(), "wx");

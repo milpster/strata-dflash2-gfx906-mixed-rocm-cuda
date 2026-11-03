@@ -170,3 +170,53 @@ or a live placement trace. This establishes a causal numerical mechanism, not
 that it is the only cause of every changed answer. No production fix was applied.
 The pooled numerical gate and frozen-request returned-message validation remain
 unpassed. Production remains down with permission; no speed claim or adoption.
+
+## The Q8_K reference kernel: the helper can run the CPU's arithmetic (q8k3)
+
+`build-mixed-gpu/repro-q8k-evidence3`, bounded run 2026-11-03 ~15:00+01, RTX 3080,
+the same pinned inputs and weights as expert2 (32 single-entry rows, layers 32-47).
+
+`native_expert_grouped_q8k` (`src/kernels/cuda/iq_kernels.cu`, a diagnostic entry
+with no caller in any serving path) consumes ggml's Q8_K activation image for
+gate/up (292 bytes per 256 values: one FP32 scale, 256 int8) and keeps the CPU
+reference's arithmetic: the exact `bsum` integers (odd scales `2*ls+1`, no
+per-sub-block truncation, the trailing power-of-two row factor of quants.c), then
+SwiGLU and the down rows on the default path. Measured against the CPU reference
+on the same rows as expert2:
+
+| gate/up input | worst output rel, 32 rows |
+|---|---|
+| helper wire Q8_1 (FP16 scale per 32) | 2.77e-2 |
+| CPU integers, scales rounded to FP16 (expert2 `cx`) | 4.47e-3 |
+| CPU Q8_K image through the Q8_K kernel (this run) | 1.78e-7 |
+
+On 32/32 rows the output residual equals the matched-down counterfactual's exactly
+(the down kernel's summation order, expert2's measured floor); hidden rows are
+1.1e-8..2.2e-7 for every gate/up type 17/18/21/22; GPU repeats are bit-identical
+(`q8k_repeat_equal` 32/32). The h re-quantization reproduced the CPU's Q8_0
+integers on every row (0/32 boundary flips).
+
+Two intermediate runs are retained as the measurement's own controls. `q8k2`
+(truncating integers, the CUDA q8_1 forms) left 1e-5..1.1e-4 on types 17/18/22
+while type 21 matched at 1e-7: the integers, not the scales. `q8k1` had a
+whole-warp shuffle called inside a single-lane branch (garbage output, rel about
+1); fixed before any conclusion was drawn.
+
+Limits: single-entry expert rows on one fixture prefix; no complete inference; no
+engine, protocol or helper change (the wire still carries Q8_1 - carrying Q8_K
+through the prompt and window paths is the next step); no timing claim; the
+frozen-request identity gates remain unpassed.
+
+HIP anomaly (unconfirmed static analysis): after the q8k rebuilds, the HIP tree's
+expert-only rerun fails at the FIRST default-path kernel launch
+(`native_expert_grouped/gu: invalid device function`) in every bounded variant
+tried (`HIP_VISIBLE_DEVICES` 0/1/2; xnack-first, 6.1.0-only and default
+`LD_LIBRARY_PATH`); the failure precedes any q8k code. expert2's HIP evidence
+from the pre-change binary stands. Not diagnosed; attempts timeboxed.
+
+Evidence: `build-mixed-gpu/repro-q8k-evidence3/q8k3-cuda.{json,log}`,
+`q8k3-hip*.log` (the failed HIP attempts), `q8k3-reports.sha256`,
+`q8k3-final-audit.log`, `q8k3-prechecks.log` (in `repro-q8k-evidence1/`), the
+retained `repro-q8k-evidence1`/`repro-q8k-evidence2` runs, and the three build
+logs. Both diagnostic builds, both CPU CTests and 52 Python report tests passed;
+input and protected-executable pins unchanged.
