@@ -163,3 +163,8 @@ The stock product is deterministic across two fresh loads; the mixed product dif
 from it on all three requests, and the divergence is already in the first verify
 window's logits (KL ≈ 0.0037 nats, largest single-logit difference 2.34).
 See [MIXED_STOCK_VS_MIXED_IDENTITY.md](MIXED_STOCK_VS_MIXED_IDENTITY.md).
+
+Second follow-up (window `iso3`, same day): the divergence is isolated to the HELPER.
+The same mixed engine and server with the helper client removed returned byte-identical
+messages and bit-identical first-window logits on all three requests. See
+[MIXED_HELPER_ISOLATION.md](MIXED_HELPER_ISOLATION.md).
