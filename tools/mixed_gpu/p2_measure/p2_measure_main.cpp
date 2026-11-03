@@ -74,8 +74,10 @@
 #include <cstring>
 #include <fstream>
 #include <functional>
+#include <iomanip>
 #include <map>
 #include <set>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -126,6 +128,11 @@ void usage() {
         "  --summary-only      emit the aggregates and the worst rows, not every row record\n"
         "  --worst N           rows in the human table's worst list (default 20)\n"
         "  --device N          this build's reference GPU ordinal (default 0; CUDA or gfx906 HIP)\n");
+    std::printf(
+        "  --quantizer-only    DIAGNOSTIC ONLY: compare actual MMQ D4 input scales/integers to\n"
+        "                      the helper's host Q8_1 quantizer on the SAME saved float rows.\n"
+        "                      No server/helper/socket or inference; --socket/--arm-groups refused.\n"
+        "                      Writes a separate producer-diagnostic JSON, refuses overwrite.\n");
 }
 
 struct Opts {
@@ -140,6 +147,7 @@ struct Opts {
     bool summary_only = false;
     uint64_t seed = 271828;
     bool synthetic = false;
+    bool quantizer_only = false;
     HelperSetup hs;
     int64_t max_fill_pairs = 0;
     int64_t max_device_mib = 4000;
@@ -174,6 +182,7 @@ bool parse(int argc, char** argv, Opts& o, std::string& err) {
         else if (a == "--fixtures") { if (!val(v)) return false; o.fixtures = v; }
         else if (a == "--max-tokens") { if (!val(v)) return false; o.max_tokens = std::atoll(v.c_str()); }
         else if (a == "--arm-groups") o.arm_groups = true;
+        else if (a == "--quantizer-only") o.quantizer_only = true;
         else if (a == "--eps") { if (!val(v)) return false; o.eps = std::atof(v.c_str()); }
         else if (a == "--slots") { if (!val(v)) return false; o.hs.slots = std::atoll(v.c_str()); }
         else if (a == "--reserve-mib") { if (!val(v)) return false; o.hs.reserve_mib = std::atoll(v.c_str()); }
@@ -187,8 +196,12 @@ bool parse(int argc, char** argv, Opts& o, std::string& err) {
         else if (a == "--help") { usage(); std::exit(0); }
         else { err = "unknown argument '" + a + "' (--help for the list)"; return false; }
     }
-    if (o.pack.empty() || o.socket.empty() || o.out.empty() || (o.activations.empty() && !o.synthetic)) {
+    if (o.pack.empty() || (!o.quantizer_only && o.socket.empty()) || o.out.empty() || (o.activations.empty() && !o.synthetic)) {
         err = "--pack, --socket, --activations and --out are all required";
+        return false;
+    }
+    if (o.quantizer_only && (!o.socket.empty() || o.arm_groups || o.max_device_mib <= 0)) {
+        err = "--quantizer-only needs no --socket/--arm-groups and a positive --max-device-mib";
         return false;
     }
     if (o.eps <= 0.0) { err = "--eps must be > 0"; return false; }
@@ -283,6 +296,98 @@ struct DevMem {
         return q;
     }
 };
+
+// The actual engine MMQ producer, without expert products, helper processes or
+// generation. The decoder's D4 contract is deliberately limited to these IQ types.
+int run_quantizer_only(const Opts& o, const std::vector<std::string>& fixtures_used,
+                       const cpu::ExpertLayout& layout, cudaStream_t cs,
+                       const cudaDeviceProp& props) {
+    std::ostringstream report;
+    report << std::setprecision(17)
+           << "{\"schema\":\"strata-q8-producer-diagnostic-v1\",\"synthetic\":"
+           << (o.synthetic ? "true" : "false")
+           << ",\"device\":\"" << json_escape(props.name) << "\",\"records\":[";
+    bool first = true;
+    std::string err;
+    for (const std::string& fid : fixtures_used) {
+        for (int64_t l = o.layer_lo; l <= o.layer_hi; ++l) {
+            const int type = layout.fmt[(size_t) l].gu_type;
+            if (type != 16 && type != 17 && type != 18 && type != 20 &&
+                type != 21 && type != 22 && type != 23 && type != 42) {
+                std::fprintf(stderr, "quantizer-only: REFUSAL: L%lld type %d is not an audited D4 IQ type\n",
+                             (long long) l, type);
+                return 3;
+            }
+            Activations a;
+            if (o.synthetic) {
+                synth_activations(o.seed, fixture_index_of(fid), l,
+                                  o.max_tokens > 0 ? std::min<int64_t>(o.max_tokens, 256) : 256, a);
+            } else if (!load_moe_dump(o.activations + "/" + fid + "." + std::to_string(l) + ".bin",
+                                      o.max_tokens, a, err)) {
+                std::fprintf(stderr, "quantizer-only: REFUSAL: %s L%lld: %s\n",
+                             fid.c_str(), (long long) l, err.c_str());
+                return 5;
+            }
+            const size_t xb = a.x.size() * sizeof(float), qb = mmq::q8_bytes(a.T, kN);
+            if (xb + qb > (uint64_t) o.max_device_mib * 1048576) {
+                std::fprintf(stderr, "quantizer-only: REFUSAL: device budget exceeded before allocation\n");
+                return 4;
+            }
+            DevMem mem;
+            float* dx = (float*) mem.take(xb, err);
+            void* dq = mem.take(qb, err);
+            if (!dx || !dq || !ck(cudaMemcpyAsync(dx, a.x.data(), xb, cudaMemcpyHostToDevice, cs), "x upload", err)) {
+                std::fprintf(stderr, "quantizer-only: REFUSAL: %s\n", err.c_str()); return 4;
+            }
+            std::vector<uint8_t> image(qb), repeat(qb);
+            for (int pass = 0; pass < 2; ++pass) {
+                if (!ck(cudaMemsetAsync(dq, 0, qb, cs), "q8 clear", err)) return 4;
+                mmq::quantize(dx, nullptr, dq, type, kN, kN, a.T, cs, nullptr);
+                if (!ck(cudaMemcpyAsync(pass ? repeat.data() : image.data(), dq, qb,
+                                         cudaMemcpyDeviceToHost, cs), "q8 readback", err) ||
+                    !ck(cudaStreamSynchronize(cs), "q8 sync", err)) {
+                    std::fprintf(stderr, "quantizer-only: REFUSAL: %s\n", err.c_str()); return 4;
+                }
+            }
+            std::vector<float> scales;
+            std::vector<int8_t> qs;
+            Q8InputDiff diff;
+            if (!decode_mmq_d4(image, a.T, kN, scales, qs, err) ||
+                !diff_q8_input(a.x.data(), (int64_t) a.x.size(), scales.data(), qs.data(), diff, err)) {
+                std::fprintf(stderr, "quantizer-only: REFUSAL: %s\n", err.c_str()); return 5;
+            }
+            if (!first) report << ',';
+            first = false;
+            report << "{\"fixture\":\"" << fid << "\",\"layer\":" << l << ",\"gu_type\":" << type
+                   << ",\"source\":\"" << json_escape(a.source) << "\",\"rows\":" << a.T
+                   << ",\"input_fnv64\":\"" << fnv64(a.x.data(), xb) << "\""
+                   << ",\"primary_repeat_equal\":" << (image == repeat ? "true" : "false")
+                   << ",\"difference\":" << q8_input_diff_json(diff) << ",\"first_scale_input_block\":[";
+            if (diff.first_scale_block >= 0) {
+                for (int j = 0; j < 32; ++j) {
+                    if (j) report << ',';
+                    report << a.x[(size_t) diff.first_scale_block * 32 + j];
+                }
+            }
+            report << "]}";
+            std::printf("quantizer-only: %s L%lld rows=%lld scale_diff=%lld/%lld integer_diff=%lld repeat_equal=%d\n",
+                        fid.c_str(), (long long) l, (long long) a.T, (long long) diff.scale_different,
+                        (long long) diff.blocks, (long long) diff.integers_different, image == repeat);
+            std::fflush(stdout);
+        }
+    }
+    report << "],\"note\":\"Actual MMQ D4 producer versus actual helper host quantizer on identical inputs; "
+              "gate/up input only. No numerical acceptance, inference identity or speed claim.\"}\n";
+    const std::string text = report.str();
+    std::FILE* output = std::fopen(o.out.c_str(), "wx");
+    if (!output) {
+        std::fprintf(stderr, "quantizer-only: REFUSAL: output exists or cannot be created: %s\n", o.out.c_str());
+        return 6;
+    }
+    const bool written = std::fwrite(text.data(), 1, text.size(), output) == text.size();
+    const bool closed = std::fclose(output) == 0;
+    return written && closed ? 0 : 6;
+}
 
 struct MmqRows {
     std::vector<float> dm;             // rows_local * N floats, the expert-order down rows (Dm)
@@ -736,6 +841,12 @@ int main(int argc, char** argv) {
     if (!ck(cudaStreamCreateWithFlags(&cs, cudaStreamNonBlocking), "stream", derr)) {
         std::fprintf(stderr, "p2_measure_harness: REFUSAL (device): %s\n", derr.c_str());
         return 4;
+    }
+
+    if (o.quantizer_only) {
+        const int rc = run_quantizer_only(o, fix, lay, cs, reference_props);
+        cudaStreamDestroy(cs);
+        return rc;
     }
 
     // ---- the pack's blobs (the same file the helper maps, resolved the helper's way) ----
