@@ -233,7 +233,7 @@ def run_world(monkeypatch, tmp_path, *, fail_probe=False, fail_restore=False,
     monkeypatch.setattr(perf.pair, "stop_group", lambda *_: events.append("cleanup"))
     monkeypatch.setattr(perf.runtime, "wait_for", lambda fn: fn())
     monkeypatch.setattr(perf.runtime, "attached", lambda **_: dict(helper_pid=2))
-    monkeypatch.setattr(perf.runtime, "engine_of", lambda _: 3)
+    monkeypatch.setattr(perf.runtime, "engine_of", lambda state, engine=None: 3)
     monkeypatch.setattr(perf.runtime, "command", lambda _: ["pinned engine"])
     monkeypatch.setattr(perf, "startup_report", lambda *_: {})
     monkeypatch.setattr(perf, "probe", probe)
@@ -875,6 +875,10 @@ def test_stock_controls_run_uses_stock_arms(monkeypatch, tmp_path):
     events, args, _ = run_world(monkeypatch, tmp_path)
     args.lever = None
     args.stock_controls = True
+    engine_expected = []
+    real_engine_of = perf.runtime.engine_of
+    monkeypatch.setattr(perf.runtime, "engine_of",
+                        lambda state, engine=None: engine_expected.append(engine) or 3)
     (tmp_path / "engine.log").write_text(
         "the prompt tier's channel (socket2) closed after 3 prompt requests / 9 prompt rows\n")
     monkeypatch.setattr(perf.lifecycle, "graceful_stop", lambda *_: events.append("arm_stop"))
@@ -895,6 +899,7 @@ def test_stock_controls_run_uses_stock_arms(monkeypatch, tmp_path):
         message_sha256=f"out{rep}", plans=[]))
     assert perf.run(args) == 0
     assert [family for family, _ in prepared_stock] == ["unit-a", "unit-c"]  # stock brackets
+    assert engine_expected == [str(window_pair.STOCK_EXE), None, str(window_pair.STOCK_EXE)]
     result = json.loads((tmp_path / "unit-perf-status.json").read_text())
     assert result["stock_controls"] is True
     assert [row["kind"] for row in result["pairs"]] == ["stock", "mixed", "stock"]

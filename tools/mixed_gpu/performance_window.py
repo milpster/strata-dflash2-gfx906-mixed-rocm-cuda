@@ -573,7 +573,8 @@ def run(args):
                 known = {active.pid: pair.process_token(active.pid)[1]}
                 state = runtime.wait_for(lambda: runtime.attached(state_path=config.state,
                                          base_url=config.base_url, supervisor_pid=active.pid))
-                state["engine_pid"] = runtime.engine_of(state)
+                state["engine_pid"] = runtime.engine_of(
+                    state, engine=str(window_pair.STOCK_EXE) if config.kind == STOCK_KIND else None)
                 state["engine_argv"] = runtime.command(state["engine_pid"])
                 known = pair.descendants(active.pid, known)
                 row = dict(label=config.label, kind=config.kind, tuning=config.tuning, state=state,
