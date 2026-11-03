@@ -186,7 +186,7 @@ def test_startup_proof(tmp_path, monkeypatch, trim):
 
 
 def run_world(monkeypatch, tmp_path, *, fail_probe=False, fail_restore=False,
-              iq_mt_min=False, adapt_off=False):
+              iq_mt_min=False, adapt_off=False, prompt_f32=False):
     """No processes/HTTP/signals; isolate new runner's finally and ownership logic."""
     monkeypatch.setattr(perf.runtime, "EV", tmp_path)
     source = tmp_path / "production.json"
@@ -199,9 +199,11 @@ def run_world(monkeypatch, tmp_path, *, fail_probe=False, fail_restore=False,
         path = tmp_path / f"{family}.json"
         path.write_text(json.dumps(dict(log=str(tmp_path / "engine.log"))))
         prepared.append(dict(family=family, iq_mt_min=kwargs.get("iq_mt_min"),
-                             adapt_off=kwargs.get("adapt_off")))
+                             adapt_off=kwargs.get("adapt_off"),
+                             prompt_f32=kwargs.get("prompt_f32")))
         return SimpleNamespace(family=family, config=path, launcher="launcher", state="state",
-                               base_url="url", socket2="socket2", tuning=kwargs.get("tuning"))
+                               base_url="url", socket2="socket2", tuning=kwargs.get("tuning"),
+                               prompt_f32=kwargs.get("prompt_f32", False))
 
     class Proc:
         pid = 123
@@ -237,7 +239,8 @@ def run_world(monkeypatch, tmp_path, *, fail_probe=False, fail_restore=False,
     monkeypatch.setattr(perf, "probe", probe)
     return events, SimpleNamespace(family="unit", lever="trim", candidate=None,
                                    expected_supervisor=1, execute=True,
-                                   iq_mt_min=iq_mt_min, adapt_off=adapt_off), prepared
+                                   iq_mt_min=iq_mt_min, adapt_off=adapt_off,
+                                   prompt_f32=prompt_f32, replay_family=None), prepared
 
 
 @pytest.mark.parametrize("restore_fails", [False, True])
@@ -272,7 +275,7 @@ def test_success_runs_all_arms_and_restores(monkeypatch, tmp_path):
     (tmp_path / "engine.log").write_text(
         "the prompt tier's channel (socket2) closed after 3 prompt requests / 9 prompt rows\n")
     monkeypatch.setattr(perf.lifecycle, "graceful_stop", lambda *_: events.append("arm_stop"))
-    monkeypatch.setattr(perf, "probe", lambda cfg, state, family, rep: dict(
+    monkeypatch.setattr(perf, "probe", lambda cfg, state, family, rep, body=None: dict(
         rep=rep, gen_rate=30, read_rate=200, request_sha256=f"req{rep}",
         message_sha256=f"out{rep}", plans=[]))
     assert perf.run(args) == 0
@@ -319,7 +322,7 @@ def test_iq_mt_min_flag_reaches_every_arm_and_the_record(monkeypatch, tmp_path):
     (tmp_path / "engine.log").write_text(
         "the prompt tier's channel (socket2) closed after 3 prompt requests / 9 prompt rows\n")
     monkeypatch.setattr(perf.lifecycle, "graceful_stop", lambda *_: events.append("arm_stop"))
-    monkeypatch.setattr(perf, "probe", lambda cfg, state, family, rep: dict(
+    monkeypatch.setattr(perf, "probe", lambda cfg, state, family, rep, body=None: dict(
         rep=rep, gen_rate=30, read_rate=200, request_sha256=f"req{rep}",
         message_sha256=f"out{rep}", plans=[]))
     assert perf.run(args) == 0
@@ -335,7 +338,7 @@ def test_adapt_off_flag_reaches_every_arm_and_the_record(monkeypatch, tmp_path):
     (tmp_path / "engine.log").write_text(
         "the prompt tier's channel (socket2) closed after 3 prompt requests / 9 prompt rows\n")
     monkeypatch.setattr(perf.lifecycle, "graceful_stop", lambda *_: events.append("arm_stop"))
-    monkeypatch.setattr(perf, "probe", lambda cfg, state, family, rep: dict(
+    monkeypatch.setattr(perf, "probe", lambda cfg, state, family, rep, body=None: dict(
         rep=rep, gen_rate=30, read_rate=200, request_sha256=f"req{rep}",
         message_sha256=f"out{rep}", plans=[]))
     assert perf.run(args) == 0
@@ -343,3 +346,368 @@ def test_adapt_off_flag_reaches_every_arm_and_the_record(monkeypatch, tmp_path):
     assert [row["iq_mt_min"] for row in prepared] == [False, False, False]
     result = json.loads((tmp_path / "unit-perf-status.json").read_text())
     assert result["adapt_off"] is True
+
+
+def test_prompt_f32_flag_reaches_every_arm_and_the_record(monkeypatch, tmp_path):
+    events, args, prepared = run_world(monkeypatch, tmp_path, prompt_f32=True)
+    (tmp_path / "engine.log").write_text(
+        "the prompt tier's channel (socket2) closed after 3 prompt requests / 9 prompt rows\n")
+    monkeypatch.setattr(perf.lifecycle, "graceful_stop", lambda *_: events.append("arm_stop"))
+    monkeypatch.setattr(perf, "probe", lambda cfg, state, family, rep, body=None: dict(
+        rep=rep, gen_rate=30, read_rate=200, request_sha256=f"req{rep}",
+        message_sha256=f"out{rep}", plans=[]))
+    assert perf.run(args) == 0
+    assert [row["prompt_f32"] for row in prepared] == [True, True, True]  # controls and candidates alike
+    result = json.loads((tmp_path / "unit-perf-status.json").read_text())
+    assert result["prompt_f32"] is True
+
+
+def make_source(ev, source="src", arms=("a", "b", "c")):
+    """Synthetic completed window: valid status + per-arm, per-rep request files."""
+    bodies = {rep: perf.request_body(source, rep) for rep in (1, 2, 3)}
+    pairs = [dict(label=label,
+                  probes=[dict(rep=rep, request_sha256=perf.digest(bodies[rep]))
+                          for rep in (1, 2, 3)]) for label in arms]
+    for label in arms:
+        for rep in (1, 2, 3):
+            (ev / f"{source}-{label}-r{rep}-request.json").write_bytes(bodies[rep])
+    (ev / f"{source}-perf-status.json").write_text(json.dumps(dict(success=True, pairs=pairs)))
+    return bodies
+
+
+def test_load_replay_freezes_source_bytes(tmp_path):
+    bodies = make_source(tmp_path)
+    frozen, provenance = perf.load_replay("src", evidence=tmp_path)
+    assert frozen == bodies                                    # raw bytes reused verbatim
+    assert provenance["request_sha256"] == {str(r): perf.digest(bodies[r]) for r in (1, 2, 3)}
+    assert len(provenance["source_files"]) == 9 and provenance["arms"] == ["a", "b", "c"]
+    assert provenance["status_sha256"] == perf.digest((tmp_path / "src-perf-status.json").read_bytes())
+
+
+def test_load_replay_pins_status_sha(tmp_path):
+    make_source(tmp_path)
+    before = perf.digest((tmp_path / "src-perf-status.json").read_bytes())
+    _, provenance = perf.load_replay("src", evidence=tmp_path)
+    assert provenance["status_sha256"] == before
+
+
+def test_load_replay_rejects_two_arms(tmp_path):
+    make_source(tmp_path, arms=("a", "b"))
+    with pytest.raises(ValueError, match="bracket"):
+        perf.load_replay("src", evidence=tmp_path)
+
+
+def test_load_replay_rejects_non_sequential_labels(tmp_path):
+    make_source(tmp_path, arms=("a", "c", "b"))
+    with pytest.raises(ValueError, match="sequential"):
+        perf.load_replay("src", evidence=tmp_path)
+
+
+def test_load_replay_rejects_bad_reps(tmp_path):
+    bodies = make_source(tmp_path)
+    st = json.loads((tmp_path / "src-perf-status.json").read_text())
+    st["pairs"][0]["probes"] = [dict(rep=1, request_sha256=perf.digest(bodies[1])),
+                                dict(rep=1, request_sha256=perf.digest(bodies[1])),
+                                dict(rep=3, request_sha256=perf.digest(bodies[3]))]
+    (tmp_path / "src-perf-status.json").write_text(json.dumps(st))
+    with pytest.raises(ValueError, match="reps must be exactly"):
+        perf.load_replay("src", evidence=tmp_path)
+
+
+def test_load_replay_rejects_unsafe_label(tmp_path):
+    make_source(tmp_path)
+    st = json.loads((tmp_path / "src-perf-status.json").read_text())
+    st["pairs"][0]["label"] = "a b"
+    (tmp_path / "src-perf-status.json").write_text(json.dumps(st))
+    with pytest.raises(ValueError, match="unsafe"):
+        perf.load_replay("src", evidence=tmp_path)
+
+
+def _fixture(**over):
+    body = json.loads(perf.request_body("src", 1))
+    for key, value in over.items():
+        if value is Ellipsis:
+            body.pop(key, None)
+        else:
+            body[key] = value
+    return json.dumps(body).encode()
+
+
+def test_validate_fixture_accepts_verbatim_request_body():
+    body = perf.request_body("src", 1)
+    assert perf.validate_fixture(body)["seed"] == 1729
+
+
+@pytest.mark.parametrize("key,value,match", [
+    ("stop", ["stop"], "key set"),
+    ("tools", [{}], "key set"),
+    ("model", "other-model", "model"),
+    ("max_tokens", True, "max_tokens"),
+    ("temperature", False, "temperature"),
+    ("seed", True, "seed"),
+    ("chat_template_kwargs", {"enable_thinking": False, "top_k": 5}, "chat_template_kwargs"),
+])
+def test_validate_fixture_rejects_controls_and_types(tmp_path, key, value, match):
+    with pytest.raises(ValueError, match=match):
+        perf.validate_fixture(_fixture(**{key: value}))
+
+
+def test_validate_fixture_rejects_multi_and_nonstring_messages():
+    body = json.loads(perf.request_body("src", 1))
+    body["messages"].append(dict(role="user", content="extra"))
+    with pytest.raises(ValueError, match="one user message"):
+        perf.validate_fixture(json.dumps(body).encode())
+    body = json.loads(perf.request_body("src", 1))
+    body["messages"][0]["content"] = 123
+    with pytest.raises(ValueError, match="one user message"):
+        perf.validate_fixture(json.dumps(body).encode())
+    body = json.loads(perf.request_body("src", 1))
+    body["messages"][0]["name"] = "extra"
+    with pytest.raises(ValueError, match="one user message"):
+        perf.validate_fixture(json.dumps(body).encode())
+
+
+def test_load_replay_missing_source(tmp_path):
+    make_source(tmp_path)
+    (tmp_path / "src-perf-status.json").unlink()
+    with pytest.raises(ValueError, match="status is missing"):
+        perf.load_replay("src", evidence=tmp_path)
+
+
+def test_load_replay_incomplete_source(tmp_path):
+    make_source(tmp_path)
+    (tmp_path / "src-perf-status.json").write_text(json.dumps(dict(success=False, pairs=[dict(label="a", probes=[])])))
+    with pytest.raises(ValueError, match="did not complete"):
+        perf.load_replay("src", evidence=tmp_path)
+
+
+def test_load_replay_missing_request_file(tmp_path):
+    make_source(tmp_path)
+    (tmp_path / "src-a-r2-request.json").unlink()
+    with pytest.raises(ValueError, match="request is missing"):
+        perf.load_replay("src", evidence=tmp_path)
+
+
+def test_load_replay_corrupt_request_json(tmp_path):
+    make_source(tmp_path)
+    (tmp_path / "src-a-r1-request.json").write_bytes(b"{not json")
+    with pytest.raises(ValueError, match="hash mismatch|not valid JSON"):
+        perf.load_replay("src", evidence=tmp_path)
+
+
+def test_load_replay_hash_mismatch(tmp_path):
+    bodies = make_source(tmp_path)
+    tampered = json.loads(bodies[1]); tampered["messages"][0]["content"] += " x"
+    (tmp_path / "src-a-r1-request.json").write_bytes(json.dumps(tampered).encode())
+    with pytest.raises(ValueError, match="hash mismatch"):
+        perf.load_replay("src", evidence=tmp_path)
+
+
+def test_load_replay_non_fixture_request(tmp_path):
+    make_source(tmp_path)
+    body = json.loads((tmp_path / "src-a-r1-request.json").read_bytes())
+    body["temperature"] = 1
+    sha = perf.digest(json.dumps(body).encode())
+    (tmp_path / "src-a-r1-request.json").write_bytes(json.dumps(body).encode())
+    st = json.loads((tmp_path / "src-perf-status.json").read_text())
+    for pair in st["pairs"]:
+        for probe in pair["probes"]:
+            if probe["rep"] == 1:
+                probe["request_sha256"] = sha
+    (tmp_path / "src-perf-status.json").write_text(json.dumps(st))
+    with pytest.raises(ValueError, match="number 0"):
+        perf.load_replay("src", evidence=tmp_path)
+
+
+def test_load_replay_cross_arm_mismatch(tmp_path):
+    bodies = make_source(tmp_path)
+    other = json.loads(bodies[1]); other["messages"][0]["content"] += " arm b drift"
+    sha = perf.digest(json.dumps(other).encode())
+    (tmp_path / "src-b-r1-request.json").write_bytes(json.dumps(other).encode())
+    st = json.loads((tmp_path / "src-perf-status.json").read_text())
+    for pair in st["pairs"]:
+        if pair["label"] == "b":
+            for probe in pair["probes"]:
+                if probe["rep"] == 1:
+                    probe["request_sha256"] = sha
+    (tmp_path / "src-perf-status.json").write_text(json.dumps(st))
+    with pytest.raises(ValueError, match="differ across arms"):
+        perf.load_replay("src", evidence=tmp_path)
+
+
+def test_load_replay_reps_not_distinct(tmp_path):
+    bodies = make_source(tmp_path)
+    # Make every rep byte-identical and re-record the hashes, then expect refusal.
+    st = json.loads((tmp_path / "src-perf-status.json").read_text())
+    for pair in st["pairs"]:
+        for rep in (1, 2, 3):
+            (tmp_path / f"src-{pair['label']}-r{rep}-request.json").write_bytes(bodies[1])
+        for probe in pair["probes"]:
+            probe["request_sha256"] = perf.digest(bodies[1])
+    (tmp_path / "src-perf-status.json").write_text(json.dumps(st))
+    with pytest.raises(ValueError, match="not distinct"):
+        perf.load_replay("src", evidence=tmp_path)
+
+
+def test_replay_source_equals_family_rejected(monkeypatch, tmp_path):
+    make_source(tmp_path)
+    events, args, _ = run_world(monkeypatch, tmp_path)
+    args.replay_family = "unit"
+    with pytest.raises(ValueError, match="must differ"):
+        perf.run(args)
+    assert events == []            # rejected before any production signal
+    assert not (tmp_path / "unit-perf-status.json").exists()
+
+
+def test_replay_source_missing_rejected_before_signal(monkeypatch, tmp_path):
+    events, args, _ = run_world(monkeypatch, tmp_path)
+    args.replay_family = "src"     # no artifacts staged
+    with pytest.raises(ValueError, match="status is missing"):
+        perf.run(args)
+    assert events == []
+
+
+def test_replay_frozen_bytes_reach_every_probe(monkeypatch, tmp_path):
+    bodies = make_source(tmp_path)
+    events, args, _ = run_world(monkeypatch, tmp_path)
+    args.family, args.replay_family = "fresh", "src"
+    (tmp_path / "engine.log").write_text(
+        "the prompt tier's channel (socket2) closed after 3 prompt requests / 9 prompt rows\n")
+    monkeypatch.setattr(perf.lifecycle, "graceful_stop", lambda *_: events.append("arm_stop"))
+    seen = []
+
+    def probe(cfg, state, family, rep, body=None):
+        seen.append(body)
+        return dict(rep=rep, gen_rate=30, read_rate=200, request_sha256=perf.digest(body),
+                    message_sha256=f"out{rep}", plans=[])
+    monkeypatch.setattr(perf, "probe", probe)
+    assert perf.run(args) == 0
+    assert seen == [bodies[1], bodies[2], bodies[3]] * 3      # frozen source bytes, verbatim
+    result = json.loads((tmp_path / "fresh-perf-status.json").read_text())
+    assert result["replay"]["source"] == "src"
+    assert result["replay"]["request_sha256"] == {str(r): perf.digest(bodies[r]) for r in (1, 2, 3)}
+    assert all(probe["request_sha256"] == perf.digest(bodies[probe["rep"]])
+               for arm in result["pairs"] for probe in arm["probes"])
+
+
+def test_replay_source_mutation_during_window_is_detected(monkeypatch, tmp_path):
+    bodies = make_source(tmp_path)
+    events, args, _ = run_world(monkeypatch, tmp_path)
+    args.family, args.replay_family = "fresh", "src"
+    (tmp_path / "engine.log").write_text(
+        "the prompt tier's channel (socket2) closed after 3 prompt requests / 9 prompt rows\n")
+    monkeypatch.setattr(perf.lifecycle, "graceful_stop", lambda *_: events.append("arm_stop"))
+
+    def probe(cfg, state, family, rep, body=None):
+        # Mutate every arm's rep-1 source file identically (a valid fixture) and keep the
+        # source status self-consistent, so load_replay passes its own checks and the
+        # end-of-window source recheck catches the on-disk change.
+        st = json.loads((tmp_path / "src-perf-status.json").read_text())
+        req = json.loads((tmp_path / "src-a-r1-request.json").read_bytes())
+        req["messages"][0]["content"] += " mutation"
+        raw = json.dumps(req).encode()
+        sha = perf.digest(raw)
+        for pair in st["pairs"]:
+            (tmp_path / f"src-{pair['label']}-r1-request.json").write_bytes(raw)
+            for item in pair["probes"]:
+                if item["rep"] == 1:
+                    item["request_sha256"] = sha
+        (tmp_path / "src-perf-status.json").write_text(json.dumps(st))
+        return dict(rep=rep, gen_rate=30, read_rate=200, request_sha256=perf.digest(body),
+                    message_sha256=f"out{rep}", plans=[])
+    monkeypatch.setattr(perf, "probe", probe)
+    with pytest.raises(RuntimeError, match="changed during measurement"):
+        perf.run(args)
+    assert events == ["stop", "arm_stop", "arm_stop", "arm_stop", "restore"]
+
+
+def test_replay_status_only_mutation_detected_and_restore_runs(monkeypatch, tmp_path):
+    make_source(tmp_path)
+    events, args, _ = run_world(monkeypatch, tmp_path)
+    args.family, args.replay_family = "fresh", "src"
+    (tmp_path / "engine.log").write_text(
+        "the prompt tier's channel (socket2) closed after 3 prompt requests / 9 prompt rows\n")
+    monkeypatch.setattr(perf.lifecycle, "graceful_stop", lambda *_: events.append("arm_stop"))
+    state = {"mutated": False}
+
+    def probe(cfg, state_obj, family, rep, body=None):
+        if not state["mutated"]:   # edit ONLY the status file, leaving the request bytes intact
+            st = json.loads((tmp_path / "src-perf-status.json").read_text())
+            st["comparison"] = {"tampered": True}
+            (tmp_path / "src-perf-status.json").write_text(json.dumps(st))
+            state["mutated"] = True
+        return dict(rep=rep, gen_rate=30, read_rate=200, request_sha256=perf.digest(body),
+                    message_sha256=f"out{rep}", plans=[])
+    monkeypatch.setattr(perf, "probe", probe)
+    with pytest.raises(RuntimeError, match="changed during measurement"):
+        perf.run(args)
+    assert events == ["stop", "arm_stop", "arm_stop", "arm_stop", "restore"]
+
+
+def test_startup_prompt_f32_engagement_proof(tmp_path, monkeypatch):
+    cfg = config_fixture()
+    cfg["env"] = {"STRATA_HIP_PROMPT_F16": "0"}
+    cfg["log"] = str(tmp_path / "engine.log")
+    Path(cfg["log"]).write_text(STARTUP)
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(cfg))
+    helper = tmp_path / "helper.log"
+    helper.write_text("fill placeholder")
+    monkeypatch.setattr(perf.lifecycle, "fill_report", lambda _: dict(slots=4093))
+    monkeypatch.setattr(perf, "engine_env", lambda pid: {"STRATA_HIP_PROMPT_F16": "0"})
+    config = SimpleNamespace(config=path, tuning=None, prompt_f32=True)
+    report = perf.startup_report(config, {"helper_log": str(helper), "engine_pid": 3})
+    assert report["prompt_f32_engagement"]["private_env"] == "0"
+    assert report["prompt_f32_engagement"]["engine_environ"]["STRATA_HIP_PROMPT_F16"] == "0"
+    assert report["prompt_f32_engagement"]["fp16_prompt_line_absent"] is True
+
+
+@pytest.mark.parametrize("env_value,live_value,fp16_line", [
+    ("1", "0", False), ("0", "1", False), ("0", "0", True), (None, "0", False)])
+def test_startup_prompt_f32_rejects_missing_engagement(tmp_path, monkeypatch, env_value, live_value, fp16_line):
+    cfg = config_fixture()
+    cfg["env"] = ({"STRATA_HIP_PROMPT_F16": env_value} if env_value is not None else {})
+    cfg["log"] = str(tmp_path / "engine.log")
+    Path(cfg["log"]).write_text(STARTUP + ("strata prefill: HIP device 0 gfx906 - STRATA_HIP_PROMPT_F16=1: "
+                                           "the prompt's 16-bit GEMMs run FP16 in and out\n" if fp16_line else ""))
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(cfg))
+    helper = tmp_path / "helper.log"
+    helper.write_text("fill placeholder")
+    monkeypatch.setattr(perf.lifecycle, "fill_report", lambda _: dict(slots=4093))
+    monkeypatch.setattr(perf, "engine_env", lambda pid: {"STRATA_HIP_PROMPT_F16": live_value})
+    config = SimpleNamespace(config=path, tuning=None, prompt_f32=True)
+    with pytest.raises(RuntimeError):
+        perf.startup_report(config, {"helper_log": str(helper), "engine_pid": 3})
+
+
+def test_startup_without_prompt_f32_is_byte_identical_proof(tmp_path, monkeypatch):
+    cfg = config_fixture()
+    cfg["env"] = {"STRATA_HIP_PROMPT_F16": "1"}
+    cfg["log"] = str(tmp_path / "engine.log")
+    Path(cfg["log"]).write_text(STARTUP)
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(cfg))
+    helper = tmp_path / "helper.log"
+    helper.write_text("fill placeholder")
+    monkeypatch.setattr(perf.lifecycle, "fill_report", lambda _: dict(slots=4093))
+
+    def boom(_):
+        raise AssertionError("the engine environ must not be read when the flag is off")
+    monkeypatch.setattr(perf, "engine_env", boom)
+    config = SimpleNamespace(config=path, tuning=None, prompt_f32=False)
+    report = perf.startup_report(config, {"helper_log": str(helper)})
+    assert report["prompt_f32_engagement"] is None
+
+
+def test_fixture_enable_thinking_requires_false_identity():
+    body = json.loads(perf.request_body("unit", 1))
+    body["chat_template_kwargs"]["enable_thinking"] = 0
+    with pytest.raises(ValueError, match="chat_template_kwargs"):
+        perf.validate_fixture(json.dumps(body).encode())
+
+
+def test_engine_env_reader_only_returns_narrow_keys():
+    import os
+    live = perf.engine_env(os.getpid())
+    assert set(live).issubset(set(perf.ENGINE_ENV_KEYS))   # never dumps secrets

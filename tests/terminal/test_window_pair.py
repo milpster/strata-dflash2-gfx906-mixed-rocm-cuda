@@ -398,3 +398,40 @@ def test_bad_adapt_off_type(tmp_path, value):
     with pytest.raises(ValueError, match="Adaptive-off baseline override"):
         window_pair.prepare("taoq", evidence=tmp_path, adapt_off=value)
     assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.skipif(not window_pair.PROD_LAUNCHER.exists(), reason="local production fixture unavailable")
+@pytest.mark.parametrize("tuning", [None, {"dflash": [7, 6, 0.3]}])
+def test_prompt_f32_baseline_on_every_arm(tmp_path, tuning):
+    prod = json.loads(window_pair.PROD_CONFIG.read_text())
+    assert prod["env"]["STRATA_HIP_PROMPT_F16"] == "1"   # canonical production keeps FP16
+    result = window_pair.prepare(f"pfa{0 if tuning is None else 1}", slots=4200,
+                                 evidence=tmp_path, tuning=tuning, prompt_f32=True)
+    cfg = json.loads(Path(result.config).read_text())
+    # The private arm overrides ONLY the inherited prompt-FP16 key to 0 (engine-side),
+    # composes with the tuning, and touches no other env value.
+    assert cfg["env"] == dict(prod["env"], STRATA_HIP_PROMPT_F16="0")
+    assert result.prompt_f32 is True
+    # Engine-side only (the server applies the config's env): no launcher seam, and the
+    # CUDA helper (no HIP prompt GEMMs) is never touched.
+    assert "STRATA_HIP_PROMPT_F16" not in Path(result.launcher).read_text()
+    assert result.parity_failures == []
+
+
+@pytest.mark.skipif(not window_pair.PROD_LAUNCHER.exists(), reason="local production fixture unavailable")
+def test_prompt_f32_default_is_byte_identical(tmp_path):
+    prod = json.loads(window_pair.PROD_CONFIG.read_text())
+    before = {p: p.read_bytes() for p in (window_pair.PROD_CONFIG, window_pair.PROD_LAUNCHER)}
+    result = window_pair.prepare("pfbo", slots=4200, evidence=tmp_path)
+    cfg = json.loads(Path(result.config).read_text())
+    assert cfg["env"] == prod["env"]          # inherits production F16=1 unchanged
+    assert result.prompt_f32 is False
+    assert "STRATA_HIP_PROMPT_F16" not in Path(result.launcher).read_text()
+    assert all(p.read_bytes() == content for p, content in before.items())  # canonical untouched
+
+
+@pytest.mark.parametrize("value", [1, "1", [], {}])
+def test_bad_prompt_f32_type(tmp_path, value):
+    with pytest.raises(ValueError, match="Prompt-F32 baseline override"):
+        window_pair.prepare("pfq", evidence=tmp_path, prompt_f32=value)
+    assert not list(tmp_path.iterdir())
