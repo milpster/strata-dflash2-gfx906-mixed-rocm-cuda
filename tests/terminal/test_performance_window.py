@@ -921,6 +921,215 @@ def test_stock_controls_refuses_lever_and_baselines(monkeypatch):
         perf.main()
 
 
+def test_helper_off_candidate_requires_stock_controls(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["performance_window", "--family", "x",
+                                      "--expected-supervisor", "1",
+                                      "--helper-off-candidate"])
+    with pytest.raises(SystemExit):
+        perf.main()
+
+
+def test_validate_reply_helper_off_arm_helper_less_semantics():
+    metric = metric_fixture()
+    metric["helper_reqs"] = None
+    with pytest.raises(RuntimeError, match="Invalid sustained"):
+        perf.validate_reply(reply_fixture(), metric)                  # helper-full expected
+    perf.validate_reply(reply_fixture(), metric, helper_off=True)     # helper-less accepted
+
+
+def test_probe_helper_off_state_needs_no_helper_identity(monkeypatch, tmp_path):
+    monkeypatch.setattr(perf.runtime, "EV", tmp_path)
+    log = tmp_path / "engine.log"
+    log.write_text("serve summary line\n")
+    cfg = tmp_path / "config.json"
+    cfg.write_text(json.dumps(dict(log=str(log))))
+    raw = json.dumps(reply_fixture()).encode()
+
+    class Resp:
+        status = 200
+
+        def read(self):
+            return raw
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    monkeypatch.setattr(perf.urllib.request, "urlopen", lambda *_, **__: (
+        log.open("a").write("serve summary line\n"), Resp())[-1])
+    helper_less = metric_fixture()
+    helper_less["helper_reqs"] = None
+    monkeypatch.setattr(perf.helper_ab, "parse_serve_line", lambda _: helper_less)
+    config = SimpleNamespace(label="b", kind="helper_off", config=cfg, base_url="http://x")
+    assert perf.probe(config, dict(helper_pid=0), "unit", 1)["rep"] == 1
+    monkeypatch.setattr(perf.helper_ab, "parse_serve_line", lambda _: metric_fixture())
+    mixed = SimpleNamespace(label="b", kind="mixed", config=cfg, base_url="http://x")
+    with pytest.raises(RuntimeError, match="lacks helper identity"):
+        perf.probe(mixed, dict(helper_pid=0), "unit", 1)
+
+
+def helper_off_config_fixture(tmp_path, log_text=STOCK_STARTUP):
+    cfg = dict(args=["--spec", "5", "--dflash-block", "5", "--spec-min-p", "0.5",
+                     "--max-context", "262144", "--gpu", "0,1", "--prefill", "8192",
+                     "--expert-helper-slots", "4200"],
+               layer_split="32", exe="/mixed/strata",
+               env={"STRATA_PREFILL_HELPER": "1", "STRATA_HIP_PROMPT_F16": "1"})
+    cfg["log"] = str(tmp_path / "engine.log")
+    Path(cfg["log"]).write_text(log_text)
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(cfg))
+    prod = tmp_path / "prod.json"
+    prod.write_text(json.dumps(dict(exe="/mixed/strata")))
+    return path, prod
+
+
+def test_helper_off_startup_report_proofs(tmp_path, monkeypatch):
+    path, prod = helper_off_config_fixture(tmp_path)
+    monkeypatch.setattr(perf.runtime, "CONFIG", prod)
+    console = tmp_path / "console.log"
+    console.write_text("ready: http://127.0.0.1:18080/v1  (context 262144 tokens, images on)\n")
+    report = perf.helper_off_startup_report(SimpleNamespace(config=path),
+                                            {"engine_log": str(console)})
+    assert report["kind"] == "helper_off" and report["split"] == 32
+    assert report["first_cache_slots"] == 6069 and report["later_cache_slots"] == 4780
+    assert report["effective_k"] == 4 and report["fp16_prompt_line"] is True
+    assert report["ready_context"] == 262144
+
+
+@pytest.mark.parametrize("mutate_cfg,mutate_log,match", [
+    (lambda c: c.update(exe=str(window_pair.STOCK_EXE)), None, "OFF derivation"),
+    (lambda c: c["args"].append("--expert-helper-socket"), None, "OFF derivation"),
+    (lambda c: c.update(expert_helper_socket="/x.sock"), None, "OFF derivation"),
+    (lambda c: c.update(expert_helper_socket2="/x2.sock"), None, "OFF derivation"),
+    (lambda c: c["env"].pop("STRATA_PREFILL_HELPER"), None, "OFF derivation"),
+    (None, lambda s: s + "expert-helper: 4093 rows on /x.sock (mirrored 4093/4200 slots)\n",
+     "expert-helper client"),
+    (None, lambda s: s.replace("CUDA1 runs layers 32-47", "CUDA1 runs layers 30-47")
+                      .replace("CUDA0 runs layers 0-31", "CUDA0 runs layers 0-29"), "layer-split"),
+    (None, lambda s: "".join(line + "\n" for line in s.splitlines()
+                             if "STRATA_HIP_PROMPT_F16" not in line), "prompt GEMM line"),
+])
+def test_helper_off_startup_report_rejects_seams_and_drift(tmp_path, monkeypatch,
+                                                           mutate_cfg, mutate_log, match):
+    path, prod = helper_off_config_fixture(tmp_path)
+    if mutate_cfg:
+        cfg = json.loads(path.read_text())
+        mutate_cfg(cfg)
+        path.write_text(json.dumps(cfg))
+    if mutate_log:
+        Path(json.loads(path.read_text())["log"]).write_text(mutate_log(STOCK_STARTUP))
+    monkeypatch.setattr(perf.runtime, "CONFIG", prod)
+    with pytest.raises(RuntimeError, match=match):
+        perf.helper_off_startup_report(SimpleNamespace(config=path),
+                                       {"engine_log": str(tmp_path / "missing.log")})
+
+
+def test_helper_off_startup_report_rejects_wrong_ready_context(tmp_path, monkeypatch):
+    path, prod = helper_off_config_fixture(tmp_path)
+    monkeypatch.setattr(perf.runtime, "CONFIG", prod)
+    console = tmp_path / "console.log"
+    console.write_text("ready: http://127.0.0.1:18080/v1  (context 131072 tokens)\n")
+    with pytest.raises(RuntimeError, match="ready-line"):
+        perf.helper_off_startup_report(SimpleNamespace(config=path),
+                                       {"engine_log": str(console)})
+
+
+def test_helper_off_candidate_run_uses_off_arm(monkeypatch, tmp_path):
+    events, args, _ = run_world(monkeypatch, tmp_path)
+    args.lever = None
+    args.stock_controls = True
+    args.helper_off_candidate = True
+    engine_expected = []
+    monkeypatch.setattr(perf.runtime, "engine_of",
+                        lambda state, engine=None: engine_expected.append(engine) or 3)
+    monkeypatch.setattr(perf.lifecycle, "graceful_stop", lambda *_: events.append("arm_stop"))
+    prepared_stock, startup_seen = [], []
+
+    def prepare_stock(family, **kwargs):
+        prepared_stock.append(family)
+        path = tmp_path / f"{family}.json"
+        path.write_text(json.dumps(dict(log=str(tmp_path / "engine.log"))))
+        return SimpleNamespace(family=family, config=path, launcher="launcher", state="state",
+                               base_url="url", socket2=None, tuning=None)
+
+    def prepare(family, **kwargs):
+        path = tmp_path / f"{family}.json"
+        path.write_text(json.dumps(dict(log=str(tmp_path / "engine.log"))))
+        return SimpleNamespace(family=family, config=path, launcher="launcher", state="state",
+                               base_url="url", socket2="socket2", tuning=None,
+                               helper_off=kwargs.get("helper_off", False))
+
+    monkeypatch.setattr(perf.window_pair, "prepare_stock", prepare_stock)
+    monkeypatch.setattr(perf.window_pair, "prepare", prepare)
+    monkeypatch.setattr(perf, "stock_pins", lambda: {"stock": "same"})
+    monkeypatch.setattr(perf, "stock_startup_report", lambda cfg, state: {"kind": "stock"})
+    monkeypatch.setattr(perf, "helper_off_startup_report",
+                        lambda cfg, state: startup_seen.append(cfg.label) or {"kind": "helper_off"})
+    monkeypatch.setattr(perf, "probe", lambda cfg, state, family, rep, body=None: dict(
+        rep=rep, gen_rate=30, read_rate=200, request_sha256=f"req{rep}",
+        message_sha256=f"out{rep}", plans=[]))
+    assert perf.run(args) == 0
+    assert prepared_stock == ["unit-a", "unit-c"]              # stock brackets, helper-off middle
+    assert startup_seen == ["b"]                               # the OFF arm ran its own proofs
+    assert engine_expected == [str(window_pair.STOCK_EXE), None, str(window_pair.STOCK_EXE)]
+    result = json.loads((tmp_path / "unit-perf-status.json").read_text())
+    assert result["helper_off_candidate"] is True
+    assert [row["kind"] for row in result["pairs"]] == ["stock", "helper_off", "stock"]
+    assert "Helper-off candidate" in result["comparison"]["limits"]
+    assert events == ["stop", "arm_stop", "arm_stop", "arm_stop", "restore"]
+
+
+def test_stock_mode_kl_keys_follow_candidate_kind(monkeypatch, tmp_path):
+    import struct
+    # the plain-stock variant's middle arm is a HELPER-FULL mixed arm: it still demands
+    # the prompt-channel close proof (the helper-off variant must not)
+    (tmp_path / "engine.log").write_text(
+        "the prompt tier's channel (socket2) closed after 3 prompt requests / 9 prompt rows\n")
+    for family, helper_off in (("iso1", False), ("iso2", True)):
+        events, args, _ = run_world(monkeypatch, tmp_path)
+        args.lever = None
+        args.stock_controls = True
+        args.helper_off_candidate = helper_off
+        args.first_logits = True
+        args.family = family
+        monkeypatch.setattr(perf.lifecycle, "graceful_stop", lambda *_: events.append("arm_stop"))
+
+        def prepare_stock(family, **kwargs):
+            path = tmp_path / f"{family}.json"
+            path.write_text(json.dumps(dict(log=str(tmp_path / "engine.log"))))
+            return SimpleNamespace(family=family, config=path, launcher="launcher", state="state",
+                                   base_url="url", socket2=None, tuning=None)
+
+        def prepare(family, **kwargs):
+            path = tmp_path / f"{family}.json"
+            path.write_text(json.dumps(dict(log=str(tmp_path / "engine.log"))))
+            return SimpleNamespace(family=family, config=path, launcher="launcher", state="state",
+                                   base_url="url", socket2="socket2", tuning=None,
+                                   helper_off=kwargs.get("helper_off", False))
+
+        def probe(cfg, state, family, rep, body=None):
+            for n in range(3):
+                Path(f"{tmp_path}/{family}-{cfg.label}-first-logits.{n}").write_bytes(
+                    struct.pack("4f", 1.0, 2.0, 3.0, 4.0))
+            return dict(rep=rep, gen_rate=30, read_rate=200, request_sha256=f"req{rep}",
+                        message_sha256=f"out{rep}", plans=[])
+
+        monkeypatch.setattr(perf.window_pair, "prepare_stock", prepare_stock)
+        monkeypatch.setattr(perf.window_pair, "prepare", prepare)
+        monkeypatch.setattr(perf, "probe", probe)
+        monkeypatch.setattr(perf, "stock_pins", lambda: {"stock": "same"})
+        monkeypatch.setattr(perf, "stock_startup_report", lambda cfg, state: {"kind": "stock"})
+        monkeypatch.setattr(perf, "helper_off_startup_report", lambda cfg, state: {"kind": "helper_off"})
+        assert perf.run(args) == 0
+        kl = json.loads((tmp_path / f"{family}-perf-status.json").read_text())["first_logits_kl"]
+        assert set(kl) == ({"stock_a_vs_stock_c", "stock_a_vs_helper_off_b",
+                            "stock_c_vs_helper_off_b", "note"} if helper_off else
+                           {"stock_a_vs_stock_c", "stock_a_vs_mixed_b",
+                            "stock_c_vs_mixed_b", "note"})
+
+
 def test_first_logits_flag_reaches_every_arm_and_kl(monkeypatch, tmp_path):
     import struct
     events, args, _ = run_world(monkeypatch, tmp_path)

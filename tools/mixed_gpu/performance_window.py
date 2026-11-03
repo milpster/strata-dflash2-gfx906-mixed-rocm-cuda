@@ -203,14 +203,15 @@ def request_body(family, rep):
                            chat_template_kwargs=dict(enable_thinking=False))).encode()
 
 
-def validate_reply(reply, metric, stock=False):
+def validate_reply(reply, metric, stock=False, helper_off=False):
     choice = reply["choices"][0]
     message = choice.get("message", {})
     count = reply["usage"]["completion_tokens"]
-    # A stock arm is the HELPER-LESS pre-helper product: its serve lines carry no helper
-    # tail at all (parse_serve_line leaves helper_reqs None).  A mixed arm must show
-    # positive helper traffic with zero timeouts/fallbacks, exactly as before.
-    helper_engaged = (metric.get("helper_reqs") is None if stock else
+    # A stock arm is the HELPER-LESS pre-helper product and a helper-off arm is the
+    # mixed ENGINE with the helper client removed: neither's serve lines carry a
+    # helper tail at all (parse_serve_line leaves helper_reqs None).  A helper-full
+    # mixed arm must show positive helper traffic with zero timeouts/fallbacks.
+    helper_engaged = (metric.get("helper_reqs") is None if stock or helper_off else
                       (metric.get("helper_reqs") or 0) > 0
                       and not (metric.get("helper_timeouts") or 0)
                       and not (metric.get("helper_fallbacks") or 0))
@@ -230,8 +231,11 @@ def validate_reply(reply, metric, stock=False):
 
 def probe(config, state, family, rep, body=None):
     # Stock arms come from window_pair.prepare_stock (kind "stock"): no helper identity
-    # to keep alive, and validate_reply accepts the helper-less serve lines.
+    # to keep alive, and validate_reply accepts the helper-less serve lines.  A
+    # helper-off arm (kind "helper_off") is the same helper-less discipline on the
+    # mixed engine: window_pair's validated OFF derivation starts no helper process.
     stock = getattr(config, "kind", None) == STOCK_KIND
+    helper_off = getattr(config, "kind", None) == "helper_off"
     prefix = runtime.EV / f"{family}-{config.label}-r{rep}"
     # Frozen replay reuses the retained source bytes VERBATIM (never regenerated or
     # reserialised); the no-option path stays request_body(family, rep).
@@ -258,11 +262,11 @@ def probe(config, state, family, rep, body=None):
     if code != 200 or len(metrics) != 1:
         raise RuntimeError(f"Expected one successful generation, http={code}, summaries={len(metrics)}")
     metric = metrics[0]
-    output = validate_reply(json.loads(raw), metric, stock=stock)
+    output = validate_reply(json.loads(raw), metric, stock=stock, helper_off=helper_off)
     if state.get("helper_pid"):
         if not pair.alive(state["helper_pid"], state["helper_start"]):
             raise RuntimeError("Helper identity changed during probe")
-    elif not stock:
+    elif not stock and not helper_off:
         raise RuntimeError("Mixed arm state lacks helper identity")
     if re.search(r"drafting is off|candidate tokens outside|sampled request uses target-only", segment):
         raise RuntimeError("Drafter fell back during probe; raw artifacts retained")
@@ -361,6 +365,54 @@ def stock_startup_report(config, state):
     return dict(kind=STOCK_KIND, split=split, later_cache_slots=int(later[3]),
                 effective_k=int(k[2]), floor=float(value("--spec-min-p")),
                 fp16_prompt_line=True, ready_context=int(ready[1]),
+                server_fill_experts=int(fill[1]) if fill else None)
+
+
+def helper_off_startup_report(config, state):
+    """Helper-less proofs for a helper-off arm (the mixed ENGINE, helper removed).
+
+    The isolation lever between the two products: window_pair.prepare(helper_off=True)
+    takes helper_ab's validated OFF derivation of the canonical mixed config (both
+    socket keys and their argv pairs popped - the engine never creates the helper
+    client; STRATA_PREFILL_HELPER stays in env, inert with no socket to connect) and
+    a launcher that starts NO helper process (supervisor helper_pid 0, attach on the
+    server's own ready line).  Proofs from the private config and the arm's own logs:
+    the engine is the canonical mixed binary, no helper seam survives in config or
+    log, the layer-split geometry and drafter match the stock arms' settings, the
+    FP16 prompt GEMM line is present (env parity with both products), and the server's
+    ready line carries the full 262144 context."""
+    cfg = json.loads(Path(config.config).read_text())
+    log = Path(cfg["log"]).read_text()
+    args = cfg["args"]
+    value = lambda flag: args[args.index(flag) + 1]
+    split = int(cfg["layer_split"])
+    prod = json.loads(runtime.CONFIG.read_text())
+    if (cfg["exe"] != prod["exe"] or "--expert-helper-socket" in args
+            or "expert_helper_socket" in cfg or "expert_helper_socket2" in cfg
+            or cfg.get("env", {}).get("STRATA_PREFILL_HELPER") != "1"):
+        raise RuntimeError("Helper-off arm is not the validated OFF derivation of the mixed product")
+    if any("expert-helper" in line for line in log.splitlines()):
+        raise RuntimeError("Helper-off arm formed an expert-helper client")
+    later = re.search(r"CUDA1 runs layers (\d+)-(\d+), expert cache (\d+) slots", log)
+    first = re.search(r"strata generate: expert cache (\d+) slots", log)
+    if (not later or tuple(map(int, later.group(1, 2))) != (split, 47)
+            or f"CUDA0 runs layers 0-{split - 1}" not in log or not first):
+        raise RuntimeError("Helper-off layer-split geometry proof failed")
+    k = re.search(r"trained block (\d+), pass K=(\d+)", log)
+    if (not k or int(k[2]) != min(int(value("--spec")) - 1, int(value("--dflash-block")))
+            or int(value("--max-context")) != 262144):
+        raise RuntimeError("Helper-off drafter/context proof failed")
+    if not FP16_PROMPT_LINE.search(log):
+        raise RuntimeError("Helper-off arm lost the STRATA_HIP_PROMPT_F16=1 prompt GEMM line")
+    console = Path(state["engine_log"]).read_text(errors="replace")
+    ready = re.search(r"ready: http://127\.0\.0\.1:\d+/v1 .*context (\d+) tokens", console)
+    if not ready or int(ready[1]) != 262144:
+        raise RuntimeError("Helper-off ready-line context proof failed")
+    fill = re.search(r"filling the GPU's expert cache \((\d+) experts", console)
+    return dict(kind="helper_off", split=split, first_cache_slots=int(first[1]),
+                later_cache_slots=int(later[3]), effective_k=int(k[2]),
+                floor=float(value("--spec-min-p")), fp16_prompt_line=True,
+                ready_context=int(ready[1]),
                 server_fill_experts=int(fill[1]) if fill else None)
 
 
@@ -507,6 +559,7 @@ def run(args):
         if os.environ.get(key, "0") not in ("", "0") or configs.get("env", {}).get(key, "0") not in ("", "0"):
             raise ValueError(f"Unexpected baseline lever enabled: {key}")
     stock_mode = bool(getattr(args, "stock_controls", False))
+    helper_off_middle = stock_mode and bool(getattr(args, "helper_off_candidate", False))
     first_logits = bool(getattr(args, "first_logits", False))
     fingerprint = pins()
     if stock_mode:
@@ -522,9 +575,12 @@ def run(args):
         # keep their provenance for the status/dry-run recheck.
         frozen, replay = load_replay(args.replay_family, evidence=runtime.EV)
     if stock_mode:
-        # [pre-helper stock, canonical mixed, pre-helper stock]: the candidate arm is the
+        # [pre-helper stock, candidate, pre-helper stock]: the candidate arm is the
         # production-mixed product itself (plain window_pair.prepare, no experimental
-        # baselines), so the comparison is product-level, not one knob.
+        # baselines), so the comparison is product-level, not one knob - or, with
+        # --helper-off-candidate, that same mixed engine with the helper client removed
+        # (helper_ab's validated OFF derivation), isolating helper traffic from the
+        # engine/server build.
         schedule = [None, None, None]
     else:
         schedule = [None, *MATRIX[args.lever], None]
@@ -534,6 +590,7 @@ def run(args):
         print(json.dumps(dict(family=args.family, schedule=schedule, reps=3,
                               max_tokens=512, minimum_output=MIN_OUTPUT,
                               stock_controls=stock_mode,
+                              helper_off_candidate=helper_off_middle,
                               stock_pins=stock_pins() if stock_mode else None,
                               first_logits=first_logits,
                               iq_mt_min=args.iq_mt_min, adapt_off=args.adapt_off,
@@ -550,12 +607,14 @@ def run(args):
             config.kind = STOCK_KIND
         else:
             config = window_pair.prepare(f"{args.family}-{label}", slots=4200, tuning=tuning,
+                                         helper_off=helper_off_middle and i == 1,
                                          iq_mt_min=args.iq_mt_min, adapt_off=args.adapt_off,
                                          prompt_f32=args.prompt_f32, first_logits=fl)
-            config.kind = "mixed"
+            config.kind = "helper_off" if getattr(config, "helper_off", False) else "mixed"
         config.label = label
         private.append(config)
     result = dict(started=time.time(), lever=args.lever, stock_controls=stock_mode,
+                  helper_off_candidate=helper_off_middle,
                   instrumented=first_logits, iq_mt_min=args.iq_mt_min,
                   adapt_off=args.adapt_off, prompt_f32=args.prompt_f32,
                   replay=replay, pairs=[], success=False, pins=fingerprint)
@@ -579,7 +638,10 @@ def run(args):
                 known = pair.descendants(active.pid, known)
                 row = dict(label=config.label, kind=config.kind, tuning=config.tuning, state=state,
                            startup=(stock_startup_report(config, state)
-                                    if config.kind == STOCK_KIND else startup_report(config, state)),
+                                    if config.kind == STOCK_KIND else
+                                    helper_off_startup_report(config, state)
+                                    if config.kind == "helper_off" else
+                                    startup_report(config, state)),
                            probes=[])
                 result["pairs"].append(row)
                 for rep in range(1, 4):
@@ -592,7 +654,7 @@ def run(args):
                 active = None
                 if any(pair.alive(pid, token) for pid, token in known.items()):
                     raise RuntimeError("Private processes survived arm teardown")
-                if config.kind != STOCK_KIND:
+                if config.kind not in (STOCK_KIND, "helper_off"):
                     log = Path(json.loads(Path(config.config).read_text())["log"]).read_text()
                     closes = [m for m in helper_ab.PROMPT_TIER_CLOSE_RE.finditer(log)
                               if m["path"] == config.socket2 and int(m["reqs"]) > 0]
@@ -625,12 +687,21 @@ def run(args):
                                                    "comparison: the pinned pre-helper engine, "
                                                    "server and config differ from the canonical "
                                                    "mixed pair together, not one knob.")
+                if helper_off_middle:
+                    result["comparison"]["limits"] += (" Helper-off candidate: the middle arm "
+                                                       "is that same mixed engine with the helper "
+                                                       "client removed (validated OFF derivation, "
+                                                       "no helper process), so text equal to the "
+                                                       "stock controls isolates the helper traffic; "
+                                                       "a mismatch points at the engine/server "
+                                                       "build. The server still differs from stock.")
             if first_logits:
                 arms = {row["label"]: row for row in result["pairs"]}
                 result["first_logits_kl"] = (
-                    {"stock_a_vs_mixed_b": kl_report(arms["a"]["first_logits"], arms["b"]["first_logits"]),
-                     "stock_c_vs_mixed_b": kl_report(arms["c"]["first_logits"], arms["b"]["first_logits"]),
-                     "stock_a_vs_stock_c": kl_report(arms["a"]["first_logits"], arms["c"]["first_logits"])}
+                    {"stock_a_vs_stock_c": kl_report(arms["a"]["first_logits"], arms["c"]["first_logits"]),
+                     **{f"stock_{ctrl}_vs_{row['kind']}_{row['label']}":
+                        kl_report(arms[ctrl]["first_logits"], row["first_logits"])
+                        for row in result["pairs"][1:-1] for ctrl in ("a", "c")}}
                     if stock_mode else
                     {"control_a_vs_control_c": kl_report(arms["a"]["first_logits"], arms["c"]["first_logits"]),
                      **{f"control_a_vs_{row['label']}":
@@ -716,10 +787,20 @@ def main():
                              "serve diagnostics) for offline KL comparison. The dump's device "
                              "sync perturbs scheduling: instrumented timings are NOT gain "
                              "evidence, and the KL rows are recorded evidence only, never a gate")
+    parser.add_argument("--helper-off-candidate", action="store_true",
+                        help="with --stock-controls: the middle arm runs the canonical mixed "
+                             "ENGINE with the helper DISABLED (window_pair's validated OFF "
+                             "derivation: both helper socket keys popped from config and argv, "
+                             "no helper process, supervisor helper_pid 0). Isolates the helper "
+                             "from the build: text equal to the stock controls means the helper "
+                             "traffic causes the divergence; a mismatch means the engine/server "
+                             "build does. Requires --stock-controls")
     args = parser.parse_args()
     if args.stock_controls and (args.lever is not None or args.candidate is not None
                                 or args.iq_mt_min or args.adapt_off or args.prompt_f32):
         parser.error("--stock-controls replaces the lever schedule and the baseline flags")
+    if args.helper_off_candidate and not args.stock_controls:
+        parser.error("--helper-off-candidate requires --stock-controls")
     if args.lever is None and not args.stock_controls:
         parser.error("--lever is required without --stock-controls")
     if args.candidate is not None and not 1 <= args.candidate <= len(MATRIX[args.lever]):
