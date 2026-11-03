@@ -11,6 +11,7 @@
 
 #include "strata/core/expert_helper_protocol.hpp"
 #include "strata/artifact/gguf_reader.hpp"
+#include "ggml.h"
 
 #include <algorithm>
 #include <cmath>
@@ -19,6 +20,8 @@
 #include <fstream>
 #include <limits>
 #include <random>
+#include <iomanip>
+#include <sstream>
 
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -28,6 +31,100 @@ namespace tools {
 namespace p2 {
 
 namespace eh = core::expert_helper;
+
+bool decode_mmq_d4(const std::vector<uint8_t>& raw, int64_t rows, int64_t cols,
+                   std::vector<float>& scales, std::vector<int8_t>& qs, std::string& err) {
+    constexpr size_t bytes = 4 * sizeof(float) + 128;
+    if (rows <= 0 || cols <= 0 || cols % 128 ||
+        (uint64_t) rows > std::numeric_limits<size_t>::max() / (uint64_t) cols ||
+        (uint64_t) rows > raw.size() / bytes / (uint64_t) (cols / 128)) {
+        err = "MMQ D4 image is short or has invalid/overflowed geometry";
+        return false;
+    }
+    scales.resize((size_t) rows * (size_t) cols / 32);
+    qs.resize((size_t) rows * (size_t) cols);
+    for (int64_t r = 0; r < rows; ++r) {
+        for (int64_t c = 0; c < cols; c += 32) {
+            const size_t block = (size_t) (c / 128) * (size_t) rows + (size_t) r;
+            const uint8_t* src = raw.data() + block * bytes;
+            const size_t logical = (size_t) r * (size_t) cols + (size_t) c;
+            std::memcpy(&scales[logical / 32], src + (size_t) ((c % 128) / 32) * sizeof(float), sizeof(float));
+            std::memcpy(qs.data() + logical, src + 4 * sizeof(float) + (size_t) (c % 128), 32);
+        }
+    }
+    return true;
+}
+
+bool diff_q8_input(const float* x, int64_t n, const float* primary_scales,
+                   const int8_t* primary_qs, Q8InputDiff& out, std::string& err) {
+    out = Q8InputDiff{};
+    if (n <= 0 || n % 32 || !x || !primary_scales || !primary_qs) {
+        err = "q8 producer comparison needs nonempty whole blocks and all three inputs";
+        return false;
+    }
+    for (int64_t i = 0; i < n; ++i) {
+        if (!std::isfinite(x[i]) || !std::isfinite(primary_scales[i / 32])) {
+            err = "q8 producer comparison refuses nonfinite input/scales";
+            return false;
+        }
+    }
+    std::vector<uint8_t> helper((size_t) (n / 32) * 36);
+    core::quantize_q8_1_cpu(x, n, helper.data());
+    out.blocks = n / 32;
+    for (int64_t b = 0; b < out.blocks; ++b) {
+        ggml_fp16_t half;
+        std::memcpy(&half, helper.data() + (size_t) b * 36, sizeof(half));
+        const float hs = ggml_fp16_to_fp32(half), ps = primary_scales[b];
+        if (std::memcmp(&ps, &hs, sizeof(float))) {
+            ++out.scale_different;
+            if (out.first_scale_block < 0) {
+                out.first_scale_block = b;
+                out.first_primary_scale = ps;
+                out.first_helper_scale = hs;
+            }
+        }
+        if (ggml_fp32_to_fp16(ps) != half) ++out.scale_after_half_different;
+        out.max_scale_abs = std::max(out.max_scale_abs, std::fabs((double) ps - hs));
+        bool different = false;
+        for (int j = 0; j < 32; ++j) {
+            int8_t hq;
+            std::memcpy(&hq, helper.data() + (size_t) b * 36 + 4 + j, 1);
+            const int64_t i = b * 32 + j;
+            const int pq = primary_qs[i];
+            if (pq != hq) {
+                ++out.integers_different;
+                different = true;
+                if (out.first_integer < 0) {
+                    out.first_integer = i;
+                    out.first_primary_integer = pq;
+                    out.first_helper_integer = hq;
+                }
+            }
+            out.max_reconstructed_abs = std::max(out.max_reconstructed_abs,
+                                                 std::fabs((double) ps * pq - (double) hs * hq));
+        }
+        if (different) ++out.integer_blocks_different;
+    }
+    return true;
+}
+
+std::string q8_input_diff_json(const Q8InputDiff& d) {
+    std::ostringstream s;
+    s << std::setprecision(17)
+      << "{\"blocks\":" << d.blocks << ",\"scale_different\":" << d.scale_different
+      << ",\"scale_after_half_different\":" << d.scale_after_half_different
+      << ",\"integers_different\":" << d.integers_different
+      << ",\"integer_blocks_different\":" << d.integer_blocks_different
+      << ",\"first_scale_block\":" << d.first_scale_block
+      << ",\"first_primary_scale\":" << d.first_primary_scale
+      << ",\"first_helper_scale\":" << d.first_helper_scale
+      << ",\"first_integer\":" << d.first_integer
+      << ",\"first_primary_integer\":" << d.first_primary_integer
+      << ",\"first_helper_integer\":" << d.first_helper_integer
+      << ",\"max_scale_abs\":" << d.max_scale_abs
+      << ",\"max_reconstructed_abs\":" << d.max_reconstructed_abs << "}";
+    return s.str();
+}
 
 // ============================== the metric ==============================
 

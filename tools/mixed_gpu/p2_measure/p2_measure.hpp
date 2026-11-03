@@ -198,6 +198,25 @@ bool load_moe_dump(const std::string& path, int64_t max_tokens, Activations& out
 /// the same generator reproduces the same bytes for (seed, fixture index, layer, T).
 void synth_activations(uint64_t seed, int fixture_index, int64_t layer, int64_t T, Activations& out);
 
+// Producer-only diagnostic: compare the actual MMQ D4 scales/integers, decoded into
+// logical input order by the GPU driver, with the helper's ACTUAL host quantizer on
+// the same floats. No tolerance, verdict or claim about complete expert products.
+struct Q8InputDiff {
+    int64_t blocks = 0, scale_different = 0, scale_after_half_different = 0;
+    int64_t integers_different = 0, integer_blocks_different = 0;
+    int64_t first_scale_block = -1, first_integer = -1;
+    float first_primary_scale = 0, first_helper_scale = 0;
+    int first_primary_integer = 0, first_helper_integer = 0;
+    double max_scale_abs = 0, max_reconstructed_abs = 0;
+};
+// Pinned ggml block_q8_1_mmq D4 layout: four float scales then 128 int8s,
+// physical block (column/128)*rows + row. Refuses short/overflowed geometry.
+bool decode_mmq_d4(const std::vector<uint8_t>& raw, int64_t rows, int64_t cols,
+                   std::vector<float>& scales, std::vector<int8_t>& qs, std::string& err);
+bool diff_q8_input(const float* x, int64_t n, const float* primary_scales,
+                   const int8_t* primary_qs, Q8InputDiff& out, std::string& err);
+std::string q8_input_diff_json(const Q8InputDiff& d);
+
 // ============================== 3. the layer's claim set ==============================
 //
 // The design's selection is `select_prompt_rows` over the layer's per-expert token lists.  This builds its

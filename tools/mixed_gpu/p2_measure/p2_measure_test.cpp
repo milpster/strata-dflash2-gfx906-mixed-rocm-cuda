@@ -2989,6 +2989,62 @@ void section_product_write_geometry() {
     }
 }
 
+static void section_q8_input() {
+    std::printf("(producer diagnostic) actual helper quantizer versus logical MMQ D4 input\n");
+    // Four physical 144-byte blocks: column-block first, then row. Every scale
+    // and integer names its position, so a row-major interpretation fails here.
+    std::vector<uint8_t> raw(4 * 144);
+    for (size_t b = 0; b < 4; ++b) {
+        for (size_t j = 0; j < 4; ++j) {
+            float scale = (float) (b * 4 + j + 1);
+            std::memcpy(raw.data() + b * 144 + j * 4, &scale, 4);
+        }
+        for (size_t j = 0; j < 128; ++j) raw[b * 144 + 16 + j] = (uint8_t) b;
+    }
+    std::vector<float> decoded_scales;
+    std::vector<int8_t> decoded_qs;
+    std::string decode_error;
+    check(decode_mmq_d4(raw, 2, 256, decoded_scales, decoded_qs, decode_error) &&
+          decoded_scales[0] == 1 && decoded_scales[4] == 9 &&
+          decoded_scales[8] == 5 && decoded_scales[12] == 13 &&
+          decoded_qs[0] == 0 && decoded_qs[128] == 2 && decoded_qs[256] == 1 && decoded_qs[384] == 3,
+          "MMQ D4 transposition decodes two rows and two column blocks exactly");
+    check(!decode_mmq_d4(raw, 3, 256, decoded_scales, decoded_qs, decode_error) &&
+          !decode_mmq_d4(raw, 1, 31, decoded_scales, decoded_qs, decode_error),
+          "short/invalid MMQ images are refused");
+    std::vector<float> x(256), scales(8, 1.0f);
+    std::vector<int8_t> qs(256);
+    for (size_t i = 0; i < x.size(); ++i) x[i] = qs[i] = i % 2 ? -127 : 127;
+    Q8InputDiff d;
+    std::string err;
+    check(diff_q8_input(x.data(), 256, scales.data(), qs.data(), d, err) && d.blocks == 8 &&
+          d.scale_different == 0 && d.integers_different == 0 && d.max_reconstructed_abs == 0,
+          "exact integer/scale reference reports no differences");
+    scales[5] = std::nextafter(1.0f, 2.0f);
+    qs[194] = 126;
+    check(diff_q8_input(x.data(), 256, scales.data(), qs.data(), d, err) &&
+          d.scale_different == 1 && d.first_scale_block == 5 &&
+          d.scale_after_half_different == 0 && d.integers_different == 1 &&
+          d.integer_blocks_different == 1 && d.first_integer == 194 &&
+          d.first_primary_integer == 126 && d.first_helper_integer == 127 &&
+          d.max_reconstructed_abs == 1,
+          "separate float-scale and integer mismatches retain exact first positions");
+    x.assign(32, 12.7f); scales.assign(1, 0.1f); qs.assign(32, 127);
+    check(diff_q8_input(x.data(), 32, scales.data(), qs.data(), d, err) &&
+          d.scale_different == 1 && d.scale_after_half_different == 0 &&
+          d.integers_different == 0 && d.first_helper_scale == 0.0999755859375f &&
+          d.max_reconstructed_abs > 0.003 && d.max_reconstructed_abs < 0.0032,
+          "hand-computed 0.1 scale loses precision even when every integer agrees");
+    check(q8_input_diff_json(d).find("\"first_helper_scale\":0.0999755859375") != std::string::npos,
+          "JSON preserves the half scale exactly, without a gate/verdict");
+    check(!diff_q8_input(x.data(), 31, scales.data(), qs.data(), d, err) &&
+          !diff_q8_input(nullptr, 32, scales.data(), qs.data(), d, err),
+          "invalid geometry/pointers refuse before quantization");
+    scales[0] = std::numeric_limits<float>::infinity();
+    check(!diff_q8_input(x.data(), 32, scales.data(), qs.data(), d, err),
+          "nonfinite primary scales refuse rather than producing invalid JSON");
+}
+
 int main(int argc, char** argv) {
     // The strict-parser integration seam: emit the deterministic CPU self-test document (no GPU, no
     // helper, no pack) so tools/mixed_gpu/p2_measure/p2_report_audit.py and
@@ -3028,6 +3084,7 @@ int main(int argc, char** argv) {
     section_gguf_truth();
     section_fault_attribution();
     section_product_write_geometry();
+    section_q8_input();
     std::printf("%s: %d failure(s)\n", failures ? "p2_measure_test: FAIL" : "p2_measure_test: PASS",
                 failures);
     return failures ? 1 : 0;
