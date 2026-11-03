@@ -6,6 +6,7 @@
 // producer stages chunk N+1 on its host thread while the final stage assembles chunk
 // N on its own - prefill.cpp:4948-4963 is the concurrent-call evidence).
 #include <strata/core/dflash_tap_collect.hpp>
+#include <strata/core/dflash.hpp>   // F1: deferral_context() (declared there, defined in dflash_runtime.cpp)
 #include <strata/core/on_device.hpp>
 
 #include <chrono>
@@ -339,6 +340,27 @@ bool DFlashTapCollector::assemble(int64_t key, const Slice* slices, int n_slices
             if (cudaMemcpyAsync(dst, s.pin[t], bytes, cudaMemcpyHostToDevice, cs_) != cudaSuccess) {
                 err = "dflash tap collect: H2D of the staged slice failed"; return false;
             }
+        }
+    }
+    // F1 (§2 change 4, hazard H1 - MANDATORY with the deferral): the drafter-local D2D reads
+    // the producer stage's SINGLE-buffered plane on cs_; with add_context's tail host sync
+    // deferred, nothing ordered it against the successor chunk's writes on the stage's own
+    // stream.  Record an event on cs_ once the plane's copies are enqueued and drain it on
+    // this (the consumer's) host thread - same device, same device's stream, the proven
+    // pattern the producer uses at stage()'s slot-event drain (cpp:205).  The barrier covers
+    // only the enqueued plane copies (2x40 MiB D2D in the bench geometry), not the fusion.
+    // Flag off: the host sync the deferred one replaced already covers this - no event, no
+    // sync, today's code.
+    if (deferral_context() && cs_ != nullptr) {
+        static cudaEvent_t d2d_barrier = nullptr;   // one consumer thread per collector (serial-only)
+        if (d2d_barrier == nullptr && cudaEventCreateWithFlags(&d2d_barrier, cudaEventDisableTiming) != cudaSuccess) {
+            err = "dflash tap collect: creating the D2D barrier event failed"; return false;
+        }
+        if (cudaEventRecord(d2d_barrier, cs_) != cudaSuccess) {
+            err = "dflash tap collect: recording the D2D barrier event failed"; return false;
+        }
+        if (cudaEventSynchronize(d2d_barrier) != cudaSuccess) {
+            err = "dflash: prompt context consumption failed"; return false;
         }
     }
     s.rows = -1;
