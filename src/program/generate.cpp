@@ -8468,6 +8468,7 @@ int main(int argc, char** argv) {
         }
         const auto fill_t0 = std::chrono::steady_clock::now();
         uint64_t fill_bytes = 0;
+        std::pair<int32_t, int32_t> verified_pair{};   // H6: the first pair THIS run prefilled (profile[0] may be the helper's)
         if (nib::any_on()) {   // STRATA_EXPERT_NIBBLE: the converted layers' pairs go through the 4-bit fill instead
             int64_t conv = 0;
             for (int64_t i = 0; i < want; ++i) conv += nib::layer(profile[(size_t) i].first).on ? 1 : 0;
@@ -8510,11 +8511,10 @@ int main(int argc, char** argv) {
         // about bytes produces a plausible token, which is this project's most expensive failure mode; the
         // cache's own `verify_slot` is the check and it costs one 1.38 MB D2H at startup.
         // (STRATA_EXPERT_NIBBLE: a converted slot holds 4-bit codes, not the blob's bytes - the 4-bit check below is its check)
-        if (prefilled > 0 && !nib::layer(profile[0].first).on &&
-            !xcache.verify_slot(xcache.slot_of(profile[0].first, profile[0].second),
-                                srcp->blob_stable(profile[0].first, profile[0].second), err,
-                                (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(profile[0].first))) {
-        if (prefilled > 0 && !xcache.verify_slot(xcache.slot_of(verified_pair.first, verified_pair.second),
+        // (merged: one check, both semantics - the nibble layers take their own path, and verified_pair is the
+        //  first pair THIS run prefilled, not profile[0] which may be the helper's now)
+        if (prefilled > 0 && !nib::layer(verified_pair.first).on &&
+            !xcache.verify_slot(xcache.slot_of(verified_pair.first, verified_pair.second),
                                 srcp->blob_stable(verified_pair.first, verified_pair.second), err,
                                 (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(verified_pair.first))) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
@@ -14721,7 +14721,9 @@ int main(int argc, char** argv) {
                 for (int k = 0; k < nact && nact > 0; ++k) {
                     const BSlot& q = bs[(size_t) act_ids[k]];
                     int want = spare / nact + (k < spare % nact ? 1 : 0);
+#if defined(STRATA_HAVE_DFLASH2)
                     want = std::min(want, (int) strata::core::Dflash2Drafter::kDrafts);
+#endif
                     want = std::min<int>(want, (int) std::max<int64_t>(0, q.max_new - q.produced - 1));
                     want = std::min<int>(want, (int) std::max<int64_t>(0, (int64_t) o.max_context - q.p - 2));
                     want = std::min(want, df2_cap);
@@ -16098,6 +16100,8 @@ int main(int argc, char** argv) {
             }
             if (req_prefill_only && (geni || o.batch > 0 || n < 2)) {
                 std::printf("ERR prefill=1 needs a text prompt of at least 2 tokens and no --batch\n");
+                continue;
+            }
             // Sampled requests decode target-only by default: speculative windows once
             // failed the seeded-output parity gate (a multi-row logits effect, not the
             // sampler).  STRATA_DFLASH_SAMPLED=1 opts in: acceptance is exact-match
@@ -19193,6 +19197,7 @@ int main(int argc, char** argv) {
             };
 #else
             auto draft_df2 = [&](int) -> bool { return false; };
+            auto defer_df2 = [&](int) -> bool { return false; };
 #endif
             if (df2_trace != nullptr) std::fprintf(df2_trace, "# request prompt %lld df2 %d spec %d\n", (long long) n, req_df2 ? 1 : 0, S_mtp);
             while (!pl_ran && !cancelled && produced_n < max_new) {
@@ -21718,11 +21723,12 @@ int main(int argc, char** argv) {
             // guard), exactly as pre-integ-023 (c938100b:16924 + :16963) had it.  Upstream's own use only reads it.
             bool drafted = !draft_on || use_dflash || (int64_t) produced.size() >= max_new || draft_next(T, a);
             if (!use_dflash) {   // ours: the CLI --dflash path joins the adaptation thread and checks it in its own block below
-            if (adapt_thr.joinable()) adapt_thr.join();
-            if (!adapt_ok) return 1;
-            if (!drafted) {
-                std::fprintf(stderr, "strata generate: %s\n", err.c_str());
-                return 1;
+                if (adapt_thr.joinable()) adapt_thr.join();
+                if (!adapt_ok) return 1;
+                if (!drafted) {
+                    std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+                    return 1;
+                }
             }
             x = outv[(size_t) a];
             p += a + 1;
