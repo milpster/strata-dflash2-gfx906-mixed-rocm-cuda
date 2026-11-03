@@ -7,13 +7,14 @@ lines (out/<arm>-r<round>-judge.txt) and prints per-arm medians for:
 Verdict rules (the box's discipline): parity mismatch = correctness failure,
 perf claims only on >=2 kept runs per arm, medians not means.
 """
+import hashlib
 import json
 import re
 import statistics as st
 from pathlib import Path
 
 B = Path(__file__).parent
-ARMS = ["A", "B"]
+ARMS = ["A", "B", "C"]
 LINE = re.compile(r"prompt (\d+) tokens = (\d+) reused \+ (\d+) read in ([\d.]+) ms \(([\d.]+) tok/s\), (\d+) generated in ([\d.]+) ms \(([\d.]+) tok/s\)")
 
 res = {a: {"pp": [], "tg": [], "infill": [], "probe": [], "walls": []} for a in ARMS}
@@ -35,8 +36,10 @@ for a in ARMS:
 
     for o in sorted((B / "out").glob(f"{a}-r*.json")):
         d = json.loads(o.read_text())
-        res[a]["probe"].append((o.stem, d["probe"]["sha"]))
-        res[a]["walls"].append((o.stem, d["pp16384"]["wall"], d["infill80k"]["wall"]))
+        res[a]["probe"].append((o.stem, d["probe"].get("sha") or hashlib.sha256(d["probe"]["text"].encode()).hexdigest()))
+        inf = d.get("infill80k", {})
+        res[a]["walls"].append((o.stem, d["pp16384"]["wall"], inf.get("wall")))
+        res[a].setdefault("infill_sha", []).append((o.stem, inf.get("sha") or hashlib.sha256(inf.get("text", "").encode()).hexdigest()))
 
 
 def med(v):
@@ -48,7 +51,11 @@ shas = {a: {s for _, s in res[a]["probe"]} for a in ARMS}
 for a in ARMS:
     print(f"  arm {a}: {' '.join(sorted(s[:16] for s in shas[a])) or '-'}")
 verdict = "MATCH" if shas["A"] == shas["B"] and shas["A"] else "*** MISMATCH (correctness failure) ***"
-print(f"  -> {verdict}")
+print(f"  -> A vs B (the merge parity gate): {verdict}")
+for a in ARMS:
+    for rd, s in res[a].get("infill_sha", []):
+        print(f"  infill80k sha {a} {rd}: {s[:16]}")
+print(f"  -> C (stock, no drafter) differs by design: {'same' if shas['C'] == shas['A'] else 'differs'}")
 print("\n== PP fresh read (tok/s, >10k read)")
 for a in ARMS:
     for r, n, t in res[a]["pp"]:
