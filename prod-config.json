@@ -1,5 +1,5 @@
 {
- "exe": "/home/user/dev/Strata/build-906-new/strata",
+ "exe": "/mnt/user/Strata/v0210/build-mixed-gpu/rpcw-hip/strata",
  "args": [
   "--gpu",
   "0,1",
@@ -55,6 +55,8 @@
   "top_k": 20
  },
  "env": {
+  "STRATA_ENGINE_NICE": "0",
+  "STRATA_WATCHDOG_S": "300",
   "HSA_OVERRIDE_GFX_VERSION": "9.0.6",
   "HIP_FORCE_P2P": "1",
   "HSA_ENABLE_SDMA": "1",
