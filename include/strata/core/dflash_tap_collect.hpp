@@ -66,6 +66,7 @@
 
 #include <cuda_runtime.h>
 
+#include <atomic>
 #include <cstdint>
 #include <condition_variable>
 #include <cstdlib>
@@ -251,11 +252,14 @@ class DFlashTapCollector {
     std::mutex q_mu_;
     std::condition_variable q_cv_;
     std::vector<PendingD2H> q_;
-    bool worker_stop_ = false;     ///< written under mu_ (the L10 epoch contract), read under q_mu_
+    std::atomic<bool> worker_stop_{false};   ///< set under mu_ by the stopping owner; read by the worker's q_cv_ wait (race-free)
     std::thread worker_;
     void worker_loop();            ///< defined in dflash_tap_collect.cpp
-    void worker_start();           ///< create the worker when async D2H is on (enable)
-    void worker_stop();            ///< drain the queue, join the worker (disable; mu_ released)
+    void worker_start();           ///< create the worker when async D2H is on (enable; mu_ held by caller)
+    /// Stop + join the worker.  The caller (disable) HOLDS `lock` on mu_; mu_ is RELEASED
+    /// around worker_.join() only (the worker takes mu_ to set staged flags) and re-taken
+    /// before return.  The queue is drained by the worker itself before it exits.
+    void worker_stop(std::unique_lock<std::mutex>& lock);
     /// Drain the per-slot async D2H events on the producer device (mu_ HELD by the caller).
     /// A cross-device HOST sync - the pattern proven in production at stage() (cpp:205)
     /// and required before pinned rows are reset/freed (§2 change 12).
