@@ -78,6 +78,19 @@ void parity_dump_u16_as_f32(const char* dir, const char* name, const void* dev, 
     }
 }
 
+// F1 (STRATA_DF_DEFER_CTX, TAP_OVERLAP_DESIGN §1/§2 changes 1-2): the prompt path defers the
+// consumer's fusion drain - add_context keeps its launches enqueued on cs_ in the same order
+// and skips the full stream sync at its tail; the drain lands on the next propose()/idle()
+// and on the collector's D2D barrier.  Read ONCE (like STRATA_DF_EVENTS at upload); the
+// flag-off path is today's code.  Declared in include/strata/core/dflash.hpp.
+bool deferral_context() {
+    static const bool on = [] {
+        const char* v = std::getenv("STRATA_DF_DEFER_CTX");
+        return v && v[0] == '1';
+    }();
+    return on;
+}
+
 void parity_dump(const char* dir, const char* name, const void* dev, int64_t floats, cudaStream_t cs) {
     std::vector<float> host((size_t) floats);
     if (cudaMemcpyAsync(host.data(), dev, (size_t) floats * 4, cudaMemcpyDeviceToHost, cs) != cudaSuccess) return;
@@ -263,6 +276,7 @@ void DFlashDrafter::clear_graphs() {
 
 void DFlashDrafter::release() {
     reference_mode_ = false;
+    deferred_ = false;   // F1: a partial upload never leaves a deferred drain behind
     if (device_ >= 0) cudaSetDevice(device_);
     if (cs_) cudaStreamSynchronize(cs_);
     taps_.disable();   // frees the cross-stage planes + pinned staging (stream drained above)
@@ -757,7 +771,7 @@ const void* DFlashDrafter::head_weights() const {
 /// One batch of up to 8 rows: ctx = hidden_norm(fc(taps)) into `ctx_`, then each draft layer's
 /// K/V projected, k-normed, roped and appended at [pos0, pos0+rows).
 bool DFlashDrafter::add_context(const uint16_t* taps, int n_taps, int64_t stride_rows, int64_t pos0, int64_t rows,
-                                std::string& err) {
+                                std::string& err, bool sync_context) {
     if (!cs_ || st_.empty()) { err = "dflash: upload before adding context"; return false; }
     const OnDevice on_df(device_);   // kernels launch on cs_'s device (MTP pattern)
     if (std::getenv("STRATA_DF_DBG")) std::fprintf(stderr, "dflash dbg: add_context rows=%lld pos0=%lld\n",
@@ -795,9 +809,16 @@ bool DFlashDrafter::add_context(const uint16_t* taps, int n_taps, int64_t stride
     // The prefill callback lends its tap buffer only until this call returns. Its
     // producer runs on another stream and can reuse/free the buffer immediately.
     // Keep this ownership boundary even though fusion no longer stages on the host.
-    if (cudaStreamSynchronize(cs_) != cudaSuccess) {
-        err = "dflash: prompt context consumption failed";
-        return false;
+    // F1 (STRATA_DF_DEFER_CTX, §2 change 2): a deferring prompt call keeps every launch
+    // enqueued on cs_ in the same order and skips this host drain; deferred_ routes the
+    // drain to the next propose()/idle() (the same cudaStreamSynchronize(cs_), the same
+    // error text).  The host-side ring checks above stay synchronous in both modes.
+    if (deferral_context() && sync_context && cs_ && rows > 0) deferred_ = true;
+    if (sync_context) {
+        if (cudaStreamSynchronize(cs_) != cudaSuccess) {
+            err = "dflash: prompt context consumption failed";
+            return false;
+        }
     }
     ring_state_.note_append(pos0, rows);
     if (cycle_ == 0 && parity_dir_[0]) {
@@ -1049,6 +1070,17 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
         err = "dflash: upload and bind a head and embeddings before proposing"; return false;
     }
     const OnDevice on_df(device_);   // the whole block runs on cs_'s device (MTP pattern)
+    // F1 (§2 change 6): one choke point drains a deferred prompt fusion before any launch of
+    // this forward - stream order already puts propose's work after the deferred fusion, so
+    // the flush buys the earlier, identically-texted failure, not correctness.  No deferral:
+    // no stream work, no behavior.
+    if (deferred_) {
+        if (cudaStreamSynchronize(cs_) != cudaSuccess) {
+            err = "dflash: prompt context consumption failed";
+            return false;
+        }
+        deferred_ = false;
+    }
     using namespace strata::kernels;
     const DFlashGeometry& dg = artifact_.geom();
     const int64_t N = dg.hidden, Q = dg.n_head * dg.head_dim, KVW = dg.n_head_kv * dg.head_dim, I = dg.intermediate;
