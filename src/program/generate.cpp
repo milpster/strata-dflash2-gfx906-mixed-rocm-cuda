@@ -11280,13 +11280,20 @@ int main(int argc, char** argv) {
                         st.sp.dflash_on_taps = [&, i](const uint16_t* data, int, int64_t rows, int64_t pos, std::string& e) {
                             if (!df_request) return true;
                             auto& tc = dflash.tap_collector();
-                            const strata::core::DFlashTapCollector::Slice slice{(int) i + 1, data, st.sp.tap_stride_rows(), rows};
+                            // F2 (§2 change 9): pass this stage's own prefill stream (m.cs is
+                            // that stream): stage() enqueues the D2H on it, stream-ordered ahead
+                            // of the successor chunk's plane writes on the same device.
+                            const strata::core::DFlashTapCollector::Slice slice{(int) i + 1, data, st.sp.tap_stride_rows(), rows, st.stream};
                             if (!tc.stage(pos, slice, 2, e)) return false;
                             if (i + 1 < stages.size()) return true;   // the next stage completes this chunk
                             const strata::core::OnDevice on_df(dflash.device());
-                            std::vector<strata::core::DFlashTapCollector::Slice> all{{0, sp.taps_plane(), sp.tap_stride_rows(), rows}};
+                            // F2 (§2 change 9): the slice list carries each producer's own
+                            // prefill stream (sp's is main_cs, prefill's m.cs is that stream);
+                            // assemble() reads only planes, so the streams are inert here -
+                            // carried per the design's slice contract.
+                            std::vector<strata::core::DFlashTapCollector::Slice> all{{0, sp.taps_plane(), sp.tap_stride_rows(), rows, (cudaStream_t) main_cs}};
                             for (size_t k = 0; k < stages.size(); ++k)
-                                all.push_back({(int) k + 1, stages[k]->sp.taps_plane(), stages[k]->sp.tap_stride_rows(), rows});
+                                all.push_back({(int) k + 1, stages[k]->sp.taps_plane(), stages[k]->sp.tap_stride_rows(), rows, stages[k]->stream});
                             if (!tc.assemble(pos, all.data(), (int) all.size(), rows, 2, e)) return false;
                             // M7 (plan sect12/12a, BUG A): the chunked prefill feeds the drafter's
                             // ring at chunk finish.  On the REMOTE lane (STRATA_DRAFT_HELPER=1 + the
