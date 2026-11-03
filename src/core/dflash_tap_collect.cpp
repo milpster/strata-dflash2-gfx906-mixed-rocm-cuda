@@ -18,18 +18,9 @@ namespace strata::core {
 
 namespace {
 constexpr bool valid_type_bytes(int type_bytes) { return type_bytes == 2 || type_bytes == 4; }
-
-// F2 (STRATA_DF_ASYNC_D2H, TAP_OVERLAP_DESIGN §1): producer-side async D2H on the staging
-// worker.  Read ONCE at the collector's enable (the collector's startup context, like
-// STRATA_DF_EVENTS at drafter upload), never per chunk; flag off, or a slice without a
-// producer stream (the decode callers), keeps today's blocking D2H byte-for-byte.
-bool async_d2h_on() {
-    static const bool on = [] {
-        const char* v = std::getenv("STRATA_DF_ASYNC_D2H");
-        return v && v[0] == '1';
-    }();
-    return on;
-}
+// F2's mode flag is DFlashTapCollector::async_d2h_on() (the header): read ONCE at the
+// collector's startup, never per chunk; flag off, or a slice without a producer stream
+// (the decode callers), keeps today's blocking D2H byte-for-byte.
 }  // namespace
 
 DFlashTapCollector::Kind& DFlashTapCollector::kind(int type_bytes) { return type_bytes == 4 ? f32_ : bf16_; }
