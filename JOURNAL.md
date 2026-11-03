@@ -68,3 +68,7 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
 - TG: E 23.9 == stock 23.6 (drafts 0/0) -> the +48% decode is ENTIRELY dflash drafting; the helper expert tier alone adds nothing on this pack (96-97% local cache hit).
 - Methodology: probe sha (first req, fresh boot) is read-path-composition sensitive - B vs D differ with identical binaries, while A==E across builds. 80k infill sha 1c7d4a6d invariant in all 7 runs. Probe = per-config determinism check only; 80k = the parity gate.
 - One D run hung at the 8192 chunk boundary (GPUs 0%) - transient gfx906 hiccup, clean on relaunch; config was valid.
+
+## 2026-11-03 Probe prompt fix (bench/ab-v0210/corpus.py)
+- PROBE_PROMPT's second line was an orphan string literal, not a concatenation: the probe really ended at "keeps the ", so every arm's probe "answer" was the model asking for the missing ending. Not a serve or template bug.
+- Fixed with a parenthesized concatenation, commit bc8c30ce. Future probes produce a real paragraph; probe shas change and do not compare with the recorded round. The probe stays a per-config determinism check, never a cross-config gate.
