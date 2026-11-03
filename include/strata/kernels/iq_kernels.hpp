@@ -79,6 +79,15 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
                            const int32_t* n_groups, const int32_t* ent_dst, const int32_t* ent_tok, int64_t cap_groups,
                            int64_t cap_entries, const void* x_q8_1, void* scratch, float* out, void* stream,
                            int64_t grid_groups = 0);
+
+/// Diagnostic only (the mixed-GPU P2 harness; no serving caller): `native_expert_grouped` with the CPU
+/// reference's gate/up activations - `x_q8_k` is ggml's Q8_K image (292 bytes per 256 values: FP32 d, qs[256]),
+/// one FP32-scaled product per super-block, the integer sub-sums of the Split applies.  SwiGLU and the down rows
+/// are the default path's.  Gate/up types IQ2_XXS/XS, IQ3_XXS/S and IQ2_S only; an unknown type exits as
+/// `native_expert_grouped` does.  Scratch: `native_expert_scratch_bytes`.
+void native_expert_grouped_q8k(const NativeExpertLayout& L, const unsigned long long* grp_ptr, const int32_t* grp_start,
+                               const int32_t* n_groups, const int32_t* ent_dst, const int32_t* ent_tok, int64_t cap_groups,
+                               int64_t cap_entries, const void* x_q8_k, void* scratch, float* out, void* stream);
 /// true: `native_expert_grouped`'s launches before the group stride (STRATA_GROUPED_V1=1 at startup) - a block row
 /// per possible group, SwiGLU and the q8_1 quantization as two kernels over all cap_entries.  Bitwise the same results
 /// (native_grouped_parity checks it); kept for A/B timing.  Set before graph capture; captured graphs keep theirs.

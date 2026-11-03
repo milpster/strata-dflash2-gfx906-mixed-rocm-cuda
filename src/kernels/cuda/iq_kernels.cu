@@ -5296,6 +5296,157 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
     check("native_expert_grouped/down");
 }
 
+// The CPU reference's gate/up arithmetic for the work the helper takes over (the P2 expert diagnostic,
+// repro-expert-evidence1): ggml-cpu's AVX2 vec_dot consumes Q8_K activations - one FP32 scale per 256 values -
+// while the helper wire's q8_1 blocks carry one FP16 scale per 32.  Matching the integers with the scales rounded
+// to half still left a 4.5e-3 output relative error (that rounding alone); this path keeps the CPU's FP32 scale.
+// `x_q8_k` is ggml's Q8_K image: 292 bytes per 256 values (float d, qs[256], 32 bytes tail padding), the same
+// bytes the CPU reference quantized.  The weight grid/sign decode is the Split loads' (proven the CPU reference's
+// on the retained rows); the integer scaling is the CPU reference's exact bsum (quants.c: odd scales, no
+// per-sub-block truncation, one trailing power-of-two row factor - the q8_1 applies truncate per sub-block,
+// which is the arithmetic the wire change must not carry over).  Each 256-value super-block: its eight scaled
+// integer sub-sums accumulated (integers, exact in any order), then one FP32-scaled product, the reference's
+// structure.  Warp per row, lane per super-block.
+constexpr size_t kQ8KActBytes = 292;   // ggml_type_size(Q8_K)
+
+template<int TY>
+__device__ __forceinline__ int gu_q8k_part(const uint8_t* row, const uint8_t* blk, int sb, int j, float& dw);
+
+template<> __device__ __forceinline__ int gu_q8k_part<16>(const uint8_t* row, const uint8_t* blk, int sb, int j, float& dw) {
+    const auto w = Split<16>::load(row, sb, Fmt<16>::step * j);
+    dw = w.dw;
+    const int8_t* qs = (const int8_t*) (blk + 4) + 32 * j;
+    int sumi = 0;
+#pragma unroll
+    for (int k = 0; k < 8; ++k) sumi = ggml_cuda_dp4a(w.g[k], get_int_b4(qs, k), sumi);
+    return sumi * w.ls;   // CPU reference: bsum exact, w.ls already odd (aux>>27|1 == 2*(aux>>28)+1); 1/8 is the row factor
+}
+template<> __device__ __forceinline__ int gu_q8k_part<17>(const uint8_t* row, const uint8_t* blk, int sb, int j, float& dw) {
+    const auto w = Split<17>::load(row, sb, Fmt<17>::step * j);
+    dw = w.dw;
+    const int8_t* qs = (const int8_t*) (blk + 4) + 32 * j;
+    int sumi0 = 0, sumi1 = 0;
+#pragma unroll
+    for (int k = 0; k < 4; ++k) sumi0 = ggml_cuda_dp4a(w.g[k], get_int_b4(qs, k), sumi0);
+#pragma unroll
+    for (int k = 4; k < 8; ++k) sumi1 = ggml_cuda_dp4a(w.g[k], get_int_b4(qs, k), sumi1);
+    return sumi0 * (2 * w.ls0 + 1) + sumi1 * (2 * w.ls1 + 1);   // CPU reference: bsum exact, odd scales; 1/8 is the row factor
+}
+template<> __device__ __forceinline__ int gu_q8k_part<18>(const uint8_t* row, const uint8_t* blk, int sb, int j, float& dw) {
+    const auto w = Split<18>::load(row, sb, Fmt<18>::step * j);
+    dw = w.dw;
+    const int8_t* qs = (const int8_t*) (blk + 4) + 32 * j;
+    int sumi = 0;
+#pragma unroll
+    for (int k = 0; k < 8; ++k) sumi = ggml_cuda_dp4a(w.g[k], get_int_b4(qs, k), sumi);
+    return sumi * (2 * w.ls + 1);   // CPU reference: bsum exact, odd scale; 1/4 is the row factor
+}
+template<> __device__ __forceinline__ int gu_q8k_part<21>(const uint8_t* row, const uint8_t* blk, int sb, int j, float& dw) {
+    const auto w = Split<21>::load(row, sb, Fmt<21>::step * j);
+    dw = w.dw;
+    const int8_t* qs = (const int8_t*) (blk + 4) + 32 * j;
+    int sumi = 0;
+#pragma unroll
+    for (int k = 0; k < 8; ++k) sumi = ggml_cuda_dp4a(w.g[k], get_int_b4(qs, k), sumi);
+    return sumi * w.ls;
+}
+template<> __device__ __forceinline__ int gu_q8k_part<22>(const uint8_t* row, const uint8_t* blk, int sb, int j, float& dw) {
+    const auto w = Split<22>::load(row, sb, Fmt<22>::step * j);
+    dw = w.dw;
+    const int8_t* qs = (const int8_t*) (blk + 4) + 32 * j;
+    int sumi0 = 0, sumi1 = 0;
+#pragma unroll
+    for (int k = 0; k < 4; ++k) sumi0 = ggml_cuda_dp4a(w.g[k], get_int_b4(qs, k), sumi0);
+#pragma unroll
+    for (int k = 4; k < 8; ++k) sumi1 = ggml_cuda_dp4a(w.g[k], get_int_b4(qs, k), sumi1);
+    return sumi0 * (2 * w.ls0 + 1) + sumi1 * (2 * w.ls1 + 1);   // CPU reference: bsum exact, odd scales; 1/8 is the row factor
+}
+
+// The CPU reference's trailing row factor (quants.c: *s = factor * sumf): a power of two, so folding it into the
+// per-super-block product is bitwise the same floats.  IQ3_S has none.
+template<int TY> __device__ __forceinline__ float q8k_row_factor();
+template<> __device__ __forceinline__ float q8k_row_factor<16>() { return 0.125f; }
+template<> __device__ __forceinline__ float q8k_row_factor<17>() { return 0.125f; }
+template<> __device__ __forceinline__ float q8k_row_factor<18>() { return 0.25f; }
+template<> __device__ __forceinline__ float q8k_row_factor<21>() { return 1.0f; }
+template<> __device__ __forceinline__ float q8k_row_factor<22>() { return 0.125f; }
+
+template<int TG>
+__global__ void __launch_bounds__(256) native_gu_q8k_kernel(const unsigned long long* __restrict__ grp_ptr,
+                                                            const int32_t* __restrict__ grp_start,
+                                                            const int32_t* __restrict__ n_groups,
+                                                            const int32_t* __restrict__ ent_tok,
+                                                            const void* __restrict__ x_q8_k, NativeExpertLayout L,
+                                                            float* __restrict__ gate, float* __restrict__ up) {
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    const int row = blockIdx.x * GU_ROWS + warp;             // 0 .. 2*n_ff
+    if (row >= 2 * L.n_ff) return;
+    const bool is_up = row >= L.n_ff;
+    const int r = is_up ? row - (int) L.n_ff : row;
+    const size_t off = (is_up ? L.up_off : 0) + (size_t) r * L.gu_row;
+    const int nsb = (int) (L.n_embd / 256);                  // one Q8_K block per weight super-block
+    const uint8_t* xb = (const uint8_t*) x_q8_k;
+    const int ng = *n_groups;
+    for (int g = blockIdx.y; g < ng; g += gridDim.y) {
+        const uint8_t* wr = (const uint8_t*) grp_ptr[g] + off;
+        const float sc = L.tail_off ? ((const float*) ((const uint8_t*) grp_ptr[g] + L.tail_off))[is_up ? 1 : 0] : 1.0f;
+        const int e0 = grp_start[g], e1 = grp_start[g + 1];
+        for (int e = e0; e < e1; ++e) {
+            const uint8_t* xt = xb + (size_t) ent_tok[e] * nsb * kQ8KActBytes;
+            float s = 0.0f;
+            for (int sb = lane; sb < nsb; sb += 32) {
+                const uint8_t* blk = xt + (size_t) sb * kQ8KActBytes;
+                float dw = 0.0f;
+                int isum = 0;
+#pragma unroll
+                for (int j = 0; j < 8; ++j) isum += gu_q8k_part<TG>(wr, blk, sb, j, dw);
+                s += q8k_row_factor<TG>() * (*(const float*) (const void*) blk * dw) * (float) isum;
+            }
+            s = warp_sum(s);   // every lane: the shuffle is a whole-warp collective, unlike the write
+            if (lane == 0) (is_up ? up : gate)[(size_t) e * L.n_ff + r] = s * sc;
+        }
+    }
+}
+
+/// Diagnostic only (the mixed-GPU P2 harness; no serving caller): gate/up from Q8_K activations, SwiGLU and the
+/// down rows on the default path (h re-quantized to q8_1, the CPU Q8_0 rule: amax/127 per 32, an FP16 scale).
+/// The scratch layout is `native_expert_grouped`'s (native_expert_scratch_bytes).
+void native_expert_grouped_q8k(const NativeExpertLayout& L, const unsigned long long* grp_ptr, const int32_t* grp_start,
+                               const int32_t* n_groups, const int32_t* ent_dst, const int32_t* ent_tok, int64_t cap_groups,
+                               int64_t cap_entries, const void* x_q8_k, void* scratch, float* out, void* stream) {
+    if (cap_groups <= 0 || cap_entries <= 0) return;
+    if (L.n_ff % 32 != 0) { std::fprintf(stderr, "native_expert_grouped_q8k: n_ff %lld\n", (long long) L.n_ff); std::exit(1); }
+    cudaStream_t s = (cudaStream_t) stream;
+    const size_t f = (size_t) cap_entries * (size_t) L.n_ff * sizeof(float), fa = (f + 255) & ~(size_t) 255;
+    float* gate = (float*) scratch;
+    float* up = (float*) ((uint8_t*) scratch + fa);
+    float* h = (float*) ((uint8_t*) scratch + 2 * fa);
+    block_q8_1* hq = (block_q8_1*) ((uint8_t*) scratch + 3 * fa);
+    const dim3 ggu((unsigned) ((2 * L.n_ff + GU_ROWS - 1) / GU_ROWS), (unsigned) cap_groups);
+    switch (L.gu_type) {
+#define STRATA_GU_Q8K(T) case T: native_gu_q8k_kernel<T><<<ggu, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, x_q8_k, L, gate, up); break;
+        STRATA_GU_Q8K(16) STRATA_GU_Q8K(17) STRATA_GU_Q8K(18) STRATA_GU_Q8K(21) STRATA_GU_Q8K(22)
+#undef STRATA_GU_Q8K
+        default: std::fprintf(stderr, "native_expert_grouped_q8k: gate/up type %d\n", L.gu_type); std::exit(1);
+    }
+    check("native_expert_grouped_q8k/gu");
+    const long long nh = (long long) cap_entries * L.n_ff;
+    swiglu_entries_kernel<<<(unsigned) ((nh + 255) / 256), 256, 0, s>>>(gate, up, h, nh);
+    if (L.had_block > 0)   // APR: as the default path, the folded down weights take the rotated h
+        hadamard_rows(h, h, cap_entries, L.n_ff, L.had_block, L.d_signs, s);
+    quantize_q8_1_kernel<<<(unsigned) ((nh + 255) / 256), 256, 0, s>>>(h, hq, nh);
+    check("native_expert_grouped_q8k/swiglu");
+    const int d_rows = (!g_old_kernels && !g_no_sub16_gu && L.n_ff == 640) ? (L.d_type == 20 || L.d_type == 40 ? 32 : (L.d_type == 42 ? 16 : 8)) : 8;
+    const dim3 gd((unsigned) ((L.n_embd + d_rows - 1) / d_rows), (unsigned) cap_groups);
+    switch (L.d_type) {
+#define STRATA_DOWN_Q8K(T) case T: launch_down<T>(gd, s, grp_ptr, grp_start, n_groups, ent_dst, hq, L, out); break;
+        STRATA_D_FMTS(STRATA_DOWN_Q8K)
+#undef STRATA_DOWN_Q8K
+        default: std::fprintf(stderr, "native_expert_grouped_q8k: down type %d\n", L.d_type); std::exit(1);
+    }
+    check("native_expert_grouped_q8k/down");
+}
+
 }  // namespace strata::kernels
 
 // ---- Volta prompt experts (STRATA_PF_WMMA): a group's experts as one launch of FP16 tensor-core tiles, the weights
