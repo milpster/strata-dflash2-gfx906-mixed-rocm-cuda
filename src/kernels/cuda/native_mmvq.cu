@@ -1175,6 +1175,7 @@ template<>
 struct SmallTraits<Q80Block, 8> {
     using Block = Q80Block;
     static constexpr int DIV = 32, T = 4, KBY = 1, BPI = 2 * WARPS * WARP / 8;
+    [[maybe_unused]] static constexpr int TYPE = 8;   // ggml type (IlQ8_0::F: the IL launcher's pf-table lookup)
     __device__ static int kqs(int tid) { return 2 * (tid % 4); }
     struct W { int v[2]; float d0; };
     __device__ static W load(const Block* __restrict__ w, int iqs) {
@@ -1642,6 +1643,7 @@ void launch_multi(const void* weights, const void* x_q8_1, float* y, int n_in, i
 struct IlQ8_0 {
     using F = SmallTraits<Q80Block, 8>;
     static constexpr bool PM = false;
+    static constexpr bool HAS_PF = false;   // no hoisted-load variant: the pf table has no Q8_0 cells (upstream's IL contract)
     template <int NC, class X>
     __device__ static void apply(const F::W& r, const X& x, int kby, int iqs, float (&out)[NC]) {
         int u[2][NC];
