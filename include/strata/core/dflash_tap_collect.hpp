@@ -70,6 +70,8 @@
 #include <condition_variable>
 #include <mutex>
 #include <string>
+#include <thread>
+#include <vector>
 
 namespace strata::core {
 
@@ -78,11 +80,16 @@ class DFlashTapCollector {
   public:
     /// One producer's plane for one chunk/window: its stage, its (device) plane, its
     /// row stride per tap, and its valid row count.  Rows beyond `rows` are stale.
+    /// F2 (STRATA_DF_ASYNC_D2H, §2 change 9): the prompt wiring passes the producer's own
+    /// prefill stream so stage() can enqueue the D2H there (stream-ordered ahead of the
+    /// next chunk's writes on the same device - no cross-device stream event is added).
+    /// nullptr (the decode callers, the defaults) keeps today's blocking D2H: F2 inert.
     struct Slice {
         int stage = 0;
         const void* plane = nullptr;
         int64_t stride_rows = 0;
         int64_t rows = 0;
+        cudaStream_t stream = nullptr;
     };
 
     static constexpr int kSlots = 2;   ///< prefill chains pipeline two chunks
@@ -100,6 +107,12 @@ class DFlashTapCollector {
         int64_t rows = -1;                             ///< rows staged under that key (geometry guard)
         bool awaiting = false;                         ///< assemble() bound this slot and waits for its staged flags
         cudaEvent_t ev = nullptr;                      ///< records the slot's last H2D
+        /// F2 (§2 change 8): per-tap events recording the async D2H enqueued on the
+        /// producer's stream.  Created at enable() exactly where the tap's pinned rows
+        /// exist (foreign taps only); drained before the pinned rows are touched
+        /// (reset_staging/disable, §2 change 12).  Null when F2 is off.
+        cudaEvent_t d2h_ev[kDFlashMaxTaps] = {};
+        int d2h_dev[kDFlashMaxTaps] = {};              ///< F2: the device each d2h_ev's stream lives on
         uint8_t* pin[kDFlashMaxTaps] = {};             ///< per-tap staging rows (FOREIGN taps only)
         bool staged[kDFlashMaxTaps] = {};              ///< tap staged into this slot
         /// Lifecycle (L10): key<0 = EMPTY; key>=0 with a staged flag = STAGED (unconsumed
@@ -169,7 +182,9 @@ class DFlashTapCollector {
 
     /// The slots for one kind; `rows_cap` bounds one tap's staged rows.  Public for the
     /// CPU bookkeeping tests; production reaches slots only through kind()/stage/assemble.
-    struct Kind { Slot slots[kSlots]; int64_t rows_cap = 0; int type_bytes = 0; };
+    /// F2 (§2 change 10): a copy fault on the staging worker is a sticky per-kind error;
+    /// assemble() surfaces it with the synchronous D2H failure's text on the consumer side.
+    struct Kind { Slot slots[kSlots]; int64_t rows_cap = 0; int type_bytes = 0; bool async_fault = false; std::string async_fault_msg; };
     Kind& kind_for_test(int type_bytes);
     /// CPU-testable producer path: the exact acquire_slot body (no CUDA call inside it);
     /// the GPU cancellation-waiter fixture exercises the same path for real.
@@ -180,6 +195,21 @@ class DFlashTapCollector {
 
   private:
     Kind& kind(int type_bytes);
+
+    /// F2 (§2 change 8): one enqueued async D2H handed to the staging worker.  The worker
+    /// drains the event on the PRODUCER's device (same device as its stream - the proven
+    /// host-side cross-device pattern, cf. stage()'s slot-event drain) and, under mu_,
+    /// sets the staged flag only if the cancellation epoch still matches.
+    struct PendingD2H {
+        int type_bytes = 0;   // Kind selector
+        int slot = 0;
+        int tap = 0;
+        int dev = -1;         // the producer device the D2H ran on
+        int64_t key = -1;     // diagnostics only
+        uint8_t* pin = nullptr;   // diagnostics only
+        uint64_t epoch = 0;   // gen_ captured under mu_ at enqueue
+        cudaEvent_t ev = nullptr;
+    };
 
     /// Producer entry: static acquire() with the metadata mutex HELD by the caller; when
     /// both slots hold unconsumed staging, the producer WAITS on cv_ (the mutex is
@@ -202,6 +232,22 @@ class DFlashTapCollector {
     std::mutex mu_;   ///< serializes slot bookkeeping + transfer enqueue across stage/assemble
     std::condition_variable cv_;   ///< backpressure wake: retire / reset / disable
     uint64_t gen_ = 0;             ///< cancellation epoch, read/written only under mu_
+
+    /// F2 (STRATA_DF_ASYNC_D2H, §2 changes 8-10): the staging worker's queue.  The worker
+    /// is created at enable() and joined at disable(); it is the only thread that drains
+    /// the async D2H events, so pinned rows are freed only after every enqueued copy lands.
+    std::mutex q_mu_;
+    std::condition_variable q_cv_;
+    std::vector<PendingD2H> q_;
+    bool worker_stop_ = false;     ///< written under mu_ (the L10 epoch contract), read under q_mu_
+    std::thread worker_;
+    void worker_loop();            ///< defined in dflash_tap_collect.cpp
+    void worker_start();           ///< create the worker when async D2H is on (enable)
+    void worker_stop();            ///< drain the queue, join the worker (disable; mu_ released)
+    /// Drain the per-slot async D2H events on the producer device (mu_ HELD by the caller).
+    /// A cross-device HOST sync - the pattern proven in production at stage() (cpp:205)
+    /// and required before pinned rows are reset/freed (§2 change 12).
+    void drain_async_d2h(Kind& k);
 };
 
 }  // namespace strata::core

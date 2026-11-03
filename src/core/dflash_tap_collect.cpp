@@ -11,11 +11,25 @@
 
 #include <chrono>
 #include <cstdio>
+#include <stdexcept>
+#include <utility>
 
 namespace strata::core {
 
 namespace {
 constexpr bool valid_type_bytes(int type_bytes) { return type_bytes == 2 || type_bytes == 4; }
+
+// F2 (STRATA_DF_ASYNC_D2H, TAP_OVERLAP_DESIGN §1): producer-side async D2H on the staging
+// worker.  Read ONCE at the collector's enable (the collector's startup context, like
+// STRATA_DF_EVENTS at drafter upload), never per chunk; flag off, or a slice without a
+// producer stream (the decode callers), keeps today's blocking D2H byte-for-byte.
+bool async_d2h_on() {
+    static const bool on = [] {
+        const char* v = std::getenv("STRATA_DF_ASYNC_D2H");
+        return v && v[0] == '1';
+    }();
+    return on;
+}
 }  // namespace
 
 DFlashTapCollector::Kind& DFlashTapCollector::kind(int type_bytes) { return type_bytes == 4 ? f32_ : bf16_; }
@@ -83,6 +97,95 @@ uint64_t DFlashTapCollector::staging_epoch() {
 
 DFlashTapCollector::Kind& DFlashTapCollector::kind_for_test(int type_bytes) { return kind(type_bytes); }
 
+// ---- F2 staging worker (TAP_OVERLAP_DESIGN §2 changes 8,10,11): ONE thread, created at
+// enable(), joined at disable().  It drains each async D2H's event on the PRODUCER's device
+// (same device as the event's stream - the host-side cross-device pattern production already
+// runs at stage()'s slot-event drain, cpp:205), then sets the staged flag under mu_ ONLY if
+// the cancellation epoch still matches (the L10 contract: an old request's producer never
+// stages into a new one).  A copy fault becomes a sticky per-kind error assemble() surfaces.
+// "staged" keeps its exact L14 meaning - bytes complete and drained - because the flag is
+// set only after this host-side drain.  No cross-device STREAM event is added (§2 change 11).
+void DFlashTapCollector::worker_loop() {
+    for (;;) {
+        PendingD2H item{};
+        {
+            std::unique_lock<std::mutex> qk(q_mu_);
+            q_cv_.wait(qk, [&] { return !q_.empty() || worker_stop_; });
+            if (!q_.empty()) {
+                item = q_.front();
+                q_.erase(q_.begin());
+            } else if (worker_stop_) {
+                return;   // disable(): the queue is empty; disable drains the events itself
+            }
+        }
+        if (item.ev == nullptr) continue;
+        cudaSetDevice(item.dev);   // the event's stream's device: the same-device drain
+        const bool ok = cudaEventSynchronize(item.ev) == cudaSuccess;
+        std::unique_lock<std::mutex> lock(mu_);
+        if (gen_ != item.epoch) {   // reset/disable since enqueue: drop the flag (L10 contract)
+            cv_.notify_all();
+            continue;
+        }
+        Kind& k = kind(item.type_bytes);
+        if (!ok) {   // §2 change 10: a copy fault is sticky per kind, surfaced by assemble()
+            k.async_fault = true;
+            k.async_fault_msg = "dflash: tap collect: D2H of the producer slice failed";
+            cv_.notify_all();
+            continue;
+        }
+        Slot& s = k.slots[item.slot];
+        if (s.key == item.key) s.staged[item.tap] = true;   // the slot was not re-bound since
+        cv_.notify_all();   // L14: a consumer in its bounded assemble() wake check re-reads flags
+    }
+}
+
+void DFlashTapCollector::worker_start() {
+    if (!async_d2h_on() || pin_bytes_ <= 0) return;   // F2 off: no thread, today's path
+    worker_stop_ = false;                              // mu_ is held by enable() here
+    try {
+        worker_ = std::thread([this] { worker_loop(); });
+    } catch (const std::system_error&) {
+        // No thread: the async D2H degrades to today's blocking copy (the flag-off path),
+        // never a lost drain.  Loud, non-fatal.
+        std::fprintf(stderr, "strata: dflash tap collect: staging worker thread failed to start; "
+                             "async D2H off (blocking copy)\n");
+    }
+}
+
+// Join the staging worker: it drains every queued async D2H (each a same-device host drain)
+// before exiting, so every enqueued copy has landed its event when this returns.  MUST run
+// with mu_ RELEASED (the worker takes mu_ to set flags); enable() re-takes the lock after.
+void DFlashTapCollector::worker_stop() {
+    {
+        std::lock_guard<std::mutex> mu(mu_);
+        worker_stop_ = true;
+    }
+    q_cv_.notify_all();
+    if (worker_.joinable()) {
+        std::unique_lock<std::mutex> lock(mu_);
+        lock.unlock();
+        worker_.join();
+        lock.lock();   // re-taken, matching enable()'s re-enable contract
+    }
+}
+
+// mu_ HELD by the caller.  The pinned rows are written by the producer device and read by
+// the drafter's H2D: reset/freeze needs every enqueued D2H drained FIRST (§2 change 12).
+// A cross-device HOST sync - the proven pattern (§2 change 11's evidence: cpp:205).
+void DFlashTapCollector::drain_async_d2h(Kind& k) {
+    int cur = 0;
+    cudaGetDevice(&cur);
+    bool switched = false;
+    for (int i = 0; i < kSlots; ++i)
+        for (int t = 0; t < kDFlashMaxTaps; ++t) {
+            if (k.slots[i].d2h_ev[t] == nullptr || k.slots[i].d2h_dev[t] < 0) continue;
+            const int dev = k.slots[i].d2h_dev[t];   // the device the async D2H ran on (stage() set it)
+            if (dev != cur && cudaSetDevice(dev) == cudaSuccess) switched = true;
+            (void) cudaEventSynchronize(k.slots[i].d2h_ev[t]);
+        }
+    if (switched && cur >= 0) cudaSetDevice(cur);
+}
+
 bool DFlashTapCollector::enable(const DFlashTapPlan& plan, int drafter_dev, int64_t f32_rows,
                                 int64_t bf16_rows, std::string& err) {
     disable();
@@ -131,25 +234,50 @@ bool DFlashTapCollector::enable(const DFlashTapPlan& plan, int drafter_dev, int6
         plane_bytes_ += plan_.plane_bytes(bf16_rows, 2);
         if (!alloc_kind(bf16_, bf16_rows, 2)) { disable(); return false; }
     }
+    // F2 (§2 change 8): one per-slot per-tap completion event where pinned staging exists
+    // (FOREIGN taps only, the same set as pin[]).  On the drafter device, like the slot's
+    // H2D event; reused like it (the worker's host drain is its consumption).  Created here
+    // once; drained and destroyed at disable() (§2 change 12).
+    const auto arm_async_events = [&](Kind& k) -> bool {
+        for (int i = 0; i < kSlots; ++i)
+            for (int t = 0; t < plan_.n_taps; ++t) {
+                if (k.slots[i].pin[t] == nullptr) continue;
+                if (cudaEventCreate(&k.slots[i].d2h_ev[t]) != cudaSuccess) {
+                    err = "dflash tap collect: staging event creation failed";
+                    return false;
+                }
+                k.slots[i].d2h_dev[t] = -1;
+            }
+        return true;
+    };
+    if (!arm_async_events(f32_) || !arm_async_events(bf16_)) { disable(); return false; }
+    worker_start();   // F2 off: no thread (today's path, byte-for-byte)
     return true;
 }
 
 void DFlashTapCollector::disable() {
-    std::lock_guard<std::mutex> lock(mu_);   // every metadata mutation is mu_-guarded (L10 review)
+    std::unique_lock<std::mutex> lock(mu_);   // every metadata mutation is mu_-guarded (L10 review)
+    worker_stop();   // F2 (§2 change 12): join the staging worker FIRST - it drains every
+                     // queued async D2H; the events are drained below before pinned rows free
     gen_ += 1;                               // pending producers reject deterministically
     const OnDevice on_dev(dev_);   // events and device planes live on dev_; drain needs its context
     const auto free_kind = [&](Kind& k) {
+        drain_async_d2h(k);   // F2: the pinned rows are written on the PRODUCER's device -
+                              // drain every enqueued D2H there before free/destroy (§2 change 12)
         for (int i = 0; i < kSlots; ++i) {
             Slot& s = k.slots[i];
             if (s.ev != nullptr) (void) cudaEventSynchronize(s.ev);   // the collector owns its outstanding H2Ds
             for (int t = 0; t < kDFlashMaxTaps; ++t) {
                 if (s.pin[t] != nullptr) cudaFreeHost(s.pin[t]);
                 s.pin[t] = nullptr; s.staged[t] = false;
+                if (s.d2h_ev[t] != nullptr) cudaEventDestroy(s.d2h_ev[t]);
+                s.d2h_ev[t] = nullptr; s.d2h_dev[t] = -1;
             }
             if (s.ev != nullptr) cudaEventDestroy(s.ev);
             s.ev = nullptr; s.key = -1; s.rows = -1; s.awaiting = false;
         }
         k.rows_cap = 0;
+        k.async_fault = false; k.async_fault_msg.clear();   // F2: fresh state on re-enable
     };
     if (plane_f32_ != nullptr) cudaFree(plane_f32_);
     if (plane_bf16_ != nullptr) cudaFree(plane_bf16_);
@@ -164,6 +292,9 @@ void DFlashTapCollector::reset_staging() {
     std::lock_guard<std::mutex> lock(mu_);
     const OnDevice on_dev(dev_ >= 0 ? dev_ : -1);
     const auto reset_kind = [&](Kind& k) {
+        drain_async_d2h(k);   // F2 (§2 change 12): the pinned rows are written on the producer
+                              // device - drain every enqueued D2H there BEFORE the bindings
+                              // reset (the cross-device HOST pattern, §2 change 11's evidence)
         for (int i = 0; i < kSlots; ++i) {
             Slot& s = k.slots[i];
             if (s.ev != nullptr) (void) cudaEventSynchronize(s.ev);   // drop nothing mid-H2D
@@ -211,10 +342,43 @@ bool DFlashTapCollector::stage(int64_t key, const Slice& slice, int type_bytes, 
         Slot& s = k.slots[slot];
         if (s.staged[t]) { err = "dflash tap collect: tap " + std::to_string(t) + " staged twice for this chunk"; return false; }
         const size_t bytes = (size_t) slice.rows * N * type_bytes;
+        const uint8_t* src = (const uint8_t*) slice.plane + (size_t) t * slice.stride_rows * N * type_bytes;
+        // F2 (§2 change 8, worker-thread form): with the flag AND a producer stream on the
+        // slice (the prompt wiring, generate.cpp), the D2H becomes cudaMemcpyAsync on the
+        // PRODUCER's own stream (m.cs): stream-ordered ahead of the next chunk's plane
+        // writes on that same stream - the plane needs no double buffer (design §3), and NO
+        // cross-device stream event exists (design §2 change 11).  The lock is RELEASED for
+        // the enqueue, so assemble() on the drafter thread overlaps the copy (the map's
+        // mu_-held D2H is the serialized term).  The staged flag lands on the worker's
+        // host-side event drain, so it keeps its exact L14 meaning: bytes complete and
+        // drained.  No flag, no stream (decode callers): today's blocking copy below.
+        const bool async_d2h = s.d2h_ev[t] != nullptr && slice.stream != nullptr && async_d2h_on();
+        if (async_d2h) {
+            const int pdev = plan_.dev[slice.stage];
+            cudaEvent_t ev = s.d2h_ev[t];
+            const uint64_t epoch = gen_;   // captured under mu_ (the L10 contract)
+            s.d2h_dev[t] = pdev;
+            lock.unlock();
+            const OnDevice on_producer(pdev);
+            const bool ok = cudaMemcpyAsync(s.pin[t], src, bytes, cudaMemcpyDeviceToHost, slice.stream) == cudaSuccess
+                && cudaEventRecord(ev, slice.stream) == cudaSuccess;
+            if (!ok) {
+                (void) cudaStreamSynchronize(slice.stream);   // drain before recording: the
+                                                              // pinned rows stay owned by the host
+                lock.lock();
+                err = "dflash tap collect: D2H of the producer slice failed";
+                return false;
+            }
+            {
+                std::lock_guard<std::mutex> qk(q_mu_);
+                q_.push_back(PendingD2H{type_bytes, slot, t, pdev, key, s.pin[t], epoch, ev});
+            }
+            q_cv_.notify_one();
+            lock.lock();
+            continue;   // the worker sets staged[t] after the same-device event drain
+        }
         const OnDevice on_producer(plan_.dev[slice.stage]);
-        if (cudaMemcpy(s.pin[t],
-                       (const uint8_t*) slice.plane + (size_t) t * slice.stride_rows * N * type_bytes,
-                       bytes, cudaMemcpyDeviceToHost) != cudaSuccess) {
+        if (cudaMemcpy(s.pin[t], src, bytes, cudaMemcpyDeviceToHost) != cudaSuccess) {
             err = "dflash tap collect: D2H of the producer slice failed";
             return false;
         }
@@ -269,6 +433,10 @@ bool DFlashTapCollector::assemble(int64_t key, const Slice* slices, int n_slices
     }
     int slot = acquire_slot(k, key, err, lock);   // backpressure refusal stands (the original contract)
     if (slot < 0) return false;
+    // F2 (§2 change 10): a copy fault the staging worker recorded is surfaced HERE, on the
+    // consumer side of the same fatal path (prefill.cpp:6633 -> the request fails), with the
+    // synchronous D2H failure's exact text.  Checked before any transfer enqueues.
+    if (k.async_fault) { err = k.async_fault_msg; return false; }
     Slot& s = k.slots[slot];
     if (s.rows >= 0 && s.rows != rows) { err = "dflash tap collect: chunk slot rows disagree"; return false; }
     // L14 CONSUMER ORDERING: a foreign tap's rows exist in the pinned slot ONLY after
