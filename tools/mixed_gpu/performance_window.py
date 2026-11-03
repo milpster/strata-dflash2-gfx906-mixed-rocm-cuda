@@ -222,7 +222,7 @@ def run(args):
         raise ValueError("Refusing to overwrite an earlier window")
     configs = json.loads(runtime.CONFIG.read_text())
     for key in ("STRATA_STAGE_TRIM", "STRATA_PREFILL_PIPE", "STRATA_PREFILL_EQUAL",
-                "STRATA_SPLIT_OVERLAP", "STRATA_DRAFT_HELPER"):
+                "STRATA_SPLIT_OVERLAP", "STRATA_DRAFT_HELPER", "STRATA_IQ_MT_MIN"):
         if os.environ.get(key, "0") not in ("", "0") or configs.get("env", {}).get(key, "0") not in ("", "0"):
             raise ValueError(f"Unexpected baseline lever enabled: {key}")
     fingerprint = pins()
@@ -232,14 +232,17 @@ def run(args):
     if not args.execute:
         print(json.dumps(dict(family=args.family, schedule=schedule, reps=3,
                               max_tokens=512, minimum_output=MIN_OUTPUT,
+                              iq_mt_min=args.iq_mt_min,
                               restore=str(runtime.LAUNCHER) + " --recover", pins=fingerprint), indent=2))
         return 0
     private = []
     for i, tuning in enumerate(schedule):
-        config = window_pair.prepare(f"{args.family}-{chr(97 + i)}", slots=4200, tuning=tuning)
+        config = window_pair.prepare(f"{args.family}-{chr(97 + i)}", slots=4200, tuning=tuning,
+                                     iq_mt_min=args.iq_mt_min)
         config.label = chr(97 + i)
         private.append(config)
-    result = dict(started=time.time(), lever=args.lever, pairs=[], success=False, pins=fingerprint)
+    result = dict(started=time.time(), lever=args.lever, iq_mt_min=args.iq_mt_min,
+                  pairs=[], success=False, pins=fingerprint)
     pair.write_json(status, result)  # durable intent before any production signal
     active, known = None, {}
     old_handlers = {sig: signal.signal(sig, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
@@ -318,6 +321,10 @@ def main():
     parser.add_argument("--candidate", type=int, help="one-based candidate for a fresh confirmation")
     parser.add_argument("--expected-supervisor", type=int, required=True)
     parser.add_argument("--execute", action="store_true")
+    parser.add_argument("--iq-mt-min", action="store_true",
+                        help="baseline env STRATA_IQ_MT_MIN=1 on EVERY arm (issue #152: "
+                             "drafting-independent CPU IQ expert rounding; controls and "
+                             "candidates alike, so the window still measures one lever)")
     args = parser.parse_args()
     if args.candidate is not None and not 1 <= args.candidate <= len(MATRIX[args.lever]):
         parser.error("candidate outside the bounded matrix")
