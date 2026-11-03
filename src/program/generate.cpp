@@ -7248,6 +7248,11 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "strata generate: %s\n", err.c_str());
                 return 1;
             }
+            // §1: no silent mode - the F1 deferral flag must be visible at startup on every
+            // dflash boot (the split prints it in the tap-collection line below, with async_d2h).
+            if (!o.dflash_remote_only && strata::core::deferral_context())
+                std::fprintf(stderr, "dflash: prompt context fusion deferred defer=1 async_d2h=%d\n",
+                             (int) dflash.tap_collector().async_d2h_enabled());
             // L8 --layer-split: derive tap ownership from the ACTUAL stage ranges and enable the
             // drafter-device collector BEFORE the expert cache is sized (docs/DFLASH2.md capture
             // contract; dflash_tap_plan.hpp).  Serve = the layer chain [0, split_at[..]); CLI =
@@ -7283,13 +7288,17 @@ int main(int argc, char** argv) {
                     return 1;
                 }
                 dflash.tap_collector().set_stream(dflash.stream());   // enable() resets the stream slot
+                // §1: the window runner must see WHICH mode the binary booted - no silent
+                // mode.  Appended to the existing startup line.
                 std::fprintf(stderr, "dflash: cross-GPU tap collection serial on CUDA%d:", dev);
                 for (int t = 0; t < tap_plan.n_taps; ++t)
                     std::fprintf(stderr, " boundary %d<-CUDA%d", tap_plan.boundary[t], tap_plan.dev[tap_plan.owner[t]]);
-                std::fprintf(stderr, "%s; planes %.1f MiB on CUDA%d, pinned staging %.1f MiB\n",
+                std::fprintf(stderr, "%s; planes %.1f MiB on CUDA%d, pinned staging %.1f MiB defer=%d async_d2h=%d\n",
                              dflash.artifact().geom().target_hc_mean ? " (HC stream mean capture)" : "",
                              (double) dflash.tap_collector().device_bytes() / 1048576.0, dev,
-                             (double) dflash.tap_collector().pinned_bytes() / 1048576.0);
+                             (double) dflash.tap_collector().pinned_bytes() / 1048576.0,
+                             (int) strata::core::deferral_context(),
+                             (int) dflash.tap_collector().async_d2h_enabled());
             }
         }
         // L9 --dflash-remote-only: capacity() is the LOCAL pools' window; the pools are never

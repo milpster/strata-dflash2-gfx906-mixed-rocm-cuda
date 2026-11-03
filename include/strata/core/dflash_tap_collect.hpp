@@ -68,6 +68,7 @@
 
 #include <cstdint>
 #include <condition_variable>
+#include <cstdlib>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -165,6 +166,17 @@ class DFlashTapCollector {
     /// rows guard or staged flags from an aborted request.  Call at request start.
     void reset_staging();
 
+    /// F2 (§1): the mode the binary booted in - STRATA_DF_ASYNC_D2H=1, read ONCE (never per
+    /// chunk), the collector's startup context, like STRATA_DF_EVENTS at drafter upload.
+    /// Printed in the startup line; the worker's existence and stage()'s async path follow it.
+    static bool async_d2h_on() {
+        static const bool on = [] {
+            const char* v = std::getenv("STRATA_DF_ASYNC_D2H");
+            return v && v[0] == '1';
+        }();
+        return on;
+    }
+    bool async_d2h_enabled() const { return async_d2h_on(); }
     bool enabled() const { return plan_.n_taps > 0; }
     const DFlashTapPlan& plan() const { return plan_; }
     int drafter_device() const { return dev_; }
