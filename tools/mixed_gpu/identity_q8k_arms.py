@@ -44,6 +44,7 @@ _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
 
 import helper_ab                                                     # noqa: E402
+import performance_window as perfwin                                 # noqa: E402
 
 WORK = _HERE.parents[1]
 ROOT = Path("/mnt/user/Strata")
@@ -124,7 +125,8 @@ def wait_http(url: str, deadline_s: int) -> None:
 
 
 def run_arm(arm: dict, base: dict, ev: Path, probe_timeout: int,
-            probes: list[tuple[str, str]], timing: bool = False) -> dict:
+            probes: list[tuple[str, str]], timing: bool = False,
+            first_logits: bool = False) -> dict:
     name = arm["name"]
     engine = Path(arm["engine"])
     helper = Path(arm["helper"]) if arm.get("helper") else None
@@ -134,6 +136,10 @@ def run_arm(arm: dict, base: dict, ev: Path, probe_timeout: int,
     if not SERVER.is_file():
         raise RuntimeError(f"{name}: missing {SERVER}")
     cfg = arm_config(base, arm, ev)
+    fl_prefix = None
+    if first_logits:      # engine dumps full-vocab f32 logits of the FIRST token per request
+        fl_prefix = ev / f"{name}-first-logits"
+        cfg.setdefault("env", {})["STRATA_DUMP_FIRST_LOGITS"] = str(fl_prefix)
     socks = ([Path(cfg["expert_helper_socket"]), Path(cfg["expert_helper_socket2"])]
              if helper is not None else [])
     for path in socks:
@@ -225,6 +231,8 @@ def run_arm(arm: dict, base: dict, ev: Path, probe_timeout: int,
                 helper_timeouts=metric.get("helper_timeouts") or 0,
                 helper_fallbacks=metric.get("helper_fallbacks") or 0))
             print(json.dumps(result["probes"][-1]), flush=True)
+        if fl_prefix is not None:
+            result["first_logits"] = perfwin.first_logits_report(fl_prefix, len(probes))
     finally:
         helper_log.close()
         server_log.close()
@@ -258,6 +266,10 @@ def main() -> int:
                     help="speed mode: allow prompt-cache reuse across probes (the request "
                          "sequence is identical per arm, so the A/B stays paired); records "
                          "gen_ms/gen_rate and helper rows/bytes per probe")
+    ap.add_argument("--first-logits", action="store_true",
+                    help="dump each arm's first-token full-vocab logits (config env "
+                         "STRATA_DUMP_FIRST_LOGITS) and report pairwise KL evidence "
+                         "(forward/reverse, full softmax) between arms")
     ap.add_argument("--execute", action="store_true")
     args = ap.parse_args()
 
@@ -310,9 +322,18 @@ def main() -> int:
     for arm in arms:
         print(f"=== arm {arm['name']} ===", flush=True)
         arm_results.append(run_arm(arm, base, ev, args.probe_timeout, probes,
-                                   timing=args.timing))
+                                   timing=args.timing, first_logits=args.first_logits))
     results = {"arms": arm_results, "family": args.family,
                "requests": "ppf1-a-r1/r2/r3 verbatim (cap1-validation)"}
+    fl_arms = [(a["arm"], a["first_logits"]) for a in arm_results if a.get("first_logits")]
+    if len(fl_arms) >= 2:
+        results["kl"] = {}
+        for i in range(len(fl_arms)):
+            for j in range(i + 1, len(fl_arms)):
+                (na, fa), (nb, fb) = fl_arms[i], fl_arms[j]
+                results["kl"][f"{na}_vs_{nb}"] = perfwin.kl_report(fa, fb)
+        print(json.dumps({k: {kk: vv for kk, vv in v.items() if kk != "rows"}
+                          for k, v in results["kl"].items()}, indent=1))
 
     ran = {a["arm"]: {p["rep"]: p["content_sha256"] for p in a["probes"]} for a in results["arms"]}
 
