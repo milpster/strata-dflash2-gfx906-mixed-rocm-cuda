@@ -3,17 +3,22 @@
 
 Reuses identity-checked pair lifecycle helpers. Never adopts settings. A completed
 window is not a numerical acceptance: timings and exact output TEXT are separate.
+Stock-controls mode brackets the canonical mixed arm with the pinned PRE-HELPER stock
+product; --first-logits adds symmetric instrumentation whose timings are never gain
+evidence.
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
 import signal
 import statistics
+import struct
 import threading
 import time
 import urllib.error
@@ -47,6 +52,10 @@ ENGINE_ENV_KEYS = ("STRATA_HIP_PROMPT_F16", "STRATA_IQ_MT_MIN")
 # The engine line the FP16 prompt override prints (ppc2-*-engine.log:34/53); under
 # --prompt-f32 it must be ABSENT on every HIP device (engine log:34/53, gemm.hpp:121-123).
 FP16_PROMPT_LINE = re.compile(r"HIP device \d+ .*STRATA_HIP_PROMPT_F16=1.*16-bit GEMMs run FP16")
+# Arm kind: a control arm running the PINNED pre-helper stock product (the dfsample-1
+# engine, the integration clone's server, the stock config; window_pair.prepare_stock).
+# The mixed arms keep kind "mixed".
+STOCK_KIND = "stock"
 
 
 def engine_env(pid, keys=ENGINE_ENV_KEYS):
@@ -194,15 +203,21 @@ def request_body(family, rep):
                            chat_template_kwargs=dict(enable_thinking=False))).encode()
 
 
-def validate_reply(reply, metric):
+def validate_reply(reply, metric, stock=False):
     choice = reply["choices"][0]
     message = choice.get("message", {})
     count = reply["usage"]["completion_tokens"]
+    # A stock arm is the HELPER-LESS pre-helper product: its serve lines carry no helper
+    # tail at all (parse_serve_line leaves helper_reqs None).  A mixed arm must show
+    # positive helper traffic with zero timeouts/fallbacks, exactly as before.
+    helper_engaged = (metric.get("helper_reqs") is None if stock else
+                      (metric.get("helper_reqs") or 0) > 0
+                      and not (metric.get("helper_timeouts") or 0)
+                      and not (metric.get("helper_fallbacks") or 0))
     if (type(count) is not int or not MIN_OUTPUT <= count <= metric["generated"] or
             choice["finish_reason"] not in ("stop", "length") or not message.get("content") or
             metric["cancelled"] or metric["reused"] != 0 or metric["read"] != metric["prompt"] or
-            metric["prompt"] < 9000 or not (metric.get("helper_reqs") or 0) > 0 or
-            (metric.get("helper_timeouts") or 0) or (metric.get("helper_fallbacks") or 0) or
+            metric["prompt"] < 9000 or not helper_engaged or
             metric["offered"] <= 0 or min(metric["gen_rate"], metric["read_rate"]) <= 0):
         raise RuntimeError(f"Invalid sustained probe: ct={count}, {metric}")
     # Compare actual returned message bytes, never the request hash or envelope's id/date.
@@ -214,6 +229,9 @@ def validate_reply(reply, metric):
 
 
 def probe(config, state, family, rep, body=None):
+    # Stock arms come from window_pair.prepare_stock (kind "stock"): no helper identity
+    # to keep alive, and validate_reply accepts the helper-less serve lines.
+    stock = getattr(config, "kind", None) == STOCK_KIND
     prefix = runtime.EV / f"{family}-{config.label}-r{rep}"
     # Frozen replay reuses the retained source bytes VERBATIM (never regenerated or
     # reserialised); the no-option path stays request_body(family, rep).
@@ -240,9 +258,12 @@ def probe(config, state, family, rep, body=None):
     if code != 200 or len(metrics) != 1:
         raise RuntimeError(f"Expected one successful generation, http={code}, summaries={len(metrics)}")
     metric = metrics[0]
-    output = validate_reply(json.loads(raw), metric)
-    if not pair.alive(state["helper_pid"], state["helper_start"]):
-        raise RuntimeError("Helper identity changed during probe")
+    output = validate_reply(json.loads(raw), metric, stock=stock)
+    if state.get("helper_pid"):
+        if not pair.alive(state["helper_pid"], state["helper_start"]):
+            raise RuntimeError("Helper identity changed during probe")
+    elif not stock:
+        raise RuntimeError("Mixed arm state lacks helper identity")
     if re.search(r"drafting is off|candidate tokens outside|sampled request uses target-only", segment):
         raise RuntimeError("Drafter fell back during probe; raw artifacts retained")
     row = dict(rep=rep, elapsed_s=time.monotonic() - start, request_sha256=digest(body),
@@ -301,6 +322,107 @@ def startup_report(config, state):
                 helper_fill=fill, eligible_pairs=int(owned[1]), held_pairs=int(owned[3]),
                 effective_k=int(k[2]), floor=float(value("--spec-min-p")), trimmed=trimmed,
                 tap_lines=taps, prompt_f32_engagement=prompt_f32_engagement)
+
+
+def stock_startup_report(config, state):
+    """Pre-helper product proofs for a stock arm (there is no helper to verify).
+
+    From the PRIVATE config and the arm's own logs: the engine is the pinned stock
+    dfsample-1 binary, argv/env carry no helper seam at all and the engine log shows no
+    helper lines, the two-GPU layer-split geometry and the DFlash drafter match the
+    mixed arms' settings, the FP16 prompt GEMM line is present (stock env F16=1, parity
+    with the mixed arms), and the server's own log carries the 262144-context ready line
+    the supervisor attached on."""
+    cfg = json.loads(Path(config.config).read_text())
+    log = Path(cfg["log"]).read_text()
+    args = cfg["args"]
+    value = lambda flag: args[args.index(flag) + 1]
+    split = int(cfg["layer_split"])
+    if (cfg["exe"] != str(window_pair.STOCK_EXE) or "--expert-helper-slots" in args
+            or "expert_helper_socket" in cfg or "expert_helper_socket2" in cfg
+            or "STRATA_PREFILL_HELPER" in cfg.get("env", {})
+            or any("expert-helper" in line for line in log.splitlines())):
+        raise RuntimeError("Stock arm is not the helper-less pre-helper product")
+    later = re.search(r"CUDA1 runs layers (\d+)-(\d+), expert cache (\d+) slots", log)
+    if (not later or tuple(map(int, later.group(1, 2))) != (split, 47)
+            or f"CUDA0 runs layers 0-{split - 1}" not in log):
+        raise RuntimeError("Stock layer-split geometry proof failed")
+    k = re.search(r"trained block (\d+), pass K=(\d+)", log)
+    if (not k or int(k[2]) != min(int(value("--spec")) - 1, int(value("--dflash-block")))
+            or int(value("--max-context")) != 262144):
+        raise RuntimeError("Stock drafter/context proof failed")
+    if not FP16_PROMPT_LINE.search(log):
+        raise RuntimeError("Stock arm lost the STRATA_HIP_PROMPT_F16=1 prompt GEMM line")
+    console = Path(state["engine_log"]).read_text(errors="replace")
+    ready = re.search(r"ready: http://127\.0\.0\.1:\d+/v1 .*context (\d+) tokens", console)
+    if not ready or int(ready[1]) != 262144:
+        raise RuntimeError("Stock ready-line context proof failed")
+    fill = re.search(r"filling the GPU's expert cache \((\d+) experts", console)
+    return dict(kind=STOCK_KIND, split=split, later_cache_slots=int(later[3]),
+                effective_k=int(k[2]), floor=float(value("--spec-min-p")),
+                fp16_prompt_line=True, ready_context=int(ready[1]),
+                server_fill_experts=int(fill[1]) if fill else None)
+
+
+def first_logits_report(prefix, expected_rows):
+    """Engagement proof + retention for the per-request first-window logit dumps.
+
+    Each request appends one <prefix>.<n> file of raw little-endian f32 logits
+    (ver.vocab() floats - generate.cpp's serve diagnostics, the row that decided the
+    first generated token).  Fails closed unless exactly expected_rows files exist with
+    equal, 4-byte-aligned sizes; a dump with MORE rows than requests is refused too (a
+    warmup or stray generation shifted the indices).  Records sha256 per row."""
+    rows = []
+    for n in range(expected_rows):
+        path = Path(f"{prefix}.{n}")
+        if not path.is_file():
+            raise RuntimeError(f"First-logits dump missing: {path.name}")
+        raw = path.read_bytes()
+        if not raw or len(raw) % 4:
+            raise RuntimeError(f"First-logits dump malformed: {path.name}")
+        rows.append(dict(file=str(path), sha256=digest(raw), floats=len(raw) // 4))
+    if Path(f"{prefix}.{expected_rows}").is_file():
+        raise RuntimeError("First-logits dump has more rows than requests")
+    if len({row["floats"] for row in rows}) != 1:
+        raise RuntimeError("First-logits row lengths differ within an arm")
+    return dict(prefix=str(prefix), rows=rows, vocab=rows[0]["floats"])
+
+
+def softmax_kl(p_logits, q_logits):
+    """KL(p||q) in nats over softmaxes of two equal-length f32 logit rows (stable)."""
+    if len(p_logits) != len(q_logits) or not p_logits:
+        raise ValueError("KL rows must be equal-length and non-empty")
+    pm, qm = max(p_logits), max(q_logits)
+    pe = [math.exp(v - pm) for v in p_logits]
+    qe = [math.exp(v - qm) for v in q_logits]
+    pz, qz = sum(pe), sum(qe)
+    log_pz, log_qz = math.log(pz), math.log(qz)
+    kl = 0.0
+    for vp, p, vq in zip(p_logits, pe, q_logits):
+        if p > 0.0:
+            kl += (p / pz) * (((vp - pm) - log_pz) - ((vq - qm) - log_qz))
+    return kl
+
+
+def kl_report(left, right):
+    """Offline KL between two arms' first-logits rows: per-rep forward/reverse KL, max
+    and L2 logit delta.  Pure CPU math on the persisted dumps - recorded evidence only,
+    never a gate (the pooled numerical relative-error gate is unchanged)."""
+    if len(left["rows"]) != len(right["rows"]):
+        raise RuntimeError("First-logits row counts differ")
+    if left["vocab"] != right["vocab"]:
+        raise RuntimeError("First-logits vocabulary widths differ across arms")
+    entries = []
+    for a, b in zip(left["rows"], right["rows"]):
+        pa = struct.unpack(f"{a['floats']}f", Path(a["file"]).read_bytes())
+        pb = struct.unpack(f"{b['floats']}f", Path(b["file"]).read_bytes())
+        delta = [x - y for x, y in zip(pa, pb)]
+        entries.append(dict(kl_forward=softmax_kl(pa, pb), kl_reverse=softmax_kl(pb, pa),
+                            max_abs_logit_delta=max(abs(d) for d in delta),
+                            l2_logit_delta=math.sqrt(sum(d * d for d in delta))))
+    return dict(vocab=left["vocab"], rows=entries,
+                mean_kl_forward=sum(e["kl_forward"] for e in entries) / len(entries),
+                mean_kl_reverse=sum(e["kl_reverse"] for e in entries) / len(entries))
 
 
 def compare(rows):
@@ -368,6 +490,11 @@ def pins():
     return {str(path): digest(path.read_bytes()) for path in paths}
 
 
+def stock_pins():
+    """Hashes of the preserved pre-helper artifacts a --stock-controls window runs."""
+    return {str(path): digest(path.read_bytes()) for path in window_pair.stock_artifacts()}
+
+
 def run(args):
     if not re.fullmatch(r"[a-z][a-z0-9]{0,10}", args.family):
         raise ValueError("Use a fresh short alphanumeric family")
@@ -379,7 +506,11 @@ def run(args):
                 "STRATA_SPLIT_OVERLAP", "STRATA_DRAFT_HELPER", "STRATA_IQ_MT_MIN"):
         if os.environ.get(key, "0") not in ("", "0") or configs.get("env", {}).get(key, "0") not in ("", "0"):
             raise ValueError(f"Unexpected baseline lever enabled: {key}")
+    stock_mode = bool(getattr(args, "stock_controls", False))
+    first_logits = bool(getattr(args, "first_logits", False))
     fingerprint = pins()
+    if stock_mode:
+        fingerprint.update(stock_pins())
     replay = None
     frozen = None
     if args.replay_family:
@@ -390,12 +521,21 @@ def run(args):
         # Select the frozen per-rep source bytes ONCE, before any production signal, and
         # keep their provenance for the status/dry-run recheck.
         frozen, replay = load_replay(args.replay_family, evidence=runtime.EV)
-    schedule = [None, *MATRIX[args.lever], None]
-    if args.candidate is not None:
-        schedule = [None, MATRIX[args.lever][args.candidate - 1], None]
+    if stock_mode:
+        # [pre-helper stock, canonical mixed, pre-helper stock]: the candidate arm is the
+        # production-mixed product itself (plain window_pair.prepare, no experimental
+        # baselines), so the comparison is product-level, not one knob.
+        schedule = [None, None, None]
+    else:
+        schedule = [None, *MATRIX[args.lever], None]
+        if args.candidate is not None:
+            schedule = [None, MATRIX[args.lever][args.candidate - 1], None]
     if not args.execute:
         print(json.dumps(dict(family=args.family, schedule=schedule, reps=3,
                               max_tokens=512, minimum_output=MIN_OUTPUT,
+                              stock_controls=stock_mode,
+                              stock_pins=stock_pins() if stock_mode else None,
+                              first_logits=first_logits,
                               iq_mt_min=args.iq_mt_min, adapt_off=args.adapt_off,
                               prompt_f32=args.prompt_f32, replay_family=args.replay_family,
                               replay=replay,
@@ -403,12 +543,20 @@ def run(args):
         return 0
     private = []
     for i, tuning in enumerate(schedule):
-        config = window_pair.prepare(f"{args.family}-{chr(97 + i)}", slots=4200, tuning=tuning,
-                                     iq_mt_min=args.iq_mt_min, adapt_off=args.adapt_off,
-                                     prompt_f32=args.prompt_f32)
-        config.label = chr(97 + i)
+        label = chr(97 + i)
+        fl = runtime.EV / f"{args.family}-{label}-first-logits" if first_logits else None
+        if stock_mode and i != 1:
+            config = window_pair.prepare_stock(f"{args.family}-{label}", first_logits=fl)
+            config.kind = STOCK_KIND
+        else:
+            config = window_pair.prepare(f"{args.family}-{label}", slots=4200, tuning=tuning,
+                                         iq_mt_min=args.iq_mt_min, adapt_off=args.adapt_off,
+                                         prompt_f32=args.prompt_f32, first_logits=fl)
+            config.kind = "mixed"
+        config.label = label
         private.append(config)
-    result = dict(started=time.time(), lever=args.lever, iq_mt_min=args.iq_mt_min,
+    result = dict(started=time.time(), lever=args.lever, stock_controls=stock_mode,
+                  instrumented=first_logits, iq_mt_min=args.iq_mt_min,
                   adapt_off=args.adapt_off, prompt_f32=args.prompt_f32,
                   replay=replay, pairs=[], success=False, pins=fingerprint)
     pair.write_json(status, result)  # durable intent before any production signal
@@ -428,8 +576,10 @@ def run(args):
                 state["engine_pid"] = runtime.engine_of(state)
                 state["engine_argv"] = runtime.command(state["engine_pid"])
                 known = pair.descendants(active.pid, known)
-                row = dict(label=config.label, tuning=config.tuning, state=state,
-                           startup=startup_report(config, state), probes=[])
+                row = dict(label=config.label, kind=config.kind, tuning=config.tuning, state=state,
+                           startup=(stock_startup_report(config, state)
+                                    if config.kind == STOCK_KIND else startup_report(config, state)),
+                           probes=[])
                 result["pairs"].append(row)
                 for rep in range(1, 4):
                     beat.phase = f"arm {config.label} probe {rep}/3"
@@ -441,15 +591,20 @@ def run(args):
                 active = None
                 if any(pair.alive(pid, token) for pid, token in known.items()):
                     raise RuntimeError("Private processes survived arm teardown")
-                log = Path(json.loads(Path(config.config).read_text())["log"]).read_text()
-                closes = [m for m in helper_ab.PROMPT_TIER_CLOSE_RE.finditer(log)
-                          if m["path"] == config.socket2 and int(m["reqs"]) > 0]
-                if len(closes) != 1:
-                    raise RuntimeError("Missing unique positive prompt-channel close proof")
-                row["prompt_channel"] = dict(requests=int(closes[0]["reqs"]), rows=int(closes[0]["rows"]))
+                if config.kind != STOCK_KIND:
+                    log = Path(json.loads(Path(config.config).read_text())["log"]).read_text()
+                    closes = [m for m in helper_ab.PROMPT_TIER_CLOSE_RE.finditer(log)
+                              if m["path"] == config.socket2 and int(m["reqs"]) > 0]
+                    if len(closes) != 1:
+                        raise RuntimeError("Missing unique positive prompt-channel close proof")
+                    row["prompt_channel"] = dict(requests=int(closes[0]["reqs"]), rows=int(closes[0]["rows"]))
                 if config.tuning and "prefill_pipe" in config.tuning and not any(p["plans"] for p in row["probes"]):
                     raise RuntimeError("Prefill-pipe changed no chunk plan; no engagement proof")
-                print(json.dumps(dict(event="arm_done", arm=config.label, startup=row["startup"])), flush=True)
+                if first_logits:
+                    row["first_logits"] = first_logits_report(
+                        runtime.EV / f"{args.family}-{config.label}-first-logits", 3)
+                print(json.dumps(dict(event="arm_done", arm=config.label, kind=config.kind,
+                                      startup=row["startup"])), flush=True)
                 pair.write_json(status, result)
             if replay is not None:
                 # Recheck the pinned source artifacts and that every probe used the frozen
@@ -464,6 +619,25 @@ def run(args):
                         if probe_row["request_sha256"] != expected:
                             raise RuntimeError(f"Probe bytes diverged from the frozen source (arm {row['label']})")
             result["comparison"] = compare(result["pairs"])
+            if stock_mode:
+                result["comparison"]["limits"] += (" Stock-controls mode is a product-level "
+                                                   "comparison: the pinned pre-helper engine, "
+                                                   "server and config differ from the canonical "
+                                                   "mixed pair together, not one knob.")
+            if first_logits:
+                arms = {row["label"]: row for row in result["pairs"]}
+                result["first_logits_kl"] = (
+                    {"stock_a_vs_mixed_b": kl_report(arms["a"]["first_logits"], arms["b"]["first_logits"]),
+                     "stock_c_vs_mixed_b": kl_report(arms["c"]["first_logits"], arms["b"]["first_logits"]),
+                     "stock_a_vs_stock_c": kl_report(arms["a"]["first_logits"], arms["c"]["first_logits"])}
+                    if stock_mode else
+                    {"control_a_vs_control_c": kl_report(arms["a"]["first_logits"], arms["c"]["first_logits"]),
+                     **{f"control_a_vs_{row['label']}":
+                        kl_report(arms["a"]["first_logits"], row["first_logits"])
+                        for row in result["pairs"][1:-1]}})
+                result["first_logits_kl"]["note"] = (
+                    "Recorded evidence only, never a gate; the pooled numerical relative-error "
+                    "gate is unchanged. Instrumented timings are not gain evidence.")
             result["success"] = True
         except BaseException as error:
             result["error"] = f"{type(error).__name__}: {error}"
@@ -481,7 +655,10 @@ def run(args):
                             raise RuntimeError("Owned processes survived; refusing concurrent production")
                         beat.phase = "restore canonical --recover"
                         lifecycle.restore_production(result, args.family)
-                    if pins() != fingerprint:
+                    current = pins()
+                    if stock_mode:
+                        current.update(stock_pins())
+                    if current != fingerprint:
                         raise RuntimeError("Pinned files changed during measurement")
                 except BaseException as error:
                     result["restore_error"] = f"{type(error).__name__}: {error}"
@@ -498,7 +675,7 @@ def run(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--family", required=True)
-    parser.add_argument("--lever", choices=MATRIX, required=True)
+    parser.add_argument("--lever", choices=MATRIX)
     parser.add_argument("--candidate", type=int, help="one-based candidate for a fresh confirmation")
     parser.add_argument("--expected-supervisor", type=int, required=True)
     parser.add_argument("--execute", action="store_true")
@@ -524,7 +701,26 @@ def main():
                              "production signal (raw SHA, fixture semantics, byte-identical "
                              "across arms per rep, distinct reps); source must differ from "
                              "--family")
+    parser.add_argument("--stock-controls", action="store_true",
+                        help="bracket the CANONICAL mixed arm with control arms running the "
+                             "PINNED PRE-HELPER stock product (window_pair.prepare_stock: the "
+                             "dfsample-1 engine, the integration clone's server, the stock "
+                             "config - no helper at all). A product-level comparison: engine, "
+                             "server and helper differ together, not one knob. Cannot compose "
+                             "with --lever/--candidate or the baseline flags")
+    parser.add_argument("--first-logits", action="store_true",
+                        help="baseline env STRATA_DUMP_FIRST_LOGITS=<arm-private prefix> on "
+                             "EVERY arm (stock and mixed alike): each engine writes its first "
+                             "verify window's logit row per request (raw f32, generate.cpp's "
+                             "serve diagnostics) for offline KL comparison. The dump's device "
+                             "sync perturbs scheduling: instrumented timings are NOT gain "
+                             "evidence, and the KL rows are recorded evidence only, never a gate")
     args = parser.parse_args()
+    if args.stock_controls and (args.lever is not None or args.candidate is not None
+                                or args.iq_mt_min or args.adapt_off or args.prompt_f32):
+        parser.error("--stock-controls replaces the lever schedule and the baseline flags")
+    if args.lever is None and not args.stock_controls:
+        parser.error("--lever is required without --stock-controls")
     if args.candidate is not None and not 1 <= args.candidate <= len(MATRIX[args.lever]):
         parser.error("candidate outside the bounded matrix")
     return run(args)

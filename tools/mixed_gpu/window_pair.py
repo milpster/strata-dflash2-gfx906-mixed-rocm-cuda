@@ -73,7 +73,7 @@ def prepare(family, *, slots=4000, fill_mib=6400, port=18080, evidence=EVIDENCE,
             engine=None, helper=None, rpc_profile=False, draft_helper=None, knob=None,
             prefill_timing=False, helper_streams=False, draft_tap_bf16=False,
             split_overlap=False, helper_off=False, iq_mt_min=False, adapt_off=False,
-            prompt_f32=False, tuning=None):
+            prompt_f32=False, first_logits=None, tuning=None):
     if tuning is not None and (knob is not None or engine is not None or helper is not None or
                                draft_helper is not None or rpc_profile or prefill_timing or
                                helper_streams or draft_tap_bf16 or split_overlap or helper_off):
@@ -92,6 +92,8 @@ def prepare(family, *, slots=4000, fill_mib=6400, port=18080, evidence=EVIDENCE,
         raise ValueError("Adaptive-off baseline override must be True or False")
     if type(prompt_f32) is not bool:
         raise ValueError("Prompt-F32 baseline override must be True or False")
+    if first_logits is not None and not isinstance(first_logits, (str, Path)):
+        raise ValueError("First-logits baseline needs a dump-path prefix or None")
     if helper_off and (draft_helper or draft_tap_bf16 or helper is not None):
         raise ValueError("Helper-off cannot combine with the remote draft lane or a helper binary")
     if helper_off and (rpc_profile or helper_streams):
@@ -190,6 +192,15 @@ def prepare(family, *, slots=4000, fill_mib=6400, port=18080, evidence=EVIDENCE,
         # reads), composes with the tuning like iq_mt_min, and an unset value leaves the
         # inherited production env byte-identical.
         config.setdefault("env", {})["STRATA_HIP_PROMPT_F16"] = "0"
+    if first_logits is not None:
+        # First-logits instrumentation baseline (parent-approved option A): every arm's
+        # private config carries STRATA_DUMP_FIRST_LOGITS=<prefix>, so each engine writes
+        # the first verify window's chosen logit row (raw f32, ver.vocab() floats, one
+        # <prefix>.<n> file per request - generate.cpp's serve diagnostics, merged ?
+        # T-1 : 0) for offline KL comparison of the prompt paths. A BASELINE on every arm
+        # alike, so it composes like iq_mt_min; the dump's device sync perturbs
+        # scheduling, so instrumented timings are never gain evidence.
+        config.setdefault("env", {})["STRATA_DUMP_FIRST_LOGITS"] = str(first_logits)
     if knob is not None:
         # L6: engine argv only. Exactly one occurrence is enforced so a silent change
         # in the production argv cannot make the knob land somewhere unexpected.
@@ -323,5 +334,107 @@ def prepare(family, *, slots=4000, fill_mib=6400, port=18080, evidence=EVIDENCE,
                     knob=None if knob is None else dict(name=knob[0], value=str(knob[1])),
                     config=str(config_path), launcher=str(launcher_path),
                     socket=str(socket), socket2=str(socket2), state=str(state_path))
+    Path(f"{prefix}-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    return SimpleNamespace(**manifest, base_url=f"http://127.0.0.1:{port}")
+
+
+# The preserved pre-helper stock product (what production ran before the mixed backend):
+# the pinned dfsample-1 engine, the integration clone's own serve/server.py, and the stock
+# config - no helper sockets, no --expert-helper-slots, no STRATA_PREFILL_HELPER.  A
+# --stock-controls arm measures THAT product; how1/how2 measured the mixed engine without
+# the helper instead.
+STOCK_CLONE = Path("/mnt/user/dflash2/Strata-integ")
+STOCK_EXE = STOCK_CLONE / "build-dfsample-1/strata"
+STOCK_SERVER = STOCK_CLONE / "serve/server.py"
+STOCK_CONFIG = ROOT / "prod-config-swift15-dflash-w4-q4_0.json"
+STOCK_LAUNCHER = ROOT / "launch-prod-swift15-dflash-w4-q4_0.sh"
+
+
+def stock_artifacts():
+    """The four preserved pre-helper artifacts a stock-controls window must hash-pin."""
+    return (STOCK_EXE, STOCK_SERVER, STOCK_CONFIG, STOCK_LAUNCHER)
+
+
+def prepare_stock(family, *, port=18080, evidence=EVIDENCE, first_logits=None):
+    """Derive a private, supervised launch of the PRE-HELPER stock product.
+
+    Same private-artifact discipline as prepare(): a fresh family gets its own config
+    (only "log"/"port" redirected, plus the optional first-logits baseline env), launcher
+    and supervisor state; the preserved stock files are only ever READ.  The launcher is
+    derived from the REAL stock launcher by strict once-only substitutions, so drift in
+    the preserved script fails loudly instead of silently changing what runs.  Two
+    mechanical differences are REQUIRED for ownership: the server starts in the
+    launcher's own process group (no `setsid nohup` - pair_supervisor must own the tree)
+    and the helper-less supervisor conventions are added (a --recover branch, `record 0`
+    so attach keys on the server's own ready line, as in the helper-off derivation)."""
+    if first_logits is not None and not isinstance(first_logits, (str, Path)):
+        raise ValueError("First-logits baseline needs a dump-path prefix or None")
+    if not re.fullmatch(r"[a-z][a-z0-9-]{0,20}", family):
+        raise ValueError("Invalid window family")
+    if not 1024 <= port <= 65535 or port == 8009:
+        raise ValueError("A private non-production port is required")
+    for path in stock_artifacts():
+        if not path.is_file():
+            raise ValueError(f"Preserved stock artifact missing: {path}")
+    if not os.access(STOCK_EXE, os.X_OK):
+        raise ValueError("Preserved stock engine is not executable")
+    prefix = Path(evidence) / family
+    config_path = Path(f"{prefix}-config.json")
+    launcher_path = Path(f"{prefix}-launch.sh")
+    if config_path.exists() or launcher_path.exists():
+        raise ValueError("Refusing to overwrite an earlier window; choose a fresh family")
+    state_path = Path(f"{prefix}-supervisor.json")
+    engine_log = Path(f"{prefix}-engine.log")
+    prod = json.loads(STOCK_CONFIG.read_text())
+    args = prod["args"]
+    value = lambda flag: args[args.index(flag) + 1]
+    if (prod["exe"] != str(STOCK_EXE) or "--expert-helper-slots" in args
+            or "expert_helper_socket" in prod or "expert_helper_socket2" in prod
+            or "STRATA_PREFILL_HELPER" in prod.get("env", {})):
+        raise ValueError("Stock config no longer describes the pre-helper product")
+    if (value("--max-context") != "262144" or value("--gpu") != "0,1"
+            or value("--prefill") != "8192" or prod.get("layer_split") != "32"):
+        raise ValueError("Stock config drifted from the matched measurement settings")
+    config = json.loads(STOCK_CONFIG.read_text())
+    config["log"] = str(engine_log)
+    config["port"] = port
+    if first_logits is not None:
+        config.setdefault("env", {})["STRATA_DUMP_FIRST_LOGITS"] = str(first_logits)
+    text = STOCK_LAUNCHER.read_text()
+    text = replace_once(text, 'CONFIG="$ROOT/prod-config-swift15-dflash-w4-q4_0.json"',
+                        f"CONFIG={shlex.quote(str(config_path))}")
+    text = replace_once(text, 'LOGDIR="$ROOT/logs"\n', 'LOGDIR="$ROOT/logs"\n\n'
+                        + "if [[ ${1:-} == --recover ]]; then\n"
+                        + f'  exec "$PY" {shlex.quote(str(WORK / "tools/mixed_gpu/pair_supervisor.py"))} run \\\n'
+                        + f'    --launcher "$0" --state {shlex.quote(str(state_path))} \\\n'
+                        + f'    --lock {shlex.quote(str(Path(f"{prefix}-supervisor.lock")))}\n'
+                        + "fi\n")
+    text = replace_regex_once(text, r"(?s)exec env -u CUDA_VISIBLE_DEVICES.*?< /dev/null\n",
+        "env -u CUDA_VISIBLE_DEVICES -u STRATA_ARENA_MMAP -u GPU_PINNED_MIN_XFER_SIZE \\\n"
+        "  -u HSA_USERPTR_FOR_PAGED_MEM \\\n"
+        "  LD_LIBRARY_PATH=/home/user/rocm-gfx906-xnack/lib:/opt/rocm-6.1.0/lib \\\n"
+        '  "$PY" serve/server.py \\\n'
+        '  --engine strata --config "$CONFIG" --port 8009 \\\n'
+        '  >> "$LOG" 2>&1 < /dev/null &\n'
+        "server_pid=$!\n"
+        'HLOG="${LOG%.log}-helper.log"\n'
+        ': > "$HLOG"\n'
+        "if [[ -n ${STRATA_PAIR_RECORD:-} ]]; then\n"
+        f'  "$PY" {shlex.quote(str(WORK / "tools/mixed_gpu/pair_supervisor.py"))} \\\n'
+        '    record 0 "$server_pid" "$LOG" "$HLOG"\n'
+        "fi\n"
+        'wait "$server_pid"\n')
+    text = replace_once(text, "prod-swift15-dflash-w4-q4_0-$(date", f"window-{family}-$(date")
+    text = "# Generated private stock-arm launcher; production comments below are historical.\n" + text.replace("8009", str(port))
+    Path(evidence).mkdir(parents=True, exist_ok=True)
+    config_path.write_text(json.dumps(config, indent=2) + "\n")
+    launcher_path.write_text(text)
+    subprocess.run(["bash", "-n", str(launcher_path)], check=True)
+    manifest = dict(family=family, port=port, kind="stock", engine=str(STOCK_EXE),
+                    server=str(STOCK_SERVER), stock_config=str(STOCK_CONFIG),
+                    stock_launcher=str(STOCK_LAUNCHER), config=str(config_path),
+                    launcher=str(launcher_path), state=str(state_path),
+                    socket=None, socket2=None, tuning=None,
+                    first_logits=str(first_logits) if first_logits is not None else None)
     Path(f"{prefix}-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     return SimpleNamespace(**manifest, base_url=f"http://127.0.0.1:{port}")

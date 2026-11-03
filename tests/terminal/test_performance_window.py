@@ -711,3 +711,289 @@ def test_engine_env_reader_only_returns_narrow_keys():
     import os
     live = perf.engine_env(os.getpid())
     assert set(live).issubset(set(perf.ENGINE_ENV_KEYS))   # never dumps secrets
+
+
+def test_validate_reply_stock_arm_helper_semantics():
+    # A stock arm's serve lines carry no helper tail at all - that is the valid state.
+    helper_less = dict(metric_fixture(), helper_reqs=None)
+    assert perf.validate_reply(reply_fixture(), helper_less, stock=True)["completion_tokens"] == 512
+    # A stock arm showing helper traffic is NOT the helper-less pre-helper product.
+    with pytest.raises(RuntimeError, match="Invalid sustained"):
+        perf.validate_reply(reply_fixture(), metric_fixture(), stock=True)
+    # A mixed arm without helper traffic still fails, exactly as before.
+    with pytest.raises(RuntimeError, match="Invalid sustained"):
+        perf.validate_reply(reply_fixture(), helper_less)
+
+
+STOCK_STARTUP = """strata generate: expert cache 6069 slots, 9.12 GiB
+strata generate: layer split: CUDA1 runs layers 32-47, expert cache 4780 slots
+strata generate: layer split: CUDA0 runs layers 0-31
+dflash: trained block 8, pass K=4
+strata prefill: HIP device 0 gfx906:sramecc+:xnack- - STRATA_HIP_PROMPT_F16=1: the prompt's 16-bit GEMMs run FP16 in and out
+strata prefill: HIP device 1 gfx906:sramecc+:xnack- - STRATA_HIP_PROMPT_F16=1: the prompt's 16-bit GEMMs run FP16 in and out
+"""
+
+
+def stock_config_fixture(tmp_path, log_text=STOCK_STARTUP):
+    cfg = dict(args=["--spec", "5", "--dflash-block", "5", "--spec-min-p", "0.5",
+                     "--max-context", "262144", "--gpu", "0,1", "--prefill", "8192"],
+               layer_split="32", exe=str(window_pair.STOCK_EXE))
+    cfg["log"] = str(tmp_path / "engine.log")
+    Path(cfg["log"]).write_text(log_text)
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(cfg))
+    return path, cfg
+
+
+def test_stock_startup_report_proofs(tmp_path):
+    path, _ = stock_config_fixture(tmp_path)
+    console = tmp_path / "console.log"
+    console.write_text("ready: http://127.0.0.1:18080/v1  (OpenAI: /v1/chat/completions, "
+                       "Anthropic: /v1/messages, context 262144 tokens, images on)\n")
+    report = perf.stock_startup_report(SimpleNamespace(config=path),
+                                       {"engine_log": str(console)})
+    assert report["kind"] == perf.STOCK_KIND and report["split"] == 32
+    assert report["later_cache_slots"] == 4780 and report["effective_k"] == 4
+    assert report["fp16_prompt_line"] is True and report["ready_context"] == 262144
+
+
+@pytest.mark.parametrize("mutate,match", [
+    (lambda s: s + "expert-helper: 4093 rows on /x.sock (mirrored 4093/4200 slots)\n",
+     "helper-less"),
+    (lambda s: s.replace("CUDA1 runs layers 32-47", "CUDA1 runs layers 30-47")
+                .replace("CUDA0 runs layers 0-31", "CUDA0 runs layers 0-29"),
+     "layer-split"),
+])
+def test_stock_startup_report_rejects_helper_and_geometry(tmp_path, mutate, match):
+    path, cfg = stock_config_fixture(tmp_path)
+    Path(cfg["log"]).write_text(mutate(STOCK_STARTUP))
+    with pytest.raises(RuntimeError, match=match):
+        perf.stock_startup_report(SimpleNamespace(config=path),
+                                  {"engine_log": str(tmp_path / "missing.log")})
+
+
+def test_stock_startup_report_rejects_wrong_ready_context(tmp_path):
+    path, _ = stock_config_fixture(tmp_path)
+    console = tmp_path / "console.log"
+    console.write_text("ready: http://127.0.0.1:18080/v1  (context 131072 tokens)\n")
+    with pytest.raises(RuntimeError, match="ready-line"):
+        perf.stock_startup_report(SimpleNamespace(config=path),
+                                  {"engine_log": str(console)})
+
+
+def test_stock_startup_report_requires_fp16_parity_line(tmp_path):
+    stripped = "".join(line + "\n" for line in STOCK_STARTUP.splitlines()
+                       if "STRATA_HIP_PROMPT_F16" not in line)
+    path, _ = stock_config_fixture(tmp_path, log_text=stripped)
+    console = tmp_path / "console.log"
+    console.write_text("ready: http://127.0.0.1:18080/v1  (context 262144 tokens)\n")
+    with pytest.raises(RuntimeError, match="prompt GEMM line"):
+        perf.stock_startup_report(SimpleNamespace(config=path),
+                                  {"engine_log": str(console)})
+
+
+STOCK_LAUNCHER_FIXTURE = (
+    '#!/usr/bin/env bash\nset -euo pipefail\n'
+    'ROOT=/mnt/user/Strata\nCLONE=/mnt/user/dflash2/Strata-integ\n'
+    'PY="$ROOT/.venv/bin/python"\n'
+    'CONFIG="$ROOT/prod-config-swift15-dflash-w4-q4_0.json"\n'
+    'LOGDIR="$ROOT/logs"\n\n'
+    'echo "checking port 8009"\n'
+    'LOG="$LOGDIR/prod-swift15-dflash-w4-q4_0-$(date +%Y%m%d-%H%M%S)-$$.log"\n'
+    'cd "$CLONE"\n'
+    'exec env -u CUDA_VISIBLE_DEVICES -u STRATA_ARENA_MMAP -u GPU_PINNED_MIN_XFER_SIZE \\\n'
+    '  -u HSA_USERPTR_FOR_PAGED_MEM \\\n'
+    '  LD_LIBRARY_PATH=/home/user/rocm-gfx906-xnack/lib:/opt/rocm-6.1.0/lib \\\n'
+    '  setsid nohup "$PY" serve/server.py \\\n'
+    '  --engine strata --config "$CONFIG" --port 8009 \\\n'
+    '  >> "$LOG" 2>&1 < /dev/null\n')
+
+
+def stock_sources(tmp_path):
+    import os
+    stock_dir = tmp_path / "stock"
+    stock_dir.mkdir()
+    exe = stock_dir / "strata"
+    exe.write_bytes(b"#!/bin/sh\nexit 0\n")
+    exe.chmod(0o755)
+    server = stock_dir / "server.py"
+    server.write_text("# stock server\n")
+    config = stock_dir / "stock-config.json"
+    config.write_text(json.dumps(dict(
+        exe=str(exe), layer_split="32",
+        args=["--spec", "5", "--dflash-block", "5", "--spec-min-p", "0.5",
+              "--max-context", "262144", "--gpu", "0,1", "--prefill", "8192"],
+        env={"STRATA_HIP_PROMPT_F16": "1"})))
+    launcher = stock_dir / "stock-launch.sh"
+    launcher.write_text(STOCK_LAUNCHER_FIXTURE)
+    return exe, server, config, launcher
+
+
+def test_prepare_stock_derives_private_supervised_arm(tmp_path, monkeypatch):
+    exe, server, config, launcher = stock_sources(tmp_path)
+    monkeypatch.setattr(window_pair, "STOCK_EXE", exe)
+    monkeypatch.setattr(window_pair, "STOCK_SERVER", server)
+    monkeypatch.setattr(window_pair, "STOCK_CONFIG", config)
+    monkeypatch.setattr(window_pair, "STOCK_LAUNCHER", launcher)
+    arm = window_pair.prepare_stock("sab", port=18080, evidence=tmp_path)
+    assert arm.kind == "stock" and arm.socket is None and arm.socket2 is None
+    private = json.loads(Path(arm.config).read_text())
+    assert private["exe"] == str(exe) and private["port"] == 18080
+    assert private["args"] == json.loads(config.read_text())["args"]
+    assert "STRATA_DUMP_FIRST_LOGITS" not in private.get("env", {})
+    text = Path(arm.launcher).read_text()
+    assert "setsid" not in text and str(arm.config) in text
+    assert arm.state in text and 'record 0 "$server_pid"' in text
+    assert 'wait "$server_pid"' in text and "18080" in text and "8009" not in text
+    # the optional first-logits baseline rides the private config env
+    arm2 = window_pair.prepare_stock("sac", port=18081, evidence=tmp_path, first_logits="/tmp/fl")
+    assert json.loads(Path(arm2.config).read_text())["env"]["STRATA_DUMP_FIRST_LOGITS"] == "/tmp/fl"
+    # a family is single-use
+    with pytest.raises(ValueError, match="overwrite"):
+        window_pair.prepare_stock("sab", evidence=tmp_path)
+
+
+def test_prepare_stock_rejects_drifted_stock_product(tmp_path, monkeypatch):
+    exe, server, config, launcher = stock_sources(tmp_path)
+    monkeypatch.setattr(window_pair, "STOCK_EXE", exe)
+    monkeypatch.setattr(window_pair, "STOCK_SERVER", server)
+    monkeypatch.setattr(window_pair, "STOCK_CONFIG", config)
+    monkeypatch.setattr(window_pair, "STOCK_LAUNCHER", launcher)
+    drifted = json.loads(config.read_text())
+    drifted["args"] += ["--expert-helper-slots", "4200"]
+    config.write_text(json.dumps(drifted))
+    with pytest.raises(ValueError, match="pre-helper product"):
+        window_pair.prepare_stock("sab", evidence=tmp_path)
+    drifted["args"] = drifted["args"][:-2]
+    drifted["env"]["STRATA_PREFILL_HELPER"] = "1"
+    config.write_text(json.dumps(drifted))
+    with pytest.raises(ValueError, match="pre-helper product"):
+        window_pair.prepare_stock("sbd", evidence=tmp_path)
+
+
+def test_stock_controls_run_uses_stock_arms(monkeypatch, tmp_path):
+    events, args, _ = run_world(monkeypatch, tmp_path)
+    args.lever = None
+    args.stock_controls = True
+    (tmp_path / "engine.log").write_text(
+        "the prompt tier's channel (socket2) closed after 3 prompt requests / 9 prompt rows\n")
+    monkeypatch.setattr(perf.lifecycle, "graceful_stop", lambda *_: events.append("arm_stop"))
+    prepared_stock = []
+
+    def prepare_stock(family, **kwargs):
+        prepared_stock.append((family, kwargs.get("first_logits")))
+        path = tmp_path / f"{family}.json"
+        path.write_text(json.dumps(dict(log=str(tmp_path / "engine.log"))))
+        return SimpleNamespace(family=family, config=path, launcher="launcher", state="state",
+                               base_url="url", socket2=None, tuning=None)
+
+    monkeypatch.setattr(perf.window_pair, "prepare_stock", prepare_stock)
+    monkeypatch.setattr(perf, "stock_pins", lambda: {"stock": "same"})
+    monkeypatch.setattr(perf, "stock_startup_report", lambda cfg, state: {"kind": "stock"})
+    monkeypatch.setattr(perf, "probe", lambda cfg, state, family, rep, body=None: dict(
+        rep=rep, gen_rate=30, read_rate=200, request_sha256=f"req{rep}",
+        message_sha256=f"out{rep}", plans=[]))
+    assert perf.run(args) == 0
+    assert [family for family, _ in prepared_stock] == ["unit-a", "unit-c"]  # stock brackets
+    result = json.loads((tmp_path / "unit-perf-status.json").read_text())
+    assert result["stock_controls"] is True
+    assert [row["kind"] for row in result["pairs"]] == ["stock", "mixed", "stock"]
+    assert "product-level" in result["comparison"]["limits"]
+    assert events == ["stop", "arm_stop", "arm_stop", "arm_stop", "restore"]
+
+
+def test_stock_controls_refuses_lever_and_baselines(monkeypatch):
+    base = ["performance_window", "--family", "x", "--expected-supervisor", "1",
+            "--stock-controls"]
+    for extra in (["--lever", "trim"], ["--candidate", "1"], ["--iq-mt-min"],
+                  ["--adapt-off"], ["--prompt-f32"]):
+        monkeypatch.setattr(sys, "argv", base + extra)
+        with pytest.raises(SystemExit):
+            perf.main()
+    monkeypatch.setattr(sys, "argv", ["performance_window", "--family", "x",
+                                      "--expected-supervisor", "1"])
+    with pytest.raises(SystemExit):   # --lever is required without --stock-controls
+        perf.main()
+
+
+def test_first_logits_flag_reaches_every_arm_and_kl(monkeypatch, tmp_path):
+    import struct
+    events, args, _ = run_world(monkeypatch, tmp_path)
+    args.first_logits = True
+    (tmp_path / "engine.log").write_text(
+        "the prompt tier's channel (socket2) closed after 3 prompt requests / 9 prompt rows\n")
+    monkeypatch.setattr(perf.lifecycle, "graceful_stop", lambda *_: events.append("arm_stop"))
+    seen = []
+
+    def prepare(family, **kwargs):
+        seen.append((family, kwargs.get("first_logits")))
+        path = tmp_path / f"{family}.json"
+        path.write_text(json.dumps(dict(log=str(tmp_path / "engine.log"))))
+        return SimpleNamespace(family=family, config=path, launcher="launcher", state="state",
+                               base_url="url", socket2="socket2", tuning=kwargs.get("tuning"))
+
+    def probe(cfg, state, family, rep, body=None):
+        for n in range(3):   # one dump row per request, as generate.cpp appends them
+            Path(f"{tmp_path}/unit-{cfg.label}-first-logits.{n}").write_bytes(
+                struct.pack("4f", 1.0, 2.0, 3.0, 4.0))
+        return dict(rep=rep, gen_rate=30, read_rate=200, request_sha256=f"req{rep}",
+                    message_sha256=f"out{rep}", plans=[])
+
+    monkeypatch.setattr(perf.window_pair, "prepare", prepare)
+    monkeypatch.setattr(perf, "probe", probe)
+    assert perf.run(args) == 0
+    assert [family for family, _ in seen] == ["unit-a", "unit-b", "unit-c"]
+    assert all(fl is not None for _, fl in seen)
+    assert len({str(fl) for _, fl in seen}) == 3            # arm-private dump prefixes
+    result = json.loads((tmp_path / "unit-perf-status.json").read_text())
+    assert result["instrumented"] is True and result["stock_controls"] is False
+    assert all(len(row["first_logits"]["rows"]) == 3 for row in result["pairs"])
+    kl = result["first_logits_kl"]
+    assert kl["control_a_vs_control_c"]["vocab"] == 4
+    assert kl["control_a_vs_b"]["mean_kl_forward"] == pytest.approx(0.0, abs=1e-12)
+    assert "never a gate" in kl["note"]
+
+
+def test_softmax_kl_matches_naive_computation():
+    import math
+    p, q = [1.0, 2.0, 0.5, -0.25], [0.8, 2.2, 0.3, 0.0]
+
+    def naive(a, b):
+        ea = [math.exp(v - max(a)) for v in a]
+        eb = [math.exp(v - max(b)) for v in b]
+        sa, sb = sum(ea), sum(eb)
+        return sum((x / sa) * math.log((x / sa) / (y / sb)) for x, y in zip(ea, eb))
+
+    assert perf.softmax_kl(p, q) == pytest.approx(naive(p, q))
+    assert perf.softmax_kl(p, p) == pytest.approx(0.0, abs=1e-15)
+    with pytest.raises(ValueError):
+        perf.softmax_kl([1.0], [1.0, 2.0])
+    with pytest.raises(ValueError):
+        perf.softmax_kl([], [])
+
+
+def test_kl_report_rejects_vocabulary_mismatch(tmp_path):
+    import struct
+    a = tmp_path / "a.0"
+    a.write_bytes(struct.pack("4f", 1, 2, 3, 4))
+    b = tmp_path / "b.0"
+    b.write_bytes(struct.pack("5f", 1, 2, 3, 4, 5))
+    with pytest.raises(RuntimeError, match="vocabulary"):
+        perf.kl_report(dict(vocab=4, rows=[dict(file=str(a), floats=4)]),
+                       dict(vocab=5, rows=[dict(file=str(b), floats=5)]))
+
+
+def test_first_logits_report_guards(tmp_path):
+    import struct
+    prefix = tmp_path / "fl"
+    for n in range(3):
+        Path(f"{prefix}.{n}").write_bytes(struct.pack("3f", 1.0, 2.0, 3.0))
+    report = perf.first_logits_report(prefix, 3)
+    assert report["vocab"] == 3 and len(report["rows"]) == 3
+    assert all(row["sha256"] for row in report["rows"])
+    Path(f"{prefix}.3").write_bytes(struct.pack("3f", 1.0, 2.0, 3.0))
+    with pytest.raises(RuntimeError, match="more rows"):
+        perf.first_logits_report(prefix, 3)   # a warmup would shift every index
+    Path(f"{prefix}.0").unlink()
+    with pytest.raises(RuntimeError, match="missing"):
+        perf.first_logits_report(prefix, 3)
