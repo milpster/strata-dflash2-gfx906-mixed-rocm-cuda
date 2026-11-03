@@ -156,3 +156,10 @@ Before any further run, existing diagnostics need source-backed validation for
 the actual serving path. The proposed CLI/`--window-hashes` replay recipe is
 **not** accepted: its serving-path equivalence has not been established.
 No speculative flags, kernel changes, or persistent diagnostics are proposed here.
+
+Follow-up (2026-11-03): the pre-helper stock product was finally measured next to the
+production-mixed product on the same frozen request bytes (window family `sab3`).
+The stock product is deterministic across two fresh loads; the mixed product differs
+from it on all three requests, and the divergence is already in the first verify
+window's logits (KL ≈ 0.0037 nats, largest single-logit difference 2.34).
+See [MIXED_STOCK_VS_MIXED_IDENTITY.md](MIXED_STOCK_VS_MIXED_IDENTITY.md).
