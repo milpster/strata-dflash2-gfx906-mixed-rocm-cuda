@@ -257,3 +257,7 @@ environment, helper fill, prompt channel, loaded libraries and pinned files pass
 with attached supervisor 2295355 and context 262,144. No old production process
 or private helper/server survived. All twelve raw request/reply/metric records,
 four startup reports and comparator arithmetic were rechecked in `lsp1-review1.log`.
+
+Related: the prefill output-identity follow-up (frozen-replay, F16-off,
+INCONCLUSIVE verdicts, no gain, no root cause) is in
+[MIXED_OUTPUT_IDENTITY_INVESTIGATION.md](MIXED_OUTPUT_IDENTITY_INVESTIGATION.md).
