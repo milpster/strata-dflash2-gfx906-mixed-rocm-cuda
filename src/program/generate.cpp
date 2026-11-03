@@ -10781,7 +10781,9 @@ int main(int argc, char** argv) {
                 // L8 --layer-split: sp is the chain's stage-0 producer; the tap callback fires
                 // after this stage's stream sync, so its rows are stable for a compact D2H.
                 // The chain's LAST stage finishes the chunk (stages + assemble + add_context).
-                if (!tc.enabled()) return dflash.add_context(data, count, sp.tap_stride_rows(), pos, rows, e);
+                // F1 (§2 change 5): the single-GPU path (collector disabled) passes the
+                // deferral flag's negation; flag off => sync_context true = today's call.
+                if (!tc.enabled()) return dflash.add_context(data, count, sp.tap_stride_rows(), pos, rows, e, !strata::core::deferral_context());
                 const strata::core::DFlashTapCollector::Slice slice{0, data, sp.tap_stride_rows(), rows};
                 return tc.stage(pos, slice, 2, e);
             };
@@ -11297,7 +11299,8 @@ int main(int argc, char** argv) {
                             // reset=1 on the request's FIRST frame at pos 0).  The local path (no
                             // remote lane) is byte-identical to the single add_context below.
                             if (draft_tier_p == nullptr)
-                                return dflash.add_context(tc.plane_bf16(), tc.plan().n_taps, tc.stride_rows_bf16(), pos, rows, e);
+                                return dflash.add_context(tc.plane_bf16(), tc.plan().n_taps, tc.stride_rows_bf16(), pos, rows, e,
+                                                          !strata::core::deferral_context());
                             if (df_draft_dead) return true;   // drafting off for this request: pure no-draft
                             const int64_t df_n_taps = (int64_t) tc.plan().n_taps;
                             const int64_t df_stride = tc.stride_rows_bf16();
@@ -12539,6 +12542,11 @@ int main(int argc, char** argv) {
                 pool_topup();   // what the park took (and what moved out) is allocated again, in the background
                 if (has_dflash) {
                     const strata::core::OnDevice on_df(dflash.device());   // the pools live on the drafter's card
+                    // F1 (§2 change 7): the drafter pools are read below, BEFORE the stage
+                    // cudaDeviceSynchronize at cpp:12556's loop - a deferred prompt fusion may
+                    // still be writing them on cs_, so this save needs its own barrier.
+                    // idle() drains the deferred fusion (flag off: today's body, no-op).
+                    if (strata::core::deferral_context() && !dflash.idle(err)) return false;
                     image.dflash_kv.resize(dflash.kv_states().size());
                     for (size_t j = 0; j < image.dflash_kv.size(); ++j)
                         if (!strata::core::conversation_kv_save(image.dflash_kv[j], dflash.kv_states()[j],
@@ -20149,6 +20157,14 @@ int main(int argc, char** argv) {
             if (o.lookup_chain > 0)
                 std::snprintf(chain_txt, sizeof(chain_txt), " %lld %lld %lld %lld %lld", (long long) chain_ok,
                               (long long) chain_drafts, (long long) sfx_ok, (long long) sfx_drafts, (long long) dec_windows);
+            // F1 (§2 change 7): a prompt-only request (prefill=1, max_new 0) never proposes,
+            // so a deferred prompt fusion drains on the request's exit - the same full stream
+            // sync and error text; idle() is today's body when nothing was deferred.  Teardown
+            // is already safe (release() syncs cs_, dflash_runtime.cpp:267 anchor).
+            if (max_new < 1 && has_dflash && !dflash.idle(err)) {
+                std::printf("ERR %s\n", err.c_str());
+                continue;
+            }
             if (yielded_at >= 0) std::printf("YIELDED %d %lld\n", yielded_slot, (long long) yielded_at);
             std::printf("DONE %lld %lld %.1f %.1f %s %lld %lld %lld %lld %lld %lld %lld %.1f %lld %lld%s chunk=%lld "
                         "experts_streamed=%lld%s\n",
