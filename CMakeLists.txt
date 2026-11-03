@@ -890,6 +890,10 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_include_directories(dflash2_attn_bench PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(dflash2_attn_bench PRIVATE strata_kernels ${_strata_gpu_runtime_target})
 
+  # gfx906 compile fix (same as the mixed line): dflash2.cpp's HIP branch is the true one on this card
+  if(STRATA_HIP_GFX906)
+    set_property(SOURCE src/core/dflash2.cpp APPEND PROPERTY COMPILE_DEFINITIONS STRATA_USE_HIP=1)
+  endif()
   add_executable(strata src/program/generate.cpp)
   strata_utf8_manifest(strata)
   target_include_directories(strata PRIVATE ${_strata_gpu_include_directories})
