@@ -207,16 +207,25 @@ engine, protocol or helper change (the wire still carries Q8_1 - carrying Q8_K
 through the prompt and window paths is the next step); no timing claim; the
 frozen-request identity gates remain unpassed.
 
-HIP anomaly (unconfirmed static analysis): after the q8k rebuilds, the HIP tree's
-expert-only rerun fails at the FIRST default-path kernel launch
-(`native_expert_grouped/gu: invalid device function`) in every bounded variant
-tried (`HIP_VISIBLE_DEVICES` 0/1/2; xnack-first, 6.1.0-only and default
-`LD_LIBRARY_PATH`); the failure precedes any q8k code. expert2's HIP evidence
-from the pre-change binary stands. Not diagnosed; attempts timeboxed.
+HIP rerun resolved (q8k4, clean tree): the failures were the RUN ENVIRONMENT, not
+code - this box's gfx906 runtime needs the canonical env
+(`HSA_OVERRIDE_GFX_VERSION=9.0.6`, `HIP_FORCE_P2P=1`, xnack-first
+`LD_LIBRARY_PATH`), which `prod-config-swift15-dflash-w4-q4_0-mixed.json`'s `env`
+block and the project's own tooling (`capture_window.py`, `finish_window.py`,
+`build_l8.sh`) document. Without the override every first kernel launch fails
+with `invalid device function`, on the pre-change tree as on HEAD (a from-scratch
+rebuild did not change it). With the canonical env the run PASSES and matches the
+CUDA arm: worst output rel 1.78e-7 (identical), output q8k == matched-down on
+32/32 rows, `q8k_repeat_equal` 32/32, and the output rows are BITWISE equal to
+the CUDA arm's 32/32 (same down-input integers, same down kernel); the hidden
+rows differ backend-to-backend only in summation order (0/32 bitwise, all within
+2.2e-7 of the CPU reference).
 
-Evidence: `build-mixed-gpu/repro-q8k-evidence3/q8k3-cuda.{json,log}`,
-`q8k3-hip*.log` (the failed HIP attempts), `q8k3-reports.sha256`,
-`q8k3-final-audit.log`, `q8k3-prechecks.log` (in `repro-q8k-evidence1/`), the
-retained `repro-q8k-evidence1`/`repro-q8k-evidence2` runs, and the three build
-logs. Both diagnostic builds, both CPU CTests and 52 Python report tests passed;
-input and protected-executable pins unchanged.
+Evidence: `build-mixed-gpu/repro-q8k-evidence3/q8k3-cuda.{json,log}` and
+`build-mixed-gpu/repro-q8k-evidence4/q8k4-hip.{json,log}`,
+`q8k3-hip*.log` (the failed attempts, retained), `q8k3-reports.sha256`,
+`q8k4-reports.sha256`, `q8k3-final-audit.log`, `q8k4-final-audit.log`, the
+`q8k3-prechecks.log` (in `repro-q8k-evidence1/`), the retained
+`repro-q8k-evidence1`/`repro-q8k-evidence2` runs, and the build logs. Both
+diagnostic builds (the HIP tree from scratch in evidence4), both CPU CTests and
+52 Python report tests passed; input and protected-executable pins unchanged.
