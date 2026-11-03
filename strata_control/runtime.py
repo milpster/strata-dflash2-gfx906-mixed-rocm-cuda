@@ -515,6 +515,59 @@ def _check_start_candidate(name: str, expected_profile_revision: str | None,
     return plan, digest
 
 
+def _repair_config_paths(name: str) -> tuple[str | None, str | None]:
+    """Before a start: every path of the saved run configs that names a version folder of Strata's own that an update removed (the Control bundle
+    that ran setup: cwd, --expert-profile; an engine package: the picture reader, library folders; the DeepSeek package) is pointed at the current
+    version and written once (strata_control/cfg_paths.py; the same resolver the config reader applies in memory).  One line of what it did goes to
+    the profile's host log.  Returns (the profile's own run config digest before, after) when it changed that file, for a caller that planned the
+    start on the old digest.  A path that exists in no current version stops the start with the file named."""
+    try:
+        from strata_control import cfg_paths, dsv41_paths
+        profile, _ = profiles.load(name)
+        own = Path(profile["source_config"])
+        before = hashlib.sha256(own.read_bytes()).hexdigest()
+        configs = [own, *[c for c in dsv41_paths.saved_configs() if c != own]]
+        notes, problems = cfg_paths.repair(configs)
+        if notes:
+            _, _, log_path = _paths(name)
+            if log_path.parent.is_dir():
+                with open(log_path, "ab") as stream:
+                    for note in notes:
+                        stream.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S')} config: {note}\n".encode("utf-8"))
+        mine = [p for p in problems if p.startswith(own.name + ":")]
+        after = hashlib.sha256(own.read_bytes()).hexdigest()
+        if mine:
+            raise ProfileError(mine[0], 6)
+        return (before, after) if after != before else (None, None)
+    except ProfileError:
+        raise
+    except Exception:                                    # noqa: BLE001 - a start never fails because of this
+        return None, None
+
+
+def _repair_dsv41_paths(name: str) -> None:
+    """Before a start: a saved profile that runs the DeepSeek engine from an engine-dsv41/ folder an update has replaced is pointed at the newest
+    installed package of its own kind (every saved profile's run config, so the next start of another one is repaired too).  Local only: it never
+    looks at the feed and fetches nothing - engine updates are the explicit `strata update` / the app's "Update engine".  Never fails a start;
+    one line of what it did goes to the profile's host log."""
+    try:
+        from strata_control import dsv41_paths
+        profile, _ = profiles.load(name)
+        configs = [Path(profile["source_config"]), *[c for c in dsv41_paths.saved_configs() if c != Path(profile["source_config"])]]
+        notes = dsv41_paths.repair_missing(configs)
+        if notes:
+            _, _, log_path = _paths(name)
+            if log_path.parent.is_dir():
+                with open(log_path, "ab") as stream:
+                    for note in notes:
+                        stream.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S')} engine: {note}\n".encode("utf-8"))
+    except Exception:                                    # noqa: BLE001 - a start never fails because of this
+        pass
+
+
+MAX_START_WAIT = 1800     # seconds a start may wait for the model: a 250 GB DeepSeek set on a slow disk needs more than 10 minutes (#3949)
+
+
 def start(name: str, *, wait: float = 300, shutdown_timeout: float = 30,
           expected_profile_revision: str | None = None,
           expected_source_sha256: str | None = None,
@@ -535,14 +588,18 @@ def start(name: str, *, wait: float = 300, shutdown_timeout: float = 30,
         if token is None:
             raise ProfileError("the process to follow with --die-with-pid is not running")
         die_with = (die_with_pid, token)
-    if not 0 <= wait <= 600 or not 0 <= shutdown_timeout <= 300:
-        raise ProfileError("start wait must be 0..600 and shutdown timeout 0..300 seconds")
+    if not 0 <= wait <= MAX_START_WAIT or not 0 <= shutdown_timeout <= 300:
+        raise ProfileError(f"start wait must be 0..{MAX_START_WAIT} and shutdown timeout 0..300 seconds")
     if expected_profile_revision is not None and (not isinstance(expected_profile_revision, str) or
             not re.fullmatch(r"[0-9a-f]{16}", expected_profile_revision)):
         raise ProfileError("expected profile revision must be 16 lowercase hex characters")
     if expected_source_sha256 is not None and (not isinstance(expected_source_sha256, str) or
             not re.fullmatch(r"[0-9a-f]{64}", expected_source_sha256)):
         raise ProfileError("expected source digest must be 64 lowercase hex characters")
+    changed_from, changed_to = _repair_config_paths(name)
+    if changed_from is not None and expected_source_sha256 == changed_from:
+        expected_source_sha256 = changed_to              # (the caller planned on the file as it was; Strata rewrote it, the caller did not)
+    _repair_dsv41_paths(name)
     plan, _ = _check_start_candidate(name, expected_profile_revision, expected_source_sha256)
     _engine_preflight(plan)
     _, _, log_path = _paths(name)
@@ -706,9 +763,9 @@ def restart(name: str, *, timeout: float = 1000, startup_wait: float = 300,
             allow_source_switch: bool = False,
             allow_source_migration: bool = False,
             expected_source_sha256: str | None = None) -> dict:
-    if (not 1 <= timeout <= 1800 or not 1 <= startup_wait <= 600 or
+    if (not 1 <= timeout <= 1800 or not 1 <= startup_wait <= MAX_START_WAIT or
             type(allow_source_switch) is not bool or type(allow_source_migration) is not bool):
-        raise ProfileError("restart wait must be 1..1800 and startup wait 1..600 seconds")
+        raise ProfileError(f"restart wait must be 1..1800 and startup wait 1..{MAX_START_WAIT} seconds")
     if expected_source_sha256 is not None and (not isinstance(expected_source_sha256, str) or
                                                not re.fullmatch(r"[0-9a-f]{64}", expected_source_sha256)):
         raise ProfileError("expected source SHA-256 must be 64 lowercase hex characters")
@@ -1224,7 +1281,7 @@ class Host:
             return {**result, "profile": self.name}
         if command == "restart":
             startup_wait = request.get("startup_wait", 300)
-            if type(startup_wait) not in (int, float) or not 1 <= startup_wait <= 600:
+            if type(startup_wait) not in (int, float) or not 1 <= startup_wait <= MAX_START_WAIT:
                 return {"ok": False, "error": "invalid_startup_wait", "exit_code": 2}
             revision = request.get("expected_profile_revision")
             if revision is not None and (not isinstance(revision, str) or
@@ -1368,7 +1425,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--die-with-pid", type=int)
     parser.add_argument("--die-with-token")
     args = parser.parse_args(argv)
-    if not 0 <= args.shutdown_timeout <= 300 or not 1 <= args.startup_wait <= 600:
+    if not 0 <= args.shutdown_timeout <= 300 or not 1 <= args.startup_wait <= MAX_START_WAIT:
         parser.error("shutdown timeout must be 0..300")
     if args.expected_profile_revision is not None and not re.fullmatch(r"[0-9a-f]{16}", args.expected_profile_revision):
         parser.error("expected profile revision must be 16 lowercase hex characters")
