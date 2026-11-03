@@ -99,8 +99,12 @@ def arm_config(base: dict, arm: dict, ev: Path) -> dict:
     cfg["exe"] = str(arm["engine"])
     cfg["log"] = str(ev / f"{arm['name']}-engine.log")
     cfg["port"] = PORT
-    cfg["expert_helper_socket"] = str(ev / f"{arm['name']}.sock")
-    cfg["expert_helper_socket2"] = str(ev / f"{arm['name']}2.sock")
+    if arm.get("helper") is not None:      # helper-less arms carry no socket keys at all
+        cfg["expert_helper_socket"] = str(ev / f"{arm['name']}.sock")
+        cfg["expert_helper_socket2"] = str(ev / f"{arm['name']}2.sock")
+    else:
+        cfg.pop("expert_helper_socket", None)
+        cfg.pop("expert_helper_socket2", None)
     if arm.get("env"):
         cfg.setdefault("env", {}).update(arm["env"])
     return cfg
@@ -121,13 +125,17 @@ def wait_http(url: str, deadline_s: int) -> None:
 
 def run_arm(arm: dict, base: dict, ev: Path, probe_timeout: int) -> dict:
     name = arm["name"]
-    engine, helper = Path(arm["engine"]), Path(arm["helper"])
-    for binary in (engine, helper, PY, SERVER):
-        if not binary.is_file() or not os.access(binary, os.X_OK if binary != SERVER else os.R_OK):
+    engine = Path(arm["engine"])
+    helper = Path(arm["helper"]) if arm.get("helper") else None
+    for binary in ([engine, PY] + ([helper] if helper else [])):
+        if not binary.is_file() or not os.access(binary, os.X_OK):
             raise RuntimeError(f"{name}: missing binary {binary}")
+    if not SERVER.is_file():
+        raise RuntimeError(f"{name}: missing {SERVER}")
     cfg = arm_config(base, arm, ev)
-    sock, sock2 = Path(cfg["expert_helper_socket"]), Path(cfg["expert_helper_socket2"])
-    for path in (sock, sock2):
+    socks = ([Path(cfg["expert_helper_socket"]), Path(cfg["expert_helper_socket2"])]
+             if helper is not None else [])
+    for path in socks:
         if path.exists() or path.is_symlink():
             raise RuntimeError(f"{name}: refusing existing socket {path}")
     cfg_path = ev / f"{name}-config.json"
@@ -138,21 +146,23 @@ def run_arm(arm: dict, base: dict, ev: Path, probe_timeout: int) -> dict:
     helper_proc = server_proc = None
     engine_log = Path(cfg["log"])
     result = dict(arm=name, engine=str(engine), engine_sha256=sha256_file(engine),
-                  helper=str(helper), helper_sha256=sha256_file(helper),
+                  helper=str(helper) if helper else "none",
+                  helper_sha256=sha256_file(helper) if helper else None,
                   env_extra=arm.get("env", {}), probes=[])
     try:
         env_clean = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"),
                      "HOME": os.environ.get("HOME", "/home/user"), "TERM": "dumb"}
-        helper_proc = subprocess.Popen(helper_argv(helper, sock, sock2), env=env_clean,
-                                       stdout=helper_log, stderr=subprocess.STDOUT,
-                                       start_new_session=True, cwd=str(WORK))
-        deadline = time.monotonic() + 900
-        while time.monotonic() < deadline and not (sock.exists() and sock2.exists()):
-            if helper_proc.poll() is not None:
-                raise RuntimeError(f"{name}: helper died rc={helper_proc.returncode}")
-            time.sleep(2)
-        if not (sock.exists() and sock2.exists()):
-            raise RuntimeError(f"{name}: helper sockets missing after 900s")
+        if helper is not None:
+            helper_proc = subprocess.Popen(helper_argv(helper, socks[0], socks[1]), env=env_clean,
+                                           stdout=helper_log, stderr=subprocess.STDOUT,
+                                           start_new_session=True, cwd=str(WORK))
+            deadline = time.monotonic() + 900
+            while time.monotonic() < deadline and not (socks[0].exists() and socks[1].exists()):
+                if helper_proc.poll() is not None:
+                    raise RuntimeError(f"{name}: helper died rc={helper_proc.returncode}")
+                time.sleep(2)
+            if not (socks[0].exists() and socks[1].exists()):
+                raise RuntimeError(f"{name}: helper sockets missing after 900s")
 
         senv = dict(os.environ)
         for var in ("CUDA_VISIBLE_DEVICES", "STRATA_ARENA_MMAP", "GPU_PINNED_MIN_XFER_SIZE",
@@ -194,7 +204,7 @@ def run_arm(arm: dict, base: dict, ev: Path, probe_timeout: int) -> dict:
             reqs = metric.get("helper_reqs") or 0
             valid = (status == 200 and finish in ("stop", "length") and type(ct) is int
                      and 0 < ct <= metric["generated"] and metric["generated"] >= 8
-                     and metric["reused"] == 0 and reqs > 0
+                     and metric["reused"] == 0 and (reqs == 0 if helper is None else reqs > 0)
                      and (metric.get("helper_timeouts") or 0) == 0
                      and (metric.get("helper_fallbacks") or 0) == 0 and content)
             if not valid:
@@ -221,7 +231,7 @@ def run_arm(arm: dict, base: dict, ev: Path, probe_timeout: int) -> dict:
                 except subprocess.TimeoutExpired:
                     os.killpg(proc.pid, signal.SIGKILL)
                     proc.wait(timeout=15)
-        for path in (sock, sock2):
+        for path in socks:
             if path.exists():
                 path.unlink()
     return result
@@ -232,6 +242,8 @@ def main() -> int:
         description="Frozen-request stock/candidate/stock identity arms for the Q8_K wire")
     ap.add_argument("--family", required=True)
     ap.add_argument("--probe-timeout", type=int, default=900)
+    ap.add_argument("--arms", default="stock1,candidate,stock2",
+                    help="comma-separated subset of: stock1,candidate,stock2,nohelper")
     ap.add_argument("--execute", action="store_true")
     args = ap.parse_args()
 
@@ -244,19 +256,27 @@ def main() -> int:
         print(f"REFUSING: {why}", file=sys.stderr)
         return 2
     base = json.loads(BASE_CONFIG.read_text())
-    arms = [
-        dict(name="stock1", engine=STOCK_ENGINE, helper=STOCK_HELPER),
-        dict(name="candidate", engine=CAND_ENGINE, helper=CAND_HELPER,
-             env={"STRATA_EXPERT_HELPER_Q8K": "1"}),
-        dict(name="stock2", engine=STOCK_ENGINE, helper=STOCK_HELPER),
-    ]
+    catalog = {
+        "stock1": dict(name="stock1", engine=STOCK_ENGINE, helper=STOCK_HELPER),
+        "candidate": dict(name="candidate", engine=CAND_ENGINE, helper=CAND_HELPER,
+                          env={"STRATA_EXPERT_HELPER_Q8K": "1"}),
+        "stock2": dict(name="stock2", engine=STOCK_ENGINE, helper=STOCK_HELPER),
+        "nohelper": dict(name="nohelper", engine=STOCK_ENGINE, helper=None),
+    }
+    unknown = [a for a in args.arms.split(",") if a and a not in catalog]
+    if unknown:
+        print(f"unknown arms: {unknown}", file=sys.stderr)
+        return 2
+    arms = [catalog[a] for a in args.arms.split(",") if a]
     print(f"family   : {ev.name}")
     print(f"requests : {REQ_DIR}/ppf1-a-{{r1,r2,r3}}-request.json (VERBATIM, temp0/seed1729/"
           f"thinking-off/512)")
     for arm in arms:
         extra = " +".join(arm.get("env", {}).keys())
+        helper_desc = (f"{Path(arm['helper']).parent.name}/{Path(arm['helper']).name}"
+                       if arm.get("helper") else "NONE (helper-less reference)")
         print(f"arm      : {arm['name']:9s} engine={Path(arm['engine']).name:26s} "
-              f"helper={Path(arm['helper']).parent.name}/{Path(arm['helper']).name} {extra}")
+              f"helper={helper_desc} {extra}")
     print(f"production: verified absent ({why}); no outage, no restore")
     if not args.execute:
         print("plan verified; pass --execute to run")
@@ -270,22 +290,26 @@ def main() -> int:
     results = {"arms": arm_results, "family": args.family,
                "requests": "ppf1-a-r1/r2/r3 verbatim (cap1-validation)"}
 
-    def hashes(arm_name: str) -> dict:
-        arm = next(a for a in results["arms"] if a["arm"] == arm_name)
-        return {p["rep"]: p["content_sha256"] for p in arm["probes"]}
+    ran = {a["arm"]: {p["rep"]: p["content_sha256"] for p in a["probes"]} for a in results["arms"]}
 
-    h1, hc, h2 = hashes("stock1"), hashes("candidate"), hashes("stock2")
+    def present(*names: str) -> bool:
+        return all(n in ran for n in names)
+
     results["verdict"] = {
-        "stock1_eq_stock2": h1 == h2,
-        "candidate_eq_stock": hc == h1,
-        "stock1": h1, "candidate": hc, "stock2": h2,
-        "note": "stock1==stock2 is REQUIRED (determinism); candidate==stock is reported. "
-                "If candidate differs, attribute with the no-helper reference arm before "
-                "interpreting: the Q8_K wire is CPU-faithful by design.",
+        "hashes": ran,
+        "stock1_eq_stock2": (ran["stock1"] == ran["stock2"]) if present("stock1", "stock2") else None,
+        "candidate_eq_stock": (ran["candidate"] == ran["stock1"]) if present("candidate", "stock1") else None,
+        "candidate_eq_nohelper": (ran["candidate"] == ran["nohelper"]) if present("candidate", "nohelper") else None,
+        "stock_eq_nohelper": (ran["stock1"] == ran["nohelper"]) if present("stock1", "nohelper") else None,
+        "note": "stock1==stock2 is REQUIRED (determinism). candidate==nohelper means the Q8_K "
+                "wire makes helper-on outputs identical to the helper-less system (CPU-faithful "
+                "by design). Cross-family comparison against q8k-id1 is done manually.",
     }
     (ev / "identity-result.json").write_text(json.dumps(results, indent=1) + "\n", encoding="utf-8")
     print(json.dumps(results["verdict"], indent=1))
-    return 0 if h1 == h2 else 1
+    if "stock1" in ran and "stock2" in ran:
+        return 0 if ran["stock1"] == ran["stock2"] else 1
+    return 0
 
 
 if __name__ == "__main__":

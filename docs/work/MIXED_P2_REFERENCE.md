@@ -276,3 +276,71 @@ Limits: one window of four; no new pooled file (the retained 2026-11-02 pooled
 verdict stands); the stock row is the retained fin1 measurement, not a same-day
 rerun; no returned-message validation here — the frozen-request identity arms
 are the next step; no timing claim. Production remains down with permission.
+
+## Frozen-request returned-message identity (q8k-id1)
+
+Driver `tools/mixed_gpu/identity_q8k_arms.py`; evidence
+`build-mixed-gpu/p2-finish/q8k-id1/`. Three arms in a sandwich: stock1, then
+the candidate, then stock2. Stock = the protected `rpcw-hip` engine with the
+protected `rpcw-cuda` helper. Candidate = the wire build (`repro-hip-q8k`
+engine, sha 596dc22a…) with the `repro-q81-cuda` helper and
+`STRATA_EXPERT_HELPER_Q8K=1`. The three frozen `ppf1-a-r1/r2/r3` request bytes
+(temperature 0, seed 1729, thinking off, 512 new tokens) were sent verbatim,
+unchanged, in every arm. Each arm ran the three probes; the comparison is the
+sha256 of the returned message content.
+
+| probe | stock1 = stock2 | candidate |
+|---|---|---|
+| r1 | 55b723c0… | ac49102c… |
+| r2 | 15e2a75a… | 195f9e31… |
+| r3 | ec8ade89… | dfaf44fb… |
+
+Stock1 and stock2 are identical on all three probes: the required determinism
+gate passed. The candidate differs from stock on all three probes: the wire
+changes returned messages. Engagement was clean in every arm: the helper
+carried 6,588–7,224 requests per probe with 0 timeouts and 0 fallbacks, so the
+Q8_K wire served all of its traffic without one refusal. Elapsed time per
+probe, recorded as evidence only: candidate 63.8/61.6/61.4 s against stock
+64.4/62.5/61.3 s — inside run-to-run noise, and not a speed claim. Measured on
+the Radeon VII engine with the RTX 3080 helper.
+
+What the candidate difference means is decided by the attribution arm: the same
+frozen requests against the same stock engine with NO helper (the shipped
+helper-less path).
+
+## Attribution: the helper-less arm (q8k-id2)
+
+Driver `tools/mixed_gpu/identity_q8k_arms.py --arms nohelper`; evidence
+`build-mixed-gpu/p2-finish/q8k-id2/`. Same stock engine, same frozen requests,
+no helper process: the config carries no socket keys, the shipped helper-less
+path. The inverted gate passed (0 helper requests on all probes).
+
+| probe | nohelper | stock1 | candidate |
+|---|---|---|---|
+| r1 | 0f56f7ad… | 55b723c0… | ac49102c… |
+| r2 | 33e5d296… | 15e2a75a… | 195f9e31… |
+| r3 | 7d25460a… | ec8ade89… | dfaf44fb… |
+
+All three configurations return different messages. Two findings:
+
+1. The stock system itself is assignment-sensitive at the returned-message
+   level: stock differs from helper-less on 3 of 3 probes. The output mismatch
+   this work started from exists in the stock system whenever the helper is
+   attached; the wire did not introduce it.
+2. The candidate is not message-identical to the helper-less system either
+   (3 of 3). The wire changes the SIZE of the per-row deviation, not its
+   existence: the controlled fixtures measured the helper's Q8_K arithmetic at
+   1.78e-7 of the CPU reference (bit-identical on standard rows, hidden rows
+   differ only in summation order), against 2.77e-2 for the stock Q8_1 wire.
+   A nonzero row deviation is enough for 512 autoregressive steps at
+   temperature 0: after the first flipped token the suffix diverges (message
+   lengths differ by roughly 200 characters).
+
+Returned-message identity across assignment would require the GPU helper to
+reproduce the CPU's exact summation order in every reduction — a stronger
+contract than same-arithmetic, not part of this change, and one the stock
+system does not meet either. What is established, on this hardware: per-run
+determinism (stock1 = stock2, 3 of 3); row-level CPU parity at the kernel floor
+(retained q8k3/q8k4 fixtures); and message-level assignment sensitivity in
+every tested configuration. Elapsed time per probe, evidence only, not a
+claim: helper-less 104.8/99.3/60.6 s against 61–64 s with a helper attached.
