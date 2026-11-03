@@ -123,7 +123,8 @@ def wait_http(url: str, deadline_s: int) -> None:
     raise RuntimeError(f"server not ready at {url} within {deadline_s}s")
 
 
-def run_arm(arm: dict, base: dict, ev: Path, probe_timeout: int) -> dict:
+def run_arm(arm: dict, base: dict, ev: Path, probe_timeout: int,
+            probes: list[tuple[str, str]], timing: bool = False) -> dict:
     name = arm["name"]
     engine = Path(arm["engine"])
     helper = Path(arm["helper"]) if arm.get("helper") else None
@@ -175,8 +176,9 @@ def run_arm(arm: dict, base: dict, ev: Path, probe_timeout: int) -> dict:
                                        start_new_session=True, cwd=str(SERVER_CWD))
         wait_http(f"http://127.0.0.1:{PORT}/v1/models", 1800)
 
-        for rep in PROBES:
-            body = (REQ_DIR / f"ppf1-a-{rep}-request.json").read_bytes()   # VERBATIM frozen bytes
+        for fam, rep in probes:
+            probe = f"{fam}-{rep}"                                        # e.g. "b-r2"
+            body = (REQ_DIR / f"ppf1-{fam}-{rep}-request.json").read_bytes()   # VERBATIM frozen bytes
             mark = engine_log.stat().st_size if engine_log.exists() else 0
             request = urllib.request.Request(f"http://127.0.0.1:{PORT}/v1/chat/completions",
                                              data=body, headers={"Content-Type": "application/json"})
@@ -185,17 +187,17 @@ def run_arm(arm: dict, base: dict, ev: Path, probe_timeout: int) -> dict:
                 raw = response.read()
                 status = response.status
             elapsed = time.monotonic() - started
-            (ev / f"{name}-{rep}-request.json").write_bytes(body)
-            (ev / f"{name}-{rep}-reply.json").write_bytes(raw)
+            (ev / f"{name}-{probe}-request.json").write_bytes(body)
+            (ev / f"{name}-{probe}-reply.json").write_bytes(raw)
             segment = ""
             if engine_log.exists():
                 with engine_log.open("rb") as log:
                     log.seek(mark)
                     segment = log.read().decode(errors="replace")
-            (ev / f"{name}-{rep}-engine.log").write_text(segment, encoding="utf-8")
+            (ev / f"{name}-{probe}-engine.log").write_text(segment, encoding="utf-8")
             metrics = [m for line in segment.splitlines() if (m := helper_ab.parse_serve_line(line))]
             if len(metrics) != 1:
-                raise RuntimeError(f"{name}/{rep}: expected one serve line, got {len(metrics)}")
+                raise RuntimeError(f"{name}/{probe}: expected one serve line, got {len(metrics)}")
             metric = metrics[0]
             reply = json.loads(raw)
             content = (reply.get("choices") or [{}])[0].get("message", {}).get("content")
@@ -204,16 +206,22 @@ def run_arm(arm: dict, base: dict, ev: Path, probe_timeout: int) -> dict:
             reqs = metric.get("helper_reqs") or 0
             valid = (status == 200 and finish in ("stop", "length") and type(ct) is int
                      and 0 < ct <= metric["generated"] and metric["generated"] >= 8
-                     and metric["reused"] == 0 and (reqs == 0 if helper is None else reqs > 0)
+                     and (timing or metric["reused"] == 0)
+                     and (reqs == 0 if helper is None else reqs > 0)
                      and (metric.get("helper_timeouts") or 0) == 0
                      and (metric.get("helper_fallbacks") or 0) == 0 and content)
             if not valid:
-                raise RuntimeError(f"{name}/{rep}: engagement gate failed: {metric} ct={ct} finish={finish}")
+                raise RuntimeError(f"{name}/{probe}: engagement gate failed: {metric} ct={ct} finish={finish}")
             result["probes"].append(dict(
-                rep=rep, http=status, elapsed_s=round(elapsed, 3), finish=finish,
+                rep=probe, http=status, elapsed_s=round(elapsed, 3), finish=finish,
                 completion_tokens=ct, request_sha256=hashlib.sha256(body).hexdigest(),
                 content_sha256=hashlib.sha256(content.encode()).hexdigest(),
                 content_chars=len(content), helper_reqs=reqs,
+                prompt=metric.get("prompt"), reused=metric.get("reused"),
+                read_ms=metric.get("read_ms"), gen_ms=metric.get("gen_ms"),
+                gen_rate=metric.get("gen_rate"), accepted=metric.get("accepted"),
+                offered=metric.get("offered"), helper_rows=metric.get("helper_rows"),
+                helper_bytes=metric.get("helper_bytes"),
                 helper_timeouts=metric.get("helper_timeouts") or 0,
                 helper_fallbacks=metric.get("helper_fallbacks") or 0))
             print(json.dumps(result["probes"][-1]), flush=True)
@@ -244,6 +252,12 @@ def main() -> int:
     ap.add_argument("--probe-timeout", type=int, default=900)
     ap.add_argument("--arms", default="stock1,candidate,stock2",
                     help="comma-separated subset of: stock1,candidate,stock2,nohelper")
+    ap.add_argument("--families", default="a",
+                    help="comma-separated ppf1 request families, e.g. a,b,c (r1-r3 each)")
+    ap.add_argument("--timing", action="store_true",
+                    help="speed mode: allow prompt-cache reuse across probes (the request "
+                         "sequence is identical per arm, so the A/B stays paired); records "
+                         "gen_ms/gen_rate and helper rows/bytes per probe")
     ap.add_argument("--execute", action="store_true")
     args = ap.parse_args()
 
@@ -256,6 +270,12 @@ def main() -> int:
         print(f"REFUSING: {why}", file=sys.stderr)
         return 2
     base = json.loads(BASE_CONFIG.read_text())
+    probes = [(fam, rep) for fam in args.families.split(",") if fam for rep in PROBES]
+    missing = [f"ppf1-{f}-{r}-request.json" for f, r in probes
+               if not (REQ_DIR / f"ppf1-{f}-{r}-request.json").is_file()]
+    if missing:
+        print(f"missing request files: {missing}", file=sys.stderr)
+        return 2
     catalog = {
         "stock1": dict(name="stock1", engine=STOCK_ENGINE, helper=STOCK_HELPER),
         "candidate": dict(name="candidate", engine=CAND_ENGINE, helper=CAND_HELPER,
@@ -269,14 +289,17 @@ def main() -> int:
         return 2
     arms = [catalog[a] for a in args.arms.split(",") if a]
     print(f"family   : {ev.name}")
-    print(f"requests : {REQ_DIR}/ppf1-a-{{r1,r2,r3}}-request.json (VERBATIM, temp0/seed1729/"
-          f"thinking-off/512)")
+    print(f"requests : {REQ_DIR}/ppf1-{{{','.join(dict.fromkeys(f for f, _ in probes))}}}"
+          f"-r1/r2/r3 ({len(probes)} distinct, VERBATIM, temp0/seed1729/thinking-off/512)")
     for arm in arms:
         extra = " +".join(arm.get("env", {}).keys())
         helper_desc = (f"{Path(arm['helper']).parent.name}/{Path(arm['helper']).name}"
                        if arm.get("helper") else "NONE (helper-less reference)")
         print(f"arm      : {arm['name']:9s} engine={Path(arm['engine']).name:26s} "
               f"helper={helper_desc} {extra}")
+    if args.timing:
+        print("mode     : TIMING (prompt-cache reuse allowed; identical request sequence per "
+              "arm keeps the A/B paired; gen_ms/gen_rate recorded per probe)")
     print(f"production: verified absent ({why}); no outage, no restore")
     if not args.execute:
         print("plan verified; pass --execute to run")
@@ -286,7 +309,8 @@ def main() -> int:
     arm_results: list[dict] = []
     for arm in arms:
         print(f"=== arm {arm['name']} ===", flush=True)
-        arm_results.append(run_arm(arm, base, ev, args.probe_timeout))
+        arm_results.append(run_arm(arm, base, ev, args.probe_timeout, probes,
+                                   timing=args.timing))
     results = {"arms": arm_results, "family": args.family,
                "requests": "ppf1-a-r1/r2/r3 verbatim (cap1-validation)"}
 
