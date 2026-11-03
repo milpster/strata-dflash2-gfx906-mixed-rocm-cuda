@@ -24,8 +24,8 @@ def corpus(chars):
     return " ".join(out)
 
 
-PROBE_PROMPT = "In exactly one short paragraph, explain why speculative decoding keeps the "
-"target model's output distribution. Answer in plain words."
+PROBE_PROMPT = ("In exactly one short paragraph, explain why speculative decoding keeps the "
+                "target model's output distribution. Answer in plain words.")
 
 TG_PROMPT = "Write a technical diary entry about porting a CUDA engine to HIP on gfx906. Be concrete."
 
