@@ -24,7 +24,8 @@ TG_RUNS = int(sys.argv[3]) if len(sys.argv) > 3 else 3
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
 from corpus import PROBE_PROMPT, TG_PROMPT, PP_CHARS, INFILL_CHARS, infill_task, corpus
 
-LOG = open(f"logs/{ARM}-r{ROUND}-drive.log", "w", buffering=1)
+B = __file__.rsplit("/", 1)[0]
+LOG = open(f"{B}/logs/{ARM}-r{ROUND}-drive.log", "w", buffering=1)
 
 
 def content_text(out):
@@ -71,5 +72,5 @@ for i in range(TG_RUNS):
 
 res["infill80k"] = chat([{"role": "user", "content": infill_task(INFILL_CHARS)}], 256, effort="low", tag="infill80k")
 
-json.dump(res, open(f"out/{ARM}-r{ROUND}.json", "w"), indent=1)
+json.dump(res, open(f"{B}/out/{ARM}-r{ROUND}.json", "w"), indent=1)
 print(f"[{ARM} r{ROUND}] done -> out/{ARM}-r{ROUND}.json", flush=True)
