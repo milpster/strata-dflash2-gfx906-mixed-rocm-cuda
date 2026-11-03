@@ -391,7 +391,13 @@ def helper_off_startup_report(config, state):
             or "expert_helper_socket" in cfg or "expert_helper_socket2" in cfg
             or cfg.get("env", {}).get("STRATA_PREFILL_HELPER") != "1"):
         raise RuntimeError("Helper-off arm is not the validated OFF derivation of the mixed product")
-    if any("expert-helper" in line for line in log.splitlines()):
+    if [line for line in log.splitlines()
+            if "expert-helper" in line and "engine started:" not in line]:
+        # The "[strata] … engine started:" banner is exempt: it echoes the argv, which
+        # keeps the inert --expert-helper-slots pair by design (iso2 evidence: that
+        # banner was the ONLY expert-helper match in a clean OFF arm - config carried
+        # no socket key, helper_pid 0, no client ever formed). Any other expert-helper
+        # line (eligible pairs, mirrored/fill, two channels, proxy) needs the client.
         raise RuntimeError("Helper-off arm formed an expert-helper client")
     later = re.search(r"CUDA1 runs layers (\d+)-(\d+), expert cache (\d+) slots", log)
     first = re.search(r"strata generate: expert cache (\d+) slots", log)
