@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # One bench arm of the v0.2.10 A/B(/C stock) comparison: helper up -> serve up -> drive -> teardown.
-# Usage: run-arm.sh A|B|C <round> [tg_runs]   (one arm at a time; waits for VRAM drain)
+# Usage: run-arm.sh A|B|C|D|E <round> [tg_runs]   (one arm at a time; waits for VRAM drain)
 #  A: the prod worktree build (frozen copy)   B: the merged v0.2.10 + our mods   C: stock v0.2.10 (no mods, no helper)
+#  D: B + STRATA_PREFILL_HELPER=0 (helper prompt tier off)   E: B minus --dflash (tap collection / drafter off)
 set -euo pipefail
 ARM=$1; ROUND=$2; TG_RUNS=${3:-3}
 ROOT=/home/user/dev/Strata; B=$ROOT/bench/ab-v0210
@@ -9,9 +10,9 @@ STOCK=/home/user/dev/strata-stock-v0210
 PY=$ROOT/.venv/bin/python
 case $ARM in
   A) ENGINE=$B/armA/bin/strata; HELPER=$B/armA/bin/strata-expert-helper; SERVE=$B/armA/serve/server.py; CD=$B ;;
-  B) ENGINE=$ROOT/build-v0210/rpcw-hip/strata; HELPER=$ROOT/build-v0210/rpcw-cuda/strata-expert-helper; SERVE=$ROOT/serve/server.py; CD=$ROOT ;;
+  B|D|E) ENGINE=$ROOT/build-v0210/rpcw-hip/strata; HELPER=$ROOT/build-v0210/rpcw-cuda/strata-expert-helper; SERVE=$ROOT/serve/server.py; CD=$ROOT ;;
   C) ENGINE=$STOCK/build/rpcw-hip/strata; HELPER=; SERVE=$STOCK/serve/server.py; CD=$STOCK ;;
-  *) echo "arm A|B|C" >&2; exit 2 ;;
+  *) echo "arm A|B|C|D|E" >&2; exit 2 ;;
 esac
 RUNCFG=$B/run/arm$ARM-r$ROUND.json
 mkdir -p "$B/run" "$B/logs" "$B/out"
