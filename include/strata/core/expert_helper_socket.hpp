@@ -101,6 +101,16 @@ public:
     int begin(int32_t layer, int32_t n_tok, const int32_t* ids, const int32_t* primary_res,
               const uint8_t* q8, size_t q8_bytes, int64_t deadline_ms);
 
+    /// kBeginQ8K (default OFF - STRATA_EXPERT_HELPER_Q8K, a peer that advertised kFeatureQ8K):
+    /// `begin`'s window request with the activation image as ggml's Q8_K blocks ((n_embd/256)*292
+    /// bytes per token) - the CPU reference's own gate/up image, quantized by the CALLER with
+    /// cpu::native_quant_act so the bytes are exactly the ones the CPU-offloaded rows of this window
+    /// run.  Refused locally (kErrRequest, nothing written) unless the peer advertised the bit: the
+    /// frame type never reaches a peer that cannot type-decode it.  finish() reads the reply, the
+    /// same kRows contract as begin's.
+    int begin_q8k(int32_t layer, int32_t n_tok, const int32_t* ids, const int32_t* primary_res,
+                  const uint8_t* q8k, size_t q8k_bytes, int64_t deadline_ms);
+
     /// Read the helper's rows for the outstanding begin and scatter them at the original indices.
     /// Validates: frame type/version, request id, sequence, payload length vs n_embd, index range vs
     /// `claims`, no duplicate index, every claimed index answered, all floats finite.  A validated
@@ -122,6 +132,7 @@ public:
     /// race against a misparse.
     bool prompt_rows_supported() const { return prompt_rows_; }
     bool prompt_f32_supported() const { return prompt_f32_; }   // M4c (b): the peer quantizes fp32 itself
+    bool q8k_supported() const { return q8k_; }   // the peer takes Q8_K activation images (kFeatureQ8K)
 
     /// The tier's OWN pinned host activation buffer (`ext_x` in the design): the tier owns it,
     /// allocates it ONCE, and it never exceeds kMaxSelTok * n_embd * 4 (2.5 MB at the pack's N=2560).
@@ -282,6 +293,7 @@ private:
     int64_t layer_lo_ = 0, layer_hi_ = -1;          // the hello window (the tier serves inside it)
     bool prompt_rows_ = false;                      // the peer advertised kFeaturePromptRows
     bool prompt_f32_ = false;                       // the peer advertised kFeaturePromptF32 (M4c (b))
+    bool q8k_ = false;                              // the peer advertised kFeatureQ8K (the Q8_K wire)
     bool draft_ = false;                            // the peer advertised kFeatureDraft (M7)
     bool draft_bf16_ = false;                       // the peer advertised kFeatureDraftBf16 (L8 wire v2)
     int64_t draft_planes_ = 0, draft_hidden_ = 0;   // the draft geometry the engine pinned
@@ -311,5 +323,13 @@ int validate_rows_payload(const uint8_t* payload, size_t n, int64_t n_embd,
 /// on hardware, not this function's bytes.  See the definition's note; the golden vectors in
 /// tests/core/expert_helper_socket_test.cpp are a regression pin of THIS code, not device parity.
 void quantize_q8_1_cpu(const float* x, int64_t n, uint8_t* y);
+
+/// The prompt tier's Q8_K row quantizer (the kBeginP image_format 2 payload): ggml's scalar
+/// reference `quantize_row_q8_K_ref` semantics restated with the same bits, so the wire's image is
+/// byte-for-byte the CPU reference's own gate/up activation.  Lives here for the same reason as
+/// quantize_q8_1_cpu: the host test pins it with no device in sight.  (The all-zero block's bsums
+/// are zeroed where ggml leaves them unwritten - the Q8_K kernel reads only d and qs; see the
+/// definition's note.)
+void quantize_row_q8k_cpu(const float* x, int64_t n, uint8_t* y);
 
 }  // namespace strata::core

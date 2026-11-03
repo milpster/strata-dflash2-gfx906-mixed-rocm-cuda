@@ -83,6 +83,7 @@ inline constexpr uint32_t kFeaturePromptRows = 1u;       // HelloAck.features bi
 inline constexpr uint32_t kFeaturePromptF32 = 2u;        // HelloAck.features bit 1 (fp32 activations, M4c (b))
 inline constexpr uint32_t kFeatureDraft = 4u;            // HelloAck.features bit 2 (M7: the drafter lane)
 inline constexpr uint32_t kFeatureDraftBf16 = 8u;        // HelloAck.features bit 3 (L8: bf16 draft taps)
+inline constexpr uint32_t kFeatureQ8K = 16u;             // bit 4: Q8_K activation images (kBeginQ8K, image_format 2)
 
 // Frame types.  Exactly one request is outstanding: the engine sends hello, fill, and a begin; each
 // expect a reply of the named type with the same request id.  A frame with an unexpected type, version,
@@ -118,6 +119,14 @@ enum FrameType : uint32_t {
     // mixed build answers with this transport's own typed refusal, never a silent misparse.
     kDraftCtxBf16 = 15,   // engine -> helper: kDraftCtx's rows as bf16
     kDraftReqBf16 = 16,   // engine -> helper: kDraftReq's rows as bf16
+    // The Q8_K activation wire (default OFF - the engine's STRATA_EXPERT_HELPER_Q8K, and only to a
+    // peer that advertised kFeatureQ8K): the SAME window request and reply as kBegin, but the
+    // activation image is ggml's Q8_K blocks - (n_embd/256) * 292 bytes per token row - the EXACT
+    // bytes the CPU reference path quantizes for gate/up (cpu::native_quant_act), so the helper's
+    // native_expert_grouped_q8k reproduces the reference arithmetic instead of the q8_1 MMQ
+    // contract.  The SAME extension rule as the frames above: a peer that never advertised the bit
+    // never sees the frame type - a mixed build gets the typed refusal, never a misparse.
+    kBeginQ8K = 17,       // engine -> helper: the window's activations as Q8_K blocks (reply stays kRows)
 };
 
 // Frame limits the reader enforces before allocating anything.
@@ -231,13 +240,16 @@ struct BeginPReq {
     int32_t k = 0;              // kK (the pack's routing width)
     int32_t n_pairs = 0;        // claimed rows, 1..kMaxRowsPerLayer
     int32_t n_q8 = 0;           // the image section's bytes: q8 -> n_sel_tok*(n_embd/32)*36, fp32 -> n_sel_tok*n_embd*4
-    int32_t image_format = 0;   // 0 = canonical q8_1 blocks, 1 = fp32 rows the helper quantizes (kFeaturePromptF32)
+    int32_t image_format = 0;   // 0 = canonical q8_1 blocks, 1 = fp32 rows the helper quantizes
+                                //     (kFeaturePromptF32), 2 = Q8_K blocks, the CPU reference's own
+                                //     gate/up image (kFeatureQ8K): n_sel * (n_embd/256) * 292 bytes
 };
 
 // The kBeginP body, in this exact order after sizeof(BeginPReq):
 //   n_pairs * 8 bytes: (int32 token, int32 expert) - token indexes the q8 image (0..n_sel_tok-1)
 //   (n_sel_tok * n_expert + 7) / 8 bytes: the layer's PRIMARY residency bitmap
-//   n_q8 bytes: the selected tokens' activations (Q8_1 blocks, or fp32 rows when image_format is 1)
+//   n_q8 bytes: the selected tokens' activations (Q8_1 blocks; fp32 rows when image_format is 1;
+//               Q8_K blocks - the CPU reference's own gate/up image - when image_format is 2)
 // Every size is checked before anything is allocated: n_sel_tok <= kMaxSelTok, n_pairs <=
 // kMaxRowsPerLayer, per-expert pairs <= kMaxRowsPerExpert, k == kK, the exact byte total.
 struct RowsPResp {

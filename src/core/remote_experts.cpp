@@ -3,6 +3,8 @@
 #include "strata/core/remote_expert_opt.hpp"
 #include "strata/core/expert_helper_socket.hpp"
 
+#include "ggml.h"   // GGML_TYPE_Q8_K (the Q8_K wire's per-layer pack-format gate)
+
 #include "strata/kernels/cpu/expert_layout.hpp"
 #include "strata/kernels/cpu/hadamard.hpp"
 #include "strata/kernels/cpu/native_expert.hpp"
@@ -520,6 +522,42 @@ bool RemoteExperts::proxy_begin(int64_t layer, const float* x, const int32_t* id
     // A duplicate routed id inside the window: the in-process tier computes ONE group row per
     // (expert) and writes it at every routed index.  The proxy keeps every routed index (the
     // helper's grouped kernel does the same: each entry is one dst row), so claims list each.
+    // The Q8_K wire (default OFF: STRATA_EXPERT_HELPER_Q8K, a peer that advertised kFeatureQ8K, and
+    // a layer whose own pack format is Q8_K gate/up on a kernel-served weight type): the image is
+    // the CPU reference's own activation - native_quant_act, the same function the CPU-offloaded
+    // rows of THIS window quantize with - so the helper's grouped Q8_K kernel reproduces the
+    // reference arithmetic instead of the q8_1 MMQ contract (docs/work/MIXED_P2_REFERENCE.md).
+    // Any miss keeps the pinned q8_1 image and today's frame, byte for byte.
+    if (std::getenv("STRATA_EXPERT_HELPER_Q8K") != nullptr && helper_->q8k_supported()) {
+        const auto& lay = strata::kernels::cpu::expert_layout();
+        if (layer >= 0 && (size_t) layer < lay.fmt.size()) {
+            const auto& f = lay.fmt[(size_t) layer];
+            if (f.gu_act == (int) GGML_TYPE_Q8_K &&
+                strata::kernels::native_expert_q8k_supported(f.gu_type, proxy_n_embd_)) {
+                thread_local std::vector<uint8_t> q8k;
+                q8k.assign((size_t) n_tok * (size_t) f.act_bytes, 0);
+                for (int64_t t = 0; t < n_tok; ++t)
+                    strata::kernels::cpu::native_quant_act(f, x + (size_t) t * (size_t) proxy_n_embd_,
+                                                           q8k.data() + (size_t) t * (size_t) f.act_bytes);
+                const int rc = helper_->begin_q8k((int32_t) layer, (int32_t) n_tok, ids, primary_res,
+                                                  q8k.data(), q8k.size(), proxy_timeout_ms_);
+                if (rc != expert_helper::kOk) {
+                    // The begin-time fallback, verbatim: the window is fully CPU-served, the tier
+                    // re-arms at the next request, and nothing failed.
+                    healthy_ = false;
+                    disabled_ = true;
+                    claims.clear();
+                    err = std::string("expert-helper: begin_q8k send failed: ") + expert_helper::status_name(rc);
+                    return true;
+                }
+                claimed_out = claims;
+                computed_ += (int64_t) claims.size();
+                launched_layers_ += 1;
+                proxy_ms_begin_ = helper_->ms_begin();
+                return true;
+            }
+        }
+    }
     const int64_t q8_blocks = n_tok * (proxy_n_embd_ / 32);
     thread_local std::vector<uint8_t> q8;
     q8.assign((size_t) q8_blocks * 36u, 0);

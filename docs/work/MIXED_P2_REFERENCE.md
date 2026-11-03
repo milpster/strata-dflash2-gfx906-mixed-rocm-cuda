@@ -229,3 +229,50 @@ Evidence: `build-mixed-gpu/repro-q8k-evidence3/q8k3-cuda.{json,log}` and
 `repro-q8k-evidence1`/`repro-q8k-evidence2` runs, and the build logs. Both
 diagnostic builds (the HIP tree from scratch in evidence4), both CPU CTests and
 52 Python report tests passed; input and protected-executable pins unchanged.
+
+## The Q8_K helper wire: built and measured — and the pooled gate's answer (q8k-wire2, q8k1)
+
+The wire is implemented and OFF by default. With `STRATA_EXPERT_HELPER_Q8K=1`
+(read at each call, never cached) AND a helper that advertises `kFeatureQ8K`,
+the engine sends the CPU's own activation arithmetic to the helper: Q8_K blocks
+(one FP32 scale per 256 values, 292 bytes) instead of Q8_1 (one FP16 scale per
+32). The window tier uses a new `kBeginQ8K` frame; the prompt tier marks the
+image `image_format=2` in the existing `kBeginP` header. A peer without the
+feature bit never receives either frame, and with the env unset the default
+frames are byte-identical to before. The helper refuses a Q8_K frame for any
+gate/up type or row width it cannot serve exactly; the engine then falls back
+to its established path. Host tests (`tests/core/expert_helper_socket_test.cpp`,
+section 19) pin the CPU-twin quantizer's structure on hand-checked blocks, the
+local refusal with a silent wire, the exact `kBeginQ8K` frame, the prompt image
+bytes, and the default-off byte identity. Both diagnostic builds, the socket
+CTest and the 52 Python tests passed (evidence `build-mixed-gpu/q8k-wire2/`).
+
+The pooled gate did NOT flip. One window was measured with the wire on: layers
+32-35, the same fin1 capture and fixtures, strict-v2 audit rc 0, 125,978 of
+125,978 rows, 0 skipped. Candidate helper and candidate harness, both
+sha-pinned; driver `tools/mixed_gpu/measure_q8k_wire.py`; evidence
+`build-mixed-gpu/p2-finish/q8k1/`.
+
+| same window (L32-35, same inputs) | rel p99.9 | rel max | tensor NMSE |
+|---|---:|---:|---:|
+| stock Q8_1 wire (fin1, measured 2026-11-02) | 0.00599 | 0.01348 | 4.228e-06 |
+| Q8_K wire (q8k1, measured 2026-11-03) | 0.02507 | 0.03857 | 1.913e-04 |
+
+The wire fired: full retention with zero refusals is only possible through the
+format-2 acceptance path, and the error moved to the Q8_1-vs-Q8_K class, uniform
+(~0.021 p99) across all three format pairs and all four layers. Helper-vs-MMQ
+agreement became about four times WORSE, not better. The reason is structural.
+The pooled gate's reference side is MMQ over MMQ's OWN Q8_1 activation bytes
+(float32 scales). A helper faithful to the CPU's Q8_K arithmetic cannot also be
+faithful to MMQ, because MMQ's own inputs deviate from the CPU's by the same
+class this run measured (0.02507 p99.9 here; expert2 measured 0.0277 for the
+mirror direction, CPU reference vs the Q8_1 wire). The gate as written can only
+pass on a helper that shares MMQ's input format. Redefining the reference side
+is a maintainer decision; the gate stays in force unchanged. The remaining
+windows (36-47) and the pooling were NOT run: with this reference they are a
+foregone FAIL, not evidence.
+
+Limits: one window of four; no new pooled file (the retained 2026-11-02 pooled
+verdict stands); the stock row is the retained fin1 measurement, not a same-day
+rerun; no returned-message validation here — the frozen-request identity arms
+are the next step; no timing claim. Production remains down with permission.

@@ -150,7 +150,7 @@ void write_rows(const uint8_t* payload, size_t n, uint32_t req_id) {
 /// for its reply, so the two sides must be live at once - exactly the two-process reality).
 /// kOk when the client is connected, handshaken and filled; the hello/fill payloads the client
 /// sent are verified on the wire by the worker.
-int handshake(ExpertHelperClient& c) {
+int handshake(ExpertHelperClient& c, uint32_t extra_feats = 0) {
     int fds[2];
     if (::socketpair(AF_UNIX, SOCK_STREAM, 0, fds) != 0) return kErrInternal;
     {
@@ -160,7 +160,7 @@ int handshake(ExpertHelperClient& c) {
         s.release();
     }
     int wire = 0;   // the worker's view of the client's payloads: 0 = all good
-    std::thread srv([fd = fds[1], &wire] {
+    std::thread srv([fd = fds[1], &wire, extra_feats] {
         Socket s;
         s.adopt(fd);
         Header head;
@@ -180,6 +180,7 @@ int handshake(ExpertHelperClient& c) {
         ack.max_entries = (int32_t) kMaxEntries;
         ack.status = 0;
         ack.free_mib = 4096;
+        ack.features = extra_feats;   // (19): a peer advertising e.g. the Q8_K wire
         if (s.write_frame(kHelloAck, head.req_id, (const uint8_t*) &ack, sizeof(ack), deadline_after(5000)) != kOk) { wire = 3; return; }
         if (s.read_frame(head, body, deadline_after(5000)) != kOk || head.type != kFill ||
             body.size() < sizeof(FillReq)) { wire = 4; return; }
@@ -762,6 +763,71 @@ int run_relisten_child() {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     return -3;                                                      // survived the signal: the live FAIL
+}
+
+/// Section (19): the Q8_K wire's window frame - begin_q8k's transport contract.  The same window
+/// send_begin pins (80 ids of expert 7, expert 5 primary-resident), with the image as Q8_K blocks:
+/// kNTok * (kH/256) * 292 bytes (23,360 at this geometry), frame type kBeginQ8K, n_q8 = the image.
+bool send_begin_q8k(ExpertHelperClient& c) {
+    std::vector<int32_t> ids((size_t) kNTok * 10, 7);
+    std::vector<int32_t> primary((size_t) kLayers * kExperts, -1);
+    primary[(size_t) kLayer * kExperts + 5] = 0;   // resident on the primary: not the helper's row
+    const int64_t img = kNTok * (kH / 256) * 292;
+    std::vector<uint8_t> q8k((size_t) img, 0x5A);
+    const int rc = c.begin_q8k(kLayer, kNTok, ids.data(), primary.data(), q8k.data(), (size_t) img, 2000);
+    if (rc != kOk) return false;
+    Socket srv;
+    srv.adopt(g_server_fd);
+    Header head;
+    std::vector<uint8_t> body;
+    const int rrc = srv.read_frame(head, body, deadline_after(2000));
+    srv.release();
+    if (rrc != kOk || head.type != kBeginQ8K) return false;
+    if (body.size() < sizeof(BeginReq)) return false;
+    BeginReq req;
+    std::memcpy(&req, body.data(), sizeof(req));
+    if (req.layer != kLayer || req.n_tok != kNTok || req.k != (int32_t) kK || req.reserved0 != 0 ||
+        req.ids_bytes != (int32_t) (kNTok * 10 * 4) || req.n_q8 != (int32_t) img ||
+        body.size() != sizeof(req) + (size_t) req.ids_bytes + kResBytes + (size_t) img)
+        return false;
+    const uint8_t* bits = body.data() + sizeof(req) + (size_t) req.ids_bytes;
+    if (!(bits[5 >> 3] & (uint8_t) (1u << (5 & 7)))) return false;      // the primary bit is set
+    if (bits[7 >> 3] & (uint8_t) (1u << (7 & 7))) return false;         // and not of a helper expert
+    const uint8_t* got = bits + kResBytes;
+    for (int64_t i = 0; i < img; i += 4096)
+        if (got[(size_t) i] != 0x5A) return false;                      // the image is verbatim
+    return true;
+}
+
+/// Section (19): read a SMALL kBeginP off the wire and verify it as an image_format 2 frame: the
+/// header's exact fields, the pinned image size (n_sel * (kH/256) * 292), and the image bytes
+/// themselves - quantize_row_q8k_cpu of the tier's OWN rows, in selection order (the same rule
+/// wire_prompt_ok pins for the q8_1/f32 images).
+bool wire_prompt_q8k_ok(const ExpertHelperPromptPlan& plan, const int32_t* primary) {
+    Socket srv;
+    srv.adopt(g_server_fd);
+    Header head;
+    std::vector<uint8_t> body;
+    const int rc = srv.read_frame(head, body, deadline_after(2000));
+    srv.release();
+    if (rc != kOk || head.type != kBeginP || body.size() < sizeof(BeginPReq)) return false;
+    BeginPReq req;
+    std::memcpy(&req, body.data(), sizeof(req));
+    const int64_t n_sel = (int64_t) plan.tokens.size();
+    const int64_t n_pairs = (int64_t) plan.pair_token.size();
+    const size_t res_bytes = (size_t) ((n_sel * kExperts + 7) / 8);
+    const int64_t img_row = (kH / 256) * 292;
+    if (req.layer != kLayer || req.n_sel_tok != n_sel || req.k != (int32_t) kK ||
+        req.n_pairs != n_pairs || req.image_format != 2 || req.n_q8 != n_sel * img_row)
+        return false;
+    if (body.size() != sizeof(req) + (size_t) n_pairs * 8 + res_bytes + (size_t) (n_sel * img_row))
+        return false;
+    const uint8_t* img = body.data() + sizeof(req) + (size_t) n_pairs * 8 + res_bytes;
+    std::vector<uint8_t> want((size_t) (n_sel * img_row), 0);
+    for (int64_t r = 0; r < n_sel; ++r)
+        quantize_row_q8k_cpu(g_prompt_x + r * g_prompt_embd, g_prompt_embd,
+                             want.data() + (size_t) r * (size_t) img_row);
+    return std::memcmp(img, want.data(), want.size()) == 0;
 }
 
 }  // namespace
@@ -1795,6 +1861,147 @@ int main(int argc, char** argv) {
         if (rc18 != 0)
             std::printf("      relisten child: exit=%d (0 = the clean exit, 42 = it kept re-listening, "
                         "-2 = signal death, -3 = it survived 4 s of SIGTERM, 11..14 = fixture)\n", rc18);
+    }
+
+    // ---- (19) the Q8_K activation wire (default OFF: STRATA_EXPERT_HELPER_Q8K + the peer's
+    // kFeatureQ8K): the negotiation gates, the frame types, the twin quantizer's golden structure,
+    // and the default-OFF byte identity of the prompt tier's image.  CPU-only, no GPU in sight;
+    // the hardware acceptance (the helper's rows through native_expert_grouped_q8k) is
+    // docs/work/MIXED_P2_REFERENCE.md's measured chain. ----
+    {
+        // (19a) quantize_row_q8k_cpu's structure, pinned on hand-checkable blocks (ggml's reference
+        // semantics: strict > amax, iscale = -127/max, the magic-number nearest_int with
+        // half-to-even, MIN(127, v), d = 1/iscale the RECIPROCAL, bsums per 16).
+        {
+            std::vector<float> x((size_t) kH, 0.0f);
+            std::vector<uint8_t> y((size_t) (kH / 256) * 292, 0xFF);
+            quantize_row_q8k_cpu(x.data(), kH, y.data());
+            bool ok = true;
+            for (int i = 0; i < 4; ++i) ok = ok && y[(size_t) i] == 0;           // d == 0
+            for (size_t i = 4; i < 260; ++i) ok = ok && y[i] == 0;               // qs zeroed
+            for (size_t i = 260; i < y.size(); ++i) ok = ok && y[i] == 0;        // bsums zeroed
+            check(ok, "q8k golden: the all-zero block writes d 0, zeroed qs and zeroed bsums");
+
+            std::fill(x.begin(), x.end(), 0.5f);
+            std::fill(y.begin(), y.end(), 0xFF);
+            quantize_row_q8k_cpu(x.data(), kH, y.data());
+            const float d_const = -1.0f / 254.0f;   // 1/iscale = 1/(-127/0.5): the reciprocal
+            float d_got = 0;
+            std::memcpy(&d_got, y.data(), 4);
+            ok = d_got == d_const;
+            for (size_t i = 4; i < 260; ++i) ok = ok && y[i] == 0x81;            // qs all -127
+            for (int j = 0; j < 16; ++j) {
+                int16_t b = 0;
+                std::memcpy(&b, y.data() + 260 + (size_t) j * 2, 2);
+                ok = ok && b == -2032;                                           // 16 * -127
+            }
+            check(ok, "q8k golden: the constant 0.5 block (d = 1/(-254), qs -127, bsums -2032)");
+
+            // mixed {2, -1, 0.25, 0...}: max 2 (strict >, the FIRST max wins), iscale -63.5,
+            // half-even rounding: 63.5 -> 64, -15.875 -> -16, -0.0 -> 0.
+            x[0] = 2.0f; x[1] = -1.0f; x[2] = 0.25f;
+            for (size_t i = 3; i < (size_t) kH; ++i) x[i] = 0.0f;
+            std::fill(y.begin(), y.end(), 0xFF);
+            quantize_row_q8k_cpu(x.data(), kH, y.data());
+            const int8_t* qs = (const int8_t*) (y.data() + 4);
+            int16_t b0 = 0;
+            std::memcpy(&b0, y.data() + 260, 2);
+            std::memcpy(&d_got, y.data(), 4);
+            check(qs[0] == -127 && qs[1] == 64 && qs[2] == -16 && qs[3] == 0 &&
+                      b0 == -79 && d_got == 1.0f / (-127.0f / 2.0f),
+                  "q8k golden: the mixed block (iscale -127/max, half-even rounding, d = 1/iscale)");
+
+            // negative max {-2, -1, 0...}: max -2, iscale +63.5 - the SIGN semantics of ggml's
+            // -127/max trick (q*d reconstructs x: -127 * (1/63.5) = -2).
+            x[0] = -2.0f; x[1] = -1.0f;
+            for (size_t i = 2; i < (size_t) kH; ++i) x[i] = 0.0f;
+            std::fill(y.begin(), y.end(), 0xFF);
+            quantize_row_q8k_cpu(x.data(), kH, y.data());
+            std::memcpy(&d_got, y.data(), 4);
+            check(qs[0] == -127 && qs[1] == -64 && d_got == 1.0f / 63.5f && d_got > 0.0f,
+                  "q8k golden: the negative-max block (iscale +63.5, d positive, q*d = x)");
+
+            // the row STRIDE is 292: a 512-value row is two blocks, block 2's qs at byte 292+4.
+            x.assign(512, 0.0f);
+            std::fill(x.begin() + 256, x.end(), 0.5f);
+            y.assign((size_t) 2 * 292, 0xFF);
+            quantize_row_q8k_cpu(x.data(), 512, y.data());
+            check(y[4] == 0 && y[292 + 4] == (uint8_t) (int8_t) -127,
+                  "q8k golden: the 292-byte stride (block 2's qs at 292+4)");
+        }
+
+        // (19b) the negotiation gate: begin_q8k is refused LOCALLY, nothing reaches the wire.
+        {
+            ExpertHelperClient c;
+            check_status(handshake(c), kOk, "plain handshake (no feature bits)");
+            std::vector<int32_t> ids((size_t) kNTok * 10, 7);
+            std::vector<int32_t> primary((size_t) kLayers * kExperts, -1);
+            std::vector<uint8_t> q8k((size_t) (kNTok * (kH / 256) * 292), 0x5A);
+            check_status(c.begin_q8k(kLayer, kNTok, ids.data(), primary.data(), q8k.data(), q8k.size(), 2000),
+                         kErrRequest, "begin_q8k without the advertised bit: the local refusal");
+            Socket srv;
+            srv.adopt(g_server_fd);
+            Header head;
+            std::vector<uint8_t> body;
+            check_status(srv.read_frame(head, body, deadline_after(300)), kErrTimeout,
+                         "and the wire stayed silent (the frame never reaches an unadvertising peer)");
+            srv.release();
+        }
+
+        // (19c) with the bit advertised: the kBeginQ8K frame is exact (fields, residency, image).
+        {
+            ExpertHelperClient c;
+            check_status(handshake(c, kFeatureQ8K), kOk, "handshake advertising kFeatureQ8K");
+            check(c.q8k_supported(), "the client records the advertised Q8_K wire");
+            check(send_begin_q8k(c), "the kBeginQ8K frame carries the window's exact shape and image");
+        }
+
+        // (19d) the prompt tier: env + bit ships image_format 2 with the twin's bytes; the DEFAULT
+        // (env off, or the bit not advertised) keeps today's f32 image, byte for byte.
+        {
+            std::vector<int32_t> primary((size_t) kLayers * kExperts, -1);
+            ExpertHelperClient c;
+            check_status(handshake_v3(c, true, kFeaturePromptF32 | kFeatureQ8K), kOk,
+                         "v3 handshake advertising fp32 AND the Q8_K bit");
+            ExpertHelperPromptPlan plan;
+            for (int i = 0; i < 4; ++i) { plan.pair_token.push_back(i); plan.pair_expert.push_back(7); }
+            for (int i = 0; i < 4; ++i) plan.tokens.push_back(i);
+            fill_prompt_buffer(c, 4);
+            ::setenv("STRATA_EXPERT_HELPER_Q8K", "1", 1);
+            check_status(c.begin_prompt(kLayer, plan, primary.data(), 4000), kOk,
+                         "kBeginP with image_format 2 is sent");
+            check(wire_prompt_q8k_ok(plan, primary.data()),
+                  "the frame's Q8_K image is quantize_row_q8k_cpu of the tier's own rows, exact");
+            ::unsetenv("STRATA_EXPERT_HELPER_Q8K");
+
+            // env off (the default): the same advertising peer, the same rows - today's f32 image.
+            ExpertHelperClient c2;
+            check_status(handshake_v3(c2, true, kFeaturePromptF32 | kFeatureQ8K), kOk,
+                         "v3 handshake again (the default-path control)");
+            ExpertHelperPromptPlan plan2;
+            for (int i = 0; i < 4; ++i) { plan2.pair_token.push_back(i); plan2.pair_expert.push_back(7); }
+            for (int i = 0; i < 4; ++i) plan2.tokens.push_back(i);
+            fill_prompt_buffer(c2, 4);
+            check_status(c2.begin_prompt(kLayer, plan2, primary.data(), 4000), kOk,
+                         "kBeginP with the env off is sent");
+            check(wire_prompt_ok(plan2, primary.data(), 4, /*f32=*/true),
+                  "the default keeps the f32 image_format 1 frame, byte for byte");
+
+            // env on but the bit NOT advertised: the default image again (a mixed-build peer).
+            ExpertHelperClient c3;
+            check_status(handshake_v3(c3, true, kFeaturePromptF32), kOk,
+                         "v3 handshake without the Q8_K bit (the mixed build)");
+            ExpertHelperPromptPlan plan3;
+            for (int i = 0; i < 4; ++i) { plan3.pair_token.push_back(i); plan3.pair_expert.push_back(7); }
+            for (int i = 0; i < 4; ++i) plan3.tokens.push_back(i);
+            fill_prompt_buffer(c3, 4);
+            ::setenv("STRATA_EXPERT_HELPER_Q8K", "1", 1);
+            check_status(c3.begin_prompt(kLayer, plan3, primary.data(), 4000), kOk,
+                         "kBeginP to a non-advertising peer is sent");
+            check(wire_prompt_ok(plan3, primary.data(), 4, /*f32=*/true),
+                  "without the peer's bit the image stays f32 (format 1), never a misparse");
+            ::unsetenv("STRATA_EXPERT_HELPER_Q8K");
+        }
     }
 
     std::printf("expert_helper_socket_test: %s\n", failures == 0 ? "PASS" : "FAIL");
