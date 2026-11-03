@@ -14,7 +14,7 @@ import statistics as st
 from pathlib import Path
 
 B = Path(__file__).parent
-ARMS = ["A", "B", "C"]
+ARMS = ["A", "B", "C", "D", "E"]
 LINE = re.compile(r"prompt (\d+) tokens = (\d+) reused \+ (\d+) read in ([\d.]+) ms \(([\d.]+) tok/s\), (\d+) generated in ([\d.]+) ms \(([\d.]+) tok/s\)")
 
 res = {a: {"pp": [], "tg": [], "infill": [], "probe": [], "walls": []} for a in ARMS}
