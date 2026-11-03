@@ -144,19 +144,17 @@ void DFlashTapCollector::worker_start() {
 }
 
 // Join the staging worker: it drains every queued async D2H (each a same-device host drain)
-// before exiting, so every enqueued copy has landed its event when this returns.  MUST run
-// with mu_ RELEASED (the worker takes mu_ to set flags); enable() re-takes the lock after.
-void DFlashTapCollector::worker_stop() {
-    {
-        std::lock_guard<std::mutex> mu(mu_);
-        worker_stop_ = true;
-    }
-    q_cv_.notify_all();
+// before exiting, so every enqueued copy has landed its event when this returns.  The caller
+// (disable) HOLDS `lock` on mu_; mu_ is RELEASED around worker_.join() only - the worker
+// takes mu_ to set staged flags - and re-taken before return.  (Review fix: the previous
+// body locked mu_ at entry while disable() already held it - a deadlock on every disable.)
+void DFlashTapCollector::worker_stop(std::unique_lock<std::mutex>& lock) {
+    worker_stop_ = true;   // atomic; no mutex needed to publish
+    q_cv_.notify_all();    // wake the worker (notifying without holding q_mu_ is legal)
     if (worker_.joinable()) {
-        std::unique_lock<std::mutex> lock(mu_);
         lock.unlock();
         worker_.join();
-        lock.lock();   // re-taken, matching enable()'s re-enable contract
+        lock.lock();
     }
 }
 
@@ -248,8 +246,8 @@ bool DFlashTapCollector::enable(const DFlashTapPlan& plan, int drafter_dev, int6
 
 void DFlashTapCollector::disable() {
     std::unique_lock<std::mutex> lock(mu_);   // every metadata mutation is mu_-guarded (L10 review)
-    worker_stop();   // F2 (§2 change 12): join the staging worker FIRST - it drains every
-                     // queued async D2H; the events are drained below before pinned rows free
+    worker_stop(lock);   // F2 (§2 change 12): join the staging worker FIRST - it drains every
+                         // queued async D2H; the events are drained below before pinned rows free
     gen_ += 1;                               // pending producers reject deterministically
     const OnDevice on_dev(dev_);   // events and device planes live on dev_; drain needs its context
     const auto free_kind = [&](Kind& k) {

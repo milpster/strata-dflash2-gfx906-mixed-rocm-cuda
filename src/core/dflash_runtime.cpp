@@ -813,7 +813,7 @@ bool DFlashDrafter::add_context(const uint16_t* taps, int n_taps, int64_t stride
     // enqueued on cs_ in the same order and skips this host drain; deferred_ routes the
     // drain to the next propose()/idle() (the same cudaStreamSynchronize(cs_), the same
     // error text).  The host-side ring checks above stay synchronous in both modes.
-    if (deferral_context() && sync_context && cs_ && rows > 0) deferred_ = true;
+    if (deferral_context() && !sync_context && cs_ && rows > 0) deferred_ = true;
     if (sync_context) {
         if (cudaStreamSynchronize(cs_) != cudaSuccess) {
             err = "dflash: prompt context consumption failed";
