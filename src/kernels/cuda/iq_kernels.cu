@@ -5408,8 +5408,20 @@ __global__ void __launch_bounds__(256) native_gu_q8k_kernel(const unsigned long 
     }
 }
 
-/// Diagnostic only (the mixed-GPU P2 harness; no serving caller): gate/up from Q8_K activations, SwiGLU and the
-/// down rows on the default path (h re-quantized to q8_1, the CPU Q8_0 rule: amax/127 per 32, an FP16 scale).
+bool native_expert_q8k_supported(int gu_type, int64_t n_embd) {
+    switch (gu_type) {   // the gu_q8k_part<TG> set this entry dispatches to, by ggml's enum VALUES
+        case 16: case 17: case 18:   // IQ2_XXS, IQ2_XS, IQ3_XXS (ggml.h: no ggml enum name in scope here)
+        case 21: case 22:            // IQ3_S, IQ2_S
+            return n_embd > 0 && n_embd % 256 == 0;
+        default:
+            return false;
+    }
+}
+
+/// Gate/up from Q8_K activations, SwiGLU and the down rows on the default path (h re-quantized to
+/// q8_1, the CPU Q8_0 rule: amax/127 per 32, an FP16 scale).  Callers: the mixed-GPU P2 harness's
+/// diagnostic arm, and the expert helper's opt-in Q8_K wire (kBeginQ8K / image_format 2, default
+/// OFF - the engine's STRATA_EXPERT_HELPER_Q8K).
 /// The scratch layout is `native_expert_grouped`'s (native_expert_scratch_bytes).
 void native_expert_grouped_q8k(const NativeExpertLayout& L, const unsigned long long* grp_ptr, const int32_t* grp_start,
                                const int32_t* n_groups, const int32_t* ent_dst, const int32_t* ent_tok, int64_t cap_groups,

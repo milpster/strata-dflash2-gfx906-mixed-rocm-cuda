@@ -498,9 +498,11 @@ int serve_fill(Helper& hp, const std::vector<uint8_t>& body, uint32_t req_id, ui
     return out.write_reply(kFillReport, req_id, seq, payload.data(), payload.size(), deadline_after(600000));
 }
 
-// ---- kBegin: one grouped launch over the claimed entries; kRows answers with the original indices ----
+// ---- kBegin / kBeginQ8K: one grouped launch over the claimed entries; kRows answers with the
+// original indices.  image_q8k: the frame's activation image is ggml's Q8_K blocks (the CPU
+// reference's own gate/up image) and the launch is native_expert_grouped_q8k. ----
 int serve_begin(Helper& hp, const std::vector<uint8_t>& body, uint32_t req_id, uint32_t seq, std::string& err,
-                Socket& out) {
+                Socket& out, bool image_q8k) {
     // ONE served frame holds the device lock (see Helper::gpu_mtx): the window tier's staging
     // (h_meta/d_meta/d_q8/d_out/scratch) and the prompt tier's are shared device state, and with
     // --socket2 two threads serve frames at once.  The lock is never held across the loop's read.
@@ -524,7 +526,9 @@ int serve_begin(Helper& hp, const std::vector<uint8_t>& body, uint32_t req_id, u
     const int64_t n = n_tok * k;
     if (req.ids_bytes != (int32_t) (n * 4)) return kErrGeometry;
     const size_t res_bytes = (size_t) ((n_tok * hp.n_expert + 7) / 8);
-    if ((int64_t) (n_tok * (H / 32) * 36) != req.n_q8) return kErrGeometry;
+    if (image_q8k && H % 256 != 0) return kErrGeometry;   // whole 256-value super-blocks
+    const int64_t img_row = image_q8k ? (H / 256) * 292 : (H / 32) * 36;   // the wire's pinned image sizes
+    if (n_tok * img_row != req.n_q8) return kErrGeometry;
     if (body.size() != sizeof(req) + (size_t) req.ids_bytes + res_bytes + (size_t) req.n_q8) return kErrShort;
     const int32_t* ids = (const int32_t*) (body.data() + sizeof(req));
     const uint8_t* primary = body.data() + sizeof(req) + (size_t) req.ids_bytes;
@@ -536,6 +540,8 @@ int serve_begin(Helper& hp, const std::vector<uint8_t>& body, uint32_t req_id, u
     if (fmt.had_gu || fmt.had_d) return kErrGeometry;   // the APR rotation path is not this helper's scope
     if (!strata::kernels::native_expert_supported(fmt.gu_type, fmt.d_type, fmt.n_embd, fmt.n_ff))
         return kErrGeometry;
+    if (image_q8k && !strata::kernels::native_expert_q8k_supported(fmt.gu_type, fmt.n_embd))
+        return kErrGeometry;   // this layer's gate/up weight type has no Q8_K kernel
 
     // The claims, in routing order: a VALID id, not primary-resident, resident HERE.  The grouped
     // kernel's `tok` indexes the window's q8 image, so one activation set per token serves its rows.
@@ -579,9 +585,10 @@ int serve_begin(Helper& hp, const std::vector<uint8_t>& body, uint32_t req_id, u
     }
     start.push_back((int32_t) dst.size());
 
-    // The engine quantized the activations into canonical q8_1 blocks (bit for bit its own
-    // quantize_q8_1_kernel's): upload them verbatim, no requantization, and launch the grouped
-    // kernel exactly the in-process tier launches it.
+    // The engine quantized the activations - canonical q8_1 blocks (bit for bit its own
+    // quantize_q8_1_kernel's) or, on the Q8_K wire, the CPU reference's own image
+    // (native_quant_act): upload them verbatim either way, no requantization, and launch the
+    // grouped kernel exactly the in-process tier launches it.
     if (!cuda_check(cudaMemcpyAsync(hp.d_q8, q8, (size_t) req.n_q8, cudaMemcpyHostToDevice, hp.stream),
                     "q8 upload", err)) return kErrInternal;
     std::memcpy(hp.h_meta->ptr, grp_ptr.data(), grp_ptr.size() * sizeof(grp_ptr[0]));
@@ -600,10 +607,16 @@ int serve_begin(Helper& hp, const std::vector<uint8_t>& body, uint32_t req_id, u
     // never wrote; a stale scratch byte must never reach a reply row.
     if (!cuda_check(cudaMemsetAsync(hp.d_scratch, 0, (size_t) hp.scratch_bytes, hp.stream),
                     "scratch clear", err)) return kErrInternal;
-    strata::kernels::native_expert_grouped(L, hp.d_meta->ptr, hp.d_meta->start, &hp.d_meta->count,
-                                            hp.d_meta->dst, hp.d_meta->tok, groups, (int64_t) dst.size(),
-                                            (const uint8_t*) hp.d_q8, hp.d_scratch, hp.d_out, hp.stream);
-    if (!cuda_check(cudaGetLastError(), "native_expert_grouped launch", err)) return kErrInternal;
+    if (image_q8k)
+        strata::kernels::native_expert_grouped_q8k(L, hp.d_meta->ptr, hp.d_meta->start, &hp.d_meta->count,
+                                                   hp.d_meta->dst, hp.d_meta->tok, groups, (int64_t) dst.size(),
+                                                   (const uint8_t*) hp.d_q8, hp.d_scratch, hp.d_out, hp.stream);
+    else
+        strata::kernels::native_expert_grouped(L, hp.d_meta->ptr, hp.d_meta->start, &hp.d_meta->count,
+                                               hp.d_meta->dst, hp.d_meta->tok, groups, (int64_t) dst.size(),
+                                               (const uint8_t*) hp.d_q8, hp.d_scratch, hp.d_out, hp.stream);
+    if (!cuda_check(cudaGetLastError(), image_q8k ? "native_expert_grouped_q8k launch"
+                                                  : "native_expert_grouped launch", err)) return kErrInternal;
     if (!cuda_check(cudaStreamSynchronize(hp.stream), "window sync", err)) return kErrInternal;
 
     // H14: prove the rows are finite before the engine refuses them (r17 died to exactly that).
@@ -681,10 +694,12 @@ int serve_prompt(Helper& hp, const std::vector<uint8_t>& body, uint32_t req_id, 
     std::memcpy(&req, body.data(), sizeof(req));
     const int64_t n_sel = req.n_sel_tok, n_pairs = req.n_pairs;
     if (n_sel < 1 || n_sel > kPromptTok || req.k != (int32_t) kK || n_pairs < 1 ||
-        n_pairs > kPromptRows || (req.image_format != 0 && req.image_format != 1)) return kErrGeometry;
+        n_pairs > kPromptRows || req.image_format < 0 || req.image_format > 2) return kErrGeometry;
     const size_t res_bytes = (size_t) ((n_sel * hp.n_expert + 7) / 8);
-    // M4c (b): image_format 1 = fp32 rows (n_sel * H * 4); 0 = the canonical q8_1 blocks.
+    // M4c (b): image_format 1 = fp32 rows (n_sel * H * 4); 0 = the canonical q8_1 blocks; 2 = the
+    // Q8_K blocks (n_sel * (H/256) * 292), the CPU reference's own gate/up image (kFeatureQ8K).
     const int64_t img_expect = req.image_format == 1 ? n_sel * H * (int64_t) sizeof(float)
+                             : req.image_format == 2 ? n_sel * (H / 256) * 292
                                                      : n_sel * (H / 32) * 36;
     if (img_expect != req.n_q8) return kErrGeometry;
     if (body.size() != sizeof(req) + (size_t) n_pairs * 8 + res_bytes + (size_t) req.n_q8) return kErrShort;
@@ -698,6 +713,12 @@ int serve_prompt(Helper& hp, const std::vector<uint8_t>& body, uint32_t req_id, 
     if (fmt.had_gu || fmt.had_d) return kErrGeometry;   // the APR rotation path is not this helper's scope
     if (!strata::kernels::native_expert_supported(fmt.gu_type, fmt.d_type, fmt.n_embd, fmt.n_ff))
         return kErrGeometry;
+    if (req.image_format == 2) {
+        if (fmt.gu_act != (int) GGML_TYPE_Q8_K)
+            return kErrGeometry;   // this layer's own gate/up format is not Q8_K: not this wire's layer
+        if (!strata::kernels::native_expert_q8k_supported(fmt.gu_type, fmt.n_embd))
+            return kErrGeometry;   // this layer's gate/up weight type has no Q8_K kernel
+    }
 
     // The claims: the pairs whose expert the helper holds and the primary does not own.  A pair whose
     // expert is primary-resident or not resident HERE is ABSENT from the reply - the engine's
@@ -751,8 +772,12 @@ int serve_prompt(Helper& hp, const std::vector<uint8_t>& body, uint32_t req_id, 
     // the same quantizer the decode contract pins) - upload verbatim, no requantization.  image_format
     // 1 (M4c (b)) arrives as fp32 rows: quantize HERE with the pinned twin - the same bytes for the
     // same floats - then the same upload.  The engine's critical path skipped this work entirely.
+    // image_format 2 arrives as Q8_K blocks - the CPU reference's own gate/up image
+    // (native_quant_act engine-side) - uploaded verbatim like format 0, at its own row size.
+    const bool img_q8k = req.image_format == 2;
     const uint8_t* img = q8;
-    const size_t up_bytes = (size_t) n_sel * (size_t) (H / 32) * 36;
+    const size_t up_bytes = (size_t) n_sel *
+        (img_q8k ? (size_t) (H / 256) * 292 : (size_t) (H / 32) * 36);
     if (req.image_format == 1) {
         if (hp.h_q8_p_scratch.size() < up_bytes) hp.h_q8_p_scratch.resize(up_bytes);
         const float* fx = (const float*) q8;
@@ -777,10 +802,16 @@ int serve_prompt(Helper& hp, const std::vector<uint8_t>& body, uint32_t req_id, 
                     "prompt output clear", err)) return kErrInternal;
     if (!cuda_check(cudaMemsetAsync(hp.d_scratch_p, 0, (size_t) hp.prompt_scratch_bytes, prompt_stream(hp)),
                     "prompt scratch clear", err)) return kErrInternal;
-    strata::kernels::native_expert_grouped(L, hp.d_meta_p->ptr, hp.d_meta_p->start, &hp.d_meta_p->count,
-                                           hp.d_meta_p->dst, hp.d_meta_p->tok, groups, (int64_t) dst.size(),
-                                           (const uint8_t*) hp.d_q8_p, hp.d_scratch_p, hp.d_out_p, prompt_stream(hp));
-    if (!cuda_check(cudaGetLastError(), "native_expert_grouped prompt launch", err)) return kErrInternal;
+    if (img_q8k)
+        strata::kernels::native_expert_grouped_q8k(L, hp.d_meta_p->ptr, hp.d_meta_p->start, &hp.d_meta_p->count,
+                                                   hp.d_meta_p->dst, hp.d_meta_p->tok, groups, (int64_t) dst.size(),
+                                                   (const uint8_t*) hp.d_q8_p, hp.d_scratch_p, hp.d_out_p, prompt_stream(hp));
+    else
+        strata::kernels::native_expert_grouped(L, hp.d_meta_p->ptr, hp.d_meta_p->start, &hp.d_meta_p->count,
+                                               hp.d_meta_p->dst, hp.d_meta_p->tok, groups, (int64_t) dst.size(),
+                                               (const uint8_t*) hp.d_q8_p, hp.d_scratch_p, hp.d_out_p, prompt_stream(hp));
+    if (!cuda_check(cudaGetLastError(), img_q8k ? "native_expert_grouped_q8k prompt launch"
+                                                : "native_expert_grouped prompt launch", err)) return kErrInternal;
     if (!cuda_check(cudaStreamSynchronize(prompt_stream(hp)), "prompt row sync", err)) return kErrInternal;
 
     // H14's finite-row scan, mirrored: prove the rows before the engine refuses them.
@@ -1105,7 +1136,12 @@ accept_peer:
                     // helper serves, bounded by kMaxSelTok / kMaxRowsPerLayer).  Appended field: an R2
                     // client reads its 24-byte prefix and ignores this; a new client that sees the bit
                     // may use the tier, one that does not (an R2 helper) never sends kBeginP.
-                    ack.features = kFeaturePromptRows | kFeaturePromptF32;   // M4c (b): fp32 images accepted
+                    ack.features = kFeaturePromptRows | kFeaturePromptF32 | kFeatureQ8K;
+                    //   M4c (b): fp32 images accepted.  The Q8_K wire (kBeginQ8K / image_format 2 -
+                    //   the CPU reference's own gate/up image through native_expert_grouped_q8k) is
+                    //   advertised because this build compiled it; the ENGINE still opts in with
+                    //   STRATA_EXPERT_HELPER_Q8K, and a layer whose weight type the Q8_K kernel does
+                    //   not serve is refused by name at serve time (native_expert_q8k_supported).
                     // M7: the drafter lane is advertised ONLY when the drafter loaded, uploaded and
                     // bound - a peer that never advertised kFeatureDraft never sends kDraftCtx/kDraftReq,
                     // and one that did gets this transport's typed refusal if it sends them to a helper
@@ -1148,9 +1184,12 @@ accept_peer:
             filled = true;
             continue;
         }
-        if (head.type == kBegin) {
+        if (head.type == kBegin || head.type == kBeginQ8K) {
+            // kBeginQ8K (default OFF, the engine's STRATA_EXPERT_HELPER_Q8K): the same window
+            // request with the activations as Q8_K blocks, served under kBegin's own rules - this
+            // helper advertised kFeatureQ8K, so a peer that never saw the bit never sends the frame.
             if (!filled) { rc = kErrRequest; }
-            else rc = serve_begin(hp, body, head.req_id, head.seq, err, out);
+            else rc = serve_begin(hp, body, head.req_id, head.seq, err, out, head.type == kBeginQ8K);
             if (rc != kOk) {
                 ErrResp e;
                 e.status = rc;
@@ -1315,7 +1354,11 @@ int main(int argc, char** argv) {
     }    hp.scratch_bytes = (int64_t) std::max<size_t>(
         (size_t) strata::kernels::moe_hit_grouped_scratch_bytes(CAP, H, FF),
         strata::kernels::native_expert_scratch_bytes(CAP, FF));
-    hp.buffers_bytes = (int64_t) (CAP * (H / 32) * 36 + CAP * H * 4 + sizeof(GroupMeta) + (2u << 20));
+    // The Q8_K wire's image row (2920 B at this geometry) is 40 B larger than the q8_1's (2880):
+    // size the activation staging for whichever is larger, so both frames upload verbatim.
+    const int64_t window_img_bytes = (int64_t) std::max<size_t>((size_t) CAP * ((size_t) H / 32) * 36,
+                                                                (size_t) CAP * ((size_t) H / 256) * 292);
+    hp.buffers_bytes = (int64_t) (window_img_bytes + CAP * H * 4 + sizeof(GroupMeta) + (2u << 20));
     if (!cuda_check(cudaStreamCreateWithFlags(&hp.stream, cudaStreamNonBlocking), "stream", err)) return fail("buffers", err);
     if (std::getenv("STRATA_HELPER_STREAMS")) {             // L2: opt-in, default OFF
         if (!cuda_check(cudaStreamCreateWithFlags(&hp.stream_p, cudaStreamNonBlocking), "stream_p", err))
@@ -1331,7 +1374,7 @@ int main(int argc, char** argv) {
     // driver happens to keep the page mapped into the CPU (it flickered under fill churn -> SIGSEGV).
     if (!cuda_check(cudaHostAlloc((void**) &hp.d_meta, sizeof(GroupMeta), cudaHostAllocPortable | cudaHostAllocMapped),
                     "meta (pinned+mapped: serve_begin reads its fields on the host)", err)) return fail("buffers", err);
-    if (!cuda_check(cudaMalloc((void**) &hp.d_q8, (size_t) CAP * (H / 32) * 36), "activation", err)) return fail("buffers", err);
+    if (!cuda_check(cudaMalloc((void**) &hp.d_q8, (size_t) window_img_bytes), "activation", err)) return fail("buffers", err);
     // H10: serve_begin's row loop copies the rows out with a HOST memcpy - d_out must be pinned
     // host memory (mapped, so the grouped kernel writes it over PCIe like the in-process tier's
     // pinned rows), never plain cudaMalloc.
@@ -1346,14 +1389,16 @@ int main(int argc, char** argv) {
     hp.prompt_scratch_bytes = (int64_t) std::max<size_t>(
         (size_t) strata::kernels::moe_hit_grouped_scratch_bytes(kPromptRows, H, FF),
         strata::kernels::native_expert_scratch_bytes(kPromptRows, FF));
-    hp.prompt_buffers_bytes = (int64_t) ((int64_t) kPromptTok * (H / 32) * 36 + (int64_t) kPromptRows * H * 4
+    const int64_t prompt_img_bytes = (int64_t) std::max<size_t>((size_t) kPromptTok * ((size_t) H / 32) * 36,
+                                                                (size_t) kPromptTok * ((size_t) H / 256) * 292);
+    hp.prompt_buffers_bytes = (int64_t) (prompt_img_bytes + (int64_t) kPromptRows * H * 4
                                           + 2 * (int64_t) sizeof(GroupMetaP) + hp.prompt_scratch_bytes);
     hp.buffers_bytes += hp.prompt_buffers_bytes;
     if (!cuda_check(cudaHostAlloc((void**) &hp.h_meta_p, sizeof(GroupMetaP), cudaHostAllocPortable | cudaHostAllocMapped),
                     "prompt meta staging", err)) return fail("buffers", err);
     if (!cuda_check(cudaHostAlloc((void**) &hp.d_meta_p, sizeof(GroupMetaP), cudaHostAllocPortable | cudaHostAllocMapped),
                     "prompt meta (pinned+mapped: serve_prompt reads its fields on the host)", err)) return fail("buffers", err);
-    if (!cuda_check(cudaMalloc((void**) &hp.d_q8_p, (size_t) kPromptTok * (H / 32) * 36), "prompt activation", err))
+    if (!cuda_check(cudaMalloc((void**) &hp.d_q8_p, (size_t) prompt_img_bytes), "prompt activation", err))
         return fail("buffers", err);
     if (!cuda_check(cudaHostAlloc((void**) &hp.d_out_p, (size_t) kPromptRows * H * 4,
                                   cudaHostAllocPortable | cudaHostAllocMapped),

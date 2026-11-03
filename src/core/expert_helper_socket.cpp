@@ -7,6 +7,8 @@
 
 #include "ggml.h"   // the fp16 contract of the q8_1 activation blocks the proxy sends (CPU-safe, no ggml compute)
 
+#include <cstdlib>   // std::getenv (the Q8_K wire's opt-in)
+
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
@@ -123,6 +125,61 @@ void quantize_q8_1_cpu(const float* x, int64_t n, uint8_t* y) {
             qs[i] = q;
         }
         std::memcpy(y + ib * 36, ds, 4);
+    }
+}
+
+// ---- The prompt tier's Q8_K row quantizer (the kBeginP image_format 2 payload). ----
+//
+// ggml's scalar reference `quantize_row_q8_K_ref` (ggml-quants.c) semantics, restated with the
+// same bits so the frame's image is byte-for-byte the CPU reference's own gate/up activation:
+// per 256 values, amax/max with strict `>` (the first maximum wins); the all-zero block writes
+// d = 0 and zeroed qs; otherwise `iscale = -127/max` (fp32), `v = nearest_int(iscale * x)` with
+// ggml's magic-number round-to-nearest, `qs = MIN(127, v)`, `d = 1/iscale` (the RECIPROCAL, not
+// -max/127 - a different rounding), and 16 int16 bsums (the sums of each 16 qs).  ggml's
+// reference leaves the zero block's bsums unwritten; this twin zeroes them: the Q8_K gate/up
+// kernel reads only d and qs of an activation block (native_gu_q8k_kernel), so the bytes it
+// consumes are identical either way and the zeroed tail is deterministic on the wire.  The
+// producer the CPU-offloaded rows themselves run is native_quant_act, whose AVX2/AVX1 Q8_K
+// writers are ggml-byte-identical by their own pins - so this twin and the reference agree with
+// them on every value.  The acceptance test is the same rule as quantize_q8_1_cpu's above: the
+// helper's rows on hardware, with the golden vectors in tests/core/expert_helper_socket_test.cpp
+// as a regression pin of THIS code.
+void quantize_row_q8k_cpu(const float* x, int64_t n, uint8_t* y) {
+    auto nearest_int = [](float fval) {   // ggml's magic-number round-to-nearest, same bits
+        const float val = fval + 12582912.0f;
+        int32_t i;
+        std::memcpy(&i, &val, sizeof(i));
+        return (i & 0x007fffff) - 0x00400000;
+    };
+    constexpr int64_t kQK = 256;   // ggml's QK_K
+    for (int64_t ib = 0, nb = n / kQK; ib < nb; ++ib) {
+        const float* xb = x + ib * kQK;
+        uint8_t* yb = y + ib * 292;   // sizeof(block_q8_K): fp32 d + qs[256] + 16 int16 bsums
+        float mx = 0.0f, amax = 0.0f;
+        for (int j = 0; j < kQK; ++j) {
+            const float ax = std::fabs(xb[j]);
+            if (ax > amax) { amax = ax; mx = xb[j]; }
+        }
+        float* d = (float*) (void*) yb;
+        int8_t* qs = (int8_t*) (yb + 4);
+        int16_t* bsums = (int16_t*) (void*) (yb + 4 + kQK);
+        if (amax == 0.0f) {
+            *d = 0.0f;
+            std::memset(qs, 0, (size_t) kQK);
+            std::memset(bsums, 0, 16 * sizeof(int16_t));
+            continue;
+        }
+        const float iscale = -127.0f / mx;
+        for (int j = 0; j < kQK; ++j) {
+            const int v = nearest_int(iscale * xb[j]);
+            qs[j] = (int8_t) (v < 127 ? v : 127);
+        }
+        for (int j = 0; j < kQK / 16; ++j) {
+            int sum = 0;
+            for (int ii = 0; ii < 16; ++ii) sum += qs[j * 16 + ii];
+            bsums[j] = (int16_t) sum;
+        }
+        *d = 1.0f / iscale;
     }
 }
 
@@ -296,6 +353,8 @@ int ExpertHelperClient::hello(int64_t n_layers, int64_t n_expert, int64_t n_embd
              (ack.features & expert_helper::kFeatureDraft) != 0;   // M7: the drafter lane
     draft_bf16_ = (body.size() >= sizeof(expert_helper::HelloAck)) &&
                   (ack.features & expert_helper::kFeatureDraftBf16) != 0;   // L8: bf16 taps
+    q8k_ = (body.size() >= sizeof(expert_helper::HelloAck)) &&
+           (ack.features & expert_helper::kFeatureQ8K) != 0;   // the Q8_K activation wire
     seq_ = head.seq;
     s.release();
     return expert_helper::kOk;
@@ -373,6 +432,47 @@ int ExpertHelperClient::begin(int32_t layer, int32_t n_tok, const int32_t* ids, 
     s.adopt(fd_);
     const auto t0 = std::chrono::steady_clock::now();
     const int rc = s.write_frame(expert_helper::kBegin, ++req_id_, payload.data(), payload.size(),
+                                 rel(deadline_ms, kDeadlineDefaultMs));
+    ms_begin_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    if (rc != expert_helper::kOk) { s.release(); close(); return rc; }
+    begin_outstanding_ = true;
+    begin_seq_ = s.seq_out();
+    seq_ = begin_seq_;
+    ++requests_;
+    s.release();
+    return expert_helper::kOk;
+}
+
+int ExpertHelperClient::begin_q8k(int32_t layer, int32_t n_tok, const int32_t* ids, const int32_t* primary_res,
+                                  const uint8_t* q8k, size_t q8k_bytes, int64_t deadline_ms) {
+    if (fd_ < 0) return expert_helper::kErrUnhealthy;
+    // The negotiation gate, BEFORE any write: kBeginQ8K is a frame type an unadvertised peer cannot
+    // type-decode, so it is refused HERE and never reaches the wire (the same rule as begin_prompt's).
+    if (!q8k_) return expert_helper::kErrRequest;
+    if (n_expert_ <= 0) return expert_helper::kErrGeometry;   // the handshake pins the geometry
+    const int64_t n_expert = n_expert_;
+    if (n_tok < 1 || n_tok > expert_helper::kMaxTok) return expert_helper::kErrGeometry;
+    const int64_t n = n_tok * expert_helper::kK;
+    const size_t res_bytes = (size_t) ((n_tok * n_expert + 7) / 8);   // the layer's primary residency bitmap
+    expert_helper::BeginReq req;
+    req.layer = layer;
+    req.n_tok = n_tok;
+    req.k = (int32_t) expert_helper::kK;
+    req.ids_bytes = (int32_t) (n * 4);
+    req.n_q8 = (int32_t) q8k_bytes;   // Q8_K blocks: n_tok * (n_embd/256) * 292
+    std::vector<uint8_t> payload(sizeof(req) + (size_t) n * 4 + res_bytes + q8k_bytes, 0);
+    std::memcpy(payload.data(), &req, sizeof(req));
+    std::memcpy(payload.data() + sizeof(req), ids, (size_t) n * 4);   // the routed ids, routing order
+    for (int64_t e = 0; e < n_expert; ++e)
+        if (primary_res && primary_res[(size_t) layer * (size_t) n_expert + (size_t) e] >= 0)
+            payload[sizeof(req) + (size_t) n * 4 + (size_t) (e >> 3)] |= (uint8_t) (1u << (e & 7));
+    std::memcpy(payload.data() + sizeof(req) + (size_t) n * 4 + res_bytes, q8k, q8k_bytes);
+    // The ONE outstanding request rule is begin's own (io_mtx_ across the write; finish reads the reply).
+    std::lock_guard<std::mutex> io_lk(io_mtx_);
+    expert_helper::Socket s;
+    s.adopt(fd_);
+    const auto t0 = std::chrono::steady_clock::now();
+    const int rc = s.write_frame(expert_helper::kBeginQ8K, ++req_id_, payload.data(), payload.size(),
                                  rel(deadline_ms, kDeadlineDefaultMs));
     ms_begin_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     if (rc != expert_helper::kOk) { s.release(); close(); return rc; }
@@ -518,9 +618,25 @@ int ExpertHelperClient::begin_prompt(int32_t layer, const ExpertHelperPromptPlan
     // contiguous copy, no engine-side quantize (that cost leaves this critical path; the helper
     // quantizes in its own process, overlapped with the primary's compute).  q8 peers keep the
     // engine-side quantizer the decode contract pins.
-    const bool f32_img = prompt_f32_;
-    const int64_t n_img = f32_img ? n_sel * n_embd_ * (int64_t) sizeof(float)
-                                  : n_sel * (n_embd_ / 32) * 36;
+    //
+    // The Q8_K wire (default OFF: STRATA_EXPERT_HELPER_Q8K with a peer that advertised
+    // kFeatureQ8K): the image is the CPU reference's own gate/up activation - quantize_row_q8k_cpu
+    // above restates ggml's reference quantizer with the same bits - so the helper's grouped Q8_K
+    // kernel reproduces the reference arithmetic (measured, docs/work/MIXED_P2_REFERENCE.md: the
+    // q8_1 wire's worst output rel 2.77e-2 falls to 1.78e-7, the down kernel's summation-order
+    // floor).  Any miss keeps TODAY's image exactly.
+    //
+    // The client's own gates are ENV + PEER BIT + GEOMETRY alone: whether the LAYER belongs on the
+    // Q8_K wire (its pack format is Q8_K gate/up and its weight type has a Q8_K kernel) is the
+    // HELPER's check, like kBeginP's other refusals - it answers image_format 2 with this
+    // transport's typed kError, the prompt tier's same-layer CPU fallback serves the rows, and a
+    // mixed build can never misparse (the format never reaches a peer without the bit).
+    const bool q8k_img = std::getenv("STRATA_EXPERT_HELPER_Q8K") != nullptr && q8k_ &&
+                         n_embd_ > 0 && n_embd_ % 256 == 0;
+    const bool f32_img = prompt_f32_ && !q8k_img;
+    const int64_t n_img = q8k_img ? n_sel * (n_embd_ / 256) * 292
+                                  : f32_img ? n_sel * n_embd_ * (int64_t) sizeof(float)
+                                            : n_sel * (n_embd_ / 32) * 36;
     const size_t res_bytes = (size_t) ((n_sel * n_expert_ + 7) / 8);   // kBegin's own bitmap shape
     const size_t total = sizeof(BeginPReq) + (size_t) rows * 8 + res_bytes + (size_t) n_img;
     if (n_img <= 0 || total > kMaxFramePayload) return kErrGeometry;   // 84 MB fp32 at the caps; over = refusal
@@ -532,7 +648,7 @@ int ExpertHelperClient::begin_prompt(int32_t layer, const ExpertHelperPromptPlan
     req.k = (int32_t) kK;
     req.n_pairs = (int32_t) rows;
     req.n_q8 = (int32_t) n_img;
-    req.image_format = f32_img ? 1 : 0;
+    req.image_format = q8k_img ? 2 : (f32_img ? 1 : 0);
     std::memcpy(payload.data(), &req, sizeof(req));
     for (int64_t i = 0; i < rows; ++i) {
         std::memcpy(payload.data() + sizeof(req) + (size_t) i * 8, &wire_token[(size_t) i], 4);
@@ -543,10 +659,15 @@ int ExpertHelperClient::begin_prompt(int32_t layer, const ExpertHelperPromptPlan
         if (host_res != nullptr && host_res[(size_t) layer * (size_t) n_expert_ + (size_t) e] >= 0)
             res[(size_t) (e >> 3)] |= (uint8_t) (1u << (e & 7));
     // The image, built HERE from the tier's OWN rows: fp32 ships them verbatim (one contiguous
-    // copy - ext_x_ holds rows 0..n_sel-1 densely); q8 uses the SAME quantizer the decode contract pins.
+    // copy - ext_x_ holds rows 0..n_sel-1 densely); q8 uses the SAME quantizer the decode contract
+    // pins; q8k uses the CPU reference's own quantizer, per row, at the pack's declared row size.
     uint8_t* q8 = res + res_bytes;
     const float* src = (const float*) ext_x_;
-    if (f32_img) {
+    if (q8k_img) {
+        for (int64_t r = 0; r < n_sel; ++r)
+            quantize_row_q8k_cpu(src + (size_t) r * (size_t) n_embd_, n_embd_,
+                                 q8 + (size_t) r * (size_t) (n_embd_ / 256) * 292);
+    } else if (f32_img) {
         std::memcpy(q8, src, (size_t) n_img);
     } else {
         for (int64_t r = 0; r < n_sel; ++r)

@@ -80,14 +80,23 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
                            int64_t cap_entries, const void* x_q8_1, void* scratch, float* out, void* stream,
                            int64_t grid_groups = 0);
 
-/// Diagnostic only (the mixed-GPU P2 harness; no serving caller): `native_expert_grouped` with the CPU
-/// reference's gate/up activations - `x_q8_k` is ggml's Q8_K image (292 bytes per 256 values: FP32 d, qs[256]),
+/// `native_expert_grouped` with the CPU reference's gate/up activations - the mixed-GPU P2 harness's
+/// diagnostic arm, and the expert helper's opt-in Q8_K wire (kBeginQ8K / image_format 2, default
+/// OFF: the engine's STRATA_EXPERT_HELPER_Q8K) as the serving caller.  `x_q8_k` is ggml's Q8_K image
+/// (292 bytes per 256 values: FP32 d, qs[256]),
 /// one FP32-scaled product per super-block, the integer sub-sums of the Split applies.  SwiGLU and the down rows
 /// are the default path's.  Gate/up types IQ2_XXS/XS, IQ3_XXS/S and IQ2_S only; an unknown type exits as
 /// `native_expert_grouped` does.  Scratch: `native_expert_scratch_bytes`.
 void native_expert_grouped_q8k(const NativeExpertLayout& L, const unsigned long long* grp_ptr, const int32_t* grp_start,
                                const int32_t* n_groups, const int32_t* ent_dst, const int32_t* ent_tok, int64_t cap_groups,
                                int64_t cap_entries, const void* x_q8_k, void* scratch, float* out, void* stream);
+
+/// true when `native_expert_grouped_q8k` serves this gate/up weight type at this n_embd: the i-quant
+/// set it is compiled for (IQ2_XXS/XS/S, IQ3_XXS/S) and whole 256-value super-blocks.  The engine
+/// (before it opts a layer into the Q8_K wire) and the helper (before it serves the frame) ask the
+/// same single question - no side keeps its own copy of the set.
+bool native_expert_q8k_supported(int gu_type, int64_t n_embd);
+
 /// true: `native_expert_grouped`'s launches before the group stride (STRATA_GROUPED_V1=1 at startup) - a block row
 /// per possible group, SwiGLU and the q8_1 quantization as two kernels over all cap_entries.  Bitwise the same results
 /// (native_grouped_parity checks it); kept for A/B timing.  Set before graph capture; captured graphs keep theirs.
