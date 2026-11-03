@@ -217,6 +217,13 @@ bool diff_q8_input(const float* x, int64_t n, const float* primary_scales,
                    const int8_t* primary_qs, Q8InputDiff& out, std::string& err);
 std::string q8_input_diff_json(const Q8InputDiff& d);
 
+// Diagnostic counterfactual only: preserve CPU Q8_K/Q8_0 integers and scales in
+// the helper's 36-byte Q8_1 wire blocks. Q8_K scales necessarily round to half.
+// Also return the original CPU reconstruction, before that half conversion.
+bool cpu_activation_to_helper(int type, const std::vector<uint8_t>& raw, int64_t n,
+                              std::vector<uint8_t>& wire, std::vector<float>& reconstructed,
+                              std::string& err);
+
 // ============================== 3. the layer's claim set ==============================
 //
 // The design's selection is `select_prompt_rows` over the layer's per-expert token lists.  This builds its

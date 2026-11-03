@@ -32,6 +32,51 @@ namespace p2 {
 
 namespace eh = core::expert_helper;
 
+bool cpu_activation_to_helper(int type, const std::vector<uint8_t>& raw, int64_t n,
+                              std::vector<uint8_t>& wire, std::vector<float>& reconstructed,
+                              std::string& err) {
+    const int block = type == GGML_TYPE_Q8_K ? 256 : type == GGML_TYPE_Q8_0 ? 32 : 0;
+    const size_t bytes = block == 256 ? 292 : 34;
+    if (!block || n <= 0 || n % block || ggml_type_size((ggml_type) type) != bytes ||
+        (uint64_t) (n / block) != raw.size() / bytes || raw.size() % bytes) {
+        err = "CPU activation transfer requires an exact audited Q8_K/Q8_0 image";
+        return false;
+    }
+    wire.assign((size_t) n / 32 * 36, 0);
+    reconstructed.resize((size_t) n);
+    for (int64_t i = 0; i < n; i += 32) {
+        const uint8_t* src = raw.data() + (size_t) (i / block) * bytes;
+        float d;
+        if (block == 256) std::memcpy(&d, src, 4);
+        else {
+            ggml_fp16_t dh;
+            std::memcpy(&dh, src, 2);
+            d = ggml_fp16_to_fp32(dh);
+        }
+        const ggml_fp16_t dh = ggml_fp32_to_fp16(d);
+        if (!std::isfinite(d) || !std::isfinite(ggml_fp16_to_fp32(dh))) {
+            err = "CPU activation scale cannot be represented by the helper";
+            return false;
+        }
+        const int8_t* qs = (const int8_t*) (src + (block == 256 ? 4 : 2) + i % block);
+        uint8_t* dst = wire.data() + (size_t) (i / 32) * 36;
+        int sum = 0;
+        for (int j = 0; j < 32; ++j) {
+            reconstructed[(size_t) i + j] = d * qs[j];
+            sum += qs[j];
+        }
+        const ggml_fp16_t sh = ggml_fp32_to_fp16(d * sum);
+        if (!std::isfinite(ggml_fp16_to_fp32(sh))) {
+            err = "CPU activation sum cannot be represented by the helper";
+            return false;
+        }
+        std::memcpy(dst, &dh, 2);
+        std::memcpy(dst + 2, &sh, 2);
+        std::memcpy(dst + 4, qs, 32);
+    }
+    return true;
+}
+
 bool decode_mmq_d4(const std::vector<uint8_t>& raw, int64_t rows, int64_t cols,
                    std::vector<float>& scales, std::vector<int8_t>& qs, std::string& err) {
     constexpr size_t bytes = 4 * sizeof(float) + 128;

@@ -3045,6 +3045,39 @@ static void section_q8_input() {
           "nonfinite primary scales refuse rather than producing invalid JSON");
 }
 
+static void section_cpu_activation_transfer() {
+    std::vector<uint8_t> raw(292, 0), wire;
+    std::vector<float> reconstructed;
+    std::string err;
+    float d = -0.125f;
+    std::memcpy(raw.data(), &d, 4);
+    for (int j = 0; j < 256; ++j) raw[4 + j] = (uint8_t) (int8_t) (j - 128);
+    check(cpu_activation_to_helper(GGML_TYPE_Q8_K, raw, 256, wire, reconstructed, err) &&
+          wire.size() == 8 * 36 && reconstructed[0] == 16.f && reconstructed[255] == -15.875f,
+          "CPU Q8_K reconstruction preserves signed scales and -128 integers");
+    bool exact = wire.size() == 8 * 36;
+    for (int b = 0; b < 8 && exact; ++b) {
+        ggml_fp16_t dh, sh;
+        std::memcpy(&dh, wire.data() + b * 36, 2);
+        std::memcpy(&sh, wire.data() + b * 36 + 2, 2);
+        int sum = 0;
+        for (int j = 0; j < 32; ++j) sum += b * 32 + j - 128;
+        exact = ggml_fp16_to_fp32(dh) == d && ggml_fp16_to_fp32(sh) == d * sum &&
+                std::memcmp(wire.data() + b * 36 + 4, raw.data() + 4 + b * 32, 32) == 0;
+    }
+    check(exact, "CPU Q8_K transfer replicates each 256-scale over eight wire blocks, with per32 sums");
+    raw.assign(34, 0);
+    const ggml_fp16_t dh = ggml_fp32_to_fp16(0.25f);
+    std::memcpy(raw.data(), &dh, 2);
+    raw[2] = (uint8_t) (int8_t) -127;
+    check(cpu_activation_to_helper(GGML_TYPE_Q8_0, raw, 32, wire, reconstructed, err) &&
+          reconstructed[0] == -31.75f && wire[4] == raw[2],
+          "CPU Q8_0 transfer preserves down-input scale and integers");
+    check(!cpu_activation_to_helper(GGML_TYPE_Q8_K, raw, 32, wire, reconstructed, err) &&
+          !cpu_activation_to_helper(GGML_TYPE_F32, raw, 32, wire, reconstructed, err),
+          "CPU transfer refuses wrong geometry and unaudited formats");
+}
+
 int main(int argc, char** argv) {
     // The strict-parser integration seam: emit the deterministic CPU self-test document (no GPU, no
     // helper, no pack) so tools/mixed_gpu/p2_measure/p2_report_audit.py and
@@ -3085,6 +3118,7 @@ int main(int argc, char** argv) {
     section_fault_attribution();
     section_product_write_geometry();
     section_q8_input();
+    section_cpu_activation_transfer();
     std::printf("%s: %d failure(s)\n", failures ? "p2_measure_test: FAIL" : "p2_measure_test: PASS",
                 failures);
     return failures ? 1 : 0;

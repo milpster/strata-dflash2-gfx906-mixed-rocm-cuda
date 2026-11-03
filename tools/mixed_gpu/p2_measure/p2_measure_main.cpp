@@ -133,6 +133,9 @@ void usage() {
         "                      the helper's host Q8_1 quantizer on the SAME saved float rows.\n"
         "                      No server/helper/socket or inference; --socket/--arm-groups refused.\n"
         "                      Writes a separate producer-diagnostic JSON, refuses overwrite.\n");
+    std::printf("  --expert-only       DIAGNOSTIC: actual single-entry CPU vs grouped helper products,\n"
+                "                      with matched-input counterfactuals. No helper process/socket.\n"
+                "                      Requires explicit --max-tokens 1..8; first routed expert/token.\n");
 }
 
 struct Opts {
@@ -148,6 +151,7 @@ struct Opts {
     uint64_t seed = 271828;
     bool synthetic = false;
     bool quantizer_only = false;
+    bool expert_only = false;
     HelperSetup hs;
     int64_t max_fill_pairs = 0;
     int64_t max_device_mib = 4000;
@@ -183,6 +187,7 @@ bool parse(int argc, char** argv, Opts& o, std::string& err) {
         else if (a == "--max-tokens") { if (!val(v)) return false; o.max_tokens = std::atoll(v.c_str()); }
         else if (a == "--arm-groups") o.arm_groups = true;
         else if (a == "--quantizer-only") o.quantizer_only = true;
+        else if (a == "--expert-only") o.expert_only = true;
         else if (a == "--eps") { if (!val(v)) return false; o.eps = std::atof(v.c_str()); }
         else if (a == "--slots") { if (!val(v)) return false; o.hs.slots = std::atoll(v.c_str()); }
         else if (a == "--reserve-mib") { if (!val(v)) return false; o.hs.reserve_mib = std::atoll(v.c_str()); }
@@ -196,12 +201,17 @@ bool parse(int argc, char** argv, Opts& o, std::string& err) {
         else if (a == "--help") { usage(); std::exit(0); }
         else { err = "unknown argument '" + a + "' (--help for the list)"; return false; }
     }
-    if (o.pack.empty() || (!o.quantizer_only && o.socket.empty()) || o.out.empty() || (o.activations.empty() && !o.synthetic)) {
+    if (o.pack.empty() || (!o.quantizer_only && !o.expert_only && o.socket.empty()) || o.out.empty() || (o.activations.empty() && !o.synthetic)) {
         err = "--pack, --socket, --activations and --out are all required";
         return false;
     }
     if (o.quantizer_only && (!o.socket.empty() || o.arm_groups || o.max_device_mib <= 0)) {
         err = "--quantizer-only needs no --socket/--arm-groups and a positive --max-device-mib";
+        return false;
+    }
+    if (o.expert_only && (o.quantizer_only || !o.socket.empty() || o.arm_groups ||
+                          o.max_tokens < 1 || o.max_tokens > 8 || o.max_device_mib <= 0)) {
+        err = "--expert-only requires --max-tokens 1..8, positive device budget, no socket/arm/quantizer-only";
         return false;
     }
     if (o.eps <= 0.0) { err = "--eps must be > 0"; return false; }
@@ -384,6 +394,147 @@ int run_quantizer_only(const Opts& o, const std::vector<std::string>& fixtures_u
         std::fprintf(stderr, "quantizer-only: REFUSAL: output exists or cannot be created: %s\n", o.out.c_str());
         return 6;
     }
+    const bool written = std::fwrite(text.data(), 1, text.size(), output) == text.size();
+    const bool closed = std::fclose(output) == 0;
+    return written && closed ? 0 : 6;
+}
+
+// One real routed expert at a time: change only the activation representation,
+// leaving weights, grouped kernels and output projection fixed. No serving path.
+int run_expert_only(const Opts& o, const std::vector<std::string>& fixtures_used,
+                    const cpu::ExpertLayout& layout, const BlobSource& blob,
+                    std::ifstream& pk, uint64_t pack_bytes, cudaStream_t cs,
+                    const cudaDeviceProp& props) {
+    std::string err;
+    std::ostringstream report;
+    report << std::setprecision(17)
+           << "{\"schema\":\"strata-expert-contract-diagnostic-v1\",\"device\":\""
+           << json_escape(props.name) << "\",\"synthetic\":" << (o.synthetic ? "true" : "false")
+           << ",\"selection\":\"first routed expert per token; single-entry CPU and GPU\",\"records\":[";
+    bool first = true;
+    auto metric = [&](const char* name, const std::vector<float>& a, const std::vector<float>& b) {
+        const RowDiff d = diff_rows(a.data(), b.data(), (int64_t) a.size());
+        if (d.nonfinite) { err = "nonfinite expert diagnostic row"; return false; }
+        report << ",\"" << name << "\":{\"max_abs\":" << d.max_abs << ",\"max_rel\":" << d.max_rel
+               << ",\"sum_sq_err\":" << d.sum_sq_err << ",\"sum_sq_ref\":" << d.sum_sq_ref
+               << ",\"a_fnv\":\"" << d.a_fnv << "\",\"b_fnv\":\"" << d.b_fnv << "\"}";
+        return true;
+    };
+    for (const std::string& fid : fixtures_used) {
+        for (int64_t l = o.layer_lo; l <= o.layer_hi; ++l) {
+            const auto& f = layout.fmt[(size_t) l];
+            if (f.gu_act != GGML_TYPE_Q8_K || f.d_act != GGML_TYPE_Q8_0) {
+                std::fprintf(stderr, "expert-only: REFUSAL: unaudited activation types %d/%d\n", f.gu_act, f.d_act);
+                return 3;
+            }
+            Activations a;
+            if (o.synthetic) synth_activations(o.seed, fixture_index_of(fid), l, o.max_tokens, a);
+            else if (!load_moe_dump(o.activations + "/" + fid + "." + std::to_string(l) + ".bin",
+                                    o.max_tokens, a, err)) {
+                std::fprintf(stderr, "expert-only: REFUSAL: %s\n", err.c_str()); return 5;
+            }
+            const auto L = strata::kernels::native_expert_layout(f.gu_type, f.d_type, kN, kFF);
+            const size_t scratch_bytes = strata::kernels::native_expert_scratch_bytes(1, kFF);
+            const size_t fa = ((size_t) kFF * 4 + 255) & ~(size_t) 255;
+            const size_t xqb = (size_t) kN / 32 * 36, hqb = (size_t) kFF / 32 * 36;
+            const size_t need = f.bytes + scratch_bytes + xqb + (size_t) kN * 4 + 64;
+            if (need > (uint64_t) o.max_device_mib * 1048576 || 3 * fa + hqb > scratch_bytes) return 4;
+            DevMem mem;
+            uint8_t* db = (uint8_t*) mem.take(f.bytes, err);
+            uint8_t* scratch = (uint8_t*) mem.take(scratch_bytes, err);
+            void* xq = mem.take(xqb, err);
+            float* out = (float*) mem.take((size_t) kN * 4, err);
+            auto* ptr = (unsigned long long*) mem.take(8, err);
+            auto* meta = (int32_t*) mem.take(5 * 4, err);
+            if (!db || !scratch || !xq || !out || !ptr || !meta) return 4;
+            const unsigned long long address = (unsigned long long) db;
+            const int32_t host_meta[5] = {0, 1, 1, 0, 0}; // starts, count, dst, tok
+            if (!ck(cudaMemcpyAsync(ptr, &address, 8, cudaMemcpyHostToDevice, cs), "expert pointer", err) ||
+                !ck(cudaMemcpyAsync(meta, host_meta, sizeof host_meta, cudaMemcpyHostToDevice, cs), "expert metadata", err)) return 4;
+            struct Snapshot { std::vector<float> h, y; };
+            auto gpu = [&](const std::vector<uint8_t>& input, bool v1, const std::vector<uint8_t>* hq,
+                           Snapshot& s) {
+                strata::kernels::native_grouped_set_v1(v1);
+                strata::kernels::native_expert_set_mode(0, hq ? 2 : 0);
+                if (!ck(cudaMemcpyAsync(xq, input.data(), xqb, cudaMemcpyHostToDevice, cs), "expert input", err) ||
+                    !ck(cudaMemsetAsync(scratch, 0, scratch_bytes, cs), "expert scratch", err) ||
+                    !ck(cudaMemsetAsync(out, 0, (size_t) kN * 4, cs), "expert output", err)) return false;
+                if (hq && !ck(cudaMemcpyAsync(scratch + 3 * fa, hq->data(), hqb, cudaMemcpyHostToDevice, cs),
+                              "matched down activation", err)) return false;
+                strata::kernels::native_expert_grouped(L, ptr, meta, meta + 2, meta + 3, meta + 4,
+                                                       1, 1, xq, scratch, out, cs);
+                s.h.resize((size_t) kFF); s.y.resize((size_t) kN);
+                return ck(cudaMemcpyAsync(s.h.data(), scratch + 2 * fa, (size_t) kFF * 4,
+                                           cudaMemcpyDeviceToHost, cs), "expert hidden", err) &&
+                       ck(cudaMemcpyAsync(s.y.data(), out, (size_t) kN * 4, cudaMemcpyDeviceToHost, cs),
+                          "expert readback", err) && ck(cudaStreamSynchronize(cs), "expert sync", err);
+            };
+            for (int64_t t = 0; t < a.T; ++t) {
+                const int64_t e = a.ids[(size_t) t * kK];
+                std::vector<uint8_t> weights(f.bytes), ca(f.act_bytes), chq(f.h_bytes), helper(xqb), matched_x, matched_h;
+                if (!read_blob_row(pk, layout, blob, l, e, weights.data(), pack_bytes, err) ||
+                    !ck(cudaMemcpyAsync(db, weights.data(), weights.size(), cudaMemcpyHostToDevice, cs), "expert blob", err)) {
+                    std::fprintf(stderr, "expert-only: REFUSAL: %s\n", err.c_str()); return 4;
+                }
+                const float* x = a.x.data() + (size_t) t * kN;
+                std::vector<float> cpu_h((size_t) kFF), cpu_y((size_t) kN), cpu_x, cpu_h_dequant;
+                cpu::native_quant_act(f, x, ca.data());
+                const void* ap = ca.data(); float* hp = cpu_h.data();
+                cpu::native_gu_rows(f, weights.data(), &ap, 1, &hp, 0, (int) kFF);
+                cpu::native_quant_h(f, cpu_h.data(), chq.data());
+                const void* hqp = chq.data(); float* yp = cpu_y.data();
+                cpu::native_down_rows(f, weights.data(), &hqp, 1, &yp, 0, (int) kN);
+                if (!cpu_activation_to_helper(f.gu_act, ca, kN, matched_x, cpu_x, err) ||
+                    !cpu_activation_to_helper(f.d_act, chq, kFF, matched_h, cpu_h_dequant, err)) {
+                    std::fprintf(stderr, "expert-only: REFUSAL: %s\n", err.c_str()); return 5;
+                }
+                strata::core::quantize_q8_1_cpu(x, kN, helper.data());
+                std::vector<float> helper_x((size_t) kN);
+                for (int64_t j = 0; j < kN; ++j) {
+                    ggml_fp16_t dh;
+                    const uint8_t* b = helper.data() + (size_t) (j / 32) * 36;
+                    std::memcpy(&dh, b, 2);
+                    helper_x[(size_t) j] = ggml_fp16_to_fp32(dh) * ((const int8_t*) (b + 4))[j % 32];
+                }
+                Snapshot actual, repeat, observable, cx, ch;
+                if (!gpu(helper, false, nullptr, actual) || !gpu(helper, false, nullptr, repeat) ||
+                    !gpu(helper, true, nullptr, observable) || !gpu(matched_x, true, nullptr, cx) ||
+                    !gpu(helper, true, &matched_h, ch)) {
+                    std::fprintf(stderr, "expert-only: REFUSAL: %s\n", err.c_str()); return 4;
+                }
+                if (!first) report << ',';
+                first = false;
+                report << "{\"fixture\":\"" << fid << "\",\"layer\":" << l << ",\"token\":" << t
+                       << ",\"expert\":" << e << ",\"gu_type\":" << f.gu_type << ",\"d_type\":" << f.d_type
+                       << ",\"gu_activation\":" << f.gu_act << ",\"down_activation\":" << f.d_act
+                       << ",\"input_fnv\":\"" << fnv64(x, (size_t) kN * 4) << "\",\"blob_fnv\":\""
+                       << fnv64(weights.data(), weights.size()) << "\",\"helper_repeat_equal\":"
+                       << (std::memcmp(actual.y.data(), repeat.y.data(), (size_t) kN * 4) == 0 ? "true" : "false");
+                if (!metric("input_cpu_vs_helper", cpu_x, helper_x) ||
+                    !metric("hidden_cpu_vs_helper", cpu_h, observable.h) ||
+                    !metric("hidden_cpu_vs_matched_input", cpu_h, cx.h) ||
+                    !metric("output_cpu_vs_helper", cpu_y, actual.y) ||
+                    !metric("output_cpu_vs_matched_input", cpu_y, cx.y) ||
+                    !metric("output_cpu_vs_matched_down", cpu_y, ch.y) ||
+                    !metric("output_default_vs_observable", actual.y, observable.y)) {
+                    std::fprintf(stderr, "expert-only: REFUSAL: %s\n", err.c_str()); return 5;
+                }
+                report << '}';
+                std::printf("expert-only: %s L%lld T%lld E%lld hidden_rel=%g matched=%g output_rel=%g down_matched=%g\n",
+                            fid.c_str(), (long long) l, (long long) t, (long long) e,
+                            diff_rows(cpu_h.data(), observable.h.data(), kFF).max_rel,
+                            diff_rows(cpu_h.data(), cx.h.data(), kFF).max_rel,
+                            diff_rows(cpu_y.data(), actual.y.data(), kN).max_rel,
+                            diff_rows(cpu_y.data(), ch.y.data(), kN).max_rel);
+                std::fflush(stdout);
+            }
+        }
+    }
+    report << "],\"note\":\"Diagnostic interventions, not a production fix. Matched Q8_K scales still round to half. "
+              "No complete inference, numerical acceptance or timing claim.\"}\n";
+    const std::string text = report.str();
+    std::FILE* output = std::fopen(o.out.c_str(), "wx");
+    if (!output) return 6;
     const bool written = std::fwrite(text.data(), 1, text.size(), output) == text.size();
     const bool closed = std::fclose(output) == 0;
     return written && closed ? 0 : 6;
@@ -921,6 +1072,12 @@ int main(int argc, char** argv) {
     pk.seekg(0, std::ios::end);
     const int64_t pack_bytes = (int64_t) pk.tellg();
     pk.seekg(0, std::ios::beg);
+
+    if (o.expert_only) {
+        const int rc = run_expert_only(o, fix, lay, blob, pk, (uint64_t) pack_bytes, cs, reference_props);
+        (void) cudaStreamDestroy(cs);
+        return rc;
+    }
 
     // ---- pass 1: every activation set, the counts, the ranked fill list ----
     std::map<std::string, Activations> act;
