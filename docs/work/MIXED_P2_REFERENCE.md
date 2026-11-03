@@ -93,3 +93,24 @@ in force unchanged. The gate is not relaxed; absolute error and NMSE are reporte
 separately and never substituted. MMQ product agreement still does not establish
 task-output equivalence. Evidence: `build-mixed-gpu/p2-finish/fin1/` (per-window reports,
 audit logs, results, preflight/verify logs) and `build-mixed-gpu/p2-finish/fin1-pooled.log`.
+
+## Input-quantizer diagnostic — 2026-11-03
+
+Opt-in `--quantizer-only` (`5c4d4bdb`) compared the actual MMQ producer with the
+helper's actual host quantizer on the same saved inputs. Each device processed
+64 rows from each of 8 fixtures at layers32–47: 128 records, 8,192 row observations.
+These prefixes overlap (80 distinct layer/input-hash keys), not 128 independent inputs.
+
+| MMQ device | scales different / 655,360 | integers different / 20,971,520 |
+|---|---:|---:|
+| Radeon VII, HIP | 655,255 | 23 |
+| RTX3080 Laptop GPU, CUDA | 655,255 | 40 |
+
+MMQ keeps float32 scales; the helper wire format rounds them to float16. Rounding
+MMQ scales to float16 still leaves 7 differing HIP scales and 22 CUDA scales.
+Both MMQ runs repeated bit-identically for every record. This establishes a
+format/rounding mismatch, not a quantizer race or a complete cause of changed answers.
+No expert products, CPU verification or returned messages were measured here.
+Evidence: `build-mixed-gpu/repro-q81-evidence3/q64-{hip,cuda}.json`, matching logs,
+input/pack manifests and build log (both builds, CPU CTests and52 Python tests pass).
+Input, source and protected executable hashes stayed unchanged. The pooled gate still FAILS.
