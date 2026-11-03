@@ -106,3 +106,8 @@ worktrees.json
 /build-spark/
 /build-vision-spark/
 /.venv-build/
+
+# frozen A/B arm copies (provenance: armA/SHA256SUMS)
+bench/ab-v0210/armA/bin/
+bench/ab-v0210/armA/serve/
+bench/ab-v0210/armA/tools/
