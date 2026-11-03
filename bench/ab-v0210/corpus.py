@@ -29,8 +29,8 @@ PROBE_PROMPT = "In exactly one short paragraph, explain why speculative decoding
 
 TG_PROMPT = "Write a technical diary entry about porting a CUDA engine to HIP on gfx906. Be concrete."
 
-PP_CHARS = 16384 * 4          # ~16384 tokens
-INFILL_CHARS = 80000 * 4      # ~80k tokens
+PP_CHARS = 16384 * 6          # ~16384 tokens (measured ~5.4 chars/token on this tokenizer)
+INFILL_CHARS = 80000 * 6      # ~80k tokens
 
 
 def infill_task(chars):
