@@ -111,3 +111,4 @@ worktrees.json
 bench/ab-v0210/armA/bin/
 bench/ab-v0210/armA/serve/
 bench/ab-v0210/armA/tools/
+bench/ab-v0210/armA/strata_control/

@@ -1,21 +1,26 @@
 #!/usr/bin/env bash
-# One bench arm of the v0.2.10 A/B: helper up -> serve up -> drive -> teardown.
-# Usage: run-arm.sh A|B <round> [tg_runs]     (one arm at a time; waits for VRAM drain)
+# One bench arm of the v0.2.10 A/B(/C stock) comparison: helper up -> serve up -> drive -> teardown.
+# Usage: run-arm.sh A|B|C <round> [tg_runs]   (one arm at a time; waits for VRAM drain)
+#  A: the prod worktree build (frozen copy)   B: the merged v0.2.10 + our mods   C: stock v0.2.10 (no mods, no helper)
 set -euo pipefail
 ARM=$1; ROUND=$2; TG_RUNS=${3:-3}
 ROOT=/home/user/dev/Strata; B=$ROOT/bench/ab-v0210
+STOCK=/home/user/dev/strata-stock-v0210
 PY=$ROOT/.venv/bin/python
 case $ARM in
   A) ENGINE=$B/armA/bin/strata; HELPER=$B/armA/bin/strata-expert-helper; SERVE=$B/armA/serve/server.py; CD=$B ;;
   B) ENGINE=$ROOT/build-v0210/rpcw-hip/strata; HELPER=$ROOT/build-v0210/rpcw-cuda/strata-expert-helper; SERVE=$ROOT/serve/server.py; CD=$ROOT ;;
-  *) echo "arm A|B" >&2; exit 2 ;;
+  C) ENGINE=$STOCK/build/rpcw-hip/strata; HELPER=; SERVE=$STOCK/serve/server.py; CD=$STOCK ;;
+  *) echo "arm A|B|C" >&2; exit 2 ;;
 esac
 RUNCFG=$B/run/arm$ARM-r$ROUND.json
 mkdir -p "$B/run" "$B/logs" "$B/out"
-sed "s#logs/$ARM-rROUND-engine.log#logs/$ARM-r$ROUND-engine.log#" "$B/arm$ARM.json" > "$RUNCFG"
+sed "s#logs/$ARM-rROUND-engine.log#$B/logs/$ARM-r$ROUND-engine.log#" "$B/arm$ARM.json" > "$RUNCFG"
 SOCK=$B/run/bench-mixed.sock; SOCK2=$B/run/bench-mixed2.sock
 LOG=$B/logs/$ARM-r$ROUND-serve.log; HLOG=$B/logs/$ARM-r$ROUND-helper.log
 ELOG=$B/logs/$ARM-r$ROUND-engine.log
+PATTERN="$B/run/arm$ARM-r$ROUND.json"
+[[ -n $HELPER ]] && PATTERN="$PATTERN|$HELPER"
 rm -f "$SOCK" "$SOCK2"
 HPID=; SPID=
 cleanup() {
@@ -24,7 +29,7 @@ cleanup() {
     [[ -n $pid ]] && kill -INT "$pid" 2>/dev/null || true
   done
   for i in $(seq 1 9); do
-    pgrep -f "$B/run/arm$ARM-r$ROUND.json|$HELPER" >/dev/null 2>&1 || break
+    pgrep -f "$PATTERN" >/dev/null 2>&1 || break
     sleep 3
   done
   for pid in ${SPID:-} ${HPID:-}; do
@@ -44,20 +49,24 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 export LD_LIBRARY_PATH=/home/user/rocm-gfx906-xnack/lib:/opt/rocm-6.1.0/lib
-echo "== arm $ARM round $ROUND: helper up ($HELPER)"
-env -i PATH="$PATH" HOME="$HOME" TERM="${TERM:-dumb}" LD_LIBRARY_PATH="$LD_LIBRARY_PATH" \
-  "$HELPER" --pack /mnt/user/ai/iq3xxs-15 \
-  --experts /mnt/user/ai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf \
-  --device 0 --slots 4200 --reserve-mib 300 --timeout 7200000 \
-  --begin-timeout 1800000 --socket "$SOCK" --fill-mib 6400 --socket2 "$SOCK2" \
-  >>"$HLOG" 2>&1 </dev/null &
-HPID=$!
-for i in $(seq 1 300); do
-  kill -0 "$HPID" 2>/dev/null || { echo "helper exited; tail $HLOG:"; tail -5 "$HLOG"; exit 1; }
-  grep -q 'expert-helper: listening on' "$HLOG" && break
-  sleep 1
-done
-grep -q 'expert-helper: listening on' "$HLOG" || { echo "helper readiness timed out"; exit 1; }
+if [[ -n $HELPER ]]; then
+  echo "== arm $ARM round $ROUND: helper up ($HELPER)"
+  env -i PATH="$PATH" HOME="$HOME" TERM="${TERM:-dumb}" LD_LIBRARY_PATH="$LD_LIBRARY_PATH" \
+    "$HELPER" --pack /mnt/user/ai/iq3xxs-15 \
+    --experts ../Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf \
+    --device 0 --slots 4200 --reserve-mib 300 --timeout 7200000 \
+    --begin-timeout 1800000 --socket "$SOCK" --fill-mib 6400 --socket2 "$SOCK2" \
+    >>"$HLOG" 2>&1 </dev/null &
+  HPID=$!
+  for i in $(seq 1 300); do
+    kill -0 "$HPID" 2>/dev/null || { echo "helper exited; tail $HLOG:"; tail -5 "$HLOG"; exit 1; }
+    grep -q 'expert-helper: listening on' "$HLOG" && break
+    sleep 1
+  done
+  grep -q 'expert-helper: listening on' "$HLOG" || { echo "helper readiness timed out"; exit 1; }
+else
+  echo "== arm $ARM round $ROUND: no helper (stock baseline)"
+fi
 echo "== arm $ARM round $ROUND: serve up on :8019 (engine log $ELOG)"
 cd "$CD"
 env -u CUDA_VISIBLE_DEVICES -u STRATA_ARENA_MMAP -u GPU_PINNED_MIN_XFER_SIZE \
