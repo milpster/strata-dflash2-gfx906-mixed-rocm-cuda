@@ -114,3 +114,59 @@ No expert products, CPU verification or returned messages were measured here.
 Evidence: `build-mixed-gpu/repro-q81-evidence3/q64-{hip,cuda}.json`, matching logs,
 input/pack manifests and build log (both builds, CPU CTests and52 Python tests pass).
 Input, source and protected executable hashes stayed unchanged. The pooled gate still FAILS.
+
+## Controlled CPU/helper expert computation — 2026-11-03
+
+**Measured cause at the expert boundary: placing a CPU expert on the helper changes
+its activation arithmetic.** The CPU uses Q8_K (one float32 scale per 256 values)
+for the tested IQ gate/up weights. The helper uses Q8_1 (one float16 scale per 32).
+These are different inputs to the same weights, not just different GPU brands.
+
+The opt-in `--expert-only` diagnostic (`13057ef8`) ran the first routed expert for
+each of two saved `pinned-sample` tokens at layers 32–47: 32 expert observations
+per device. The CPU used `native_quant_act`, `native_gu_rows`, `native_quant_h`
+and `native_down_rows`. The GPU used the helper's `native_expert_grouped`.
+GGUF types, sizes and input/weight hashes were checked. Devices: Radeon VII (HIP)
+and RTX 3080 Laptop GPU (CUDA). No helper/server process or generation ran.
+
+Two interventions held the weights and GPU kernels fixed:
+
+1. Transfer the CPU's Q8_K integers and scales to helper wire blocks, rounding
+   only the scales to float16. This reduced hidden and output error in all 32
+   observations. Hidden error energy fell 99.74%; output error energy fell 94.82%.
+2. Transfer the CPU's exact Q8_0 down input and run only the GPU down projection.
+   The remaining output difference was at float32 rounding size.
+
+| Measurement | Normal helper input | CPU input transferred |
+|---|---:|---:|
+| Largest hidden-row max-relative difference | 0.0192743 | 0.000494652 |
+| Largest output-row max-relative difference | 0.0276884 | 0.00446645 |
+
+With the exact CPU down input, the largest output-row max-relative difference
+was **1.78199e-7**. These use the existing `max_abs / max(row_amax, eps)` metric;
+the columns are maxima over 32 observations, not a new acceptance test.
+
+Every repeated GPU output was bit-identical. Observable v1 and normal grouped
+outputs matched bit-for-bit in all 32 observations on each device. Final GPU
+expert rows also matched bit-for-bit across HIP and CUDA in all 32 observations.
+Thus, in this sample, CPU/helper arithmetic changes the result while switching
+between the two GPU backends does not. Matching only input scales to MMQ would
+not preserve the CPU reference contract.
+
+Source trace: `src/kernels/cpu/native_expert.cpp:131–151` selects the CPU producer;
+`src/core/expert_helper_socket.cpp:98–126` implements the host Q8_1 producer;
+`tools/mixed_gpu/sidecar/helper_main.cpp:590–606` runs the grouped helper kernel.
+The helper window replaces CPU work; the prompt helper claims before the CPU
+share (`src/prefill/prefill.cpp:4003–4017`). Assignment can therefore change the
+arithmetic contract. Same-config assignment changes were not traced in this run.
+
+Evidence: `build-mixed-gpu/repro-expert-evidence1/expert2-{cuda,hip}.json`, matching
+logs, `expert2-reports.sha256`, input/source/binary manifests and `build.log`.
+Both diagnostic builds, both CPU CTests and 52 Python report tests passed.
+Protected executable hashes remained unchanged.
+
+Limits: one fixture prefix, single-entry expert computations, not full inference
+or a live placement trace. This establishes a causal numerical mechanism, not
+that it is the only cause of every changed answer. No production fix was applied.
+The pooled numerical gate and frozen-request returned-message validation remain
+unpassed. Production remains down with permission; no speed claim or adoption.
