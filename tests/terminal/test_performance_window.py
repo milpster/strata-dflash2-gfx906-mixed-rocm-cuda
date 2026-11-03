@@ -185,18 +185,19 @@ def test_startup_proof(tmp_path, monkeypatch, trim):
             perf.startup_report(config, {"helper_log": str(helper)})
 
 
-def run_world(monkeypatch, tmp_path, *, fail_probe=False, fail_restore=False):
+def run_world(monkeypatch, tmp_path, *, fail_probe=False, fail_restore=False, iq_mt_min=False):
     """No processes/HTTP/signals; isolate new runner's finally and ownership logic."""
     monkeypatch.setattr(perf.runtime, "EV", tmp_path)
     source = tmp_path / "production.json"
     source.write_text(json.dumps(dict(env={})))
     monkeypatch.setattr(perf.runtime, "CONFIG", source)
     monkeypatch.setattr(perf, "pins", lambda: {"pinned": "same"})
-    events = []
+    events, prepared = [], []
 
     def prepare(family, **kwargs):
         path = tmp_path / f"{family}.json"
         path.write_text(json.dumps(dict(log=str(tmp_path / "engine.log"))))
+        prepared.append((family, kwargs.get("iq_mt_min")))
         return SimpleNamespace(family=family, config=path, launcher="launcher", state="state",
                                base_url="url", socket2="socket2", tuning=kwargs.get("tuning"))
 
@@ -233,12 +234,13 @@ def run_world(monkeypatch, tmp_path, *, fail_probe=False, fail_restore=False):
     monkeypatch.setattr(perf, "startup_report", lambda *_: {})
     monkeypatch.setattr(perf, "probe", probe)
     return events, SimpleNamespace(family="unit", lever="trim", candidate=None,
-                                   expected_supervisor=1, execute=True)
+                                   expected_supervisor=1, execute=True,
+                                   iq_mt_min=iq_mt_min), prepared
 
 
 @pytest.mark.parametrize("restore_fails", [False, True])
 def test_failure_always_cleans_and_restores(monkeypatch, tmp_path, restore_fails):
-    events, args = run_world(monkeypatch, tmp_path, fail_probe=True, fail_restore=restore_fails)
+    events, args, _ = run_world(monkeypatch, tmp_path, fail_probe=True, fail_restore=restore_fails)
     with pytest.raises(RuntimeError, match="restore failed" if restore_fails else "probe failed"):
         perf.run(args)
     assert events == ["stop", "cleanup", "restore"]
@@ -248,7 +250,7 @@ def test_failure_always_cleans_and_restores(monkeypatch, tmp_path, restore_fails
 
 
 def test_failed_ownership_refuses_concurrent_restore(monkeypatch, tmp_path):
-    events, args = run_world(monkeypatch, tmp_path, fail_probe=True)
+    events, args, _ = run_world(monkeypatch, tmp_path, fail_probe=True)
     monkeypatch.setattr(perf.pair, "alive", lambda *_: True)
     with pytest.raises(RuntimeError, match="survived"):
         perf.run(args)
@@ -256,7 +258,7 @@ def test_failed_ownership_refuses_concurrent_restore(monkeypatch, tmp_path):
 
 
 def test_preflight_refusal_never_stops(monkeypatch, tmp_path):
-    events, args = run_world(monkeypatch, tmp_path)
+    events, args, _ = run_world(monkeypatch, tmp_path)
     (tmp_path / "unit-perf-status.json").write_text("existing evidence")
     with pytest.raises(ValueError, match="overwrite"):
         perf.run(args)
@@ -264,7 +266,7 @@ def test_preflight_refusal_never_stops(monkeypatch, tmp_path):
 
 
 def test_success_runs_all_arms_and_restores(monkeypatch, tmp_path):
-    events, args = run_world(monkeypatch, tmp_path)
+    events, args, _ = run_world(monkeypatch, tmp_path)
     (tmp_path / "engine.log").write_text(
         "the prompt tier's channel (socket2) closed after 3 prompt requests / 9 prompt rows\n")
     monkeypatch.setattr(perf.lifecycle, "graceful_stop", lambda *_: events.append("arm_stop"))
@@ -300,3 +302,25 @@ def test_http_failure_retains_request_reply_and_log(monkeypatch, tmp_path):
     assert (tmp_path / "unit-a-r1-request.json").is_file()
     assert (tmp_path / "unit-a-r1-reply.json").read_bytes() == b"error evidence"
     assert (tmp_path / "unit-a-r1-engine.log").read_text() == "engine request failed\n"
+
+
+def test_ambient_iq_mt_min_refused_before_any_signal(monkeypatch, tmp_path):
+    events, args, _ = run_world(monkeypatch, tmp_path)
+    monkeypatch.setenv("STRATA_IQ_MT_MIN", "1")
+    with pytest.raises(ValueError, match="STRATA_IQ_MT_MIN"):
+        perf.run(args)
+    assert events == []  # the baseline guard fires before any production signal
+
+
+def test_iq_mt_min_flag_reaches_every_arm_and_the_record(monkeypatch, tmp_path):
+    events, args, prepared = run_world(monkeypatch, tmp_path, iq_mt_min=True)
+    (tmp_path / "engine.log").write_text(
+        "the prompt tier's channel (socket2) closed after 3 prompt requests / 9 prompt rows\n")
+    monkeypatch.setattr(perf.lifecycle, "graceful_stop", lambda *_: events.append("arm_stop"))
+    monkeypatch.setattr(perf, "probe", lambda cfg, state, family, rep: dict(
+        rep=rep, gen_rate=30, read_rate=200, request_sha256=f"req{rep}",
+        message_sha256=f"out{rep}", plans=[]))
+    assert perf.run(args) == 0
+    assert [iq for _, iq in prepared] == [True, True, True]  # controls and candidates alike
+    result = json.loads((tmp_path / "unit-perf-status.json").read_text())
+    assert result["iq_mt_min"] is True
