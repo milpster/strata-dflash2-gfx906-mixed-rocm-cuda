@@ -344,3 +344,39 @@ determinism (stock1 = stock2, 3 of 3); row-level CPU parity at the kernel floor
 (retained q8k3/q8k4 fixtures); and message-level assignment sensitivity in
 every tested configuration. Elapsed time per probe, evidence only, not a
 claim: helper-less 104.8/99.3/60.6 s against 61–64 s with a helper attached.
+
+## Speed: the stock helper against the Q8_K wire (q8k-sp2)
+
+Driver `tools/mixed_gpu/identity_q8k_arms.py --timing`; evidence
+`build-mixed-gpu/p2-finish/q8k-sp2/`. Stock stack (rpcw-hip engine +
+rpcw-cuda helper, the Q8_1 wire) against the wire build (repro-hip-q8k engine
++ repro-q81-cuda helper, `STRATA_EXPERT_HELPER_Q8K=1`). Radeon VII engine,
+RTX 3080 helper, 262144 context, speculative decode 5, temperature 0. The
+three request files turned out to be byte-identical across the a/b/c sets, so
+each arm ran the same three prompts three times (9 probes per arm); the b/c
+runs reused the prompt prefix (10,458 of 10,465 tokens), identically in both
+arms.
+
+| request | stock decode | Q8_K wire decode | difference |
+|---|---:|---:|---:|
+| r1 | 13,953 ms (36.7 tok/s) | 14,395 ms (35.6 tok/s) | +3.2% |
+| r2 | 14,766 ms (34.7 tok/s) | 14,920 ms (34.3 tok/s) | +1.0% |
+| r3 | 14,158 ms (36.2 tok/s) | 14,610 ms (35.0 tok/s) | +3.2% |
+
+Decode — the part the wire touches — costs 1.0–3.2% with the Q8_K wire on.
+Each number is the median of three repetitions; repeating the same request
+within an arm varied by about 1%. End-to-end these requests are
+prefill-dominated (about 47 s read for the 10,465-token prompt against 14–15 s
+decode), so elapsed medians are 61.4 s stock against 61.6 s wire, not
+separable at this sample size. One transient stall: the wire arm's second
+probe read the prompt in 164 s (about 3.5× the usual); the same request re-ran
+at 47 s later in the same arm — treated as an outlier, not a wire effect.
+
+The helper carried all traffic in both arms (0 timeouts, 0 fallbacks,
+34,840–39,287 rows per request). The two helpers did not serve identical row
+sets (for example 35,994 stock rows against 36,881 wire rows on r1), so this
+compares the two stacks end to end, not the same rows under two formats.
+
+Limits: three prompts, one machine; the refused first attempt (q8k-sp1,
+gate-correct) matches q8k-id1 stock exactly; the wire stays default OFF —
+this documents the cost of turning it on and claims no gain.
