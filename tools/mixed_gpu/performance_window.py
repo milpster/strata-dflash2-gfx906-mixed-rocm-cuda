@@ -36,6 +36,143 @@ PARAGRAPH = ("Mixed precision inference on consumer GPUs requires careful memory
              "by routing frequency and streamed only on demand. ")
 MIN_OUTPUT = 384
 PROTECTED = runtime.WORK / "build-mixed-gpu/nmse-tooling1/parent-build1-protected-before.sha256"
+REPLAY_RE = r"[a-z][a-z0-9]{0,10}"
+# Exact retained-fixture contract (see validate_fixture): the known request key set and model.
+FIXTURE_KEYS = frozenset({"model", "messages", "max_tokens", "temperature", "seed",
+                          "reasoning_budget_tokens", "chat_template_kwargs"})
+FIXTURE_MODEL = "swift-1.5-iq3_xxs"
+# Narrow audit allowlist for the live engine environment: only these keys are ever read
+# and echoed, so the engagement proof never dumps secrets (API keys, tokens, paths).
+ENGINE_ENV_KEYS = ("STRATA_HIP_PROMPT_F16", "STRATA_IQ_MT_MIN")
+# The engine line the FP16 prompt override prints (ppc2-*-engine.log:34/53); under
+# --prompt-f32 it must be ABSENT on every HIP device (engine log:34/53, gemm.hpp:121-123).
+FP16_PROMPT_LINE = re.compile(r"HIP device \d+ .*STRATA_HIP_PROMPT_F16=1.*16-bit GEMMs run FP16")
+
+
+def engine_env(pid, keys=ENGINE_ENV_KEYS):
+    """Read ONLY the narrow audited keys from the live engine's environment snapshot.
+
+    /proc/<pid>/environ is the exec-time kernel snapshot the server applied from the
+    private config (serve/server.py). The fixed allowlist means no secret is ever
+    returned, and an unreadable environ is a hard failure - the engagement proof is a
+    direct read, never inferred from the line's absence."""
+    try:
+        raw = Path(f"/proc/{int(pid)}/environ").read_bytes()
+    except OSError as error:
+        raise RuntimeError(f"Engine environ unreadable for the engagement proof: {error}")
+    live = {}
+    for entry in raw.split(b"\0"):
+        key, sep, value = entry.partition(b"=")
+        if sep and key.decode(errors="replace") in keys:
+            live[key.decode(errors="replace")] = value.decode(errors="replace")
+    return live
+
+
+def validate_fixture(raw):
+    """Strict retained-fixture validation, narrow on purpose.
+
+    Accepts ONLY the known request key set, the pinned model, a single user message with
+    non-empty string content, and exact numeric fixture values. Sampling/tool/stop controls,
+    extra keys, malformed messages/model, and bool-as-number (True/False as 0/1) are refused.
+    The raw bytes are never reserialised - the caller digests them verbatim. This is reused
+    fixture validation, not a gate change; it does not require the prompt family to equal any
+    source name (nested replay legitimately keeps the source's prompt bytes).
+    """
+    try:
+        req = json.loads(raw)
+    except (ValueError, UnicodeDecodeError) as error:
+        raise ValueError(f"Replay source request is not valid JSON: {error}")
+    if not isinstance(req, dict) or set(req) != FIXTURE_KEYS:
+        raise ValueError(f"Replay source request key set must be exactly {sorted(FIXTURE_KEYS)}")
+    if req["model"] != FIXTURE_MODEL:
+        raise ValueError(f"Replay source request model must be {FIXTURE_MODEL}")
+    messages = req["messages"]
+    if (not isinstance(messages, list) or len(messages) != 1
+            or not isinstance(messages[0], dict) or messages[0].get("role") != "user"
+            or not isinstance(messages[0].get("content"), str) or not messages[0]["content"]
+            or set(messages[0]) != {"role", "content"}):
+        raise ValueError("Replay source request must be one user message with non-empty string content")
+    numeric = lambda key: type(req[key]) in (int, float) and type(req[key]) is not bool
+    for key, expected in (("max_tokens", 512), ("temperature", 0), ("seed", 1729),
+                          ("reasoning_budget_tokens", 0)):
+        if not numeric(key) or req[key] != expected:
+            raise ValueError(f"Replay source request {key} must be the number {expected} (not a bool)")
+    kwargs = req["chat_template_kwargs"]
+    if (not isinstance(kwargs, dict) or set(kwargs) != {"enable_thinking"}
+            or kwargs.get("enable_thinking") is not False):
+        raise ValueError("Replay source chat_template_kwargs must be exactly {enable_thinking: False}")
+    return req
+
+
+def load_replay(source, evidence=runtime.EV):
+    """Freeze the exact retained request bytes of a completed window, per repetition.
+
+    Read-only and pure: validates the source shape (3 or 4 arms, safe sequential unique
+    labels, exactly reps 1,2,3 per arm), pins the raw STATUS bytes, then re-validates each
+    arm's per-rep request file (raw SHA against the recorded request_sha256, strict fixture
+    semantics, byte-identical across all arms per rep) and that the three reps are distinct.
+    Returns the raw bytes to reuse VERBATIM (never regenerated or reserialised) plus
+    provenance including the status SHA. Fails closed on any missing, corrupt, malformed,
+    hash-mismatched, cross-arm-differing, non-fixture, or non-distinct source, before any
+    production signal.
+    """
+    if not re.fullmatch(REPLAY_RE, source):
+        raise ValueError("Replay source needs a short family name")
+    status = Path(evidence) / f"{source}-perf-status.json"
+    if not status.is_file():
+        raise ValueError(f"Replay source status is missing: {status.name}")
+    status_bytes = status.read_bytes()
+    status_sha = digest(status_bytes)
+    try:
+        data = json.loads(status_bytes)
+    except (ValueError, UnicodeDecodeError) as error:
+        raise ValueError(f"Replay source status is malformed: {error}")
+    if not data.get("success"):
+        raise ValueError("Replay source window did not complete")
+    pairs = data.get("pairs")
+    if not isinstance(pairs, list) or len(pairs) not in (3, 4):
+        raise ValueError("Replay source must have 3 (bracket) or 4 (two-candidate) arms")
+    labels = []
+    for row in pairs:
+        if not isinstance(row, dict) or "label" not in row or "probes" not in row:
+            raise ValueError("Replay source arm is not a label/probes record")
+        label = row["label"]
+        if not isinstance(label, str) or not re.fullmatch(r"[a-z]", label):
+            raise ValueError(f"Replay source arm label is unsafe: {label!r}")
+        if not isinstance(row["probes"], list):
+            raise ValueError(f"Replay source {label} probes is not a list")
+        reps = [p.get("rep") for p in row["probes"] if isinstance(p, dict)]
+        if sorted(reps) != [1, 2, 3] or len(set(reps)) != 3:
+            raise ValueError(f"Replay source {label} reps must be exactly 1,2,3 unique")
+        labels.append(label)
+    if len(set(labels)) != len(labels) or labels != [chr(97 + i) for i in range(len(labels))]:
+        raise ValueError("Replay source labels must be unique and sequential a,b,c[,d]")
+    frozen, source_files = {}, {}
+    for rep in (1, 2, 3):
+        body, digests = None, set()
+        for row in pairs:
+            probe = {p["rep"]: p for p in row["probes"]}[rep]
+            req = Path(evidence) / f"{source}-{row['label']}-r{rep}-request.json"
+            if not req.is_file():
+                raise ValueError(f"Replay source request is missing: {req.name}")
+            raw = req.read_bytes()
+            sha = digest(raw)
+            if probe.get("request_sha256") != sha:
+                raise ValueError(f"Replay source request hash mismatch: {req.name}")
+            validate_fixture(raw)
+            if body is None:
+                body = raw
+            digests.add(sha)
+            source_files[str(req)] = sha
+        if len(digests) != 1:
+            raise ValueError(f"Replay source request bytes differ across arms for rep {rep}")
+        frozen[rep] = body
+    if len({digest(frozen[rep]) for rep in (1, 2, 3)}) != 3:
+        raise ValueError("Replay source repetitions are not distinct")
+    provenance = dict(source=source, status=str(status), status_sha256=status_sha, arms=labels,
+                      request_sha256={str(rep): digest(frozen[rep]) for rep in (1, 2, 3)},
+                      source_files=source_files)
+    return frozen, provenance
 
 
 def digest(data):
@@ -76,9 +213,11 @@ def validate_reply(reply, metric):
                 content_chars=len(message["content"]))
 
 
-def probe(config, state, family, rep):
+def probe(config, state, family, rep, body=None):
     prefix = runtime.EV / f"{family}-{config.label}-r{rep}"
-    body = request_body(family, rep)
+    # Frozen replay reuses the retained source bytes VERBATIM (never regenerated or
+    # reserialised); the no-option path stays request_body(family, rep).
+    body = request_body(family, rep) if body is None else body
     Path(f"{prefix}-request.json").write_bytes(body)
     log_path = Path(json.loads(Path(config.config).read_text())["log"])
     mark = log_path.stat().st_size
@@ -143,10 +282,25 @@ def startup_report(config, state):
     taps = [line for line in log.splitlines() if "cross-GPU tap collection" in line]
     if len(taps) != 1:
         raise RuntimeError("Missing unique cross-GPU DFlash tap binding")
+    prompt_f32_engagement = None
+    if getattr(config, "prompt_f32", False):
+        # Direct engagement proof (NOT inferred from the line's absence): the private config
+        # sets the key to 0, the live engine's environment snapshot shows it at 0, and no
+        # HIP device reports the FP16 prompt GEMMs. Startup is refused if the FP16 prompt
+        # line appears under the flag.
+        if cfg.get("env", {}).get("STRATA_HIP_PROMPT_F16") != "0":
+            raise RuntimeError("Prompt-F32 private config env is not STRATA_HIP_PROMPT_F16=0")
+        live = engine_env(state["engine_pid"])
+        if live.get("STRATA_HIP_PROMPT_F16") != "0":
+            raise RuntimeError(f"Engine environ shows STRATA_HIP_PROMPT_F16={live.get('STRATA_HIP_PROMPT_F16')}, not 0")
+        if FP16_PROMPT_LINE.search(log):
+            raise RuntimeError("A HIP device reports prompt FP16 GEMMs under --prompt-f32")
+        prompt_f32_engagement = dict(private_env="0", engine_environ=live,
+                                     engine_pid=state["engine_pid"], fp16_prompt_line_absent=True)
     return dict(split=split, first_cache_slots=int(first[1]), later_cache_slots=int(later[3]),
                 helper_fill=fill, eligible_pairs=int(owned[1]), held_pairs=int(owned[3]),
                 effective_k=int(k[2]), floor=float(value("--spec-min-p")), trimmed=trimmed,
-                tap_lines=taps)
+                tap_lines=taps, prompt_f32_engagement=prompt_f32_engagement)
 
 
 def compare(rows):
@@ -226,6 +380,16 @@ def run(args):
         if os.environ.get(key, "0") not in ("", "0") or configs.get("env", {}).get(key, "0") not in ("", "0"):
             raise ValueError(f"Unexpected baseline lever enabled: {key}")
     fingerprint = pins()
+    replay = None
+    frozen = None
+    if args.replay_family:
+        if not re.fullmatch(REPLAY_RE, args.replay_family):
+            raise ValueError("Replay source needs a short family name")
+        if args.replay_family == args.family:
+            raise ValueError("Replay source must differ from the fresh evidence family")
+        # Select the frozen per-rep source bytes ONCE, before any production signal, and
+        # keep their provenance for the status/dry-run recheck.
+        frozen, replay = load_replay(args.replay_family, evidence=runtime.EV)
     schedule = [None, *MATRIX[args.lever], None]
     if args.candidate is not None:
         schedule = [None, MATRIX[args.lever][args.candidate - 1], None]
@@ -233,16 +397,20 @@ def run(args):
         print(json.dumps(dict(family=args.family, schedule=schedule, reps=3,
                               max_tokens=512, minimum_output=MIN_OUTPUT,
                               iq_mt_min=args.iq_mt_min, adapt_off=args.adapt_off,
+                              prompt_f32=args.prompt_f32, replay_family=args.replay_family,
+                              replay=replay,
                               restore=str(runtime.LAUNCHER) + " --recover", pins=fingerprint), indent=2))
         return 0
     private = []
     for i, tuning in enumerate(schedule):
         config = window_pair.prepare(f"{args.family}-{chr(97 + i)}", slots=4200, tuning=tuning,
-                                     iq_mt_min=args.iq_mt_min, adapt_off=args.adapt_off)
+                                     iq_mt_min=args.iq_mt_min, adapt_off=args.adapt_off,
+                                     prompt_f32=args.prompt_f32)
         config.label = chr(97 + i)
         private.append(config)
     result = dict(started=time.time(), lever=args.lever, iq_mt_min=args.iq_mt_min,
-                  adapt_off=args.adapt_off, pairs=[], success=False, pins=fingerprint)
+                  adapt_off=args.adapt_off, prompt_f32=args.prompt_f32,
+                  replay=replay, pairs=[], success=False, pins=fingerprint)
     pair.write_json(status, result)  # durable intent before any production signal
     active, known = None, {}
     old_handlers = {sig: signal.signal(sig, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
@@ -265,7 +433,8 @@ def run(args):
                 result["pairs"].append(row)
                 for rep in range(1, 4):
                     beat.phase = f"arm {config.label} probe {rep}/3"
-                    row["probes"].append(probe(config, state, args.family, rep))
+                    row["probes"].append(probe(config, state, args.family, rep,
+                                               None if frozen is None else frozen[rep]))
                     pair.write_json(status, result)
                 beat.phase = f"arm {config.label} graceful stop"
                 lifecycle.graceful_stop(active, state, known)
@@ -282,6 +451,18 @@ def run(args):
                     raise RuntimeError("Prefill-pipe changed no chunk plan; no engagement proof")
                 print(json.dumps(dict(event="arm_done", arm=config.label, startup=row["startup"])), flush=True)
                 pair.write_json(status, result)
+            if replay is not None:
+                # Recheck the pinned source artifacts and that every probe used the frozen
+                # bytes before comparison (fail closed if the source mutated mid-window).
+                _, prov_again = load_replay(args.replay_family, evidence=runtime.EV)
+                if (prov_again["source_files"] != replay["source_files"]
+                        or prov_again["status_sha256"] != replay["status_sha256"]):
+                    raise RuntimeError("Replay source artifacts changed during measurement")
+                for row in result["pairs"]:
+                    for probe_row in row["probes"]:
+                        expected = replay["request_sha256"].get(str(probe_row["rep"]))
+                        if probe_row["request_sha256"] != expected:
+                            raise RuntimeError(f"Probe bytes diverged from the frozen source (arm {row['label']})")
             result["comparison"] = compare(result["pairs"])
             result["success"] = True
         except BaseException as error:
@@ -329,6 +510,20 @@ def main():
                         help="baseline argv --adapt-swaps 0 on EVERY arm (freeze both adaptive "
                              "tiers at the deterministic initial fill, so placement stops "
                              "following the lever's timing; controls and candidates alike)")
+    parser.add_argument("--prompt-f32", action="store_true",
+                        help="baseline env STRATA_HIP_PROMPT_F16=0 on EVERY arm (controls and "
+                             "candidates alike): disables the prompt-FP16 override ONLY, "
+                             "selecting the engine's non-FP16 default prompt GEMMs "
+                             "(gemm.hpp prompt_f16). Not a whole-engine FP32 claim; startup "
+                             "proves engagement from the private config and the live engine "
+                             "environ, and refuses a HIP device reporting FP16 prompt GEMMs")
+    parser.add_argument("--replay-family",
+                        help="source family whose completed window's EXACT request bytes are "
+                             "frozen and reused verbatim by every NEW arm; the new --family "
+                             "stays a fresh artifact/lifecycle identity. Validated before any "
+                             "production signal (raw SHA, fixture semantics, byte-identical "
+                             "across arms per rep, distinct reps); source must differ from "
+                             "--family")
     args = parser.parse_args()
     if args.candidate is not None and not 1 <= args.candidate <= len(MATRIX[args.lever]):
         parser.error("candidate outside the bounded matrix")

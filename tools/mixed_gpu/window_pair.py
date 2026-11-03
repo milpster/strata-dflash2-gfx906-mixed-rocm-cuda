@@ -72,7 +72,8 @@ def prepare(family, *, slots=4000, fill_mib=6400, port=18080, evidence=EVIDENCE,
             prod_config=PROD_CONFIG, prod_launcher=PROD_LAUNCHER,
             engine=None, helper=None, rpc_profile=False, draft_helper=None, knob=None,
             prefill_timing=False, helper_streams=False, draft_tap_bf16=False,
-            split_overlap=False, helper_off=False, iq_mt_min=False, adapt_off=False, tuning=None):
+            split_overlap=False, helper_off=False, iq_mt_min=False, adapt_off=False,
+            prompt_f32=False, tuning=None):
     if tuning is not None and (knob is not None or engine is not None or helper is not None or
                                draft_helper is not None or rpc_profile or prefill_timing or
                                helper_streams or draft_tap_bf16 or split_overlap or helper_off):
@@ -89,6 +90,8 @@ def prepare(family, *, slots=4000, fill_mib=6400, port=18080, evidence=EVIDENCE,
         raise ValueError("IQ-MT-MIN baseline override must be True or False")
     if type(adapt_off) is not bool:
         raise ValueError("Adaptive-off baseline override must be True or False")
+    if type(prompt_f32) is not bool:
+        raise ValueError("Prompt-F32 baseline override must be True or False")
     if helper_off and (draft_helper or draft_tap_bf16 or helper is not None):
         raise ValueError("Helper-off cannot combine with the remote draft lane or a helper binary")
     if helper_off and (rpc_profile or helper_streams):
@@ -176,6 +179,17 @@ def prepare(family, *, slots=4000, fill_mib=6400, port=18080, evidence=EVIDENCE,
         if "--adapt-swaps" in args:
             raise ValueError("Adaptive-off baseline requires production argv without --adapt-swaps")
         args += ["--adapt-swaps", "0"]
+    if prompt_f32:
+        # Prompt-FP16 identity probe (Gate A, prefill-diagnostic-review.md §3): the private
+        # config inherits production's env, which carries STRATA_HIP_PROMPT_F16=1 (engine
+        # log "the prompt's 16-bit GEMMs run FP16 in and out ... not bit-identical to the
+        # default"). Setting it to 0 on EVERY arm - controls and candidates alike - selects
+        # the non-FP16 default prompt GEMMs (include/strata/prefill/gemm.hpp:121-123,
+        # prompt_f16() overrides), i.e. it disables the prompt-FP16 override ONLY. It is not
+        # a whole-engine FP32 claim, is engine-side only (a HIP-only key the CUDA helper never
+        # reads), composes with the tuning like iq_mt_min, and an unset value leaves the
+        # inherited production env byte-identical.
+        config.setdefault("env", {})["STRATA_HIP_PROMPT_F16"] = "0"
     if knob is not None:
         # L6: engine argv only. Exactly one occurrence is enforced so a silent change
         # in the production argv cannot make the knob land somewhere unexpected.
@@ -305,7 +319,7 @@ def prepare(family, *, slots=4000, fill_mib=6400, port=18080, evidence=EVIDENCE,
                     rpc_profile=rpc_profile, draft_helper=draft_helper, prefill_timing=prefill_timing,
                     helper_streams=helper_streams, draft_tap_bf16=draft_tap_bf16,
                      split_overlap=split_overlap, helper_off=helper_off,
-                     tuning=tuning,
+                     tuning=tuning, prompt_f32=prompt_f32,
                     knob=None if knob is None else dict(name=knob[0], value=str(knob[1])),
                     config=str(config_path), launcher=str(launcher_path),
                     socket=str(socket), socket2=str(socket2), state=str(state_path))
