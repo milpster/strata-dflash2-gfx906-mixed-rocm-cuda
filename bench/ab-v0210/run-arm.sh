@@ -24,6 +24,29 @@ ELOG=$B/logs/$ARM-r$ROUND-engine.log
 PATTERN="$B/run/arm$ARM-r$ROUND.json"
 [[ -n $HELPER ]] && PATTERN="$PATTERN|$HELPER"
 rm -f "$SOCK" "$SOCK2"
+# pre-boot guard (measured 2026-11-04): a killed engine exits slowly (43 GiB anon arena) and a leftover
+# serve holds :8019 while respawning engines; either starves the next boot. Refuse or wait instead.
+if pgrep -f '[r]pcw-(hip|cuda)/|/serve/server[.]py' >/dev/null 2>&1; then
+  echo "== arm $ARM round $ROUND: REFUSING to boot - leftover engine/serve:"
+  pgrep -af '[r]pcw-(hip|cuda)/|/serve/server[.]py' | head -4
+  exit 1
+fi
+if ss -ltn 2>/dev/null | grep -q ':8019 '; then
+  echo "== arm $ARM round $ROUND: REFUSING to boot - port 8019 is still held"
+  exit 1
+fi
+for i in $(seq 1 60); do
+  free_mib=$(awk '/^MemFree:/{print int($2/1024)}' /proc/meminfo)
+  (( free_mib >= 45000 )) && break
+  echo "$(date +%T) waiting for the previous engine's anon arena to release: MemFree ${free_mib} MiB"
+  sleep 5
+done
+for i in $(seq 1 60); do
+  vram_b=$(rocm-smi --showmeminfo vram --csv 2>/dev/null | awk -F, '/^card[01]/{u+=$3} END{print u+0}')
+  (( vram_b < 2000000000 )) && break
+  echo "$(date +%T) waiting VII VRAM drain: $vram_b bytes"
+  sleep 5
+done
 HPID=; SPID=
 cleanup() {
   trap - EXIT INT TERM
@@ -42,7 +65,7 @@ cleanup() {
   pkill -KILL -f "$ENGINE --serve" 2>/dev/null || true
   # VRAM drain: next arm cannot boot on half-freed cards
   for i in $(seq 1 60); do
-    used=$(rocm-smi --showmeminfo vram --csv 2>/dev/null | awk -F, '/GPU\[0\]|GPU\[1\]/{s+=$2} END{print s+0}')
+    used=$(rocm-smi --showmeminfo vram --csv 2>/dev/null | awk -F, '/^card[01]/{s+=$3} END{print s+0}')
     (( used < 200000000 )) && break
     echo "$(date +%T) waiting VRAM drain: $used bytes"
     sleep 5
