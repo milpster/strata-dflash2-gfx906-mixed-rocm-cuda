@@ -801,3 +801,21 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
 - Harness notes: inline pkill must bracket-escape patterns (my stop shell
   self-matched its own pattern and died mid-sequence); the run-arm whitelist is
   a separate line from the per-arm cases.
+
+## 2026-11-04 23:05 — V9 (iq3_s safe-squeeze) passes the full arm
+
+- User chose option (b). Arm V9 = iq3_s, reserves 640/640, helper fill 7000,
+  slots 4600 (8daa8f95). One full arm, rc=0.
+- The V8 killer passed: pp16384 read 18082 tokens at 226.7 tok/s, 10 generated,
+  zero non-finite logits anywhere in the run.
+- Boot: cache ~3576 slots, relief 3583/3583 (6.63 GiB; complement 2752 ranges /
+  40.21 GiB), free-after-load 784/626 MiB — both cards above the 512 MiB paging
+  line, matching the 770/650 interpolation. Helper filled 3583 slots (6.64 GiB).
+- Perf vs V6 (same pack, 896/1000 + fill 6400): TG ~34.7 vs 32.9; 88k read
+  519.2 vs 399.2 tok/s. Probe sha 717b8504bc58ab71; 80k sha 1c7d4a6d9be118d8
+  (the iq3xxs-canonical value; V6's iq3_s value was 9f3c8e97 — deterministic
+  per-config, no r2 byte-gate on a one-shot arm).
+- Engine anon 49.0 GiB, same as V6 — the box runs tight (2 GiB free) but held.
+- Frontier settled: 256/256 = NaN, 640/640 + fill 7000 = safe and faster,
+  896/1000 = safe. Proposal (awaiting user): V9-class becomes the iq3_s fleet
+  conf. Prod restored after the lane.
