@@ -605,3 +605,17 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
   M1 predicts read_bytes rising through the tg1024 legs; M2 predicts flat read_bytes with
   context-switch spikes. STRATA_DRIVE_STOP_AFTER only supports "pp" (no TG-leg stop), so the
   probe rides a full ~25 min drive.
+
+### Fix A implemented and committed (20:0x, user order "go"; 1167bd6d)
+
+- All seven lock-taking sites under relief now pre-check the drop bitmap lock-free
+  (boot-published, immutable while serving — the refill is the documented no-op) and take
+  `file_mu_` only for a dropped pair, re-checking under the lock: blob, blob_stable,
+  blob_at, transient, copy_blob, pinned, device_alias (src/core/expert_source.cpp).
+- g++ -fsyntax-only with the rpcw-hip build flags: clean (only pre-existing warnings).
+  The first check attempt died SIGPIPE-141 (grep -m1 piped from ninja under pipefail) —
+  the standing "never pipe into ninja" rule, applied to -m1 readers too now; nothing was
+  lost, redone with file capture.
+- Rebuild deferred until the V4-r8 arm completes so the block keeps one binary. Next:
+  reconcile out/V4-r8-io.csv (M1 vs M2), ninja -j11 rebuild both backends, V5-r1
+  (relief + fix A) with the probe sampler attached, compare vs P0-r7.
