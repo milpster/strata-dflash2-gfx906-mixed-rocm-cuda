@@ -104,3 +104,14 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
   (dflash_runtime.cpp:376) — NO shutdown call site; the 100 s graceful-teardown window was never the fix.
   Patched generate.cpp: df_timing_drain+dump after every request summary (file-scope decls, no-op unless
   STRATA_DF_EVENTS=1). Table is now cumulative + crash-proof.
+
+## 2026-11-04 prod observation: small fresh reads stall (pre-existing, all boots today)
+- Every boot's ~200-token FRESH reads take 30-60+ s: 09:22 boot request 2 read 210 tokens in 39+ s;
+  11:57 boot: 4 smokes of the same 206-token prompt, 31 s then 30-60+ s each (2 curl timeouts).
+- Decode stays healthy in the SAME requests (30.0 / 35.5 / 43.7 tok/s), expert-cache hits 80-92.4%
+  (NOT cold cache), and big reads are unaffected (18k fresh 265 tok/s, 80k 583 tok/s same day).
+- Same family as the S1 tg-flicker (18-token warm re-read at 5.7 tok/s, 3.2 s) — a FIXED per-request
+  cost on the read path that dominates only small prompts. Unconfirmed static analysis: candidate
+  mechanisms are the conversation-cache/checkpoint placement path, not expert fetches.
+- Practical: interactive UX defect only; throughput gates unaffected. Parked as a separate defect
+  from the RAM-relief ladder (which proceeds on its own plan).
