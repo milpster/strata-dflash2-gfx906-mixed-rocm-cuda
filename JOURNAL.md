@@ -733,3 +733,19 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
 - New per-model shas established (probe ad5508a8c87b1574, 80k 9f3c8e9718477049);
   r2 required only for a byte-identity claim. Adoption (quality vs -13% TG and
   -7 GiB headroom) is the user's call; prod stays on swift15/iq3xxs meanwhile.
+
+## 2026-11-04 21:55 — V7 limit probe: fastest config of the night, at the paging edge
+
+- V7 = V5 + VII reserves 256/256 MiB + helper fill 6700 (4318 slots staged, 6.53 GiB;
+  relief dropped 4318/4316 pairs, complement 33.44 GiB). Full drive, 0 timeouts.
+- Fastest measured tonight: TG median 39.1 (beats the P0 control 38.05 and V5 37.65);
+  pp16384 277.9; 88k 575.3 (control 576.5); decode hit rate 97.0-97.5% with the PCIe
+  share down to 10.8-14%. Engine anon 41.8 GiB.
+- The limit itself: 248 MiB free on CUDA1 after load (406 on CUDA0) — below the
+  engine's own 512 MiB threshold where the driver may page GPU memory out; the layer
+  plan also miscounted 104 MiB. Going lower is not advisable; a later-reserve of 512
+  would keep most of the gain with headroom.
+- Quality: the 80k sha is byte-identical (1c7d4a6d...); the probe sha diverged for
+  the first time (126dc32d..., 229 vs 208 completions) — consistent with
+  ROUTE_TAIL_SKIP being coverage-dependent (different resident set skips different
+  rank-7 experts), unconfirmed. r2 would show whether the divergence reproduces.
