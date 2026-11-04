@@ -4,7 +4,7 @@
 # TUNED config (ab2-r1 PASS verdict 2026-10-31: long decode +7.7%, xl +6.5%, prompt tier live):
 # rpcw candidate engine+helper, helper second channel (--socket2), prompt tier on
 # (STRATA_PREFILL_HELPER=1 via the config env), occupancy pinned (slots4c sweep
-# 2026-11-01: --slots 4600 requested, --fill-mib 6700 binds first at 4093 slots
+# 2026-11-04: V7-squeezed promoted (08f5e690): fill-mib 6700 binds first at 4318 slots (bench r1+r2 + prod boot)
 # 6.25 GiB; +13.6% decode median vs the old 4000-slot cap, read rate unchanged).
 set -euo pipefail
 ROOT=/mnt/user/Strata
