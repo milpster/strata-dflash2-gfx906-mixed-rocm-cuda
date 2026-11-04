@@ -10,10 +10,10 @@ STOCK=/home/user/dev/strata-stock-v0210
 PY=$ROOT/.venv/bin/python
 case $ARM in
   A) ENGINE=$B/armA/bin/strata; HELPER=$B/armA/bin/strata-expert-helper; SERVE=$B/armA/serve/server.py; CD=$B ;;
-  B|D|E|F0|K1|K2|K3|K4|P0|S1|S2|S3|S4|X0|R0) ENGINE=$ROOT/build-v0210/rpcw-hip/strata; HELPER=$ROOT/build-v0210/rpcw-cuda/strata-expert-helper; SERVE=$ROOT/serve/server.py; CD=$ROOT ;;
+  B|D|E|F0|K1|K2|K3|K4|P0|S1|S2|S3|S4|X0|R0|V0|V1|V2|V3) ENGINE=$ROOT/build-v0210/rpcw-hip/strata; HELPER=$ROOT/build-v0210/rpcw-cuda/strata-expert-helper; SERVE=$ROOT/serve/server.py; CD=$ROOT ;;
   F1off|F1|F2|F2only|P1) ENGINE=$ROOT/build-tap-overlap/rpcw-hip/strata; HELPER=$ROOT/build-v0210/rpcw-cuda/strata-expert-helper; SERVE=$ROOT/serve/server.py; CD=$ROOT ;;
   C) ENGINE=$STOCK/build/rpcw-hip/strata; HELPER=; SERVE=$STOCK/serve/server.py; CD=$STOCK ;;
-  *) echo "arm A|B|C|D|E|F0|F1off|F1|F2|F2only|K1|K2|K3|K4|P0|P1|S1|S2|S3|S4|X0|R0" >&2; exit 2 ;;
+  *) echo "arm A|B|C|D|E|F0|F1off|F1|F2|F2only|K1|K2|K3|K4|P0|P1|S1|S2|S3|S4|X0|R0|V0|V1|V2|V3" >&2; exit 2 ;;
 esac
 RUNCFG=$B/run/arm$ARM-r$ROUND.json
 mkdir -p "$B/run" "$B/logs" "$B/out"
@@ -88,4 +88,17 @@ echo "== arm $ARM round $ROUND: driving"
 "$PY" "$B/drive.py" "$ARM" "$ROUND" "$TG_RUNS"
 echo "== arm $ARM round $ROUND: judge lines"
 grep -E 'PP tok/s|generated in .* tok/s' "$ELOG" | tail -40 | tee "$B/out/$ARM-r$ROUND-judge.txt"
+# RAM-relief ladder: bank the pair's host-RAM footprint at end-of-arm (after the drive,
+# before teardown) so every rung's RSS delta is measured identically.
+pids=$(pgrep -f "$ENGINE --serve" 2>/dev/null)
+[[ -n $HELPER ]] && pids="$pids $(pgrep -f "$HELPER" 2>/dev/null)"
+{
+  echo "== $(date +%T) $ARM r$ROUND RSS snapshot"
+  for pid in $pids; do
+    [[ -d /proc/$pid ]] || continue
+    echo "pid $pid $(tr '\0' ' ' < /proc/$pid/cmdline | cut -c1-70)"
+    grep -E '^(Rss|Pss|Anonymous|Pss_File):' /proc/$pid/smaps_rollup 2>/dev/null
+  done
+  free -g | sed -n '2p'
+} | tee "$B/out/$ARM-r$ROUND-rss.txt"
 echo "== arm $ARM round $ROUND: done"
