@@ -6259,12 +6259,18 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
     // variable is unset.  A hugetlb-backed arena is already all 2 MiB pages: nothing to collapse.
     if (std::getenv("STRATA_ARENA_COLLAPSE") != nullptr && a->backing != PageBacking::LargePages) {
         constexpr uint64_t kHuge = 2ull << 20;
+        // The kernel EINVALs a MADV_COLLAPSE whose START is not 2 MiB-aligned (it clamps only the
+        // length), so the sweep runs over the whole 2 MiB blocks fully inside [base, base+want):
+        // start rounded UP, end rounded DOWN.  A constructor that hands back a merely page-aligned
+        // base would otherwise refuse every chunk (H1-r1: 20463 of 20463 EINVAL).
+        const uintptr_t payload = (uintptr_t) a->base;
+        const uintptr_t start = (payload + kHuge - 1) & ~(uintptr_t) (kHuge - 1);
+        const uintptr_t end = (payload + (uintptr_t) want) & ~(uintptr_t) (kHuge - 1);
         uint64_t done = 0, tried = 0, eagain = 0, other = 0;
         int why = 0;
-        for (uint64_t off = 0; off < want; off += kHuge) {
-            const uint64_t len = want - off < kHuge ? want - off : kHuge;
+        for (uintptr_t off = start; off < end; off += kHuge) {
             ++tried;
-            if (madvise((uint8_t*) a->base + (size_t) off, (size_t) len, MADV_COLLAPSE) == 0) {
+            if (madvise((void*) off, (size_t) kHuge, MADV_COLLAPSE) == 0) {
                 ++done;
             } else if (errno == EAGAIN || errno == EINTR) {
                 ++eagain;   // no free 2 MiB block right now: the kernel collapses it at a later fault
