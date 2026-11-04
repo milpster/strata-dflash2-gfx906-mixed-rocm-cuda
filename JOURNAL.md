@@ -684,3 +684,17 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
   resident-pair prefetches are gone; the residual is legitimate on-demand staging.
 - V5-r2 launched (sampler attached) for the second kept boot; medians and the final
   three-way report follow. Fixes B/C/D held in reserve. Adoption is the user's call.
+
+## 2026-11-04 20:57 — V5-r2 confirms; bench phase complete, final report
+
+- V5-r2: TG median 37.7 (segments 36.7-39.5, tight), 88k 553.4, 80k decode 38.3, shas
+  canonical, engine anon 42.1 GiB, no retries. Combined V5 (r1+r2): TG median 37.65 =
+  98.9% of the winning-config control (P0-r7 38.05), 36% above stock (C-r3 27.6);
+  88k 552.9 vs stock 550.0 / control 576.5; anonymous -5.3 GiB vs control; drop line
+  4116/4116 on both boots.
+- Full table + verdict written to bench/ab-v0210/out/RESULTS-relief-fix.md. The relief
+  TG loss is fixed by W1a+W1b; fixes B/C/D unnecessary. Zero wedges/timeouts/retries
+  across every V5/P0/C boot of the evening.
+- Session commits on tap-overlap-f1f2: 1167bd6d (W1a), f4e0bc3d (W1b), db8782c0 (V5
+  harness wiring), b2e23344 (armV5 log path), af94a27c (V5-r1 docs), plus the earlier
+  503-retry/THP/probe commits. Awaiting user: adoption decision and prod restore.
