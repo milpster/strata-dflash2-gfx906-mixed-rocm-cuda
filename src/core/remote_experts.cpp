@@ -102,8 +102,31 @@ bool RemoteExperts::preflight(int device, double& free_gib, std::string& err) {
     return true;
 }
 
+namespace {
+// W1 (--expert-helper-ram-relief): the one listener, set by a source that dropped the helper's pairs
+// out of the arena.  See set_helper_residency_release_hook() in the header.
+std::mutex g_release_mu;
+std::function<void()> g_release_fn;
+/// Fires the notice on the thread that noticed the loss (a decode thread, at a begin/finish that
+/// failed).  The listener starts its own thread; this call never reads a file.
+void fire_helper_residency_release() {
+    std::function<void()> fn;
+    {
+        std::lock_guard<std::mutex> lk(g_release_mu);
+        fn = g_release_fn;
+    }
+    if (fn) fn();
+}
+}  // namespace
+
+void set_helper_residency_release_hook(std::function<void()> fn) {
+    std::lock_guard<std::mutex> lk(g_release_mu);
+    g_release_fn = std::move(fn);
+}
+
 void RemoteExperts::close() {
     if (proxy_) {   // the proxy tier owns no device resource: close the channel, nothing else
+        const bool had_residency = proxy_resident_ > 0;   // W1: the residency this channel releases
         if (helper_ != nullptr) {
             // keep the evidence: the DONE line's helper= counters must survive the channel's
             // close (r15 printed nothing because the stats died with the client object)
@@ -145,6 +168,7 @@ void RemoteExperts::close() {
         proxy_bytes_ = 0;
         proxy_ms_begin_ = proxy_ms_wait_ = 0;
         proxy_claims_.clear();
+        if (had_residency) fire_helper_residency_release();   // W1: its pairs are the host's job again
     }
     if (device_ < 0) return;
     DeviceScope scope(device_);
@@ -545,6 +569,7 @@ bool RemoteExperts::proxy_begin(int64_t layer, const float* x, const int32_t* id
                 if (rc != expert_helper::kOk) {
                     // The begin-time fallback, verbatim: the window is fully CPU-served, the tier
                     // re-arms at the next request, and nothing failed.
+                    if (proxy_residency_live()) fire_helper_residency_release();   // W1
                     healthy_ = false;
                     disabled_ = true;
                     claims.clear();
@@ -570,6 +595,7 @@ bool RemoteExperts::proxy_begin(int64_t layer, const float* x, const int32_t* id
         // stays EMPTY for the caller's begin contract: the dispatch's kind[] keeps these entries
         // CPU-served, so the CPU computes them right here in the same window (the begin-time
         // fallback), and the tier re-arms at the next request.
+        if (proxy_residency_live()) fire_helper_residency_release();   // W1
         healthy_ = false;
         disabled_ = true;
         claims.clear();
@@ -590,6 +616,7 @@ bool RemoteExperts::proxy_finish(float* out, std::string& err) {
     const int rc = helper_->finish(out, proxy_n_embd_, 0, 10, proxy_claims_, proxy_timeout_ms_, got);
     proxy_ms_wait_ = helper_->ms_wait();
     if (rc != expert_helper::kOk) {
+        if (proxy_residency_live()) fire_helper_residency_release();   // W1
         healthy_ = false;
         disabled_ = true;
         proxy_claims_.clear();   // the dispatch recomputes EXACTLY these rows on the CPU
@@ -616,7 +643,7 @@ int RemoteExperts::begin_prompt(int32_t layer, const ExpertHelperPromptPlan& pla
         // disables the prompt tier for the rest of the request while the window tier keeps serving
         // (and the reverse).  Single channel: the shared latch, exactly as before.
         if (ch == helper2_) { healthy2_ = false; disabled2_ = true; }
-        else { healthy_ = false; disabled_ = true; }
+        else { if (proxy_residency_live()) fire_helper_residency_release(); healthy_ = false; disabled_ = true; }
     }
     return rc;
 }
@@ -629,7 +656,7 @@ int RemoteExperts::finish_prompt(float* out, int64_t n_embd, const std::vector<i
     const int rc = ch->finish_prompt(out, n_embd, claims, timeout_ms, rows);
     if (rc != expert_helper::kOk) {
         if (ch == helper2_) { healthy2_ = false; disabled2_ = true; }
-        else { healthy_ = false; disabled_ = true; }
+        else { if (proxy_residency_live()) fire_helper_residency_release(); healthy_ = false; disabled_ = true; }
         rows = 0;   // the client's whole-or-nothing rule: a violation applies NOTHING
     }
     return rc;

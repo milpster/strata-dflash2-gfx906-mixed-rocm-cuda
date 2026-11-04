@@ -115,3 +115,172 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
   mechanisms are the conversation-cache/checkpoint placement path, not expert fetches.
 - Practical: interactive UX defect only; throughput gates unaffected. Parked as a separate defect
   from the RAM-relief ladder (which proceeds on its own plan).
+
+## 2026-11-04 12:42 — prod incident: read-stall crossed the watchdog; V-ladder window open
+
+- Incident: a real ~19.8k fresh read hit the read-stall pathology (320 s vs ~75 s healthy), crossed STRATA_WATCHDOG_S=300,
+  and the watchdog killed engine #1. serve respawned engine #2, but the launcher never respawns the helper: engine #1's
+  death closed both channels and the helper exited cleanly (185 windows served). Prod ran degraded draftless until the
+  user noticed. Confirms the small-read stall is prod-destructive under a 300 s watchdog, not cosmetic.
+- Mitigation: prod config watchdog 300→900 (backup .bak-watchdog300, JSON validated); pair restarted and verified (helper
+  second-channel connected, :8009 200, --prefill 16384). The restart's first smoke then stalled 140+ s on a 194-token
+  read — worst yet today (30-60 s on earlier boots). Defect f5ddb808 upgraded: evaluate the tap-overlap binary + ring-mult
+  right after the ladder.
+- Recon (direct; the explorer child died on a connection error): the socket helper's slots hold MAIN-model experts in the
+  profile's global rank order (one mirrored set over both channels); bench AND prod helpers run no drafter lane — the
+  drafter is engine-side on the VII. SECOND_GPU.md: helper-held experts are left out of the RAM copy → that exclusion is
+  the V0 mechanism. 3080 at its 6400 MiB fill cap, 1094 MiB free.
+- V-ladder window open 12:42 (prod down, VRAM 0): run-arm.sh per-arm helper caps + armV0/V1.json (commit 4aecf2b3).
+  V0 = fill 7000/slots 5100 (mechanism probe, ~+0.6 GiB); V1 = fill auto/slots 9000 (helper ceiling); V2 = winner +
+  --mmap-experts (arena→file-backed, the big lever vs the 42.9 GiB anon baseline); V3 = + --dflash-remote-only (drafter
+  to the helper, frees VII VRAM). Gates per rung: TG ≥ 33.1, 80k sha byte-identical, PP 583-587, medians; RSS delta in
+  out/<ARM>-r<ROUND>-rss.txt.
+
+## 2026-11-04 13:12 — V0 rejected; 80k read wedges at exactly 81,920 (5×16384); P0 control running
+
+- V0 r1 (helper fill 7000 / engine slots 5100): the fill grew 4116→4340 slots (6.64 GiB) and stopped at the CARD'S
+  BUDGET (698 MiB free), not at my caps → the 3080 helper ceiling is +0.39 GiB; V1 (fill auto/slots 9000) is moot.
+  Helper-growth route rejected on ceiling alone.
+- Gates: decode itself healthy (engine log: one 494-token generation at 35.5 tok/s; TG walls 30.5-62 s are
+  read-stall-contaminated), but the read path failed hard: fresh-18k ~137 tok/s (same-day anchor 266) and the 80k
+  read WEDGED at exactly 81,920 of 87,879 tokens = 5×16384, zero progress for ~5 min (29 progress lines at 10 s
+  cadence) until I killed the arm. First hard-wedge capture of the read-stall defect.
+- Escalation across today's boots: probe stalls 39 s (09:22) → 30-60 s (11:57) → 140+ s (12:29 prod) → 163.7 s +
+  80k wedge (12:42 V0). X0 r3's 264 s pp16384 vs r2's 69 s this morning fits the same curve.
+- Unconfirmed hypothesis (static analysis, not measured): stalls at power-of-2 token boundaries + the 43 GiB anon
+  arena under 54/62 GiB pressure fit THP compaction stalls; V2 --mmap-experts (file-backed arena) would be both the
+  RAM lever and the escape. THP settings + compact_stall counters recorded at journal time.
+- Discriminator running: P0 r4 control (adopted config, same binary, watchdog 300 deliberately kept — a wedge
+  reproduces the prod incident deterministically). Clean P0 → V0's exclusion interplay implicated, proceed to V2;
+  wedged P0 → the defect owns the window, ladder pauses, defect thread promotes (tap-overlap binary + THP evidence).
+
+## 2026-11-04 13:18 — orphan-chain: a slow-dying engine starves the next boot (P0 r4 void)
+
+- P0 r4 control was VOID: a previous engine wedged-then-killed leaves a 43 GiB anon arena lingering for minutes
+  while the process exits. With MemFree at 1.7 GiB, P0 r4's own engine starved during load (its serve 503'd the
+  probe within ~2 min; the drive crashed on the 503) and it then became the next 42.4 GiB orphan. It finished dying
+  ~13:16 on its own; memory then read 42 GiB free / 48 available — machine healthy again.
+- RULE for the harness: before every arm boot, verify no rpcw-hip engine process remains AND MemFree > ~45 GiB.
+  Two 43 GiB anon arenas cannot coexist; overlap = starvation-thrash (this is likely a large share of today's
+  "escalating read stalls" after the kills began — though the original small-read stall predates them, present
+  at 09:22).
+- P0 r5 control re-running on the clean machine with the wedge watcher re-armed (two pkill self-match kills of my
+  own watcher shells today — lesson: never put a plain process name and its bracketed pkill pattern in one shell).
+- THP evidence (recorded 13:13): enabled=[always], defrag=[defer], compact_stall 631k, compact_fail 458k vs
+  compact_success 173k — severe fragmentation; supports (does not prove) compaction-stall involvement in fresh
+  reads. V2 --mmap-experts remains the candidate that is both RAM lever and escape.
+
+## 2026-11-04 13:23 — r5 void too: leftover serve held :8019; bench fully reset; harness guarded
+
+- P0 r5 was VOID before it started: the r4-era serve survived (its cmdline is dev/Strata/serve/server.py — none of my
+  kill patterns matched that path), kept :8019, and r5's own serve died instantly ("port 8019 already in use").
+  r5's probe went to the leftover stack and 503'd. The r4 serve's engine respawn was killed (502674, 42.8 GiB) and
+  the port holder (pid 19022) killed by port lookup; after that: port free, MemFree 44 GiB, VII VRAM 0.02 GiB —
+  first provably clean bench state since 12:42.
+- run-arm.sh hardened (commit follows): pre-boot guard refuses a boot while any rpcw engine/serve lives or :8019 is
+  held, then waits for MemFree >= 45 GiB and VII VRAM < 2 GiB (a killed engine's 43 GiB anon arena releases over
+  minutes); the drain loop's rocm-smi parse fixed for cardN,total,used rows.
+- Kill-pattern lessons banked: the bench serve's path is TREE-ROOT/serve/server.py (not build-v0210/serve); never
+  put a plain process name and its bracketed pkill pattern in one shell (two self-kill incidents today).
+
+## 2026-11-04 13:57 — path-1 verdict: the helper relieves ZERO host RAM in the plain mode
+
+- V0 r2 measurement (live smaps, engine mid-drive, helper at its budget ceiling 4340 slots / 6.64 GiB of 7842 MiB):
+  engine Rss 46.6 GiB, Anonymous 46.0 GiB, Pss_File 0.55 GiB — vs the P0 baseline 42.9 GiB anon with 4116 slots held.
+  The +3.1 GiB is the in-flight read working set; the arena did NOT shrink by the helper's share. The documented
+  "helper-held experts are left out of the RAM copy" does not fire outside the resident/mmap mode. Helper = compute
+  acceleration only, today. Path 2 (extend the exclusion to the plain anon arena, refills from pack files) is the
+  only helper-based RAM route; bounded by the 8 GiB card (~6.6-6.9 GiB relief).
+- Bonus evidence: AnonHugePages = 0 on the 46 GiB arena despite THP enabled=[always] and compact_fail 460k vs
+  compact_success 173k — the arena never gets huge pages; the read stalls are the failed-compaction churn on the
+  fault path. (Unconfirmed attribution, but the counters fit.)
+- Probe on this boot ran 16.8 s (no stall) vs 163.7 s on V0 r1's boot — the anon-mode stall is boot-dependent,
+  consistent with the fragmentation state at arena-build time.
+- User sequence approved and executed: path 1 (this measurement) -> STOP (prod restored on old settings) -> path 2.
+
+## 2026-11-04 14:05 — plan approved for step 2; Phase A recon dispatched
+
+- User approved (after plan-mode discussion): W1 = opt-in --expert-helper-ram-relief dropping helper-held pairs from the
+  plain anon arena with the PROMPT HELPER READOPTED (the 3080 computes prefill rows for held experts — the user's
+  architecture: "the entire point is to make the cuda card perform all the work the rocm cards are able to do"; file
+  reads only as the emergency CPU-window fallback); W2 = engine-side huge pages (madvise MADV_HUGEPAGE + arena-first
+  boot order; user explicitly declined the hard-reservation/hugetlb-pool route). Standing policies reaffirmed:
+  wedge -> rerun; strict serial kills, no grace; autonomous till done; prod toggling at my discretion.
+- Prod verified on old settings 14:04 (:8009 UP, helper 2nd-channel, --prefill 16384, no mmap flag, watchdog 900,
+  PREFILL_HELPER=0, engine anon 43.0 GiB). Phase A scoping (both workstreams) dispatched read-only to the explorer
+  while prod serves.
+
+## 2026-11-04 14:16 — V2 re-adopted by user order after the stall lottery bit again
+
+- The 14:10 plain-mode boot wedged on user traffic (20,066-token read stuck at 16,384 for 240+ s = the ~80 tps report);
+  user order: 'get us v2 back'. Both prod configs re-adopted --mmap-experts (watchdog 900; .bak-pre-v2 remains the
+  plain-mode restore point). Known trade (bench-measured): decode ~27 vs 33-35, PP 534 vs 583-587, in exchange for no
+  stalls (probe 20.1 s, small reads 0.15-0.4 s), bounded 15-30 s boundary pauses, engine anon ~7 GiB + ~36 GiB evictable.
+- Found and killed a stray bench serve (pid 987334, .venv python running TREE-ROOT serve/server.py with the armV0-r2
+  config on :8019, alive since 13:52 — the same tree-root-path pattern that evaded kills at 13:22; its engine respawns
+  during the PP-tank window were an untracked memory/VRAM competitor). Machine verified clean before the V2 relaunch:
+  ports free, 51.2 GiB available, 3080 drained.
+- W1/W2 recon (revived after a cancellation) still running read-only; W2 (engine-side huge pages) remains the accepted
+  path to recover the perf gap without the stalls, once prod is stable.
+
+## 2026-11-04 14:22 — V2 rolled off within minutes; final prod state = plain + prompt helper ON
+
+- User order sequence: 'get us v2 back' (14:16) -> saw the mmap RAM profile -> 'i told you we dont use mmap' ->
+  'get us the best performing earlier config back' + 'i want my ram locked and my helper active - prompt helper thing'.
+  POLICY CLARIFIED: prod up/down at my discretion; CONFIGS change only on explicit user order.
+- Final applied state (verified in JSON): BOTH prod configs --mmap-experts REMOVED, env STRATA_PREFILL_HELPER=1
+  (user-ordered; was 0 on the morning config), STRATA_WATCHDOG_S=900 kept; launchers clean (config-driven).
+- Self-kill incident #3: the combined takedown+edit shell SIGKILLed itself — the launcher path literal inside the
+  python heredoc matched my own 'pkill -f [l]aunch-prod' pattern. No damage (config edits simply never ran; redone
+  in a kill-free shell). Rule reaffirmed: kill patterns and the strings they match NEVER share a command.
+- W1/W2 Phase-A recon continues SOLO (explorer child died on infra twice — ConnectionRefused both times).
+  Findings so far: arena machinery lives in src/core/expert_source.cpp (STRATA_ARENA_MMAP file-backed mode ~5893,
+  that is the V2 mmap path); helper_holds is gated on STRATA_DISJOINT_ADAPT (expert_helper_candidates.cpp:189)
+  which our env does NOT set — the exclusion machinery exists but was never engaged in our runs.
+
+## 2026-11-04 14:27 — winning config fully restored + verified; three-way gate set
+
+- PREFILL_HELPER flipped 1->0 within a minute of my over-application (user: 'i thought we had prompt helper off at
+  our winning config??'). Prod verified 14:25 on the exact winning config: helper 2nd-channel x1, --prefill 16384,
+  NO mmap, PREFILL_HELPER=0, engine anon 43.2 GiB (RAM locked), smoke 8.75 s, no wedge. Only deltas vs winning cfg:
+  watchdog 900 + helper no-idle-exit (both failure-path-only, user informed).
+- FINAL GATE (user order 14:26): final verification compares candidate vs STOCK STRATA and vs THE WINNING PROD
+  CONFIG, quality AND speed, as previously: 80k sha 1c7d4a6d9be118d8 byte-identical across all three; TG >= 33.1,
+  PP frame 583-587, fresh-18k toward 337, medians, one arm at a time.
+- Phase A recon re-delegated to explorer (third attempt; first two died on infra ConnectionRefused).
+
+- W2 machine recon (14:27, prod live): THP enabled=[always] defrag=[defer]; the arena is ONE 40.0 GiB VMA, already
+  2 MiB aligned, AnonHugePages 0.00 process-wide (also the 8.7/8.9 GiB VMAs); compaction 199k success / 493k fail
+  (+14k fail in ~15 min). Conclusion: eligibility and alignment were never the blocker — under defrag=defer no
+  synchronous compaction runs at fault time and background kcompactd cannot assemble 2 MiB blocks on this
+  fragmented machine. Engine-side W2 = MADV_COLLAPSE post-fill sweep + MADV_HUGEPAGE + arena-first boot order;
+  a plain machine reboot (allowed) resets the fragmentation baseline.
+- MADV_COLLAPSE (man 2 madvise, kernel 7.3.0): independent of ALL sysfs THP settings (works under defrag=defer); best-effort synchronous per-2MiB, partial failures continue the sweep; auto-clamps to alignment; requires >=1 resident page per region (post-fill arena qualifies). W2 engine design fully validated as viable — no root needed.
+
+## 2026-11-04 14:35 — Phase A recon complete (explorer); implementation dispatched to fixer
+
+- Full file:line map landed (arena=PinnedArena via pinned.cu:462 anon mmap, arena_off expert_source.cpp:6359;
+  absent-not-representable; prompt tier claims HELD experts only via select_prompt_rows socket.cpp:188-254 with
+  the blob_stable landmine at prefill.cpp:4963; resident-exclusion code gen.cpp:10413-10436 is mmap-mode-only;
+  CPU fallback reads blob() at expert_source.cpp:5221/4796 + fallback.cpp:92; MADV_HUGEPAGE exists at
+  pinned.cu:506 but self-disables under THP=always; no MADV_COLLAPSE in tree; disjoint_adapt gates GPU cache
+  admission ONLY via helper_holds gen.cpp:9020 used at 13360/13635/21253).
+- W2 split: H1a (env STRATA_ARENA_COLLAPSE=1: HUGEPAGE-under-always + post-fill COLLAPSE sweep, no reorder) —
+  bench first; H1b (arena-first boot reorder) deferred, high coupling risk (split search, pin-by-need pricing,
+  conversation-cache sizing, PLE give-back hook).
+- W1 design frozen: post-hoc drop of held pairs (MADV_DONTNEED 2MiB-clamped ranges, VA/offsets unchanged);
+  absent table + staged file-read transient copies; prompt eligibility keyed to holds(); one-shot background
+  refill from files on helper channel loss.
+- Dispatched to fixer (one agent, serial): commit1 W2a, commit2 W1; CPU-only builds, prod untouched. Arms V4/H1
+  already scaffolded (68e40044).
+
+## 2026-11-04 16:28 — prod stall-death + VRAM-ghost boot failure; fixer died post-commit; solo mode ordered
+
+- Prod (14:23 boot) died ~16:20 on the pre-existing stall defect (engine self-stop, 'stopped making progress',
+  328 s, exit -15). First relaunch failed: the new engine priced card1 VRAM while the dead engine's allocation
+  lingered -> expert caches left 1.1 GiB -> weights arena (1466 MiB) split failure -> serve respawn loop. Clean
+  takedown + release-wait (52 GiB avail, card1 16.0 free) -> relaunch. The prod launcher needs the bench
+  harness's release-wait guard (noted for later).
+- Fixer died on ConnectionRefused (3rd child infra death today) at ~15:3x-16:2x: W2a committed (0d661511), W1
+  landed uncommitted across 8 files, no post-edit builds.
+- USER ORDER: stop delegating; implementation work proceeds solo.

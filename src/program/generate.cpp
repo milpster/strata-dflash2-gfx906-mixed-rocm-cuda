@@ -775,6 +775,11 @@ struct Options {
     int64_t expert_helper_mib = 0;
     int64_t expert_helper_reserve_mib = 512;
     int64_t expert_helper_timeout_ms = 20;
+    /// W1 (opt-in, --expert-helper-ram-relief): the expert arena gives back the pages of the pairs the
+    /// out-of-process helper holds, so they are not in RAM twice.  The proxy's fill report is what says
+    /// which pairs those are, so the flag needs --expert-helper-socket.  Off: the arena keeps every
+    /// expert, today's path.
+    bool expert_helper_ram_relief = false;
     bool remote_expert_opt = false; ///< optional optimization of the existing remote-expert decode path
     std::string expert_cache_remote_placement = "stripe"; ///< stripe experts or assign complete layers to CUDA1..3
     bool expert_cache_cpu_order = false;
@@ -1321,6 +1326,14 @@ void usage() {
                  "  --expert-helper-reserve-mib N  VRAM the helper leaves free on its card (default 512)\n"
                  "  --expert-helper-timeout-ms N  the per-window begin/finish bound (default 20; a late\n"
                  "                       helper is a CPU window, never a stall)\n"
+                 "  --expert-helper-ram-relief  opt-in: the expert arena gives back the RAM of the expert\n"
+                 "                       pairs the helper holds, so they are not in host RAM twice (pairs\n"
+                 "                       in page-locked memory the GPU has an alias into stay).  Their\n"
+                 "                       rows come from the helper; their blobs are read from the pack\n"
+                 "                       files when the CPU needs one, and they are read back into the\n"
+                 "                       arena if the helper's channel closes mid-run.  Needs\n"
+                 "                       --expert-helper-socket (its fill report names the pairs).  Off:\n"
+                 "                       the arena keeps every expert, exactly as before.\n"
                  "  --expert-cache-per-layer  R4.2g: give each layer its OWN slots instead of letting the first\n"
                  "                       position take all of them.  The default policy fills in arrival order\n"
                  "                       from one shared counter, so 256 slots went to ~26 layers of position 0\n"
@@ -3645,6 +3658,7 @@ int main(int argc, char** argv) {
         }
         else if (a == "--expert-helper-reserve-mib") o.expert_helper_reserve_mib = std::atoll(next("--expert-helper-reserve-mib"));
         else if (a == "--expert-helper-timeout-ms") o.expert_helper_timeout_ms = std::atoll(next("--expert-helper-timeout-ms"));
+        else if (a == "--expert-helper-ram-relief") o.expert_helper_ram_relief = true;
         else if (a == "--vram-reserve-mib") { o.vram_reserve_mib = std::atoi(next("--vram-reserve-mib")); o.vram_reserve_given = true; }
         else if (a == "--vram-reserve-later-mib")
             o.vram_reserve_later_mib = std::atoi(next("--vram-reserve-later-mib"));
@@ -4728,6 +4742,14 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: --expert-helper-socket: %s\n", helper_scope_bad);
             return 2;
         }
+    }
+    // W1: the flag drops the pairs the helper holds, and only the proxy's fill report says which those
+    // are.  Without a configured helper there is nothing to drop: a named refusal, not a silent no-op.
+    if (o.expert_helper_ram_relief && o.expert_helper_socket.empty()) {
+        std::fprintf(stderr, "strata generate: --expert-helper-ram-relief: the out-of-process expert helper is not "
+                             "configured (--expert-helper-socket is required: the fill report is what names the pairs "
+                             "the helper holds, and without it there is nothing to drop from the arena)\n");
+        return 2;
     }
     // STRATA_MMQ_DIRECT: the room each sized expert slot keeps after its blob (0 unless it is on: the slot costs and
     // the arena are then today's, byte for byte)
@@ -8976,6 +8998,24 @@ int main(int argc, char** argv) {
                     helper_tier_p = &helper_tier;
                     std::fprintf(stderr, "strata generate: expert-helper proxy: %lld experts on %s, %.2f GiB (fill report)\n",
                                  (long long) helper_tier.resident(), o.expert_helper_socket.c_str(), helper_tier.gib());
+                    // W1 (--expert-helper-ram-relief): the arena was built before this reply and holds a copy of
+                    // every expert, the helper's pairs included.  Give the host copy of the held pairs back to the
+                    // OS now: their rows come from the helper, their blobs from the pack files.  The pairs the
+                    // driver registered stay (the GPU has an alias into those pages).
+                    if (o.expert_helper_ram_relief) {
+                        if (srcp != &arena_src) {
+                            std::fprintf(stderr, "strata generate: --expert-helper-ram-relief: nothing dropped: this run's "
+                                                 "expert source is not the arena (--mmap-experts / --resident-experts read "
+                                                 "the files and keep no arena copy)\n");
+                        } else {
+                            std::vector<std::pair<int32_t, int32_t>> held;
+                            held.reserve((size_t) helper_tier.resident());
+                            for (int64_t l = 0; l < g.n_layers; ++l)
+                                for (int64_t e = 0; e < g.n_expert; ++e)
+                                    if (helper_tier.holds(l, (int32_t) e)) held.emplace_back((int32_t) l, (int32_t) e);
+                            arena_src.set_unfilled(std::move(held));
+                        }
+                    }
                 }
             }
         }
@@ -11508,6 +11548,10 @@ int main(int argc, char** argv) {
             // failed start) when the helper cannot serve prompt rows.
             if (const char* const hp_env = std::getenv("STRATA_PREFILL_HELPER");
                 hp_env != nullptr && std::atoi(hp_env) == 1 && helper_tier.prompt_capable()) {
+                // W1: with the arena's copy of the helper's pairs dropped, a helper-held expert has no host
+                // blob, so the prompt claim screens it by the hold-set.  The env gate above is unchanged: this
+                // flag never turns the prompt tier on by itself.
+                sp.set_helper_ram_relief(o.expert_helper_ram_relief);
                 if (!sp.set_prompt_helper(&helper_tier, err)) {
                     std::fprintf(stderr, "strata serve: %s - the prompt path stays on the primary GPU\n", err.c_str());
                     err.clear();
@@ -20650,8 +20694,10 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: prompt path allocates its own buffers (no cache slots to borrow)\n");
         if (!multi_gpu && !o.no_pool) prefill.set_cpu_pool(&pool);
         if (const char* const hp_env = std::getenv("STRATA_PREFILL_HELPER");   // M2: the same opt-in on the CLI path
-            hp_env != nullptr && std::atoi(hp_env) == 1 && helper_tier.prompt_capable())
+            hp_env != nullptr && std::atoi(hp_env) == 1 && helper_tier.prompt_capable()) {
+            prefill.set_helper_ram_relief(o.expert_helper_ram_relief);   // W1: claim a held pair by the hold-set
             prefill.set_prompt_helper(&helper_tier, err);   // soft-declines inside: a notice, never a failed run
+        }
         std::function<bool(const uint16_t*, int, int64_t, int64_t, std::string&)> df_on_taps;
         if (use_dflash && std::getenv("STRATA_DF_NOPF") == nullptr) {
             // the prompt's context cells: the fusion runs per chunk over the BF16 taps
