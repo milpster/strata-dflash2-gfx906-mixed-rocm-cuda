@@ -717,3 +717,19 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
   smoke answered exactly; engine anon 40.68 GiB against the pre-promotion 47.4.
 - Caveats recorded: the iq3_s variant's pack was never relief-validated; prod
   quality byte-identity is inherited from the bench (same binary, pack, flags).
+
+## 2026-11-04 21:40 — V6 (iq3_s) lane: works with relief, slower and tighter
+
+- Arm V6 = V5 flags on the iq3_s pack (Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S, rows
+  1.97 MiB = +26% vs IQ3_XXS). Attempt 1 died at helper boot: the PACK/EXPERTS lines
+  landed inside the env -i continuation, so the helper inherited CUDA_VISIBLE_DEVICES
+  and saw no device (fixed 6c5f9ab6; bash -n cannot catch that class).
+- Attempt 2, full drive, 0 timeouts/fallbacks: relief engaged (3377/3377 pairs dropped,
+  6.24 GiB; complement 2642 ranges / 40.60 GiB; fill-mib capped at 3377 slots).
+- vs V5 (iq3xxs, same evening): TG median 32.9 (segments 22.7-38.9, one slow tail)
+  vs 37.65 (-13%); pp16384 228.5 vs 271.7 (-16%); 88k 399.2 vs 552.9 (-28%); 80k
+  decode 32.8. Engine anon 49.0 GiB (V5 42.1); host at 54/62 GiB used, 1 GiB free
+  at peak — the 88k slowdown and the 22.7 segment are consistent with that pressure.
+- New per-model shas established (probe ad5508a8c87b1574, 80k 9f3c8e9718477049);
+  r2 required only for a byte-identity claim. Adoption (quality vs -13% TG and
+  -7 GiB headroom) is the user's call; prod stays on swift15/iq3xxs meanwhile.
