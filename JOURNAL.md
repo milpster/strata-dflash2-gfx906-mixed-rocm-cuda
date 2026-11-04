@@ -666,3 +666,21 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
   39.97 GiB at 2.48 GiB/s, filled the GPU expert cache, and reached ready — the 19:53 binary
   with W1a+W1b boots clean.
 - Fix: armV5.json log field → logs/V5-rROUND-engine.log. Attempt 3 launched with the sampler.
+
+## 2026-11-04 20:50 — V5-r1: the fix pair lands — relief TG at control speed
+
+- V5-r1 (relief + W1a lock-free pre-check + W1b dropped-only forwards), full drive clean:
+  TG median 37.2 tok/s (segments 34.5/35.9/36.5/37.9/39.9/40.8) — gate 33.1 PASSED, within
+  2.4% of the P0-r7 control (38.1), 2.3x the unfixed relief (16.0/20.1). TG walls
+  36.9/26.5/27.0 s against V4-r8's 116.8/104.0/34.7.
+- 88k 552.4 (above stock C-r3's 550.0, near control 576.5); 80k decode 38.9 tok/s (the
+  unfixed arm degraded to 5.4); probe sha 709bd8fb and 80k sha 1c7d4a6d — quality
+  byte-identical, zero timeouts/fallbacks/retries.
+- Relief intact: drop line 4116/4116 (6.24 GiB), complement 3033 ranges / 33.73 GiB —
+  identical to V4; engine anon 42.1 GiB against the control's 47.4; Pss_File 4.3 GiB of
+  retained pack cache.
+- Sampler (out/V5-r1-io.csv): drive-phase disk reads 2.31 GiB total, peak 20 s window
+  40 MiB/s (baseline) — against V4-r8's ~40 GB sustained at 100-500 MB/s. The wasted
+  resident-pair prefetches are gone; the residual is legitimate on-demand staging.
+- V5-r2 launched (sampler attached) for the second kept boot; medians and the final
+  three-way report follow. Fixes B/C/D held in reserve. Adoption is the user's call.
