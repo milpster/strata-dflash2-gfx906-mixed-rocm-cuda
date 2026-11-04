@@ -41,6 +41,8 @@ def cfg(model, pack, tok, name, exe=None, cwd=None):
         "--native", model,
         "--native-dense-gguf", model,
         "--ple-gguf", PLE,
+        "--spec", "5",
+        "--spec-min-p", "0.5",
         "--expert-profile", PROFILE,
         "--vram-reserve-mib", "640",
         "--vram-reserve-later-mib", "640",
