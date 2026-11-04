@@ -640,3 +640,18 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
   relief setup (page-cache-backed, anonymous-RAM goal intact); Fix B (pinned staged LRU)
   reserved for if eviction still bites. Then rebuild both backends and run V5-r1 with the
   sampler against the P0-r7 same-evening control.
+
+### Fix W1b implemented (20:1x): the 40 GB were wasted prefetches of resident pairs
+
+- Found the read driver: ArenaExpertSource::begin_layer/prefetch/warm forwarded EVERY id to
+  the relief file source; that source (plain pack open, complement_ready_ false) skips
+  nothing — FileExpertSource::warm madvise(MADV_WILLNEED)s (or io-enqueues) each forwarded
+  id's pack ranges, resident or not. The decode dispatch calls begin_layer per routed batch
+  (expert_pool_dispatch, src/core/expert_source.cpp:4749/4945) and the warm hints ride the
+  same path — so the engine continuously prefetched from disk the experts it already held
+  in arena RAM. V4-r8's ~40 GB/drive of storage reads were this waste.
+- Fix: the three forwards now filter to dropped pairs only (lock-free bitmap check, W1a
+  invariant) and return before the lock when none qualify — the decode common case. Dropped
+  pairs still stage on demand through blob()'s pull path (bounded by the 6.24 GiB held set).
+- Syntax PASS with the rpcw-hip build flags. armV5.json staged (copy of armV4.json). Rebuild
+  of both backends next, then V5-r1 (relief + W1a + W1b) with the sampler against P0-r7.
