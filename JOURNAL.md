@@ -619,3 +619,24 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
 - Rebuild deferred until the V4-r8 arm completes so the block keeps one binary. Next:
   reconcile out/V4-r8-io.csv (M1 vs M2), ninja -j11 rebuild both backends, V5-r1
   (relief + fix A) with the probe sampler attached, compare vs P0-r7.
+
+## 2026-11-04 19:50 — Probe verdict: decode-time pack reads dominate (M1); V4-r8 confirms r7
+
+- V4-r8 (relief, pre-fix binary, full drive + /proc sampler): TG median 20.1 (segments
+  6.3-31.7, bimodal), pp18k 270.9, 88k 438.8, 80k sha PASS, anon 41.2 GiB, no retries.
+  Second kept V4 boot: medians 16.0 / 20.1 — both far under the 33.1 gate.
+- The sampler (out/V4-r8-io.csv; read_bytes counts storage-layer fetches only, page-cache
+  hits excluded): the three TG legs sustained 100-500 MB/s of disk reads — roughly 40 GB
+  total, against a held set of 6.24 GiB: the same blobs re-read ~6x. The 88k prefill leg
+  shows the same signature (~30-40 GB). Involuntary context switches spike to 364k/s while
+  the reads run — threads starving behind I/O: the lock convoy (M2) is real but downstream
+  of the reads (M1).
+- Mechanism: dropped pairs are "transient" — every consumer touch (prompt stager, window
+  fill) re-stages the blob from the pack files; under relief the held pairs are the hottest
+  experts, so prefill and TG re-read them from disk continuously; the 80k prompt-cache
+  spread evicts what the page cache had retained.
+- Consequence: Fix A (1167bd6d) removes the resident-pair locking but cannot remove the
+  reads themselves. Next: Fix D — fadvise(WILLNEED) over the held pairs' pack ranges at
+  relief setup (page-cache-backed, anonymous-RAM goal intact); Fix B (pinned staged LRU)
+  reserved for if eviction still bites. Then rebuild both backends and run V5-r1 with the
+  sampler against the P0-r7 same-evening control.
