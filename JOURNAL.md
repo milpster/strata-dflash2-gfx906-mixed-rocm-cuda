@@ -587,3 +587,21 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
 - Live discriminator queued behind C-r3 (GPUs busy): one V4 TG leg sampling /proc/<pid>/io
   read_bytes delta + futex contention. Predicts: read_bytes grows ~100s of MB per TG leg under
   relief, ~0 under P0.
+
+## 2026-11-04 19:35 — C-r3 lands the three-way table; relief verdict final for tonight
+
+- C-r3 (stock, no helper) clean, no retries: TG median 27.6 (segments 26.6-28.1), fresh-18k
+  340.2 tok/s (inside the stock 337-339 band — the box is not globally slow today; P0's own
+  110.1 fresh-18k was that config's noisy leg), 88k 550.0 (in band), probe sha d7e714573946a47b
+  = C-r1 canonical, 80k sha 1c7d4a6d9be118d8 — byte-identical across ALL THREE arms.
+- Three-way (same evening, same binary for V4/P0): TG P0 38.1 (passes 33.1) / C 27.6 / V4 16.0
+  (2.4x below winning, 1.7x below stock); 88k P0 576.5 / C 550.0 / V4 503.3; engine anon
+  V4 41.2 vs P0 47.4 GiB (-6.2, the relief goal) and C 46.2.
+- Verdict: relief delivers its RAM goal with byte-identical output but fails the TG adoption
+  gate as-is. Bottleneck (static): global file_mu_ convoy + pack-file reads at decode under
+  unfilled_>0. Fix candidates A-D staged; nothing implemented without a user order.
+- Live discriminator launched as V4-r8 (doubles as the 2nd kept boot): probe_relief_tg.sh
+  samples engine /proc/io + context switches every 2 s during the standard full drive.
+  M1 predicts read_bytes rising through the tg1024 legs; M2 predicts flat read_bytes with
+  context-switch spikes. STRATA_DRIVE_STOP_AFTER only supports "pp" (no TG-leg stop), so the
+  probe rides a full ~25 min drive.
