@@ -6468,9 +6468,9 @@ bool ArenaExpertSource::pcie_layer(int64_t layer) const {
 
 bool ArenaExpertSource::pinned(int64_t layer, int64_t expert) const {
     if (base_ == nullptr || layer < 0 || expert < 0 || expert >= n_expert_) return false;
-    if (unfilled_.load(std::memory_order_relaxed) > 0) {   // W1: a dropped pair is never pinned, and never DMA'd
+    if (unfilled_.load(std::memory_order_relaxed) > 0 && unfilled_at(layer, expert)) {   // W1a: lock-free pre-check (see blob())
         std::lock_guard<std::mutex> lk(file_mu_);
-        if (unfilled_at(layer, expert)) return false;
+        if (unfilled_at(layer, expert)) return false;   // W1: a dropped pair is never pinned, and never DMA'd
     }
     const auto& lay = strata::kernels::cpu::expert_layout();
     if (ranges_) return pin_range_of(arena_off(layer, expert), lay.blob_bytes(layer)) >= 0;   // the whole blob inside ONE registered range
@@ -6478,9 +6478,9 @@ bool ArenaExpertSource::pinned(int64_t layer, int64_t expert) const {
 }
 
 const uint8_t* ArenaExpertSource::device_alias(int64_t layer, int64_t expert) const {
-    if (unfilled_.load(std::memory_order_relaxed) > 0) {   // W1: its pages are gone; no alias over them
+    if (unfilled_.load(std::memory_order_relaxed) > 0 && unfilled_at(layer, expert)) {   // W1a: lock-free pre-check (see blob())
         std::lock_guard<std::mutex> lk(file_mu_);
-        if (unfilled_at(layer, expert)) return nullptr;
+        if (unfilled_at(layer, expert)) return nullptr;   // W1: its pages are gone; no alias over them
     }
     if (ranges_) {   // pin by need: the range's device base + the blob's offset inside it
         if (base_ == nullptr || layer < 0 || expert < 0 || expert >= n_expert_) return nullptr;
@@ -6503,7 +6503,14 @@ const uint8_t* ArenaExpertSource::blob(int64_t layer, int64_t expert) {
     const int64_t idx = layer * n_expert_ + expert;
     if (idx < 0 || idx >= blobs_) return nullptr;
     reads_.fetch_add(1, std::memory_order_relaxed);
-    if (unfilled_.load(std::memory_order_relaxed) > 0) {   // W1: --expert-helper-ram-relief
+    // W1a (TG fix): the drop publishes this bitmap at boot, before any request thread serves
+    // (set_unfilled -> register_complement -> first request), and under relief nothing writes it
+    // again while serving (refill_run is the documented no-op), so a RESIDENT pair - the
+    // overwhelming majority of calls - is decided without file_mu_.  Only a dropped pair takes
+    // the lock; the re-check under it keeps a future flag-writing refill honest.  Before this,
+    // every call locked and the decode threads convoyed behind staged pack reads (V4 TG 16 vs
+    // 38 tok/s, journal 2026-11-04).
+    if (unfilled_.load(std::memory_order_relaxed) > 0 && unfilled_at(layer, expert)) {   // W1: --expert-helper-ram-relief
         std::lock_guard<std::mutex> lk(file_mu_);
         if (unfilled_at(layer, expert))
             return file_source() == nullptr ? nullptr : file_->blob(layer, expert);
@@ -6517,9 +6524,9 @@ const uint8_t* ArenaExpertSource::blob_at(int64_t layer, int64_t expert) const {
     if (base_ == nullptr || layer < 0 || expert < 0 || expert >= n_expert_) return nullptr;
     const int64_t idx = layer * n_expert_ + expert;
     if (idx < 0 || idx >= blobs_) return nullptr;
-    if (unfilled_.load(std::memory_order_relaxed) > 0) {   // W1: a dropped pair has no arena bytes to point at
+    if (unfilled_.load(std::memory_order_relaxed) > 0 && unfilled_at(layer, expert)) {   // W1a: lock-free pre-check (see blob())
         std::lock_guard<std::mutex> lk(file_mu_);
-        if (unfilled_at(layer, expert)) return nullptr;
+        if (unfilled_at(layer, expert)) return nullptr;   // W1: a dropped pair has no arena bytes to point at
     }
     return base_ + arena_off(layer, expert);   // (the padded layout of pin by need too)
 }
@@ -6754,7 +6761,7 @@ void ArenaExpertSource::refill_run() {
 }
 
 const uint8_t* ArenaExpertSource::blob_stable(int64_t layer, int64_t expert) {
-    if (unfilled_.load(std::memory_order_relaxed) > 0) {
+    if (unfilled_.load(std::memory_order_relaxed) > 0 && unfilled_at(layer, expert)) {   // W1a: lock-free pre-check (see blob())
         std::lock_guard<std::mutex> lk(file_mu_);
         if (unfilled_at(layer, expert)) return nullptr;   // no stable blob: the pages are gone
     }
@@ -6763,13 +6770,14 @@ const uint8_t* ArenaExpertSource::blob_stable(int64_t layer, int64_t expert) {
 
 bool ArenaExpertSource::transient(int64_t layer, int64_t expert) const {
     if (unfilled_.load(std::memory_order_relaxed) <= 0) return false;
+    if (!unfilled_at(layer, expert)) return false;   // W1a: lock-free pre-check (see blob()); resident = not transient
     std::lock_guard<std::mutex> lk(file_mu_);
     return unfilled_at(layer, expert);
 }
 
 bool ArenaExpertSource::copy_blob(int64_t layer, int64_t expert, uint8_t* dst) {
     if (dst == nullptr) return false;
-    if (unfilled_.load(std::memory_order_relaxed) > 0) {
+    if (unfilled_.load(std::memory_order_relaxed) > 0 && unfilled_at(layer, expert)) {   // W1a: lock-free pre-check (see blob())
         std::lock_guard<std::mutex> lk(file_mu_);
         if (unfilled_at(layer, expert)) {
             FileExpertSource* f = file_source();
