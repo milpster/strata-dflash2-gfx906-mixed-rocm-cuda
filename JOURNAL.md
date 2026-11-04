@@ -911,3 +911,11 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
   itself; the only remaining lever is a different draft model (engineering).
 - Fresh iq3_s prod restore after the arm (the wedged 23:53 boot was cleared
   before the lane).
+
+## 2026-11-05 00:4x-00:5x - quality gate (ordered after hold; cut by user order) + prod restore
+- Yardstick: tools/quant_quality.py, 5x999 teacher-forced positions, CPU-expert mode (expert-cache 1, fp16 kv, no helper => gates the quant/pack layer).
+- Design forced by two boot facts: no-pack impossible (canonical Q2_0 fallback needs AVX-512, CPU is AVX2 => packs are the only expert source) and IQ packs require --spec>=2 (native CPU kernels are multi-token). Configs: bench/ab-v0210/quality/{make_qq_configs.py,qq*.json}; stock exe = strata-stock-v0210 tree.
+- HEADLINE PASS: REF (stock strata + iq3s pack) vs A (relief binary + iq3s pack): top-1 100.00%, KL 0.00000 (p99 0.0000), PPL 4.115 = 4.115 over all 4995 positions. The relief stack is logprob-identical to stock on the live pack; combined with +36% TG vs stock => zero quality cost for the speed.
+- Cut by user order ("bring prod back"): C (stock+iq3xxs15) killed at 2/5 segments (partial TSV committed as evidence), B never ran. Unmeasured: C-vs-B twin check, REF-vs-C quant delta - resumable on order.
+- Prod restored (iq3_s, first boot at helper fill 6796): health 200 ~75s, 784 MiB free, helper filled 3582 slots 6.64GiB stopped:fill-mib (one row under the 7000-ask boot = same edge), 698 MiB left on 3080.
+- Commits: 651f87a9 (configs v1), aaf53b18 (redesign), 7881dc1d (--spec fix), fc3303e8 (REF+A artifacts).
