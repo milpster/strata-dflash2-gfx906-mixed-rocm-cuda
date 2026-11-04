@@ -87,3 +87,20 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
 - Dose-response (window 3): 16384 is the peak — 24576 loses 10% on 80k (527.5), 32768 loses 37% (367.0); the amortization reverses past 16384. K3/K4 rejected.
 - Residuals on record: P0 r2 one 80k cancel-and-retry at 99.99% of the read (retried clean in-round, wall ≈ 2 reads, sha held) — watch item; tg-scale segment flicker (missing exact checkpoint at resume → ~535-token re-read ≈ 6 s; state-dependent 0-4 of segments; checkpoint-placement, NOT ring) — open small lever.
 - Ops lessons: never edit a script its running chain still reads (bash re-reads incrementally — cost C-r2 its judge txt; metrics survived in engine logs); C engine logs append across sessions (rotate per window); takedown pkill patterns must be self-match-safe (bracket trick — a naive pattern killed my own shell).
+
+## 2026-11-04 window4: S-tuning verdicts, X0 crash, per-request DF_EVENTS dump
+- S-arms vs same-day P0 (window2): min-p 0.4 → 80k 518 tok/s (−11%); min-p 0.6 → 434 (−25%), TG 20.3 (−43%);
+  dflash-block 4 → 198 (−66%, fresh reads only, warm reads normal — per-chunk draft overhead scales with block count);
+  block 6 → TG noisy-bad. ALL REJECTED. Draft acceptance never rose (P0 probe ~63%, S1 52%) — acceptance is
+  drafter-mismatch-capped, not sampling-capped. Config space around adopted defaults is exhausted.
+- Fresh-probe read walls scatter 7–119 s across arms (X0-r1 8.2 s, X0-r2 110.6 s, same prompt/config): the FIRST
+  request races the helper's 6.25 GiB fill. Probe read tok/s is NOISE, never a gate. pp16384 (2nd request) is the
+  comparable fresh-prefill metric. X0-r2 instrumented pp16384 265.7 tok/s ≈ P0 266.9 — DF_EVENTS does NOT halve 18k
+  prefill (r1's 167.1 was probe-race contamination).
+- X0-r1 crash: instrumented engine died in tg-after-park decode — verify GPU waits timed out at layer 16
+  (verify.cpp:3492), decode decayed 30→4 tok/s after the 12.2 s/657 MB park. Fresh probe + pp healthy. Park rate
+  measured again: 18244 tokens / 12.2 s ≈ 54 MB/s.
+- 3rd lost section table → root cause: DFlashDrafter::release() only runs from upload()'s failure bail
+  (dflash_runtime.cpp:376) — NO shutdown call site; the 100 s graceful-teardown window was never the fix.
+  Patched generate.cpp: df_timing_drain+dump after every request summary (file-scope decls, no-op unless
+  STRATA_DF_EVENTS=1). Table is now cumulative + crash-proof.
