@@ -898,3 +898,16 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
   so nothing was lost. Lesson: confirm before acting on ambiguous one-word
   orders.
 - iq3_s prod restored after the lane.
+
+## 2026-11-05 00:05 — DF3: block 3 flat; the dflash config sweep is fully closed
+
+- Arm DF3 = V10-exact + --dflash-block 3 (cdd09edc), rc=0, clean.
+- TG median 37.6 vs V10's 37.2 (+0.4, inside boot noise); acceptance ~63.7% vs
+  ~64.6% (same); 88k 562.9 read / 39.1 decode; 80k sha canonical; probe sha
+  f889609a; engine anon 41.8 GiB; 0 non-finite; helper timeouts=0.
+- Sweep fully closed: quant (DF1) dead, width (DF2) worse, block (DF3) flat.
+  spec 5 / q4_0 / block 5 stands — the setting every canonical sha tonight was
+  measured at. The ~60–65% acceptance ceiling is the dflash2 draft model
+  itself; the only remaining lever is a different draft model (engineering).
+- Fresh iq3_s prod restore after the arm (the wedged 23:53 boot was cleared
+  before the lane).
