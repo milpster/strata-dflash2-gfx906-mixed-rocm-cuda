@@ -854,3 +854,17 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
   position ~18077; unvalidated on the GPU path; norms amplified to Inf/NaN.
   The exact garbage source (paging vs P2P vs uninitialized slot) is
   unconfirmed — would need an instrumented boot. 640/640 stays the fix.
+
+## 2026-11-04 23:35 — V10 passes: iq3xxs safety margin at ~zero cost
+
+- Arm V10 = iq3xxs at 640/640 + fill 6700 (a7ec2674), one full arm, rc=0.
+- Boot: free-after-load 788/632 MiB (V7 was 406/248) — both cards above the
+  512 MiB line with real margin. Relief 4310/4310 (6.53 GiB), cache ~4230
+  slots (about -80 vs the 256/256 squeeze), helper 4310 slots, 0 non-finite.
+- Perf in-band: TG legs 34.8/34.9/37.1/37.3/39.8/40.4 (median 37.2, inside
+  V7's own boot spread 39.1/37.0), pp16384 275.3 tok/s, 88k 562.1 tok/s,
+  80k sha canonical (1c7d4a6d), engine anon 41.8 GiB.
+- swift15 prod conf updated to 640/640 (fill/slots unchanged) — the fast
+  variant no longer rides the 248 MiB edge.
+- DF1 (q8_0 draft, V10-exact otherwise) launched before the prod restore to
+  save two boot cycles; iq3_s prod comes back right after DF1's verdict.
