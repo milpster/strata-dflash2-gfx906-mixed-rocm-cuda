@@ -78,9 +78,9 @@ export LD_LIBRARY_PATH=/home/user/rocm-gfx906-xnack/lib:/opt/rocm-6.1.0/lib
 if [[ -n $HELPER ]]; then
   echo "== arm $ARM round $ROUND: helper up ($HELPER)"
   HSLOTS=4200; HFILL=6400
-  case $ARM in V0) HSLOTS=5100; HFILL=7000 ;; V1) HSLOTS=9000; HFILL=0 ;; V4|V5|V6) HSLOTS=4200; HFILL=6400 ;; V7) HSLOTS=4600; HFILL=6700 ;; esac
+  case $ARM in V0) HSLOTS=5100; HFILL=7000 ;; V1) HSLOTS=9000; HFILL=0 ;; V4|V5|V6) HSLOTS=4200; HFILL=6400 ;; V7|V8) HSLOTS=4600; HFILL=6700 ;; esac
   PACK=/mnt/user/ai/iq3xxs-15; EXPERTS=../Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf
-  case $ARM in V6) PACK=/mnt/user/ai/iq3s; EXPERTS=../Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S.gguf ;; esac
+  case $ARM in V6|V8) PACK=/mnt/user/ai/iq3s; EXPERTS=../Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S.gguf ;; esac
   env -i PATH="$PATH" HOME="$HOME" TERM="${TERM:-dumb}" LD_LIBRARY_PATH="$LD_LIBRARY_PATH" \
     "$HELPER" --pack "$PACK" \
       --experts "$EXPERTS" \
@@ -125,7 +125,7 @@ gate_fail() {
   exit 3
 }
 grep -q 'STRATA_ARENA_COLLAPSE: 0 of' "$ELOG" 2>/dev/null && gate_fail "arena collapse sweep collapsed 0 chunks (void for a collapse arm)"
-if [[ $ARM == V4 || $ARM == V5 || $ARM == V6 || $ARM == V7 ]] && ! grep -Eq -- "--expert-helper-ram-relief: [1-9][0-9]* of the helper's [0-9]+ pairs dropped from the arena" "$ELOG"; then
+if [[ $ARM == V4 || $ARM == V5 || $ARM == V6 || $ARM == V7 || $ARM == V8 ]] && ! grep -Eq -- "--expert-helper-ram-relief: [1-9][0-9]* of the helper's [0-9]+ pairs dropped from the arena" "$ELOG"; then
   gate_fail "RAM relief dropped no helper pairs (void for a relief arm)"
 fi
 [[ -n "$HELPER" ]] && ! grep -q 'expert-helper proxy' "$ELOG" 2>/dev/null && gate_fail "helper fill report never arrived (helperless run)"
