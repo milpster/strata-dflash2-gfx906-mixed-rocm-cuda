@@ -26,9 +26,9 @@
   "--kv",
   "int8",
   "--vram-reserve-mib",
-  "896",
+  "256",
   "--vram-reserve-later-mib",
-  "1000",
+  "256",
   "--kv-resident",
   "262144",
   "--pcie-frac",
@@ -49,7 +49,7 @@
   "--suffix-draft",
   "0",
   "--expert-helper-slots",
-  "4200",
+  "4600",
   "--expert-helper-ram-relief"
  ],
  "cwd": "/mnt/user/Strata",
@@ -116,6 +116,6 @@
  },
  "expert_helper_socket": "/mnt/user/Strata/run/prod-mixed.sock",
  "expert_helper_socket2": "/mnt/user/Strata/run/prod-mixed2.sock",
- "expert_helper_slots": 3400,
+ "expert_helper_slots": 4600,
  "expert_helper_timeout": 100
 }

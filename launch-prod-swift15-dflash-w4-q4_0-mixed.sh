@@ -4,7 +4,7 @@
 # TUNED config (ab2-r1 PASS verdict 2026-10-31: long decode +7.7%, xl +6.5%, prompt tier live):
 # rpcw candidate engine+helper, helper second channel (--socket2), prompt tier on
 # (STRATA_PREFILL_HELPER=1 via the config env), occupancy pinned (slots4c sweep
-# 2026-11-01: --slots 4200 requested, --fill-mib 6400 binds first at 4093 slots
+# 2026-11-01: --slots 4600 requested, --fill-mib 6700 binds first at 4093 slots
 # 6.25 GiB; +13.6% decode median vs the old 4000-slot cap, read rate unchanged).
 set -euo pipefail
 ROOT=/mnt/user/Strata
@@ -48,8 +48,8 @@ trap 'exit 130' INT
 env -i PATH="$PATH" HOME="$HOME" TERM="${TERM:-dumb}" "$HELPER" \
   --pack /mnt/user/ai/iq3xxs-15 \
   --experts ../Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf \
-  --device 0 --slots 4200 --reserve-mib 300 --timeout 63115200000 \
-  --begin-timeout 1800000 --socket "$SOCKET" --fill-mib 6400 --socket2 "$SOCKET2" \
+  --device 0 --slots 4600 --reserve-mib 300 --timeout 63115200000 \
+  --begin-timeout 1800000 --socket "$SOCKET" --fill-mib 6700 --socket2 "$SOCKET2" \
   >>"$HLOG" 2>&1 < /dev/null &
 helper_pid=$!
 for ((i=0; i<300; i++)); do
