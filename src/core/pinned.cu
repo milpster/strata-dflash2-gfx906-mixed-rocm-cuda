@@ -1016,9 +1016,16 @@ uint64_t PinnedArena::register_after_fill(const std::vector<std::pair<uint64_t, 
     bool refused = false;
     for (const auto& rg : ranges) {
         if (rg.second == 0 || rg.first >= capacity) continue;
-        // INWARD, like pin-by-need: a registered page holds no byte of an unregistered neighbour blob
-        uint64_t a = (rg.first + kPage - 1) & ~(kPage - 1);
-        uint64_t b = std::min<uint64_t>(rg.first + rg.second, capacity) & ~(kPage - 1);
+        // OUTWARD, page-granular: a span's first/last page is shared with a DROPPED blob's tail -
+        // that page stays mapped (only wholly-inside pages were given back) and its kept bytes must
+        // be DMA-able, so the registration covers it.  V4-r3: the inward rounding left every
+        // span-edge blob's partial page outside the alias window, and the first cache fill of such
+        // a pair ran past its registered range and died with "invalid argument" (the same error
+        // V4-r2 was mis-blamed on held-undropped pairs for).  Wholly-dropped pages are never
+        // reached: the spans stop at kept-blob boundaries and the round reaches at most the one
+        // shared page.
+        uint64_t a = rg.first & ~(kPage - 1);
+        uint64_t b = std::min<uint64_t>((rg.first + rg.second + kPage - 1) & ~(kPage - 1), capacity);
         // ranges arrive sorted and non-overlapping; trim the head against the previous tail
         if (!pin_ranges.empty()) {
             const uint64_t last_end = pin_ranges.back().first + pin_ranges.back().second;
