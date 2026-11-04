@@ -764,3 +764,20 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
 - Net: the squeezed config is the best measured (38.5 combined) but the margin over
   the current prod config is modest and it sits at the driver-paging edge. Safe
   adoption variant: reserves 384/512 MiB + helper fill 6700. Prod decision pending.
+
+## 2026-11-04 22:45 — V7-squeezed promoted to prod, verified live
+
+- User order "do it" after the A/B/B' fork. Prod commit 08f5e690: both mixed
+  configs at reserves 256/256 + expert-helper-slots 4600; both launchers at
+  --fill-mib 6700 --slots 4600. Binaries unchanged (the validated 19:53 pair,
+  sha-verified again). Relaunch verified against the bench boots line-for-line:
+  relief 4318/4318 (6.53 GiB), complement 3120 ranges / 33.44 GiB, free-after-load
+  406/248 MiB (CUDA1 LOW warning expected), helper filled 4318 slots (6.54 GiB),
+  smoke exact, engine anon 40.4 GiB.
+- Prod now runs the flag-level optimum measured tonight: TG 38.5 combined over
+  two bench boots (vs 37.65 for V5-class, 38.05 control), 88k at control level,
+  6.53 GiB of arena relief. Rollback: git revert 08f5e690 (+ 3a34d550) + relaunch.
+- Caveats on record: CUDA1 at the 248 MiB paging edge (engine warns below 512),
+  deterministic probe-text difference vs the V5 canonical (80k byte-identical),
+  iq3_s variant unbenched at these settings, dflash-draft-to-3080 parked as an
+  engineering follow-up.
