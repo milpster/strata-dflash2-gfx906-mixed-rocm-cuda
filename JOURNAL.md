@@ -560,3 +560,30 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
   slower → FAILS the adoption gate as-is. The cost sits in decode-time service of the dropped
   pairs (helper rows / pack-file reads). C-r3 stock next for the three-way table; adoption only
   on explicit user order.
+
+## 2026-11-04 19:4x — Relief TG bottleneck: static chain complete (user order: find it)
+
+- Log forensics first: V4-r7 vs P0-r7 TG legs have IDENTICAL work — decode cache hit rate
+  ~96% both, miss rows 39.6-49.7k vs 37.1-47.8k, helper reqs 5.2-7.8k vs 5.8-7.5k. The relief
+  arm is not doing more; it is serving the same misses slower (walls 41-62 s vs 12-15 s per leg).
+- Root, from expert_source.cpp: under relief `unfilled_` stays 4116 forever (refill_run is a
+  deliberate no-op — dropped pairs stay file-served until restart, 6713-6724). Every
+  blob/blob_stable/blob_at/transient/copy_blob/note_async_read/begin_layer/prefetch/warm call
+  then takes the GLOBAL `file_mu_` — including calls for RESIDENT pairs, which lock just to
+  check `unfilled_at()` (6506-6524, 6756-6768). `blob()` performs the pack-file read for a
+  dropped pair INSIDE the critical section (6508-6509). `begin_layer` (6787-6791) forwards the
+  per-layer decode ids into the file source's io-prefetch/aging machinery on every layer of
+  every token — machinery a run without relief never executes.
+- Two mechanisms: M1 — a staged pack read holds the global lock for a disk-read's duration
+  (matches the bimodal TG segments: 27-29 tok/s page-cache hits vs 8-12 tok/s real reads; the
+  80k drive had evicted the pack cache); M2 — convoy: every decode thread calling any of the
+  nine entry points queues behind those holds. P0 is immune: `unfilled_==0` short-circuits
+  before the lock; all blobs are pointer arithmetic.
+- Fix candidates (not implemented — user order needed): (A) lock-free `unfilled_at` snapshot,
+  take `file_mu_` only for real dropped-pair reads; (B) small pinned LRU of staged dropped
+  blobs so decode never re-reads pack files; (C) piggyback blob bytes on the helper's row
+  answers; (D) boot-time posix_fadvise WILLNEED over the held 6.24 GiB (weakest: observed
+  page-cache pressure evicts it).
+- Live discriminator queued behind C-r3 (GPUs busy): one V4 TG leg sampling /proc/<pid>/io
+  read_bytes delta + futex contention. Predicts: read_bytes grows ~100s of MB per TG leg under
+  relief, ~0 under P0.
