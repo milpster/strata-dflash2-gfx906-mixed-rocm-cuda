@@ -49,7 +49,8 @@
   "--suffix-draft",
   "0",
   "--expert-helper-slots",
-  "4200"
+  "4200",
+  "--expert-helper-ram-relief"
  ],
  "cwd": "/mnt/user/Strata",
  "tokenizer": "/mnt/user/ai/iq3xxs-15/tokenizer",
@@ -100,7 +101,7 @@
   "STRATA_NO_PCIE_GROUP": "1",
   "STRATA_HIP_PROMPT_F16": "1",
   "STRATA_DFLASH_SAMPLED": "1",
-  "STRATA_PREFILL_HELPER": "0"
+  "STRATA_PREFILL_HELPER": "1"
  },
  "mcp_servers": {
   "markitdown": {
