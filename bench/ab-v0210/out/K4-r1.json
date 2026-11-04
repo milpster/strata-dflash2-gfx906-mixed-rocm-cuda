@@ -1,0 +1,82 @@
+{
+ "probe": {
+  "tag": "probe",
+  "wall": 14.399627447128296,
+  "usage": {
+   "prompt_tokens": 214,
+   "completion_tokens": 251,
+   "total_tokens": 465,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "text": "Speculative decoding works by having a small draft model propose a sequence of tokens, then the target model verifies each one. At each position, the proposed token is accepted with probability min(1, p_target/p_draft); if it's rejected, a replacement token is drawn from the \"residual\" distribution (p_target \u2212 p_draft, normalized). This is exactly the rejection-sampling procedure: the accept step captures the overlap between the two distributions, and the reject step fills in the remainder, so the final token at every position is drawn from p_target exactly, not from p_draft."
+ },
+ "pp16384": {
+  "tag": "pp16384",
+  "wall": 67.21112251281738,
+  "usage": {
+   "prompt_tokens": 18233,
+   "completion_tokens": 8,
+   "total_tokens": 18241,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "text": ""
+ },
+ "tg1024": [
+  {
+   "tag": "tg1024.0",
+   "wall": 40.7133424282074,
+   "usage": {
+    "prompt_tokens": 225,
+    "completion_tokens": 1024,
+    "total_tokens": 1249,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "text": "**Diary \u2014 2026-03-18 \u2014 Porting the CUDA engine to HIP on gfx906**\n\nToday I finished the first end-to-end port of the CUDA engine to HIP on AMD `gfx906` (Vega 10 / MI50 class). The goal was not a toy demo: the engine has a multi-kernel pipeline, shared-memory reductions, warp-level shuffles, cooperative grid launches, and a host-side memory pool. The port is now compiling, running, and producing bit-identical results on the reference test set.\n\nConcrete notes:\n\n1. **Build setup**\n   - CUDA sources were compiled with `nvcc -O3 -arch=sm_70`.\n   - HIP sources were compiled with:\n     ```bash\n     hipcc -O3 -x hip \\\n       --offload-arch=gfx906 \\\n       -Iinclude \\\n       -o engine_hip engine_hip.cpp\n     ```\n   - I kept the CUDA kernel syntax (`__global__`, `__shared__`, `<<<...>>>`) because HIP accepts it, but I replaced CUDA runtime calls with HIP equivalents.\n\n2. **Runtime API translation**\n   - `cudaMalloc` \u2192 `hipMalloc`\n   - `cudaFree` \u2192 `hipFree`\n   - `cudaMemcpy` \u2192 `hipMemcpy`\n   - `cudaMemcpyAsync` \u2192 `hipMemcpyAsync`\n   - `cudaStream_t` \u2192 `hipStream_t`\n   - `cudaEvent_t` \u2192 `hipEvent_t`\n   - `cudaDeviceSynchronize` \u2192 `hipDeviceSynchronize`\n   - `cudaGetLastError` \u2192 `hipGetLastError`\n   - `cudaGetDeviceProperties` \u2192 `hipGetDeviceProperties`\n\n   Example:\n   ```cpp\n   // CUDA\n   cudaStream_t stream;\n   cudaStreamCreate(&stream);\n   cudaMemcpyAsync(d_x, h_x, n * sizeof(float), cudaMemcpyHostToDevice, stream);\n\n   // HIP\n   hipStream_t stream;\n   hipStreamCreate(&stream);\n   hipMemcpyAsync(d_x, h_x, n * sizeof(float), hipMemcpyHostToDevice, stream);\n   ```\n\n3. **Warp size is the big gotcha**\n   - CUDA"
+  },
+  {
+   "tag": "tg1024.1",
+   "wall": 30.673548698425293,
+   "usage": {
+    "prompt_tokens": 225,
+    "completion_tokens": 1024,
+    "total_tokens": 1249,
+    "prompt_tokens_details": {
+     "cached_tokens": 220
+    }
+   },
+   "text": "**Diary \u2014 Day 14: CUDA \u2192 HIP on gfx906**\n\nToday I finished the first end-to-end run of the particle engine on a Vega 10 / gfx906 device. The engine is a 3D SPH solver: one kernel for neighbor search, one for density/pressure, one for force accumulation, and a small reduction kernel for global diagnostics.\n\nThe CUDA source was already mostly portable: kernels used `__global__`, `__device__`, `__shared__`, `cudaStream_t`, `cudaEvent_t`, `cudaMemcpyAsync`, and cuBLAS for the linear algebra pieces. I started with `hipify-perl`, which handled the obvious renames:\n\n```bash\nhipify-perl src/cuda/engine.cu > src/hip/engine.hip.cpp\nhipify-perl src/cuda/engine.cuh > src/hip/engine.hip.hpp\n```\n\nThat got the code compiling, but not correctly.\n\nThe first real issue was kernel launch configuration. The CUDA code used:\n\n```cpp\n__global__ void __launch_bounds__(256, 4) sph_force_kernel(...)\n```\n\nOn gfx906, the wavefront size is 64, not 32. I changed the block size to 256, which is fine, but I removed the second launch-bounds argument at first because I did not know the target occupancy. Later I set it explicitly:\n\n```cpp\n__global__ void __launch_bounds__(256, 4) sph_force_kernel(...)\n```\n\nFor gfx906, 256 threads per block with 4 blocks per CU is a reasonable target for the force kernel. The compiler accepted it, and occupancy improved from 37% to 61% in `rocprof`.\n\nThe second issue was shared memory. The CUDA kernel used:\n\n```cpp\n__shared__ float smem[256];\n```\n\nand a second kernel used dynamic shared memory:\n\n```cpp\nextern __shared__ float dyn_smem[];\n```\n\nThe CUDA launch passed:\n\n```cpp\ncudaFuncSetAttribute(density_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, 49152);\n```\n\nHIP has the same API:\n\n```cpp\nhipFuncSetAttribute(density_kernel, hip"
+  },
+  {
+   "tag": "tg1024.2",
+   "wall": 31.13610553741455,
+   "usage": {
+    "prompt_tokens": 225,
+    "completion_tokens": 1024,
+    "total_tokens": 1249,
+    "prompt_tokens_details": {
+     "cached_tokens": 220
+    }
+   },
+   "text": "**Diary \u2014 2026-03-14 \u2014 Porting the CUDA engine to HIP on gfx906**\n\nToday I moved the core CUDA engine over to HIP on a Vega/MI50-class GPU, target `gfx906`. The engine is a tile-based compute kernel with a CUDA-style launch path, device memory pool, streams, events, and a small set of warp-level primitives. The goal was not a full rewrite, just a HIP translation that preserves the CUDA semantics and runs efficiently on AMD.\n\nThe first pass was mechanical. I replaced CUDA runtime calls with HIP equivalents:\n\n```cpp\ncudaMalloc -> hipMalloc\ncudaFree -> hipFree\ncudaMemcpy -> hipMemcpy\ncudaMemset -> hipMemset\ncudaStream_t -> hipStream_t\ncudaEvent_t -> hipEvent_t\ncudaDeviceSynchronize -> hipDeviceSynchronize\ncudaGetLastError -> hipGetLastError\ncudaError_t -> hipError_t\n```\n\nKernel launches were the next step. The CUDA engine used the triple-chevron syntax:\n\n```cpp\nengine_kernel<<<grid, block, smem, stream>>>(args);\n```\n\nHIP supports the same syntax, so I kept it for the first build. Later I switched the hot path to `hipLaunchKernelGGL` because it made the launch parameters explicit and easier to audit:\n\n```cpp\nhipLaunchKernelGGL(\n    engine_kernel,\n    dim3(grid_x, grid_y),\n    dim3(block_x, block_y),\n    dynamic_smem_bytes,\n    stream,\n    args...\n);\n```\n\nThe compiler invocation was:\n\n```bash\nhipcc -O3 -march=gfx906 -std=c++17 \\\n  -Iinclude -Isrc \\\n  -o engine_hip src/engine_hip.cpp\n```\n\nI also added:\n\n```bash\n-D__HIP_PLATFORM_AMD__\n```\n\nbecause the engine had a few CUDA-specific preprocessor guards.\n\nThe first successful compile was not the interesting part. The interesting part was the wavefront size. CUDA assumes a warp of 32 lanes. `gfx906` uses a 64-lane wavefront. That broke two assumptions in the engine:\n\n1. The engine used `__shfl_sync` with an implicit 32-lane warp.\n"
+  }
+ ],
+ "infill80k": {
+  "tag": "infill80k",
+  "wall": 243.9661648273468,
+  "usage": {
+   "prompt_tokens": 87879,
+   "completion_tokens": 155,
+   "total_tokens": 88034,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "text": "watch memory quick the through dog quick."
+ }
+}
