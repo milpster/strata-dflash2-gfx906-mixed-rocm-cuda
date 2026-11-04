@@ -1391,9 +1391,12 @@ public:
     /// W1 (--expert-helper-ram-relief): build the arena without the whole-arena registration (and
     /// without the working-set lock), so the fill writes plain pages.  Call before open().
     void set_ram_relief(bool on) { ram_relief_ = on; }
-    /// W1: after the helper's fill report, register everything EXCEPT the held pairs - their pages
-    /// are about to be given back, and driver-pinned pages refuse MADV_DONTNEED - then rebuild the
-    /// alias tables over the registered complement and lock it resident.  Call before set_unfilled().
+    /// W1: after the helper's fill report, register everything EXCEPT the pairs set_unfilled()
+    /// actually gave back (a pair that is neither dropped nor registered has no DMA-legal address;
+    /// V4-r2), then rebuild the alias tables over the registered complement.  No working-set lock:
+    /// the registration pins what it covers, and locking the dropped holes would fault them back
+    /// (or, before the drop, refuse the MADV_DONTNEED itself - unlimited mlock boxes).
+    /// Call after set_unfilled().
     void register_complement(const std::vector<std::pair<int32_t, int32_t>>& held);
     /// W1: rebuild pin_start_/pin_end_/pin_dev_/layer_pcie_ from the arena's registered ranges -
     /// the same build open() does for a pin-by-need arena, run again after register_complement().

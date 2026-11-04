@@ -9016,9 +9016,13 @@ int main(int argc, char** argv) {
                             for (int64_t l = 0; l < g.n_layers; ++l)
                                 for (int64_t e = 0; e < g.n_expert; ++e)
                                     if (helper_tier.holds(l, (int32_t) e)) held.emplace_back((int32_t) l, (int32_t) e);
-                            arena_src.register_complement(held);   // W1: DMA alias over everything but
-                                                                  // these pairs, so the drop below is legal
-                            arena_src.set_unfilled(std::move(held));
+                            // Order matters: the drop runs FIRST, while the held pages are still plain
+                            // (nothing registered over them), and the registration then covers everything
+                            // that is still servable - including any pair the drop refused (V4-r2 lesson:
+                            // a pair that is neither dropped nor registered has no DMA-legal address, and
+                            // the first cache fill of such a pair kills the request).
+                            arena_src.set_unfilled(held);
+                            arena_src.register_complement(held);
                         }
                     }
                 }

@@ -6545,6 +6545,7 @@ void ArenaExpertSource::set_unfilled(std::vector<std::pair<int32_t, int32_t>> pa
     const int64_t n_layers = blobs_ / n_expert_;
     if (unfilled_flag_.empty()) unfilled_flag_.assign((size_t) blobs_, 0);
     int64_t dropped = 0, registered = 0, out_of_range = 0, refused = 0;
+    int first_refusal = 0;
     uint64_t bytes = 0;
     for (const auto& p : pairs) {
         const int64_t l = p.first, e = p.second;
@@ -6558,7 +6559,11 @@ void ArenaExpertSource::set_unfilled(std::vector<std::pair<int32_t, int32_t>> pa
         uint64_t hi = end & ~(uint64_t) 4095;
         if (arena_capacity_ > 0 && hi > arena_capacity_) hi = arena_capacity_;
         if (hi <= lo) continue;   // a blob inside one page: nothing page-granular to give back
-        if (madvise((uint8_t*) base_ + (size_t) lo, (size_t) (hi - lo), MADV_DONTNEED) != 0) { ++refused; continue; }
+        if (madvise((uint8_t*) base_ + (size_t) lo, (size_t) (hi - lo), MADV_DONTNEED) != 0) {
+            if (first_refusal == 0) first_refusal = errno;   // V4-r2: 4116 refusals, every one mlock's EINVAL
+            ++refused;
+            continue;
+        }
         unfilled_flag_[idx] = 1;
         ++dropped;
         bytes += hi - lo;
@@ -6567,8 +6572,9 @@ void ArenaExpertSource::set_unfilled(std::vector<std::pair<int32_t, int32_t>> pa
     unfilled_bytes_ = bytes;
     if (dropped <= 0) {
         std::fprintf(stderr, "strata generate: --expert-helper-ram-relief: nothing dropped (%lld of %lld pairs are "
-                             "pinned memory the GPU has an alias into, %lld madvise refusals)\n",
-                     (long long) registered, (long long) pairs.size(), (long long) refused);
+                             "pinned memory the GPU has an alias into, %lld madvise refusals, first: %s)\n",
+                     (long long) registered, (long long) pairs.size(), (long long) refused,
+                     first_refusal != 0 ? std::strerror(first_refusal) : "n/a");
         return;
     }
     note_ += "; --expert-helper-ram-relief: " + std::to_string(dropped) + " of " + std::to_string(pairs.size()) +
@@ -6617,26 +6623,24 @@ void ArenaExpertSource::apply_registration() {
 }
 
 void ArenaExpertSource::register_complement(const std::vector<std::pair<int32_t, int32_t>>& held) {
-    // W1: after the helper's fill report, register everything EXCEPT the held pairs - their pages
-    // are about to be given back with MADV_DONTNEED, which driver-pinned memory refuses (measured:
-    // all 4116 held pairs sat inside the whole-arena registration and nothing could be dropped).
-    // The complement keeps its DMA alias; the held pairs stay plain, unlocked pages until
-    // set_unfilled() drops them.  Boot-time, one thread.
-    if (base_ == nullptr || arena_ == nullptr || held.empty()) return;
+    // W1, AFTER set_unfilled(): register everything that is still servable - every pair EXCEPT the
+    // ones the drop actually gave back.  V4-r2 lesson: a pair that is neither dropped nor
+    // registered has no DMA-legal address, and the first cache fill of such a pair fails with
+    // "invalid argument" and kills the request.  Boot-time, one thread.
+    if (base_ == nullptr || arena_ == nullptr) return;
     PinnedArena* a = static_cast<PinnedArena*>(arena_);   // stored opaque; the type is complete here
     const int64_t n_layers = blobs_ / (n_expert_ > 0 ? n_expert_ : 1);
-    std::vector<uint8_t> drop((size_t) blobs_, 0);
-    for (const auto& p : held) {
-        const int64_t l = p.first, e = p.second;
-        if (l >= 0 && l < n_layers && e >= 0 && e < n_expert_) drop[(size_t) (l * n_expert_ + e)] = 1;
-    }
-    std::vector<std::pair<uint64_t, uint64_t>> comp;   // spans of consecutive unheld blobs, merged
+    if (unfilled_flag_.empty()) unfilled_flag_.assign((size_t) blobs_, 0);
+    std::vector<std::pair<uint64_t, uint64_t>> comp;   // spans of consecutive still-held blobs, merged
     uint64_t span = 0;
     bool open = false;
+    int64_t dropped = 0;
     for (int64_t l = 0; l < n_layers; ++l) {
         for (int64_t e = 0; e < n_expert_; ++e) {
+            const size_t i = (size_t) (l * n_expert_ + e);
             const uint64_t off = arena_off(l, e);
-            if (drop[(size_t) (l * n_expert_ + e)]) {
+            if (i < unfilled_flag_.size() && unfilled_flag_[i] != 0) {
+                ++dropped;
                 if (open) { comp.emplace_back(span, off > span ? off - span : 0); open = false; }
             } else if (!open) {
                 span = off;
@@ -6645,11 +6649,17 @@ void ArenaExpertSource::register_complement(const std::vector<std::pair<int32_t,
         }
     }
     if (open && arena_capacity_ > span) comp.emplace_back(span, arena_capacity_ - span);
-    const uint64_t got = a->register_after_fill(comp, true);
+    // lock_rest = false: the registration itself pins what it covers (the GPU's alias needs the
+    // pages resident), and the dropped pairs' pages are gone on purpose - a working-set lock over
+    // the holes would fault them back in as zero pages.  Run BEFORE the drop instead (V4-r2), it
+    // is what made MADV_DONTNEED EINVAL on every held pair: this box allows unlimited mlock.  The
+    // only unlocked leftovers are the shared edge pages (~a page per range boundary), which no DMA
+    // touches and the kernel keeps absent pressure.
+    const uint64_t got = a->register_after_fill(comp, false);
     apply_registration();
-    std::fprintf(stderr, "strata generate: --expert-helper-ram-relief: registered the complement of the helper's "
-                         "%llu pairs after the fill (%zu range(s), %.2f GiB); the held pages stay plain\n",
-                 (unsigned long long) held.size(), comp.size(), (double) got / 1073741824.0);
+    std::fprintf(stderr, "strata generate: --expert-helper-ram-relief: registered what stayed behind the helper's "
+                         "%llu pairs (%lld dropped, %zu range(s), %.2f GiB)\n",
+                 (unsigned long long) held.size(), (long long) dropped, comp.size(), (double) got / 1073741824.0);
 }
 
 FileExpertSource* ArenaExpertSource::file_source() const {
@@ -6679,6 +6689,18 @@ void ArenaExpertSource::refill_unfilled() {
 }
 
 void ArenaExpertSource::refill_run() {
+    if (ram_relief_) {
+        // W1 + complement registration: re-read bytes into addresses the registration does not
+        // cover would put pairs back in serving with no DMA-legal address (the V4-r2 failure in
+        // reverse), and re-registering at runtime would rebuild alias tables under live readers.
+        // The dropped pairs stay file-served (transient) until the next boot: the documented
+        // helper-loss degrade - slower, correct.
+        std::fprintf(stderr, "strata: expert arena: the helper's residency is released; its %lld dropped experts "
+                             "stay file-served until restart (--expert-helper-ram-relief)\n",
+                     (long long) unfilled_.load(std::memory_order_relaxed));
+        refill_running_.store(false);
+        return;
+    }
     const int64_t asked = unfilled_.load(std::memory_order_relaxed);
     const auto t0 = std::chrono::steady_clock::now();
     std::fprintf(stderr, "strata: expert arena: the helper's residency is released; re-reading its %lld dropped "
