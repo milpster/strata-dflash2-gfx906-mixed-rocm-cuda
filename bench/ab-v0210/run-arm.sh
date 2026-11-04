@@ -10,7 +10,7 @@ STOCK=/home/user/dev/strata-stock-v0210
 PY=$ROOT/.venv/bin/python
 case $ARM in
   A) ENGINE=$B/armA/bin/strata; HELPER=$B/armA/bin/strata-expert-helper; SERVE=$B/armA/serve/server.py; CD=$B ;;
-  B|D|E|F0|K1|K2|K3|K4|P0|S1|S2|S3|S4|X0|R0|V0|V1|V2|V2b|V3|V4|V5|V6|V7|V8|V9|V10|H1) ENGINE=$ROOT/build-v0210/rpcw-hip/strata; HELPER=$ROOT/build-v0210/rpcw-cuda/strata-expert-helper; SERVE=$ROOT/serve/server.py; CD=$ROOT ;;
+  B|D|E|F0|K1|K2|K3|K4|P0|S1|S2|S3|S4|X0|R0|V0|V1|V2|V2b|V3|V4|V5|V6|V7|V8|V9|V10|DF1|H1) ENGINE=$ROOT/build-v0210/rpcw-hip/strata; HELPER=$ROOT/build-v0210/rpcw-cuda/strata-expert-helper; SERVE=$ROOT/serve/server.py; CD=$ROOT ;;
   F1off|F1|F2|F2only|P1) ENGINE=$ROOT/build-tap-overlap/rpcw-hip/strata; HELPER=$ROOT/build-v0210/rpcw-cuda/strata-expert-helper; SERVE=$ROOT/serve/server.py; CD=$ROOT ;;
   C) ENGINE=$STOCK/build/rpcw-hip/strata; HELPER=; SERVE=$STOCK/serve/server.py; CD=$STOCK ;;
   *) echo "arm A|B|C|D|E|F0|F1off|F1|F2|F2only|K1|K2|K3|K4|P0|P1|S1|S2|S3|S4|X0|R0|V0|V1|V2|V2b|V3" >&2; exit 2 ;;
@@ -78,7 +78,7 @@ export LD_LIBRARY_PATH=/home/user/rocm-gfx906-xnack/lib:/opt/rocm-6.1.0/lib
 if [[ -n $HELPER ]]; then
   echo "== arm $ARM round $ROUND: helper up ($HELPER)"
   HSLOTS=4200; HFILL=6400
-  case $ARM in V0) HSLOTS=5100; HFILL=7000 ;; V1) HSLOTS=9000; HFILL=0 ;; V4|V5|V6) HSLOTS=4200; HFILL=6400 ;; V7|V8|V10) HSLOTS=4600; HFILL=6700 ;; V9) HSLOTS=4600; HFILL=7000 ;; esac
+  case $ARM in V0) HSLOTS=5100; HFILL=7000 ;; V1) HSLOTS=9000; HFILL=0 ;; V4|V5|V6) HSLOTS=4200; HFILL=6400 ;; V7|V8|V10|DF1) HSLOTS=4600; HFILL=6700 ;; V9) HSLOTS=4600; HFILL=7000 ;; esac
   PACK=/mnt/user/ai/iq3xxs-15; EXPERTS=../Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf
   case $ARM in V6|V8|V9) PACK=/mnt/user/ai/iq3s; EXPERTS=../Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S.gguf ;; esac
   env -i PATH="$PATH" HOME="$HOME" TERM="${TERM:-dumb}" LD_LIBRARY_PATH="$LD_LIBRARY_PATH" \
@@ -125,7 +125,7 @@ gate_fail() {
   exit 3
 }
 grep -q 'STRATA_ARENA_COLLAPSE: 0 of' "$ELOG" 2>/dev/null && gate_fail "arena collapse sweep collapsed 0 chunks (void for a collapse arm)"
-if [[ $ARM == V4 || $ARM == V5 || $ARM == V6 || $ARM == V7 || $ARM == V8 || $ARM == V9 || $ARM == V10 ]] && ! grep -Eq -- "--expert-helper-ram-relief: [1-9][0-9]* of the helper's [0-9]+ pairs dropped from the arena" "$ELOG"; then
+if [[ $ARM == V4 || $ARM == V5 || $ARM == V6 || $ARM == V7 || $ARM == V8 || $ARM == V9 || $ARM == V10 || $ARM == DF1 ]] && ! grep -Eq -- "--expert-helper-ram-relief: [1-9][0-9]* of the helper's [0-9]+ pairs dropped from the arena" "$ELOG"; then
   gate_fail "RAM relief dropped no helper pairs (void for a relief arm)"
 fi
 [[ -n "$HELPER" ]] && ! grep -q 'expert-helper proxy' "$ELOG" 2>/dev/null && gate_fail "helper fill report never arrived (helperless run)"
