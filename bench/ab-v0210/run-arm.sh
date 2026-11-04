@@ -110,6 +110,21 @@ for i in $(seq 1 2400); do   # model load can take ~15 min; poll visibly
   sleep 1
 done
 curl -sf http://127.0.0.1:8019/health >/dev/null || { echo "server readiness timed out"; exit 1; }
+# fail-fast gate (user directive 2026-11-04): a verdict that is knowable at boot must not burn the
+# ~25 min drive. Three checks, each one a void run: a COLLAPSE arm whose sweep collapsed nothing,
+# a helper arm whose fill report never arrived (a helperless run measures the wrong thing), and an
+# engine that is already gone. Teardown matches the normal one; exit 3 so the wrapper knows.
+gate_fail() {
+  echo "== arm $ARM round $ROUND: GATE-FAIL: $1"
+  kill -9 "$SPID" 2>/dev/null
+  pkill -9 -f "$ENGINE --serve" 2>/dev/null
+  [[ -n "$HELPER" ]] && pkill -9 -f "$HELPER" 2>/dev/null
+  sleep 2
+  exit 3
+}
+grep -q 'STRATA_ARENA_COLLAPSE: 0 of' "$ELOG" 2>/dev/null && gate_fail "arena collapse sweep collapsed 0 chunks (void for a collapse arm)"
+[[ -n "$HELPER" ]] && ! grep -q 'expert-helper proxy' "$ELOG" 2>/dev/null && gate_fail "helper fill report never arrived (helperless run)"
+pgrep -f "$ENGINE --serve" >/dev/null 2>&1 || gate_fail "engine not running at drive start"
 echo "== arm $ARM round $ROUND: driving"
 "$PY" "$B/drive.py" "$ARM" "$ROUND" "$TG_RUNS"
 echo "== arm $ARM round $ROUND: judge lines"
