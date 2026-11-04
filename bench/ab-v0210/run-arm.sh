@@ -125,6 +125,15 @@ gate_fail() {
 grep -q 'STRATA_ARENA_COLLAPSE: 0 of' "$ELOG" 2>/dev/null && gate_fail "arena collapse sweep collapsed 0 chunks (void for a collapse arm)"
 [[ -n "$HELPER" ]] && ! grep -q 'expert-helper proxy' "$ELOG" 2>/dev/null && gate_fail "helper fill report never arrived (helperless run)"
 pgrep -f "$ENGINE --serve" >/dev/null 2>&1 || gate_fail "engine not running at drive start"
+# Preserve post-registration THP evidence even if a later request fails.
+if [[ $ARM == H1 ]]; then
+  for pid in $(pgrep -f "$ENGINE --serve"); do
+    cp -- "/proc/$pid/smaps" "$B/out/$ARM-r$ROUND-pid$pid-smaps.txt"
+    grep -E '^(Name|Pid|THP_enabled|VmRSS|VmLck):' "/proc/$pid/status" \
+      > "$B/out/$ARM-r$ROUND-pid$pid-status.txt"
+    echo "== arm $ARM round $ROUND: post-registration THP snapshot captured (pid $pid)"
+  done
+fi
 echo "== arm $ARM round $ROUND: driving"
 "$PY" "$B/drive.py" "$ARM" "$ROUND" "$TG_RUNS"
 echo "== arm $ARM round $ROUND: judge lines"

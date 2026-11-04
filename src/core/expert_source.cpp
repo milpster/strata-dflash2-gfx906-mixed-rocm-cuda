@@ -65,11 +65,12 @@
 #include <cerrno>
 #include <linux/aio_abi.h>   // the kernel's own asynchronous reads (io_submit): no library, allowed by Docker's seccomp
 #include <sched.h>
+#include <sys/prctl.h>
 #include <sys/syscall.h>
 #endif
 
 #ifndef MADV_COLLAPSE
-#define MADV_COLLAPSE 25   // Linux 5.16; the number the kernel documents.  Older headers have no name for it.
+#define MADV_COLLAPSE 25   // Linux 6.1; older headers have no name for it.
 #endif
 
 // a 64-bit seek (as in pinned.cu): the 32-bit `fseek` wraps past 4 GiB, and the spelling differs per platform
@@ -6262,18 +6263,25 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
                      ok ? "wrote" : "could NOT write", path.c_str());
     }
     // W2a (opt-in, STRATA_ARENA_COLLAPSE=1): collapse the filled range into 2 MiB huge pages NOW.
-    // MADV_COLLAPSE (Linux 5.16+) takes a range of pages that are already written and fills one 2 MiB
+    // MADV_COLLAPSE (Linux 6.1+) takes a range of pages that are already written and fills one 2 MiB
     // block from them, so the arena's TLB benefit does not depend on the kernel finding a free block at
     // each of the ten million faults of the load.  Best effort: a chunk the kernel cannot collapse right
     // now (EAGAIN, ENOMEM, EINTR) is counted and skipped - it stays 4 KB-backed and the kernel still
     // collapses it at a later fault.  Nothing here fails the boot, and nothing here runs when the
     // variable is unset.  A hugetlb-backed arena is already all 2 MiB pages: nothing to collapse.
     if (std::getenv("STRATA_ARENA_COLLAPSE") != nullptr && a->backing != PageBacking::LargePages) {
-        // This box's kernel EINVALs MADV_COLLAPSE while the 2 MiB order sits on [inherit]
-        // (the top level saying [always] notwithstanding); a MADV_HUGEPAGE-hinted VMA collapses
-        // fine in both explicit per-order modes (measured 2026-11-04, user's root test).  Ask for
-        // the hint under the flag: #771's 432 s start was defrag=madvise fault-time compaction,
-        // not the hint itself, and the arm measures the boot time anyway.
+        // Launchers can disable THP with prctl; that policy survives fork/exec and vetoes even
+        // MADV_COLLAPSE. Override it only for this explicit, already-filled sweep, then restore it
+        // before registration. There are no throwing operations between the override and restore.
+#if defined(__linux__)
+        const int thp_before = prctl(PR_GET_THP_DISABLE, 0L, 0L, 0L, 0L);
+        const bool thp_override = thp_before == 1 && prctl(PR_SET_THP_DISABLE, 0L, 0L, 0L, 0L) == 0;
+        if (thp_before < 0 || (thp_before == 1 && !thp_override))
+            std::fprintf(stderr, "strata generate: expert arena: THP policy override failed: %s\n", std::strerror(errno));
+        std::fprintf(stderr, "strata generate: expert arena: THP policy before sweep: %d (%s)\n",
+                     thp_before, thp_override ? "temporarily enabled for collapse" : "unchanged");
+#endif
+        // Hint after filling, so this request does not add fault-time compaction to the load.
         madvise(a->base, (size_t) want, MADV_HUGEPAGE);
         constexpr uint64_t kHuge = 2ull << 20;
         // The kernel EINVALs a MADV_COLLAPSE whose START is not 2 MiB-aligned (it clamps only the
@@ -6296,6 +6304,14 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
                 if (why == 0) why = errno;
             }
         }
+#if defined(__linux__)
+        if (thp_override) {
+            if (prctl(PR_SET_THP_DISABLE, 1L, 0L, 0L, 0L) != 0)
+                std::fprintf(stderr, "strata generate: expert arena: THP policy restore failed: %s\n", std::strerror(errno));
+            else
+                std::fprintf(stderr, "strata generate: expert arena: THP policy restored to %d\n", thp_before);
+        }
+#endif
         a->note += "; STRATA_ARENA_COLLAPSE: " + std::to_string(done) + " of " + std::to_string(tried) +
                    " 2 MiB chunks collapsed after the fill" +
                    (eagain ? ", " + std::to_string(eagain) + " refused for room" : "") +
