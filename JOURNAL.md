@@ -881,3 +881,20 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
   the sweep continues: --spec/--spec-min-p grid, --dflash-block, or a
   different draft model — the likely real fix.
 - iq3_s prod restored after the arm.
+
+## 2026-11-05 00:00 — DF2: spec 7 loses; the dflash config sweep is exhausted
+
+- Arm DF2 = V10-exact + --spec 7 (4ac93265), rc=0, clean.
+- TG median 36.1 vs V10's 37.2 (−3%); acceptance diluted to ~59.3% from
+  ~64.6% — the wider verify windows cost more than the extra accepted drafts
+  bought. 88k 562.7 tok/s, 80k sha canonical (quality holds at width),
+  engine anon 41.9 GiB.
+- Sweep conclusion: DF1 (q8_0 draft) flat/worse, DF2 (spec 7) worse —
+  spec 5 + q4_0 is the optimum for the dflash2 draft model. Its ~60–65%
+  acceptance ceiling is the model itself. Remaining options: one cheap
+  --dflash-block probe, or a different draft model (the real fix).
+- Process note: user's "done" meant "show prelim results"; I misread it as
+  "wrap up" and TERMed the lane — the TERMs landed after the arm completed,
+  so nothing was lost. Lesson: confirm before acting on ambiguous one-word
+  orders.
+- iq3_s prod restored after the lane.
