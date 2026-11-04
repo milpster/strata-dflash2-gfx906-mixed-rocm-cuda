@@ -1339,6 +1339,17 @@ public:
     /// `blob` without the read counter: a pure pointer into the arena, safe from another thread (the async adaptive
     /// tier's job thread)
     const uint8_t* blob_at(int64_t layer, int64_t expert) const;
+    /// W1: a dropped pair has no stable blob (its pages are gone), is not pinned, has no device alias, and its
+    /// `blob` is a short-lived staged read from the pack files - so `transient` is true for it and `copy_blob`
+    /// reads it straight into the caller's buffer.  Nothing changes for a pair that is not dropped.
+    const uint8_t* blob_stable(int64_t layer, int64_t expert) override;
+    bool transient(int64_t layer, int64_t expert) const override;
+    bool copy_blob(int64_t layer, int64_t expert, uint8_t* dst) override;
+    void note_async_read(const uint8_t* blob, void* stream) override;
+    void begin_layer(int64_t layer, const int32_t* ids, int64_t k) override;
+    void prefetch(int64_t layer, const int64_t* experts, int64_t n) override;
+    void warm(int64_t layer, const int64_t* experts, int64_t n) override;
+    bool warms() const override { return unfilled_.load(std::memory_order_relaxed) > 0; }
     int64_t reads() const { return reads_.load(std::memory_order_relaxed); }
     bool pinned(int64_t layer, int64_t expert) const override;
     const uint8_t* device_alias(int64_t layer, int64_t expert) const override;
@@ -1360,6 +1371,29 @@ public:
     }
     /// Pin by need, after open(): the registered ranges (0 when the prefix rule, or nothing, is in force)
     size_t pin_ranges() const { return pin_start_.size(); }
+
+    /// W1 (--expert-helper-ram-relief, opt-in): the (layer, expert) pairs the out-of-process expert
+    /// helper holds, given to the source ONCE, after the helper's fill report.  The host arena keeps a
+    /// copy of every expert, the helper's pairs included, so a pair the helper computes rows for sits in
+    /// RAM twice; this gives those pages back to the OS and keeps the addresses (the arena's address
+    /// space is never given back).  A dropped pair is then:
+    ///   - no stable blob (`blob_stable`, `blob_at`), not pinned, no device alias;
+    ///   - `blob` reads it from the pack files into a short-lived buffer, so `transient` is true for it
+    ///     and every consumer copies it (the CPU windows, the cache fill, the prompt path's stager);
+    ///   - its rows come from the helper while the channel is open.
+    /// A pair inside a registered range is left alone: the driver pins those pages and the GPU has an
+    /// alias into them, so releasing them is not safe - relief is the held pairs that are not pinned.
+    /// Never called: today's behaviour, byte for byte.
+    void set_unfilled(std::vector<std::pair<int32_t, int32_t>> pairs);
+    /// How many pairs are dropped, and the bytes given back (0: the flag did nothing on this source)
+    int64_t unfilled_pairs() const { return unfilled_.load(std::memory_order_relaxed); }
+    uint64_t unfilled_bytes() const { return unfilled_bytes_; }
+    /// W1, the channel-loss path: read the dropped pairs back into the reserved addresses from the pack
+    /// files, clearing them as each lands.  This runs when the helper's residency is RELEASED - the
+    /// helper died mid-run - and the CPU has to serve their rows: with no host copy there would be
+    /// nothing to serve them from, so the run re-reads them and degrades exactly as a no-helper run.
+    /// Asks a background thread; never blocks the thread that noticed the loss.
+    void refill_unfilled();
 
     /// What backing was obtained and why, for the startup print.  "The engine adapts to the machine it is on" is
     /// only true if the engine says what it got.
@@ -1425,6 +1459,31 @@ private:
     /// index of the registered range holding [off, off + len), or -1
     int64_t pin_range_of(uint64_t off, uint64_t len) const;
     std::string gguf_;
+
+    // ---- W1 (--expert-helper-ram-relief): the pairs dropped out of the arena, and the pack files they
+    // come back from.  Empty `unfilled_flag_` (never set) is today's source, byte for byte.
+    std::vector<uint8_t> unfilled_flag_;      ///< (layers x experts): 1 = the pages are given back
+    std::atomic<int64_t> unfilled_{0};
+    uint64_t unfilled_bytes_ = 0;
+    uint64_t arena_capacity_ = 0;             ///< open()'s arena bytes (the spare blob on top)
+    bool shared_backing_ = false;             ///< a shared-file arena: MADV_DONTNEED would zero the FILE
+    std::string pack_dir_;                    ///< open()'s pack dir, for the file fallback
+    mutable std::unique_ptr<FileExpertSource> file_;  ///< the pack files: opened on the first dropped-pair read
+    mutable std::mutex file_mu_;
+    std::thread refill_;                      ///< refill_unfilled()'s background read
+    std::atomic<bool> refill_running_{false};
+    /// The pack files, opened on demand (W1).  `file_mu_` HELD by the caller.  Null when they cannot be
+    /// opened: a dropped pair then has no blob and every caller refuses that window with its existing
+    /// named failure.
+    FileExpertSource* file_source() const;
+    /// The refill thread's body: re-read every dropped pair into its arena address, clearing it as it
+    /// lands.  Runs on `refill_`, joined by close().
+    void refill_run();
+    bool unfilled_at(int64_t layer, int64_t expert) const {
+        const size_t i = (size_t) (layer * n_expert_ + expert);
+        return !unfilled_flag_.empty() && layer >= 0 && expert >= 0 && expert < n_expert_ &&
+               i < unfilled_flag_.size() && unfilled_flag_[i] != 0;
+    }
 };
 
 /// Plan v0.3 P6: checks native_experts.txt's GGUF spans against the files, before anything is read: each layer's

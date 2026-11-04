@@ -1233,6 +1233,7 @@ struct Prefill::Impl {
     // block-ordered H2D source for off[]'s helper block (hp_stage) and row_sd ones (hp_ones - the helper's native
     // rows carry s_down already, like the CPU pool's); and the CPU fallback's activations and jobs.
     core::RemoteExperts* hp = nullptr;
+    bool hp_ram_relief = false;   // W1 (--expert-helper-ram-relief): a held pair has no host blob; claim it by the hold-set
     float* hp_rows = nullptr;
     float* hp_stage = nullptr;
     float* hp_ones = nullptr;
@@ -2528,6 +2529,8 @@ void Prefill::set_tap_layers(const int* layers, int n, bool hc_mean) {
 
 // ================= M2 (STRATA_PREFILL_HELPER, docs/work/MIXED_BACKEND_RPC_PLAN.md): the out-of-process
 // helper as a PROMPT claimant =================
+void Prefill::set_helper_ram_relief(bool on) { impl_->hp_ram_relief = on; }
+
 bool Prefill::set_prompt_helper(core::RemoteExperts* helper, std::string& err) {
     (void) err;   // every decline below is a NOTICE, never a failed start: the default path must not change
     Impl& m = *impl_;
@@ -4960,7 +4963,14 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             std::vector<uint8_t> hp_holds((size_t) m.g->n_expert), hp_stable((size_t) m.g->n_expert);
                             for (int32_t e = 0; e < m.g->n_expert; ++e) {
                                 hp_holds[(size_t) e] = m.hp->holds(l, e) ? 1 : 0;
-                                hp_stable[(size_t) e] = m.src->blob_stable(l, e) != nullptr ? 1 : 0;
+                                // W1 (--expert-helper-ram-relief): a held pair has no host blob to be stable - its
+                                // arena pages were given back, and the host copy is the whole point of the flag.  It
+                                // is prompt-eligible by the hold-set (the same holds[] select_prompt_rows screens),
+                                // and its rows come from the helper.  A pair the helper does not hold keeps today's
+                                // rule (its arena bytes are there, stable, as they always were).
+                                hp_stable[(size_t) e] = (m.hp_ram_relief && hp_holds[(size_t) e])
+                                                            ? 1
+                                                            : (m.src->blob_stable(l, e) != nullptr ? 1 : 0);
                             }
                             // M4c (a): the size-adaptive claim. The M4b re-measure found the crossover -
                             // deep claims WON at small chunks (+19.8% at 222 tok) and LOST above (-22.7% at

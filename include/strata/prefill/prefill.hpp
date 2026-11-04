@@ -223,6 +223,11 @@ public:
     /// as it was.  Needs the CPU pool set (the fallback's arm).
     bool set_prompt_helper(core::RemoteExperts* helper, std::string& err);
 
+    /// W1 (--expert-helper-ram-relief): the arena dropped the helper's pairs, so a helper-held expert has no
+    /// host blob of its own; it is prompt-eligible by the hold-set, not by `blob_stable`.  False (the
+    /// default): the claim rule is exactly today's.
+    void set_helper_ram_relief(bool on);
+
     /// Plan v0.3 P6: called after every chunk with the chunk's final multi-stream residual rows (device,
     /// T x hc*n_embd, valid until the next chunk) and the chunk's first position; the MTP draft layer builds its
     /// K/V from them.  The prefill stream is synchronized before the call.
