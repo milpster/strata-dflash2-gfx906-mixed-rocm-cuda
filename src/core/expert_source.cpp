@@ -6269,6 +6269,12 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
     // collapses it at a later fault.  Nothing here fails the boot, and nothing here runs when the
     // variable is unset.  A hugetlb-backed arena is already all 2 MiB pages: nothing to collapse.
     if (std::getenv("STRATA_ARENA_COLLAPSE") != nullptr && a->backing != PageBacking::LargePages) {
+        // This box's kernel EINVALs MADV_COLLAPSE while the 2 MiB order sits on [inherit]
+        // (the top level saying [always] notwithstanding); a MADV_HUGEPAGE-hinted VMA collapses
+        // fine in both explicit per-order modes (measured 2026-11-04, user's root test).  Ask for
+        // the hint under the flag: #771's 432 s start was defrag=madvise fault-time compaction,
+        // not the hint itself, and the arm measures the boot time anyway.
+        madvise(a->base, (size_t) want, MADV_HUGEPAGE);
         constexpr uint64_t kHuge = 2ull << 20;
         // The kernel EINVALs a MADV_COLLAPSE whose START is not 2 MiB-aligned (it clamps only the
         // length), so the sweep runs over the whole 2 MiB blocks fully inside [base, base+want):
