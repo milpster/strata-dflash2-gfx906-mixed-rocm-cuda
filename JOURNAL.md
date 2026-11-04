@@ -518,3 +518,18 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
 - Lanes relaunched serially with fresh unused labels: V4-r7, then winning P0-r7, then stock C-r3; second block
   V4-r8/P0-r8/C-r4 if healthy (report.py protocol: >=2 kept boots per arm for performance claims). THP off; no
   production change.
+
+## 2026-11-04 19:06 — V4-r7 complete: relief works mechanically, TG gate fails 3-for-3
+
+- Full drive finished, no wedge, no 503 retry. Relief: 4116/4116 pairs dropped (6.24 GiB), complement
+  3033 ranges / 33.73 GiB. Probe 42.2 tok/s; fresh-18k 271.9; 88k 503.3 (second segment restored in
+  526 ms — segment health clean).
+- TG (report.py rule, 6 steady segments): 7.9 / 11.9 / 12.4 / 19.6 / 27.0 / 29.4 → median 16.0 tok/s
+  vs gate 33.1 — FAIL. Same degraded-TG signature as r1 (18.6) and r6 (19.0 pre-wedge): three relief
+  rounds, three sub-gate TGs. 80k decode tail also degraded (129 @ 5.4 tok/s).
+- End-of-drive RSS: engine Rss 56.4 GiB / anon 41.2 GiB / Pss_File 15.0 GiB (the 80k prompt-cache
+  spread resident — comparable only against the same-point P0-r7 snapshot); helper Rss 0.44 GiB, its
+  file pages evicted under memory pressure (re-read on demand).
+- Decisive next step: same-day P0-r7 winning-config control (no relief), then C-r3 stock. If P0-r7
+  TG holds ~33+ today, the TG loss is relief-caused (helper/file path at decode); if P0-r7 also
+  sags, it is the session frame. No adoption either way without user order.
