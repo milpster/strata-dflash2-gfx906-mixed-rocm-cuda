@@ -79,9 +79,9 @@ if [[ -n $HELPER ]]; then
   echo "== arm $ARM round $ROUND: helper up ($HELPER)"
   HSLOTS=4200; HFILL=6400
   case $ARM in V0) HSLOTS=5100; HFILL=7000 ;; V1) HSLOTS=9000; HFILL=0 ;; V4|V5|V6) HSLOTS=4200; HFILL=6400 ;; esac
+  PACK=/mnt/user/ai/iq3xxs-15; EXPERTS=../Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf
+  case $ARM in V6) PACK=/mnt/user/ai/iq3s; EXPERTS=../Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S.gguf ;; esac
   env -i PATH="$PATH" HOME="$HOME" TERM="${TERM:-dumb}" LD_LIBRARY_PATH="$LD_LIBRARY_PATH" \
-    PACK=/mnt/user/ai/iq3xxs-15; EXPERTS=../Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf
-    case $ARM in V6) PACK=/mnt/user/ai/iq3s; EXPERTS=../Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S.gguf ;; esac
     "$HELPER" --pack "$PACK" \
       --experts "$EXPERTS" \
     --device 0 --slots "$HSLOTS" --reserve-mib 300 --timeout 7200000 \
