@@ -475,3 +475,23 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
   and `git diff --check` passed. No default-path prctl calls or production setting changes.
 - H1-r5 launched after announcement: both AMD gfx906 cards and RTX3080 helper, estimated5minload
   plus25mindrive, shell sh_1a795c36b001A2FvJkDwAhyxtU. Engine-scale THP and performance verdict pending.
+
+## 2026-11-04 — H1-r5 complete; user orders full RAM-relief validation
+
+- H1-r5 completed the full drive, no HTTP failure. Sweep12824/20462 chunks collapsed;
+  6719 transient refusals and919 ENOMEM. Post-registration smaps records26263552KiB
+  AnonHugePages (25.05GiB); status records THP_enabled0. Thus huge backing survives registration
+  and the inherited disable policy is restored. Artifacts: out/H1-r5-pid197525-{smaps,status}.txt.
+- H1-r5 fresh18233-token PP180.3tok/s (101.143s), long87879-token PP469.2tok/s (187.300s).
+  TG segments16.4–41.2tok/s, variable. The80k hash is
+  1c7d4a6d9be118d8f3143f7a8ab74d4b5a39811dafeaa2e6a6fa73e0f726dd73, matching the gate.
+  This arm fails historical performance gates; not adopted. A new control is needed to attribute
+  the slowdown to THP rather than the session frame. H1 did NOT enable RAM relief.
+- USER ORDER: run full speed/quality validation of CUDA-helper RAM relief. Plan: V4-r6 first,
+  then winning P0-r7 and stock C-r3, serially. Three TG requests per arm plus fresh18k/long88k,
+  full80k output hash/text comparison and end-of-drive host RSS/anonymous/PSS evidence.
+  V4 includes --expert-helper-ram-relief and PREFILL_HELPER1; P0 has neither relief nor prompt-helper;
+  stock C has no CUDA helper/DFlash and prefill8192. THP is off for all three. No production changes.
+- Preflight: code/harness clean before the new gate; both AMD cards10948608B VRAM, NVIDIA86MiB,
+  MemAvailable52.07GiB, ports8009/8019 clear, lock limit unlimited. No live benchmark processes.
+- Add a V4-only fail-fast gate: a missing/zero dropped-pairs report stops before the drive.

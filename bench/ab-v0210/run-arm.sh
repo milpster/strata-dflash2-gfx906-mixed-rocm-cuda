@@ -123,6 +123,9 @@ gate_fail() {
   exit 3
 }
 grep -q 'STRATA_ARENA_COLLAPSE: 0 of' "$ELOG" 2>/dev/null && gate_fail "arena collapse sweep collapsed 0 chunks (void for a collapse arm)"
+if [[ $ARM == V4 ]] && ! grep -Eq -- "--expert-helper-ram-relief: [1-9][0-9]* of the helper's [0-9]+ pairs dropped from the arena" "$ELOG"; then
+  gate_fail "RAM relief dropped no helper pairs (void for a relief arm)"
+fi
 [[ -n "$HELPER" ]] && ! grep -q 'expert-helper proxy' "$ELOG" 2>/dev/null && gate_fail "helper fill report never arrived (helperless run)"
 pgrep -f "$ENGINE --serve" >/dev/null 2>&1 || gate_fail "engine not running at drive start"
 # Preserve post-registration THP evidence even if a later request fails.
