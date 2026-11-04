@@ -450,8 +450,17 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
     // physical pools shrink. The ring pools are fixed (no elastic/VMM) and allocated before the
     // expert cache is sized. Legacy and full-attention geometries keep ring_state_.ring = 0 and their old
     // full-capacity allocation untouched.
+    // STRATA_DF_RING_MULT (opt-in, default 1): scale the SWA draft ring's physical cells so deep
+    // segment resumes stay retained - the stale-window guard otherwise re-reads the whole context
+    // through the drafter (generate.cpp's "no longer retains a rewind" path). 1 = stock geometry.
+    static const int64_t df_ring_mult = [] {
+        const char* v = std::getenv("STRATA_DF_RING_MULT");
+        const int64_t m = v != nullptr ? std::atoll(v) : 1;
+        return m < 1 ? 1 : (m > 1024 ? 1024 : m);
+    }();
     ring_state_.ring = dg.is_dflash2() && dg.head_dim == 128 && dg.sliding_window > 0
-        ? dflash_ring_capacity(dg.sliding_window, 8, (int64_t) strata::core::shapes_of(pool_g_).page_size)
+        ? dflash_ring_capacity(dg.sliding_window * df_ring_mult, 8,
+                               (int64_t) strata::core::shapes_of(pool_g_).page_size)
         : 0;
     ring_state_.window = ring_state_.ring ? dg.sliding_window : 0;
     ring_state_.max_rows = 8;      // the widest block: proposals + anchor (propose guards K <= max_rows_)
