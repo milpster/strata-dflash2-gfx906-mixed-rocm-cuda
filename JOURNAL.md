@@ -541,3 +541,22 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
   Recomputed from the stored text per report.py convention: probe `709bd8fb67692e9e` and 80k
   `1c7d4a6d9be118d8` — both quality gates PASS, matching the drive log. V4-r7 verdict unchanged:
   quality PASS, TG median 16.0 vs 33.1 FAIL.
+
+## 2026-11-04 19:17 — P0-r7 control lands the verdict: relief costs TG decode
+
+- P0-r7 (winning config, no relief, no THP), full drive clean, no wedge, no retry:
+  TG median 38.1 tok/s (35.4/39.1/34.3/40.6/37.0/40.7) — PASSES the 33.1 gate. V4-r7 relief ran
+  16.0. The TG degradation is RELIEF-CAUSED (three relief rounds sub-gate vs a passing control),
+  not today's session frame. The user's watched "stall" was this control's own fresh-18k leg:
+  110.1 tok/s / 165.9 s — fresh-read scatter today (V4 271.9/267.5, H1 180.3), engine finished it;
+  not a wedge, no #267.
+- 88k: control 576.5 (within 1% of the 583-587 frame) vs relief 503.3 (-13%).
+- Quality: probe sha 707704f68c5947f0 (P0 canonical, byte-identical to window-2) and 80k sha
+  1c7d4a6d9be118d8 — both arms PASS. Second 80k segment restored in 258 ms.
+- Host RAM, end-of-drive anonymous: relief 41.2 GiB vs control 47.4 GiB = -6.2 GiB — the relief
+  goal is delivered. (Rss is not comparable: V4's snapshot carries 15.0 GiB Pss_File of resident
+  prompt-cache spread vs P0's 0.57 GiB; anon is the like-for-like.)
+- Provisional verdict: relief = 6.2 GiB host RAM back, quality byte-identical, TG decode 2.4x
+  slower → FAILS the adoption gate as-is. The cost sits in decode-time service of the dropped
+  pairs (helper rows / pack-file reads). C-r3 stock next for the three-way table; adoption only
+  on explicit user order.
