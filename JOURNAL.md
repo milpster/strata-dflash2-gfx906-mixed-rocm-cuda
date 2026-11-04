@@ -533,3 +533,11 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
 - Decisive next step: same-day P0-r7 winning-config control (no relief), then C-r3 stock. If P0-r7
   TG holds ~33+ today, the TG loss is relief-caused (helper/file path at decode); if P0-r7 also
   sags, it is the session frame. No adoption either way without user order.
+
+### V4-r7 correction (19:1x)
+
+- My results bank briefly recorded "80k sha = GATE FAIL" with an empty value: the bank script read
+  out/V4-r7.json, which by drive.py design carries no `sha` keys (shas go to the drive log/stdout).
+  Recomputed from the stored text per report.py convention: probe `709bd8fb67692e9e` and 80k
+  `1c7d4a6d9be118d8` — both quality gates PASS, matching the drive log. V4-r7 verdict unchanged:
+  quality PASS, TG median 16.0 vs 33.1 FAIL.
