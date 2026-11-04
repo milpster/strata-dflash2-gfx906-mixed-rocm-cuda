@@ -994,6 +994,78 @@ void PinnedArena::register_slices(std::atomic<int>& ready) {
     ready.store(INT_MAX, std::memory_order_release);   // every slice done (or given up on)
 }
 
+PinnedArena::PinnedArena(uint64_t bytes, ReserveOnly) : capacity(bytes) {
+    by_need = true;
+    if (bytes == 0) return;
+    base = reserve(bytes, backing, note, std::string{}, 0, mapping_base, mapping_bytes);
+    if (base != nullptr && mapping_base == nullptr) {
+        mapping_base = base;
+        mapping_bytes = bytes;
+    }
+    // Nothing registered, nothing locked: the fill writes plain anonymous pages.  W1's MADV_DONTNEED
+    // and W2's MADV_COLLAPSE both refuse driver-pinned memory - measured the hard way: the whole-arena
+    // registration made the relief guard refuse all 4116 helper-held pairs, and every one of the
+    // sweep's 20462 collapse chunks EINVAL'd.  register_after_fill() restores DMA where it must be.
+    note = "reserve only (nothing registered, nothing locked yet); " + note;
+}
+
+uint64_t PinnedArena::register_after_fill(const std::vector<std::pair<uint64_t, uint64_t>>& ranges, bool lock_rest) {
+    if (base == nullptr || !by_need) return 0;   // only the ReserveOnly arena registers late
+    constexpr uint64_t kPage = 4096;
+    uint64_t total = 0;
+    bool refused = false;
+    for (const auto& rg : ranges) {
+        if (rg.second == 0 || rg.first >= capacity) continue;
+        // INWARD, like pin-by-need: a registered page holds no byte of an unregistered neighbour blob
+        uint64_t a = (rg.first + kPage - 1) & ~(kPage - 1);
+        uint64_t b = std::min<uint64_t>(rg.first + rg.second, capacity) & ~(kPage - 1);
+        // ranges arrive sorted and non-overlapping; trim the head against the previous tail
+        if (!pin_ranges.empty()) {
+            const uint64_t last_end = pin_ranges.back().first + pin_ranges.back().second;
+            if (a < last_end) a = last_end;
+        }
+        if (a >= b) continue;
+        if (register_range(*this, (uint8_t*) base + a, b - a) != cudaSuccess) {
+            (void) cudaGetLastError();
+            refused = true;
+            break;   // pin-by-need's rule: the first refusal ends the registration
+        }
+        pin_ranges.emplace_back(a, b - a);
+        registered_bytes += b - a;
+        ++registered_slices;
+        total += b - a;
+        if (refused) break;
+    }
+    note = "registered after the fill: " + std::to_string(pin_ranges.size()) + " ranges (" +
+           std::to_string(registered_bytes >> 20) + " MiB)" +
+           (refused ? ", the driver refused the next one" : "") + "; " + note;
+    if (lock_rest) {
+        // the complement stays resident through the working-set lock, exactly like pin-by-need's holes
+        locked_ranges.clear();
+        uint64_t cur = 0, hole_bytes = 0;
+        for (const auto& r : pin_ranges) {
+            if (r.first > cur) { locked_ranges.emplace_back(cur, r.first - cur); hole_bytes += r.first - cur; }
+            cur = r.first + r.second;
+        }
+        if (cur < capacity) { locked_ranges.emplace_back(cur, capacity - cur); hole_bytes += capacity - cur; }
+        const char* env = std::getenv("STRATA_ARENA_LOCK");
+        if (backing == PageBacking::LargePages) {
+            note = "large pages are resident without a lock; " + note;   // #779
+            locked_ranges.clear();
+        } else if (env != nullptr && std::string(env) == "0") {
+            note = "arena lock disabled (STRATA_ARENA_LOCK=0); " + note;
+            locked_ranges.clear();
+        } else {
+            std::vector<std::pair<void*, uint64_t>> holes;
+            for (const auto& r : locked_ranges) holes.emplace_back((uint8_t*) base + r.first, r.second);
+            const strata::platform::LockResult lr = strata::platform::lock_resident_ranges(holes);
+            locked_bytes = lr.locked_bytes;
+            note = lr.note + " (" + std::to_string(hole_bytes >> 20) + " MiB of holes); " + note;
+        }
+    }
+    return total;
+}
+
 PinnedArena::~PinnedArena() {
     if (base && by_need) {
         for (const auto& r : locked_ranges) strata::platform::unlock_resident((uint8_t*) base + r.first, r.second);

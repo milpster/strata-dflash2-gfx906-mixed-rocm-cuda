@@ -7797,6 +7797,9 @@ int main(int argc, char** argv) {
                                  "STRATA_RESIDENT_HEADROOM_GIB decides when set)\n",
                          (double) o.ram_keep / 1073741824.0, (double) o.ram_keep / 1073741824.0, (double) ram_fallback_headroom / 1073741824.0,
                          (double) strata::core::fallback_safety_headroom(kWindowsHost) / 1073741824.0);
+        if (o.expert_helper_ram_relief) arena_src.set_ram_relief(true);   // W1: arena opens with nothing
+                                                                                     // registered; register_complement()
+                                                                                     // restores DMA after the fill report
         const bool arena_ok = arena_src.open(o.pack, g.n_layers, g.n_expert, /*threads=*/6, err, pin_limit,
                                              o.shared_expert_arena);
         strata::core::pin_note_arena(arena_src.pinned_arena_bytes());
@@ -9013,6 +9016,8 @@ int main(int argc, char** argv) {
                             for (int64_t l = 0; l < g.n_layers; ++l)
                                 for (int64_t e = 0; e < g.n_expert; ++e)
                                     if (helper_tier.holds(l, (int32_t) e)) held.emplace_back((int32_t) l, (int32_t) e);
+                            arena_src.register_complement(held);   // W1: DMA alias over everything but
+                                                                  // these pairs, so the drop below is legal
                             arena_src.set_unfilled(std::move(held));
                         }
                     }
