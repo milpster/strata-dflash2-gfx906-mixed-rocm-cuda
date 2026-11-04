@@ -495,3 +495,8 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
 - Preflight: code/harness clean before the new gate; both AMD cards10948608B VRAM, NVIDIA86MiB,
   MemAvailable52.07GiB, ports8009/8019 clear, lock limit unlimited. No live benchmark processes.
 - Add a V4-only fail-fast gate: a missing/zero dropped-pairs report stops before the drive.
+- Gate checks passed: bash-n; previous V4-r5 positive drop accepted; zero-drop fixture rejected;
+  git diff-check clean. Harness and H1-result record committedafe96ce5.
+- V4-r6 launched after announcement, shell sh_1a7a80b2e001zGoPvdcHVpcXdz:
+  `env -u STRATA_ARENA_COLLAPSE -u STRATA_DRIVE_STOP_AFTER -u STRATA_ARENA_MMAP bash bench/ab-v0210/run-arm.sh V4 6 3`.
+  Full drive, no THP, no production change; current P0/stock controls follow after reconciliation/drain.
