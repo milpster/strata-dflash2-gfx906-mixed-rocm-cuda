@@ -655,3 +655,14 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
   pairs still stage on demand through blob()'s pull path (bounded by the 6.24 GiB held set).
 - Syntax PASS with the rpcw-hip build flags. armV5.json staged (copy of armV4.json). Rebuild
   of both backends next, then V5-r1 (relief + W1a + W1b) with the sampler against P0-r7.
+
+### V5-r1 attempts 2-3: harness plumbing, engine healthy (20:4x)
+
+- Attempt 2 died at the relief fail-fast gate at 20:38. Root cause: armV5.json was copied from
+  armV4.json with "log": "logs/V4-rROUND-engine.log" still inside; run-arm.sh substitutes only
+  ${ARM}-rROUND per round, so for V5 nothing matched and the engine wrote its log to a literal
+  V4-rROUND path under the repo's logs/ dir while the gate grepped the V5 path that was never
+  created. The kill wasted an otherwise healthy boot: the serve log shows the engine loaded
+  39.97 GiB at 2.48 GiB/s, filled the GPU expert cache, and reached ready — the 19:53 binary
+  with W1a+W1b boots clean.
+- Fix: armV5.json log field → logs/V5-rROUND-engine.log. Attempt 3 launched with the sampler.
