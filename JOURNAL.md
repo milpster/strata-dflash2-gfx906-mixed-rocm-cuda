@@ -781,3 +781,23 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
   deterministic probe-text difference vs the V5 canonical (80k byte-identical),
   iq3_s variant unbenched at these settings, dflash-draft-to-3080 parked as an
   engineering follow-up.
+
+## 2026-11-04 22:40 — V8 (iq3_s at the promoted squeeze) FAILS: non-finite logits in long prefill
+
+- User ordered "test iq3s with the promoted conf" (quality lane held). Arm V8 =
+  iq3_s pack at 256/256 + fill 6700 + slots 4600 (60a992f9 + whitelist e23e981c).
+- Boot healthy: relief 3530/3530 (6.53 GiB), complement 2722 / 40.31 GiB, cache
+  3724 slots, helper 3530, free-after-load 400/242 MiB. Probe fine: sha
+  55b3e637a4cea9df, hit 95.4%, 39.4 tok/s.
+- pp16384: non-finite logits (#879) in the prompt window at ~18077 of 18082
+  tokens, then in the first decode window; serve retried 3x, all non-finite,
+  then 503. Engine never crashed — drive.py's "engine restart" is a mislabel.
+- V6 (same pack, 896/1000 + fill 6400) passed this exact gate => the squeeze
+  breaks iq3_s long prefill. Mechanism unconfirmed (paging at 229-242 MiB free
+  during first-use window graphs — static analysis).
+- Consequence: the promoted iq3_s fleet conf from 08f5e690 is invalid for long
+  prompts. swift15/V7 (iq3xxs) unaffected. Proposal (awaiting user): revert
+  iq3_s conf + launcher to V6-class settings.
+- Harness notes: inline pkill must bracket-escape patterns (my stop shell
+  self-matched its own pattern and died mid-sequence); the run-arm whitelist is
+  a separate line from the per-arm cases.
