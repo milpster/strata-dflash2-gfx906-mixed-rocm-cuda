@@ -24,28 +24,29 @@ ELOG=$B/logs/$ARM-r$ROUND-engine.log
 PATTERN="$B/run/arm$ARM-r$ROUND.json"
 [[ -n $HELPER ]] && PATTERN="$PATTERN|$HELPER"
 rm -f "$SOCK" "$SOCK2"
-# pre-boot guard (measured 2026-11-04): a killed engine exits slowly (43 GiB anon arena) and a leftover
-# serve holds :8019 while respawning engines; either starves the next boot. Refuse or wait instead.
-if pgrep -f '[r]pcw-(hip|cuda)/|/serve/server[.]py' >/dev/null 2>&1; then
-  echo "== arm $ARM round $ROUND: REFUSING to boot - leftover engine/serve:"
-  pgrep -af '[r]pcw-(hip|cuda)/|/serve/server[.]py' | head -4
-  exit 1
-fi
-if ss -ltn 2>/dev/null | grep -q ':8019 '; then
-  echo "== arm $ARM round $ROUND: REFUSING to boot - port 8019 is still held"
-  exit 1
-fi
-for i in $(seq 1 60); do
+# pre-boot policy (user directive 2026-11-04): strict serial lifecycle - fully kill any previous
+# instance before booting the next; no grace periods. The bounded waits below are only for the
+# KERNEL to release the killed instance's resources (port, anon, VRAM), never for processes.
+pkill -9 -f '[r]pcw-(hip|cuda)/' 2>/dev/null && echo "== arm $ARM round $ROUND: killed leftover engine/helper" || true
+pkill -9 -f '/serve/server[.]py' 2>/dev/null && echo "== killed leftover serve" || true
+pkill -9 -f 'drive[.]py' 2>/dev/null || true
+pkill -9 -f 'watch-wedge[.]sh' 2>/dev/null || true
+for i in $(seq 1 30); do
+  ss -ltn 2>/dev/null | grep -q ':8019 ' || break
+  echo "$(date +%T) waiting for :8019 to release"
+  sleep 2
+done
+for i in $(seq 1 30); do
   avail_mib=$(awk '/^MemAvailable:/{print int($2/1024)}' /proc/meminfo)
   (( avail_mib >= 30000 )) && break
   echo "$(date +%T) waiting for the previous engine's memory to release: MemAvailable ${avail_mib} MiB"
-  sleep 5
+  sleep 2
 done
-for i in $(seq 1 60); do
+for i in $(seq 1 30); do
   vram_b=$(rocm-smi --showmeminfo vram --csv 2>/dev/null | awk -F, '/^card[01]/{u+=$3} END{print u+0}')
   (( vram_b < 2000000000 )) && break
   echo "$(date +%T) waiting VII VRAM drain: $vram_b bytes"
-  sleep 5
+  sleep 2
 done
 HPID=; SPID=
 cleanup() {
