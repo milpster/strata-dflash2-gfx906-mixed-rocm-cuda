@@ -831,3 +831,26 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
   engine anon 44.4 GiB, 3080 at 7144 MiB.
 - Switchback path: stop + relaunch the swift15 launcher (V7 conf untouched).
 - NaN source dive revived with prod up (no-delegation-while-prod-down rule).
+
+## 2026-11-04 23:35 — NaN source dive (done directly; explorer errored 3x on infra)
+
+- #879/#3465/#2065 are issue references embedded in comments and log lines,
+  not runtime counters.
+- Detection is symptom-level: src/core/verify.cpp:3708 scans a window row's
+  full-vocab HEAD logits with isfinite; src/program/generate.cpp:12700-12711
+  reports and ends the request. Nothing identifies the producing layer.
+- The low-VRAM warning (generate.cpp:15737-15753, "#2065: said, never
+  changed") is warning-only — no cache free, no refusal. Recommended reserve =
+  current + (512 − free) rounded to 64 MiB; reproduces V8's printed 384/576.
+- Verifier::capture (verify.cpp:2778) has no free-VRAM guard; #1275 records a
+  capture-time process death at 313 MiB free.
+- Validation asymmetry: helper-served expert rows are isfinite-checked
+  (expert_helper_socket.cpp:65, kErrNonFinite; V8 ran timeouts=0 fallbacks=0),
+  but GPU-side expert reads (VRAM cache / cross-card P2P / arena) have no row
+  validation — garbage propagates FFN → norms → head and is only caught at the
+  head logits.
+- Conclusion: at 256/256 (3724 slots, 229 MiB free) the over-full card during
+  the 18k prefill's second chunk served garbage for the experts hot at
+  position ~18077; unvalidated on the GPU path; norms amplified to Inf/NaN.
+  The exact garbage source (paging vs P2P vs uninitialized slot) is
+  unconfirmed — would need an instrumented boot. 640/640 stays the fix.
