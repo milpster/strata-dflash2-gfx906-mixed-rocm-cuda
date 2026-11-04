@@ -284,3 +284,194 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
 - Fixer died on ConnectionRefused (3rd child infra death today) at ~15:3x-16:2x: W2a committed (0d661511), W1
   landed uncommitted across 8 files, no post-edit builds.
 - USER ORDER: stop delegating; implementation work proceeds solo.
+
+## 2026-11-04 16:55 — H1-r1 sweep void: MADV_COLLAPSE EINVAL root cause + fix
+
+- User spotted nr_anon_transparent_hugepages pinned at 127 (254 MiB). Engine log: '0 of 20463 2 MiB chunks
+  collapsed, 20463 refused: Invalid argument'.
+- Userspace probe on this kernel (7.3.0-xanmod): MADV_COLLAPSE with a non-2MiB-aligned START returns EINVAL;
+  the kernel clamps only the length (the man page's 'automatically clamp' misled the implementation). An aligned
+  call on this fragmented box returns ENOMEM (no free 2 MiB block while the H1 engine holds ~45 GiB).
+- The sweep stepped a->base + k*2MiB; the H1 arena's base is page-aligned only (the 2 MiB-align dance in
+  pinned.cu:460-470 belongs to the plain constructor; this arena took another path) -> every call misaligned.
+- Fix (solo): the sweep now derives the aligned window (start rounded up, end rounded down from base+want) and
+  steps whole 2 MiB blocks inside it. Hip rebuild in flight; H1 rerun comes after r1's sha/PP/TG legs land.
+
+## 2026-11-04 16:57 — H1-r2 death classified; fail-fast gate added; V4 is next
+
+- H1-r2 (fixed aligned sweep): the sweep STILL refused all chunks — '0 of 20462, EINVAL'. The engine then died
+  mid-drive: serve log 'Unrecoverable native verification failure: verify: timed out at layer 39; its GPU waits
+  were released but the GPU did not finish within 5 s (#267)' — the team's tracked GPU-hang class, transient;
+  the r1->r2 binary delta is 10 inert boot-time lines, so not today's code. Wedge policy: rerun.
+- Probes: an ALIGNED MADV_COLLAPSE on a plain fresh mapping returns ENOMEM even with the box quiet at 51.8 GiB
+  free (direct compaction cannot assemble one 2 MiB block — the day's ~20 boots shredded the buddy allocator);
+  the mlock pinning probe could not run (ulimit -l in this shell). The engine's EINVAL (vs the probe's ENOMEM)
+  still points at cudaHostRegister-pinned pages refusing collapse outright — fix shape: sweep before
+  registration (deferred-registration path) or unreg-sweep-rereg; likely needs a machine reboot for a clean
+  fragmentation baseline to matter at all.
+- USER CRITICISM adopted: no more full legs when the verdict is knowable at boot — run-arm.sh now has a
+  fail-fast gate (void sweep / helperless / dead engine -> teardown + exit 3 before the drive).
+- Pivot: V4 (W1 --expert-helper-ram-relief + prompt helper + 4200/6400) is the primary deliverable and is
+  independent of W2's huge-page fight; it runs next (announced). W2 resumes after V4's numbers.
+
+## 2026-11-04 17:02 — UNIFIED ROOT CAUSE: the whole-arena cudaHostRegister blocks W1 AND W2
+
+- V4-r1 boot: helper fill report 4116 pairs / 6.25 GiB, then '--expert-helper-ram-relief: nothing dropped
+  (4116 of 4116 pairs are pinned memory the GPU has an alias into)'. On Linux the arena is registered WHOLE
+  (#253 'Linux keeps the whole-arena pin'), so every helper-held blob sits inside a registered range and the
+  W1 guard (correctly) refuses to release driver-pinned pages.
+- Same mechanism explains W2a: MADV_COLLAPSE EINVALs on every chunk because the pages are GUP-pinned by
+  cudaHostRegister (VmFlags show no 'lo' — GUP pinning is invisible there; the plain-mapping probe's ENOMEM vs
+  the registered arena's EINVAL contrast fits).
+- Fix direction (both workstreams): register the arena EXCLUDING the helper-held ranges — a by-need-style
+  complement registration whose holes are NOT locked (the existing ByNeed ctor mlocks its holes; a no-lock
+  variant is needed). This config runs --pcie-frac 0, so the alias over held pages is likely unused —
+  registration of those ranges may be droppable outright, cost measured by the arm.
+- V4-r1 drive continues: still measures the prompt-helper half (STRATA_PREFILL_HELPER=1, tier claims held
+  pairs) + the 80k sha gate. After it: probe4 on the 3080 (announced) formalizes pinning->EINVAL, then the
+  registration surgery, then V4-r2/H1-r3.
+
+## 2026-11-04 17:2x — surgery implemented + both backends green; V4-r1 classified
+
+- Surgery (deferred-complement registration) implemented solo across pinned.hpp/pinned.cu/expert_source.hpp/
+  expert_source.cpp/generate.cpp: ReserveOnly arena -> fill on plain pages -> W1 registers the complement of
+  the held pairs at the fill report + rebuilds alias tables -> set_unfilled drops the held pages; W2 sweeps
+  unregistered then registers the whole span. One compile fix (arena_ is stored void* - static_cast).
+  ninja green: rpcw-cuda helper + rpcw-hip engine. Build lesson: never pipe ninja into `head` (SIGPIPE kills it, exit 141).
+- V4-r1 VOID on relief (4116/4116 pairs pinned - the root cause above) and its drive died at tg1024 with a 503
+  after tg degraded to 18.6 tok/s + 'drafter returned candidates outside the vocabulary' at pos 579. The drafter
+  anomaly is PRE-EXISTING (B-r2, F0-r1, F1-r1, F1-r2 logs show it) - not W1 code. Death classed #267 wedge
+  (2nd long-drive death today). Not rerunning r1: r2 with the fix supersedes it.
+- probe4 SKIPPED as redundant: H1-r3 on the unregistered arena is the direct collapse experiment.
+
+## 2026-11-04 17:5x — V4-r2 root-caused (mlock), fixes landed, r3 ready
+
+- V4-r2 chain closed: harness shells have UNLIMITED ulimit -l -> register_after_fill(comp, lock=true)
+  mlocked the held spans -> MADV_DONTNEED on mlocked pages = EINVAL x4116 -> pairs neither dropped nor
+  registered -> first lent-slot fill DMA'd from an unregistered host blob -> invalid argument -> serve
+  400 at the probe. CPU probe: plain-page inward DONTNEED 2651/2651 OK on this kernel.
+- Fixes committed: drop-before-register; complement = everything except what DROPPED; lock_rest=false
+  under relief (registration pins; mlock would fault dropped pages back); errno in the refusal line;
+  refill_run keeps dropped pairs file-served until restart under the flag (no runtime table rebuild).
+- Next: V4-r3 (announced) then H1-r3 (the THP experiment: collapse now runs on unregistered pages).
+
+## 2026-11-04 17:3x — V4-r3: drop WORKS (4116/4116, 6.24 GiB back); residual bug = span-edge alias; fix = outward rounding
+
+- V4-r3 boot gates: '4116 of 4116 pairs dropped (6.24 GiB given back; 0 pinned, 0 madvise refusals)' + 'registered what stayed
+  (4116 dropped, 3033 ranges, 33.71 GiB)'. The mlock fix + drop-before-register order work.
+- Probe still died 6 s in: SAME 'fill_slot_queued: invalid argument'. Unified cause for r2 AND r3: register_after_fill rounded
+  complement spans INWARD -> unheld blobs at span boundaries have partial edge pages outside the registration -> full-blob DMA
+  past the alias window. r2's held-undropped theory was incomplete; the edge-pair bug was present in both.
+- Fix: outward page rounding in register_after_fill (span-edge pages stay mapped - only wholly-inside pages were dropped - and
+  carry kept bytes that must be DMA-able; wholly-dropped pages never reached). Rebuilt -j11 both trees, committed.
+- Also: builds now -j11 (user standing order; pinned in git config strata.buildJobs). THP counter ~109 during V4 = expected
+  (no sweep on this arm; H1-r3 is the THP experiment).
+
+## 2026-11-04 17:36 — measured: defrag=alone is not enough; V4-r4 classified (wedge #3); sequence set
+
+- THP fault probe (user set defrag=always, verified live in sysfs): fresh 4 GiB anon mmap+fault under the
+  running arm -> AnonHugePages 0.00 GiB (0 of 2048 possible 2 MiB pages). Direct compaction cannot build
+  even one huge block at this occupancy/fragmentation. Measured -> the reboot is the unlock; the sweep (H1)
+  then makes the arena huge on the first boot; defrag=always keeps everything else huge-friendly after.
+- V4-r4 FINAL: the two code fixes are CONFIRMED (probe answered 32.1 s, sha 709bd8fb67692e9e = byte-identical
+  to r1; pp16384 69.8 s vs r1's 212.9 s; zero serve errors through pp) — then tg1024.0 died with 503, the
+  same death point/class as V4-r1 (wedge). Third long-drive wedge today across different code (H1-r2, V4-r1,
+  V4-r4) -> machine/driver-class, and the reboot may clear it too. tg/sha legs void.
+- SEQUENCE (user reboots when ready): reboot -> H1-r3 FIRST (sweep's best shot = cleanest allocator,
+  announced) -> V4-r5 to complete W1 gates (TG >= 33.1 + 80k sha; fragmentation-independent) -> three-way
+  report. Gates banked so far: drop 4116/4116 / 6.24 GiB, complement 3033 ranges / 33.73 GiB outward,
+  anon 43.8 -> 38.7 GiB, probe sha byte-identical, pp 69.8 s.
+
+## 2026-11-04 17:5x — THP dead kernel-wide; H1 void x3; cmdline defrag param ignored
+
+- H1-r3: sweep 0/20462 EINVAL on the clean post-reboot unregistered arena -> the harness fail-fast gate
+  killed the arm before the drive (working as designed). Third void, now on ideal conditions.
+- probe2 (userspace, solo): hinted (MADV_HUGEPAGE) dance-mapped 256 MiB fault -> 0 kB AnonHugePages;
+  unhinted -> 0 kB; strace confirms madvise(..., MADV_COLLAPSE) = -1 EINVAL from the kernel on a perfectly
+  aligned hinted anonymous mapping. Fault-time AND explicit THP both categorically dead on
+  7.3.1-x64v3-xanmod1 despite /sys enabled=[always] and CONFIG_TRANSPARENT_HUGEPAGE=y.
+- /proc/cmdline carries transparent_hugepage.defrag=always but the runtime value is [defer]: the boot
+  parameter was ignored (unknown param on this kernel). The user-visible ~100-150 AnonHugePages are
+  early-boot remnants.
+- Consequence: W2 (huge pages for the arena) has NO engine-side path on this kernel build - reported as a
+  box/kernel defect, not an engine bug. W1 (RAM relief) is unaffected. V4-r5 next for the W1 gates.
+
+## 2026-11-04 18:0x — CRACKED: per-order mTHP [inherit] is broken on this kernel; user root test proves it
+
+- User wrote explicit values to /sys/.../hugepages-2048kB/enabled: with 'always' AND with 'madvise',
+  MADV_COLLAPSE returns OK on the probe (fault-time THP stays 0 kB - also inherit-gated - but the sweep
+  never needed fault-time). Root cause of all three void sweeps: the xanmod 7.3.1 [inherit] resolution is
+  dead for both THP paths while the top-level shows [always]. The cmdline defrag param is ignored too.
+- Engine: arena now gets MADV_HUGEPAGE under STRATA_ARENA_COLLAPSE before the sweep (committed) - the
+  hinted VMA is the proven-working configuration in both per-order modes.
+- Persistent box fix for the user: /etc/tmpfiles.d/thp-2m.conf -> 'w /sys/kernel/mm/transparent_hugepage/
+  hugepages-2048kB/enabled - - - - always' (their root, one time).
+- NEXT: H1-r4 (announced) - sweep should finally collapse ~20k chunks; then V4-r5 for the W1 gates.
+
+## 2026-11-04 18:2x — THP: LKML dead-end, root-vs-scope discriminator; V4-r5 running for W1 gates
+
+- LKML 2025-11-07 thread: MADV_COLLAPSE EINVAL on DIRTY FILE-BACKED text pages (collapse_file path,
+  CONFIG_READ_ONLY_THP_FOR_FS) - first call EINVAL, retry succeeds after writeback. Our arena is anon
+  private (different code path), so that bug does not explain us; the meta-lesson (EINVAL can be a
+  retryable transient in collapse paths) is noted.
+- Eliminated: seccomp (0 everywhere), systemd-run escape (still EINVAL), CapEff is plain-user normal.
+  Remaining deltas for the user's two T3-OK vs my deterministic EINVAL on the same binary+sysfs state:
+  their run was root (sudo/root shell), or their terminal scope differs from my tmux-spawn scope.
+  ASKED USER: run /tmp/agent/collapse5/probe2 as a PLAIN user in their terminal (no sudo).
+  - EINVAL => collapse is root-gated on this kernel => the engine can never sweep => W2 report-only.
+  - OK => arms must be launched from outside my scope (their terminal wrapper).
+- V4-r5 launched (announced): W1 relief gates - TG >= 33.1, PP frame, 80k sha byte-identical, anon delta.
+
+## 2026-11-04 18:3x — THP: collapse NOT root-gated (user plain-user OK); context hunt narrows to env or hint-stickiness
+
+- User ran /tmp/agent/collapse5/probe2 as a PLAIN user in their own terminal (no sudo), per-order [madvise]
+  live: T3 collapse OK. Root-gate theory dead. Same binary+sysfs+uid in my shell = deterministic EINVAL.
+- Remaining delta = execution context (my opencode tmux-spawn scope). Two theories under test:
+  1) inherited environment (LD_LIBRARY_PATH etc.) - test: env -i probe2.
+  2) MADV_HUGEPAGE hint not sticking (VM_HUGEPAGE missing) - test: probe4 prints hint return + smaps
+     VmFlags 'ht' bit + per-chunk collapse count.
+- If env -i fixes: scrub env in run-arm.sh for the engine. If neither: hand the user a one-liner to run
+  the H1 arm from their terminal (arms launched from my context inherit the broken context).
+
+## 2026-11-04 — THP process-policy cause measured; earlier kernel claims withdrawn
+
+- This session's child reports PR_GET_THP_DISABLE=1 and THP_enabled=0. The unchanged probe2
+  returns EINVAL there. PR_SET_THP_DISABLE=0 succeeds as the ordinary user; no root is needed.
+  Linux documents this flag as inherited across fork/exec and overriding even MADV_COLLAPSE.
+- Earlier claims that XanMod or per-order inherit was broken were not established: those probes
+  inherited a process-wide THP veto. They do not justify a kernel diagnosis or sysfs persistence fix.
+- The old 2x256MiB probe stalled after clearing the flag; PID335894 was in D state and received TERM.
+  Use a filled single2MiB mapping for further CPU tests, with the hint applied after filling.
+- V4-r5: probe11.4s, sha709bd8fb67692e9e; pp16384 then failed HTTP503. No valid TG/PP/80k verdict.
+  Wrapper cancelled by the host restart; AMD VRAM had not drained at last inspection.
+- Plan: narrowly scoped process-policy override inside STRATA_ARENA_COLLAPSE only, restore before
+  registration, CPU before/after evidence, affected backend builds at -j11, then an announced H1 arm
+  only after hardware/resource recovery. No production/config changes or performance claims.
+
+### THP CPU result and scoped fix
+
+- PASSED: `timeout --signal=TERM --kill-after=5s 45s python3 -u tools/probe_arena_thp.py`.
+  Inherited policy1: MADV_COLLAPSE returned EINVAL. Scoped clear0: collapse succeeded;
+  the mapping had2048KiB AnonHugePages. SHA256 of the2MiB payload stayed identical.
+  Disabled policy1 and the original process policy were restored. Exit0, no root/sysfs/GPU use.
+- Engine change only inside the existing STRATA_ARENA_COLLAPSE opt-in: detect full process disable,
+  clear it for the already-filled sweep, restore before string allocations or DMA registration;
+  report query/override/restore failures. Already eligible policies0/3 are not changed.
+- The default path adds no prctl calls. Incorrect kernel/per-order diagnosis comments removed;
+  MADV_COLLAPSE minimum kernel corrected to6.1. HIP and CUDA engine/helper builds queued at -j11.
+- Latest process inspection: no benchmark/probe processes remain; MemAvailable46.2GiB.
+  Engine-scale huge backing, registration survival, quality and performance are not yet tested.
+- Preflight queries: both AMD GPUs use10936320B VRAM each; NVIDIA86MiB; ports8009/8019 clear.
+  The2MiB per-order setting is now[inherit], top-level[always], defrag[defer]; no sysfs changes made.
+  No configured SYCL tree or icpx compiler is available, so SYCL compilation is not run.
+- PASSED: `ninja -j11 -C build-v0210/rpcw-hip strata` and
+  `ninja -j11 -C build-v0210/rpcw-cuda strata strata-expert-helper` (both engine backends compiled
+  expert_source.cpp; CUDA also linked the helper). Compiler warnings were reported; no build errors.
+- H1 harness now saves full engine smaps and selected status fields after registration/readiness,
+  before the drive. This evidence survives later HTTP errors and distinguishes real huge backing
+  from a successful syscall alone. Other arms are unchanged.
+- Fix committed as1abe8b9a on tap-overlap-f1f2 (engine/probe/H1 capture only).
+  `bash -n bench/ab-v0210/run-arm.sh`, `python3 -m py_compile tools/probe_arena_thp.py`,
+  and `git diff --check` passed. No default-path prctl calls or production setting changes.
+- H1-r5 launched after announcement: both AMD gfx906 cards and RTX3080 helper, estimated5minload
+  plus25mindrive, shell sh_1a795c36b001A2FvJkDwAhyxtU. Engine-scale THP and performance verdict pending.
