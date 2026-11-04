@@ -22,7 +22,7 @@
  ],
  "cwd": "/home/user/dev/Strata",
  "tokenizer": "/mnt/user/ai/iq3xxs-15/tokenizer",
- "model_name": "qq-b-pack-iq3xxs15",
+ "model_name": "qq-b-relief-pack-iq3xxs15",
  "lib_dirs": [
   "/home/user/rocm-gfx906-xnack/lib",
   "/opt/rocm-6.1.0/lib"
