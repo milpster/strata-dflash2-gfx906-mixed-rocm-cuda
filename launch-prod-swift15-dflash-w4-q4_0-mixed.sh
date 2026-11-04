@@ -49,7 +49,7 @@ env -i PATH="$PATH" HOME="$HOME" TERM="${TERM:-dumb}" "$HELPER" \
   --pack /mnt/user/ai/iq3xxs-15 \
   --experts ../Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf \
   --device 0 --slots 4600 --reserve-mib 300 --timeout 63115200000 \
-  --begin-timeout 1800000 --socket "$SOCKET" --fill-mib 6700 --socket2 "$SOCKET2" \
+  --begin-timeout 1800000 --socket "$SOCKET" --fill-mib 6796 --socket2 "$SOCKET2" \
   >>"$HLOG" 2>&1 < /dev/null &
 helper_pid=$!
 for ((i=0; i<300; i++)); do
