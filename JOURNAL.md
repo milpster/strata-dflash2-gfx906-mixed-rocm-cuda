@@ -749,3 +749,18 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
   the first time (126dc32d..., 229 vs 208 completions) — consistent with
   ROUTE_TAIL_SKIP being coverage-dependent (different resident set skips different
   rank-7 experts), unconfirmed. r2 would show whether the divergence reproduces.
+
+## 2026-11-04 22:25 — V7-r2: 2-boot verdict and the determinism answer
+
+- V7-r2 reproduces r1: TG segments 34.1-41.6 (median 37.0; r1 39.1); combined
+  12-segment median 38.5 — +2.3% over V5's 37.65, +1.2% over the P0 control.
+  pp16384 277.9/280.3; 88k 575.3/573.2 (control level); 80k sha canonical on both
+  boots; relief 4318/4318 (6.53 GiB) identical; free-after-load 406/248 MiB with the
+  same sub-512 MiB paging warnings; zero timeouts or failed legs.
+- The probe sha 126dc32d... reproduced EXACTLY (229 completions both boots): the
+  divergence from the V5 canonical probe text is deterministic under this coverage
+  set — consistent with ROUTE_TAIL_SKIP being coverage-dependent. Stability is
+  proven; whether the different probe text is acceptable is a judgment call.
+- Net: the squeezed config is the best measured (38.5 combined) but the margin over
+  the current prod config is modest and it sits at the driver-paging edge. Safe
+  adoption variant: reserves 384/512 MiB + helper fill 6700. Prod decision pending.
