@@ -868,3 +868,16 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
   variant no longer rides the 248 MiB edge.
 - DF1 (q8_0 draft, V10-exact otherwise) launched before the prod restore to
   save two boot cycles; iq3_s prod comes back right after DF1's verdict.
+
+## 2026-11-04 23:45 — DF1: the q8_0 draft buys nothing; the sweep's first rung closes
+
+- Arm DF1 = V10-exact with the dflash q8_0 draft (adc6aa6e), rc=0, clean
+  (0 non-finite, helper timeouts=0).
+- TG median 37.3 vs V10's 37.2 — flat. Acceptance ~61.6% vs ~64.6% — slightly
+  worse, never ahead on any leg. 88k 550.9, pp 271.8, 80k sha canonical,
+  engine anon 41.8 GiB.
+- Conclusion: the ~60% acceptance ceiling is the dflash2 draft model itself
+  (block 5), not its quantization. The q4_0 draft stays. Remaining options if
+  the sweep continues: --spec/--spec-min-p grid, --dflash-block, or a
+  different draft model — the likely real fix.
+- iq3_s prod restored after the arm.
