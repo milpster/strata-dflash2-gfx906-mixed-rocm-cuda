@@ -182,10 +182,6 @@ public:
     /// which report the same "prompt context consumption failed".  Default true: today's path.
     bool add_context(const uint16_t* taps, int n_taps, int64_t stride_rows, int64_t pos0, int64_t rows,
                      std::string& err, bool sync_context = true);
-    /// True when STRATA_DF_DEFER_CTX=1 (read once at startup): the prompt fusion's drain is
-    /// deferred to propose()/idle() and the collector gates the plane's D2D on a barrier event.
-    /// Defined in dflash_runtime.cpp.
-    bool deferral_context();
     /// The same from the verify window's capture: f32 taps [n_taps][stride_floats] (the window's
     /// max_t * n_embd), rows [0, rows) of each tap valid (at most 8).
     /// synchronize=false requires an immediate propose()/idle() before the caller reuses taps.
@@ -336,5 +332,11 @@ private:
     int64_t cycle_ = 0;              ///< proposes so far (the parity fixture's cycle selector)
     char parity_dir_[512] = {};      ///< STRATA_DF_PARITY: the stage-dump directory (empty: off)
 };
+
+/// True when STRATA_DF_DEFER_CTX=1 (read once at startup): the prompt fusion's drain is
+/// deferred to propose()/idle() and the collector gates the plane's D2D on a barrier event.
+/// A free function - the tap collector and the serve wiring ask it without a drafter
+/// object.  Defined in dflash_runtime.cpp.
+bool deferral_context();
 
 }  // namespace strata::core
