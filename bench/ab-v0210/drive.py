@@ -14,6 +14,7 @@ All requests temperature 0 (greedy) so arms are comparable token-for-token.
 Writes out/<arm>-r<round>.json and prints a compact summary."""
 import hashlib
 import json
+import os
 import sys
 import time
 import urllib.request
@@ -66,9 +67,18 @@ res["probe"] = chat([{"role": "user", "content": PROBE_PROMPT}], 512, effort="lo
 pp_prompt = f"(round {ROUND}) Summarize the following document in one sentence.\n\n" + corpus(PP_CHARS)
 res["pp16384"] = chat([{"role": "user", "content": pp_prompt}], 16, effort="low", tag="pp16384")
 
+# STRATA_DRIVE_STOP_AFTER: "pp" = stop after pp16384 (graceful teardown right after the
+# fresh-prefill profile phase); "80k" = skip tg1024, go straight to infill80k. Default: full.
+STOP = os.environ.get("STRATA_DRIVE_STOP_AFTER", "")
+if STOP == "pp":
+    json.dump(res, open(f"{B}/out/{ARM}-r{ROUND}.json", "w"), indent=1)
+    print(f"[{ARM} r{ROUND}] stop-after-pp (STRATA_DRIVE_STOP_AFTER=pp) -> out/{ARM}-r{ROUND}.json", flush=True)
+    sys.exit(0)
+
 res["tg1024"] = []
-for i in range(TG_RUNS):
-    res["tg1024"].append(chat([{"role": "user", "content": TG_PROMPT}], 1024, effort="high", tag=f"tg1024.{i}"))
+if STOP != "80k":
+    for i in range(TG_RUNS):
+        res["tg1024"].append(chat([{"role": "user", "content": TG_PROMPT}], 1024, effort="high", tag=f"tg1024.{i}"))
 
 res["infill80k"] = chat([{"role": "user", "content": infill_task(INFILL_CHARS)}], 256, effort="low", tag="infill80k")
 
