@@ -698,3 +698,22 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
 - Session commits on tap-overlap-f1f2: 1167bd6d (W1a), f4e0bc3d (W1b), db8782c0 (V5
   harness wiring), b2e23344 (armV5 log path), af94a27c (V5-r1 docs), plus the earlier
   503-retry/THP/probe commits. Awaiting user: adoption decision and prod restore.
+
+## 2026-11-04 21:35 — V5 promoted to prod, verified live
+
+- User order: promote V5 (relief + W1a + W1b) to prod and update all prod configs.
+- Prod repo /mnt/user/Strata (build-latest): committed the live-as-benched baseline
+  (8c7a5ed1: prefill 16384, watchdog 900, helper no-idle-exit), deployed the
+  V5-validated 19:53 binaries into v0210/build-mixed-gpu (engine 331c2e89d00dd4f1,
+  helper afbf19f76e39ac16; old pair backed up in pre-v5-backup-20261104), and
+  committed the promotion (3a34d550: --expert-helper-ram-relief +
+  STRATA_PREFILL_HELPER=1 in both mixed configs, iq3_s slots 4000->4200 and its
+  stale top-level expert_helper_slots 3400->4200). Non-mixed configs have no
+  helper; relief does not apply. telemetry.py/.gitignore working-tree changes and
+  untracked files left untouched (not mine).
+- Relaunch (launch-prod-swift15-dflash-w4-q4_0-mixed.sh, announced) verified:
+  health at 46 s; relief drop 4116/4116 (6.24 GiB) + complement 3033 ranges /
+  33.73 GiB, identical to the bench boots; helper listening; 64-token temp-0
+  smoke answered exactly; engine anon 40.68 GiB against the pre-promotion 47.4.
+- Caveats recorded: the iq3_s variant's pack was never relief-validated; prod
+  quality byte-identity is inherited from the bench (same binary, pack, flags).
