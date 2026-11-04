@@ -500,3 +500,21 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
 - V4-r6 launched after announcement, shell sh_1a7a80b2e001zGoPvdcHVpcXdz:
   `env -u STRATA_ARENA_COLLAPSE -u STRATA_DRIVE_STOP_AFTER -u STRATA_ARENA_MMAP bash bench/ab-v0210/run-arm.sh V4 6 3`.
   Full drive, no THP, no production change; current P0/stock controls follow after reconciliation/drain.
+- Existing report.py protocol requires at least2kept boots per arm before performance claims.
+  Plan a second clean block V4-r7/P0-r8/C-r4 after V4-r6/P0-r7/C-r3 (unused labels checked at launch).
+  Use only new kept rounds for medians; retain failed arms separately. Reuse its steady-TG filter
+  (read<400, generated>400) and also report whole-request walls so checkpoint rereads are not hidden.
+
+## 2026-11-04 18:5x — V4-r6 disposition: #267 wedge class; drive retries once; lanes relaunched
+
+- V4-r6's 503 root: `verify: timed out at layer 47; GPU did not finish within 5 s (#267)` at ~1021 tokens of the
+  first TG1024 — the box's documented gfx906 lost-completion family (80+ stall reports on stock 0.1.45 since 10-21,
+  both cards). Not proven relief-caused: 3 of 6 V4 rounds wedged, while same-day H1-r5 and window-2 P0 were clean.
+  Discriminator going forward: a V4 wedge with clean same-day P0/C controls.
+- Fix (user order, solo): bench/ab-v0210/drive.py now retries a leg ONCE on HTTP 503 after waiting for /health
+  (the server restarts the engine on the next request; reload is minutes). Retry is recorded in the drive log/JSON;
+  the retried leg's wall includes the reload, engine judge lines stay clean. py_compile, bash -n, git diff --check
+  passed; committed.
+- Lanes relaunched serially with fresh unused labels: V4-r7, then winning P0-r7, then stock C-r3; second block
+  V4-r8/P0-r8/C-r4 if healthy (report.py protocol: >=2 kept boots per arm for performance claims). THP off; no
+  production change.
