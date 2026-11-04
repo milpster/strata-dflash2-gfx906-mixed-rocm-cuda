@@ -17,6 +17,7 @@ import json
 import os
 import sys
 import time
+import urllib.error
 import urllib.request
 
 URL = "http://127.0.0.1:8019/v1/chat/completions"
@@ -48,8 +49,27 @@ def chat(messages, max_tokens, effort="low", tag=""):
     data = json.dumps(body).encode()
     req = urllib.request.Request(URL, data=data, headers={"Content-Type": "application/json"})
     t0 = time.time()
-    with urllib.request.urlopen(req, timeout=3600) as r:
-        out = json.loads(r.read())
+    for attempt in (1, 2):
+        try:
+            with urllib.request.urlopen(req, timeout=3600) as r:
+                out = json.loads(r.read())
+            break
+        except urllib.error.HTTPError as e:
+            # The box's #267 gfx906 wedge class: the engine exits, the server answers 503 and
+            # restarts the engine on the next request. Standing discipline is rerun-and-ignore:
+            # wait for health (the restart reloads, minutes) and retry this leg ONCE. The retried
+            # leg's wall includes the reload; judge lines still carry clean per-segment numbers.
+            if e.code != 503 or attempt == 2:
+                raise
+            print(f"[{ARM} r{ROUND}] {tag}: HTTP 503 (engine restart); waiting for health, retrying once", flush=True)
+            LOG.write(json.dumps({"tag": tag, "http503_retry": True}) + "\n")
+            deadline = time.time() + 1200
+            while time.time() < deadline:
+                try:
+                    urllib.request.urlopen("http://127.0.0.1:8019/health", timeout=5).read()
+                    break
+                except Exception:
+                    time.sleep(10)
     wall = time.time() - t0
     text = content_text(out)
     u = out.get("usage", {})
