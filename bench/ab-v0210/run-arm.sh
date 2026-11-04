@@ -10,10 +10,10 @@ STOCK=/home/user/dev/strata-stock-v0210
 PY=$ROOT/.venv/bin/python
 case $ARM in
   A) ENGINE=$B/armA/bin/strata; HELPER=$B/armA/bin/strata-expert-helper; SERVE=$B/armA/serve/server.py; CD=$B ;;
-  B|D|E|F0|K1|K2|K3|K4|P0) ENGINE=$ROOT/build-v0210/rpcw-hip/strata; HELPER=$ROOT/build-v0210/rpcw-cuda/strata-expert-helper; SERVE=$ROOT/serve/server.py; CD=$ROOT ;;
+  B|D|E|F0|K1|K2|K3|K4|P0|S1|S2|S3|S4) ENGINE=$ROOT/build-v0210/rpcw-hip/strata; HELPER=$ROOT/build-v0210/rpcw-cuda/strata-expert-helper; SERVE=$ROOT/serve/server.py; CD=$ROOT ;;
   F1off|F1|F2|F2only|P1) ENGINE=$ROOT/build-tap-overlap/rpcw-hip/strata; HELPER=$ROOT/build-v0210/rpcw-cuda/strata-expert-helper; SERVE=$ROOT/serve/server.py; CD=$ROOT ;;
   C) ENGINE=$STOCK/build/rpcw-hip/strata; HELPER=; SERVE=$STOCK/serve/server.py; CD=$STOCK ;;
-  *) echo "arm A|B|C|D|E|F0|F1off|F1|F2|F2only|K1|K2|K3|K4|P0|P1" >&2; exit 2 ;;
+  *) echo "arm A|B|C|D|E|F0|F1off|F1|F2|F2only|K1|K2|K3|K4|P0|P1|S1|S2|S3|S4" >&2; exit 2 ;;
 esac
 RUNCFG=$B/run/arm$ARM-r$ROUND.json
 mkdir -p "$B/run" "$B/logs" "$B/out"
@@ -30,9 +30,9 @@ cleanup() {
   for pid in ${SPID:-} ${HPID:-}; do
     [[ -n $pid ]] && kill -INT "$pid" 2>/dev/null || true
   done
-  for i in $(seq 1 9); do
+  for i in $(seq 1 20); do
     pgrep -f "$PATTERN" >/dev/null 2>&1 || break
-    sleep 3
+    sleep 5
   done
   for pid in ${SPID:-} ${HPID:-}; do
     [[ -n $pid ]] && kill -TERM "$pid" 2>/dev/null || true
