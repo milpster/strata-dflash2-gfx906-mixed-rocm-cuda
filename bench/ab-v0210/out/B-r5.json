@@ -1,0 +1,82 @@
+{
+ "probe": {
+  "tag": "probe",
+  "wall": 12.79753589630127,
+  "usage": {
+   "prompt_tokens": 214,
+   "completion_tokens": 254,
+   "total_tokens": 468,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "text": "Speculative decoding works by having a small draft model propose a sequence of tokens, then the target model verifies them in parallel. Each proposed token is accepted with probability min(1, p(x)/q(x)), where p is the target model's probability and q is the draft model's. If a token is rejected, the next token is drawn from the residual distribution (p(x) \u2212 q(x)) normalized, which is exactly the rejection-sampling procedure. Because rejection sampling is a mathematically exact method for sampling from p using q as a proposal, the final output distribution is identical to what the target model would have produced on its own, token for token."
+ },
+ "pp16384": {
+  "tag": "pp16384",
+  "wall": 60.03055667877197,
+  "usage": {
+   "prompt_tokens": 18233,
+   "completion_tokens": 8,
+   "total_tokens": 18241,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "text": ""
+ },
+ "tg1024": [
+  {
+   "tag": "tg1024.0",
+   "wall": 34.712281227111816,
+   "usage": {
+    "prompt_tokens": 225,
+    "completion_tokens": 1024,
+    "total_tokens": 1249,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "text": "**Diary \u2014 2026-03-18 \u2014 Porting the CUDA engine to HIP on gfx906**\n\nToday I moved the core CUDA engine onto ROCm/HIP targeting `gfx906` (Vega 10 / MI50 class). The goal was not a full rewrite, just a clean port of the hot path: kernel launches, memory management, streams/events, and the reduction kernels.\n\n### 1. Build setup\n\nI started with a minimal HIP translation unit:\n\n```bash\nhipcc -O3 -std=c++17 -x hip -mcpu=gfx906 engine.hip -o engine\n```\n\nFor a mixed host/device project, I split the CUDA-specific code into `.hip` files and kept host-only code in `.cpp`.\n\nThe first thing I did was replace CUDA runtime calls:\n\n```cpp\n// CUDA\ncudaMalloc(&d_x, n * sizeof(float));\ncudaMemcpy(d_x, h_x, n * sizeof(float), cudaMemcpyHostToDevice);\ncudaMemset(d_y, 0, n * sizeof(float));\ncudaFree(d_x);\n\n// HIP\nhipMalloc(&d_x, n * sizeof(float));\nhipMemcpy(d_x, h_x, n * sizeof(float), hipMemcpyHostToDevice);\nhipMemset(d_y, 0, n * sizeof(float));\nhipFree(d_x);\n```\n\nI also replaced CUDA streams and events:\n\n```cpp\nhipStream_t stream;\nhipEvent_t start, stop;\n\nhipStreamCreate(&stream);\nhipEventCreate(&start);\nhipEventCreate(&stop);\n\nhipEventRecord(start, stream);\nkernel<<<grid, block, smem, stream>>>(...);\nhipEventRecord(stop, stream);\nhipEventSynchronize(stop);\n\nfloat ms = 0.0f;\nhipEventElapsedTime(&ms, start, stop);\n```\n\n### 2. Kernel syntax\n\nThe kernels were mostly portable. CUDA `__global__` maps directly to HIP.\n\n```cpp\n__global__ void scale_kernel(float* __restrict__ y,\n                             const float* __restrict__ x,\n                             float alpha,\n                             size_t n)\n{\n    size_t i = blockIdx.x * blockDim.x + threadIdx.x;\n    if (i < n) {\n"
+  },
+  {
+   "tag": "tg1024.1",
+   "wall": 29.795595169067383,
+   "usage": {
+    "prompt_tokens": 225,
+    "completion_tokens": 1024,
+    "total_tokens": 1249,
+    "prompt_tokens_details": {
+     "cached_tokens": 220
+    }
+   },
+   "text": "**Diary \u2014 2026-03-14 \u2014 Porting the CUDA engine to HIP on gfx906**\n\nToday I moved the core CUDA engine over to HIP on an AMD MI50 / Vega 20-class GPU, target ISA `gfx906`. The goal was not a toy demo: I wanted the existing tile-based compute engine to run under ROCm with the same numerical output and a sane performance profile.\n\n### What I changed first\n\nThe CUDA engine had three main GPU-facing pieces:\n\n1. A kernel launcher wrapper around `cudaLaunchKernel`\n2. Device memory management using `cudaMalloc`, `cudaMemcpy`, `cudaFree`\n3. Stream/event synchronization using `cudaStream_t` and `cudaEvent_t`\n\nI replaced the CUDA runtime calls with HIP equivalents:\n\n```cpp\n#include <hip/hip_runtime.h>\n\n#define CHECK_HIP(x) do { \\\n    hipError_t err = (x); \\\n    if (err != hipSuccess) { \\\n        fprintf(stderr, \"HIP error %s:%d: %s\\n\", __FILE__, __LINE__, hipGetErrorString(err)); \\\n        exit(1); \\\n    } \\\n} while (0)\n```\n\nMemory allocation became:\n\n```cpp\nCHECK_HIP(hipMalloc(&d_tile, bytes));\nCHECK_HIP(hipMemcpy(d_tile, h_tile, bytes, hipMemcpyHostToDevice));\nCHECK_HIP(hipFree(d_tile));\n```\n\nStreams and events:\n\n```cpp\nhipStream_t stream;\nhipEvent_t start, stop;\n\nCHECK_HIP(hipStreamCreate(&stream));\nCHECK_HIP(hipEventCreate(&start));\nCHECK_HIP(hipEventCreate(&stop));\n\nCHECK_HIP(hipEventRecord(start, stream));\nengine_kernel<<<grid, block, smem_bytes, stream>>>(...);\nCHECK_HIP(hipEventRecord(stop, stream));\nCHECK_HIP(hipEventSynchronize(stop));\n\nfloat ms = 0.0f;\nCHECK_HIP(hipEventElapsedTime(&ms, start, stop));\n```\n\nThe kernel launch syntax is almost identical, which made the first pass easy:\n\n```cpp\nengine_kernel<<<grid, block, dynamic_smem, stream>>>(\n    d_input,\n    d_output,"
+  },
+  {
+   "tag": "tg1024.2",
+   "wall": 30.853893995285034,
+   "usage": {
+    "prompt_tokens": 225,
+    "completion_tokens": 1024,
+    "total_tokens": 1249,
+    "prompt_tokens_details": {
+     "cached_tokens": 220
+    }
+   },
+   "text": "**Diary \u2014 2026-02-14 \u2014 Porting the CUDA engine to HIP on gfx906**\n\nToday I finished the first end-to-end port of our CUDA compute engine to HIP on an AMD Vega 10 / gfx906 device. The engine is a small tile-based kernel pipeline: load input tiles into shared memory, run a fused reduction, write results back through a stream-ordered pipeline. The CUDA version had been tuned for 32-lane warps, so the main work was not just renaming APIs, but rethinking warp-level code for 64-lane wavefronts.\n\n---\n\n## 1. Environment\n\nTarget device:\n\n```bash\n$ rocminfo | grep -A 10 \"gfx906\"\nName:                    gfx906\nMarketing Name:          Radeon Instinct MI60\nCompute Unit:            64\nMax Work Group Size:     1024\nLDS Size:                65536 bytes\n```\n\nCompiler:\n\n```bash\n$ hipcc --version\nhipcc version 6.1.40500-...\n```\n\nBuild command:\n\n```bash\nhipcc -O3 -x hip \\\n  --offload-arch=gfx906 \\\n  -Iinclude \\\n  -o engine_hip \\\n  src/engine_hip.cpp \\\n  src/kernels_hip.cpp\n```\n\nI explicitly targeted `gfx906` because the default fat binary was pulling in `gfx908` and `gfx90a` code paths, and I wanted a clean ISA for profiling.\n\n---\n\n## 2. API translation\n\nThe CUDA engine used:\n\n```cpp\ncudaMalloc\ncudaMemcpyAsync\ncudaStreamCreate\ncudaEventCreate\ncudaEventRecord\ncudaEventSynchronize\ncudaDeviceSynchronize\n```\n\nI replaced them with HIP equivalents:\n\n```cpp\nhipMalloc\nhipMemcpyAsync\nhipStreamCreate\nhipEventCreate\nhipEventRecord\nhipEventSynchronize\nhipDeviceSynchronize\n```\n\nThe launch syntax stayed the same:\n\n```cpp\nkernel<<<grid, block, sharedMemBytes, stream>>>(args);\n```\n\nFor example:\n\n```cpp\nconstexpr int TILE = 128;\nconstexpr int"
+  }
+ ],
+ "infill80k": {
+  "tag": "infill80k",
+  "wall": 186.33721160888672,
+  "usage": {
+   "prompt_tokens": 87879,
+   "completion_tokens": 155,
+   "total_tokens": 88034,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "text": "watch memory quick the through dog quick."
+ }
+}
