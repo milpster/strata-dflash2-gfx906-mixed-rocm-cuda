@@ -37,7 +37,7 @@ if ss -ltn 2>/dev/null | grep -q ':8019 '; then
 fi
 for i in $(seq 1 60); do
   free_mib=$(awk '/^MemFree:/{print int($2/1024)}' /proc/meminfo)
-  (( free_mib >= 45000 )) && break
+  (( free_mib >= 35000 )) && break
   echo "$(date +%T) waiting for the previous engine's anon arena to release: MemFree ${free_mib} MiB"
   sleep 5
 done
