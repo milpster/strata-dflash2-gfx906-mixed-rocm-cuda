@@ -1,0 +1,82 @@
+{
+ "probe": {
+  "tag": "probe",
+  "wall": 12.777828454971313,
+  "usage": {
+   "prompt_tokens": 214,
+   "completion_tokens": 254,
+   "total_tokens": 468,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "text": "Speculative decoding works by having a small draft model propose a sequence of tokens, then the target model verifies them in parallel. Each proposed token is accepted with probability min(1, p(x)/q(x)), where p is the target model's probability and q is the draft model's. If a token is rejected, the next token is drawn from the residual distribution (p(x) \u2212 q(x)) normalized, which is exactly the rejection-sampling procedure. Because rejection sampling is a mathematically exact method for sampling from p using q as a proposal, the final output distribution is identical to what the target model would have produced on its own, token for token."
+ },
+ "pp16384": {
+  "tag": "pp16384",
+  "wall": 59.8276584148407,
+  "usage": {
+   "prompt_tokens": 18233,
+   "completion_tokens": 8,
+   "total_tokens": 18241,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "text": ""
+ },
+ "tg1024": [
+  {
+   "tag": "tg1024.0",
+   "wall": 43.44991612434387,
+   "usage": {
+    "prompt_tokens": 225,
+    "completion_tokens": 1024,
+    "total_tokens": 1249,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "text": "**Diary \u2014 2026-03-14 \u2014 Porting the CUDA engine to HIP on gfx906**\n\nToday I moved the core CUDA engine onto AMD gfx906 (Vega/MI50-class) using HIP. The goal was not a full rewrite, but a mechanical port of the runtime, kernels, and build system, then fixing the places where CUDA assumptions leak into the code.\n\n## 1. Build system\n\nThe CUDA engine built with `nvcc`. I switched the target to HIP with `hipcc`.\n\nCUDA:\n\n```bash\nnvcc -O3 -arch=sm_70 -o engine_cuda engine.cu\n```\n\nHIP:\n\n```bash\nhipcc -O3 --offload-arch=gfx906 -o engine_hip engine.hip\n```\n\nFor a CMake project, I replaced the CUDA target with a HIP target:\n\n```cmake\nfind_package(hip REQUIRED)\n\nhip_add_executable(engine_hip\n    engine.hip\n    kernels.hip\n)\n\ntarget_link_libraries(engine_hip PRIVATE hip::device)\n```\n\nThe important flag is:\n\n```bash\n--offload-arch=gfx906\n```\n\nWithout it, the compiler may target the default architecture, and kernels will not load on gfx906.\n\n## 2. Runtime API translation\n\nThe CUDA runtime calls mapped cleanly to HIP:\n\n```cpp\ncudaMalloc        -> hipMalloc\ncudaFree          -> hipFree\ncudaMemcpy        -> hipMemcpy\ncudaMemcpyAsync   -> hipMemcpyAsync\ncudaMemset        -> hipMemset\ncudaMemsetAsync   -> hipMemsetAsync\ncudaDeviceSynchronize -> hipDeviceSynchronize\ncudaGetLastError  -> hipGetLastError\ncudaGetDeviceProperties -> hipGetDeviceProperties\n```\n\nExample:\n\n```cpp\nfloat *d_x = nullptr;\nhipMalloc(&d_x, n * sizeof(float));\n\nhipMemcpyAsync(d_x, h_x, n * sizeof(float),\n               hipMemcpyHostToDevice, stream);\n```\n\nI kept the same pointer types:\n\n```cpp\nhipStream_t stream;\nhipEvent_t start, stop;\n\nhipStreamCreate(&stream);\nhipEventCreate(&start);\nhipEventCreate(&stop);\n```\n\nKernel launches remained visually identical:"
+  },
+  {
+   "tag": "tg1024.1",
+   "wall": 30.04046130180359,
+   "usage": {
+    "prompt_tokens": 225,
+    "completion_tokens": 1024,
+    "total_tokens": 1249,
+    "prompt_tokens_details": {
+     "cached_tokens": 220
+    }
+   },
+   "text": "**Diary \u2014 Day 12: Porting the CUDA engine to HIP on gfx906**\n\nTarget: AMD MI50 / Vega 20, ISA `gfx906`, 64 CUs, 32 GB HBM2, 64 KB LDS per CU, wavefront size 64.\n\nToday I moved the core CUDA engine to HIP. The engine is a GPU particle solver: one kernel for force accumulation, one for integration, one for spatial hashing, plus a small CPU-side scheduler using streams and events.\n\n### 1. Build system\n\nI added a HIP target to CMake:\n\n```cmake\nfind_package(hip REQUIRED)\n\ntarget_link_libraries(engine PRIVATE hip::device)\ntarget_compile_options(engine PRIVATE\n    $<$<COMPILE_LANGUAGE:CXX>:-O3>\n    $<$<COMPILE_LANGUAGE:CXX>:-std=c++17>\n)\n```\n\nFor direct kernel compilation:\n\n```bash\nhipcc -O3 -std=c++17 -march=gfx906 -c engine_kernels.hip.cpp -o engine_kernels.o\n```\n\nI used `-march=gfx906` explicitly. Without it, `hipcc` picked the default target on my box, which was not what I wanted.\n\n### 2. CUDA API replacements\n\nThe mechanical part was mostly predictable:\n\n```cpp\ncudaMalloc      -> hipMalloc\ncudaFree        -> hipFree\ncudaMemcpy      -> hipMemcpy\ncudaMemcpyAsync -> hipMemcpyAsync\ncudaStream_t    -> hipStream_t\ncudaEvent_t     -> hipEvent_t\ncudaDeviceSynchronize -> hipDeviceSynchronize\ncudaGetLastError -> hipGetLastError\ncudaError_t     -> hipError_t\n```\n\nKernel launches changed from:\n\n```cpp\nintegrate_kernel<<<grid, block, 0, stream>>>(particles, dt);\n```\n\nto:\n\n```cpp\nhipLaunchKernelGGL(integrate_kernel, grid, block, 0, stream, particles, dt);\n```\n\nI did not use `hipify-clang` for the whole project. It handled the obvious API calls, but it left too many architecture-specific assumptions. I preferred manual porting for the kernels.\n\n### 3. Architecture guards\n\nThe CUDA code had:\n\n```cpp\n#if defined"
+  },
+  {
+   "tag": "tg1024.2",
+   "wall": 29.76166605949402,
+   "usage": {
+    "prompt_tokens": 225,
+    "completion_tokens": 1024,
+    "total_tokens": 1249,
+    "prompt_tokens_details": {
+     "cached_tokens": 220
+    }
+   },
+   "text": "**Diary \u2014 2026-03-18 \u2014 Porting the CUDA engine to HIP on gfx906**\n\nToday I moved the core compute engine from CUDA to HIP for an AMD Vega/MI50-class GPU, target architecture `gfx906`. The goal was not a toy demo: I wanted the existing kernel pipeline to compile, run, and produce bit-compatible results on ROCm.\n\n### 1. Build setup\n\nI started from the CUDA source tree and kept the kernel code as close as possible to the original. The CUDA engine used:\n\n- `cudaMalloc`, `cudaMemcpy`, `cudaFree`\n- `cudaStream_t`\n- `cudaEvent_t`\n- `__global__` kernels\n- `<<<grid, block, sharedMem, stream>>>` launches\n- `__shfl_down_sync` for warp reductions\n- `__syncthreads()`\n- `__restrict__` pointers\n- `__launch_bounds__`\n\nFor HIP, the first pass was mostly mechanical:\n\n```bash\nhipcc -O3 -x hip \\\n  --offload-arch=gfx906 \\\n  -Iinclude \\\n  -o engine_hip \\\n  src/engine_hip.cpp\n```\n\nThe important flag is:\n\n```bash\n--offload-arch=gfx906\n```\n\nWithout it, the compiler may target the default architecture, and the kernels will not load on the Vega/MI50 device.\n\nI also added a CMake option so the CUDA and HIP builds stay separate:\n\n```cmake\nif (USE_HIP)\n  find_package(hip REQUIRED)\n  target_compile_options(engine PRIVATE -x hip)\n  target_link_libraries(engine PRIVATE hip::device)\n  target_compile_definitions(engine PRIVATE __HIP_PLATFORM_AMD__)\nendif()\n```\n\nFor the HIP target, I explicitly set:\n\n```cmake\nset(CMAKE_HIP_ARCHITECTURES gfx906)\n```\n\n### 2. Runtime API translation\n\nThe CUDA runtime calls mapped cleanly:\n\n```cpp\n// CUDA\ncudaMalloc(&d_x, n * sizeof(float));\ncudaMemcpy(d_x, h_x, n * sizeof(float), cudaMemcpyHostToDevice);\ncudaFree(d_x);\n\n// HIP\nhipMalloc(&d_x, n *"
+  }
+ ],
+ "infill80k": {
+  "tag": "infill80k",
+  "wall": 185.8286190032959,
+  "usage": {
+   "prompt_tokens": 87879,
+   "completion_tokens": 155,
+   "total_tokens": 88034,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "text": "watch memory quick the through dog quick."
+ }
+}
