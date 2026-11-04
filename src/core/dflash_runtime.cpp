@@ -78,19 +78,6 @@ void parity_dump_u16_as_f32(const char* dir, const char* name, const void* dev, 
     }
 }
 
-// F1 (STRATA_DF_DEFER_CTX, TAP_OVERLAP_DESIGN §1/§2 changes 1-2): the prompt path defers the
-// consumer's fusion drain - add_context keeps its launches enqueued on cs_ in the same order
-// and skips the full stream sync at its tail; the drain lands on the next propose()/idle()
-// and on the collector's D2D barrier.  Read ONCE (like STRATA_DF_EVENTS at upload); the
-// flag-off path is today's code.  Declared in include/strata/core/dflash.hpp.
-bool deferral_context() {
-    static const bool on = [] {
-        const char* v = std::getenv("STRATA_DF_DEFER_CTX");
-        return v && v[0] == '1';
-    }();
-    return on;
-}
-
 void parity_dump(const char* dir, const char* name, const void* dev, int64_t floats, cudaStream_t cs) {
     std::vector<float> host((size_t) floats);
     if (cudaMemcpyAsync(host.data(), dev, (size_t) floats * 4, cudaMemcpyDeviceToHost, cs) != cudaSuccess) return;
@@ -222,6 +209,21 @@ bool dflash_mapped(int64_t n, void** host, void** dev) {
 }
 
 }  // namespace
+
+// F1 (STRATA_DF_DEFER_CTX, TAP_OVERLAP_DESIGN §1/§2 changes 1-2): the prompt path defers the
+// consumer's fusion drain - add_context keeps its launches enqueued on cs_ in the same order
+// and skips the full stream sync at its tail; the drain lands on the next propose()/idle()
+// and on the collector's D2D barrier.  Read ONCE (like STRATA_DF_EVENTS at upload); the
+// flag-off path is today's code.  Declared in include/strata/core/dflash.hpp.  (Build fix:
+// defined at strata::core scope, NOT in the anonymous namespace above - the collector and
+// the serve wiring call it through the header declaration, which needs external linkage.)
+bool deferral_context() {
+    static const bool on = [] {
+        const char* v = std::getenv("STRATA_DF_DEFER_CTX");
+        return v && v[0] == '1';
+    }();
+    return on;
+}
 
 uint64_t DFlashDrafter::vram_bytes() const {
     uint64_t bytes = vram_;
