@@ -38,6 +38,7 @@ ARMS = {
     "F1off": dict(exe=NEW),
     "F1": dict(exe=NEW, env={"STRATA_DF_DEFER_CTX": "1"}),
     "F2": dict(exe=NEW, env={"STRATA_DF_DEFER_CTX": "1", "STRATA_DF_ASYNC_D2H": "1"}),
+    "F2only": dict(exe=NEW, env={"STRATA_DF_ASYNC_D2H": "1"}),
     "K1": dict(exe=OLD, layer_split="16"),
     "K2": dict(exe=OLD, prefill="16384"),
 }
