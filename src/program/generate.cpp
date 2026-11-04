@@ -86,12 +86,15 @@
 #include "strata/core/dflash2.hpp"
 #include "strata/core/draft_cap.hpp"
 #endif
-// STRATA_DF_EVENTS=1 research timing: drain+dump are defined in dflash_runtime.cpp; declared
-// here at global scope (outside the DFLASH2 guard - the serve summary below is unconditional)
-// so the per-request boundary can print the cumulative section table. DFlashDrafter::release()
-// only runs on upload-failure paths, never at shutdown - the table used to be lost to every stop.
+// STRATA_DF_EVENTS=1 research timing: drain+dump are defined at strata::core scope in
+// dflash_runtime.cpp; declared here (outside the DFLASH2 guard - the serve summary below is
+// unconditional) so the per-request boundary can print the cumulative section table.
+// DFlashDrafter::release() only runs on upload-failure paths, never at shutdown - the table
+// used to be lost to every stop.
+namespace strata::core {
 void df_timing_drain();
 void df_timing_dump();
+}
 #include "strata/prefill/kva.hpp"
 #include "strata/prefill/kva_floor.hpp"
 #include "strata/prefill/prefill.hpp"
@@ -20342,8 +20345,8 @@ int main(int argc, char** argv) {
                          (long long) draft_offered, checks.size(), cancelled ? " (cancelled)" : "", helper_txt);
             // STRATA_DF_EVENTS=1: cumulative per-section timing right after each request summary.
             // Both are no-ops unless the env was set at drafter upload - the default path is identical.
-            df_timing_drain();
-            df_timing_dump();
+            strata::core::df_timing_drain();
+            strata::core::df_timing_dump();
             if (serve_adapt_drain_ms >= 1.0)
                 std::fprintf(stderr, "strata serve: the request first waited %.0f ms for the adaptive tier's round in flight\n",
                              serve_adapt_drain_ms);

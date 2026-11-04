@@ -158,30 +158,9 @@ struct DFlashSection {
 
 /// The GPU half of the sections opened since the last drain: after a full sync every recorded
 /// event pair is complete, so fold the elapsed times in and recycle the pool.
-void df_timing_drain() {
-    DFlashTiming& t = df_timing();
-    if (!t.on || !t.inited) return;
-    for (const auto& [name, idx] : t.open) {
-        float ms = 0;
-        if (cudaEventElapsedTime(&ms, t.ev[idx], t.ev[idx + 1]) == cudaSuccess) t.acc[name].gpu_ms += ms;
-    }
-    t.open.clear();
-    t.ev_used = 0;
-}
-
-void df_timing_dump() {
-    DFlashTiming& t = df_timing();
-    if (!t.on) return;
-    std::fprintf(stderr, "dflash timing (STRATA_DF_EVENTS=1), section totals: %18s %10s %10s %8s\n",
-                 "gpu ms", "wall ms", "gpu/wall", "calls");
-    double gpu_sum = 0, wall_sum = 0;
-    for (auto& [name, a] : t.acc) { gpu_sum += a.gpu_ms; wall_sum += a.wall_ms; }
-    for (auto& [name, a] : t.acc) {
-        std::fprintf(stderr, "  %-28s %10.2f %10.2f %8.3f %8lld\n", name.c_str(), a.gpu_ms, a.wall_ms,
-                     a.wall_ms > 0 ? a.gpu_ms / a.wall_ms : 0.0, (long long) a.n);
-    }
-    std::fprintf(stderr, "  %-28s %10.2f %10.2f\n", "SUM (not decode wall)", gpu_sum, wall_sum);
-}
+/// NOTE: drain/dump are defined BELOW at strata::core scope (after the anonymous namespace
+/// closes) so generate.cpp's per-request boundary can call them; everything else here stays
+/// file-local.
 
 cudaStream_t& DFlashSection::df_stream() {
     static cudaStream_t s = nullptr;   // one drafter per process; upload() sets it
@@ -209,6 +188,35 @@ bool dflash_mapped(int64_t n, void** host, void** dev) {
 }
 
 }  // namespace
+
+// STRATA_DF_EVENTS=1: drain+dump moved out of the anonymous namespace above (same external-
+// linkage reasoning as deferral_context below) - generate.cpp's per-request boundary calls
+// them so the cumulative section table survives hard stops; DFlashDrafter::release() only
+// ever ran on upload failures.
+void df_timing_drain() {
+    DFlashTiming& t = df_timing();
+    if (!t.on || !t.inited) return;
+    for (const auto& [name, idx] : t.open) {
+        float ms = 0;
+        if (cudaEventElapsedTime(&ms, t.ev[idx], t.ev[idx + 1]) == cudaSuccess) t.acc[name].gpu_ms += ms;
+    }
+    t.open.clear();
+    t.ev_used = 0;
+}
+
+void df_timing_dump() {
+    DFlashTiming& t = df_timing();
+    if (!t.on) return;
+    std::fprintf(stderr, "dflash timing (STRATA_DF_EVENTS=1), section totals: %18s %10s %10s %8s\n",
+                 "gpu ms", "wall ms", "gpu/wall", "calls");
+    double gpu_sum = 0, wall_sum = 0;
+    for (auto& [name, a] : t.acc) { gpu_sum += a.gpu_ms; wall_sum += a.wall_ms; }
+    for (auto& [name, a] : t.acc) {
+        std::fprintf(stderr, "  %-28s %10.2f %10.2f %8.3f %8lld\n", name.c_str(), a.gpu_ms, a.wall_ms,
+                     a.wall_ms > 0 ? a.gpu_ms / a.wall_ms : 0.0, (long long) a.n);
+    }
+    std::fprintf(stderr, "  %-28s %10.2f %10.2f\n", "SUM (not decode wall)", gpu_sum, wall_sum);
+}
 
 // F1 (STRATA_DF_DEFER_CTX, TAP_OVERLAP_DESIGN §1/§2 changes 1-2): the prompt path defers the
 // consumer's fusion drain - add_context keeps its launches enqueued on cs_ in the same order
