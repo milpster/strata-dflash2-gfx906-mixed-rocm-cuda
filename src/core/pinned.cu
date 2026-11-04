@@ -482,7 +482,14 @@ void* reserve(uint64_t bytes, PageBacking& got, std::string& note, const std::st
         }
         std::fclose(f);
     }
-    const bool skip_thp_request = std::getenv("STRATA_NO_ARENA_THP") != nullptr || thp_mode == "always";
+    // W2a (opt-in, STRATA_ARENA_COLLAPSE=1): with THP "always" the mapping is huge-backed where the kernel
+    // can get a 2 MiB block, and MADV_HUGEPAGE is skipped because it adds reclaim and compaction on every
+    // fault.  The post-fill collapse sweep (see expert_source.cpp, the arena's own loader) asks for those
+    // blocks ONCE, after the bytes are written, where there is no fault cost - so the request is worth
+    // making even under "always", and it is made there only when the sweep is asked for.  Unset: today's
+    // rule, byte for byte.
+    const bool collapse = std::getenv("STRATA_ARENA_COLLAPSE") != nullptr;
+    const bool skip_thp_request = std::getenv("STRATA_NO_ARENA_THP") != nullptr || (thp_mode == "always" && !collapse);
     if (std::getenv("STRATA_NO_LARGEPAGES") == nullptr && skip_thp_request) {
         const std::string four_k = "; using 4 KB pages";
         if (note.size() >= four_k.size() && note.compare(note.size() - four_k.size(), four_k.size(), four_k) == 0)

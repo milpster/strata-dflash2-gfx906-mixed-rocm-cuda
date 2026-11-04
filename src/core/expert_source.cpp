@@ -68,6 +68,10 @@
 #include <sys/syscall.h>
 #endif
 
+#ifndef MADV_COLLAPSE
+#define MADV_COLLAPSE 25   // Linux 5.16; the number the kernel documents.  Older headers have no name for it.
+#endif
+
 // a 64-bit seek (as in pinned.cu): the 32-bit `fseek` wraps past 4 GiB, and the spelling differs per platform
 #ifndef STRATA_FSEEK64
 #ifdef _WIN32
@@ -6240,6 +6244,38 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
         if (!ok) std::remove(tmp.c_str());
         std::fprintf(stderr, "strata generate: STRATA_ARENA_MMAP: %s %s (the next start maps it)\n",
                      ok ? "wrote" : "could NOT write", path.c_str());
+    }
+    // W2a (opt-in, STRATA_ARENA_COLLAPSE=1): collapse the filled range into 2 MiB huge pages NOW.
+    // MADV_COLLAPSE (Linux 5.16+) takes a range of pages that are already written and fills one 2 MiB
+    // block from them, so the arena's TLB benefit does not depend on the kernel finding a free block at
+    // each of the ten million faults of the load.  Best effort: a chunk the kernel cannot collapse right
+    // now (EAGAIN, ENOMEM, EINTR) is counted and skipped - it stays 4 KB-backed and the kernel still
+    // collapses it at a later fault.  Nothing here fails the boot, and nothing here runs when the
+    // variable is unset.  A hugetlb-backed arena is already all 2 MiB pages: nothing to collapse.
+    if (std::getenv("STRATA_ARENA_COLLAPSE") != nullptr && a->backing != PageBacking::LargePages) {
+        constexpr uint64_t kHuge = 2ull << 20;
+        uint64_t done = 0, tried = 0, eagain = 0, other = 0;
+        int why = 0;
+        for (uint64_t off = 0; off < want; off += kHuge) {
+            const uint64_t len = want - off < kHuge ? want - off : kHuge;
+            ++tried;
+            if (madvise((uint8_t*) a->base + (size_t) off, (size_t) len, MADV_COLLAPSE) == 0) {
+                ++done;
+            } else if (errno == EAGAIN || errno == EINTR) {
+                ++eagain;   // no free 2 MiB block right now: the kernel collapses it at a later fault
+            } else {
+                ++other;
+                if (why == 0) why = errno;
+            }
+        }
+        a->note += "; STRATA_ARENA_COLLAPSE: " + std::to_string(done) + " of " + std::to_string(tried) +
+                   " 2 MiB chunks collapsed after the fill" +
+                   (eagain ? ", " + std::to_string(eagain) + " refused for room" : "") +
+                   (other ? ", " + std::to_string(other) + " refused (" + std::strerror(why) + ")" : "");
+        std::fprintf(stderr, "strata generate: expert arena: STRATA_ARENA_COLLAPSE: %llu of %llu 2 MiB chunks collapsed"
+                             " after the fill (%llu refused for room, %llu refused: %s)\n",
+                     (unsigned long long) done, (unsigned long long) tried, (unsigned long long) eagain,
+                     (unsigned long long) other, why ? std::strerror(why) : "none");
     }
     arena_ = a;
     base_ = a->data();
