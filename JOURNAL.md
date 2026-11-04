@@ -819,3 +819,15 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
 - Frontier settled: 256/256 = NaN, 640/640 + fill 7000 = safe and faster,
   896/1000 = safe. Proposal (awaiting user): V9-class becomes the iq3_s fleet
   conf. Prod restored after the lane.
+
+## 2026-11-04 23:25 — V9-class promoted to the iq3_s fleet conf; live prod switched to iq3_s
+
+- User order. Prod commit 1c80795b: iq3_s conf at 640/640 + fill 7000 (slots
+  4600 unchanged). swift15 stopped cleanly; prod relaunched on the iq3_s
+  launcher (port 8009, its own socket pair).
+- Boot verified against the V9 bench boot: relief 3582/3582 (6.63 GiB;
+  complement 2722... prod shows 2752 ranges / 40.21 GiB), free-after-load
+  784/626 MiB identical, helper filled 3582 slots (6.64 GiB), smoke exact,
+  engine anon 44.4 GiB, 3080 at 7144 MiB.
+- Switchback path: stop + relaunch the swift15 launcher (V7 conf untouched).
+- NaN source dive revived with prod up (no-delegation-while-prod-down rule).
