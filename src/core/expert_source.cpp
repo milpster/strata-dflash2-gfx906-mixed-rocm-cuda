@@ -6117,8 +6117,19 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
 #else
     const bool deferred = false;
 #endif
-    PinnedArena* a = by_need ? new PinnedArena(arena_bytes + (uint64_t) blob, PinnedArena::ByNeed{}, need_ranges,
-                                               max_pinned_bytes, shared_arena_file, pack_hash)
+    // W1/W2 (opt-in): the whole-arena registration pins every page, and that is exactly what W1's
+    // MADV_DONTNEED and W2's MADV_COLLAPSE refuse to touch (measured: the relief guard refused all
+    // 4116 helper-held pairs; every one of the sweep's 20462 chunks EINVAL'd).  Reserve without
+    // registering and without locking; register_after_fill() restores DMA once the layout is
+    // decided - for W2 right after the collapse sweep below (the whole span), for W1 from the
+    // caller through register_complement() (the helper's held pairs are known only after its fill
+    // report).  Between the fill and that call the arena is registered-less but resident (just
+    // written; nothing else pressures it during boot) and no request has run yet.
+    const bool relief_reserve = !by_need && shared_arena_file.empty() &&
+                                 (ram_relief_ || std::getenv("STRATA_ARENA_COLLAPSE") != nullptr);
+    PinnedArena* a = relief_reserve ? new PinnedArena(want + (uint64_t) blob, PinnedArena::ReserveOnly{})
+                    : by_need ? new PinnedArena(arena_bytes + (uint64_t) blob, PinnedArena::ByNeed{}, need_ranges,
+                                                max_pinned_bytes, shared_arena_file, pack_hash)
                    : deferred ? new PinnedArena(want + (uint64_t) blob, bounds, PinnedArena::Deferred{})
                               : new PinnedArena(want + (uint64_t) blob, bounds, max_pinned_bytes,
                                                 shared_arena_file, pack_hash);
@@ -6287,6 +6298,12 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
                              " after the fill (%llu refused for room, %llu refused: %s)\n",
                      (unsigned long long) done, (unsigned long long) tried, (unsigned long long) eagain,
                      (unsigned long long) other, why ? std::strerror(why) : "none");
+        if (!ram_relief_) {
+            // W2 alone: the sweep ran on unregistered pages (that is the point of the ReserveOnly
+            // arena); restore the whole-span DMA registration now, before the alias tables below
+            // are built from it.  W1 defers: its complement is known only after the fill report.
+            a->register_after_fill(std::vector<std::pair<uint64_t, uint64_t>>{{0, (uint64_t) want}}, true);
+        }
     }
     arena_ = a;
     base_ = a->data();
@@ -6566,6 +6583,73 @@ void ArenaExpertSource::set_unfilled(std::vector<std::pair<int32_t, int32_t>> pa
     // The channel-loss safety net: on a residency release, read them back so the CPU can serve their rows.
     set_helper_residency_release_hook([this] { refill_unfilled(); });
 #endif
+}
+
+void ArenaExpertSource::apply_registration() {
+    // W1: rebuild the alias tables after register_complement() - the same build open() does for a
+    // pin-by-need arena, run again now that the registered ranges exist.  Boot-time, one thread.
+    if (base_ == nullptr || arena_ == nullptr) return;
+    PinnedArena* a = static_cast<PinnedArena*>(arena_);   // stored opaque; the type is complete here
+    if (!a->by_need) return;
+    pin_start_.clear(); pin_end_.clear(); pin_dev_.clear();
+    ranges_ = !a->pin_ranges.empty();
+    for (const auto& r : a->pin_ranges) {
+        void* d = nullptr;
+        if (cudaHostGetDevicePointer(&d, (void*) (base_ + r.first), 0) != cudaSuccess) {
+            (void) cudaGetLastError();
+            ranges_ = false;
+            break;
+        }
+        pin_start_.push_back(r.first);
+        pin_end_.push_back(r.first + r.second);
+        pin_dev_.push_back((const uint8_t*) d);
+    }
+    if (!ranges_) {
+        pin_start_.clear(); pin_end_.clear(); pin_dev_.clear();
+        pinned_bytes_ = 0;
+        return;
+    }
+    pinned_bytes_ = a->registered_bytes;
+    layer_pcie_.assign((size_t) (blobs_ / (n_expert_ > 0 ? n_expert_ : 1)), 0);
+    for (int64_t l = 0; l < (int64_t) layer_pcie_.size(); ++l)
+        for (int64_t e = 0; e < n_expert_ && !layer_pcie_[(size_t) l]; ++e)
+            layer_pcie_[(size_t) l] = pinned(l, e) ? 1 : 0;
+}
+
+void ArenaExpertSource::register_complement(const std::vector<std::pair<int32_t, int32_t>>& held) {
+    // W1: after the helper's fill report, register everything EXCEPT the held pairs - their pages
+    // are about to be given back with MADV_DONTNEED, which driver-pinned memory refuses (measured:
+    // all 4116 held pairs sat inside the whole-arena registration and nothing could be dropped).
+    // The complement keeps its DMA alias; the held pairs stay plain, unlocked pages until
+    // set_unfilled() drops them.  Boot-time, one thread.
+    if (base_ == nullptr || arena_ == nullptr || held.empty()) return;
+    PinnedArena* a = static_cast<PinnedArena*>(arena_);   // stored opaque; the type is complete here
+    const int64_t n_layers = blobs_ / (n_expert_ > 0 ? n_expert_ : 1);
+    std::vector<uint8_t> drop((size_t) blobs_, 0);
+    for (const auto& p : held) {
+        const int64_t l = p.first, e = p.second;
+        if (l >= 0 && l < n_layers && e >= 0 && e < n_expert_) drop[(size_t) (l * n_expert_ + e)] = 1;
+    }
+    std::vector<std::pair<uint64_t, uint64_t>> comp;   // spans of consecutive unheld blobs, merged
+    uint64_t span = 0;
+    bool open = false;
+    for (int64_t l = 0; l < n_layers; ++l) {
+        for (int64_t e = 0; e < n_expert_; ++e) {
+            const uint64_t off = arena_off(l, e);
+            if (drop[(size_t) (l * n_expert_ + e)]) {
+                if (open) { comp.emplace_back(span, off > span ? off - span : 0); open = false; }
+            } else if (!open) {
+                span = off;
+                open = true;
+            }
+        }
+    }
+    if (open && arena_capacity_ > span) comp.emplace_back(span, arena_capacity_ - span);
+    const uint64_t got = a->register_after_fill(comp, true);
+    apply_registration();
+    std::fprintf(stderr, "strata generate: --expert-helper-ram-relief: registered the complement of the helper's "
+                         "%llu pairs after the fill (%zu range(s), %.2f GiB); the held pages stay plain\n",
+                 (unsigned long long) held.size(), comp.size(), (double) got / 1073741824.0);
 }
 
 FileExpertSource* ArenaExpertSource::file_source() const {

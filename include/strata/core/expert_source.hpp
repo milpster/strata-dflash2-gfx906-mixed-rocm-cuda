@@ -1382,9 +1382,22 @@ public:
     ///     and every consumer copies it (the CPU windows, the cache fill, the prompt path's stager);
     ///   - its rows come from the helper while the channel is open.
     /// A pair inside a registered range is left alone: the driver pins those pages and the GPU has an
-    /// alias into them, so releasing them is not safe - relief is the held pairs that are not pinned.
-    /// Never called: today's behaviour, byte for byte.
+    /// alias into them, so releasing them is not safe.  Under the flag the arena is built WITHOUT the
+    /// whole-arena registration and `register_complement()` registers everything but the held pairs
+    /// first, so the held pages are plain and this drops them (measured without that order: all 4116
+    /// held pairs sat inside the registration and nothing could be dropped).
+    /// Never called without the flag: today's behaviour, byte for byte.
     void set_unfilled(std::vector<std::pair<int32_t, int32_t>> pairs);
+    /// W1 (--expert-helper-ram-relief): build the arena without the whole-arena registration (and
+    /// without the working-set lock), so the fill writes plain pages.  Call before open().
+    void set_ram_relief(bool on) { ram_relief_ = on; }
+    /// W1: after the helper's fill report, register everything EXCEPT the held pairs - their pages
+    /// are about to be given back, and driver-pinned pages refuse MADV_DONTNEED - then rebuild the
+    /// alias tables over the registered complement and lock it resident.  Call before set_unfilled().
+    void register_complement(const std::vector<std::pair<int32_t, int32_t>>& held);
+    /// W1: rebuild pin_start_/pin_end_/pin_dev_/layer_pcie_ from the arena's registered ranges -
+    /// the same build open() does for a pin-by-need arena, run again after register_complement().
+    void apply_registration();
     /// How many pairs are dropped, and the bytes given back (0: the flag did nothing on this source)
     int64_t unfilled_pairs() const { return unfilled_.load(std::memory_order_relaxed); }
     uint64_t unfilled_bytes() const { return unfilled_bytes_; }
@@ -1463,6 +1476,7 @@ private:
     // ---- W1 (--expert-helper-ram-relief): the pairs dropped out of the arena, and the pack files they
     // come back from.  Empty `unfilled_flag_` (never set) is today's source, byte for byte.
     std::vector<uint8_t> unfilled_flag_;      ///< (layers x experts): 1 = the pages are given back
+    bool ram_relief_ = false;                 ///< W1: open() builds the arena with nothing registered
     std::atomic<int64_t> unfilled_{0};
     uint64_t unfilled_bytes_ = 0;
     uint64_t arena_capacity_ = 0;             ///< open()'s arena bytes (the spare blob on top)

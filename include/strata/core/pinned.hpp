@@ -93,6 +93,17 @@ struct PinnedArena {
     /// Registers the deferred slices in order, publishing how many are done in `ready`, and INT_MAX once it
     /// returns (a slice CUDA refuses ends the registration, and the rest is kept resident by the working-set lock).
     void register_slices(std::atomic<int>& ready);
+    /// W1/W2 (opt-in): reserve the address space with NOTHING registered and NOTHING locked - the fill
+    /// writes plain anonymous pages, which is what `MADV_DONTNEED` (W1: give the helper-held pairs back)
+    /// and `MADV_COLLAPSE` (W2: huge pages) need.  `register_after_fill()` registers what must be
+    /// DMA-able once the layout decision is made (the helper's fill report for W1, the sweep for W2).
+    /// Teardown is the pin-by-need shape: unregister `pin_ranges`, unlock `locked_ranges`.
+    struct ReserveOnly {};
+    PinnedArena(uint64_t bytes, ReserveOnly);
+    /// Post-fill registration for the ReserveOnly arena: register `ranges` (offset, length) page-inward,
+    /// in order; the first CUDA refusal stops (pin-by-need's rule).  With `lock_rest` the complement is
+    /// locked resident (the arena's "never swaps" rule).  Returns the registered bytes.
+    uint64_t register_after_fill(const std::vector<std::pair<uint64_t, uint64_t>>& ranges, bool lock_rest);
     std::vector<uint64_t> bounds_;
     std::vector<uint64_t> slice_starts;
     /// #3431 (Windows, HIP): the address-space reservations under the GPU aliases of the registered ranges, released after them
