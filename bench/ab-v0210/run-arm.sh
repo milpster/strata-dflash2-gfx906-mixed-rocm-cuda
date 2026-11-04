@@ -10,7 +10,7 @@ STOCK=/home/user/dev/strata-stock-v0210
 PY=$ROOT/.venv/bin/python
 case $ARM in
   A) ENGINE=$B/armA/bin/strata; HELPER=$B/armA/bin/strata-expert-helper; SERVE=$B/armA/serve/server.py; CD=$B ;;
-  B|D|E|F0|K1|K2|K3|K4|P0|S1|S2|S3|S4|X0|R0|V0|V1|V2|V2b|V3|V4|V5|V6|V7|H1) ENGINE=$ROOT/build-v0210/rpcw-hip/strata; HELPER=$ROOT/build-v0210/rpcw-cuda/strata-expert-helper; SERVE=$ROOT/serve/server.py; CD=$ROOT ;;
+  B|D|E|F0|K1|K2|K3|K4|P0|S1|S2|S3|S4|X0|R0|V0|V1|V2|V2b|V3|V4|V5|V6|V7|V8|H1) ENGINE=$ROOT/build-v0210/rpcw-hip/strata; HELPER=$ROOT/build-v0210/rpcw-cuda/strata-expert-helper; SERVE=$ROOT/serve/server.py; CD=$ROOT ;;
   F1off|F1|F2|F2only|P1) ENGINE=$ROOT/build-tap-overlap/rpcw-hip/strata; HELPER=$ROOT/build-v0210/rpcw-cuda/strata-expert-helper; SERVE=$ROOT/serve/server.py; CD=$ROOT ;;
   C) ENGINE=$STOCK/build/rpcw-hip/strata; HELPER=; SERVE=$STOCK/serve/server.py; CD=$STOCK ;;
   *) echo "arm A|B|C|D|E|F0|F1off|F1|F2|F2only|K1|K2|K3|K4|P0|P1|S1|S2|S3|S4|X0|R0|V0|V1|V2|V2b|V3" >&2; exit 2 ;;
