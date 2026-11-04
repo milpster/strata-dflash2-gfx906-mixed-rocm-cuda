@@ -55,7 +55,7 @@
  "cwd": "/home/user/dev/Strata",
  "tokenizer": "/mnt/user/ai/iq3xxs-15/tokenizer",
  "model_name": "swift-1.5-iq3_xxs",
- "log": "logs/V4-rROUND-engine.log",
+ "log": "logs/V5-rROUND-engine.log",
  "lib_dirs": [
   "/home/user/rocm-gfx906-xnack/lib",
   "/opt/rocm-6.1.0/lib"
