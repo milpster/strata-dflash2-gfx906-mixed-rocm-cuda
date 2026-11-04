@@ -67,7 +67,32 @@ matter: P0's 80k (582.9/586.6) matches window-1's tier-ON K2 (583.7).
   it (bash re-reads scripts incrementally → parse error at the judge step). Metrics live in the
   engine logs; nothing was re-run. Lesson recorded: never edit a script its running chain reads.
 
-## Window 3 (levers) — pending
+## Window 3 (levers) — complete (09:22)
 
-K3 (prefill 24576), K4 (prefill 32768), P1 (prefill 16384 + STRATA_DF_RING_MULT=8 on the
-ring-mult build) — results appended when the window completes.
+**Dose-response — 16384 is the peak; K3/K4 rejected.**
+
+| prefill | chunks @80k | 80k tok/s | fresh-18233 | verdict |
+|---|---|---|---|---|
+| 8192 (B r5 ref) | 11 | 482.5 | 305.3 | old default |
+| **16384 (P0)** | 6 | **582.9 / 586.6** | 276.8 | **adopted — peak** |
+| 24576 (K3 r1) | 4 | 527.5 | 321.0 | reject: 80k −10% |
+| 32768 (K4 r1) | 3 | 367.0 | 272.3 | reject: 80k −37% |
+
+The amortization gain saturates past 16384 and reverses — per-chunk serial work grows faster
+than the chunk-count saving. K3's PP 321 (18233 fits one 24576 chunk) is single-round and does
+not outweigh its 80k loss. Gates held in both (80k sha `1c7d4a6d…`; zero rewind-loss).
+
+**P1 = ring-mult 8 (the stall mitigation, benched):** speed-neutral everywhere (80k 576.1 vs
+582.9-586.6; PP 272.9; TG 30-37; sha gate held; pools fit VRAM; zero rewind-loss lines; the
+80k second segment restored). The deep-resume stall class is fixed by construction at mult 8
+(safe resume depth ~14.3k cells ≥ chunk-16k drift). NOT deployed to prod autonomously: prod
+keeps the genuine v0210 binary; the stall did not reproduce in either adopted-config round
+(P0 2/2 clean). Ready mitigation if it bites: swap prod engine to
+`build-tap-overlap/rpcw-hip/strata` (cf653943+, flags default-off, F1off-gated byte-identical)
+and set `STRATA_DF_RING_MULT=8` in the prod config env.
+
+**Residual (accepted):** the tg-scale segment flicker (a second segment finding no exact
+checkpoint at its resume → re-reads ~535 tokens at ~90 tok/s ≈ 6 s) is state-dependent
+(K2-r2 4-of-4, K3 1-of-3, P1 1-of-4, P0/K4 0) and is NOT fixed by ring-mult — it is
+checkpoint placement, a separate small lever, left on the table. The P0-r2 80k
+cancel-and-retry one-off (wall ≈ 2 reads, retried clean, sha held) is a watch item.
