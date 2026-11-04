@@ -53,11 +53,13 @@ trap 'exit 130' INT
 export LD_LIBRARY_PATH=/home/user/rocm-gfx906-xnack/lib:/opt/rocm-6.1.0/lib
 if [[ -n $HELPER ]]; then
   echo "== arm $ARM round $ROUND: helper up ($HELPER)"
+  HSLOTS=4200; HFILL=6400
+  case $ARM in V0) HSLOTS=5100; HFILL=7000 ;; V1) HSLOTS=9000; HFILL=0 ;; esac
   env -i PATH="$PATH" HOME="$HOME" TERM="${TERM:-dumb}" LD_LIBRARY_PATH="$LD_LIBRARY_PATH" \
     "$HELPER" --pack /mnt/user/ai/iq3xxs-15 \
     --experts ../Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf \
-    --device 0 --slots 4200 --reserve-mib 300 --timeout 7200000 \
-    --begin-timeout 1800000 --socket "$SOCK" --fill-mib 6400 --socket2 "$SOCK2" \
+    --device 0 --slots "$HSLOTS" --reserve-mib 300 --timeout 7200000 \
+    --begin-timeout 1800000 --socket "$SOCK" --fill-mib "$HFILL" --socket2 "$SOCK2" \
     >>"$HLOG" 2>&1 </dev/null &
   HPID=$!
   for i in $(seq 1 300); do
