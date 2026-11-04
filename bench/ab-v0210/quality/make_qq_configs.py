@@ -64,16 +64,16 @@ STOCK_EXE = "/home/user/dev/strata-stock-v0210/build/rpcw-hip/strata"
 STOCK_CWD = "/home/user/dev/strata-stock-v0210"
 
 ARMS = {
-    "qqREF": cfg(GGUF_IQ3S, None, "/mnt/user/ai/iq3s/tokenizer", "qq-ref-iq3s-gguf"),
-    "qqA": cfg(GGUF_IQ3S, "/mnt/user/ai/iq3s", "/mnt/user/ai/iq3s/tokenizer", "qq-a-pack-iq3s"),
-    "qqC": cfg(GGUF_XXS15, None, "/mnt/user/ai/iq3xxs-15/tokenizer", "qq-c-iq3xxs15-gguf"),
-    "qqB": cfg(GGUF_XXS15, "/mnt/user/ai/iq3xxs-15", "/mnt/user/ai/iq3xxs-15/tokenizer", "qq-b-pack-iq3xxs15"),
-    # stock-strata anchors on the live lineage (ordered: "compare to stock strata"):
-    #   S1 = stock exe, IQ3_S GGUF, no pack  (plain stock serving)
-    #   S2 = stock exe, pack iq3s            (stock serving the live pack)
-    # headline: S1 vs A (plain stock vs full relief stack), REF vs S1 (binary delta), S1 vs S2 (pack via stock)
-    "qqS1": cfg(GGUF_IQ3S, None, "/mnt/user/ai/iq3s/tokenizer", "qq-s1-stock-iq3s-gguf", exe=STOCK_EXE, cwd=STOCK_CWD),
-    "qqS2": cfg(GGUF_IQ3S, "/mnt/user/ai/iq3s", "/mnt/user/ai/iq3s/tokenizer", "qq-s2-stock-pack-iq3s", exe=STOCK_EXE, cwd=STOCK_CWD),
+    # No-pack arms are IMPOSSIBLE here: without --pack the engine reads the canonical Q2_0
+    # "pack/full", whose CPU kernel needs AVX-512 (this CPU is AVX2) -> instant exit 1.
+    # Packs are THE expert source, so the gate is stock binary vs relief binary on identical packs:
+    #   REF vs A = the headline stack delta on the live pack (gate: ~0)
+    #   C   vs B = the same on the swift15 pack            (gate: ~0)
+    #   REF vs C = quant/lineage delta                     (informational)
+    "qqREF": cfg(GGUF_IQ3S, "/mnt/user/ai/iq3s", "/mnt/user/ai/iq3s/tokenizer", "qq-ref-stock-pack-iq3s", exe=STOCK_EXE, cwd=STOCK_CWD),
+    "qqA": cfg(GGUF_IQ3S, "/mnt/user/ai/iq3s", "/mnt/user/ai/iq3s/tokenizer", "qq-a-relief-pack-iq3s"),
+    "qqC": cfg(GGUF_XXS15, "/mnt/user/ai/iq3xxs-15", "/mnt/user/ai/iq3xxs-15/tokenizer", "qq-c-stock-pack-iq3xxs15", exe=STOCK_EXE, cwd=STOCK_CWD),
+    "qqB": cfg(GGUF_XXS15, "/mnt/user/ai/iq3xxs-15", "/mnt/user/ai/iq3xxs-15/tokenizer", "qq-b-relief-pack-iq3xxs15"),
 }
 
 if __name__ == "__main__":

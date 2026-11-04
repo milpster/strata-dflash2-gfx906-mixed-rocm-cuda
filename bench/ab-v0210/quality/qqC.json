@@ -1,8 +1,10 @@
 {
- "exe": "/home/user/dev/Strata/build-v0210/rpcw-hip/strata",
+ "exe": "/home/user/dev/strata-stock-v0210/build/rpcw-hip/strata",
  "args": [
   "--gpu",
   "0,1",
+  "--pack",
+  "/mnt/user/ai/iq3xxs-15",
   "--native",
   "/mnt/user/ai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
   "--native-dense-gguf",
@@ -18,9 +20,9 @@
   "--expert-cache-cpu-order",
   "--prompt-cache-spread"
  ],
- "cwd": "/home/user/dev/Strata",
+ "cwd": "/home/user/dev/strata-stock-v0210",
  "tokenizer": "/mnt/user/ai/iq3xxs-15/tokenizer",
- "model_name": "qq-c-iq3xxs15-gguf",
+ "model_name": "qq-c-stock-pack-iq3xxs15",
  "lib_dirs": [
   "/home/user/rocm-gfx906-xnack/lib",
   "/opt/rocm-6.1.0/lib"
