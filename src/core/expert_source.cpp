@@ -6793,21 +6793,42 @@ void ArenaExpertSource::note_async_read(const uint8_t* blob, void* stream) {
 }
 
 void ArenaExpertSource::begin_layer(int64_t layer, const int32_t* ids, int64_t k) {
+    // W1b (TG fix): forward only the ids the file source can serve - a pair that is still in the
+    // arena is blob()'d from RAM and must never reach the file machinery, whose prefetch would
+    // read its pack range from disk for nothing (V4-r8 measured ~40 GB of such reads per drive:
+    // every warmed/routed resident id was being WILLNEED'd/io-enqueued because this file source
+    // has no complement RAM copy to skip against).  The lock-free bitmap check is the same
+    // boot-published invariant as blob()'s (W1a).
     if (unfilled_.load(std::memory_order_relaxed) <= 0) return;
+    std::vector<int32_t> dropped;
+    dropped.reserve((size_t) std::min<int64_t>(k, 256));
+    for (int64_t i = 0; i < k; ++i)
+        if (ids[i] >= 0 && unfilled_at(layer, ids[i])) dropped.push_back(ids[i]);
+    if (dropped.empty()) return;
     std::lock_guard<std::mutex> lk(file_mu_);
-    if (file_) file_->begin_layer(layer, ids, k);   // ages the staged buffers the dropped pairs came from
+    if (file_) file_->begin_layer(layer, dropped.data(), (int64_t) dropped.size());   // ages the staged buffers the dropped pairs came from
 }
 
 void ArenaExpertSource::prefetch(int64_t layer, const int64_t* experts, int64_t n) {
     if (unfilled_.load(std::memory_order_relaxed) <= 0) return;
+    std::vector<int64_t> dropped;   // W1b: dropped-only forward (see begin_layer)
+    dropped.reserve((size_t) std::min<int64_t>(n, 256));
+    for (int64_t i = 0; i < n; ++i)
+        if (experts[i] >= 0 && unfilled_at(layer, experts[i])) dropped.push_back(experts[i]);
+    if (dropped.empty()) return;
     std::lock_guard<std::mutex> lk(file_mu_);
-    if (file_) file_->prefetch(layer, experts, n);
+    if (file_) file_->prefetch(layer, dropped.data(), (int64_t) dropped.size());
 }
 
 void ArenaExpertSource::warm(int64_t layer, const int64_t* experts, int64_t n) {
     if (unfilled_.load(std::memory_order_relaxed) <= 0) return;
+    std::vector<int64_t> dropped;   // W1b: dropped-only forward (see begin_layer)
+    dropped.reserve((size_t) std::min<int64_t>(n, 256));
+    for (int64_t i = 0; i < n; ++i)
+        if (experts[i] >= 0 && unfilled_at(layer, experts[i])) dropped.push_back(experts[i]);
+    if (dropped.empty()) return;
     std::lock_guard<std::mutex> lk(file_mu_);
-    if (file_) file_->warm(layer, experts, n);
+    if (file_) file_->warm(layer, dropped.data(), (int64_t) dropped.size());
 }
 
 }  // namespace strata::core
