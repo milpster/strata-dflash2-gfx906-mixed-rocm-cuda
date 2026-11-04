@@ -16,7 +16,7 @@
   "--expert-cache",
   "auto",
   "--prefill",
-  "8192",
+  "16384",
   "--spec",
   "5",
   "--spec-min-p",
@@ -89,7 +89,7 @@
  },
  "env": {
   "STRATA_ENGINE_NICE": "0",
-  "STRATA_WATCHDOG_S": "300",
+  "STRATA_WATCHDOG_S": "900",
   "HSA_OVERRIDE_GFX_VERSION": "9.0.6",
   "HIP_FORCE_P2P": "1",
   "HSA_ENABLE_SDMA": "1",

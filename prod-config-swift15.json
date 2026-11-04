@@ -16,7 +16,7 @@
   "--expert-cache",
   "auto",
   "--prefill",
-  "8192",
+  "16384",
   "--spec",
   "6",
   "--spec-min-p",

@@ -48,7 +48,7 @@ trap 'exit 130' INT
 env -i PATH="$PATH" HOME="$HOME" TERM="${TERM:-dumb}" "$HELPER" \
   --pack /mnt/user/ai/iq3s \
   --experts ../Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S.gguf \
-  --device 0 --slots 4000 --reserve-mib 300 --timeout 7200000 \
+  --device 0 --slots 4000 --reserve-mib 300 --timeout 63115200000 \
   --begin-timeout 1800000 --socket "$SOCKET" --fill-mib 6400 --socket2 "$SOCKET2" \
   >>"$HLOG" 2>&1 < /dev/null &
 helper_pid=$!
