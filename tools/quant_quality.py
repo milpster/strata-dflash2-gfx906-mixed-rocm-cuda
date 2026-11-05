@@ -219,6 +219,9 @@ def cmd_prompt(a) -> int:
     del args[k:k + 2]                      # the default (64): these prompts take the batched prompt path
     k = args.index("--prefill")
     args[k + 1] = "auto"
+    if a.kv:
+        k = args.index("--kv")
+        args[k + 1] = a.kv
     if a.wrap:
         args = a.wrap.split() + args
     errf = open(out / "stderr.txt", "w")
@@ -383,6 +386,7 @@ def main() -> int:
     p.add_argument("--gpu-experts", action="store_true")
     p.add_argument("--min-free-gb", type=float, default=16)
     p.add_argument("--wrap")
+    p.add_argument("--kv", help="override the pinned fp16 kv (int8 = prod's mode)")
     p = sub.add_parser("compare")
     p.add_argument("ref")
     p.add_argument("runs", nargs="+")
