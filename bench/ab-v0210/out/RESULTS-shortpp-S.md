@@ -79,3 +79,32 @@ the guard, and arms from pressured eras are void.
 - The three hot layers (6/21/41) of the 10k-token read — residency gap, measurable target.
 - Helper 10 s prompt-tier deadline → blob-loss 400 under pathological slowness (S4, and
   session-1's mid-S18k death) — robustness candidate.
+
+## A/B4 — STRATA_PROMPT_STAGE_MEMO (2026-11-05 19:04-19:30): DO NOT PROMOTE, both arms failed
+
+Binary: build-memo/rpcw-hip/strata (sha16 95059fae184f6953) = shortpp-src c85cda34
++ 375183eb (note_dropped_read dedup) + b8470d07 (STRATA_PROMPT_STAGE_MEMO, prefill.cpp +105/-8).
+Legs S214/S1k/S4k/S18k x3, same helper (4600 slots / 7000 MiB), ab3 swap-window skeleton.
+
+| arm | S214 | S1k | S4k | S18k | end |
+|-----|------|-----|-----|------|-----|
+| M0 (flags OFF) | **107.4**/2.9/2.6 | 6.45/6.23/6.45 | 400 after 35 s | - | probe abort |
+| M1 (MEMO=1) | 5.7/2.9/2.6 | 6.45/6.18/**9.0** | **113.2/22.5/88.3** | **60.1/242.9**/400 at 174 s | probe abort |
+| S0-r1 baseline (f5fb0738) | 2.6 | 6.15-6.43 | 15.7-16.1 | 40.7-48.7 | ok |
+
+The 400 is the server mapping an engine error: `prefill: the helper fallback lost a blob`.
+
+- M0 fails FLAGS-OFF => the regression is in the default path of b8470d07 (its only file is
+  prefill.cpp), not in the opt-in memo path. The "byte-identical default" claim did not hold.
+- M1 adds slowness that scales with prompt size (S4k 1.4-7x baseline, S18k r1 243 s): the memo
+  path itself is also wrong, not just slow.
+- First-leg anomalies: M0 S214 r0 107.4 s (later legs 2.6-2.9) - first request after fill.
+- 375183eb (dedup) is gated to the WINDOW_POPULATE recording path, not exercised here; its diff
+  re-read looks clean. Suspect remains b8470d07 alone.
+- Zero crash signatures in either engine log; teardowns clean. Restores: bench binary f5fb0738
+  sha-verified back; prod relaunched supervised gen-1, health 200.
+
+Follow-up: post-mortem b8470d07's prefill.cpp diff (helper-fallback blob handoff vs the new
+staging code), fix forward or revert; HEAD of shortpp-src currently carries the regression
+(prod unaffected: it runs the V5 binaries). Re-bench only after a flags-off S4k/S18k parity leg
+passes on the fixed binary.
