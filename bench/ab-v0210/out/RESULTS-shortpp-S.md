@@ -108,3 +108,29 @@ Follow-up: post-mortem b8470d07's prefill.cpp diff (helper-fallback blob handoff
 staging code), fix forward or revert; HEAD of shortpp-src currently carries the regression
 (prod unaffected: it runs the V5 binaries). Re-bench only after a flags-off S4k/S18k parity leg
 passes on the fixed binary.
+
+### A/B4 correction (same day, evidence from the session-3 logs): the 400s are pre-existing
+
+The claim above that "the default path of b8470d07 is not byte-identical" is RETRACTED. The
+error `prefill: the helper fallback lost a blob` is a pre-existing failure mode of the tree,
+not of the memo commits:
+
+- S0-r1 (the session-3 BASELINE, binary f5fb0738, before either commit existed) contains the
+  identical chain: `expert-helper: reading the prompt row reply failed: helper channel closed`
+  -> `the rows did not come back whole; the claimed rows fall back to the CPU` ->
+  `read 10139 tokens (batched) in 102909.8 ms` -> the blob error -> a 400 after 175 s
+  (and a second errored request, 45 tokens in 106 s). Both victims were NOT probe legs: all
+  13 S0-r1 probe records are intact (S18k 40.65/48.72/45.95, TG128 16.55).
+- S1-r1 shows one hit too, with recovered slow legs of the same magnitude as today's
+  (S18k r2 241.82 s, TG128 73.94 s - compare M1's S18k r1 242.92 s).
+- Today's M0 (:227-231) and M1 (:322-326) died to the identical chain; there the victims WERE
+  probe legs, which is why the arms aborted.
+
+Corrected reading: the helper's prompt-tier channel closes under slow request phases (the
+parked "helper prompt-tier deadline" item), the CPU fallback then loses a blob, and the
+request 400s. A/B4 is therefore CONTAMINATED: it proves nothing about the memo's merit either
+way. Remaining suspicious-but-confounded signals: M1's S4k legs all 22.5-113.2 s vs baseline
+15.7-16.1 s, and M0's first S214 leg 107.4 s vs 5.7 s in every other arm (n=1).
+
+Do-not-promote stands (nothing was validated). The channel-close/deadline bug is the lane
+blocker: until it is fixed, any arm with S4k+ legs can die to it at random.
