@@ -73,3 +73,4 @@ dist-hip/
 v0210/
 tools/amdmemorytweak/
 strata-server.out
+*.tldrignore
