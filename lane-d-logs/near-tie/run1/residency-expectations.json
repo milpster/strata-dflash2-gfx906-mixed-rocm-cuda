@@ -1,0 +1,18 @@
+{
+  "target": {
+    "requested_expert_cache_budget": 2649,
+    "expected_primary_slots": 3521,
+    "expected_total_slots": 3521,
+    "expected_source": "harness fixture input, never read from the observed engine",
+    "observed_expert_slots_primary": "3521",
+    "observed_expert_slots": "3521"
+  },
+  "dflash": {
+    "requested_expert_cache_budget": 2649,
+    "expected_primary_slots": 3521,
+    "expected_total_slots": 3521,
+    "expected_source": "harness fixture input, never read from the observed engine",
+    "observed_expert_slots_primary": "3521",
+    "observed_expert_slots": "3521"
+  }
+}

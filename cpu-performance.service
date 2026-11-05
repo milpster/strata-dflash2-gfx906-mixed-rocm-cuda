@@ -1,0 +1,16 @@
+[Unit]
+# GUAM: amd-pstate-epp registers every policy with governor "powersave" at boot
+# (the EPP-hint default), and power-profiles-daemon is dbus-activated (late) with
+# battery_aware=true able to downgrade. This pins both knobs after PPD so the
+# strata engine's host-side work (expert streaming, TTM/swap kworkers, batch prep)
+# never runs at boot-default clocks. See JOURNAL.md 2026-10-26.
+Description=Pin amd-pstate governor+EPP to performance (strata host work)
+After=power-profiles-daemon.service multi-user.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor /sys/devices/system/cpu/cpu*/cpufreq/energy_performance_preference; do echo performance > "$f"; done'
+
+[Install]
+WantedBy=multi-user.target
