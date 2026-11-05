@@ -23,7 +23,7 @@
   "--max-context",
   "262144",
   "--kv",
-  "f16",
+  "fp16",
   "--vram-reserve-mib",
   "256",
   "--vram-reserve-later-mib",
