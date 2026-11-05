@@ -16,6 +16,14 @@ M-lane (2026-11-05, the 3-hot-layer residency gap): the memo binary is build-mem
 
   M0 = S0 env on the memo binary, flags OFF   (parity vs S0 + same-binary control)
   M1 = M0 + STRATA_PROMPT_STAGE_MEMO=1        (a dropped prompt pair pack-reads once per request)
+
+M-lane re-bench (2026-11-05 evening, after the fallback fix 14ba81f3): both arms share
+STRATA_PREFILL_HELPER_TIMEOUT_MS=120000 so a slow request phase no longer kills the prompt
+tier mid-request (recon: 10 s default reply deadline vs 100-240 s slow phases); internally
+consistent A/B, footnoted vs session-3's default-timeout numbers:
+
+  M0b = control, flags OFF + the raised timeout
+  M1b = M0b + STRATA_PROMPT_STAGE_MEMO=1
 """
 import json
 import pathlib
@@ -60,3 +68,6 @@ if __name__ == "__main__":
     arm("SP", env={"STRATA_PREFILL_CPU_SHARE": "auto", "STRATA_PF_STEP_SYNC": "1"})
     arm("M0", env={"STRATA_PREFILL_CPU_SHARE": "auto"})
     arm("M1", env={"STRATA_PREFILL_CPU_SHARE": "auto", "STRATA_PROMPT_STAGE_MEMO": "1"})
+    arm("M0b", env={"STRATA_PREFILL_CPU_SHARE": "auto", "STRATA_PREFILL_HELPER_TIMEOUT_MS": "120000"})
+    arm("M1b", env={"STRATA_PREFILL_CPU_SHARE": "auto", "STRATA_PREFILL_HELPER_TIMEOUT_MS": "120000",
+                    "STRATA_PROMPT_STAGE_MEMO": "1"})
