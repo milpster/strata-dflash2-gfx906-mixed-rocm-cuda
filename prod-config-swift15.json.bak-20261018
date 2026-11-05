@@ -1,0 +1,72 @@
+{
+ "exe": "/mnt/user/Strata/build-906-new/strata",
+ "args": [
+  "--gpu",
+  "0,1",
+  "--pack",
+  "/mnt/user/ai/iq3xxs-15",
+  "--native",
+  "/mnt/user/ai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
+  "--ple-gguf",
+  "/mnt/user/ai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
+  "--expert-profile",
+  "/mnt/user/Strata/data/expert-profile.bin",
+  "--expert-cache",
+  "auto",
+  "--prefill",
+  "8192",
+  "--spec",
+  "6",
+  "--spec-min-p",
+  "0.7",
+  "--max-context",
+  "262144",
+  "--kv",
+  "int8",
+  "--vram-reserve-mib",
+  "350",
+  "--kv-resident",
+  "262144",
+  "--pcie-frac",
+  "0",
+  "--expert-cache-cpu-order",
+  "--vision"
+ ],
+ "cwd": "/mnt/user/Strata",
+ "tokenizer": "/mnt/user/ai/iq3xxs-15/tokenizer",
+ "model_name": "swift-1.5-iq3_xxs",
+ "log": "logs/engine-swift15.log",
+ "lib_dirs": [
+  "/home/user/rocm-gfx906-xnack/lib",
+  "/opt/rocm-6.1.0/lib"
+ ],
+ "port": 8009,
+ "host": "127.0.0.1",
+ "gpu": [
+  0,
+  1
+ ],
+ "layer_split": "32",
+ "backend": "hip",
+ "reasoning_effort": "high",
+ "reasoning_budget_tokens": 0,
+ "sampling": {
+  "temperature": 0.6,
+  "top_p": 0.95,
+  "top_k": 20
+ },
+ "vision": {
+  "exe": "/mnt/user/Strata/build-vision/bin/strata-vision",
+  "mmproj": "/mnt/user/ai/mmproj-Swift-Qwen3.8-Flash-Next-BF16.gguf",
+  "model": "/home/user/ai/ai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
+  "gpu": false,
+  "threads": 8,
+  "max_tokens": 1024
+ },
+ "env": {
+  "HSA_OVERRIDE_GFX_VERSION": "9.0.6",
+  "HIP_FORCE_P2P": "1",
+  "HSA_ENABLE_SDMA": "1",
+  "CUDA_VISIBLE_DEVICES": "0,1"
+ }
+}

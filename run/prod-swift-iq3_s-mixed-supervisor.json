@@ -1,0 +1,14 @@
+{
+  "supervisor_pid": 834980,
+  "launcher_pid": 999709,
+  "generation": 2,
+  "state": "stopped",
+  "timestamp": 1793487689.5198839,
+  "helper_pid": 999715,
+  "server_pid": 999952,
+  "engine_log": "/mnt/user/Strata/logs/prod-swift-iq3_s-dflash-w4-q4_0-mixed-20261031-235223-999709.log",
+  "helper_log": "/mnt/user/Strata/logs/prod-swift-iq3_s-dflash-w4-q4_0-mixed-20261031-235223-999709-helper.log",
+  "helper_start": "10929252",
+  "server_start": "10929353",
+  "attached_at": 1793487331.9612682
+}
