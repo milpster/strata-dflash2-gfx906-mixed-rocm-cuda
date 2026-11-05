@@ -68,3 +68,6 @@ dist-hip/
 # BEGIN worktrees
 .slim/
 # END worktrees
+
+# deployed engine/helper binaries + pre-promotion backups (reproduced from the validated bench build)
+v0210/
