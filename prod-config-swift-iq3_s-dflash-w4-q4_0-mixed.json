@@ -101,7 +101,8 @@
   "STRATA_NO_PCIE_GROUP": "1",
   "STRATA_HIP_PROMPT_F16": "1",
   "STRATA_DFLASH_SAMPLED": "1",
-  "STRATA_PREFILL_HELPER": "1"
+  "STRATA_PREFILL_HELPER": "1",
+  "STRATA_PREFILL_CPU_SHARE": "auto"
  },
  "mcp_servers": {
   "markitdown": {
