@@ -22,6 +22,13 @@ PARA = (
 
 SIZES = [("S214", 2), ("S1k", 9), ("S4k", 36), ("S18k", 160)]  # (tag, paragraph count)
 
+# STRATA_PROBE_LEGS="S1k" (comma-separated tags; "TG" gates the TG leg): run only those legs.
+# Default/empty = every leg = byte-identical behavior. The A/B discriminator windows use S1k-only
+# mini arms: the fast (6.2-6.5 s) and regressed (8.6-29 s) S1k ranges are disjoint.
+import os
+_want = [t.strip() for t in os.environ.get("STRATA_PROBE_LEGS", "").split(",") if t.strip()]
+SIZES = [s for s in SIZES if not _want or s[0] in _want]
+
 
 def build(tag, paras, marker):
     return f"[{tag}#{marker}] " + (PARA * paras)
