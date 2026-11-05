@@ -930,3 +930,10 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
 ## 2026-11-05 03:2x - quality lane for the promoted version (ordered: speed+quality for the new version)
 - User order banked as standing rule too: any NEW engine version gets BOTH lanes (speed + quality) before promotion.
 - Quality gate for the live promoted config (CPU_SHARE=auto): qqS vs share-off twin A and vs stock REF = top-1 100.00%, KL 0.00000/p99 0.0000, PPL 4.115=4.115 over 4995 positions; yardstick pins --prefill 512 so every scored chunk runs the share path. PERFECT PASS - the 1.8-2.4x short-prompt win carries zero quality cost. Commits: 25ae1864 (qqS config), 60e7afaa (S.tsv artifacts).
+
+## 2026-11-05 13:45 — S-lane: implementation landed, first bench session aborted (host too tired)
+- shortpp-src: STRATA_REFILL_OVERLAP=1 (c44c6d07) + STRATA_WINDOW_POPULATE=1 (03d40f8e), both OFF by default; build-v0210 engine rebuilt 331c2e89 -> f5fb0738 (backup strata.pre-s-331c2e89); helper untouched.
+- S-harness: make_s_configs.py (S0-S4/SP on CPU_SHARE=auto base) + run_s_session.sh; RAM gate now HARD-FAILS below 30 GiB (bfb28d8d) — it used to fall through and boot anyway.
+- First S-session (12:47-13:29) ABORTED after S0+S1 rc=1: MemAvailable ~9 GiB with 15 GiB swap (host exhausted after 24 h of crashes/boots); arms thrashed — S18k chunk stages 360-731 s vs T-lane ~39 s; the helper prompt-tier 10 s reply deadline closed the channel mid-prompt -> "prefill: the helper fallback lost a blob" -> HTTP 400. W1a/W1b ancestry verified: the binary was NOT the regression.
+- Promising but not bankable: S2 (populate) short legs hit 2.59/2.91 s (T4-class) before the abort.
+- Rerun preconditions: clean host (reboot = gold standard) + the new gate. Prod restored meanwhile (gen-1 supervised, 13:31, health 200 in ~135 s).
