@@ -16,6 +16,22 @@ for i in $(seq 1 60); do
   vram_b=$(rocm-smi --showmeminfo vram --csv 2>/dev/null | awk -F, '/^card[01]/{u+=$3} END{print u+0}')
   (( vram_b < 2000000000 )) && break; echo "$(date +%T) drain: $vram_b bytes"; sleep 5
 done
+log "ensuring port 8009 is free (first attempt died to an orphan holding it)"
+for i in $(seq 1 24); do
+  if ss -ltn 2>/dev/null | grep -q ':8009 '; then
+    for pid in $(ss -ltnp 2>/dev/null | grep ':8009 ' | grep -oP 'pid=\K[0-9]+' | sort -u); do
+      echo "port 8009 held by pid $pid - killing"; kill -9 "$pid" 2>/dev/null
+    done
+    sleep 2
+  else
+    break
+  fi
+done
+if ss -ltn 2>/dev/null | grep -q ':8009 '; then
+  echo 'PORT 8009 STILL OCCUPIED - aborting, restoring prod'
+  bash "$PROD/relaunch-pair-supervised.sh"; exit 1
+fi
+echo 'port 8009 free'
 log "booting iq3_s pair with STRATA_RPC_PROFILE=1 (manual, no supervisor)"
 export STRATA_RPC_PROFILE=1
 bash "$PROD/launch-prod-swift-iq3_s-dflash-w4-q4_0-mixed.sh" > /tmp/agent/ab7-launch.log 2>&1 &
