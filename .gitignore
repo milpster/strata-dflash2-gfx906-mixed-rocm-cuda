@@ -71,3 +71,4 @@ dist-hip/
 
 # deployed engine/helper binaries + pre-promotion backups (reproduced from the validated bench build)
 v0210/
+tools/amdmemorytweak/
