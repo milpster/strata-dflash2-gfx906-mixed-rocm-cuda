@@ -3,11 +3,14 @@
 A background thread samples once a second and keeps the last 60 readings of each series for the sparklines:
 - GPU: NVIDIA's own NVML library (nvml.dll / libnvidia-ml.so.1, installed with every driver) through ctypes, so no
   pip package is needed: load, VRAM, temperature, power, PCIe link and throughput.  With the AMD backend (#301): the
-  amdgpu driver's Linux sysfs files - load, VRAM, temperature and power.  On macOS (Metal backend): IOKit's
+  amdgpu driver's Linux sysfs files - load, VRAM, temperature and power, plus the per-card detail the opencode
+  status plugin shows: the PCI id, the edge/hotspot/HBM temperatures and the instantaneous wattage.  On macOS (Metal backend): IOKit's
   IOAccelerator registry - load and VRAM; the temperature and power sensors need root (`powermetrics`), and an Apple
   Silicon GPU sits on the die, so there is no PCIe link.
 - CPU, RAM, disk: `psutil` when it is installed (setup installs it); without it the CPU and RAM readings fall back to
-  the OS (Windows GlobalMemoryStatusEx / GetSystemTimes, Linux /proc) and the disk rate is absent.
+  the OS (Windows GlobalMemoryStatusEx / GetSystemTimes, Linux /proc) and the disk rate is absent.  The CPU's own
+  temperature (the k10temp hwmon) and package wattage (the RAPL energy counter) are Linux sysfs readings; the
+  sampler's HISTORY window of the wattages is what the "average" fields report.
 Anything that cannot be read is None; nothing here can stop the server.
 """
 from __future__ import annotations
@@ -233,19 +236,43 @@ class _Amd:
                 "pcie_path": "%d/%d" % (read, len(hops))}
 
 
+    def _pci_id(self):
+        """The card's PCI id as "1002:66af" (vendor:device from the device's sysfs files) - what a client maps
+        to a model name (a Radeon VII is 1002:66af); None when they cannot be read."""
+        v, d = self._read(self.dev, "vendor"), self._read(self.dev, "device")
+        if not v or not d:
+            return None
+        return "%s:%s" % (v.removeprefix("0x").lower(), d.removeprefix("0x").lower())
+
     def read(self):
-        out = {"util": self._int(os.path.join(self.dev, "gpu_busy_percent")),
-               "mem_used": self._int(os.path.join(self.dev, "mem_info_vram_used")),
-               "mem_total": self._int(os.path.join(self.dev, "mem_info_vram_total"))}
+        u = self._int(os.path.join(self.dev, "gpu_busy_percent"))
+        used, total = (self._int(os.path.join(self.dev, n))
+                       for n in ("mem_info_vram_used", "mem_info_vram_total"))
+        # the richer keys the opencode status plugin reads beside the Monitor tab's: the PCI id (its "VII" tag),
+        # the load as a percent, and the VRAM in MiB
+        out = {"util": u, "util_pct": u, "name": self._pci_id(),
+               "mem_used": used, "mem_total": total,
+               "vram_used_mib": used >> 20 if used is not None else None,
+               "vram_total_mib": total >> 20 if total is not None else None}
         if self.hwmon:
             t = self._int(os.path.join(self.hwmon, "temp1_input"))
             out["temp"] = t / 1000.0 if t is not None else None
+            # the sensors a big amdgpu card exposes on its hwmon: temp1 edge, temp2 junction (the hotspot),
+            # temp3 HBM - °C to 1 dp; a card without a sensor line leaves that key None
+            out["edge_c"] = round(t / 1000.0, 1) if t is not None else None
+            for k, n in (("hotspot_c", "temp2_input"), ("mem_c", "temp3_input")):
+                v = self._int(os.path.join(self.hwmon, n))
+                out[k] = round(v / 1000.0, 1) if v is not None else None
             p = self._int(os.path.join(self.hwmon, "power1_average"))
             if p is None:
                 p = self._int(os.path.join(self.hwmon, "power1_input"))
             out["power"] = p / 1e6 if p is not None else None
             cap = self._int(os.path.join(self.hwmon, "power1_cap"))
             out["power_limit"] = cap / 1e6 if cap is not None else None
+            # the **instantaneous** wattage: power1_input.  The rolling average is the sampler's own window
+            # (its per-card history), not the driver's - a Radeon VII has no power1_average file at all
+            pin = self._int(os.path.join(self.hwmon, "power1_input"))
+            out["power_w"] = round(pin / 1e6, 1) if pin is not None else None
         out.update(self.link())
         return out
 
@@ -486,6 +513,52 @@ class _CpuRamFallback:
             return None, None
 
 
+# ------------------------------------------------------------------------------------------------ CPU temp & power (Linux sysfs)
+def cpu_temp_c(sysfs=None):
+    """The CPU's temperature from the k10temp hwmon an AMD CPU exposes (its temp1_input, Tctl, m°C -> °C to 1 dp);
+    None on a host without it (Intel CPUs expose no k10temp - the plugin renders "?" there)."""
+    base = os.path.join(sysfs or SYSFS, "class", "hwmon")
+    try:
+        hs = os.listdir(base)
+    except OSError:
+        return None
+    for h in hs:
+        d = os.path.join(base, h)
+        try:
+            with open(os.path.join(d, "name"), encoding="utf-8") as f:
+                if f.read().strip() != "k10temp":
+                    continue
+        except OSError:
+            continue
+        t = _Amd._int(os.path.join(d, "temp1_input"))
+        return round(t / 1000.0, 1) if t is not None else None
+    return None
+
+
+class _Rapl:
+    """CPU package power from the RAPL energy counter (/sys/class/powercap/intel-rapl:0, Linux; the amd_rapl
+    driver exposes the same interface on AMD).  `energy_uj` is a running joule counter that wraps at
+    `max_energy_range_uj`, so the wattage is the delta between two sampler ticks over the seconds between them -
+    the tick defines the window and the first tick is None.  Many distros make the counter readable only by root
+    (mode 0400): every reading is then None and the plugin renders "?".  Windows has RAPL too, but through
+    QueryStateDynamic, not a file; not read here."""
+
+    def __init__(self, sysfs=None):
+        self.base = os.path.join(sysfs or SYSFS, "class", "powercap", "intel-rapl:0")
+        self.prev = None                                    # (t, energy_uj) of the last tick
+
+    def watt(self):
+        e = _Amd._int(os.path.join(self.base, "energy_uj"))
+        t = time.time()
+        prev, self.prev = self.prev, (t, e)
+        if e is None or prev is None or prev[1] is None or t <= prev[0]:
+            return None
+        d = e - prev[1]
+        if d < 0:                                           # the counter wrapped; add its range back
+            d += _Amd._int(os.path.join(self.base, "max_energy_range_uj")) or 0
+        return round(d / (t - prev[0]) / 1e6, 1) if d >= 0 else None
+
+
 # ------------------------------------------------------------------------------------------------ the sampler
 class Telemetry:
     def __init__(self, extra=None, gpu_index=0, gpu_indices=None, amd=False):
@@ -508,6 +581,11 @@ class Telemetry:
         except ImportError:
             self.ps = None
         self.fallback = _CpuRamFallback()
+        self.rapl = _Rapl()
+        # rolling wattage windows for the plugin's average fields: HISTORY ticks of each card's power_w and of
+        # the CPU's; the mean over what the ticks before the current one measured (None on the first tick)
+        self._pw = collections.defaultdict(lambda: collections.deque(maxlen=HISTORY))
+        self._cpu_pw = collections.deque(maxlen=HISTORY)
         gpu_name = " + ".join(g.name() or "?" for _, g in self.gpus) if self.gpu.ok() else None
         win_amd = None
         if gpu_name is None and amd and os.name == "nt":
@@ -556,10 +634,31 @@ class Telemetry:
         dt = t - prev[0]
         return (c.read_bytes - prev[1]) / dt / 2**20, (c.write_bytes - prev[2]) / dt / 2**20
 
+    @staticmethod
+    def _mean(dq):
+        """The rolling mean of a watt-sample deque (the HISTORY window), 1 dp; None while it is empty."""
+        v = list(dq)
+        return round(sum(v) / len(v), 1) if v else None
+
     def sample(self):
         s = {}
         if self.gpu.ok():
             reads = [(i, g.read()) for i, g in self.gpus]
+            # each card's own entry - the Monitor tab's keys plus the plugin's richer names (a reader without
+            # a field, NVML or Metal, leaves it None); power_avg_w is the mean of the card's window so far
+            cards = []
+            for i, r in reads:
+                dq = self._pw[i]
+                avg = self._mean(dq)
+                if r.get("power_w") is not None:
+                    dq.append(r["power_w"])
+                cards.append({"index": i, "name": r.get("name"), "util_pct": r.get("util"),
+                              "edge_c": r.get("edge_c"), "hotspot_c": r.get("hotspot_c"), "mem_c": r.get("mem_c"),
+                              "power_w": r.get("power_w"), "power_avg_w": avg,
+                              "vram_used_mib": r.get("vram_used_mib"), "vram_total_mib": r.get("vram_total_mib"),
+                              "util": r.get("util"), "mem_used": r.get("mem_used"), "mem_total": r.get("mem_total"),
+                              "temp": r.get("temp"), "power": r.get("power")})
+            s["gpus"] = cards
             g = dict(reads[0][1])
             if len(reads) > 1:
                 def vals(k):
@@ -571,9 +670,9 @@ class Telemetry:
                 g["util"] = sum(u) / len(u) if u else None
                 t = vals("temp")
                 g["temp"] = max(t) if t else None
-                s["gpus"] = [{"index": i, "util": r.get("util"), "mem_used": r.get("mem_used"),
-                              "mem_total": r.get("mem_total"), "temp": r.get("temp"), "power": r.get("power")}
-                             for i, r in reads]
+            for k in ("name", "util_pct", "edge_c", "hotspot_c", "mem_c", "power_w",
+                      "vram_used_mib", "vram_total_mib"):   # per-card keys - "gpus" carries them, not gpu_*
+                g.pop(k, None)
             s.update({f"gpu_{k}": v for k, v in g.items()})
         if self.ps:
             try:
@@ -586,6 +685,19 @@ class Telemetry:
             s["cpu"] = self.fallback.cpu()
             s["ram_used"], s["ram_total"] = self.fallback.ram()
         s["disk_read_mb"], s["disk_write_mb"] = self._disk()
+        s["cpu_temp_c"] = cpu_temp_c()
+        w = self.rapl.watt()
+        s["cpu_power_w"] = w
+        s["cpu_power_avg_w"] = self._mean(self._cpu_pw)
+        if w is not None:
+            self._cpu_pw.append(w)
+        # the whole-system wattage the plugin's Σ line shows: the cards' plus the CPU package's, each summed
+        # over what was readable; None when nothing was
+        pw = [c["power_w"] for c in s["gpus"] if c.get("power_w") is not None] if "gpus" in s else []
+        pa = [c["power_avg_w"] for c in s["gpus"] if c.get("power_avg_w") is not None] if "gpus" in s else []
+        s["power_sum_w"] = round(sum(pw) + (w or 0.0), 1) if (pw or w is not None) else None
+        avg_sum = sum(pa) + (s["cpu_power_avg_w"] or 0.0)
+        s["power_avg_sum_w"] = round(avg_sum, 1) if (pa or s["cpu_power_avg_w"] is not None) else None
         if self.extra:
             try:
                 s.update(self.extra())
