@@ -8,7 +8,7 @@ set -u
 ROOT=/mnt/user/Strata
 cd "$ROOT"
 bash stop-prod.sh
-nohup bash "$ROOT/launch-prod-ud-iq3xxs-dflash-w4-q4_0-mixed.sh" --recover \
+nohup bash "$ROOT/launch-prod-swift-iq3_s-dflash-w4-q4_0-mixed.sh" --recover \
   > /tmp/agent/prod-pair-supervised.log 2>&1 &
 echo "supervisor launcher pid $!"
 for i in $(seq 1 40); do
