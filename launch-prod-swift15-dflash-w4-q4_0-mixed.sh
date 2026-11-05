@@ -6,6 +6,10 @@
 # (STRATA_PREFILL_HELPER=1 via the config env), occupancy pinned (slots4c sweep
 # 2026-11-04: V7-squeezed promoted (08f5e690): fill-mib 6700 binds first at 4318 slots (bench r1+r2 + prod boot)
 # 6.25 GiB; +13.6% decode median vs the old 4000-slot cap, read rate unchanged).
+# 2026-11-05 pair fix: --begin-timeout 1800000 -> 63115200000 (the 30-min idle wait killed the
+# helper after every idle half-hour; engine death still exits at once on socket close), and prod
+# boots THROUGH the supervisor: 'bash <this> --recover' = pair_supervisor.py wraps this launcher,
+# any peer death restarts BOTH (either both run or both reset).
 set -euo pipefail
 ROOT=/mnt/user/Strata
 WORK="$ROOT/v0210"
@@ -49,7 +53,7 @@ env -i PATH="$PATH" HOME="$HOME" TERM="${TERM:-dumb}" "$HELPER" \
   --pack /mnt/user/ai/iq3xxs-15 \
   --experts ../Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf \
   --device 0 --slots 4600 --reserve-mib 300 --timeout 63115200000 \
-  --begin-timeout 1800000 --socket "$SOCKET" --fill-mib 6796 --socket2 "$SOCKET2" \
+  --begin-timeout 63115200000 --socket "$SOCKET" --fill-mib 6796 --socket2 "$SOCKET2" \
   >>"$HLOG" 2>&1 < /dev/null &
 helper_pid=$!
 for ((i=0; i<300; i++)); do

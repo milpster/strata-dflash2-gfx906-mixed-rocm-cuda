@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
-# stop-prod.sh - clean prod stop (launchers, engine, helper), socket cleanup, VRAM report.
+# stop-prod.sh - clean prod stop (pair supervisor FIRST, then launchers, engine, helper), socket cleanup, VRAM report.
 # On-disk on purpose: an inline kill must never share a command body with the patterns it
 # greps for (self-match killed an inline attempt once). pgrep scans command lines, not this file.
 set -u
+echo '=== stop-prod: pair supervisor (first - it would restart what we kill below) ==='
+pgrep -af 'pair_supervisor.py' | head -2
+pkill -TERM -f 'pair_supervisor.py' 2>/dev/null && echo 'supervisor TERMed (its clean stop reaps the whole pair)' || echo '(no supervisor matched)'
+sleep 5
 echo '=== stop-prod: launchers + wrapper ==='
 pgrep -af 'bash .*launch-prod-|/bin/bash -c rm -f .*launch-prod' | head -4
 pkill -TERM -f 'bash .*launch-prod-' 2>/dev/null && echo 'launchers TERMed' || echo '(no launcher matched)'
