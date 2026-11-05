@@ -39,6 +39,20 @@ max_tokens 8, 3 rounds each; TG leg = 620-token prompt + 128 generated. All arms
 (source-level arena work needed); T3 null; inert env cleanup (PRIMARY_COMMIT_OVERLAP/NO_PCIE_GROUP)
 left for the next conf touch.
 
+## Quality gate for the promoted knob (2026-11-05 03:2x)
+
+`qqS` (relief binary + pack iq3s + `STRATA_PREFILL_CPU_SHARE=auto`) vs the share-off twin `qqA`
+and vs the stock anchor `REF`, 4995 teacher-forced positions, yardstick-pinned `--prefill 512`
+(every scored chunk exercises the share path):
+
+```
+S vs A:   all 4995 100.00%  0.00000  0.0000  4.115 4.115
+S vs REF: all 4995 100.00%  0.00000  0.0000  4.115 4.115
+```
+
+The promoted config is logprob-identical to share-off and to the stock binary on this workload.
+Artifacts: `bench/ab-v0210/quality/out/S.tsv{,.seg.json,.run.log}` (commit 60e7afaa).
+
 ## Conclusions (final)
 
 1. Chat-sized prompts can be **2.2× faster** (6.5 → 2.9 s) by window-routing them — proven twice
