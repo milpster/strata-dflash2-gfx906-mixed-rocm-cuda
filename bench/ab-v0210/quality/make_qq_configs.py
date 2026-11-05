@@ -74,6 +74,12 @@ ARMS = {
     #   REF vs C = quant/lineage delta                     (informational)
     "qqREF": cfg(GGUF_IQ3S, "/mnt/user/ai/iq3s", "/mnt/user/ai/iq3s/tokenizer", "qq-ref-stock-pack-iq3s", exe=STOCK_EXE, cwd=STOCK_CWD),
     "qqA": cfg(GGUF_IQ3S, "/mnt/user/ai/iq3s", "/mnt/user/ai/iq3s/tokenizer", "qq-a-relief-pack-iq3s"),
+    # S = A + STRATA_PREFILL_CPU_SHARE=auto: isolates the T-lane winner (promoted to prod 2026-11-05)
+    # on our binary. The yardstick pins --prefill 512, so every scored chunk runs through the share
+    # path (below the _MAX threshold) — the gate exercises the knob, it cannot bypass it.
+    # S vs A = the share's own delta (expect upstream-documented KL~0.004 class); S vs REF = stack+share vs stock.
+    "qqS": {**cfg(GGUF_IQ3S, "/mnt/user/ai/iq3s", "/mnt/user/ai/iq3s/tokenizer", "qq-s-relief-cpushare-iq3s"),
+            "env": {**ENV, "STRATA_PREFILL_CPU_SHARE": "auto"}},
     "qqC": cfg(GGUF_XXS15, "/mnt/user/ai/iq3xxs-15", "/mnt/user/ai/iq3xxs-15/tokenizer", "qq-c-stock-pack-iq3xxs15", exe=STOCK_EXE, cwd=STOCK_CWD),
     "qqB": cfg(GGUF_XXS15, "/mnt/user/ai/iq3xxs-15", "/mnt/user/ai/iq3xxs-15/tokenizer", "qq-b-relief-pack-iq3xxs15"),
 }
