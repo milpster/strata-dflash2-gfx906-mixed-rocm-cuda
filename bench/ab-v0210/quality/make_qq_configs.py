@@ -84,6 +84,23 @@ ARMS = {
     "qqB": cfg(GGUF_XXS15, "/mnt/user/ai/iq3xxs-15", "/mnt/user/ai/iq3xxs-15/tokenizer", "qq-b-relief-pack-iq3xxs15"),
 }
 
+# M-lane quality gate (2026-11-05 evening): quant_quality.py PROMPT mode is the memo-exercising
+# yardstick - it drops --short-read so segments ride the batched prompt path (the chunk stager the
+# memo hooks) and dumps full-vocab first logits for pcompare. Three arms, same pack:
+#   P0 = the pre-memo bench binary (f5fb0738-aside)   PM = memo binary, flags OFF
+#   PX = memo binary + STRATA_PROMPT_STAGE_MEMO=1
+# Gates: pcompare PM PX (the memo's own delta - same bytes, must be ~0) and pcompare P0 PM
+# (the whole promoted binary, flags off - byte-identity of the default path, measured).
+ARMS.update({
+    "qqP0": {**cfg(GGUF_IQ3S, "/mnt/user/ai/iq3s", "/mnt/user/ai/iq3s/tokenizer", "qq-p0-oldbin-promptpath"),
+             "exe": "/home/user/dev/Strata/build-v0210/rpcw-hip/strata.f5fb0738-aside"},
+    "qqPM": {**cfg(GGUF_IQ3S, "/mnt/user/ai/iq3s", "/mnt/user/ai/iq3s/tokenizer", "qq-pm-memobin-off"),
+             "exe": "/home/user/dev/Strata/build-memo2/rpcw-hip/strata"},
+    "qqPX": {**cfg(GGUF_IQ3S, "/mnt/user/ai/iq3s", "/mnt/user/ai/iq3s/tokenizer", "qq-px-memobin-on"),
+             "exe": "/home/user/dev/Strata/build-memo2/rpcw-hip/strata",
+             "env": {**ENV, "STRATA_PROMPT_STAGE_MEMO": "1"}},
+})
+
 if __name__ == "__main__":
     BASE.mkdir(parents=True, exist_ok=True)
     (BASE / "out").mkdir(exist_ok=True)
