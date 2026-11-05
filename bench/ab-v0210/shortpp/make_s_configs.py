@@ -32,10 +32,12 @@ B = pathlib.Path("/home/user/dev/Strata/bench/ab-v0210")
 BASE = json.loads((B / "armV9.json").read_text())
 
 
-def arm(name, env=None, args_delta=None):
+def arm(name, env=None, args_delta=None, kv=None):
     c = json.loads(json.dumps(BASE))  # deep copy
     c["env"] = dict(c.get("env", {}))
     c["env"]["STRATA_TRACE"] = "1"
+    for k, v in (kv or {}).items():
+        c[k] = v
     for k, v in (env or {}).items():
         c["env"][k] = v
     if args_delta:
@@ -68,6 +70,12 @@ if __name__ == "__main__":
     arm("SP", env={"STRATA_PREFILL_CPU_SHARE": "auto", "STRATA_PF_STEP_SYNC": "1"})
     arm("M0", env={"STRATA_PREFILL_CPU_SHARE": "auto"})
     arm("M1", env={"STRATA_PREFILL_CPU_SHARE": "auto", "STRATA_PROMPT_STAGE_MEMO": "1"})
-    arm("M0b", env={"STRATA_PREFILL_CPU_SHARE": "auto", "STRATA_PREFILL_HELPER_TIMEOUT_MS": "120000"})
+    # 2026-11-05 M0b-r8: the window tier's 100 ms reply deadline missed on a busy host
+    # (pre-reboot, swap-on-nvme) -> channel closed -> fallbacks -> 'an adaptive refill failed'
+    # 400 on the very first leg. 2000 ms keeps the tier alive through transient stalls; the
+    # window deadline then only bites a genuinely stuck helper.
+    arm("M0b", env={"STRATA_PREFILL_CPU_SHARE": "auto", "STRATA_PREFILL_HELPER_TIMEOUT_MS": "120000"},
+        kv={"expert_helper_timeout": 2000})
     arm("M1b", env={"STRATA_PREFILL_CPU_SHARE": "auto", "STRATA_PREFILL_HELPER_TIMEOUT_MS": "120000",
-                    "STRATA_PROMPT_STAGE_MEMO": "1"})
+                    "STRATA_PROMPT_STAGE_MEMO": "1"},
+        kv={"expert_helper_timeout": 2000})

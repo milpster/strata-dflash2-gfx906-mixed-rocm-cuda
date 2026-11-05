@@ -109,5 +109,5 @@
  "expert_helper_socket": "/home/user/dev/Strata/bench/ab-v0210/run/bench-mixed.sock",
  "expert_helper_socket2": "/home/user/dev/Strata/bench/ab-v0210/run/bench-mixed2.sock",
  "expert_helper_slots": 4600,
- "expert_helper_timeout": 100
+ "expert_helper_timeout": 2000
 }
