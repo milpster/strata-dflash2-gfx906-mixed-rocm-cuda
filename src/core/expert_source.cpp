@@ -6776,6 +6776,7 @@ int64_t ArenaExpertSource::refill_recorded_pairs() {
     if (refill_running_.load(std::memory_order_relaxed)) return 0;   // the bulk refill owns the flags
     std::vector<std::pair<int32_t, int32_t>> todo;
     todo.swap(dropped_reads_);
+    dropped_reads_seen_.clear();   // the dedup map swaps empty with the vector: the next cycle records again
     if (todo.empty()) return 0;
     PinnedArena* a = static_cast<PinnedArena*>(arena_);
     const auto& lay = strata::kernels::cpu::expert_layout();

@@ -1399,9 +1399,17 @@ public:
     /// today's degrade.  Returns the pairs refilled.  Without ram-relief: a no-op (nothing is dropped).
     int64_t refill_recorded_pairs();
     /// STRATA_WINDOW_POPULATE=1: record a dropped pair whose `blob` took the pack-file path (file_mu_ HELD).
-    /// Bounded: the refill dedups, an overflow loses records, never serves a wrong pair.
+    /// Bounded: an overflow loses records, never serves a wrong pair.  A pair the prompt path re-reads in
+    /// every chunk was recorded every time (measured 2026-11-05: a 10.1k-token prompt, ~300 chunks on the
+    /// same pairs), so the 8192 cap filled with duplicates and kept the early chunks.  The seen map records
+    /// a pair once per request cycle: it swaps empty with dropped_reads_ in refill_recorded_pairs, where
+    /// refill's own flag check stays the backstop.
     void note_dropped_read(int64_t layer, int64_t expert) {
-        if (dropped_reads_.size() < 8192) dropped_reads_.emplace_back((int32_t) layer, (int32_t) expert);
+        if (dropped_reads_.size() >= 8192) return;   // overflow loses records, as before
+        const int64_t key = layer * n_expert_ + expert;
+        if (dropped_reads_seen_.find(key) != dropped_reads_seen_.end()) return;
+        dropped_reads_seen_.emplace(key, 0);
+        dropped_reads_.emplace_back((int32_t) layer, (int32_t) expert);
     }
     /// W1 (--expert-helper-ram-relief): build the arena without the whole-arena registration (and
     /// without the working-set lock), so the fill writes plain pages.  Call before open().
@@ -1495,6 +1503,7 @@ private:
     // come back from.  Empty `unfilled_flag_` (never set) is today's source, byte for byte.
     std::vector<uint8_t> unfilled_flag_;      ///< (layers x experts): 1 = the pages are given back
     std::vector<std::pair<int32_t, int32_t>> dropped_reads_;   ///< STRATA_WINDOW_POPULATE: dropped pairs a window read (see refill_recorded_pairs)
+    std::unordered_map<int64_t, char> dropped_reads_seen_;     ///< note_dropped_read's dedup: pairs recorded this cycle, swapped empty with dropped_reads_ at refill_recorded_pairs
     bool ram_relief_ = false;                 ///< W1: open() builds the arena with nothing registered
     std::atomic<int64_t> unfilled_{0};
     uint64_t unfilled_bytes_ = 0;
