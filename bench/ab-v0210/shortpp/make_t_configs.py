@@ -50,3 +50,11 @@ if __name__ == "__main__":
     arm("T3", env={"STRATA_PREFILL_HELPER_PIPE": "1"})
     arm("T4", env={"STRATA_PREFILL_CPU_SHARE": "auto"})
     arm("T5", env={"STRATA_SPLIT_SMALL_OWN": "1024", "STRATA_SPLIT_SMALL_MAX": "4096"})
+    # added after the T1 decomposition:
+    #   T1b = T1 + STRATA_RPC_PROFILE=1  - splits the ~10s short batched read (per-layer d2h/send vs compute)
+    #   T2c = T1 + --short-read 256       - chat-sized prompts (~185 tok) read fully through the fast window
+    #                                      path (T1 measured: 55-tok windows read 0.98s vs 185-tok batched 5.6-7.9s);
+    #                                      T2a(16)/T2b(128) dropped: the windows tail is 4 tok / ~55ms, and 16
+    #                                      would push MORE tokens into the slow batched path.
+    arm("T1b", env={"STRATA_RPC_PROFILE": "1"})
+    arm("T2c", args_delta=[("--short-read", "256")])
