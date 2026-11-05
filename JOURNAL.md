@@ -919,3 +919,10 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
 - Cut by user order ("bring prod back"): C (stock+iq3xxs15) killed at 2/5 segments (partial TSV committed as evidence), B never ran. Unmeasured: C-vs-B twin check, REF-vs-C quant delta - resumable on order.
 - Prod restored (iq3_s, first boot at helper fill 6796): health 200 ~75s, 784 MiB free, helper filled 3582 slots 6.64GiB stopped:fill-mib (one row under the 7000-ask boot = same edge), 698 MiB left on 3080.
 - Commits: 651f87a9 (configs v1), aaf53b18 (redesign), 7881dc1d (--spec fix), fc3303e8 (REF+A artifacts).
+
+## 2026-11-05 01:50-03:05 - T-lane: short-prompt PP / TG<->PP turn-around (prod down, ordered autonomous)
+- Baseline (T1 trace): batched read has ~3.6s intercept + ~11ms/tok early marginal (185tok 23-33 tok/s vs 313 bulk); refill 0.5-5.8s after prefill (1.27ms/lent-slot); in-request TG<->PP seam <1s (not a problem); helper claims ~0.3s/request (T1b profile, not the whale).
+- T2c short-read 256: chat 6.5->2.9s (2.2x) but FATAL refill-from-files poison after window reads (TG128 14.2->57.8s). T5 SPLIT_SMALL: no-refill real (-0.3s) but 1024-geometry destroys 2-4k (23->37/171s). T6c combo: poison gone but 512-geometry +2s on S1k and a 127s restaging catastrophe on first big prompt after small traffic. T3 PIPE: clean null (as profiled).
+- T4 STRATA_PREFILL_CPU_SHARE=auto: THE WINNER - S214 2.4x (2.6-2.9s warm), S1k 1.8x (6.2s, read halved), S4k 1.4x (16s), TG128 -5.1s (9.1s), S18k unchanged; zero regressions/outliers; upstream KL~0.004 documented. PROMOTED to both prod configs.
+- Window-routing (2.2x for <=256tok) proven twice but needs source work: window reads must populate the arena (refill/restaging root cause); the ~3.6s short-chunk intercept is layer compute/staging (source).
+- Commits: 32fcc9c4, a69e7898, 8f9469e3 + results commits; artifacts in bench/ab-v0210/{shortpp,logs,out/RESULTS-shortpp.md}.
