@@ -10,6 +10,12 @@ S0 (flags off) is directly comparable to T4's measured numbers on the same probe
   S3 = S0 + both
   S4 = S3 + --short-read 256          (T2c-style window routing WITH both fixes: the poison test)
   SP = S0 + STRATA_PF_STEP_SYNC=1     (intercept profile: layer-experts/KV pf-step decomposition)
+
+M-lane (2026-11-05, the 3-hot-layer residency gap): the memo binary is build-memo/rpcw-hip
+(fixer commits 375183eb dedup + b8470d07 STRATA_PROMPT_STAGE_MEMO, default OFF):
+
+  M0 = S0 env on the memo binary, flags OFF   (parity vs S0 + same-binary control)
+  M1 = M0 + STRATA_PROMPT_STAGE_MEMO=1        (a dropped prompt pair pack-reads once per request)
 """
 import json
 import pathlib
@@ -52,3 +58,5 @@ if __name__ == "__main__":
                    "STRATA_WINDOW_POPULATE": "1"},
         args_delta=[("--short-read", "256")])
     arm("SP", env={"STRATA_PREFILL_CPU_SHARE": "auto", "STRATA_PF_STEP_SYNC": "1"})
+    arm("M0", env={"STRATA_PREFILL_CPU_SHARE": "auto"})
+    arm("M1", env={"STRATA_PREFILL_CPU_SHARE": "auto", "STRATA_PROMPT_STAGE_MEMO": "1"})

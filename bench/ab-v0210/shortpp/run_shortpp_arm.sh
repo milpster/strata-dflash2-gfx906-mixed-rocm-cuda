@@ -7,8 +7,8 @@ ARM=$1; ROUND=${2:-1}
 ROOT=/home/user/dev/Strata; B=$ROOT/bench/ab-v0210; SP=$B/shortpp
 PY=$ROOT/.venv/bin/python
 case $ARM in
-  T1|T1b|T2a|T2b|T2c|T3|T4|T5|T6c|S0|S1|S2|S3|S4|SP) ENGINE=$ROOT/build-v0210/rpcw-hip/strata; HELPER=$ROOT/build-v0210/rpcw-cuda/strata-expert-helper; SERVE=$ROOT/serve/server.py; CD=$ROOT ;;
-  *) echo "arm T1|T1b|T2a|T2b|T2c|T3|T4|T5|T6c|S0|S1|S2|S3|S4|SP" >&2; exit 2 ;;
+  T1|T1b|T2a|T2b|T2c|T3|T4|T5|T6c|S0|S1|S2|S3|S4|SP|M0|M1) ENGINE=$ROOT/build-v0210/rpcw-hip/strata; HELPER=$ROOT/build-v0210/rpcw-cuda/strata-expert-helper; SERVE=$ROOT/serve/server.py; CD=$ROOT ;;
+  *) echo "arm T1|T1b|T2a|T2b|T2c|T3|T4|T5|T6c|S0|S1|S2|S3|S4|SP|M0|M1" >&2; exit 2 ;;
 esac
 RUNCFG=$SP/run/arm$ARM-r$ROUND.json
 mkdir -p "$SP/run" "$SP/out/$ARM-r$ROUND" "$B/logs"
