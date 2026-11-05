@@ -17398,7 +17398,15 @@ int main(int argc, char** argv) {
             // STRATA_REFILL_PARTS=1 (gfx1151's table): a lent slot of a GGUF read in place is refilled from the pieces in the mapping.
             // The default assembles the blob in a staging buffer first (a 4 MB copy on this thread), then copies that.
             static const bool refill_parts = [] { const char* v = std::getenv("STRATA_REFILL_PARTS"); return v != nullptr && std::atoi(v) != 0; }();
-            auto refill_issue = [&](PfPart& p, std::string& e) -> bool {
+            // STRATA_REFILL_OVERLAP=1: the FINAL refill (after the prompt is read) queues its copies and lets the
+            // request's first decode window run while they are in flight; refill_complete below waits for a copy
+            // before the dispatch that would read its slot.  Off: every mark lands with its copy, as today.
+            static const bool refill_overlap = [] { const char* v = std::getenv("STRATA_REFILL_OVERLAP"); return v != nullptr && std::atoi(v) != 0; }();
+            bool refill_deferred = false;   // set only at the final refill, only when overlap's gates pass
+            // STRATA_REFILL_OVERLAP=1: the final refill's marks are deferred to refill_complete below.  A queued
+            // fill leaves its pair kNotResident until its copy lands: the windows in flight read it over PCIe
+            // (dispatch kind 1) from the SAME host bytes the fill is reading, never from the half-written slot.
+            auto refill_issue = [&](PfPart& p, std::string& e, const bool deferred = false) -> bool {
                 tr("refill start", (long long) p.lent.size());
                 const strata::core::OnDevice on(p.dev);
                 for (const auto& [i, slot] : p.lent) {   // D-4: queued, one wait (STRATA_REFILL_BLOCKING=1: each)
@@ -17406,7 +17414,7 @@ int main(int argc, char** argv) {
                     const int np = refill_parts && !refill_blocking() ? srcp->blob_parts(i / g.n_expert, i % g.n_expert, parts) : 0;
                     if (np > 0) {   // the GGUF read in place: the tensors' pieces go from the mapping to the slot, no assembled copy
                         if (!p.cache->fill_slot_queued_parts(slot, parts, np, e)) return false;
-                        host_res[(size_t) i] = slot;
+                        if (!(deferred && !refill_blocking())) host_res[(size_t) i] = slot;
                         continue;
                     }
                     const uint8_t* b = srcp->blob_stable(i / g.n_expert, i % g.n_expert);
@@ -17415,7 +17423,7 @@ int main(int argc, char** argv) {
                                                             : p.cache->fill_slot_queued(slot, b, e, nb)))
                         return false;
                     if (!refill_blocking()) srcp->note_async_read(b, nullptr);   // #1237
-                    host_res[(size_t) i] = slot;
+                    if (!(deferred && !refill_blocking())) host_res[(size_t) i] = slot;
                 }
                 return true;
             };
@@ -17439,6 +17447,27 @@ int main(int argc, char** argv) {
             // waited for - the same copies into the same slots, so the same cache; one stage: refill_one exactly.
             // STRATA_REFILL_SERIAL=1: stage after stage, as 0.1.30/0.1.31.
             static const bool refill_serial = std::getenv("STRATA_REFILL_SERIAL") != nullptr;
+            // STRATA_REFILL_OVERLAP=1's deferred half (see refill_issue): one part in flight at a time, the part's
+            // copies synced before any dispatch reads its slots - the async tier's rule (host_res marks the
+            // residency a landed copy: SwapIn at the tier writes a mark only after its batch has landed).
+            int64_t refill_inflight = 0;   // slots whose copies are in flight (0: nothing, the default)
+            auto refill_complete = [&](std::string& e) -> bool {
+                if (refill_inflight == 0) return true;
+                for (PfPart& p : pf_parts) {
+                    if (p.lent.empty()) continue;
+                    const strata::core::OnDevice on(p.dev);
+                    if (!p.cache->sync_queued(e)) return false;   // the copies have landed (refill_wait's sync)
+                    for (const auto& [i, slot] : p.lent) host_res[(size_t) i] = slot;
+                    p.lent.clear();
+                    p.lent_chunk = 0;
+                }
+                refill_inflight = 0;
+                if (res_upload() != cudaSuccess) {
+                    e = "the residency table update failed";
+                    return false;
+                }
+                return true;
+            };
             auto refill = [&](std::string& e) -> bool {
                 const auto t_rf = Clock::now();
                 int64_t n_lent = 0, n_parts = 0;
@@ -18376,6 +18405,8 @@ int main(int argc, char** argv) {
                 if (mt < 2) return -1;
                 return std::max(a0, n - mt);
             };
+            int refill_deferred_n = 0;      // final refills taken in the deferred form (0: the plain refill ran)
+            int64_t refill_inflight_last = 0;   // the last deferred issue's slot count (for the trace)
             for (const int64_t to : cuts) {
                 if (to <= at) continue;
                 err.clear();
