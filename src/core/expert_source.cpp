@@ -6512,8 +6512,10 @@ const uint8_t* ArenaExpertSource::blob(int64_t layer, int64_t expert) {
     // 38 tok/s, journal 2026-11-04).
     if (unfilled_.load(std::memory_order_relaxed) > 0 && unfilled_at(layer, expert)) {   // W1: --expert-helper-ram-relief
         std::lock_guard<std::mutex> lk(file_mu_);
-        if (unfilled_at(layer, expert))
+        if (unfilled_at(layer, expert)) {
+            note_dropped_read(layer, expert);   // STRATA_WINDOW_POPULATE=1: a window read this pair - refill_recorded_pairs refills it at the request's end
             return file_source() == nullptr ? nullptr : file_->blob(layer, expert);
+        }
     }
     // Pointer arithmetic into resident memory.  No fault, no copy, no mapping - which is the entire point of
     // this class over `FileExpertSource`.
@@ -6758,6 +6760,81 @@ void ArenaExpertSource::refill_run() {
                  (long long) done, (long long) asked, (double) bytes / 1073741824.0,
                  std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
     refill_running_.store(false);
+}
+
+// STRATA_WINDOW_POPULATE=1 (opt-in): the per-pair inverse of set_unfilled for the dropped pairs a window
+// read.  Per pair: read the bytes from the pack files into a staging buffer, register the pair's whole-page
+// range (V4-r2: a pair that is neither dropped nor registered has no DMA-legal address; the outward page
+// rounding follows register_after_fill's V4-r3 rule - the shared edge pages' kept bytes must be DMA-able),
+// take its device alias, INSERT the range into the sorted pin tables, write the bytes, clear the flag.
+// The caller runs it on the request's serial path at the request's end (the generate.cpp gate): the sole
+// reader of pin_start_/pin_end_/pin_dev_/layer_pcie_ at that point, the same single-thread rule
+// apply_registration documents.  A driver refusal leaves the pair dropped: today's file-served degrade.
+int64_t ArenaExpertSource::refill_recorded_pairs() {
+    if (base_ == nullptr || !ram_relief_ || !ranges_ || arena_ == nullptr) return 0;
+    if (unfilled_.load(std::memory_order_relaxed) <= 0) return 0;
+    if (refill_running_.load(std::memory_order_relaxed)) return 0;   // the bulk refill owns the flags
+    std::vector<std::pair<int32_t, int32_t>> todo;
+    todo.swap(dropped_reads_);
+    if (todo.empty()) return 0;
+    PinnedArena* a = static_cast<PinnedArena*>(arena_);
+    const auto& lay = strata::kernels::cpu::expert_layout();
+    const uint64_t kPage = 4096;
+    int64_t done = 0;
+    uint64_t bytes = 0;
+    for (const auto& [l, e] : todo) {
+        if (l < 0 || e < 0 || e >= n_expert_) continue;
+        const size_t idx = (size_t) (l * n_expert_ + e);
+        if (idx >= unfilled_flag_.size() || unfilled_flag_[idx] == 0) continue;   // already whole
+        const uint64_t off = arena_off(l, e);
+        const uint64_t end = off + lay.blob_bytes(l);
+        const uint64_t lo = off & ~(uint64_t) 4095;                              // outward, as register_after_fill
+        const uint64_t hi = std::min<uint64_t>((end + kPage - 1) & ~(uint64_t) 4095, arena_capacity_);
+        if (hi <= lo) continue;
+        std::vector<uint8_t> stage;
+        {   // the pack files first (file_mu_ held): a private staging copy, the arena stays untouched
+            std::lock_guard<std::mutex> lk(file_mu_);
+            FileExpertSource* f = file_source();
+            if (f == nullptr) break;   // every later read of a dropped pair fails by name, as it does now
+            stage.assign((size_t) lay.blob_bytes(l), 0);
+            if (!f->copy_blob(l, e, stage.data())) continue;   // stays dropped: blob() re-reads it on demand
+        }
+        void* dp = nullptr;
+        if (cudaHostRegister((uint8_t*) base_ + (size_t) lo, (size_t) (hi - lo),
+                             cudaHostRegisterPortable | cudaHostRegisterMapped) != cudaSuccess) {
+            (void) cudaGetLastError();   // the driver refused: the pair stays dropped, today's degrade
+            continue;
+        }
+        if (cudaHostGetDevicePointer(&dp, (uint8_t*) base_ + (size_t) lo, 0) != cudaSuccess || dp == nullptr) {
+            (void) cudaGetLastError();
+            continue;   // the pair stays dropped (the flag still refuses every DMA use of its address)
+        }
+        // insert the range into the sorted tables (the gate: the request's serial path is the only reader)
+        size_t pos = std::upper_bound(pin_start_.begin(), pin_start_.end(), lo) - pin_start_.begin();
+        pin_start_.insert(pin_start_.begin() + (long) pos, lo);
+        pin_end_.insert(pin_end_.begin() + (long) pos, hi);
+        pin_dev_.insert(pin_dev_.begin() + (long) pos, (const uint8_t*) dp);
+        a->pin_ranges.insert(a->pin_ranges.begin() + (long) pos, std::make_pair(lo, hi - lo));
+        a->registered_bytes += hi - lo;
+        std::memcpy((uint8_t*) base_ + (size_t) off, stage.data(), (size_t) lay.blob_bytes(l));
+        {   // clear the flag with the same lock blob()/pinned() re-check under (refill_run's rule)
+            std::lock_guard<std::mutex> lk(file_mu_);
+            unfilled_flag_[idx] = 0;
+        }
+        unfilled_.fetch_sub(1, std::memory_order_relaxed);
+        ++done;
+        bytes += lay.blob_bytes(l);
+    }
+    if (done > 0) {   // pcie_layer's answers follow the registered ranges
+        for (size_t l = 0; l < layer_pcie_.size(); ++l)
+            for (int64_t e = 0; e < n_expert_ && layer_pcie_[l] == 0; ++e)
+                layer_pcie_[l] = pinned((int64_t) l, e) ? 1 : 0;
+        std::fprintf(stderr, "strata: expert arena: STRATA_WINDOW_POPULATE: re-read %lld of %lld window-read dropped "
+                             "experts from the pack files (%.2f MiB, %lld ranges registered); their refills take the "
+                             "arena path from now on\n", (long long) done, (long long) todo.size(),
+                      (double) bytes / 1048576.0, (long long) pin_start_.size());
+    }
+    return done;
 }
 
 const uint8_t* ArenaExpertSource::blob_stable(int64_t layer, int64_t expert) {

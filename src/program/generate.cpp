@@ -18481,9 +18481,53 @@ int main(int argc, char** argv) {
                     std::fprintf(stderr, "strata serve: message boundary checkpoint: %lld tokens, %lld tail\n",
                                  (long long) message_at, (long long) (turn_at - message_at));
             }
-            if (!refill(err)) {
+            // STRATA_REFILL_OVERLAP=1 (opt-in): the final refill queues its copies and the request runs on;
+            // refill_complete waits for them before the first decode window's dispatch.  The gates keep it to the
+            // serial request (one reader thread, no batch/pipeline windows, no peer/remote/swap caches, single
+            // stage) with a non-merge first window: the merge-first's all-resident requirement (merge_from) is
+            // NOT met with copies in flight, so a merge-first request refills as today.
+            refill_deferred = refill_overlap && merge_at < 0 && admit_slot < 0 && !pipe && o.batch == 0 &&
+                              stages.empty() && !peer.valid() && remote_opt == nullptr && fs_swap == nullptr &&
+                              !refill_blocking() && pf_parts.size() == 1;
+            if (refill_deferred) {
+                refill_deferred_n = 1;
+                int64_t n_in = 0;
+                for (PfPart& p : pf_parts)
+                    if (!p.lent.empty()) { n_in += (int64_t) p.lent.size(); }
+                for (PfPart& p : pf_parts)
+                    if (!p.lent.empty() && !refill_issue(p, err, true)) {
+                        std::printf("ERR refilling a lent slot failed: %s\n", err.c_str());
+                        return 1;
+                    }
+                refill_inflight = n_in;
+                refill_inflight_last = n_in;
+                tr("prompt done (refill in flight)", n_in);
+            } else if (!refill(err)) {
                 std::printf("ERR refilling a lent slot failed: %s\n", err.c_str());
                 return 1;
+            }
+            // STRATA_WINDOW_POPULATE=1 (opt-in): the prompt windows' usage (the pool accumulated it into
+            // drive.d.usage while reading, see expert_source.cpp's begin/pool) has no promoter of its own -
+            // adapt() runs only from the decode loops (the gate at the generate-side call sites skips the
+            // prompt read).  Run the promotion machinery once here: adapt() -> apply_pending(true) ->
+            // res_upload, exactly the decode loop's pattern - so the pairs the prompt windows read take GPU
+            // slots before the first decode window.  Serial path only (the async tier and the multi-reader
+            // window modes keep their own timing); failures are logged and the request continues.
+            static const bool window_populate = [] { const char* v = std::getenv("STRATA_WINDOW_POPULATE"); return v != nullptr && std::atoi(v) != 0; }();
+            if (window_populate && refill_deferred_n == 0 && pending.empty() && ajob == nullptr &&
+                !pipe && stages.empty() && !peer.valid() && remote_opt == nullptr &&
+                !drive.d.usage.empty() && host_res.size() == drive.d.usage.size()) {
+                const size_t before = std::count_if(host_res.begin(), host_res.end(),
+                                                    [](int32_t r) { return r >= 0; });
+                if (adapt() && !pending.empty()) {
+                    apply_pending(true);   // the copies landed: host_res marks + res_upload inside
+                    std::fprintf(stderr, "strata serve: STRATA_WINDOW_POPULATE: the prompt windows' usage promoted "
+                                          "%zu pairs to GPU slots (%zu -> %zu resident)\n",
+                                  std::count_if(host_res.begin(), host_res.end(),
+                                                [](int32_t r) { return r >= 0; }) - before,
+                                  before, (size_t) std::count_if(host_res.begin(), host_res.end(),
+                                                                 [](int32_t r) { return r >= 0; }));
+                }
             }
             if (mtp_room_open && room_close("prompt done") != 0) return 1;
             if (head_restore() != 0) return 1;
@@ -19612,6 +19656,18 @@ int main(int argc, char** argv) {
                 if (gated_proposal) ver.set_spec_proposal(proposal.n_q ? proposal.mu.data() : nullptr, proposal.n_q);
                 else if (strata::spec::mtp_q_applies(use_mtp, req_df2, use_mtp && mtp.prob(), from_sfx, first_window, T_mtp)) ver.set_spec_q(mtp.spec_q(), T_mtp - 1);   // only candidates the MTP drew
                 const auto decode_pool_fn = use_mtp && mtp.prob() ? invariant_win_pool_fn : win_pool_fn;
+                // STRATA_REFILL_OVERLAP=1: the in-flight final refill lands before this dispatch reads a slot
+                // (the first window is the first reader; its dispatch takes the PCIe path for those pairs until
+                // here).  The trace names the overlap for the benches.
+                if (first_window && refill_inflight > 0) {
+                    if (trace)
+                        std::fprintf(stderr, "strata trace: refill overlap: %lld slots in flight at the first window\n",
+                                     (long long) refill_inflight_last);
+                    if (!refill_complete(err)) {
+                        std::printf("ERR refilling a lent slot failed: %s\n", err.c_str());
+                        return 1;
+                    }
+                }
                 exit_if_gpu_fatal("");   // (the test hook counts windows here)
                 if (!ver.run(T, window.data(), p, decode_pool_fn, win_pool_user, outv.data(), err) || drive.d.failed) {
                     exit_if_gpu_fatal(drive.d.failed && drive.d.fail ? drive.d.fail : err);
@@ -20018,6 +20074,23 @@ int main(int argc, char** argv) {
                 x = outv[(size_t) a];
                 p += a + 1;
             }
+            if (refill_inflight > 0 && !refill_complete(err)) {   // STRATA_REFILL_OVERLAP: never carry an unlanded copy past the decode
+                std::printf("ERR refilling a lent slot failed: %s\n", err.c_str());
+                return 1;
+            }
+            // STRATA_WINDOW_POPULATE=1 (opt-in): the dropped pairs a window read (recorded in ArenaExpertSource::
+            // blob's file path) come back from the pack files through their arena addresses: read, registered,
+            // flag cleared - the per-pair inverse of set_unfilled, so the next refill takes the fast arena
+            // path (measured: 1.27 ms/slot) instead of the pack files' 52 ms/slot.  The request has stopped:
+            // the serial request path is the source's only reader at this point (no batch/pipeline windows,
+            // no peer/remote/swap caches, single stage, no async tier) - the tables refill_recorded_pairs
+            // rebuilds are read by this thread alone.  The refill runs before the DONE line so a checkpoint
+            // never snapshots a half-refilled arena story.  (window_populate: the one read declared at the
+            // final refill, the same env var.)
+            if (window_populate && o.batch == 0 && admit_slot < 0 && !pipe && stages.empty() &&
+                !peer.valid() && remote_opt == nullptr && fs_swap == nullptr && ajob == nullptr &&
+                refill_inflight == 0 && srcp == &arena_src)
+                (void) static_cast<strata::core::ArenaExpertSource*>(srcp)->refill_recorded_pairs();
             if (!keep_sync()) { std::printf("ERR %s\n", err.c_str()); return 1; }
             const double decode_ms = std::chrono::duration<double, std::milli>(Clock::now() - d0).count();
             if (use_df2 && o.draft_auto && bandit_key != 0 && produced_n >= 48 && decode_ms > 0.0) {

@@ -1388,6 +1388,21 @@ public:
     /// held pairs sat inside the registration and nothing could be dropped).
     /// Never called without the flag: today's behaviour, byte for byte.
     void set_unfilled(std::vector<std::pair<int32_t, int32_t>> pairs);
+    /// STRATA_WINDOW_POPULATE=1 (opt-in, the per-pair inverse of set_unfilled): a dropped pair a window read
+    /// (`blob` took its pack-file path, note_dropped_read) is read back from the pack files into its arena
+    /// address, its range registered (V4-r2's rule: a pair that is neither dropped nor registered has no
+    /// DMA-legal address) and its flag cleared, so the next refill takes the fast arena path instead of the
+    /// pack files — exactly what refill_run's relief no-op (the documented helper-loss degrade) never does.
+    /// SAFE ONLY on a single-reader call point: the request's serial path (no batch, no pipeline windows, no
+    /// peer/remote/swap caches, single stage, no async tier) at the request's end, the sole reader of the
+    /// pin/alias tables it rebuilds.  A pair the driver refuses to register stays dropped and file-served,
+    /// today's degrade.  Returns the pairs refilled.  Without ram-relief: a no-op (nothing is dropped).
+    int64_t refill_recorded_pairs();
+    /// STRATA_WINDOW_POPULATE=1: record a dropped pair whose `blob` took the pack-file path (file_mu_ HELD).
+    /// Bounded: the refill dedups, an overflow loses records, never serves a wrong pair.
+    void note_dropped_read(int64_t layer, int64_t expert) {
+        if (dropped_reads_.size() < 8192) dropped_reads_.emplace_back((int32_t) layer, (int32_t) expert);
+    }
     /// W1 (--expert-helper-ram-relief): build the arena without the whole-arena registration (and
     /// without the working-set lock), so the fill writes plain pages.  Call before open().
     void set_ram_relief(bool on) { ram_relief_ = on; }
@@ -1479,6 +1494,7 @@ private:
     // ---- W1 (--expert-helper-ram-relief): the pairs dropped out of the arena, and the pack files they
     // come back from.  Empty `unfilled_flag_` (never set) is today's source, byte for byte.
     std::vector<uint8_t> unfilled_flag_;      ///< (layers x experts): 1 = the pages are given back
+    std::vector<std::pair<int32_t, int32_t>> dropped_reads_;   ///< STRATA_WINDOW_POPULATE: dropped pairs a window read (see refill_recorded_pairs)
     bool ram_relief_ = false;                 ///< W1: open() builds the arena with nothing registered
     std::atomic<int64_t> unfilled_{0};
     uint64_t unfilled_bytes_ = 0;
