@@ -104,6 +104,7 @@ bool ple_batch_enabled() {
 #include <deque>
 #include <map>
 #include <string>
+#include <new>
 #include <atomic>
 #include <condition_variable>
 #include <cstring>
@@ -112,6 +113,7 @@ bool ple_batch_enabled() {
 #include <optional>
 #include <mutex>
 #include <thread>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -639,6 +641,56 @@ struct Alloc {
 
 }  // namespace
 
+// STRATA_PROMPT_STAGE_MEMO=1 (opt-in, off by default): a dropped (layer,expert) pair the prompt path
+// re-reads from the pack files is read ONCE per request and the staged bytes serve the chunks after it.
+// Measured 2026-11-05 on a 10.1k-token prompt: three layers spent 46-212 s because their cache-uncovered
+// pairs were read in every one of ~300 chunks (~52 ms each) - nothing on the prompt path memoized them.
+// The memo is REQUEST-scoped (a local of run_impl, freed with the request) and keeps its own bytes: it
+// never touches the decode tier's staging state (FileExpertSource::staged_blob is the keyed claim there,
+// the same key, process-wide - the eviction state stays entangled with nothing).
+// Cap: 512 MiB per request, a generous fixed bound. Past the cap no new pair is memoized and those pairs
+// keep today's per-chunk read. Nothing is evicted: a chunk reads a pair at most once, so the working set
+// is the request's dropped pairs, not a sliding window.
+// Off (the default): find/reserve return at once, every job is built exactly as before.
+struct PromptStageMemo {
+    static constexpr size_t kCap = 512ull << 20;   // bytes per request
+    struct Slot {
+        std::unique_ptr<uint8_t[]> bytes;
+        // 1: the bytes are in (the stager thread that copied the pair's bytes sets it, release).  A job the
+        // routing skipped leaves it 0, and a later chunk's job fills the slot - never a hit on empty bytes.
+        std::atomic<int> filled{0};
+    };
+    // read once at first use (the repo's env-bool pattern, as generate.cpp's STRATA_WINDOW_POPULATE)
+    static inline const bool on = [] { const char* v = std::getenv("STRATA_PROMPT_STAGE_MEMO");
+                                       return v != nullptr && std::atoi(v) != 0; }();
+    std::unordered_map<int64_t, std::unique_ptr<Slot>> slots;   // key = layer * n_expert + expert
+    size_t used = 0;
+    /// The pair's staged bytes (nullptr: no hit - off, unseen, or its copy has not run)
+    const uint8_t* find(int64_t l, int64_t e, int64_t n_expert) const {
+        if (!on) return nullptr;
+        const auto it = slots.find(l * n_expert + e);
+        if (it == slots.end()) return nullptr;
+        const Slot* s = it->second.get();
+        if (s->filled.load(std::memory_order_acquire) == 0) return nullptr;
+        return s->bytes.get();
+    }
+    /// The slot to stage a pair into (nullptr: the cap is reached, the pair keeps today's per-chunk read)
+    Slot* reserve(int64_t l, int64_t e, int64_t n_expert, size_t bytes) {
+        if (!on) return nullptr;
+        const int64_t key = l * n_expert + e;
+        const auto it = slots.find(key);
+        if (it != slots.end()) return it->second.get();   // its job was skipped by the routing: fill it again
+        if (used + bytes > kCap) return nullptr;
+        std::unique_ptr<Slot> s = std::make_unique<Slot>();
+        s->bytes.reset(new (std::nothrow) uint8_t[bytes]);
+        if (!s->bytes) return nullptr;   // no room in RAM: today's path for this pair
+        used += bytes;
+        Slot* p = s.get();
+        slots.emplace(key, std::move(s));
+        return p;
+    }
+};
+
 // Step 4 of the prompt-speed plan: the experts the arena could not pin (a third of the streamed ones on IQ3_S) are
 // copied into pinned buffers by these threads, ahead of the launches.  Copied in line by the launching thread they
 // left the GPU without queued work while each ~2 MB memcpy ran (~15 s of a 32K prompt on IQ3_S).  Job j - a layer's
@@ -653,7 +705,9 @@ struct Stager {
     int batch = 1;
     // `from` set: the blob is copied by the source itself (CS-T: a GGUF read in place assembles it from its three
     // role slices; a pointer to it would not live as long as the queue)
-    struct Job { const uint8_t* src; size_t bytes; core::ExpertSource* from = nullptr; int32_t l = 0, e = 0; };
+    struct Job { const uint8_t* src; size_t bytes; core::ExpertSource* from = nullptr; int32_t l = 0, e = 0;
+                 // STRATA_PROMPT_STAGE_MEMO=1: the request memo slot this job's bytes fill once they land (null: none)
+                 PromptStageMemo::Slot* memo = nullptr; };
     std::vector<uint8_t*> buf;
     std::vector<char> pinned;
     std::vector<std::vector<uint8_t>> pageable;   // the fallback when no more RAM can be pinned
@@ -753,18 +807,36 @@ struct Stager {
                 }
                 int32_t rl[kMaxBatch], re[kMaxBatch];
                 uint8_t* rd[kMaxBatch];
-                size_t nr = 0;
+                // STRATA_PROMPT_STAGE_MEMO=1: the transient jobs that also fill a memo slot (t's bytes from rd[mri[t]])
+                PromptStageMemo::Slot* ms[kMaxBatch];
+                size_t mb[kMaxBatch], mri[kMaxBatch];
+                size_t nr = 0, nm = 0;
                 core::ExpertSource* from = nullptr;
                 for (int i = j; i < j + k; ++i) {
                     if (skipped[(size_t) i].load(std::memory_order_acquire)) continue;   // nothing will read it: no copy
                     const Job& jb = jobs[(size_t) i];
-                    if (jb.from == nullptr) { std::memcpy(buf[i % kRing], jb.src, jb.bytes); continue; }
+                    if (jb.from == nullptr) {
+                        std::memcpy(buf[i % kRing], jb.src, jb.bytes);
+                        if (jb.memo) {   // the pair's bytes, kept for the chunks after this one
+                            std::memcpy(jb.memo->bytes.get(), jb.src, jb.bytes);
+                            jb.memo->filled.store(1, std::memory_order_release);
+                        }
+                        continue;
+                    }
                     from = jb.from;
-                    rl[nr] = jb.l; re[nr] = jb.e; rd[nr] = buf[i % kRing]; ++nr;
+                    rl[nr] = jb.l; re[nr] = jb.e; rd[nr] = buf[i % kRing];
+                    if (jb.memo) { ms[nm] = jb.memo; mb[nm] = jb.bytes; mri[nm] = nr; ++nm; }
+                    ++nr;
                 }
                 if (nr > 0 && !from->copy_blobs(rl, re, rd, nr)) {
                     std::fprintf(stderr, "prefill: the expert source could not copy experts %d.. of layer %d\n", re[0], rl[0]);
                     std::abort();
+                }
+                // STRATA_PROMPT_STAGE_MEMO=1: the pack-read pair lands in its slot with the ring's copy (the release
+                // is what the next chunk's plan reads; finish() is the barrier it waits behind)
+                for (size_t t = 0; t < nm; ++t) {
+                    std::memcpy(ms[t]->bytes.get(), rd[mri[t]], mb[t]);
+                    ms[t]->filled.store(1, std::memory_order_release);
                 }
                 for (int i = j; i < j + k; ++i) ready[(size_t) i].store(1, std::memory_order_release);
                 active.fetch_sub(1, std::memory_order_acq_rel);
@@ -3451,6 +3523,9 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         for (size_t i = 0; i < tap_local_.size(); ++i) tap_slot[(size_t) tap_local_[i]] = (int) i;
     }
 #endif
+    // STRATA_PROMPT_STAGE_MEMO=1 (opt-in): this request's memo for the experts the chunk loop re-reads from the
+    // pack files (see PromptStageMemo). Off by default: the loops below build every job exactly as before.
+    PromptStageMemo stage_memo;
     for (int64_t c0 = 0; c0 < n; c0 += C) {
         if (should_stop && should_stop()) { err = "cancelled"; return false; }
         // the first stage: end the run before this chunk (every chunk before it is handed on; the caller's drain
@@ -3757,11 +3832,21 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 for (int32_t e = 0; e < m.g->n_expert; ++e) {
                     if (m.host_res && m.cache && m.host_res[(size_t) l * m.g->n_expert + e] >= 0) continue;
                     if (m.pp && m.pp->peer && m.pp->peer->has(l, e)) continue;   // multi-GPU: computed on (or read from) the peer
+                    // STRATA_PROMPT_STAGE_MEMO=1: a pair this request already staged copies from the memo; the
+                    // pack files are read once (off: find returns at once and every job below is today's job)
+                    const uint8_t* mm = stage_memo.find(l, e, m.g->n_expert);
+                    if (mm != nullptr) {
+                        const int mj = (int) js.size();
+                        js.push_back({mm, (size_t) lay0.blob_bytes(l)});
+                        seq.push_back({(int32_t) l, e, mm, mj});
+                        continue;
+                    }
                     int job = -1;
                     const uint8_t* b = nullptr;
                     if (m.src->transient(l, e)) {   // CS-T: copied by the source into the stager's buffer
                         job = (int) js.size();
-                        js.push_back({nullptr, (size_t) lay0.blob_bytes(l), m.src, (int32_t) l, e});
+                        js.push_back({nullptr, (size_t) lay0.blob_bytes(l), m.src, (int32_t) l, e,
+                                      stage_memo.reserve(l, e, m.g->n_expert, (size_t) lay0.blob_bytes(l))});
                     } else {
                         b = m.src->blob_stable(l, e);
                         if (!b) { err = "prefill: expert source has no blob"; return false; }
@@ -3776,7 +3861,9 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         }
                         if (!m.src->pinned(l, e)) {
                             job = (int) js.size();
-                            js.push_back({b, (size_t) lay0.blob_bytes(l)});
+                            // STRATA_PROMPT_STAGE_MEMO=1: the first read keeps its bytes in the memo (null past the cap)
+                            js.push_back({b, (size_t) lay0.blob_bytes(l), nullptr, 0, 0,
+                                          stage_memo.reserve(l, e, m.g->n_expert, (size_t) lay0.blob_bytes(l))});
                         }
                     }
                     seq.push_back({(int32_t) l, e, b, job});
@@ -5845,14 +5932,24 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                 const int32_t e = order[j];
                                 if (m.host_res && m.cache && m.host_res[(size_t) l * m.g->n_expert + e] >= 0) continue;
                                 if (m.src->pinned(l, e)) continue;
+                                // STRATA_PROMPT_STAGE_MEMO=1: a pair this request already staged copies from the
+                                // memo, so the pack files are read once per request (off: today's jobs, byte for byte)
+                                const uint8_t* mm = stage_memo.find(l, e, m.g->n_expert);
+                                if (mm != nullptr) {
+                                    job_of[j] = (int) js.size();
+                                    js.push_back({mm, (size_t) lay.blob_bytes(l)});
+                                    continue;
+                                }
                                 job_of[j] = (int) js.size();
                                 if (m.src->transient(l, e)) {   // CS-T: copied by the source
-                                    js.push_back({nullptr, (size_t) lay.blob_bytes(l), m.src, (int32_t) l, e});
+                                    js.push_back({nullptr, (size_t) lay.blob_bytes(l), m.src, (int32_t) l, e,
+                                                  stage_memo.reserve(l, e, m.g->n_expert, (size_t) lay.blob_bytes(l))});
                                     continue;
                                 }
                                 const uint8_t* b = m.src->blob_stable(l, e);
                                 if (!b) { err = "prefill: expert source has no blob"; return false; }
-                                js.push_back({b, (size_t) lay.blob_bytes(l)});
+                                js.push_back({b, (size_t) lay.blob_bytes(l), nullptr, 0, 0,
+                                              stage_memo.reserve(l, e, m.g->n_expert, (size_t) lay.blob_bytes(l))});
                             }
                             if (m.warmer) {
                                 std::vector<int64_t> cur;
