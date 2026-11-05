@@ -134,3 +134,34 @@ way. Remaining suspicious-but-confounded signals: M1's S4k legs all 22.5-113.2 s
 
 Do-not-promote stands (nothing was validated). The channel-close/deadline bug is the lane
 blocker: until it is fixed, any arm with S4k+ legs can die to it at random.
+
+## A/B5 — the M-lane re-bench (2026-11-05 20:56-21:24): MEMO WINS the speed lane
+
+Fixed binary 66446e2181bd5243 (shortpp-src + b8470d07 memo + 375183eb dedup + 14ba81f3
+fallback-transient fix), same-binary A/B, both arms: prompt tier 120 s reply timeout,
+window tier 2000 ms. First M-pair to complete: zero 400s, zero tier deaths - the fallback
+fix and the raised deadlines hold. Host: rebooted (swap off the NVMe), cold page cache.
+
+| leg | M0b (flags off) | M1b (MEMO=1) | warm baseline S0-r1 |
+|-----|-----------------|--------------|---------------------|
+| S214 | 125.9 / 4.8 / 4.4 | 55.2 / **3.0 / 2.7** | 5.7 / 2.9 / 2.6 |
+| S1k | 16.9 / 7.9 / 8.1 | **6.6 / 6.3 / 6.6** | 6.4 / 6.2 / 6.4 |
+| S4k | 18.0 / 27.9 / 53.0 | 20.9 / 46.0 / **24.0** | 15.7 / 16.1 / 16.0 |
+| S18k | 60.1 / 45.0 / **161.4** | 88.5 / **41.7 / 49.1** | 40.7 / 48.7 / 46.0 |
+| TG128 | **146.7** | **11.2** | 16.6 |
+
+Mechanism (judge lines - machinery state, not cache): the control arm hit the accumulation
+pathology exactly as parked - S18k r2 checkpoint save 90378.8 ms, S4k-class slot refill
+28272.9 ms, and the TG leg after it ran 9x baseline. The memo arm's same phases: saves
+~100 ms, refills 530-723 ms, TG 11.2 s. Each dropped pair read once per request starves
+the pathology instead of feeding it.
+
+Caveats: cold host (both arms above warm baseline on first-touch legs; S1k M1b matches the
+warm baseline anyway); M1b ran second on a slightly warmer page cache - which cannot explain
+the checkpoint/refill/TG deltas above. Round-over-round degradation persists in both arms'
+S4k (accumulation follow-up stays parked).
+
+Verdict: SPEED LANE PASS - M1b wins stability decisively (no 161 s blowups, TG 147->11,
+refill 28->0.7) and speed moderately (S1k ~20%, S4k/S18k medians ~14-18%). Next gate:
+the quality yardstick (KL vs stock anchor) on this binary with STRATA_PROMPT_STAGE_MEMO=1
+before any promotion. The adaptive-refill copy bug did not recur on the clean host.
