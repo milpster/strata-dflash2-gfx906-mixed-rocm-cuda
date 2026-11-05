@@ -1,0 +1,82 @@
+{
+ "probe": {
+  "tag": "probe",
+  "wall": 16.60300898551941,
+  "usage": {
+   "prompt_tokens": 214,
+   "completion_tokens": 275,
+   "total_tokens": 489,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "text": "Speculative decoding works by having a small draft model propose a sequence of tokens, then the target model verifies them in parallel. Each proposed token is accepted with probability min(1, p_target/p_draft), which is the standard rejection-sampling correction: it boosts tokens the target model favors relative to the draft and suppresses those it disfavors. If a token is rejected, the next token is drawn from the residual distribution (p_target \u2212 p_draft)/(1 \u2212 p_draft), which is exactly the probability mass the draft model \"missed.\" Acceptance plus residual sampling together reconstruct p_target exactly, so the final output distribution is identical to what the target model would have produced token-by-token."
+ },
+ "pp16384": {
+  "tag": "pp16384",
+  "wall": 165.87178945541382,
+  "usage": {
+   "prompt_tokens": 18233,
+   "completion_tokens": 8,
+   "total_tokens": 18241,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "text": ""
+ },
+ "tg1024": [
+  {
+   "tag": "tg1024.0",
+   "wall": 38.137168884277344,
+   "usage": {
+    "prompt_tokens": 225,
+    "completion_tokens": 1024,
+    "total_tokens": 1249,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "text": "**Diary \u2014 Porting the CUDA engine to HIP on gfx906**  \n**Date:** 2026-06-14  \n**Target:** AMD Radeon Instinct MI50 / Vega 10, `gfx906`  \n**Stack:** ROCm 6.2, HIP 6.2, `hipcc`, `rocBLAS`, `rocFFT`\n\n---\n\n### 08:40 \u2014 Baseline\n\nThe CUDA engine is a small compute pipeline:\n\n- `engine.cu`: kernel launches, memory management, stream/event synchronization\n- `kernels.cu`: fused elementwise + reduction kernels\n- `blas_bridge.cu`: cuBLAS calls for GEMM\n- `fft_bridge.cu`: cuFFT calls\n- `device_info.cu`: CUDA device properties\n\nThe engine is not a full CUDA runtime app; it is mostly kernels plus cuBLAS/cuFFT. That makes the HIP port tractable.\n\nI started from a clean CUDA build:\n\n```bash\nnvcc -O3 -arch=sm_70 -o cuda_engine engine.cu kernels.cu blas_bridge.cu fft_bridge.cu\n./cuda_engine --size 4096\n```\n\nBaseline on the old CUDA box:\n\n```text\nsize=4096\ngemm=18.4 ms\nfft=11.2 ms\nreduce=3.1 ms\ntotal=32.7 ms\n```\n\n---\n\n### 09:15 \u2014 First pass: hipify\n\nI ran `hipify-perl` over the CUDA sources:\n\n```bash\nhipify-perl engine.cu > engine.hip.cpp\nhipify-perl kernels.cu > kernels.hip.cpp\nhipify-perl blas_bridge.cu > blas_bridge.hip.cpp\nhipify-perl fft_bridge.cu > fft_bridge.hip.cpp\nhipify-perl device_info.cu > device_info.hip.cpp\n```\n\nThe mechanical replacements were mostly clean:\n\n```cpp\ncudaMalloc      -> hipMalloc\ncudaFree        -> hipFree\ncudaMemcpy      -> hipMemcpy\ncudaMemcpyAsync -> hipMemcpyAsync\ncudaStream_t    -> hipStream_t\ncudaEvent_t     -> hipEvent_t\ncudaDeviceSynchronize -> hipDeviceSynchronize\n__global__     "
+  },
+  {
+   "tag": "tg1024.1",
+   "wall": 27.4952392578125,
+   "usage": {
+    "prompt_tokens": 225,
+    "completion_tokens": 1024,
+    "total_tokens": 1249,
+    "prompt_tokens_details": {
+     "cached_tokens": 220
+    }
+   },
+   "text": "**Diary \u2014 Day 14: Porting the CUDA engine to HIP on gfx906**\n\nToday I moved the core compute engine from CUDA to HIP targeting AMD `gfx906` (Vega/MI50-class). The goal was not a toy kernel: the engine has a multi-kernel pipeline, pinned host buffers, async streams, events, cooperative reductions, and a small autotuner for block sizes.\n\n## 1. Build system\n\nThe CUDA build used `nvcc` with `-arch=sm_70`. For HIP I switched to `hipcc` and pinned the target architecture:\n\n```bash\nhipcc -O3 -x hip \\\n  --offload-arch=gfx906 \\\n  -Iinclude \\\n  -o engine_hip \\\n  src/engine_hip.cpp\n```\n\nFor a CMake project, the important part was forcing the target arch:\n\n```cmake\ntarget_compile_options(engine_hip PRIVATE\n  --offload-arch=gfx906\n)\n```\n\nI also added a compile-time guard so the same source can be compiled for CUDA and HIP:\n\n```cpp\n#ifdef __HIPCC__\n  #define TARGET_ARCH_GFX906 1\n  #define WARP_SIZE 64\n#else\n  #define WARP_SIZE 32\n#endif\n```\n\nThis mattered immediately because the engine used warp shuffles.\n\n## 2. Runtime API translation\n\nThe CUDA engine used:\n\n```cpp\ncudaMalloc\ncudaFree\ncudaMemcpyAsync\ncudaStream_t\ncudaEvent_t\ncudaDeviceSynchronize\n```\n\nI replaced them with HIP equivalents:\n\n```cpp\nhipMalloc\nhipFree\nhipMemcpyAsync\nhipStream_t\nhipEvent_t\nhipDeviceSynchronize\n```\n\nThe direct mapping was mostly mechanical, but I did not blindly sed-replace `cuda` with `hip`. I checked every call for semantics.\n\nExample:\n\n```cpp\nhipStream_t stream;\nhipEvent_t start, stop;\n\nhipStreamCreate(&stream);\nhipEventCreate(&start);\nhipEventCreate(&stop);\n\nhipEventRecord(start, stream);\n\nengine_kernel<<<grid, block, 0, stream>>>(d_in, d_out, n);\n\nhipEventRecord(stop, stream);\nhipEventSynchronize"
+  },
+  {
+   "tag": "tg1024.2",
+   "wall": 26.36636734008789,
+   "usage": {
+    "prompt_tokens": 225,
+    "completion_tokens": 1024,
+    "total_tokens": 1249,
+    "prompt_tokens_details": {
+     "cached_tokens": 220
+    }
+   },
+   "text": "**2025-03-14 \u2014 Porting the CUDA engine to HIP on gfx906**\n\nToday I started the CUDA \u2192 HIP port for the compute engine on a Vega-class GPU, target `gfx906`. The engine is a mixed workload: a dense linear algebra core, a sparse gather/scatter kernel, and a small reduction pipeline. The goal is not a toy demo; it has to run the same regression suite as the CUDA build.\n\nFirst pass: inventory.\n\n```bash\ngrep -RIn --include='*.cu' --include='*.cuh' \\\n  -e 'cuda' -e '__global__' -e '__device__' -e '__shared__' \\\n  -e '__syncthreads' -e '__shfl' -e 'cudaStream' -e 'cudaEvent' \\\n  src/\n```\n\nThe CUDA surface area is manageable:\n\n- `cudaMalloc`, `cudaFree`, `cudaMemcpy`, `cudaMemset`\n- `cudaStream_t`, `cudaEvent_t`\n- `__global__`, `__device__`, `__shared__`\n- `__syncthreads()`\n- `__shfl_sync()`\n- `__launch_bounds__`\n- `__constant__`\n- `cudaGetLastError()`\n- `cudaDeviceSynchronize()`\n\nI used `hipify-perl` for the mechanical rename, then reviewed every generated file by hand.\n\n```bash\nhipify-perl src/engine.cu > src/engine.hip.cpp\nhipify-perl src/kernels.cu > src/kernels.hip.cpp\n```\n\nThe rename is useful, but it is not a port.\n\nConcrete changes:\n\n```cpp\n// CUDA\n__global__ void reduce_kernel(float* out, const float* in, int n) {\n    __shared__ float smem[256];\n    int tid = threadIdx.x;\n    int idx = blockIdx.x * blockDim.x + tid;\n    float v = idx < n ? in[idx] : 0.0f;\n    smem[tid] = v;\n    __syncthreads();\n    for (int s = blockDim.x / 2; s > 0; s >>= 1) {\n        if (tid < s) smem[tid"
+  }
+ ],
+ "infill80k": {
+  "tag": "infill80k",
+  "wall": 156.34342741966248,
+  "usage": {
+   "prompt_tokens": 87879,
+   "completion_tokens": 155,
+   "total_tokens": 88034,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "text": "watch memory quick the through dog quick."
+ }
+}

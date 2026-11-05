@@ -1,0 +1,82 @@
+{
+ "probe": {
+  "tag": "probe",
+  "wall": 8.77856707572937,
+  "usage": {
+   "prompt_tokens": 203,
+   "completion_tokens": 102,
+   "total_tokens": 305,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "text": "Your sentence is cut off \u2014 \"keeps the\" what? (e.g., \"keeps the output distribution identical,\" \"keeps the latency low,\" \"keeps the acceptance rate high\"?) Let me know the full prompt and I'll write the paragraph."
+ },
+ "pp16384": {
+  "tag": "pp16384",
+  "wall": 44.94046115875244,
+  "usage": {
+   "prompt_tokens": 12176,
+   "completion_tokens": 8,
+   "total_tokens": 12184,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "text": ""
+ },
+ "tg1024": [
+  {
+   "tag": "tg1024.0",
+   "wall": 46.165563106536865,
+   "usage": {
+    "prompt_tokens": 225,
+    "completion_tokens": 1024,
+    "total_tokens": 1249,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "text": "**Diary \u2014 2026-03-14 \u2014 Porting the CUDA engine to HIP on gfx906**\n\nToday I moved the old CUDA engine onto ROCm/HIP for a Vega 20 / gfx906 box. The engine is a mixed workload: a streaming kernel, a reduction kernel, a small graph builder, and a lot of CUDA-style memory/stream/event plumbing. The goal was not a full rewrite, just a faithful port that keeps the same numerical behavior and gets the kernels running on gfx906.\n\n---\n\n## 1. Environment\n\nTarget machine:\n\n```bash\n$ rocminfo | grep -E \"Name|gfx\"\nName:                    gfx906\nName:                    AMD Radeon Instinct MI50\n```\n\nCompiler/toolchain:\n\n```bash\n$ hipcc --version\nHIP version: 6.x\nAMD clang version 17.x\nTarget: x86_64-unknown-linux-gnu\n```\n\nBuild flags I started with:\n\n```bash\nhipcc -O3 -std=c++17 \\\n  -D__HIP_PLATFORM_AMD__ \\\n  -D__HIP_ARCH_GFX906__=1 \\\n  -Iinclude \\\n  -o engine_hip \\\n  src/*.cpp\n```\n\nFor kernels:\n\n```bash\nhipcc -O3 -std=c++17 \\\n  -D__HIP_ARCH_GFX906__=1 \\\n  -c kernels.cu -o kernels.o\n```\n\nI kept the `.cu` extension for now because the CUDA launch syntax is mostly compatible with HIP.\n\n---\n\n## 2. First pass: mechanical CUDA \u2192 HIP replacements\n\nI did a broad rename pass:\n\n```bash\nsed -i \\\n  -e 's/cudaMalloc/hipMalloc/g' \\\n  -e 's/cudaFree/hipFree/g' \\\n  -e 's/cudaMemcpy/hipMemcpy/g' \\\n  -e 's/cudaMemcpyAsync/hipMemcpyAsync/g' \\\n  -e 's/cudaMemset/hipMemset/g' \\\n  -e 's/cudaMemsetAsync/hipMemsetAsync/g' \\\n  -e 's/cudaStream_t/hipStream_t/g'"
+  },
+  {
+   "tag": "tg1024.1",
+   "wall": 26.347193241119385,
+   "usage": {
+    "prompt_tokens": 225,
+    "completion_tokens": 1024,
+    "total_tokens": 1249,
+    "prompt_tokens_details": {
+     "cached_tokens": 220
+    }
+   },
+   "text": "**Diary \u2014 2026-03-14 \u2014 Porting the CUDA engine to HIP on gfx906**\n\nToday I moved the core compute engine from CUDA to HIP targeting AMD `gfx906` (Vega 10 / MI50-class). The goal was not a full rewrite, but a clean port of the kernel launch layer, memory model, and profiling hooks so the engine can run under ROCm with minimal divergence from the CUDA codebase.\n\n---\n\n### 1. Build setup\n\nI started by isolating the CUDA-specific code behind a thin abstraction layer:\n\n```cpp\n// engine_backend.h\n#pragma once\n\n#if defined(__HIPCC__)\n  #include <hip/hip_runtime.h>\n  #define ENGINE_DEVICE __device__\n  #define ENGINE_HOST   __host__\n  #define ENGINE_KERNEL __global__\n  #define ENGINE_INLINE __device__ __forceinline__\n  #define ENGINE_SYNC   __syncthreads\n  #define ENGINE_LAUNCH(kernel, grid, block, smem, stream, ...) \\\n      kernel<<<grid, block, smem, stream>>>(__VA_ARGS__)\n#else\n  #include <cuda_runtime.h>\n  #define ENGINE_DEVICE __device__\n  #define ENGINE_HOST   __host__\n  #define ENGINE_KERNEL __global__\n  #define ENGINE_INLINE __device__ __forceinline__\n  #define ENGINE_SYNC   __syncthreads\n  #define ENGINE_LAUNCH(kernel, grid, block, smem, stream, ...) \\\n      kernel<<<grid, block, smem, stream>>>(__VA_ARGS__)\n#endif\n```\n\nThe CUDA engine already used `__global__`, `__device__`, `__syncthreads()`, and `<<<...>>>` launch syntax, so HIP compatibility was mostly a matter of compiler flags and runtime API names.\n\nI compiled with:\n\n```bash\nhipcc \\\n  -O3 \\\n  -std=c++17 \\\n  --offload-arch=gfx906 \\\n  -Iinclude \\\n  src/engine_hip.cpp \\\n  -o engine_hip\n```\n\nFor a mixed CUDA/HIP project, I kept CUDA sources out of the HIP translation unit. Mixing `cuda_runtime.h` and `hip_runtime.h` in the same"
+  },
+  {
+   "tag": "tg1024.2",
+   "wall": 29.09494423866272,
+   "usage": {
+    "prompt_tokens": 225,
+    "completion_tokens": 1024,
+    "total_tokens": 1249,
+    "prompt_tokens_details": {
+     "cached_tokens": 220
+    }
+   },
+   "text": "**2025-06-12 \u2014 Porting the CUDA engine to HIP on gfx906**\n\nToday I finished the first end-to-end run of the old CUDA engine on a Vega 10 / gfx906 device using HIP. The engine is a small GPU compute pipeline: it loads a sparse matrix, runs a custom SpMV kernel, then calls a dense GEMM for the projection step. The CUDA version had been stable for years, so the port was mostly about removing CUDA assumptions and making the kernels behave on AMD\u2019s 64-lane wavefront model.\n\nThe target machine is a Radeon Instinct MI50, gfx906, 32 GB HBM2, 32 compute units, 64 KB LDS per CU, 64 lanes per wavefront. ROCm version: 6.1.0. HIP compiler: `hipcc`.\n\n---\n\n### 1. Inventory of CUDA-specific code\n\nI started by grepping the CUDA engine for CUDA-only constructs:\n\n```bash\ngrep -RIn --include='*.cu' --include='*.cuh' --include='*.cpp' --include='*.h' \\\n  -e 'cuda' -e '__global__' -e '__device__' -e '__shared__' \\\n  -e 'cublas' -e 'curand' -e 'cudaStream' -e 'cudaEvent' \\\n  src/ include/\n```\n\nThe engine had:\n\n- 11 CUDA kernels in `src/kernels/*.cu`\n- 3 cuBLAS calls in `src/linear_algebra.cpp`\n- CUDA streams and events for overlap\n- `cudaMalloc`, `cudaMemcpy`, `cudaMemset`\n- `__launch_bounds__`\n- `__shfl_down_sync`\n- `__ballot_sync`\n- cooperative groups in one reduction kernel\n- `cudaDeviceSynchronize`\n- CUDA error-check macros\n\nI made a short migration table:\n\n| CUDA construct | HIP / ROCm replacement | Notes |\n|---|---|---|\n| `cudaMalloc` | `hipMalloc` | Direct replacement |\n| `cudaMemcpy` | `hipMemcpy` | Direct replacement |\n| `cudaMemset` | `hipMemset` | Direct replacement"
+  }
+ ],
+ "infill80k": {
+  "tag": "infill80k",
+  "wall": 242.3221514225006,
+  "usage": {
+   "prompt_tokens": 58682,
+   "completion_tokens": 158,
+   "total_tokens": 58840,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "text": "warps lazy warps warps the beneath jumps."
+ }
+}

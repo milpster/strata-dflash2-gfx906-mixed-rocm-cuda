@@ -1,0 +1,28 @@
+{
+ "probe": {
+  "tag": "probe",
+  "wall": 119.05535197257996,
+  "usage": {
+   "prompt_tokens": 214,
+   "completion_tokens": 275,
+   "total_tokens": 489,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "text": "Speculative decoding works by having a small draft model propose a sequence of tokens, then the target model verifies them in parallel. Each proposed token is accepted with probability min(1, p_target/p_draft), which is the standard rejection-sampling correction: it boosts tokens the target model favors relative to the draft and suppresses those it disfavors. If a token is rejected, the next token is drawn from the residual distribution (p_target \u2212 p_draft)/(1 \u2212 p_draft), which is exactly the probability mass the draft model \"missed.\" Acceptance plus residual sampling together reconstruct p_target exactly, so the final output distribution is identical to what the target model would have produced token-by-token."
+ },
+ "pp16384": {
+  "tag": "pp16384",
+  "wall": 68.92967939376831,
+  "usage": {
+   "prompt_tokens": 18233,
+   "completion_tokens": 8,
+   "total_tokens": 18241,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "text": ""
+ }
+}
