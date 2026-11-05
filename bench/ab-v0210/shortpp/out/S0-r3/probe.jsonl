@@ -1,0 +1,5 @@
+{"tag": "warmup", "wall_s": 1.409}
+{"tag": "S1k", "round": 0, "chars": 2677, "wall_s": 10.05}
+{"tag": "S1k", "round": 1, "chars": 2677, "wall_s": 6.466}
+{"tag": "S1k", "round": 2, "chars": 2677, "wall_s": 6.244}
+{"tag": "TG128", "wall_s": 8.928}

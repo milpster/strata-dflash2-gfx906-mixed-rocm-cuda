@@ -1,0 +1,80 @@
+strata trace: prompt done (slots refilled) -1 -1 795637.9 ms
+strata trace: window 10143 1 795638.5 ms
+strata trace: window 10144 5 795707.8 ms
+strata trace: window 10146 5 795828.8 ms
+strata trace: request 10144 0 818985.2 ms
+strata trace: prompt start 10143 -1 818985.2 ms
+strata trace: lent 4590 slots for 10240 tokens in 0.5 ms
+strata trace: prompt chunk 0 of 10139 stage [0,32) 817559.4 ms
+strata pf-step: chunk from token 0, layer 6: reading the prompt (batched, step sync): the experts and the rest of layer took 212491 ms (no error / no error)
+strata pf-step: chunk from token 0, layer 11: reading the prompt (batched, step sync): the experts and the rest of layer took 1633 ms (no error / no error)
+strata pf-step: chunk from token 0, layer 21: reading the prompt (batched, step sync): the experts and the rest of layer took 45905 ms (no error / no error)
+strata pf-step: chunk from token 0, layer 24: reading the prompt (batched, step sync): the experts and the rest of layer took 1221 ms (no error / no error)
+strata trace: prompt chunk 0 of 10139 stage [32,48) 1188874.1 ms
+strata pf-step: chunk from token 0, layer 32: reading the prompt (batched, step sync): the experts and the rest of layer took 987 ms (no error / no error)
+strata pf-step: chunk from token 0, layer 33: reading the prompt (batched, step sync): the experts and the rest of layer took 950 ms (no error / no error)
+strata pf-step: chunk from token 0, layer 34: reading the prompt (batched, step sync): the experts and the rest of layer took 894 ms (no error / no error)
+strata pf-step: chunk from token 0, layer 35: reading the prompt (batched, step sync): the experts and the rest of layer took 968 ms (no error / no error)
+strata pf-step: chunk from token 0, layer 36: reading the prompt (batched, step sync): the experts and the rest of layer took 765 ms (no error / no error)
+strata pf-step: chunk from token 0, layer 37: reading the prompt (batched, step sync): the experts and the rest of layer took 932 ms (no error / no error)
+strata pf-step: chunk from token 0, layer 38: reading the prompt (batched, step sync): the experts and the rest of layer took 865 ms (no error / no error)
+strata pf-step: chunk from token 0, layer 39: reading the prompt (batched, step sync): the experts and the rest of layer took 986 ms (no error / no error)
+strata pf-step: chunk from token 0, layer 40: reading the prompt (batched, step sync): the experts and the rest of layer took 2179 ms (no error / no error)
+strata pf-step: chunk from token 0, layer 41: reading the prompt (batched, step sync): the experts and the rest of layer took 70922 ms (no error / no error)
+strata pf-step: chunk from token 0, layer 42: reading the prompt (batched, step sync): the experts and the rest of layer took 975 ms (no error / no error)
+strata pf-step: chunk from token 0, layer 43: reading the prompt (batched, step sync): the experts and the rest of layer took 1069 ms (no error / no error)
+strata pf-step: chunk from token 0, layer 44: reading the prompt (batched, step sync): the experts and the rest of layer took 1100 ms (no error / no error)
+strata pf-step: chunk from token 0, layer 45: reading the prompt (batched, step sync): the experts and the rest of layer took 1081 ms (no error / no error)
+strata pf-step: chunk from token 0, layer 46: reading the prompt (batched, step sync): the experts and the rest of layer took 1089 ms (no error / no error)
+strata trace: read 10139 tokens (batched) in 467109.3 ms
+strata trace: checkpoint at 10139: sync 5.3 ms, save 33914.1 ms (2 stage(s))
+strata trace: refilled 4590 slots on 2 stage(s) in 5902.2 ms
+strata trace: read 4 tokens (windows) in 183.1 ms
+strata trace: prompt done (slots refilled) -1 -1 1326104.1 ms
+strata trace: window 10143 1 1326104.6 ms
+strata trace: window 10144 5 1326192.6 ms
+strata trace: window 10146 4 1326313.0 ms
+strata trace: request 625 0 1326884.6 ms
+strata trace: prompt start 624 -1 1326884.7 ms
+strata trace: lent 567 slots for 768 tokens in 0.7 ms
+strata trace: prompt chunk 0 of 620 stage [0,32) 1325458.8 ms
+strata trace: prompt chunk 0 of 620 stage [32,48) 1328328.9 ms
+strata pf-step: chunk from token 0, layer 33: reading the prompt (batched, step sync): the experts and the rest of layer took 327 ms (no error / no error)
+strata trace: read 620 tokens (batched) in 5459.9 ms
+strata trace: checkpoint at 620: sync 0.1 ms, save 94.0 ms (2 stage(s))
+strata trace: refilled 567 slots on 2 stage(s) in 723.5 ms
+strata trace: read 4 tokens (windows) in 55.3 ms
+strata trace: prompt done (slots refilled) -1 -1 1333218.3 ms
+strata trace: window 624 1 1333218.3 ms
+strata trace: window 625 5 1333277.2 ms
+strata trace: window 627 5 1333344.6 ms
+strata trace: window 632 2 1333414.8 ms
+strata trace: window 634 1 1333476.6 ms
+strata trace: window 635 5 1333519.0 ms
+strata trace: window 639 5 1333634.5 ms
+strata trace: window 644 5 1333713.7 ms
+strata trace: window 649 5 1333795.4 ms
+strata trace: window 654 5 1335888.8 ms
+strata trace: window 659 5 1336073.6 ms
+strata trace: window 664 5 1336157.4 ms
+strata trace: window 669 5 1336239.5 ms
+strata trace: window 674 5 1336321.8 ms
+strata trace: window 679 5 1336506.2 ms
+strata trace: window 684 5 1336589.8 ms
+strata trace: request 707 0 1336678.3 ms
+strata trace: prompt start 706 -1 1336678.3 ms
+strata trace: read 17 tokens (windows) in 250.1 ms
+strata trace: prompt done (slots refilled) -1 -1 1336928.3 ms
+strata trace: window 706 1 1336928.4 ms
+strata trace: window 707 3 1336971.0 ms
+strata trace: window 710 5 1337112.4 ms
+strata trace: window 712 2 1337183.9 ms
+strata trace: window 714 5 1337233.7 ms
+strata trace: window 717 5 1337304.9 ms
+strata trace: window 722 5 1337425.6 ms
+strata trace: window 727 5 1337505.1 ms
+strata trace: window 732 5 1337588.9 ms
+strata trace: window 736 5 1337669.9 ms
+strata trace: window 741 5 1337827.2 ms
+strata trace: window 746 5 1337922.6 ms
+strata trace: window 751 5 1338004.0 ms

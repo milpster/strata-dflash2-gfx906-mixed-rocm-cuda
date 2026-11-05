@@ -1,0 +1,80 @@
+strata trace: lent 4590 slots for 10240 tokens in 0.6 ms
+strata trace: prompt chunk 0 of 10139 stage [0,32) 78090.1 ms
+strata trace: prompt chunk 0 of 10139 stage [32,48) 92485.7 ms
+strata trace: read 10139 tokens (batched) in 32588.1 ms
+strata trace: checkpoint at 10139: sync 0.1 ms, save 95.5 ms (2 stage(s))
+strata trace: refilled 4590 slots on 2 stage(s) in 7483.8 ms
+strata trace: read 4 tokens (windows) in 66.3 ms
+strata trace: prompt done (slots refilled) -1 -1 119629.6 ms
+strata trace: window 10143 1 119629.7 ms
+strata trace: window 10144 5 119671.0 ms
+strata trace: window 10146 4 119739.8 ms
+strata trace: request 10144 0 127325.8 ms
+strata trace: prompt start 10143 -1 127326.3 ms
+strata trace: lent 4590 slots for 10240 tokens in 0.3 ms
+strata trace: prompt chunk 0 of 10139 stage [0,32) 126021.0 ms
+strata trace: prompt chunk 0 of 10139 stage [32,48) 140929.1 ms
+strata trace: read 10139 tokens (batched) in 34528.7 ms
+strata trace: checkpoint at 10139: sync 0.1 ms, save 606.9 ms (2 stage(s))
+strata trace: refilled 4590 slots on 2 stage(s) in 5826.0 ms
+strata trace: read 4 tokens (windows) in 64.8 ms
+strata trace: prompt done (slots refilled) -1 -1 168353.2 ms
+strata trace: window 10143 1 168353.3 ms
+strata trace: window 10144 5 168395.3 ms
+strata trace: window 10146 5 168467.2 ms
+strata trace: request 10144 0 173813.8 ms
+strata trace: prompt start 10143 -1 173813.8 ms
+strata trace: lent 4590 slots for 10240 tokens in 0.6 ms
+strata trace: prompt chunk 0 of 10139 stage [0,32) 172508.8 ms
+strata trace: prompt chunk 0 of 10139 stage [32,48) 186806.5 ms
+strata trace: read 10139 tokens (batched) in 32508.2 ms
+strata trace: checkpoint at 10139: sync 0.1 ms, save 2071.5 ms (2 stage(s))
+strata trace: refilled 4590 slots on 2 stage(s) in 5825.8 ms
+strata trace: read 4 tokens (windows) in 63.9 ms
+strata trace: prompt done (slots refilled) -1 -1 214283.9 ms
+strata trace: window 10143 1 214284.0 ms
+strata trace: window 10144 5 214346.9 ms
+strata trace: window 10146 5 214416.1 ms
+strata trace: request 625 0 217593.6 ms
+strata trace: prompt start 624 -1 217593.6 ms
+strata trace: lent 567 slots for 768 tokens in 0.4 ms
+strata trace: prompt chunk 0 of 620 stage [0,32) 216288.4 ms
+strata trace: prompt chunk 0 of 620 stage [32,48) 218960.3 ms
+strata trace: read 620 tokens (batched) in 5328.3 ms
+strata trace: checkpoint at 620: sync 0.1 ms, save 3853.6 ms (2 stage(s))
+strata trace: refilled 567 slots on 2 stage(s) in 723.5 ms
+strata trace: read 4 tokens (windows) in 52.7 ms
+strata trace: prompt done (slots refilled) -1 -1 227552.3 ms
+strata trace: window 624 1 227552.4 ms
+strata trace: window 625 5 227592.4 ms
+strata trace: window 627 5 227662.3 ms
+strata trace: window 632 2 227728.6 ms
+strata trace: window 634 1 227775.6 ms
+strata trace: window 635 4 227817.7 ms
+strata trace: window 639 5 227907.5 ms
+strata trace: window 644 5 227987.3 ms
+strata trace: window 649 5 228068.3 ms
+strata trace: window 654 5 228151.0 ms
+strata trace: window 659 5 228334.0 ms
+strata trace: window 664 5 228419.7 ms
+strata trace: window 669 5 228501.0 ms
+strata trace: window 674 5 228582.3 ms
+strata trace: window 679 5 228754.0 ms
+strata trace: window 684 5 228841.3 ms
+strata trace: request 707 0 228931.0 ms
+strata trace: prompt start 706 -1 228931.0 ms
+strata trace: read 17 tokens (windows) in 229.7 ms
+strata trace: prompt done (slots refilled) -1 -1 229160.8 ms
+strata trace: window 706 1 229160.8 ms
+strata trace: window 707 3 229201.5 ms
+strata trace: window 710 2 229311.4 ms
+strata trace: window 712 1 229358.0 ms
+strata trace: window 713 5 229397.7 ms
+strata trace: window 717 5 229467.2 ms
+strata trace: window 722 5 229594.6 ms
+strata trace: window 727 5 229675.4 ms
+strata trace: window 732 5 230559.1 ms
+strata trace: window 734 5 230640.2 ms
+strata trace: window 739 5 230796.4 ms
+strata trace: window 744 5 230885.1 ms
+strata trace: window 749 5 230966.0 ms
