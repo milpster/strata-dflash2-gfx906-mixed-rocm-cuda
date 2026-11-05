@@ -1,0 +1,82 @@
+{
+ "probe": {
+  "tag": "probe",
+  "wall": 9.665092945098877,
+  "usage": {
+   "prompt_tokens": 63,
+   "completion_tokens": 280,
+   "total_tokens": 343,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "text": "Speculative decoding works by having a small \"draft\" model propose tokens, then the large \"target\" model checks each one. The key trick is the acceptance rule: if the target model thinks a proposed token is more likely than the draft model did, it's always accepted; if the target model thinks it's less likely, it's accepted with a probability equal to that ratio. This is exactly the math of rejection sampling, which is a well-known technique for drawing samples from a desired distribution using a proposal distribution. Because of this, every token that passes through the filter is distributed exactly as the target model would have produced it on its own, so the final output is statistically identical to what the target model would generate token-by-token, just faster."
+ },
+ "pp16384": {
+  "tag": "pp16384",
+  "wall": 79.4344277381897,
+  "usage": {
+   "prompt_tokens": 18082,
+   "completion_tokens": 8,
+   "total_tokens": 18090,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "text": ""
+ },
+ "tg1024": [
+  {
+   "tag": "tg1024.0",
+   "wall": 39.757078886032104,
+   "usage": {
+    "prompt_tokens": 74,
+    "completion_tokens": 1024,
+    "total_tokens": 1098,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "text": "**Diary entry \u2014 2026-01-14**  \n**Subject:** Porting the CUDA compute engine to HIP on gfx906  \n**Target GPU:** AMD gfx906 / Vega 20 class, e.g. Radeon VII / MI50  \n**ROCm:** 6.2  \n**Compiler:** `hipcc` / LLVM AMDGPU backend  \n**Goal:** Replace CUDA runtime + kernels with HIP, keep the engine\u2019s simulation loop, memory layout, and numerical behavior as close as possible.\n\n---\n\n## 1. Initial state\n\nThe engine is a CUDA-based particle/field solver:\n\n- 1 main compute kernel: `step_kernel`\n- 2 auxiliary kernels:\n  - `init_kernel`\n  - `reduce_kernel`\n- Uses:\n  - `cudaMalloc`\n  - `cudaMemcpy`\n  - `cudaStream_t`\n  - `cudaEvent_t`\n  - `__shared__`\n  - `__syncthreads()`\n  - warp shuffles\n  - atomics\n  - cooperative groups for block reduction\n- Build system: CMake + `CUDA::cudart`\n\nThe first porting pass is not a rewrite. It is a mechanical translation, then a gfx906-specific tuning pass.\n\n---\n\n## 2. Runtime API translation\n\nThe CUDA runtime calls map almost one-to-one.\n\n### Header\n\nBefore:\n\n```cpp\n#include <cuda_runtime.h>\n```\n\nAfter:\n\n```cpp\n#include <hip/hip_runtime.h>\n```\n\n### Types\n\n```cpp\ncudaStream_t   -> hipStream_t\ncudaEvent_t    -> hipEvent_t\ncudaDeviceProp -> hipDeviceProp_t\ncudaError_t    -> hipError_t\n```\n\n### Memory\n\n```cpp\ncudaMalloc(&d_particles, bytes);\ncudaMemcpy(d_particles, h_particles, bytes, cudaMemcpyHostToDevice);\ncudaFree(d_particles);\n```\n\nbecomes:\n\n```cpp\nhipMalloc(&d_particles, bytes);\nhipMemcpy(d_particles, h_particles, bytes, hipMemcpyHostToDevice);\nhipFree(d_particles);\n```\n\n### Streams and events\n\n```cpp\ncudaStreamCreate(&stream);\ncudaEventCreate(&ev);\ncudaEventRecord(ev, stream);\ncudaEventSynchronize(ev);\n"
+  },
+  {
+   "tag": "tg1024.1",
+   "wall": 30.984686136245728,
+   "usage": {
+    "prompt_tokens": 74,
+    "completion_tokens": 1024,
+    "total_tokens": 1098,
+    "prompt_tokens_details": {
+     "cached_tokens": 69
+    }
+   },
+   "text": "**Technical Diary \u2014 Day 14: Porting the CUDA Engine to HIP on gfx906**\n\n**Date:** 2026-06-18  \n**Target GPU:** AMD Radeon Instinct MI50 / gfx906  \n**ROCm:** 6.2.4  \n**HIP:** 6.2.23493  \n**CUDA baseline:** CUDA 12.4, sm_75  \n**Engine:** \u201cAurora\u201d \u2014 CUDA-based particle transport + sparse accumulation engine  \n**Goal:** Get the CUDA engine running on gfx906 via HIP with acceptable numerical parity and performance.\n\n---\n\n## 07:40 \u2014 Initial build attempt\n\nI started by replacing the CUDA runtime API with HIP. The first pass was mechanical:\n\n```bash\nsed -i 's/cudaMalloc/hipMalloc/g' src/*.cu\nsed -i 's/cudaFree/hipFree/g' src/*.cu\nsed -i 's/cudaMemcpy/hipMemcpy/g' src/*.cu\nsed -i 's/cudaStream_t/hipStream_t/g' src/*.cu\nsed -i 's/cudaEvent_t/hipEvent_t/g' src/*.cu\nsed -i 's/cudaDeviceSynchronize/hipDeviceSynchronize/g' src/*.cu\nsed -i 's/cudaGetDeviceProperties/hipGetDeviceProperties/g' src/*.cu\n```\n\nI renamed the kernel files from `.cu` to `.hip` and updated the CMake target:\n\n```cmake\nset_source_files_properties(\n  src/transport_kernel.hip\n  src/accumulate_kernel.hip\n  PROPERTIES LANGUAGE HIP\n)\n\ntarget_compile_options(aurora_hip PRIVATE\n  --offload-arch=gfx906\n  -O3\n  --use_fast_math\n)\n```\n\nThe first compile failed immediately:\n\n```text\nerror: use of undeclared identifier '__shfl_sync'\n```\n\nThat was expected. CUDA warp intrinsics do not map one-to-one onto AMD wavefronts.\n\n---\n\n## 09:15 \u2014 Warp/wavefront mismatch\n\nThe CUDA engine used a lot of 32-lane warp reductions:\n\n```cpp\n__device__ float warpReduceSum(float x) {\n    for (int"
+  },
+  {
+   "tag": "tg1024.2",
+   "wall": 39.86151838302612,
+   "usage": {
+    "prompt_tokens": 74,
+    "completion_tokens": 1024,
+    "total_tokens": 1098,
+    "prompt_tokens_details": {
+     "cached_tokens": 69
+    }
+   },
+   "text": "**Technical Diary \u2014 Porting the CUDA Engine to HIP on gfx906**\n\n**Date:** 2026-01-14  \n**Target GPU:** AMD Radeon Instinct MI50 / Vega 10, `gfx906`  \n**ROCm:** 6.1  \n**HIP:** 6.1  \n**CUDA baseline:** CUDA 12.2, compute capability 7.5  \n**Engine:** particle solver + reduction pipeline, ~18k LOC CUDA, heavy use of warp intrinsics, shared memory, streams, events, and custom kernels.\n\n---\n\n## 08:10 \u2014 Initial assessment\n\nThe CUDA engine is not a simple \u201crename `cuda` to `hip`\u201d port. The main risks are:\n\n1. **Warp size mismatch**\n   - CUDA warp = 32 lanes.\n   - AMD wavefront on `gfx906` = 64 lanes.\n   - Any code assuming `warpSize == 32`, `__shfl_sync(0xffffffff, ...)`, `__ballot_sync(0xffffffff, ...)`, `__syncwarp()`, or 32-lane segmented reductions will be wrong.\n\n2. **Shared memory and occupancy**\n   - `gfx906` has 64 CUs.\n   - Shared memory per CU is 64 KB, with 64 KB LDS per workgroup maximum.\n   - The CUDA engine used 48 KB shared memory per block in one kernel. That is legal on `gfx906`, but occupancy is very low.\n\n3. **FP16 behavior**\n   - CUDA code used `__half2`, `__hmul2`, `__hfma2`.\n   - HIP on `gfx906` supports FP16, but the compiler path is different.\n   - Need to verify that `__half2` operations are not being scalarized.\n\n4. **Atomics**\n   - CUDA used `atomicAdd(float*)` heavily.\n   - On `gfx906`, FP32 global atomics are supported, but contention in the reduction kernel is a major performance issue.\n\n5. **Streams/events**\n   - CUDA streams map cleanly to HIP streams.\n   - CUDA events map cleanly to"
+  }
+ ],
+ "infill80k": {
+  "tag": "infill80k",
+  "wall": 225.47650170326233,
+  "usage": {
+   "prompt_tokens": 87728,
+   "completion_tokens": 210,
+   "total_tokens": 87938,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "text": "The winds a silicon while kernel watch jumps jumps winds dog lanes controller's winds and a controller's through silicon lazy the the brown fox the memory and silicon lanes over silicon watch brown winds fox beneath quick jumps kernel a winds lazy jumps beneath dog a lazy jumps schedules a through winds quick watch memory quick the through dog quick."
+ }
+}

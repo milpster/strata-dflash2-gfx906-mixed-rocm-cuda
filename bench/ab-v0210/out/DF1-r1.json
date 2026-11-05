@@ -1,0 +1,82 @@
+{
+ "probe": {
+  "tag": "probe",
+  "wall": 11.753590822219849,
+  "usage": {
+   "prompt_tokens": 214,
+   "completion_tokens": 219,
+   "total_tokens": 433,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "text": "Speculative decoding works by having a small draft model propose several tokens, then the target model verifies them in parallel. For each proposed token, the target model checks whether the draft's probability for that token is at most the target's probability; if so, the token is accepted. If the draft overestimated the probability, the token is rejected and resampled from the *corrected* distribution (target probability minus draft probability, renormalized). This is exactly rejection sampling, which guarantees that every accepted token is drawn from the target model's true distribution, so the final output is statistically identical to what the target model would have produced on its own."
+ },
+ "pp16384": {
+  "tag": "pp16384",
+  "wall": 67.28932809829712,
+  "usage": {
+   "prompt_tokens": 18233,
+   "completion_tokens": 8,
+   "total_tokens": 18241,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "text": ""
+ },
+ "tg1024": [
+  {
+   "tag": "tg1024.0",
+   "wall": 36.90476989746094,
+   "usage": {
+    "prompt_tokens": 225,
+    "completion_tokens": 1024,
+    "total_tokens": 1249,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "text": "**Diary \u2014 2026-02-17**  \n**Project:** `fluid-solver` CUDA engine \u2192 HIP on AMD gfx906  \n**Machine:** AMD MI50, 16 GB HBM2, ROCm 6.2.4, HIP 6.2, LLVM 18  \n**Target arch:** `gfx906`  \n**Goal:** get the CUDA solver running on AMD without a CUDA runtime.\n\n---\n\n### 08:40 \u2014 Baseline CUDA build\n\nThe CUDA engine is a small explicit finite-difference solver:\n\n- `src/cuda/solver.cu`\n- `src/cuda/kernels.cu`\n- `src/cuda/memory.cu`\n- `src/cuda/streams.cu`\n\nIt uses:\n\n- `cudaMalloc`, `cudaMemcpy`, `cudaMemcpyAsync`\n- `cudaStream_t`, `cudaEvent_t`\n- `__global__` kernels\n- `<<<grid, block, sharedMem, stream>>>` launches\n- `__syncthreads()`\n- `__shfl_down_sync()`\n- `cudaDeviceSynchronize()`\n- `cudaGetLastError()`\n\nThe CUDA build is clean:\n\n```bash\nnvcc -O3 -arch=sm_70 -o solver_cuda src/cuda/*.cu\n./solver_cuda --grid 2048 --steps 1000\n```\n\nBaseline on the old CUDA box:\n\n```text\ngrid=2048 steps=1000\ntime=1.842 s\navg=1.842 ms/step\n```\n\n---\n\n### 09:15 \u2014 First HIP conversion pass\n\nI started with `hipify-perl` because the CUDA surface area is small.\n\n```bash\nhipify-perl src/cuda/solver.cu > src/hip/solver.cpp\nhipify-perl src/cuda/kernels.cu > src/hip/kernels.cpp\nhipify-perl src/cuda/memory.cu > src/hip/memory.cpp\nhipify-perl src/cuda/streams.cu > src/hip/streams.cpp\n```\n\nThe mechanical replacements were mostly straightforward:\n\n```cpp\n#include <hip/hip_runtime.h>\n\nhipMalloc(&d_pressure, bytes);"
+  },
+  {
+   "tag": "tg1024.1",
+   "wall": 26.959280967712402,
+   "usage": {
+    "prompt_tokens": 225,
+    "completion_tokens": 1024,
+    "total_tokens": 1249,
+    "prompt_tokens_details": {
+     "cached_tokens": 220
+    }
+   },
+   "text": "**Diary \u2014 2026-02-14 \u2014 Porting the CUDA engine to HIP on gfx906**\n\nToday I moved the core CUDA engine onto HIP for gfx906. The engine is a tile-based compute kernel: it loads input tiles into shared memory, runs a fused reduction, and writes results back through a stream pipeline. The CUDA version was already using streams, events, pinned host memory, and a small graph-like launch sequence, so the port was mostly mechanical, but gfx906 forced a few real changes.\n\n**1. Build setup**\n\nI started from the CUDA source and ran `hipify-perl` over the kernel and runtime files:\n\n```bash\nhipify-perl -inplace engine.cu\nhipify-perl -inplace engine_host.cpp\n```\n\nThe automatic conversion handled most of the obvious API renames:\n\n```cpp\ncudaMalloc      -> hipMalloc\ncudaFree        -> hipFree\ncudaMemcpyAsync -> hipMemcpyAsync\ncudaStream_t    -> hipStream_t\ncudaEvent_t     -> hipEvent_t\ncudaDeviceSynchronize -> hipDeviceSynchronize\n```\n\nThe kernel launch syntax stayed the same:\n\n```cpp\n__global__ void tile_reduce_kernel(\n    const float* __restrict__ in,\n    float* __restrict__ out,\n    int rows,\n    int cols)\n{\n    extern __shared__ float smem[];\n\n    int tid = threadIdx.x;\n    int row = blockIdx.x;\n    int lane = tid & 31;\n    int warp = tid >> 5;\n\n    float acc = 0.0f;\n\n    for (int c = tid; c < cols; c += blockDim.x) {\n        acc += in[row * cols + c];\n    }\n\n    smem[tid] = acc;\n    __syncthreads();\n\n    for (int s = blockDim.x / 2; s > 32; s >>= 1) {\n        if (tid < s) {\n            smem[tid] += smem[tid + s];\n        }\n        __syncthreads();\n    }\n\n    if (tid < 32) {\n        float v = smem[tid];\n        v += __shfl_down_sync(0xffffffff, v"
+  },
+  {
+   "tag": "tg1024.2",
+   "wall": 26.824312925338745,
+   "usage": {
+    "prompt_tokens": 225,
+    "completion_tokens": 1024,
+    "total_tokens": 1249,
+    "prompt_tokens_details": {
+     "cached_tokens": 220
+    }
+   },
+   "text": "**Diary \u2014 2026-03-14 \u2014 Porting the CUDA engine to HIP on gfx906**\n\nToday I moved the core compute engine from CUDA to HIP targeting AMD `gfx906` (Vega/MI50-class). The goal was not a toy demo: the engine has a multi-kernel pipeline, pinned host memory, async copies, streams, events, cooperative reductions, and a small device-side allocator. I wanted it to compile, run, and be profiled on ROCm.\n\n## 1. Build setup\n\nI started from a CUDA source tree with kernels like:\n\n```cpp\n__global__ void reduce_kernel(float* out, const float* in, int n) {\n    __shared__ float smem[256];\n    int tid = threadIdx.x;\n    int idx = blockIdx.x * blockDim.x + tid;\n    float v = (idx < n) ? in[idx] : 0.f;\n\n    smem[tid] = v;\n    __syncthreads();\n\n    for (int s = blockDim.x / 2; s > 0; s >>= 1) {\n        if (tid < s) smem[tid] += smem[tid + s];\n        __syncthreads();\n    }\n\n    if (tid == 0) atomicAdd(out, smem[0]);\n}\n```\n\nThe CUDA build used:\n\n```bash\nnvcc -O3 -arch=sm_75 -o engine_cuda engine.cu\n```\n\nFor HIP, I switched to:\n\n```bash\nhipcc -O3 --offload-arch=gfx906 -o engine_hip engine.cpp\n```\n\nI renamed `.cu` files to `.cpp` and replaced CUDA headers:\n\n```cpp\n#include <hip/hip_runtime.h>\n```\n\nThe first compile failure was not exotic: CUDA-specific intrinsics and types. I replaced:\n\n```cpp\ncudaMalloc\ncudaFree\ncudaMemcpy\ncudaMemcpyAsync\ncudaStream_t\ncudaEvent_t\ncudaDeviceSynchronize\ncudaGetLastError\ncudaDeviceProp\n```\n\nwith the HIP equivalents:\n\n```cpp\nhipMalloc\nhipFree\nhipMemcpy\nhipMemcpyAsync\nhipStream_t\nhipEvent_t\nhipDeviceSynchronize\nhipGetLastError\nhip"
+  }
+ ],
+ "infill80k": {
+  "tag": "infill80k",
+  "wall": 163.59228372573853,
+  "usage": {
+   "prompt_tokens": 87879,
+   "completion_tokens": 155,
+   "total_tokens": 88034,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "text": "watch memory quick the through dog quick."
+ }
+}

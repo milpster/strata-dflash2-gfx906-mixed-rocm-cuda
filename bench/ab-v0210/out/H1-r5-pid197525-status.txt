@@ -1,0 +1,5 @@
+Name:	strata-host
+Pid:	197525
+VmLck:	    2276 kB
+VmRSS:	45796608 kB
+THP_enabled:	0
