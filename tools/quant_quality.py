@@ -233,9 +233,10 @@ def cmd_prompt(a) -> int:
             break
     else:
         raise SystemExit(f"the engine ended before READY (exit {p.wait()}); see {out}/stderr.txt")
+    lens = [int(x) for x in a.lens.split(",")] if a.lens else PROMPT_LENS
     index = []
     for s in st["segments"]:
-        for n in PROMPT_LENS:
+        for n in lens:
             p.stdin.write("GEN 1 " + ",".join(map(str, s["ids"][:n])) + "\n")
             p.stdin.flush()
             done = None
@@ -387,6 +388,7 @@ def main() -> int:
     p.add_argument("--min-free-gb", type=float, default=16)
     p.add_argument("--wrap")
     p.add_argument("--kv", help="override the pinned fp16 kv (int8 = prod's mode)")
+    p.add_argument("--lens", help="comma list overriding PROMPT_LENS (e.g. 256,512 for a shallow gate)")
     p = sub.add_parser("compare")
     p.add_argument("ref")
     p.add_argument("runs", nargs="+")
