@@ -926,3 +926,7 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
 - T4 STRATA_PREFILL_CPU_SHARE=auto: THE WINNER - S214 2.4x (2.6-2.9s warm), S1k 1.8x (6.2s, read halved), S4k 1.4x (16s), TG128 -5.1s (9.1s), S18k unchanged; zero regressions/outliers; upstream KL~0.004 documented. PROMOTED to both prod configs.
 - Window-routing (2.2x for <=256tok) proven twice but needs source work: window reads must populate the arena (refill/restaging root cause); the ~3.6s short-chunk intercept is layer compute/staging (source).
 - Commits: 32fcc9c4, a69e7898, 8f9469e3 + results commits; artifacts in bench/ab-v0210/{shortpp,logs,out/RESULTS-shortpp.md}.
+
+## 2026-11-05 03:2x - quality lane for the promoted version (ordered: speed+quality for the new version)
+- User order banked as standing rule too: any NEW engine version gets BOTH lanes (speed + quality) before promotion.
+- Quality gate for the live promoted config (CPU_SHARE=auto): qqS vs share-off twin A and vs stock REF = top-1 100.00%, KL 0.00000/p99 0.0000, PPL 4.115=4.115 over 4995 positions; yardstick pins --prefill 512 so every scored chunk runs the share path. PERFECT PASS - the 1.8-2.4x short-prompt win carries zero quality cost. Commits: 25ae1864 (qqS config), 60e7afaa (S.tsv artifacts).
