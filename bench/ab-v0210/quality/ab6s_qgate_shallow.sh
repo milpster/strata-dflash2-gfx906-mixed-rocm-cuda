@@ -11,7 +11,7 @@ ROOT=/home/user/dev/Strata; Q=$ROOT/bench/ab-v0210/quality; PROD=/mnt/user/Strat
 PY=$ROOT/.venv/bin/python
 log(){ echo "=== $* $(date +%T) ==="; }
 sha16(){ sha256sum "$1" | awk '{print substr($1,1,16)}'; }
-log "SHALLOW QGATE (fp16) start: stopping prod (GPU window: 2 shallow arms + 1 compare; both VIIs, CPU experts)"
+log "SHALLOW QGATE (fp16+gpu-experts) start: stopping prod (GPU window: 2 shallow arms + 1 compare; experts in VRAM - host RAM lean)"
 bash "$PROD/stop-prod.sh"
 pkill -9 -f '[r]pcw-(hip|cuda)/' 2>/dev/null; pkill -9 -f '/serve/[s]erver[.]py' 2>/dev/null
 for i in $(seq 1 60); do
@@ -22,8 +22,8 @@ log "binary provenance (sha-gated)"
 [[ $(sha16 "$ROOT/build-memo2/rpcw-hip/strata") == 66446e2181bd5243 ]] || { echo 'SHA FAIL: memo2 binary'; bash "$PROD/relaunch-pair-supervised.sh"; exit 1; }
 cd "$ROOT"
 for a in PM PX; do
-  log "arm ${a}s: prompt-mode logits, fp16 pin, --lens 256,512 (shallow)"
-  "$PY" tools/quant_quality.py prompt --config "$Q/qq$a.json" --out "$Q/out/prompt-${a}s" --lens 256,512 \
+  log "arm ${a}s: prompt-mode logits, fp16 pin, --gpu-experts, --lens 256,512 (shallow, VRAM experts)"
+  "$PY" tools/quant_quality.py prompt --config "$Q/qq$a.json" --out "$Q/out/prompt-${a}s" --lens 256,512 --gpu-experts \
     || { echo "ARM ${a}s FAILED - restoring prod"; bash "$PROD/relaunch-pair-supervised.sh"; exit 1; }
 done
 log "GATE: PMs vs PXs - the memo's delta at the fp16 pin, shallow (must be ~0)"
