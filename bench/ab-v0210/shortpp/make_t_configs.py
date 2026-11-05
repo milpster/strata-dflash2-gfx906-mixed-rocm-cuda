@@ -58,3 +58,7 @@ if __name__ == "__main__":
     #                                      would push MORE tokens into the slow batched path.
     arm("T1b", env={"STRATA_RPC_PROFILE": "1"})
     arm("T2c", args_delta=[("--short-read", "256")])
+    # T6c combo (after the T2c + T5 verdicts): window-route <=256-tok prompts AND nothing-lent <=1024-tok
+    # requests, so the refill T2c poisoned cannot exist and the 512-chunk geometry never touches 2-4k prompts.
+    arm("T6c", env={"STRATA_SPLIT_SMALL_OWN": "512", "STRATA_SPLIT_SMALL_MAX": "1024"},
+        args_delta=[("--short-read", "256")])
