@@ -7,8 +7,8 @@ ARM=$1; ROUND=${2:-1}
 ROOT=/home/user/dev/Strata; B=$ROOT/bench/ab-v0210; SP=$B/shortpp
 PY=$ROOT/.venv/bin/python
 case $ARM in
-  T1|T1b|T2a|T2b|T2c|T3|T4|T5|T6c) ENGINE=$ROOT/build-v0210/rpcw-hip/strata; HELPER=$ROOT/build-v0210/rpcw-cuda/strata-expert-helper; SERVE=$ROOT/serve/server.py; CD=$ROOT ;;
-  *) echo "arm T1|T1b|T2a|T2b|T2c|T3|T4|T5|T6c" >&2; exit 2 ;;
+  T1|T1b|T2a|T2b|T2c|T3|T4|T5|T6c|S0|S1|S2|S3|S4|SP) ENGINE=$ROOT/build-v0210/rpcw-hip/strata; HELPER=$ROOT/build-v0210/rpcw-cuda/strata-expert-helper; SERVE=$ROOT/serve/server.py; CD=$ROOT ;;
+  *) echo "arm T1|T1b|T2a|T2b|T2c|T3|T4|T5|T6c|S0|S1|S2|S3|S4|SP" >&2; exit 2 ;;
 esac
 RUNCFG=$SP/run/arm$ARM-r$ROUND.json
 mkdir -p "$SP/run" "$SP/out/$ARM-r$ROUND" "$B/logs"
@@ -27,6 +27,10 @@ for i in $(seq 1 30); do
   avail_mib=$(awk '/^MemAvailable:/{print int($2/1024)}' /proc/meminfo)
   (( avail_mib >= 30000 )) && break; echo "$(date +%T) waiting MemAvailable ${avail_mib} MiB"; sleep 2
 done
+# 2026-11-05: the wait used to fall through and boot anyway - arms then thrashed 19x on a
+# tired host (9 GiB free, 15 GiB swap). The gate must refuse, not hope.
+avail_mib=$(awk '/^MemAvailable:/{print int($2/1024)}' /proc/meminfo)
+(( avail_mib >= 30000 )) || { echo "== GATE-FAIL: MemAvailable ${avail_mib} MiB < 30000 - host too tired to bench"; exit 3; }
 for i in $(seq 1 30); do
   vram_b=$(rocm-smi --showmeminfo vram --csv 2>/dev/null | awk -F, '/^card[01]/{u+=$3} END{print u+0}')
   (( vram_b < 2000000000 )) && break; echo "$(date +%T) waiting VII VRAM drain: $vram_b bytes"; sleep 2
