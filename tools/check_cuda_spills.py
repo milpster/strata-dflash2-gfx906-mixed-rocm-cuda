@@ -59,6 +59,9 @@ ALLOWED = {
     "strata::kernels::route_resident_k": {"sm_86": (40, 0)},
     # float a[HPT][32] (HPT = 3): the thread's score tile (no spill; sm_120 keeps it in 142 registers)
     "strata::kernels::{anonymous}::attn_chunk_kernel": {"sm_86": (384, 0)},
+    # v0.2.10 upmerge (src/kernels/cuda/dflash_inco.cu): both select_kernel instantiations keep the
+    # score/topk working set on the stack (256 B). Avoidable by pointer-passing; noted for a later pass.
+    "strata::kernels::{anonymous}::select_kernel": {"sm_86": (256, 0)},
     # spill 4 / 4 at 64 registers under __launch_bounds__(THREADS = 256); its cc[NC] / kk[NC][8] / pp[NC][16] / acc[G]
     # stay in registers
     "strata::kernels::{anonymous}::attn_chunk_kernel_pre75": {"sm_86": (8, 0)},
