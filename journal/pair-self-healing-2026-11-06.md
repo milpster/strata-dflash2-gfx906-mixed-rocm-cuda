@@ -376,3 +376,22 @@ Verification so far: build OK; override prints only when set (GPU-free run with
 `tests/mixed_gpu` passed; config JSON validates. NOT yet live: activation needs
 one `systemctl --user restart strata-mixed-pair.service`, then the helper log
 must show the override line, fill, proxy ack and a completion.
+
+## Shutdown for the user's reboot (2026-11-06 evening)
+
+- User: take prod down for a reboot; ensure ALL prod start scripts/configs use
+  the patient setup. Aligned the remaining five configs
+  (`expert_helper_timeout` 2000 -> 10000 everywhere; their pre-existing
+  `STRATA_PREFILL_HELPER_TIMEOUT_MS` 600000/120000 values left as tuned) and
+  set the launchers' helper override to 600000 to match.
+- Commits: worktree `71ee8bd` (helper source), main `1c50b7d` (first pass) and
+  `2a29321` (align all launchers/configs; amended to keep the two pre-existing
+  `run/*-supervisor.json` runtime modifications OUT of the commit).
+- `systemctl --user stop strata-mixed-pair.service`: unit inactive/dead; no
+  strata-host / strata-expert-helper / server.py / pair_supervisor processes;
+  port 8009 free; `run/prod-swift15-f16kv-mixed*.sock` gone; nvidia-smi shows
+  only the host store's 8 MiB (the helper's ~7 GB released). Safe to reboot.
+- After reboot prod does NOT auto-start (transient unit). First start will use
+  the patient helper; verify the helper log line
+  "reply write deadlines overridden to 600000 ms", then fill/proxy/completion
+  as usual.
