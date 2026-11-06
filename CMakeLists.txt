@@ -1967,6 +1967,8 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   add_test(NAME ple_parity COMMAND ple_parity --selftest
     --in "${STRATA_PLE_FIXTURE_DIR}/ple_in.bin" --out "${STRATA_PLE_FIXTURE_DIR}/ple_out.bin"
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+  # 77 = the optional Q2_0 table shard (or fixtures) are not on this box: skip, not fail
+  set_tests_properties(ple_parity PROPERTIES SKIP_RETURN_CODE 77)
   # STRATA_PLE_COMPACT: the raw IQ4_NL rows dequantized on the device against the host decode, bit for bit (synthetic, no model)
   add_executable(ple_iq4nl_dequant_test src/kernels/ple_iq4nl_dequant_test.cpp)
   target_include_directories(ple_iq4nl_dequant_test PRIVATE ${_strata_gpu_include_directories})

@@ -186,7 +186,7 @@ static void static_contract_checks() {
           "static: serve AND CLI each declare a request-scope latch (exactly two)");
     check(has(gen, "df_pending_k = df_numeric_refusal ? 0 : (df_auto ? df_policy.choose() : req_dflash_k);"),
           "static: serve's per-round K honours the latch (a latched request cannot re-arm)");
-    check(has(gen, "dflash_ready = !df_numeric_refusal && req_dflash && drafted &&"),
+    check(has(gen, "dflash_ready = !df_numeric_refusal && !df_draft_dead && req_dflash && drafted &&"),
           "static: serve's readiness gate honours the latch");
     check(has(gen, "if (dflash_ready && drafted && req_spec_min_p > 0 && !df_numeric_refusal)"),
           "static: probability truncation is gated, so a refused proposal never reads stale dprob");
@@ -208,12 +208,14 @@ static void static_contract_checks() {
     check(count_of(gen, "!strata::core::dflash_refusal_is_fatal(dflash.last_refusal())") == 2 &&
               count_of(gen, "dflash.last_refusal() == strata::core::DflashRefusal::kNonFiniteCandidates") == 0,
           "static: BOTH call sites classify through the SHARED dflash_refusal_is_fatal() (no direct enum compare)");
-    check(window_has(gen, "if (!drafted && !strata::core::dflash_refusal_is_fatal(dflash.last_refusal())) {",
+    // v0.2.10 upmerge: the serve recovery branch gained the remote-lane arm (draft_tier_p); the
+    // latch/restore/clear statements and the numeric-arm notice are unchanged in intent.
+    check(window_has(gen, "if (!drafted && (draft_tier_p != nullptr ||",
                      "df_numeric_refusal = true;", 600) &&
-              window_has(gen, "if (!drafted && !strata::core::dflash_refusal_is_fatal(dflash.last_refusal())) {",
+              window_has(gen, "if (!drafted && (draft_tier_p != nullptr ||",
                          "drafted = true;", 600) &&
-              window_has(gen, "if (!drafted && !strata::core::dflash_refusal_is_fatal(dflash.last_refusal())) {",
-                         "err.clear();", 600),
+              window_has(gen, "if (!drafted && (draft_tier_p != nullptr ||",
+                         "err.clear();", 1600),
           "static: serve's recovery branch latches, restores drafted and clears the consumed err");
     check(window_has(gen, "if (ctx_ok && dflash_ready && !drafted &&",
                      "df_numeric_refusal = true;", 600) &&
@@ -224,10 +226,13 @@ static void static_contract_checks() {
     // inside each recovery branch (the latch makes that branch run at most once per request).
     check(!has(gen, "df_refusal_reported") && !has(gen, "df_cli_refusal_reported"),
           "static: no process-wide notice-suppression flag (notices are not muted for later requests)");
+    // v0.2.10 upmerge: the remote-lane arm's notice adds a third "off for the rest of this
+    // request" occurrence (serve numeric, serve remote-lane, CLI), and the numeric-arm notice
+    // now sits past the new arm - hence the wider window.
     check(count_of(gen, "candidate tokens outside the vocabulary") == 2 &&
-              count_of(gen, "for the rest of this request and the model keeps") == 2 &&
-              window_has(gen, "if (!drafted && !strata::core::dflash_refusal_is_fatal(dflash.last_refusal())) {",
-                         "std::fprintf(stderr, \"strata generate: at position %lld the drafter returned", 600) &&
+              count_of(gen, "for the rest of this request and the model keeps") == 3 &&
+              window_has(gen, "if (!drafted && (draft_tier_p != nullptr ||",
+                         "std::fprintf(stderr, \"strata generate: at position %lld the drafter returned", 1600) &&
               window_has(gen, "if (ctx_ok && dflash_ready && !drafted &&",
                          "std::fprintf(stderr, \"strata generate: at position %lld the drafter returned", 600),
           "static: each recovery branch prints its own position-bearing notice (one per refused request)");

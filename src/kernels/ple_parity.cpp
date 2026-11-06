@@ -279,6 +279,12 @@ int main(int argc, char** argv) {
     PleCapture cap;
     bool preflight_done = false;
     if (selftest || check_fixtures) {
+        // A missing table gguf is a SKIP, not a parity failure: the Q2_0 shard is optional test
+        // data (boxes without it simply cannot run the real-table arm).  Incompatible = still fail.
+        if (file_size(gguf.c_str()) < 0) {
+            std::fprintf(stderr, "ple_parity: PLE table gguf not present (%s) - skipping\n", gguf.c_str());
+            return 77;
+        }
         if (!table.open(gguf, err) || table.rows() != o::kTableRows ||
             file_size(gguf.c_str()) != (long long) o::kTableDataStart + (long long) o::kTableRows * k::PLE_ROW_BYTES) {
             std::fprintf(stderr, "ple_parity: required PLE table is missing or incompatible: %s (%s)\n", gguf.c_str(), err.c_str());
