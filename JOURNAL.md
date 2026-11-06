@@ -1034,3 +1034,18 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
   re-push (user decision pending). The private prod tree is not published and keeps its own copy.
 - NOTE for future bench rounds: generated arm/config artifacts record whatever the env resolves
   to; scrub paths before committing new artifacts, or commit only the summarized RESULTS docs.
+
+## 2026-11-06 — README: OS row, main-branch policy, custom-rocBLAS rebuild section (user follow-up 12)
+
+- User order x3: (1) elaborate the custom rocBLAS rebuild if it is not straightforward, (2) state that
+  main carries the latest working version, (3) name the OS in the right place.
+- Facts gathered before writing: OS = Ubuntu 25.04 (Plucky) from /etc/os-release -> rig table OS row
+  (was bare "Linux, XanMod ..."), role now "userland the custom rocBLAS is built against".
+- rocBLAS rebuild: NOT straightforward-as-documented. Only the installed prefix survives
+  (~/rocm-gfx906-xnack: rocBLAS 4.1.0 from include/rocblas/internal/rocblas-version.h, matches pinned
+  ROCm 6.1.0); source tree, CMakeCache and build log are gone; journal has no recorded recipe.
+  README therefore documents the canonical upstream side-build shape (gfx906:xnack+ target,
+  install-prefix layout, heavy Tensile build) explicitly labeled "not a re-verified run" - to be
+  replaced with real flags/wall-time/verification at the next rebuild. No fake precision.
+- Branches row: main now marked "carries the latest working version; nothing lands before both
+  backends build and the gates pass" (matches the existing promotion wording).
