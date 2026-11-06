@@ -13,7 +13,7 @@ PY="$ROOT/.venv/bin/python"
 CONFIG="$ROOT/prod-config-ud-iq3xxs-dflash-w4-q4_0-mixed.json"
 SOCKET="$ROOT/run/prod-iq3xxs-ud-mixed.sock"
 SOCKET2="$ROOT/run/prod-ud-iq3xxs-mixed2.sock"
-HELPER="$WORK/build-mixed-gpu/rpcw-cuda/strata-expert-helper"
+HELPER="$WORK/build-mixed-gpu/rpcw-cuda/strata-expert-helper-patient"
 case "${1:-}" in
   --pair-child)
     [[ -n ${STRATA_PAIR_RECORD:-} ]] || { echo 'REFUSING unowned pair child.' >&2; exit 2; } ;;
@@ -50,7 +50,7 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 143' TERM
 trap 'exit 130' INT
-env -i PATH="$PATH" HOME="$HOME" TERM="${TERM:-dumb}" "$HELPER" \
+env -i STRATA_HELPER_REPLY_TIMEOUT_MS=180000 PATH="$PATH" HOME="$HOME" TERM="${TERM:-dumb}" "$HELPER" \
   --pack /mnt/user/ai/iq3xxs-ud \
   --experts ../Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00004.gguf \
   --persist \

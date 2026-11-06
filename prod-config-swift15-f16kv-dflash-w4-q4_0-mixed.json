@@ -67,6 +67,7 @@
   "STRATA_PREFILL_CPU_SHARE": "auto",
   "STRATA_PREFILL_HELPER": "1",
   "STRATA_PREFILL_HELPER_TIMEOUT_MS": "600000",
+  "STRATA_PREFILL_HELPER_TIMEOUT_MS": "180000",
   "STRATA_PRIMARY_COMMIT_OVERLAP": "1",
   "STRATA_PROMPT_STAGE_MEMO": "1",
   "STRATA_WATCHDOG_S": "900"
@@ -76,7 +77,7 @@
  "expert_helper_slots": 4600,
  "expert_helper_socket": "/mnt/user/Strata/run/prod-swift15-f16kv-mixed.sock",
  "expert_helper_socket2": "/mnt/user/Strata/run/prod-swift15-f16kv-mixed2.sock",
- "expert_helper_timeout": 2000,
+ "expert_helper_timeout": 10000,
  "fit_max_tokens": true,
  "gpu": [
   0,

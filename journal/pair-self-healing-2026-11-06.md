@@ -340,3 +340,35 @@ New options from this trace (none applied): (a) supervisor waits for VRAM
 release before relaunch (saves gen-2-style refusals); (b) consider a longer
 `--expert-helper-timeout-ms` so transient stalls close no channel; both need
 approval and testing first.
+
+## Patient helper replies implemented (user-approved same day)
+
+User: "longer helper timeout sounds good. we dont want a fallback. if it breaks
+in any way it is to fix itself."
+
+Found the decisive timer was NOT `--expert-helper-timeout-ms` (that is the
+engine's per-window bound; late = CPU window, never a stall) and not the
+helper's `--timeout`/`--begin-timeout` (already ~infinite in the launcher). It
+was the helper's HARDCODED reply-write deadlines (1 s empty reply, 10 s
+kRows/kRowsP/kDraft, in `tools/mixed_gpu/sidecar/helper_main.cpp`): the frozen
+engine stopped draining its socket and the helper closed the second channel.
+The engine side also has `STRATA_PREFILL_HELPER_TIMEOUT_MS` (default 10000) for
+its prompt-row read.
+
+Changes (worktree branch `fix/helper-reply-patience`, commit `71ee8bd`):
+`STRATA_HELPER_REPLY_TIMEOUT_MS` (>= 100) overrides every data-reply write
+deadline at once; unset keeps each default byte for byte; one startup log line
+names the override. Built `strata-expert-helper` in the worktree's rpcw-cuda
+dir and copied it to `v0210/.../strata-expert-helper-patient` (original
+untouched; md5 fccdb64... vs cf97b6a...).
+
+Main repo: all six launchers use the patient helper with
+`STRATA_HELPER_REPLY_TIMEOUT_MS=180000`; the Swift 1.5 config gains
+`STRATA_PREFILL_HELPER_TIMEOUT_MS=180000` in `env` and `expert_helper_timeout`
+2000 -> 10000.
+
+Verification so far: build OK; override prints only when set (GPU-free run with
+`--device 99`); `expert_helper_socket_test` passed (6.23 s); 27/27
+`tests/mixed_gpu` passed; config JSON validates. NOT yet live: activation needs
+one `systemctl --user restart strata-mixed-pair.service`, then the helper log
+must show the override line, fill, proxy ack and a completion.

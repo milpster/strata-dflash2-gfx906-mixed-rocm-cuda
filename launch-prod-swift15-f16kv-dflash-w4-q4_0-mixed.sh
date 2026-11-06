@@ -17,7 +17,7 @@ PY="$ROOT/.venv/bin/python"
 CONFIG="$ROOT/prod-config-swift15-f16kv-dflash-w4-q4_0-mixed.json"
 SOCKET="$ROOT/run/prod-swift15-f16kv-mixed.sock"
 SOCKET2="$ROOT/run/prod-swift15-f16kv-mixed2.sock"
-HELPER="$WORK/build-mixed-gpu/rpcw-cuda/strata-expert-helper"
+HELPER="$WORK/build-mixed-gpu/rpcw-cuda/strata-expert-helper-patient"
 # Default on before the supervisor forks; STRATA_KSM=0 opts out at startup.
 if [[ ${STRATA_KSM:-1} == 1 && ${STRATA_KSM_BOOTSTRAPPED:-0} != 1 ]]; then
   export STRATA_KSM_BOOTSTRAPPED=1
@@ -70,7 +70,7 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 143' TERM
 trap 'exit 130' INT
-env -i PATH="$PATH" HOME="$HOME" TERM="${TERM:-dumb}" "$HELPER" \
+env -i STRATA_HELPER_REPLY_TIMEOUT_MS=180000 PATH="$PATH" HOME="$HOME" TERM="${TERM:-dumb}" "$HELPER" \
   --pack /mnt/user/ai/iq3xxs-15 \
   --experts ../Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf \
   --device 0 --slots 4600 --reserve-mib 300 --timeout 63115200000 \

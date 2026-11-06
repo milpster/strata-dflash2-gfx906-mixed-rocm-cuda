@@ -88,6 +88,34 @@ reported 7,026 MiB allocated to it, and the engine acknowledged the same proxy.
 Real API requests completed on the pair. These are deployment measurements on
 the local RTX 3080 helper / Radeon VII engine PC, not performance comparisons.
 
+### Patient helper replies (2026-11-06 evening)
+
+The Nov 6 17:47 event: the engine's prompt lane froze ~90 s in a reclaim-driven
+HIP queue suspension (amdgpu XDMA no-retry faults; the box was swapping ~100 MB/s
+both ways), the helper's hardcoded 10 s kRowsP reply-write deadline closed the
+second channel ("helper timeout"), the engine fell back to CPU rows for the
+request, and the supervisor rebuilt the pair 3 times with all KV lost.
+
+- `v0210/build-mixed-gpu/rpcw-cuda/strata-expert-helper-patient` is built from
+  the same source plus one change (worktree branch `fix/helper-reply-patience`,
+  commit `71ee8bd`): `STRATA_HELPER_REPLY_TIMEOUT_MS` (>= 100) overrides every
+  DATA reply's write deadline (kRows, kRowsP, kDraftAck, kDraftReply, kHelloAck).
+  Unset = the per-call defaults, byte for byte. A dead peer is POLLHUP and is
+  detected at once at any deadline. One line in the helper log names the active
+  override at startup. The original helper binary is untouched next to it.
+- All six launchers start it with `STRATA_HELPER_REPLY_TIMEOUT_MS=180000`
+  (3 min, twice the observed 90 s stall).
+- The Swift 1.5 config also sets `STRATA_PREFILL_HELPER_TIMEOUT_MS=180000` (the
+  engine's prompt-row read bound; hardcoded default 10000) and raises
+  `expert_helper_timeout` 2000 -> 10000 (the per-window bound - a late helper is
+  a CPU window, never a stall).
+- Effect: a transient engine stall up to 3 minutes no longer closes a channel,
+  triggers the CPU fallback, or costs the KV; a real peer death is still
+  detected instantly and the supervisor rebuilds the pair.
+- Verified GPU-free: the override line prints only when set, is silent when
+  unset; `expert_helper_socket_test` passes; the 27-test `tests/mixed_gpu` suite
+  passes; the config JSON validates. Not yet verified on the live GPU pair.
+
 ## CPU-only regression tests
 
 ```sh
