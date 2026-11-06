@@ -1347,3 +1347,19 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
   poisons helper/ctest GPU visibility (env -u it); bench arms need a fully drained pair
   supervisor, not just engine/helper kills; arm jsons/run-arm.sh carry neutral paths in git
   and are translated locally (uncommitted) like the 24 prod config/launcher files.
+
+## 2026-11-06 — Quality gate on the merged tree: fork vs stock prompt-logit parity (exact)
+
+- Modernized quality/ab6_qgate.sh (its October sha-pinned binaries are gone) into
+  run/qgate-20261106.sh + run/qgate-20261106-armB.sh: prompt-mode first logits (20 prompts,
+  iq3xxs-15 pack, --kv fp16 --max-context 1512 prompt lane), fork-vs-stock pcompare, prod
+  stopped supervisor-first and restored on the swift15 lane after.
+- Verdict: merged fork (build-qa/rpcw-hip, sha16 01621127ea680105) vs stock v0.2.10
+  (sha16 a6b862e5b46fd6aa): top-1 agreement 100.00%, KL mean/median/max 0.00000 across all
+  20 prompts. The v0.2.10-upmerge kernels (iq_avx512, dflash_inco select) are numerically
+  transparent on the prompt path.
+- Gotcha recorded: quality/qqB.json carried the OLD home repo root after generic path
+  translation (/home/user/dev/Strata -> /home/srcds/dev/Strata is a deleted tree); fork-side
+  configs must translate to the mnt repo root. qqB.json, qqC.json, armB/C.json and
+  run-arm.sh now carry local real paths (uncommitted, same convention as the prod configs);
+  git keeps the neutral forms.
