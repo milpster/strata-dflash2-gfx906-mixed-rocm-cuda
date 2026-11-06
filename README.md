@@ -43,11 +43,11 @@ Serving stack on that hardware:
 | Model | Swift-1.5-Qwen3.8-Flash-Next, GSQ-RCO IQ3_XXS / IQ3_S packs (~47 GiB expert set) |
 | Drafter | DFlash2 (inco draft, q4_0), `--spec 5`, engine-side on the VIIs |
 | Vision | `strata-vision` sidecar, Swift BF16 mmproj |
-| Server | OpenAI- and Anthropic-compatible API (`serve/server.py`), supervised pair on :8009 |
+| Server | OpenAI- and Anthropic-compatible API (`serve/server.py`), supervised engine+helper pair |
 
 The point of the rig: a laptop-class CPU, two 2019-vintage Radeon VIIs and an 8 GiB laptop GPU together serve a ~47 GiB MoE model at coding-agent speed.
 
-**ROCm first, CUDA second.** The AMD cards run everything; the NVIDIA card only serves expert rows and prefill rows on request. Helper loss is **self-healing**: in-flight requests finish on the engine alone (it recomputes the claimed rows), and the pair supervisor restarts the whole engine+helper pair on any peer death — the SIGKILL-the-helper kill test passes (generation bump, health back to 200). Live evidence: the current prod pair sits at supervisor generation 6.
+**ROCm first, CUDA second.** The AMD cards run everything; the NVIDIA card only serves expert rows and prefill rows on request. Helper loss is **self-healing**: in-flight requests finish on the engine alone (it recomputes the claimed rows), and the pair supervisor restarts the whole engine+helper pair on any peer death — the SIGKILL-the-helper kill test passes (generation bump, health back to 200).
 
 ## What the fork adds over stock
 
@@ -138,15 +138,6 @@ That is what backs the "faster with zero quality cost" claim: the speed wins abo
 - Small fresh-read stalls (30–140 s on ~200-token cold reads): pre-existing, interactive-UX only; watchdog raised 300 → 900 s so it cannot kill prod.
 - iq3_s at 256/256 MiB reserves → non-finite logits on long prefill (V8); fixed policy: 640/640 + fill 7000 (V9/V10) keeps both cards above the 512 MiB paging line.
 - Not promoted, default off: tap-overlap F1/F2 (flat), `STRATA_REFILL_OVERLAP` / `STRATA_WINDOW_POPULATE` (net-negative on big prompts), `--short-read` window routing (refill poison).
-- Newer than the tables above: the **f16-KV lineage is live prod** since Nov 6 (swift15/iq3xxs pair, `launch-prod-swift15-f16kv-*`); the measured tables were taken on the int8-KV config.
-- In flight: helper-threading measurement (`STRATA_RPC_PROFILE`), `promo_check` exact-reply traffic probe.
-
-## Locations
-
-| Path | What |
-| --- | --- |
-| `/home/user/dev/Strata` | dev source tree — branches, `bench/`, `docs/`, `JOURNAL.md` (README canonical here) |
-| `/mnt/user/Strata` | **the live Strata** (branch `pair-self-heal`) — `launch-prod-*.sh` launchers, `prod-config-*.json`, supervised engine+helper pair on `:8009`, binaries in `v0210/build-mixed-gpu/`, `logs/` |
 
 ## Build guide — how we built it
 
