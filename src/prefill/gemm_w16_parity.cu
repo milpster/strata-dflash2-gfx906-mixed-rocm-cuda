@@ -85,6 +85,17 @@ int main() {
     for (const Weight& w : ws) { if (w.s.K > max_k) max_k = w.s.K; if (w.s.N > max_n) max_n = w.s.N; }
     const int64_t Ts[] = {16, 64, 512, 4096};
     const int64_t Tmax = 4096;
+    // The X/Y scratch alone is Tmax x max_k x 2 + 2 x (Tmax x max_n x 4) bytes; on the
+    // largest engine shape (output head N) that is ~8.2 GiB - more than an 8 GiB helper
+    // card has free.  Skip (77) instead of failing, same convention as the no-device exit.
+    const int64_t need = Tmax * max_k * 2 + 2 * (Tmax * max_n * 4);
+    size_t free_b = 0, total_b = 0;
+    if (!ok(cudaMemGetInfo(&free_b, &total_b), "memInfo")) return 1;
+    if ((int64_t) free_b < need + ((int64_t) 1 << 28)) {
+        std::fprintf(stderr, "gemm_w16_parity: needs ~%.1f GiB free VRAM, card has %.1f GiB - skipping\n",
+                     (double) need / 1073741824.0, (double) free_b / 1073741824.0);
+        return 77;
+    }
     uint16_t* X = nullptr;
     float* Y[2] = {nullptr, nullptr};
     if (!ok(cudaMalloc((void**) &X, (size_t) Tmax * max_k * 2), "X") || !ok(cudaMalloc((void**) &Y[0], (size_t) Tmax * max_n * 4), "Y0") ||
