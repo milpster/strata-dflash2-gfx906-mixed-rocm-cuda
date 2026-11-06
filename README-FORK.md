@@ -19,17 +19,31 @@ An engine fork of [Niko1221/Strata](https://github.com/Niko1221/Strata) (upstrea
 - **Quality-critical users** — byte-identical greedy output vs stock, plus KL / top-1 / PPL gates before every promotion.
 - **Bench & tuning work** — the A/B/C harness, sha parity gates and quality yardstick are reusable for any further Strata engine work.
 
-## The rig it is built and measured on
+## Hardware — the box behind every number
+
+Every number in this README was measured on exactly this machine; nothing is claimed for other hardware.
+
+| Part | Detail |
+| --- | --- |
+| CPU | AMD Ryzen 9 5900HX — 8 cores / 16 threads, up to ~4.7 GHz |
+| RAM | 62 GiB |
+| GPU 0+1 | 2× AMD Radeon VII (Vega 20, gfx906, 16 GiB HBM2 each) — **first: the ROCm/HIP engine** |
+| GPU 2 | NVIDIA GeForce RTX 3080 Laptop, 8 GiB (sm_86) — **second: the CUDA helper** |
+| Storage | 1 TB WD SN530 NVMe + 2 TB Crucial BX500 SATA SSD — model packs, relief reads |
+| OS / kernel | Linux, XanMod `7.2.9-x64v3-xanmod1` |
+
+Serving stack on that hardware:
 
 | Part | Role |
 | --- | --- |
-| 2× AMD Radeon VII (gfx906, ROCm 6.1 / HIP wave64) | **first — the engine**: all model execution, layer-split over both cards, DFlash2 drafter included; the engine process maps no CUDA runtime |
-| 1× NVIDIA RTX 3080 (CUDA, sm_86) | **second — the helper**: `strata-expert-helper`, a subordinate expert-row server + prefill prompt tier (~6.5 GiB expert cache), attached over a socket pair |
-| 62 GiB host RAM | engine anon ~41 GiB after relief (~34 GiB registered) |
-| Model | Swift-1.5-Qwen3.8-Flash-Next, GSQ-RCO IQ3_XXS / IQ3_S packs |
+| Radeon VII ×2 | all model execution, layer-split over both cards, DFlash2 drafter included; the engine process maps no CUDA runtime |
+| RTX 3080 Laptop | `strata-expert-helper`, a subordinate expert-row server + prefill prompt tier (~6.5 GiB expert cache), attached over a socket pair |
+| Model | Swift-1.5-Qwen3.8-Flash-Next, GSQ-RCO IQ3_XXS / IQ3_S packs (~47 GiB expert set) |
 | Drafter | DFlash2 (inco draft, q4_0), `--spec 5`, engine-side on the VIIs |
 | Vision | `strata-vision` sidecar, Swift BF16 mmproj |
 | Server | OpenAI- and Anthropic-compatible API (`serve/server.py`), supervised pair on :8009 |
+
+The point of the rig: a laptop-class CPU, two 2019-vintage Radeon VIIs and an 8 GiB laptop GPU together serve a ~47 GiB MoE model at coding-agent speed.
 
 **ROCm first, CUDA second.** The AMD cards run everything; the NVIDIA card only serves expert rows and prefill rows on request. If the helper dies, the engine recomputes its rows itself and finishes the request — the engine never depends on CUDA.
 
@@ -128,6 +142,57 @@ That is what backs the "faster with zero quality cost" claim: the speed wins abo
 | --- | --- |
 | `/home/user/dev/Strata` | dev source tree — branches, `bench/`, `docs/`, `JOURNAL.md` (README canonical here) |
 | `/mnt/user/Strata` | **the live Strata** — `launch-prod-*.sh` launchers, `prod-config-*.json`, supervised engine+helper pair on `:8009`, binaries in `v0210/build-mixed-gpu/`, `logs/` |
+
+## Build guide — how we built it
+
+### Prerequisites (exactly what this box uses)
+
+- **ROCm 6.1.0, pinned** at `/opt/rocm-6.1.0` — HIP compiler (`/opt/rocm-6.1.0/llvm/bin/clang++`), `libhipblas.so.2`, `libamdhip64.so.6`. Newer ROCm trees on the box (`6.4.4`, `7.2.4`) must **not** leak into the link: the engine then links `.so.3`/`.so.7` SONAMEs it cannot load (exit 127).
+- **Custom libs** at `~/rocm-gfx906-xnack` — a self-built rocBLAS (`librocblas.so.4.1`, 82 MB) with gfx906-**xnack** kernels. It sits FIRST on `CMAKE_PREFIX_PATH` and on the runtime `LD_LIBRARY_PATH`, overriding the system rocblas.
+- **CUDA toolkit** for the helper only: `/usr/local/cuda/bin/nvcc`, arch 86.
+- Ninja + CMake (Release). The pinned ggml source (`3cf03257f`) is fetched automatically at configure.
+
+### Engine — HIP, gfx906 (Radeon VII)
+
+```sh
+export PATH=/opt/rocm-6.1.0/bin:$PATH          # and keep nvcc OUT of this configure
+cmake -S . -B build-v0210/rpcw-hip -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DSTRATA_HIP_GFX906=ON \
+  -DCMAKE_HIP_ARCHITECTURES=gfx906 \
+  -DCMAKE_HIP_COMPILER=/opt/rocm-6.1.0/llvm/bin/clang++ \
+  -Dhip_DIR=/opt/rocm-6.1.0/lib/cmake/hip \
+  -Dhipblas_DIR=/opt/rocm-6.1.0/lib/cmake/hipblas \
+  -DROCM_PATH=/opt/rocm-6.1.0 -DHIP_PATH=/opt/rocm-6.1.0 -DHIP_ROOT_DIR=/opt/rocm-6.1.0 \
+  "-DCMAKE_PREFIX_PATH=$HOME/rocm-gfx906-xnack;/opt/rocm-6.1.0" \
+  -DSTRATA_ENABLE_DFLASH2=ON -DSTRATA_HAVE_DFLASH2=OFF -DSTRATA_TESTS=ON
+ninja -j11 -C build-v0210/rpcw-hip strata       # -j11 = standing order (git config strata.buildJobs)
+```
+
+### Helper — CUDA (RTX 3080 Laptop)
+
+```sh
+cmake -S . -B build-v0210/rpcw-cuda -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DSTRATA_ENABLE_CUDA=ON -DSTRATA_BUILD_EXPERT_HELPER=ON \
+  -DCMAKE_CUDA_ARCHITECTURES=86 -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
+  -DSTRATA_ENABLE_DFLASH2=ON -DSTRATA_HAVE_DFLASH2=OFF -DSTRATA_TESTS=ON
+ninja -j11 -C build-v0210/rpcw-cuda strata strata-expert-helper
+ctest -R helper --output-on-failure               # from build-v0210/rpcw-cuda
+```
+
+### Runtime (what the launchers set)
+
+```sh
+LD_LIBRARY_PATH=$HOME/rocm-gfx906-xnack/lib:/opt/rocm-6.1.0/lib
+HSA_OVERRIDE_GFX_VERSION=9.0.6  HIP_FORCE_P2P=1  HSA_ENABLE_SDMA=1
+```
+
+### Lessons baked into the process
+
+- Pin everything; a bare configure finds the newest ROCm and links unloadable SONAMEs. Derived trees are always configured fresh (a reused cache keeps stale `find_library` results).
+- Hide `nvcc` from the HIP configure — a new `/usr/local/cuda-*` under PATH silently wins and produces a mixed-header build (231 errors).
+- Never pipe `ninja` into `head` (SIGPIPE kills it, exit 141) and never compile during a bench round (starves the engine's watchdog).
+- Memory-gentle fallback when the box is busy: `nice ninja -j2`, dropping to `-j1` below 3 GiB MemAvailable.
+- Verify with `ldd`: no `libhipblas.so.3`, no `libamdhip64.so.7`.
 
 ## Repo map
 
