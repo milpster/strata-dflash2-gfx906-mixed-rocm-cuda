@@ -953,3 +953,8 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
   /mnt/user/Strata on :8009), a dedicated Quality-gates section (80k SHA, yardstick, probe determinism,
   speed gates), and an explicit "ROCm first, CUDA second" statement (engine maps no CUDA runtime; helper
   death is survivable).
+- User follow-up 2: expanded the helper-architecture section (two processes, socket pair, slot/fill caps from
+  sweeps, decode vs prompt tiers, relief interplay, kill-test fallback, --persist, v4 multi-shard, pair
+  supervisor, honest D/E attribution) and the DFlash2-advantages section (arm-E attribution, HIP-side drafter,
+  exact-match sampled verification, bounded SWA ring + DF_RING_MULT, parking, DF_EVENTS, perf work, closed
+  sweep). README copied to the prod tree /mnt/user/Strata (build-latest) on user question; dev copy canonical.

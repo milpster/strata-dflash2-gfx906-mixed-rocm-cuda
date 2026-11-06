@@ -41,11 +41,16 @@ An engine fork of [Niko1221/Strata](https://github.com/Niko1221/Strata) (upstrea
 - Tuned gfx906 knobs in prod configs: `STRATA_GFX906_TOPK_FIT17`, `STRATA_GFX906_TOPK_REG`, `STRATA_HIP_PROMPT_F16`.
 - Blackwell-only `mmq_w4a4` and known-broken paths cleanly gated off.
 
-### 2. Mixed-GPU CUDA expert helper
-- `strata-expert-helper` on the NVIDIA card serves decode/verify expert rows to the HIP engine over a socket pair.
-- Prompt tier: prefill rows for helper-held experts computed on the CUDA card (`STRATA_PREFILL_HELPER=1`).
-- `--persist` re-listens across engine restarts; v4 fill supports multi-shard packs; transient-pair fallback instead of hard failures.
-- Pair supervisor: engine + helper run as one supervised pair — either dies, both restart.
+### 2. Mixed-GPU CUDA expert helper — architecture
+- Two processes, strictly separated: the HIP engine (AMD-only, **no CUDA runtime mapped**) and `strata-expert-helper` (NVIDIA-only, owns all of that card's expert VRAM).
+- Transport: a local socket pair. The helper fills ~4.3–4.6k cache slots (~6.5 GiB) and keeps them filled (fill-mib / slot caps from bench sweeps: **+13.6 %** decode median vs the old 4000-slot cap); it answers with one grouped launch per decode/verify window (≤ 8 tokens).
+- Two serving tiers:
+  - **decode/verify tier** — expert rows for token windows;
+  - **prompt tier** (`STRATA_PREFILL_HELPER=1`) — prefill rows for helper-held experts: the CUDA card does work the AMD cards would otherwise stage from host RAM.
+- Relief interplay: helper-held pairs are dropped from the host arena (`--expert-helper-ram-relief`); pack-file reads exist only as the emergency fallback.
+- Resilience: helper killed mid-decode → the engine recomputes the claimed rows and finishes the request (measured kill test); `--persist` re-listens for the next engine instead of dying with it; v4 fill supports multi-shard packs; transient-pair fallback instead of hard failures.
+- Supervision: `tools/mixed_gpu/pair_supervisor.py` runs engine + helper as one pair — either dies, both restart; a long idle no longer kills the helper.
+- Honest attribution: the decode tier alone is ~neutral on this pack (96–97 % local cache hit, arms D/E); the helper's measured value is the prompt tier, expert capacity, and RAM relief.
 
 ### 3. Host RAM relief
 - `--expert-helper-ram-relief` drops helper-held expert pairs from the anon arena (4116/4116 pairs, 6.24 GiB back).
@@ -53,11 +58,18 @@ An engine fork of [Niko1221/Strata](https://github.com/Niko1221/Strata) (upstrea
 - W1a/W1b fixes: lock-free residency pre-checks + dropped-only prefetch forwarding — relief TG 16.0 → 37.65 tok/s (control 38.05), disk reads 40 GB → 2.31 GB per drive.
 - `STRATA_ARENA_COLLAPSE`: opt-in post-fill `MADV_COLLAPSE` sweep (25.05 GiB of the arena collapsed in H1-r5), with a scoped fix for inherited `PR_SET_THP_DISABLE`.
 
-### 4. Speculative decoding (DFlash / DFlash2)
-- Standalone DFlash block drafter: GGUF draft weights (Q8/Q5/Q4), greedy drafting, per-section timing (`STRATA_DF_EVENTS=1`).
-- DFlash2 (official Flash-Next format) built as HIP on gfx906 — the drafter runs on the Radeon VIIs.
-- `STRATA_DF_RING_MULT`: scales the SWA draft ring so long-context segment resumes stop re-reading the whole context (deep-stall class fixed by construction; parked as ready mitigation).
-- Verified optimum: spec 5 / q4_0 draft / block 5 (q8_0 draft flat, spec 7 −3 %, block 3 flat).
+### 4. Speculative decoding — DFlash2 advantages
+- **The decode win is DFlash2.** Attribution arm E (drafter off) decodes at stock speed (23.9 vs 23.6 tok/s, same day); drafter on = 33–38.5 tok/s — the entire gain is drafting, at byte-identical output.
+- Runs **HIP engine-side on the Radeon VIIs** (stock DFlash2 is CUDA-only) — drafting never touches the helper card.
+- Official Flash-Next draft format (inco draft, q4_0 GGUF); Q8/Q5/Q4 draft weights supported — q4_0 measured optimal, q8_0 flat: the ~60–65 % acceptance ceiling is the draft model itself, not its quantization.
+- Tuned optimum, sweep fully closed: `--spec 5` / block 5 / q4_0 (spec 7 −3 % TG, block 3 flat, acceptance never bought back by sampling arms).
+- Beyond stock drafter behavior:
+  - sampled requests get **target exact-match verification** (`STRATA_DFLASH_SAMPLED`) — non-greedy traffic keeps draft guarantees;
+  - **bounded SWA draft ring** with honest window defaults and recoverable deep rewinds; `STRATA_DF_RING_MULT` scales the ring so long-context segment resumes stop re-reading the whole context (deep-stall class fixed by construction, speed-neutral);
+  - conversation parking keeps the draft image across park/save;
+  - per-section timing (`STRATA_DF_EVENTS=1`) dumps the section table after every request;
+  - perf: batched KV append with device-owned positions, attention probabilities reused across value lanes, batched BF16 projections, confidence gating for fixed blocks.
+- DFlash standalone (the prerequisite layer): GGUF drafter artifacts via `tools/dflash_gguf.py`, target taps [3,15,23,35,43], private draft K/V, block execution + target verification; MTP stays available, mutually exclusive.
 
 ### 5. Short-prompt latency
 - `STRATA_PREFILL_CPU_SHARE=auto` (promoted): 214 tok **2.4×**, 620 tok **1.8×**, 4k **1.4×**, TG128 −5.1 s, ≥18k unchanged, zero regressions.
@@ -114,7 +126,7 @@ That is what backs the "faster with zero quality cost" claim: the speed wins abo
 
 | Path | What |
 | --- | --- |
-| `/home/user/dev/Strata` | this source tree — branches, `bench/`, `docs/`, `JOURNAL.md` |
+| `/home/user/dev/Strata` | dev source tree — branches, `bench/`, `docs/`, `JOURNAL.md` (README canonical here) |
 | `/mnt/user/Strata` | **the live Strata** — `launch-prod-*.sh` launchers, `prod-config-*.json`, supervised engine+helper pair on `:8009`, binaries in `v0210/build-mixed-gpu/`, `logs/` |
 
 ## Repo map
