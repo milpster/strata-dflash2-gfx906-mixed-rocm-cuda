@@ -47,7 +47,7 @@ Serving stack on that hardware:
 
 The point of the rig: a laptop-class CPU, two 2019-vintage Radeon VIIs and an 8 GiB laptop GPU together serve a ~47 GiB MoE model at coding-agent speed.
 
-**ROCm first, CUDA second.** The AMD cards run everything; the NVIDIA card only serves expert rows and prefill rows on request. If the helper dies, the engine recomputes its rows itself and finishes the request — the engine never depends on CUDA.
+**ROCm first, CUDA second.** The AMD cards run everything; the NVIDIA card only serves expert rows and prefill rows on request. Helper loss is **self-healing**: in-flight requests finish on the engine alone (it recomputes the claimed rows), and the pair supervisor restarts the whole engine+helper pair on any peer death — the SIGKILL-the-helper kill test passes (generation bump, health back to 200).
 
 ## What the fork adds over stock
 
@@ -65,7 +65,7 @@ The point of the rig: a laptop-class CPU, two 2019-vintage Radeon VIIs and an 8 
   - **decode/verify tier** — expert rows for token windows;
   - **prompt tier** (`STRATA_PREFILL_HELPER=1`) — prefill rows for helper-held experts: the CUDA card does work the AMD cards would otherwise stage from host RAM.
 - Relief interplay: helper-held pairs are dropped from the host arena (`--expert-helper-ram-relief`); pack-file reads exist only as the emergency fallback.
-- Resilience: helper killed mid-decode → the engine recomputes the claimed rows and finishes the request (measured kill test); `--persist` re-listens for the next engine instead of dying with it; v4 fill supports multi-shard packs; transient-pair fallback instead of hard failures.
+- Resilience, two layers: **in-flight** — helper killed mid-decode → the engine recomputes the claimed rows and finishes the request (measured kill test); **pair self-heal** — the supervisor restarts the whole pair on ANY peer death (verified prod cutover, default on; SIGKILL-helper test: generation bump, health 200). `--persist` re-listens for the next engine; v4 fill supports multi-shard packs; transient-pair fallback instead of hard failures.
 - Supervision: `tools/mixed_gpu/pair_supervisor.py` runs engine + helper as one pair — either dies, both restart; a long idle no longer kills the helper.
 - Honest attribution: the decode tier alone is ~neutral on this pack (96–97 % local cache hit, arms D/E); the helper's measured value is the prompt tier, expert capacity, and RAM relief.
 

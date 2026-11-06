@@ -982,3 +982,11 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
   Fork README.md swap committed (fork page = README.md, upstream product page = README-upstream.md).
 - Resolution: user indifferent main-vs-master; remote main (the GitHub default) fast-forwarded to master's
   commit — overview now renders the fork README. master and main kept in sync.
+- Final: user ordered ONE branch; decided for main (already the GitHub default, deletable without API auth).
+  master deleted remotely, local branch renamed main, tracking origin/main. Remaining remote branches:
+  main (canonical), main-pre-publish (845-commit upstream-main snapshot backup), build-latest,
+  build-mixed-v0210, stock-v0210-gfx906-buildfix, tap-overlap-f1f2.
+- User follow-up 8: helper-loss claim corrected — pair self-heal is the current default (prod line
+  pair-self-heal: "Harden mixed-GPU paired recovery by default", "Record verified production paired-recovery
+  cutover"; pair-kill-test.sh SIGKILLs the helper and expects generation bump + health 200). README now states
+  both layers: in-flight engine fallback (recompute rows) + supervisor full-pair restart.
