@@ -138,6 +138,9 @@ struct GroupMetaP {
 };
 
 std::atomic<int> g_stop{0};
+// One signal = one fact: the --persist session loop exits on this count, never on the g_stop latch,
+// which main itself sets while ending a session (the latch is shared, the signal count is not).
+std::atomic<int> g_sig_count{0};
 // R5 P1 (the SIGTERM begin-wait fix, t0-incumbent-repro1 evidence: helper 2462170 SURVIVED the
 // driver's SIGTERM while sitting in its 30-minute --begin-timeout read, leaving the restore
 // RESTORE_BLOCKED and forcing a parent SIGKILL).  A flag alone cannot end that wait: the handler
@@ -151,6 +154,7 @@ std::atomic<int> g_stop{0};
 // (kErrUnhealthy/timeout) and recomputes the window's rows on the CPU, exactly the shipped fault rule.
 int g_wake_pipe[2] = {-1, -1};
 void on_signal(int) {
+    g_sig_count.fetch_add(1);
     g_stop.store(1);
     if (g_wake_pipe[1] >= 0) {
         const char byte = 1;
@@ -995,6 +999,13 @@ struct Options {
     int64_t idle_timeout_ms = 120000;  // no engine connected yet: exit (the engine starts first)
     int64_t begin_timeout_ms = 60000;  // the engine is mid-window computation: a generous, bounded read
     bool once = false;
+    // --persist (opt-in): when an engine session ENDS (the engine died, said bye, or idled past its
+    // timeout), keep the card and LISTEN AGAIN so the NEXT engine incarnation - the one server.py
+    // restarts after a GPU hiccup - reconnects on the same sockets and re-fills.  The Nov 6 prod
+    // chain (kernel fence reset -> engine abort -> helper "channel closed; exiting" -> every later
+    // engine logged "helper connect failed" and ran the CPU expert path) is what this answers.
+    // false (the default) = the original single-session helper, byte for byte.
+    bool persist = false;
     // M7 (opt-in, plan sect12): the drafter lane.  EMPTY --dflash = no drafter, no draft frames, no
     // feature bit: every line of the draft tier stays dormant.  When set, --experts must name the
     // target's GGUF: the drafter binds the target's native head and pinned embedding from it.
@@ -1024,6 +1035,7 @@ bool parse(int argc, char** argv, Options& o, std::string& err) {
         else if (a == "--dflash") { if (!(v = need("--dflash"))) return false; o.dflash = v; }
         else if (a == "--dflash-window") { if (!(v = need("--dflash-window"))) return false; o.dflash_window = std::atoll(v); }
         else if (a == "--once") o.once = true;
+        else if (a == "--persist") o.persist = true;
         else { err = "unknown argument '" + a + "' (--help for the list)"; return false; }
     }
     if (o.pack.empty() || o.socket.empty()) { err = "--pack and --socket are required"; return false; }
@@ -1059,7 +1071,12 @@ void usage() {
         "  (slots / fill-mib / budget / ranked candidates exhausted) and the device's raw free MiB\n"
         "  before and after, so occupancy is measured, not guessed.\n"
         "  --dflash (opt-in, the M7 drafter lane): load this DFlash artifact onto this card and serve\n"
-        "  the kDraftCtx/kDraftReq frames; needs --experts <model.gguf> for the target's head.\n");
+        "  the kDraftCtx/kDraftReq frames; needs --experts <model.gguf> for the target's head.\n"
+        "  --persist (opt-in): when an engine session ends (the engine died, said bye, or idled past\n"
+        "  its timeout), keep the card and LISTEN AGAIN: the next engine incarnation reconnects on the\n"
+        "  same sockets and re-fills (its own kFill), so an engine death costs the expert tier only for\n"
+        "  that session. SIGTERM/SIGINT still exit cleanly; without this flag the helper serves exactly\n"
+        "  one engine session, as in every build before it.\n");
 }
 
 /// Serve ONE accepted connection: accept on `listener`, run the frame loop on `out`, answer every
@@ -1523,6 +1540,12 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "expert-helper: second channel listening on %s (the engine's prompt tier "
                              "rides it; the window tier stays on %s)\n",
                      o.socket2.c_str(), o.socket.c_str());
+    }
+
+    // The second channel's thread is (re)started per engine session: the engine connects it once per
+    // run, and a --persist re-listen must offer it to the next incarnation.  The binds happen once.
+    auto start_chan2 = [&hp, &o] {
+        if (o.socket2.empty() || hp.chan2.joinable()) return;
         hp.chan2 = std::thread([&hp, &o]() {
             std::string e2;
             const int rc2 = serve_channel(hp, hp.sock2, hp.listener2, o, true, e2);
@@ -1532,30 +1555,65 @@ int main(int argc, char** argv) {
             else if (rc2 != 0 && rc2 != kConnStop)
                 std::fprintf(stderr, "expert-helper: second channel ended: %s\n", status_name(rc2));
         });
-    }
+    };
 
-    const int conn_rc = serve_channel(hp, hp.sock, hp.listener, o, false, err);
-    // END: wake the second channel (the wake byte makes its poll answer the value an expired
-    // deadline answers, and its loop takes that named exit), JOIN it, and only THEN release the
-    // card - the join is what keeps the device free of a serve thread that is still launching.
-    g_stop.store(1);
-    if (g_wake_pipe[1] >= 0) {
-        const char byte = 1;
-        const int saved = errno;
-        const ssize_t woke = ::write(g_wake_pipe[1], &byte, 1);   // one byte: wakes the channel polls
-        (void) woke;                                              // best-effort, as the signal handler's is
-        errno = saved;
-    }
-    if (hp.chan2.joinable()) hp.chan2.join();
+    for (int gen = 1;; ++gen) {
+        start_chan2();
+        const int conn_rc = serve_channel(hp, hp.sock, hp.listener, o, false, err);
+        // A stop latched BEFORE main latches it is a real SIGTERM/SIGINT (the serve loop breaks on
+        // it), and every mode honors it with the clean exit below.
+        const bool signalled = g_stop.load() != 0;
+        // END: wake the second channel (the wake byte makes its poll answer the value an expired
+        // deadline answers, and its loop takes that named exit), JOIN it, and only THEN release the
+        // card - the join is what keeps the device free of a serve thread that is still launching.
+        g_stop.store(1);
+        if (g_wake_pipe[1] >= 0) {
+            const char byte = 1;
+            const int saved = errno;
+            const ssize_t woke = ::write(g_wake_pipe[1], &byte, 1);   // one byte: wakes the channel polls
+            (void) woke;                                              // best-effort, as the signal handler's is
+            errno = saved;
+        }
+        if (hp.chan2.joinable()) hp.chan2.join();
 
-    if (conn_rc == kConnStop) { hp.release(); return 0; }
-    if (conn_rc == kConnAcceptFailed) return fail("accept", err);
-    std::fprintf(stderr, "expert-helper: %lld windows served, %lld prompt row requests%s; releasing the card\n",
-                 (long long) windows_served.load(), (long long) prompt_requests_served.load(),
-                 o.dflash.empty() ? ""
-                                  : (std::string(", ") + std::to_string((long long) draft_ctx_rows_served.load()) +
-                                     " draft context rows, " + std::to_string((long long) draft_rounds_served.load()) +
-                                     " draft rounds").c_str());
-    hp.release();
-    return conn_rc == 0 ? 0 : 1;
+        if (conn_rc == kConnStop) { hp.release(); return 0; }
+        if (conn_rc == kConnAcceptFailed) return fail("accept", err);
+        std::fprintf(stderr, "expert-helper: %lld windows served, %lld prompt row requests%s; %s\n",
+                     (long long) windows_served.load(), (long long) prompt_requests_served.load(),
+                     o.dflash.empty() ? ""
+                                      : (std::string(", ") + std::to_string((long long) draft_ctx_rows_served.load()) +
+                                         " draft context rows, " + std::to_string((long long) draft_rounds_served.load()) +
+                                         " draft rounds").c_str(),
+                     (o.persist && !o.once && !signalled) ? "the engine's session ended" : "releasing the card");
+        if (o.once || !o.persist || signalled) {
+            hp.release();
+            return conn_rc == 0 ? 0 : 1;
+        }
+        // --persist and the session ended by itself (peer EOF, bye, the engine idled past its
+        // timeout): keep the card and listen again.  The next engine's kHello re-binds slots and
+        // layer range; its kFill re-fills (ExpertCache::open closes the old arena first, and
+        // serve_fill skips pairs the cache still holds).  Reset the engine-bound handshake state
+        // exactly as serve_channel's pre-hello re-listen does.
+        g_claimed.clear();
+        g_reserve = kReserveDefaultMiB;
+        g_slots = 0;
+        hp.layer_lo = hp.layer_hi = 0;
+        if (g_wake_pipe[0] >= 0) {   // drain the wake byte: a stale wake must not end the new accept
+            char drained = 0;
+            while (::read(g_wake_pipe[0], &drained, 1) > 0) {}
+        }
+        // Clear ONLY main's own END latch; a real SIGTERM/SIGINT is a separate fact (g_sig_count)
+        // and wins over the re-listen at every point of this window: before the store the count
+        // gate below answers it (the drain consumed its wake byte, so the exit is clean), after
+        // the store the latched g_stop and its wake byte take accept's named clean exit. (R5 P1
+        // lesson, kept: the latched stop must win over any re-listen.)
+        g_stop.store(0);
+        if (g_sig_count.load() != 0) {
+            std::fprintf(stderr, "expert-helper: SIGTERM/SIGINT recorded during the session end; exiting cleanly\n");
+            hp.release();
+            return 0;
+        }
+        std::fprintf(stderr, "expert-helper: --persist: engine session %d ended; listening again for the "
+                             "next engine (card held; the next kHello/kFill re-binds and re-fills)\n", gen);
+    }
 }
