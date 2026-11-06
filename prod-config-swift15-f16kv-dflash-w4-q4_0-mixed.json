@@ -89,17 +89,6 @@
   "/opt/rocm-6.1.0/lib"
  ],
  "log": "/mnt/user/Strata/logs/engine-swift15-f16kv-dflash-w4-q4_0-mixed.log",
- "mcp_servers": {
-  "docling": {
-   "command": "/home/user/.config/opencode2/bin/docling-mcp-local"
-  },
-  "markitdown": {
-   "command": "/home/user/.local/bin/markitdown-mcp"
-  },
-  "pandoc": {
-   "command": "/home/user/.local/bin/mcp-pandoc"
-  }
- },
  "model_name": "swift-1.5-iq3_xxs-f16kv",
  "port": 8009,
  "reasoning_budget_tokens": 55000,
