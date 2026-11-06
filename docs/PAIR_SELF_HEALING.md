@@ -141,7 +141,11 @@ the engine on every recovery - so the move had to become part of startup.
   engine incarnation.
 - Results land in the state JSON under `stage_affinity` (`applied`/`failed`,
   moved count, snapshot path). A failure never restarts the pair by itself; the
-  supervisor tries for 10 monitor intervals, records the outcome, and moves on.
+  supervisor tries for 30 monitor intervals, records the outcome, and moves on.
+  Both startup races are retried, not failed: the engine renames itself
+  `strata-host` only after early serve startup (first seen live on Nov 6 night:
+  attach fired while comm was still `strata`), and the staging threads can spawn
+  late. The fixture reproduces the rename delay.
 - All six supervised launchers pass `--stage-cpus 3,5,7,9,11,13,15`. Without the
   flag the supervisor is byte-for-byte the old behavior. `--single-run` (the
   diagnostic path, no supervisor) does not apply affinity.

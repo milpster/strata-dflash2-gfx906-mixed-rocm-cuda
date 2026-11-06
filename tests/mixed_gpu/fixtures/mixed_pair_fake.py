@@ -80,8 +80,6 @@ def publish(helper, server, helper_log):
 if mode == "engine":
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
     libc = ctypes.CDLL(None, use_errno=True)
-    # The staging-affinity tool only accepts a process named strata-host.
-    libc.prctl(15, b"strata-host", 0, 0, 0)  # PR_SET_NAME
 
     def staging():
         libc.prctl(15, b"strata-stage", 0, 0, 0)
@@ -109,6 +107,10 @@ if mode == "engine":
     if filled and os.environ.get("FAKE_NO_ENGINE_ACK") != "1":
         append(root / "engine.log", "strata generate: expert-helper proxy: 4093 experts on one.sock, 6.25 GiB (fill report)")
     append(root / "engine.log", "strata generate: session is up")
+    time.sleep(0.2)
+    # The real engine renames itself strata-host only after early serve startup;
+    # the supervisor must retry the affinity move through that window.
+    libc.prctl(15, b"strata-host", 0, 0, 0)  # PR_SET_NAME
     threading.Event().wait(120)
 elif mode == "helper":
     listeners = []

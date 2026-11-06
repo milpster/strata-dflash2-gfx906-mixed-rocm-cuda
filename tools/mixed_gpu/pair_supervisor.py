@@ -39,7 +39,7 @@ PROXY = re.compile(r"expert-helper proxy: [1-9][0-9]* experts\b")
 REQUEST_DONE = re.compile(r"strata serve: prompt [0-9,]+ tokens")
 READ_TICK = re.compile(r"reading the prompt: ([0-9,]+ of [0-9,]+) tokens")
 STAGE_SCRIPT = Path(__file__).resolve().parent / "staging_affinity.py"
-STAGE_ATTEMPTS = 10  # Monitor intervals; staging threads exist well before attach.
+STAGE_ATTEMPTS = 30  # The engine renames itself strata-host only after early serve startup.
 
 
 def helper_degraded(line: str) -> bool:
@@ -156,7 +156,8 @@ def apply_stage_affinity(engine: tuple[int, str], cpus: str, snapshot: Path) -> 
         lines = (result.stderr or result.stdout).strip().splitlines()
         error = lines[-1] if lines else f"exit status {result.returncode}"
     return (result.returncode == 0, int(moved.group(1)) if moved else None,
-            "No CPU-0 strata-stage threads found" in result.stderr, error)
+            "No CPU-0 strata-stage threads found" in result.stderr
+            or "must name a live strata-host" in result.stderr, error)
 
 
 class LogTail:

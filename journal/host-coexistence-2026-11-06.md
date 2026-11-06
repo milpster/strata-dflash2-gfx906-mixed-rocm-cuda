@@ -147,3 +147,9 @@ discovered engine right after `attached`, every generation, snapshot-first,
 results in the state JSON under `stage_affinity`. An affinity miss never
 restarts the pair. `--single-run` runs without it. Details and limits:
 `docs/PAIR_SELF_HEALING.md`, section "Stage-thread affinity at attach".
+
+Night follow-up: the first live pair hit a startup race - the engine renames
+itself `strata-host` only AFTER early serve startup, so the attach-time attempt
+met comm `strata` and failed as permanent. Fixed: that error is retryable,
+30 attempts; applied by hand to the live pair (64 threads moved); the fixture
+now delays its rename to regression-test the window.
