@@ -1295,3 +1295,24 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
   defaults stay machine-neutral; host paths are local uncommitted state - never commit them.
 - Prod stayed up through the merge (delegation served continuously). QA (build + gates + restart +
   self-heal test) runs next with prod down.
+
+## 2026-11-06 — QA round on the merged tree: builds, 231/233 ctest, live self-heal PASS
+
+- Fresh builds (build-qa/, both backends, -j11): HIP engine + CUDA engine/helper configure+build
+  clean, 517 s total (CUDA leg 315 s). ldd SONAME guards PASS (no libhipblas.so.3 / libamdhip64.so.7).
+- ctest (233 tests): 231 PASS after three environment fixes, 2 classified:
+  1. The user bashrc exports CUDA_VISIBLE_DEVICES="" globally (hides the NVIDIA card); launchers
+     env -u it, raw ctest does not -> 77 "no CUDA device" failures. Run tests with
+     `env -u CUDA_VISIBLE_DEVICES ctest`. Recorded as THE pitfall for future QA lanes.
+  2. The scrubbed engine/test tmp base (/tmp/agent) must exist: reboots clear /tmp; mkdir -p it
+     before suites (ownership test failed on connect until then).
+  3. Guard allowlists needed two v0.2.10-upmerge entries (commit on main): iq_avx512.cpp's
+     iq512_reference_gu_rows/iq512x_rows (runtime-gated family, portable.cpp stubs verified) and
+     dflash_inco.cu's select_kernel STACK 256 (both instantiations; pointer-pass noted as follow-up).
+  Classified (not regressions): ple_parity (Q2_0 test shard never present on this box) and
+  dflash_refusal_test (3 of 112 static text pins drifted in the dev line itself - v0210 line's own
+  generate.cpp fails the same pins; behaviour present, 64 production checks pass).
+- Live phase: supervised boot, health 200 in ~42 s, helper fill + second-channel engine connected,
+  smoke completion OK. Self-heal test: SIGKILL the helper -> supervisor generation 1 -> 2, health
+  back to 200, helper refilled and reconnected, post-kill smoke OK.
+- Prod left UP on the swift15 f16-KV iq3xxs lane; delegation can resume.
