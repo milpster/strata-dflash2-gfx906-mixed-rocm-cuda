@@ -1238,3 +1238,22 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
   (30-140 s cold reads) are the transient class -> now attributed to host co-tenancy.
 - README trade-offs row updated: stalls = host co-tenancy, not an engine defect; watchdog 300->900 s
   and the helper reply-patience deadlines both exist to ride out exactly this.
+
+## 2026-11-06 — repo consolidation: mnt tree is THE repo (scrubbed, published); home dev tree retired
+
+- User orders: mnt is the only relevant repo; full mnt rewrite + publish; port home's NON-upstream
+  content only (upstream v0.2.10 upmerge explicitly IGNORED for now - merge + validate/test comes
+  later on explicit user command); delete /home/user/dev/Strata (nothing else in home).
+- mnt history scrubbed (3 filter-repo passes): all machine paths/username/tooling paths neutralized,
+  background-load vocabulary + hostapp titles + store names neutralized, hostapp-* journal files renamed to
+  host-*, host-coexistence branch renamed host-coexistence. Verify: pickaxe user=0, hostapp/background-load/
+  steam/title hits=0 across journal+docs+src+tools.
+- Ported from the dev line (content-level, no upstream upmerge): README, docs/work rocBLAS gfx906
+  bug report + workaround patch, JOURNAL tail (2026-11-03 onward - the two journals were
+  complementary, 0 duplicate headings after the fix), 81-file location-independent script fix
+  (ROOT probes resolve to /mnt/user/Strata).
+- Pre-scrub backups: /home/user/dev/strata-pre-scrub.bundle (dev line) +
+  strata-mnt-pre-scrub.bundle (this line). Fixer script: /home/user/dev/fix_strata_roots.py.
+- The v0.2.10 dev line is NOT lost: archived on the fork as branch v0210-dev-line (pushed from the
+  home tree before its deletion) - the base for the pending upstream merge.
+- TODO (on user command): upmerge upstream into this line + validate/test.
