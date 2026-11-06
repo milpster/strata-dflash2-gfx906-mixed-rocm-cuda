@@ -1,9 +1,18 @@
 #!/bin/sh
 # Strata for Linux: the first run installs everything and starts the model; later runs just start it.
+# Drafter choices are MTP, the official DFlash2 checkpoint, or off; setup.py handles DFlash2 quantization.
+# The experimental DFlash2 path builds the local CUDA engine and uses the target's shared output head.
 # Needs only an NVIDIA driver (or, for an AMD Radeon card, the kernel's amdgpu driver: see docs/AMD_HIP.md).
 # Python (with venv) is installed through apt/dnf if it is missing (asks for sudo).
 # NixOS (or STRATA_UV=1) with uv installed: uv makes the project venv; every other Linux uses the standard venv.
 cd "$(dirname "$0")" || exit 1
+# A bundled Python runtime (the python/ folder of the terminal archive) is used when it is there: nothing to find,
+# install or download. update.sh runs this file, so it uses it too.
+if [ -x python/bin/python3 ]; then
+  PYTHONNOUSERSITE=1; export PYTHONNOUSERSITE
+  unset PYTHONHOME PYTHONPATH
+  exec python/bin/python3 setup.py "$@"
+fi
 # Python 3.10+ that can make a venv WITH pip: Debian/Ubuntu ship `venv` without `ensurepip` (that is the separate
 # python3-venv package), and a venv made without it has no pip
 ok_py() { "$1" -c 'import sys, venv, ensurepip; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; }

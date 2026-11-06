@@ -9,6 +9,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -123,6 +124,53 @@ class Calibrate(unittest.TestCase):
     def test_defaults_kept_when_flat(self):
         res, _ = self.run_with(lambda f, p, w: 50.0)
         self.assertEqual(res["settings"], {})
+
+    def test_measure_reports_bounded_stages_and_stops_between_samples(self):
+        events = []
+        stopped = threading.Event()
+
+        def progress(stage, completed, total):
+            events.append((stage, completed, total))
+            if stage == "pcie_share" and completed == 1:
+                stopped.set()
+
+        with self.assertRaises(CAL.CalibrationCancelled):
+            CAL.measure(BASE, [[1, 2, 3]] * 3,
+                        lambda args: FakeEngine(args, lambda *_: 50.0),
+                        say=lambda *_: None, progress=progress, cancel_event=stopped)
+        self.assertIn(("loading", 1, 1), events)
+        self.assertIn(("pcie_share", 1, len(CAL.PCIE_FRACS) * CAL.SWEEP_ROUNDS), events)
+        self.assertNotIn("draft_floor", [stage for stage, _, _ in events])
+
+    def test_active_generation_receives_shared_cancel_event(self):
+        stopped = threading.Event()
+        seen = []
+
+        class Engine:
+            def generate(self, ids, max_new, sampling, cancel):
+                seen.append(cancel)
+                cancel.set()
+                yield None
+
+        session = CAL.Session(Engine(), [[1, 2, 3]], stopped)
+        with self.assertRaises(CAL.CalibrationCancelled):
+            session.rate()
+        self.assertEqual(seen, [stopped])
+
+    def test_successful_sweep_covers_every_progress_stage(self):
+        events = []
+        CAL.measure(BASE, [[1, 2, 3]] * 3,
+                    lambda args: FakeEngine(args, lambda *_: 50.0),
+                    say=lambda *_: None, progress=lambda *item: events.append(item))
+        stages = list(dict.fromkeys(stage for stage, _, _ in events))
+        self.assertEqual(stages, ["loading", "pcie_share", "draft_floor", "confirmation",
+                                  "cpu_workers", "expert_tier"])
+        for stage in stages:
+            readings = [(done, total) for current, done, total in events if current == stage]
+            self.assertEqual(readings[0][0], 0)
+            self.assertEqual(readings[-1][0], readings[-1][1])
+            self.assertTrue(all(before[0] <= after[0] and before[1] == after[1]
+                                for before, after in zip(readings, readings[1:])))
 
     def test_small_gain_is_noise(self):
         # 2% better at pcie 0.35: below MIN_GAIN, so the default stays
@@ -294,6 +342,21 @@ class Calibrate(unittest.TestCase):
             self.assertIsNone(CAL.engine_error(None))
             self.assertIsNone(CAL.engine_error(str(Path(d) / "missing.log")))
 
+    def test_apply_removes_all_duplicate_overrides(self):
+        args = BASE + ["--pcie-frac", "0.2", "--pcie-frac", "0.75", "--spec-min-p", "0.7"]
+        default = CAL.apply(args, {})
+        self.assertNotIn("--pcie-frac", default)
+        self.assertEqual(default.count("--spec-min-p"), 1)
+        self.assertEqual(CAL.arg_value(default, "--spec-min-p"), "0.5")
+
+    def test_close_reaps_a_killed_engine(self):
+        import subprocess
+        eng = mock.Mock()
+        eng.proc.wait.side_effect = [subprocess.TimeoutExpired("engine", 60), 0]
+        CAL.close(eng)
+        eng.proc.kill.assert_called_once()
+        self.assertEqual(eng.proc.wait.call_args_list, [mock.call(60), mock.call(timeout=10)])
+
     def test_worker_candidates(self):
         self.assertEqual(CAL.worker_candidates(6), [6, 4, 3, 2])
         self.assertEqual(CAL.worker_candidates(23), [23, 15, 12, 6])        # a quarter: 4 beat 15 on 8P + 16E
@@ -307,6 +370,59 @@ class Calibrate(unittest.TestCase):
         self.assertEqual(CAL.pick({"a": [50, 51, 49], "b": [53, 52, 60]}, "a"), "b")
         self.assertEqual(CAL.pick({"a": [50, 51, 49], "b": [51, 51.5, 51]}, "a"), "a")
         self.assertEqual(CAL.pick({}, "a"), "a")
+
+
+class DFlashCalibration(unittest.TestCase):
+    def measure(self, speed, maximum=7, base=None):
+        starts = []
+        base = base or CAL.with_arg(BASE, "--spec", "8") + ["--dflash", "draft.gguf"]
+        class DraftEngine(FakeEngine):
+            def __init__(self, args):
+                super().__init__(args, lambda *a: 50, info_workers=0, starts=starts)
+                self.info.update(dflash_block=int(CAL.arg_value(args, "--dflash-block") or maximum), dflash_max=maximum)
+            def generate(self, ids, max_new, sampling, cancel):
+                tune = sampling.get("strata_tune") or {}
+                k = tune.get("dflash_block", self.info["dflash_block"])
+                assert 1 <= k <= maximum
+                rate = speed(k, tune.get("pcie_frac", 0.55), tune.get("spec_min_p", self.info["spec_min_p"]))
+                yield from [1] * max_new
+                self.last = {"generated": max_new, "decode_ms": max_new / rate * 1000}
+        return CAL.measure(base, [[1]] * 3, DraftEngine, say=lambda *_: None), starts
+
+    def test_forward_width_persisted_through_restarts(self):
+        res, starts = self.measure(lambda k, f, p: 60 if k == 4 else 50)
+        self.assertEqual(res["settings"]["--dflash-block"], "4")
+        self.assertTrue(all(CAL.arg_value(a, "--dflash-block") == "4" for a in starts[1:]))
+        self.assertEqual(len(res["report"]["dflash_block_sweeps"]), 2)
+
+    def test_noise_keeps_default_and_resets_old_width(self):
+        res, starts = self.measure(lambda k, f, p: 51 if k == 4 else 50,
+                                  base=BASE + ["--dflash", "draft.gguf", "--dflash-block", "4"])
+        self.assertEqual(res["settings"], {})
+        self.assertIsNone(CAL.arg_value(starts[0], "--dflash-block"))
+
+    def test_loaded_capacity_limits_candidates(self):
+        res, _ = self.measure(lambda k, f, p: 60 if k == 2 else 50, maximum=3)
+        self.assertEqual(res["settings"]["--dflash-block"], "2")
+        self.assertEqual(set(res["report"]["dflash_block_sweeps"][0]["rates"]), {"1", "2", "3"})
+
+    def test_retunes_width_after_pcie_change(self):
+        # A GPU-favouring share changes which forward width wins.
+        def speed(k, f, p):
+            if f == 0.2:
+                return 80 if k == 3 else 65
+            return 60 if k == 4 else 50
+        res, _ = self.measure(speed)
+        self.assertEqual(res["settings"]["--dflash-block"], "3")
+        self.assertEqual(res["settings"]["--pcie-frac"], "0.20")
+
+    def test_six_row_forward_is_measured(self):
+        res, _ = self.measure(lambda k, f, p: 60 if k == 6 else 50)
+        self.assertEqual(res["settings"]["--dflash-block"], "6")
+
+    def test_mtp_never_receives_dflash_setting(self):
+        args = CAL.apply(BASE, {"--dflash-block": "4"})
+        self.assertNotIn("--dflash-block", args)
 
 
 class SetupIntegration(unittest.TestCase):
@@ -362,6 +478,16 @@ class SetupIntegration(unittest.TestCase):
         self.assertTrue(self.S.calibrate_config(cfg_path))
         self.assertEqual(json.loads(cfg_path.read_text())["env"], {"STRATA_ROCBLAS_TUNING": "t"})
 
+    def test_calibration_keys_separate_drafters_and_quantization(self):
+        cfg = {"args": BASE + ["--mtp", "mtp"], "model_name": "m", "drafter": "mtp"}
+        df = dict(cfg, args=BASE + ["--dflash", "q4.gguf", "--dflash-vocab", "vocab.bin"], drafter="dflash")
+        keys = [self.S.hardware_key(cfg), self.S.hardware_key(df),
+                self.S.hardware_key(dict(df, args=CAL.with_arg(df["args"], "--dflash", "q8.gguf"))),
+                self.S.hardware_key(dict(cfg, args=BASE, drafter="none"))]
+        self.assertEqual(len(set(keys)), 4)
+        # The calibrated width itself is not part of its cache key.
+        self.assertEqual(keys[1], self.S.hardware_key(dict(df, args=df["args"] + ["--dflash-block", "4"])))
+
     def test_failed_calibration_keeps_defaults(self):
         cfg_path = Path(self.tmp.name) / "strata-q2_0.json"
         cfg_path.write_text(json.dumps({"exe": "x", "args": list(BASE), "model_name": "m"}))
@@ -394,7 +520,7 @@ class SetupIntegration(unittest.TestCase):
         self.assertNotIn("an earlier start", out.getvalue())
         out = io.StringIO()
         with mock.patch.object(self.S, "ROOT", Path(self.tmp.name)), \
-                mock.patch.object(self.S, "data_folder", lambda d: (Path(self.tmp.name) / "data", [])), \
+                mock.patch.object(self.S, "data_folder", lambda d, *a, **k: (Path(self.tmp.name) / "data", [])), \
                 mock.patch.object(self.S, "update_installed_engine", lambda *a: None), \
                 mock.patch.object(sys, "argv", ["setup.py", "--calibrate", "--no-start"]), \
                 contextlib.redirect_stdout(out):

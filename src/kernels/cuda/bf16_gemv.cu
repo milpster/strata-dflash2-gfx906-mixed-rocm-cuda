@@ -65,6 +65,69 @@ __global__ void bf16_gemv_split_kernel(const uint16_t* __restrict__ x, const uin
     if (t == 0) y[o] = scratch[0];
 }
 
+/// TWO weight matrices from one read of x - llama.cpp's `*_mul_mat_multi` shape.  One warp computes row `o`
+/// of `w1` and row `o` of `w2` with two independent accumulators over the SAME lane-strided loop, so each
+/// accumulator sees the addend sequence its standalone `bf16_gemv_warp_kernel` run gave it: bitwise equal
+/// (checked by `bf16_gemv_pair_parity`).  Rows past a matrix's `n_out` skip that accumulator only.
+__global__ void bf16_gemv_pair_warp_kernel(const uint16_t* __restrict__ x, const uint16_t* __restrict__ w1,
+                                           float* __restrict__ y1, long long n_out1,
+                                           const uint16_t* __restrict__ w2, float* __restrict__ y2,
+                                           long long n_out2, long long n_in) {
+    const int warps_per_block = (int) (blockDim.x >> 5);
+    const long long o = (long long) blockIdx.x * warps_per_block + (threadIdx.x >> 5);
+    const int lane = threadIdx.x & 31;
+    const long long n_out = n_out1 > n_out2 ? n_out1 : n_out2;
+    if (o >= n_out) return;
+    const int run1 = o < n_out1, run2 = o < n_out2;
+    const uint16_t* r1 = w1 + o * n_in;
+    const uint16_t* r2 = w2 + o * n_in;
+    float acc1 = 0.0f, acc2 = 0.0f;
+    for (long long i = lane; i < n_in; i += 32) {
+        const float xv = f32_from_bf16(x[i]);
+        if (run1) acc1 += xv * f32_from_bf16(r1[i]);
+        if (run2) acc2 += xv * f32_from_bf16(r2[i]);
+    }
+    if (run1) {
+        float a = acc1;
+        for (int off = 16; off > 0; off >>= 1) a += __shfl_down_sync(0xFFFFFFFFu, a, off);
+        if (lane == 0) y1[o] = a;
+    }
+    if (run2) {
+        float a = acc2;
+        for (int off = 16; off > 0; off >>= 1) a += __shfl_down_sync(0xFFFFFFFFu, a, off);
+        if (lane == 0) y2[o] = a;
+    }
+}
+
+/// One WARP per output row, ALL `batch` activation rows at once: the weight row is read once
+/// and multiplied into `batch` accumulators (calling `bf16_gemv` per row reads it once per
+/// row).  Every output is bit-identical to its own warp-path `bf16_gemv` call: the same
+/// per-lane strided accumulation (i = lane, lane+32, ...), the same fma shape, the same
+/// shuffle-reduce order - the batch rides as independent accumulator chains between them.
+template <int BATCH>
+__global__ void bf16_gemv_batch_kernel(const uint16_t* __restrict__ x, const uint16_t* __restrict__ w,
+                                       float* __restrict__ y, long long n_in, long long n_out) {
+    const int warps_per_block = (int) (blockDim.x >> 5);
+    const long long o = (long long) blockIdx.x * warps_per_block + (threadIdx.x >> 5);
+    if (o >= n_out) return;
+    const int lane = threadIdx.x & 31;
+    const uint16_t* row = w + o * n_in;
+    float acc[BATCH];
+#pragma unroll
+    for (int b = 0; b < BATCH; ++b) acc[b] = 0.0f;
+    for (long long i = lane; i < n_in; i += 32) {
+        const float wv = f32_from_bf16(row[i]);
+#pragma unroll
+        for (int b = 0; b < BATCH; ++b) acc[b] += f32_from_bf16(x[(size_t) b * n_in + i]) * wv;
+    }
+#pragma unroll
+    for (int b = 0; b < BATCH; ++b) {
+        float v = acc[b];
+        for (int off = 16; off > 0; off >>= 1) v += __shfl_down_sync(0xFFFFFFFFu, v, off);
+        if (lane == 0) y[(size_t) b * n_out + o] = v;
+    }
+}
+
 inline void finish(void* stream, const char* what) {
     const cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) {
@@ -112,6 +175,46 @@ void bf16_gemv(const uint16_t* x, const uint16_t* w, float* y, int64_t n_in, int
     const unsigned grid = (unsigned) ((n_out + THREADS - 1) / THREADS);
     bf16_gemv_naive_kernel<<<grid, THREADS, 0, (cudaStream_t) stream>>>(x, w, y, n_in, n_out);
     finish(stream, "bf16_gemv");
+}
+
+void bf16_gemv_pair(const uint16_t* x, const uint16_t* w1, float* y1, int64_t n_out1, const uint16_t* w2,
+                    float* y2, int64_t n_out2, int64_t n_in, void* stream) {
+    if (n_in <= 0 || (n_out1 <= 0 && n_out2 <= 0)) return;
+    // THE PAIR KERNEL IS THE WARP-PER-ROW ACCUMULATION on both sides, so it is bitwise what
+    // `bf16_gemv` (n_out >= 64) and `bf16_gemv_split` at tpr 32 produced.  Callers whose standalone path
+    // was the NAIVE kernel (a small `n_out` with the plain entry) must not use this.
+    const int warps = THREADS / 32;
+    const long long n_out = n_out1 > n_out2 ? n_out1 : n_out2;
+    const unsigned grid = (unsigned) ((n_out + warps - 1) / warps);
+    bf16_gemv_pair_warp_kernel<<<grid, THREADS, 0, (cudaStream_t) stream>>>(
+        x, w1, y1, n_out1, w2, y2, n_out2, n_in);
+    finish(stream, "bf16_gemv_pair");
+}
+
+void bf16_gemv_batch(const uint16_t* x, const uint16_t* w, float* y, int64_t n_in, int64_t n_out,
+                     int batch, void* stream) {
+    if (n_in <= 0 || n_out <= 0 || batch <= 0) return;
+    if (batch > 8) {
+        std::fprintf(stderr, "bf16_gemv_batch: batch %d over the 8-row forward width\n", batch);
+        std::exit(1);
+    }
+    if (batch == 1) {
+        bf16_gemv(x, w, y, n_in, n_out, stream);
+        return;
+    }
+    const int warps = THREADS / 32;
+    const unsigned grid = (unsigned) ((n_out + warps - 1) / warps);
+    cudaStream_t st = (cudaStream_t) stream;
+    switch (batch) {
+        case 2: bf16_gemv_batch_kernel<2><<<grid, THREADS, 0, st>>>(x, w, y, n_in, n_out); break;
+        case 3: bf16_gemv_batch_kernel<3><<<grid, THREADS, 0, st>>>(x, w, y, n_in, n_out); break;
+        case 4: bf16_gemv_batch_kernel<4><<<grid, THREADS, 0, st>>>(x, w, y, n_in, n_out); break;
+        case 5: bf16_gemv_batch_kernel<5><<<grid, THREADS, 0, st>>>(x, w, y, n_in, n_out); break;
+        case 6: bf16_gemv_batch_kernel<6><<<grid, THREADS, 0, st>>>(x, w, y, n_in, n_out); break;
+        case 7: bf16_gemv_batch_kernel<7><<<grid, THREADS, 0, st>>>(x, w, y, n_in, n_out); break;
+        case 8: bf16_gemv_batch_kernel<8><<<grid, THREADS, 0, st>>>(x, w, y, n_in, n_out); break;
+    }
+    finish(st, "bf16_gemv_batch");
 }
 
 void bf16_gemv_split(const uint16_t* x, const uint16_t* w, float* y, int64_t n_in, int64_t n_out,

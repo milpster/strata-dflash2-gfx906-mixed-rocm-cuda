@@ -26,6 +26,22 @@ namespace strata::kernels {
 /// `strata::core::WeightRef::ne0/ne1` already report.
 void bf16_gemv(const uint16_t* x, const uint16_t* w, float* y, int64_t n_in, int64_t n_out, void* stream);
 
+/// TWO weight matrices from ONE kernel (llama.cpp's `*_mul_mat_multi` shape): `y1 = w1 @ x`, `y2 = w2 @ x`.
+/// One warp computes row o of both matrices with two accumulators over one lane-strided pass, so each output
+/// is bitwise what `bf16_gemv` produced for that matrix wherever `bf16_gemv` used its warp kernel
+/// (`n_out >= 64`); a matrix below that threshold falls back to the plain call to keep the naive kernel's
+/// summation order.  `n_out1` or `n_out2` may be 0 for a one-sided call.
+void bf16_gemv_pair(const uint16_t* x, const uint16_t* w1, float* y1, int64_t n_out1, const uint16_t* w2,
+                    float* y2, int64_t n_out2, int64_t n_in, void* stream);
+
+/// `y[b * n_out + o]` for every batch row b of `x` ([batch][n_in] bf16, row stride n_in):
+/// one launch, each weight row read once for the whole batch (per-row `bf16_gemv` calls read
+/// it once per row).  Every output is bit-identical to its own `bf16_gemv` call on that row -
+/// the reduction order is the warp kernel's, the batch rides as independent accumulator
+/// chains.  batch 1..8 (the drafter's forward width); 1 delegates to `bf16_gemv`.
+void bf16_gemv_batch(const uint16_t* x, const uint16_t* w, float* y, int64_t n_in, int64_t n_out,
+                     int batch, void* stream);
+
 /// The row-split variant, for the same reason `s_gemv_split` exists: with one thread per output row the
 /// parallelism IS the output width, and `ssm_alpha` has 48 of them over 48 SMs.  One warp per row, lanes
 /// striding the reduction axis - which is also what makes the access pattern coalesced in this layout.

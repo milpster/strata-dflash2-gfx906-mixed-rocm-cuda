@@ -22,7 +22,7 @@
 #include <memory>
 #include <string>
 
-namespace strata::core { class PeerExperts; }
+namespace strata::core { class PeerExperts; class RemoteExperts; }
 namespace strata::kernels::cpu { class ExpertPool; }
 
 namespace strata::prefill {
@@ -44,6 +44,12 @@ struct PrefillStats {
 }  // namespace strata::prefill
 namespace strata::core { class MtpDrafter; }
 namespace strata::prefill {
+
+/// HIP: one tiny BF16 and one tiny FP16 product on a private handle, so the first prompt does not pay hipBLAS's one-time
+/// library loads (about 2.5 s on an R9700); once per device, later calls wait for the first and return.  Safe to call from a
+/// thread before the expert arena loads.  STRATA_PREFILL_WARM=0 makes it a no-op.  Nothing on CUDA / SYCL.
+void warm_gemm_libraries(int device);
+
 
 class Prefill {
 public:
@@ -174,10 +180,43 @@ public:
     /// chunks of up to init's `chunk` tokens.  Needs P2P between the two cards.
     bool set_peer(core::PeerExperts* peer, int64_t cap_rows, std::string& err);
 
+    /// M2 (STRATA_PREFILL_HELPER=1, opt-in, default OFF - docs/work/MIXED_BACKEND_RPC_PLAN.md): the
+    /// out-of-process CUDA helper computes WHOLE experts' routed rows for every prompt chunk on its
+    /// own card, over the proxy's prompt channel (the P1 tier: begin_prompt / finish_prompt).  The
+    /// claim rule is P1's select_prompt_rows (helper-held, primary-non-resident, stable blobs,
+    /// protocol caps); a failed send or reply runs the same-layer CPU fallback for EXACTLY the
+    /// claimed rows.  A null or non-prompt-capable helper changes nothing: the prompt path stays
+    /// as it was.  Needs the CPU pool set (the fallback's arm).
+    bool set_prompt_helper(core::RemoteExperts* helper, std::string& err);
+
     /// Plan v0.3 P6: called after every chunk with the chunk's final multi-stream residual rows (device,
     /// T x hc*n_embd, valid until the next chunk) and the chunk's first position; the MTP draft layer builds its
     /// K/V from them.  The prefill stream is synchronized before the call.
     std::function<bool(const float* R_rows, int64_t T, int64_t pos0, std::string& err)> on_chunk;
+    /// DFlash2 prompt taps (CUDA / HIP, single stage): before `run`, ask for the completed output of each layer in `layers` (zero-based; the
+    /// mean of the hc streams) for the prompt rows at positions >= `first_pos`, at most `cap_rows` rows per chunk (a staging buffer of
+    /// cap_rows x layers x n_embd floats is allocated at the first chunk).  After each chunk that has such rows, on_taps(taps
+    /// [rows][layers][n_embd] device, rows, first position, err) runs with the stream synchronized.  clear_taps frees the staging.
+    void set_taps(const std::vector<int>& layers, int64_t first_pos, int64_t cap_rows) { tap_layers_ = layers; tap_first_ = first_pos; tap_cap_ = cap_rows; }
+    void clear_taps();
+    std::function<bool(const float* taps, int64_t rows, int64_t pos0, std::string& err)> on_taps;
+
+    /// DFlash feature taps (docs/DFLASH.md): at each listed boundary layer, capture the ATTN-HALF HC
+    /// read's contracted residual (n_embd BF16 per row - the fusion's input precision) for every row
+    /// of each chunk.  Before init.  Buffer: [n_taps x chunk x n_embd] bf16, rows [0, T) of the last
+    /// chunk; delivered by dflash_on_taps right after on_chunk (same synchronization).
+    /// hc_mean=true captures the completed raw HC stream mean before the learned HC read.
+    void set_tap_layers(const int* layers, int n, bool hc_mean = false);
+    /// Rows per tap in the device buffer (the chunk capacity); the per-tap stride of `taps`.
+    int64_t tap_stride_rows() const;
+    /// The device tap plane itself (tap t's rows at taps_plane() + t * tap_stride_rows() * n_embd):
+    /// the cross-stage tap collector reads each producer stage's own plane (dflash_tap_collect.hpp).
+    const uint16_t* taps_plane() const;
+    /// OUR tap-plane collector (the serve / --layer-split path, docs/DFLASH.md, dflash_tap_collect.hpp).
+    /// A distinct name on purpose: upstream v0.2.3's DFlash2 prompt taps keep `on_taps` above with their
+    /// float* staging buffer (rows, pos0), and a verifier has exactly one tap producer (gate 1), so the
+    /// two callbacks are two members and neither side's signature is touched.
+    std::function<bool(const uint16_t* taps, int n_taps, int64_t T, int64_t pos0, std::string& err)> dflash_on_taps;
 
     /// Layer split: called by every stage when it has read a chunk, with the position reached, while its own state
     /// is still at that chunk's end (its stream synchronized; the last stage calls it just before `on_chunk`).  An
@@ -192,6 +231,9 @@ public:
     /// says how many of the run's tokens that is (-1 when the run read them all).  A read beside the batch slots
     /// (STRATA_PIPED_CONCURRENT) gives way to a waiting shorter request there.
     std::function<bool()> stop_at_chunk;
+    /// 149-prefetch (STRATA_RAM_ADAPT2): a layer's routed expert ids (T x k, -1 = none) after the prompt path downloaded them
+    /// for its grouping on the host; a policy may count them. Not called on the paths that keep the ids on the GPU.
+    std::function<void(int64_t layer, const int32_t* ids, int64_t n)> on_routes;
     int64_t stopped_at() const { return stopped_at_; }
     /// Grows this stage's (and the later stages') pinned upload slots to what a text chunk of `T` tokens uploads, so
     /// a run of such chunks allocates no pinned memory (STRATA_PIPED_CONCURRENT: an allocation or free on the read's
@@ -247,6 +289,9 @@ private:
     bool drain_pipeline(std::string& err);
 
     int64_t stage_lb_ = 0, stage_le_ = -1;
+    std::vector<int> tap_layers_;
+    int64_t tap_first_ = 0, tap_cap_ = 0;
+    float* tap_dev_ = nullptr;
     Prefill* next_ = nullptr;
     Prefill* helper_ = nullptr;         ///< set_stage_helper
     bool single_chunk_ = false;         ///< a later stage: the prompt is one chunk (set by the stage before)

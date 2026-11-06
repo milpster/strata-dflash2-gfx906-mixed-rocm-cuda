@@ -1,16 +1,20 @@
 # The interleaved small-batch matvec (STRATA_MMVQ_IL): how to measure a table for your card
 
-The decode and verify windows run their dense projections (2 to 4 tokens at a time) through `native_mmvq_il`, which reads an
+The decode and verify windows run their dense projections (2 to 8 tokens at a time) through `native_mmvq_il`, which reads an
 interleaved copy of the q8_1 activations. Every choice it makes gives the same bits as the plain kernels
 (`STRATA_MMVQ_IL=0` turns the whole path off); only the speed differs. How many matrix rows one warp takes
 (1, 2 or 4, or 0 = use the plain kernel) is a table in `src/kernels/cuda/native_mmvq.cu`, indexed by the
-quantisation type (IQ4_XS, Q4_K, Q5_K, Q6_K), the token count (2-4) and the matrix's row count (five classes).
+quantisation type (IQ4_XS, Q4_K, Q5_K, Q6_K, Q3_K), the token count (2-4) and the matrix's row count (five classes).
+Windows of 5 to 8 tokens have a second table (`kIlRows58_<cc>`, 1 or 2 rows a warp); only sm_120 has one so far (measured on
+the RTX PRO 5000: e.g. the Q5_K head at 5 tokens 899 -> 491 us), every other card keeps the plain kernels there.
+`STRATA_MMVQ_IL_WIDE=0` turns the 5-8 token path off. `--emit-table` prints both tables.
 
 Which table a card gets:
 
 | card | table |
 |---|---|
-| sm_86 (Ampere consumer) and sm_120 (Blackwell consumer) | `kIlRowsShared`, measured on an RTX 3060 and an RTX 5070 together (a cell is non-zero only if the worse of the two cards still gains 3%) |
+| sm_86 (Ampere consumer) and sm_120 cards with fewer than 80 SMs (RTX 5070 and smaller) | `kIlRowsShared`, measured on an RTX 3060 and an RTX 5070 together (a cell is non-zero only if the worse of the two cards still gains 3%) |
+| sm_120 cards with 80 or more SMs (RTX PRO 5000 / 6000 Blackwell, RTX 5080 / 5090) | `kIlRows_120`, measured on an RTX PRO 5000 Blackwell (110 SMs); `STRATA_MMVQ_IL_120=0` gives them the shared table |
 | sm_89 (Ada) and every other sm_80+ card | `kIlRowsShared` too. Nobody has measured sm_89 yet (we have no such card). |
 | sm_75 and older | the path is off; the plain kernels run |
 | a card listed in `kIlArch` | its own table |
@@ -30,3 +34,17 @@ Which table a card gets:
 
 The emit rule: per cell, the fastest rows count if it takes at least 3% off the plain kernel's time, else 0; shapes of one
 class that disagree give 0; a class with no measured shape copies its neighbour below.
+
+### Opt-in Q8_0 output head on SM89
+
+`STRATA_MMVQ_IL_Q8_HEAD=1` selects two rows per warp for the 248320-row Q8_0
+head at 3–8 columns on SM89. It leaves one/two columns, other output sizes,
+other cards and the existing default path unchanged. DFlash2's own head path
+also requires `STRATA_DFLASH_HEAD_IL=1`. See the
+[long-prompt measurements](../bench/results/2026-10-20-dflash2-long-tuned/README.md).
+
+Recheck parity and the head timings with:
+
+```sh
+STRATA_MMVQ_IL_Q8_HEAD=1 MMVQ_IL_ONLY=Q8_0 build-dflash2/mmvq_il_parity --bench
+```
