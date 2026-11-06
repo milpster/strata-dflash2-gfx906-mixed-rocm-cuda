@@ -411,3 +411,18 @@ must show the override line, fill, proxy ack and a completion.
   `launch-prod-swift15-dflash-w4-q4_0-v023.sh` (unused, informational).
 - The local README edit stays in `stash@{0}`; the two runtime
   `run/*-supervisor.json` files restored to their uncommitted state.
+
+## Night follow-up: live wedge validated the helper; stall recovery added (2026-11-06 night)
+
+- User rebooted 19:40 and started prod at 19:46 (swift15-f16kv = the iq3-xxs
+  fp16-KV config with helper). First live pass of the patient helper: a GPU
+  wedge 19:54 froze a 189k read mid-flight; the channel stayed open, no
+  CPU-fallback line, pair attached throughout.
+- The late auto-recovery was the server's STOP watchdog (engine_silence_s 300
+  after the client canceled): ~12 min, request lost. Wired supervisor-side
+  detection: `--stall-timeout 300` on all six launchers (tracker on the read
+  ticker, reset on request completion, restart on 5 min of frozen heartbeat).
+  Commit follows this entry; suite 32 tests.
+- Also this evening: `--stage-cpus 3,5,7,9,11,13,15` wired into all six
+  launchers (commit fe5447e8), prod config paths migrated /mnt/user ->
+  /mnt/user (commit d40fdd4d).

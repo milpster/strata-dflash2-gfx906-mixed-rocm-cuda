@@ -210,6 +210,46 @@ class RecoveryTests(ScratchTest):
         self.assertIn("must exclude CPU 0",
                       (self.root / "supervisor.log").read_text())
 
+    def test_frozen_read_ticker_restarts_the_pair(self):
+        self.start_pair(extra_args=("--stall-timeout", "0.3"))
+        self.attached()
+        with (self.root / "server.log").open("a") as log:
+            log.write("[strata] reading the prompt: 100 of 200 tokens, 10 s so far\n")
+        stalled = self.wait_state(
+            lambda state: state["state"] == "backoff"
+            and "stalled at 100 of 200" in state.get("reason", ""))
+        self.assertIn("stalled at 100 of 200", stalled["reason"])
+
+    def test_completed_request_resets_the_stall_tracker(self):
+        self.start_pair(extra_args=("--stall-timeout", "0.3"))
+        self.attached()
+        with (self.root / "server.log").open("a") as log:
+            log.write("[strata] reading the prompt: 100 of 200 tokens, 10 s so far\n")
+        time.sleep(0.15)
+        with (self.root / "engine.log").open("a") as log:
+            log.write("strata serve: prompt 100 tokens = 0 reused + 100 read in 10 ms, 1 generated in 5 ms\n")
+        time.sleep(0.6)  # Idle after a finished request must never restart the pair.
+        state = json.loads(self.state.read_text())
+        self.assertEqual((state["generation"], state["state"]), (1, "attached"))
+        with (self.root / "server.log").open("a") as log:  # A new request then stalls.
+            log.write("[strata] reading the prompt: 0 of 50 tokens, 0 s so far\n")
+        self.wait_state(lambda state: state["state"] == "backoff"
+                        and "stalled at 0 of 50" in state.get("reason", ""))
+
+    def test_progressing_read_ticker_does_not_restart(self):
+        self.start_pair(extra_args=("--stall-timeout", "0.3"))
+        self.attached()
+        for count in (100, 150, 200):
+            time.sleep(0.1)
+            with (self.root / "server.log").open("a") as log:
+                log.write(f"[strata] reading the prompt: {count} of 200 tokens, 1 s so far\n")
+        time.sleep(0.15)
+        with (self.root / "engine.log").open("a") as log:
+            log.write("strata serve: prompt 200 tokens = 0 reused + 200 read in 10 ms, 1 generated in 5 ms\n")
+        time.sleep(0.5)
+        state = json.loads(self.state.read_text())
+        self.assertEqual((state["generation"], state["state"]), (1, "attached"))
+
     def test_unfilled_live_helper_never_becomes_attached_and_is_retried(self):
         self.start_pair({"FAKE_NO_FILL": "1"}, ("--startup-timeout", "1"))
         state = self.wait_state(lambda state: state["state"] == "backoff")

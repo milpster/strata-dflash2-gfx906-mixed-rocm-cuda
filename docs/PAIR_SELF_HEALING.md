@@ -149,6 +149,40 @@ the engine on every recovery - so the move had to become part of startup.
   and carries a CPU-0 `strata-stage` thread; the suite (29 tests) checks the
   move at attach, the fresh move after an engine kill, and the CPU-0 refusal.
 
+### Stalled-request recovery (2026-11-06 night)
+
+The Nov 6 evening wedge (19:54): mid-read of a 189k-token prompt the GPU
+wedged - the read counter froze at 64,773 of 188,981, the server's 10 s ticker
+printed the same count for ~50 s and then went silent, both compute GPUs sat at
+0% utilization, and every process stayed alive with the helper channel open.
+Nothing fired: no death, no channel close, no degradation line. The patient
+helper held the pair `attached` for the whole wedge (its first live pass). What
+finally recovered was the server's own STOP watchdog (`engine_silence_s` 300) -
+but only after the client canceled, ~12 minutes end to end, and the request was
+dead regardless.
+
+- `pair_supervisor.py run --stall-timeout SECONDS` (opt-in, 0 = old behavior;
+  all six launchers pass 300) closes that blind spot. The server's read ticker
+  (`[strata] reading the prompt: N of M tokens`) is the only per-request
+  heartbeat: the tracker starts on the first tick, advances only when the
+  N-of-M pair CHANGES, and clears when the engine log reports the request done
+  (`strata serve: prompt ... tokens`). Idle (no request in flight) has no
+  tracker and can never fire.
+- Attached + no changed tick for 300 s -> the reason is
+  `prompt read stalled at N of M tokens ...` and the normal generation restart
+  follows (SIGTERM, escalation to SIGKILL for a wedged engine, backoff, refill).
+- Why 300 s and not sooner: host contention (swap, a hostapp loading) can stall a
+  read for minutes and then auto-recover - an early restart would throw away a
+  pair that was about to heal. Five minutes of frozen heartbeat separates the
+  two; it also beats the ~12 min client-dependent server path.
+- Limits: this covers the read phase, the one phase with a heartbeat. A wedge
+  during decode (no per-request heartbeat in either log) is not detected; the
+  server's `engine_silence_s` remains the backstop there. GPU utilization is
+  deliberately not consulted. `--single-run` runs without it.
+- Verified by three fixture tests: a frozen ticker restarts with the reason; a
+  completed request clears the tracker (idle never restarts, a later new stall
+  still does); a progressing ticker never restarts. Suite is 32 tests.
+
 ## CPU-only regression tests
 
 ```sh

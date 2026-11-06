@@ -42,7 +42,8 @@ case "${1:-}" in
     exec "$PY" "$ROOT/tools/mixed_gpu/pair_supervisor.py" run --launcher "$0" --config "$CONFIG" \
       --state "$ROOT/run/prod-swift15-f16kv-rv-mixed-supervisor.json" --lock "$ROOT/run/mixed-supervisor.lock" \
       --socket "$SOCKET" --socket "$SOCKET2" --nice 1 \
-      --stage-cpus 3,5,7,9,11,13,15 ;;  # staging threads off CPU 0; the hostapp keeps it
+      --stage-cpus 3,5,7,9,11,13,15 \
+      --stall-timeout 300 ;;  # a wedged in-flight read rebuilds the pair after 5 min
   *) echo 'Usage: launcher [--recover|--single-run]' >&2; exit 2 ;;
 esac
 command -v ss >/dev/null

@@ -36,6 +36,8 @@ HELPER_FAILURES = (
 FILLED = re.compile(r"expert-helper: filled [1-9][0-9]* slots\b|"
                     r"expert-helper: fill stopped: [^\n]*\([1-9][0-9]* slots, [0-9.]+ [GM]iB uploaded")
 PROXY = re.compile(r"expert-helper proxy: [1-9][0-9]* experts\b")
+REQUEST_DONE = re.compile(r"strata serve: prompt [0-9,]+ tokens")
+READ_TICK = re.compile(r"reading the prompt: ([0-9,]+ of [0-9,]+) tokens")
 STAGE_SCRIPT = Path(__file__).resolve().parent / "staging_affinity.py"
 STAGE_ATTEMPTS = 10  # Monitor intervals; staging threads exist well before attach.
 
@@ -275,6 +277,8 @@ def supervise(args: argparse.Namespace) -> int:
                                          start_new_session=True)
                 peers = None
                 engine = None
+                server_tail = None
+                reading: tuple[str, float] | None = None
                 token = process_token(child.pid)
                 known = {child.pid: token[1]} if token is not None else {}
                 owned: dict[Path, tuple[int, int]] = {}
@@ -336,6 +340,9 @@ def supervise(args: argparse.Namespace) -> int:
                                         reason = "engine helper degraded: " + failed.strip()
                                         break
                                     engine_attached |= any(PROXY.search(line) for line in lines)
+                                    if args.stall_timeout and any(REQUEST_DONE.search(line)
+                                                                 for line in lines):
+                                        reading = None  # The request ended; idle is not a stall.
                                 helper_path = Path(peers["helper_log"])
                                 helper_log = helper_path.read_text(errors="replace") if helper_path.exists() else ""
                                 if any(mark in helper_log for mark in (
@@ -382,6 +389,25 @@ def supervise(args: argparse.Namespace) -> int:
                                     publish["stage_affinity"] = dict(stage_result,
                                                                     cpus=args.stage_cpus)
                                     write_json(args.state, publish)
+                            # A mid-request wedge keeps every process alive and
+                            # every channel open; the only heartbeat is the
+                            # server's read ticker, which prints every 10 s while
+                            # a prompt is being read. A counter that stops
+                            # changing for --stall-timeout means the read is
+                            # wedged (or the ticker itself is), so rebuild the
+                            # pair instead of waiting for a client to cancel.
+                            if (args.stall_timeout and healthy and tail is not None
+                                    and peers.get("server_pid")):
+                                if server_tail is None:
+                                    server_tail = LogTail(Path(peers["engine_log"]))
+                                for line in server_tail.read_lines():
+                                    tick = READ_TICK.search(line)
+                                    if tick and (reading is None or tick.group(1) != reading[0]):
+                                        reading = (tick.group(1), time.monotonic())
+                                if reading is not None and time.monotonic() - reading[1] > args.stall_timeout:
+                                    reason = (f"prompt read stalled at {reading[0]} tokens for "
+                                              f"{args.stall_timeout:g}s without progress")
+                                    break
                         if child.poll() is not None:
                             break
                         if not healthy and time.monotonic() - started > args.startup_timeout:
@@ -437,6 +463,9 @@ def main() -> int:
                      help="nice increment inherited by the launcher, helper, server and engine")
     run.add_argument("--stage-cpus", metavar="CPUS",
                      help="after attach, move CPU-0 strata-stage threads to these logical CPUs (opt-in)")
+    run.add_argument("--stall-timeout", type=float, default=0, metavar="SECONDS",
+                     help="restart the pair when an in-flight prompt read stops making progress "
+                          "for this long; 0 (default) keeps the old wait-forever behavior")
     args = parser.parse_args()
     if args.command == "record":
         peers = {key: getattr(args, key) for key in ("helper_pid", "server_pid", "engine_log", "helper_log")}
@@ -467,6 +496,10 @@ def main() -> int:
         if not target or 0 in target or not set(target) <= os.sched_getaffinity(0):
             parser.error("--stage-cpus must be allowed on this host and must exclude CPU 0")
         args.stage_cpus = ",".join(map(str, target))
+    if args.stall_timeout and not (math.isfinite(args.stall_timeout) and args.stall_timeout > 0):
+        parser.error("--stall-timeout must be positive seconds (0 disables it)")
+    if args.stall_timeout and args.config is None:
+        parser.error("--stall-timeout requires --config (progress lives in the config's logs)")
     return supervise(args)
 
 
