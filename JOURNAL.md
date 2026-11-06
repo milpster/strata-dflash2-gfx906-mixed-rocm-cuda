@@ -966,3 +966,10 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
   CMakeCache.txt + tools/mixed_gpu/build_l3.sh; hardware from lscpu/rocm-smi/nvidia-smi/lsblk.
 - User follow-up 4: top-of-file callout added — the project is made to be compiled/installed/operated by an
   agent, humans order and read (JOURNAL.md, RESULTS*.md, build guide, AGENTS.md).
+- User follow-up 5: "stock does not support" narrowed to the measured claim — stock's gfx906 path is a
+  community source build the maintainers have never run (compile-checked only, not in its README table);
+  v0.2.10 as tagged does not compile (three fixes, branch stock-v0210-gfx906-buildfix). Fixed in intro,
+  bullet, who-benefits, bottom line, section 1.
+- Published: fork pushed to github.com/milpster/strata-dflash2-gfx906-mixed-rocm-cuda (origin; old origin
+  kept as upstream for future v0.2.10+ upmerges), shortpp-src renamed main per user order. WIP helper files
+  stayed uncommitted/local.
