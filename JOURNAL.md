@@ -1003,4 +1003,8 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
   acceptance 60–65%; sweep verdicts; +13.6% slots; 96–97% hit; H1-r5 25.05 GiB; hardware box; ROCm 6.1 pins +
   ~/rocm-gfx906-xnack; stock-compile-check-only claim) re-verified against JOURNAL.md, RESULTS*.md, CMakeCache,
   prod configs/processes. Live knobs (MEMO=1, CPU_SHARE=auto, PREFILL_HELPER=1, ram-relief) verified in the
-  live f16kv config.
+  live f16kv config. 
+- User follow-up 10 (public-clean pass): removed machine-local info from the README — the Locations table
+  (both local tree paths), the :8009 port, the live-generation-6 line, the "f16-KV is live prod" note and the
+  "In flight" work list. Build-guide paths that describe HOW it builds (pinned /opt/rocm-6.1.0, system CUDA,
+  ~/rocm-gfx906-xnack custom libs) stay by user order ("mention our rocm and custom libs").
