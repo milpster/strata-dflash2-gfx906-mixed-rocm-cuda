@@ -139,3 +139,8 @@ Status: prod UP swift-iq3_s-f16kv (parent). Awaiting cutover round 2 verdict.
 - Sanity: usage run exits 2 with usage line, no GPU context opened. NO --mmproj run performed (cards are prod's).
 - Benchmark window (parent): LD_LIBRARY_PATH=/home/user/rocm-gfx906-xnack/lib:/opt/rocm-6.1.0/lib HSA_OVERRIDE_GFX_VERSION=9.0.6 strata-vision --mmproj ... --gpu
 - CPU-mode caveat: source's CUDA_VISIBLE_DEVICES=-1 guard is ignored by HIP/ROCR; use HIP_VISIBLE_DEVICES="" ROCR_VISIBLE_DEVICES="" for a no-GPU run of this build.
+
+## Radeon-vision prod variant (13:4x)
+- HIP/gfx906 vision bench (camera img, 2048 tok): Q8 2.16 s / BF16 2.29 s vs CPU 33-36 s — ~16x. Root cause of earlier "no ROCm-capable device": unmasked Cezanne iGPU breaks enumeration; engine env pins HIP_VISIBLE_DEVICES=0,1 — wrapper tools/vision-hip.sh replicates it. Earlier "3080 CUDA" numbers (49-53 s) were silent 4-thread CPU fallbacks — never actual GPU.
+- Helper health re-verified on live request: TG 43.4 tok/s, expert cache hit 71.9% (42021/58449), 8751 rows over PCIe; 3080 util 11-45%, power 16->26 W. /metrics hardware omits the 3080 (blind spot explains "no GPU load" impression). New warning: 231 MiB free on 3080 at request start -> engine suggests --vram-reserve-mib 576 (open decision).
+- New variant committed: prod-config-...-radeonvision.json (vision exe=tools/vision-hip.sh, gpu=true, mmproj Q8, 2048 tok) + launch-...-radeonvision.sh (own sockets prod-swift15-f16kv-rv-mixed*.sock, own supervisor state/lock/logs). Trade: vision takes ~1.2 GiB on gfx906#0 at boot -> engine sizes expert cache around it (~900 fewer slots, ~9%, small TG tax). Not boot-tested yet.
