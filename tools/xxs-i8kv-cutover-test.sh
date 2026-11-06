@@ -80,7 +80,10 @@ completion_json() {  # $1 model id, $2 reasoning effort; the raw chat.completion
     -d "{\"model\":\"$1\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with exactly: XXS-OK\"}],\"max_tokens\":512,\"temperature\":0,\"reasoning_effort\":\"$2\"}"
 }
 completion() {  # $1 model id, $2 effort; prints the reply's message.content (empty = not a pass)
-  completion_json "$1" "$2" | "$PY" -c 'import json,sys
+  # Operator patch r4: curl failures/timeouts (e.g. engine mid-restart) must NOT abort the
+  # script under set -e/pipefail - an empty reply is a retry signal, not a crash (round 3
+  # died exactly here with curl exit 28 in the hiccup loop).
+  { completion_json "$1" "$2" || true; } | "$PY" -c 'import json,sys
 try:
     print((json.load(sys.stdin)["choices"][0]["message"].get("content") or "").strip())
 except Exception:
@@ -89,7 +92,7 @@ except Exception:
 gen_probe() {  # $1 model id, $2 effort; exit 0 if the endpoint demonstrably GENERATED text:
   # real content, OR reasoning text that ran the prompt's token budget out (finish_reason
   # length). The restore path must not print CRITICAL on a reasoning model mid-reasoning.
-  completion_json "$1" "$2" | "$PY" -c 'import json,sys
+  { completion_json "$1" "$2" || true; } | "$PY" -c 'import json,sys
 try:
     c = json.load(sys.stdin)["choices"][0]
     m = c.get("message") or {}
@@ -180,14 +183,17 @@ for k, v in c["env"].items(): print(f"{k}={v}")
 print("LD_LIBRARY_PATH=" + ":".join(c["lib_dirs"]))' "$UD_CONFIG")
 ev "STAGE A: engine direct run (${#ENGINE_ARGS[@]} args, $(grep -c -- --native-dense-gguf <<<"${ENGINE_ARGS[*]}") native-dense shards) -> $AENG"
 # stdin /dev/null: the engine exits by itself once its serve loop sees EOF, after session-up.
+# (Operator patch r3: with EOF the engine always ends its helper channel with 0 requests served -
+# expected for a boot-only probe - and the rebuilt helper (5a949542c046) words its success line
+# "fill stopped: budget; ... (N slots, X GiB uploaded)"; accept both old and new wordings.)
 timeout -k 10 600 env "${ENGINE_ENV[@]}" "$ENGINE" "${ENGINE_ARGS[@]}" < /dev/null >> "$AENG" 2>&1 && ARC=0 || ARC=$?
-A_FILL=$(grep -m1 -E 'filled [0-9]+ slots' "$AHEL" || true)
+A_FILL=$(grep -m1 -E 'filled [0-9]+ slots|fill stopped: [a-z-]+;.*\([0-9]+ slots, [0-9.]+ [GM]iB uploaded\)' "$AHEL" || true)
 if ! { grep -q 'session is up' "$AENG" && grep -q 'engine connected' "$AHEL" \
-       && ! grep -Eq 'helper is absent|fill refused|channel closed after 0 requests' "$AENG" \
+       && ! grep -Eq 'helper is absent|fill refused' "$AENG" \
        && [[ -n "$A_FILL" ]]; }; then
   ev "STAGE A FAIL (engine rc $ARC); engine log tail:"; tail -12 "$AENG" | tee -a "$SLOG"
   ev "helper log tail:"; tail -6 "$AHEL" | tee -a "$SLOG"
-  die_restore "stage A: the xxs engine did not come up ON the expert helper (need session-up + engine connected + a real 'filled N slots' + NO absent/refused/0-requests lines)"
+  die_restore "stage A: the xxs engine did not come up ON the expert helper (need session-up + engine connected + a real fill-success line + NO absent/refused lines)"
 fi
 ev "STAGE A PASS: engine rc $ARC, 'session is up' + helper 'engine connected' + ${A_FILL:0:110}"
 kill -TERM "$AHPID" 2>/dev/null || true
