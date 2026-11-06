@@ -4,105 +4,110 @@ An engine fork of [Niko1221/Strata](https://github.com/Niko1221/Strata) (upstrea
 
 > **Made to be built and run by an agent, not by humans.** Compiling, installing, benching, promoting and operating this fork are agent workflows: pinned toolchains, custom libs, harness scripts and a mandatory speed+quality measurement discipline. A human gives orders and reads results — the agent executes and documents. Start at `JOURNAL.md` (session record), `bench/ab-v0210/out/RESULTS*.md` (verdicts) and the build guide below; `AGENTS.md` is the technical reference for AI tools.
 
-- **Runs where stock barely reaches**: stock's gfx906 support is a community source build the maintainers have never run (compile-checked only, absent from its README's supported-hardware table) — and **v0.2.10 as tagged does not compile for gfx906** (three fixes needed); this fork runs it as a daily production server.
-- **Faster decode**: **+36–39 % tok/s** vs same-day stock (37.7–38.5 vs 27.6 tok/s; +48 % in the widest same-day frame).
-- **Faster chat**: **1.4–2.4×** faster short-prompt reads (214 / 620 / 4k tokens) plus **14–20 %** more from the prompt-stage memo.
-- **Less RAM**: **−6.2 GiB** host memory via expert-helper RAM relief, at control speed.
-- **Bit-exact quality**: greedy 80k-token infill byte-identical to stock; teacher-forced gates logprob-identical (KL 0.00000, top-1 100 %, PPL 4.115 = 4.115).
-- **Measured or it didn't happen**: every claim comes from a same-day A/B/C bench window; artifacts in `bench/ab-v0210/out/`, the story in `JOURNAL.md`.
+**Contents:** [At a glance](#at-a-glance) · [Who it's for](#who-its-for) · [The rig](#the-rig) · [How it works](#how-the-fork-works) · [Measured vs stock](#measured-fork-vs-stock-v0210) · [Quality gates](#quality-gates) · [Trade-offs](#trade-offs-and-known-defects) · [Build guide](#build-guide--how-we-built-it) · [Repo map](#repo-map)
 
-## Who this benefits
+## At a glance
 
-- **gfx906 owners (Radeon VII, MI50, MI60)** — stock ships only a compile-checked community source path (and v0.2.10 as tagged needs three fixes to build at all); this fork runs these cards as a production local-LLM server. MI50/MI60 share the target but are untested here.
+- **Runs where stock barely reaches** — stock's gfx906 support is a community source build the maintainers have never run, and v0.2.10 as tagged does not even compile for gfx906; this fork runs it as a daily server.
+- **Faster decode** — **+36–39 %** vs same-day stock (37.7–38.5 vs 27.6 tok/s; +48 % in the widest same-day frame).
+- **Faster chat** — **1.4–2.4×** faster short-prompt reads, plus **14–20 %** more from the prompt-stage memo.
+- **Less RAM** — **−6.2 GiB** host memory via expert-helper RAM relief, at control speed.
+- **Bit-exact quality** — greedy 80k-token infill byte-identical to stock; teacher-forced gates logprob-identical (KL 0.00000, top-1 100 %, PPL 4.115 = 4.115).
+- **Measured or it didn't happen** — every claim comes from a same-day A/B/C bench window; artifacts in `bench/ab-v0210/out/`, the story in `JOURNAL.md`.
+
+## Who it's for
+
+The fork pays off when your hardware or your traffic matches what it was built for:
+
+- **gfx906 owners (Radeon VII, MI50, MI60)** — stock ships only a compile-checked community source path; this fork runs these cards as a production local-LLM server. MI50/MI60 share the target but are untested here.
 - **Mixed AMD + NVIDIA rigs** — stock has no cross-vendor serving path; here the NVIDIA card pulls expert and prefill duty for the AMD HIP engine.
-- **Big MoE model, small cards** — a ~47 GiB expert set serving from 2× 16 GiB VRAM + 62 GiB host RAM (layer split + expert helper + RAM relief).
+- **Big MoE model, small cards** — a ~47 GiB expert set serving from 2× 16 GiB VRAM + 62 GiB host RAM.
 - **RAM-tight hosts** — 6.2 GiB of anonymous memory handed back to the OS.
-- **Interactive agent traffic** (OpenCode, Claude Code-style clients) — 200-token reads in ~3 s instead of 6.5 s; exactly the request shape coding agents produce, on the OpenAI/Anthropic-compatible API.
+- **Interactive agent traffic** (OpenCode, Claude Code-style clients) — 200-token reads in ~3 s instead of 6.5 s, on the OpenAI/Anthropic-compatible API.
 - **Quality-critical users** — byte-identical greedy output vs stock, plus KL / top-1 / PPL gates before every promotion.
 - **Bench & tuning work** — the A/B/C harness, sha parity gates and quality yardstick are reusable for any further Strata engine work.
 
-## Hardware — the box behind every number
+## The rig
 
 Every number in this README was measured on exactly this machine; nothing is claimed for other hardware.
 
-| Part | Detail |
-| --- | --- |
-| CPU | AMD Ryzen 9 5900HX — 8 cores / 16 threads, up to ~4.7 GHz |
-| RAM | 62 GiB |
-| GPU 0+1 | 2× AMD Radeon VII (Vega 20, gfx906, 16 GiB HBM2 each) — **first: the ROCm/HIP engine** |
-| GPU 2 | NVIDIA GeForce RTX 3080 Laptop, 8 GiB (sm_86) — **second: the CUDA helper** |
-| Storage | 1 TB WD SN530 NVMe + 2 TB Crucial BX500 SATA SSD — model packs, relief reads |
-| OS / kernel | Linux, XanMod `7.2.9-x64v3-xanmod1` |
-
-Serving stack on that hardware:
-
-| Part | Role |
-| --- | --- |
-| Radeon VII ×2 | all model execution, layer-split over both cards, DFlash2 drafter included; the engine process maps no CUDA runtime |
-| RTX 3080 Laptop | `strata-expert-helper`, a subordinate expert-row server + prefill prompt tier (~6.5 GiB expert cache), attached over a socket pair |
-| Model | Swift-1.5-Qwen3.8-Flash-Next, GSQ-RCO IQ3_XXS / IQ3_S packs (~47 GiB expert set) |
-| Drafter | DFlash2 (inco draft, q4_0), `--spec 5`, engine-side on the VIIs |
-| Vision | `strata-vision` sidecar, Swift BF16 mmproj |
-| Server | OpenAI- and Anthropic-compatible API (`serve/server.py`), supervised engine+helper pair |
+| Part | What | Role here |
+| --- | --- | --- |
+| CPU | AMD Ryzen 9 5900HX, 8C/16T, ~4.7 GHz | host staging, quality yardstick |
+| RAM | 62 GiB | expert arena: ~41 GiB anon after relief (~34 GiB registered) |
+| GPU 0+1 | 2× AMD Radeon VII (Vega 20, gfx906, 16 GiB HBM2) | **first — the ROCm/HIP engine**: all model execution, layer-split, DFlash2 drafter |
+| GPU 2 | NVIDIA RTX 3080 Laptop, 8 GiB (sm_86) | **second — the CUDA helper**: expert rows + prefill tier, ~6.5 GiB cache |
+| Storage | 1 TB WD SN530 NVMe + 2 TB Crucial BX500 SATA | model packs, relief reads |
+| OS | Linux, XanMod `7.2.9-x64v3-xanmod1` | — |
+| Model | Swift-1.5-Qwen3.8-Flash-Next, GSQ-RCO IQ3_XXS / IQ3_S packs | ~47 GiB expert set |
+| Server | `serve/server.py` | OpenAI- and Anthropic-compatible API, supervised pair |
 
 The point of the rig: a laptop-class CPU, two 2019-vintage Radeon VIIs and an 8 GiB laptop GPU together serve a ~47 GiB MoE model at coding-agent speed.
 
-**ROCm first, CUDA second.** The AMD cards run everything; the NVIDIA card only serves expert rows and prefill rows on request. Helper loss is **self-healing**: in-flight requests finish on the engine alone (it recomputes the claimed rows), and the pair supervisor restarts the whole engine+helper pair on any peer death — the SIGKILL-the-helper kill test passes (generation bump, health back to 200).
+**ROCm first, CUDA second.** The AMD cards run everything; the NVIDIA card only serves expert rows and prefill rows on request. The engine process maps no CUDA runtime at all. Helper loss is **self-healing**: in-flight requests finish on the engine alone (it recomputes the claimed rows), and the pair supervisor restarts the whole engine+helper pair on any peer death — the SIGKILL-the-helper kill test passes (generation bump, health back to 200).
 
-## What the fork adds over stock
+## How the fork works
 
-### 1. gfx906 (Radeon VII) backend
-- Stock keeps gfx906 as a compile-checked community path; this line runs it daily and carries the v0.2.10 compile fixes (`stock-v0210-gfx906-buildfix`).
+Six pieces, each opt-in; the default path stays byte-identical to stock. The first three make the rig possible at all, the last three make it fast.
+
+### 1. gfx906 backend (Radeon VII)
+
+Stock treats gfx906 as a compile-checked community port; this line runs it daily and carries the v0.2.10 compile fixes (`stock-v0210-gfx906-buildfix`).
+
 - Full HIP wave64 port of the engine, kept compiling through every upstream merge since v0.1.45 → v0.2.10.
 - Compat shims: `cudaStreamCreateWithPriority`, cublas→hipBLAS, `__ldg` / fp16 bit-casts, `STRATA_SHARED_ALIGN16_I4` int4 fix.
-- Tuned gfx906 knobs in prod configs: `STRATA_GFX906_TOPK_FIT17`, `STRATA_GFX906_TOPK_REG`, `STRATA_HIP_PROMPT_F16`.
+- Tuned knobs in prod configs: `STRATA_GFX906_TOPK_FIT17`, `STRATA_GFX906_TOPK_REG`, `STRATA_HIP_PROMPT_F16`.
 - Blackwell-only `mmq_w4a4` and known-broken paths cleanly gated off.
 
-### 2. Mixed-GPU CUDA expert helper — architecture
-- Two processes, strictly separated: the HIP engine (AMD-only, **no CUDA runtime mapped**) and `strata-expert-helper` (NVIDIA-only, owns all of that card's expert VRAM).
-- Transport: a local socket pair. The helper fills ~3.6–4.6k cache slots (pack-dependent), ~6.5 GiB, and keeps them filled (fill-mib / slot caps from bench sweeps: **+13.6 %** decode median vs the old 4000-slot cap); it answers with one grouped launch per decode/verify window (≤ 8 tokens).
-- Two serving tiers:
-  - **decode/verify tier** — expert rows for token windows;
-  - **prompt tier** (`STRATA_PREFILL_HELPER=1`) — prefill rows for helper-held experts: the CUDA card does work the AMD cards would otherwise stage from host RAM.
+### 2. The CUDA expert helper
+
+A second process hands the AMD engine the NVIDIA card's VRAM and compute over a local socket pair — the helper is NVIDIA-only and owns all of that card's expert memory.
+
+- Fills ~3.6–4.6k cache slots (pack-dependent, ~6.5 GiB) and keeps them filled; caps come from bench sweeps (**+13.6 %** decode median vs the old 4000-slot cap).
+- Two serving tiers: a **decode/verify tier** (expert rows for ≤ 8-token windows) and a **prompt tier** (`STRATA_PREFILL_HELPER=1`) that computes prefill rows for helper-held experts.
 - Relief interplay: helper-held pairs are dropped from the host arena (`--expert-helper-ram-relief`); pack-file reads exist only as the emergency fallback.
-- Resilience, two layers: **in-flight** — helper killed mid-decode → the engine recomputes the claimed rows and finishes the request (measured kill test); **pair self-heal** — the supervisor restarts the whole pair on ANY peer death (verified prod cutover, default on; SIGKILL-helper test: generation bump, health 200). `--persist` re-listens for the next engine; v4 fill supports multi-shard packs; transient-pair fallback instead of hard failures.
-- Supervision: `tools/mixed_gpu/pair_supervisor.py` runs engine + helper as one pair — either dies, both restart; a long idle no longer kills the helper.
-- Honest attribution: the decode tier alone is ~neutral on this pack (96–97 % local cache hit, arms D/E); the helper's measured value is the prompt tier, expert capacity, and RAM relief.
+- Resilience, two layers: **in-flight** — the engine recomputes claimed rows and finishes the request (measured kill test); **pair self-heal** — the supervisor restarts the whole pair on ANY peer death (verified prod cutover, default on). `--persist` re-listens for the next engine; v4 fill supports multi-shard packs.
+- Honest attribution: the decode tier alone is ~neutral on this pack (96–97 % local cache hit, arms D/E) — the helper's measured value is the prompt tier, expert capacity, and RAM relief.
 
 ### 3. Host RAM relief
-- `--expert-helper-ram-relief` drops helper-held expert pairs from the anon arena (4116/4116 pairs, 6.24 GiB back).
+
+The experts the helper holds in VRAM don't also need to live in host RAM — relief drops them from the anon arena and gives the memory back.
+
+- `--expert-helper-ram-relief`: 4116/4116 pairs dropped, 6.24 GiB back.
 - Deferred-complement `cudaHostRegister`: arena built unregistered, only kept ranges registered, outward span rounding.
 - W1a/W1b fixes: lock-free residency pre-checks + dropped-only prefetch forwarding — relief TG 16.0 → 37.65 tok/s (control 38.05), disk reads 40 GB → 2.31 GB per drive.
 - `STRATA_ARENA_COLLAPSE`: opt-in post-fill `MADV_COLLAPSE` sweep (25.05 GiB of the arena collapsed in H1-r5), with a scoped fix for inherited `PR_SET_THP_DISABLE`.
 
-### 4. Speculative decoding — DFlash2 advantages
-- **The decode win is DFlash2.** Attribution arm E (drafter off) decodes at stock speed (23.9 vs 23.6 tok/s, same day); drafter on = 33–38.5 tok/s — the entire gain is drafting, at byte-identical output.
-- Runs **HIP engine-side on the Radeon VIIs** (stock DFlash2 is CUDA-only) — drafting never touches the helper card.
-- Official Flash-Next draft format (inco draft, q4_0 GGUF); Q8/Q5/Q4 draft weights supported — q4_0 measured optimal, q8_0 flat: the ~60–65 % acceptance ceiling is the draft model itself, not its quantization.
+### 4. DFlash2 speculative decoding
+
+Every decoded token we don't pay for comes from the drafter — attribution arm E (drafter off) decodes at stock speed (23.9 vs 23.6 tok/s), so the entire decode gain is DFlash2, at byte-identical output.
+
+- Runs HIP engine-side on the Radeon VIIs (stock DFlash2 is CUDA-only) — drafting never touches the helper card.
+- Official Flash-Next draft format (inco draft, q4_0 GGUF); Q8/Q5/Q4 draft weights supported — q4_0 measured optimal, q8_0 flat: the ~60–65 % acceptance ceiling is the draft model, not its quantization.
 - Tuned optimum, sweep fully closed: `--spec 5` / block 5 / q4_0 (spec 7 −3 % TG, block 3 flat, acceptance never bought back by sampling arms).
-- Beyond stock drafter behavior:
-  - sampled requests get **target exact-match verification** (`STRATA_DFLASH_SAMPLED`) — non-greedy traffic keeps draft guarantees;
-  - **bounded SWA draft ring** with honest window defaults and recoverable deep rewinds; `STRATA_DF_RING_MULT` scales the ring so long-context segment resumes stop re-reading the whole context (deep-stall class fixed by construction, speed-neutral);
-  - conversation parking keeps the draft image across park/save;
-  - per-section timing (`STRATA_DF_EVENTS=1`) dumps the section table after every request;
-  - perf: batched KV append with device-owned positions, attention probabilities reused across value lanes, batched BF16 projections, confidence gating for fixed blocks.
-- DFlash standalone (the prerequisite layer): GGUF drafter artifacts via `tools/dflash_gguf.py`, target taps [3,15,23,35,43], private draft K/V, block execution + target verification; MTP stays available, mutually exclusive.
+- Beyond stock drafter behavior: **target exact-match verification** for sampled requests (`STRATA_DFLASH_SAMPLED`); a **bounded SWA draft ring** with recoverable deep rewinds plus `STRATA_DF_RING_MULT` so segment resumes stop re-reading the context; draft image survives conversation parking; per-section timing (`STRATA_DF_EVENTS=1`); batched KV append, attention reuse across value lanes, batched BF16 projections, confidence gating.
+- DFlash standalone (the prerequisite layer): GGUF drafter artifacts via `tools/dflash_gguf.py`, target taps [3,15,23,35,43], private draft K/V; MTP stays available, mutually exclusive.
 
 ### 5. Short-prompt latency
-- `STRATA_PREFILL_CPU_SHARE=auto` (promoted): 214 tok **2.4×**, 620 tok **1.8×**, 4k **1.4×**, TG128 −5.1 s, ≥18k unchanged, zero regressions.
-- `STRATA_PROMPT_STAGE_MEMO` (promoted): a dropped prompt expert is read once per request — medians **14–20 %** faster across short-prompt legs.
-- `--prefill 16384` dose (promoted): measured peak for long-context serving (24k −10 %, 32k −37 %).
+
+Coding agents send small prompts constantly — three promoted knobs make those cheap, and ≥18k prompts don't regress.
+
+- `STRATA_PREFILL_CPU_SHARE=auto`: 214 tok **2.4×**, 620 tok **1.8×**, 4k **1.4×**, TG128 −5.1 s, ≥18k unchanged, zero regressions.
+- `STRATA_PROMPT_STAGE_MEMO`: a dropped prompt expert is read once per request — medians **14–20 %** faster across short-prompt legs.
+- `--prefill 16384`: measured peak for long-context serving (24k −10 %, 32k −37 %).
 
 ### 6. Bench + quality discipline
+
+Nothing ships on a hunch — every knob above was an arm in a controlled window before it was promoted.
+
 - `bench/ab-v0210/`: A/B/C arm harness (`run-arm.sh`), traffic driver (`drive.py`), verdict docs, RAM/IO samplers, fail-fast guards, port / VRAM / MemFree boot gates.
-- Quality yardstick (`tools/quant_quality.py`): 4995 teacher-forced positions, full-vocab KL / top-1 / PPL vs the stock binary:
-  - relief binary vs stock: top-1 100.00 %, KL 0.00000, PPL 4.115 = 4.115;
-  - CPU-share knob: identical perfect scores vs its twin and vs stock;
-  - memo knob: promoted after the ab6s shallow prompt-mode gates (int8 + fp16 arms; artifacts in `bench/ab-v0210/quality/out/prompt-*`; the full ab6/ab6b overnight run stayed parked).
+- Quality yardstick (`tools/quant_quality.py`): 4995 teacher-forced positions, full-vocab KL / top-1 / PPL vs the stock binary.
 - Parity gates: greedy 80k-infill SHA byte-identical across fork, fork-flags-off, and stock in every kept round (18/18 in the tap-overlap window alone).
 - Standing rule: a new engine version passes BOTH the speed lane and the quality lane before promotion.
 
-## Measured: fork vs stock v0.2.10 (same day, same box, same pack)
+## Measured: fork vs stock v0.2.10
+
+Same day, same box, same pack. Attribution (arms D/E): the decode win is entirely DFlash drafting; the helper expert tier alone is ~neutral on this pack — its value is the prompt tier, expert capacity, and RAM relief.
 
 | Metric | Fork (prod config) | Stock | Delta |
 | --- | ---: | ---: | ---: |
@@ -114,30 +119,32 @@ The point of the rig: a laptop-class CPU, two 2019-vintage Radeon VIIs and an 8 
 | Host anon RAM, GiB | 41.2 | 47.4 | **−6.2** |
 | Greedy 80k output | byte-identical | — | ✓ |
 
-Attribution (arms D/E): the decode win is entirely DFlash drafting; the helper expert tier alone is ~neutral on this pack (96–97 % local cache hit) — its value is the prompt tier, expert capacity, and RAM relief.
-
-**Bottom line vs stock:** ≈ **1.4× decode throughput** · **1.4–2.4× chat-read latency** · **−6.2 GiB host RAM** · **byte-identical output** — one regression (**−18 %** fresh ~18k bulk prefill) — on hardware where stock, as tagged, does not build.
+> **Bottom line vs stock:** ≈ **1.4× decode throughput** · **1.4–2.4× chat-read latency** · **−6.2 GiB host RAM** · **byte-identical output** — one regression (**−18 %** fresh ~18k bulk prefill) — on hardware where stock, as tagged, does not build.
 
 ## Quality gates
 
-Standing rule: every promotion passes BOTH the speed lane and the quality lane, same-day, against stock.
+What backs the "faster with zero quality cost" claim: the speed wins above were promoted only after these gates passed.
 
 | Gate | What it checks | Result |
 | --- | --- | --- |
 | 80k greedy SHA | deep-infill (80k ctx, ≥5k out) byte-identical across candidate / flags-off / stock binaries | held **18/18** kept rounds (`1c7d4a6d…`) |
 | Teacher-forced yardstick (`tools/quant_quality.py`) | 4995 positions, full-vocab first logits: top-1, KL (p99), PPL — vs stock binary AND vs flags-off twin | top-1 **100.00 %** · KL **0.00000** · PPL **4.115 = 4.115** (relief and CPU-share arms) |
-| Probe determinism | fixed prompt re-answered every boot; sha must reproduce exactly per config | reproduces exactly, per-config values documented (incl. coverage-dependent texts) |
+| Probe determinism | fixed prompt re-answered every boot; sha must reproduce exactly per config | reproduces exactly, per-config values documented |
 | Speed gates | TG median ≥ 33.1 · 80k frame 583–587 · fresh-18k toward 337 · medians over ≥ 2 kept boots/arm | see measured table above |
 
-That is what backs the "faster with zero quality cost" claim: the speed wins above were promoted only after these gates passed.
+The memo knob was gated by the ab6s shallow prompt-mode runs (int8 + fp16 arms; artifacts in `bench/ab-v0210/quality/out/prompt-*`); the full overnight ab6/ab6b run stayed parked.
 
-## Honest trade-offs and known defects
+## Trade-offs and known defects
 
-- Fresh ~18k prefill pays −18 % for DFlash tap collection (long-context reads gain instead).
+The wins are not free, and the defects are on record rather than hidden:
+
+- Fresh ~18k prefill pays **−18 %** for DFlash tap collection (long-context reads gain instead).
 - `#267` gfx906 lost-completion wedge: transient verify-timeout GPU hangs (~1 in 20 long drives, both cards, also on stock 0.1.45); the bench retries the leg once.
 - Small fresh-read stalls (30–140 s on ~200-token cold reads): pre-existing, interactive-UX only; watchdog raised 300 → 900 s so it cannot kill prod.
 - iq3_s at 256/256 MiB reserves → non-finite logits on long prefill (V8); fixed policy: 640/640 + fill 7000 (V9/V10) keeps both cards above the 512 MiB paging line.
 - Not promoted, default off: tap-overlap F1/F2 (flat), `STRATA_REFILL_OVERLAP` / `STRATA_WINDOW_POPULATE` (net-negative on big prompts), `--short-read` window routing (refill poison).
+
+---
 
 ## Build guide — how we built it
 
@@ -202,8 +209,4 @@ HSA_OVERRIDE_GFX_VERSION=9.0.6  HIP_FORCE_P2P=1  HSA_ENABLE_SDMA=1
 | `strata_control/`, `tools/` | prod control plane, quality yardstick, setup tests |
 | Branches | `main` (canonical, published), `main-pre-publish` (845-commit upstream-main snapshot), `build-latest`, `build-mixed-v0210` (prod line history), `stock-v0210-gfx906-buildfix` (stock build fixes), `tap-overlap-f1f2` (parked) |
 
-## Upstream hygiene
-
-- Upmerges from upstream (`upstream/main`, Niko1221/Strata; `origin` is this fork) — v0.1.45 → v0.2.10 kept: upstream machinery wins where it supersedes; fork specifics (helper RPC, prompt tier, dflash runtime, gfx906 gates) re-integrated and depth-verified after every merge.
-- Fork features are opt-in flags; the default path stays byte-identical to stock (F1off arm: all shas reproduce, fresh-PP equal).
-- Both backends (HIP gfx906 engine, CUDA helper) build before any promotion.
+Upstream hygiene: upmerges from `upstream/main` (Niko1221/Strata; `origin` is this fork) — v0.1.45 → v0.2.10 kept, upstream machinery winning where it supersedes, fork specifics re-integrated and depth-verified after every merge; fork features are opt-in and the default path stays byte-identical to stock (F1off arm: all shas reproduce, fresh-PP equal); both backends build before any promotion.

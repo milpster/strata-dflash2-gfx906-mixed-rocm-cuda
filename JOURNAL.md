@@ -1008,3 +1008,6 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
   (both local tree paths), the :8009 port, the live-generation-6 line, the "f16-KV is live prod" note and the
   "In flight" work list. Build-guide paths that describe HOW it builds (pinned /opt/rocm-6.1.0, system CUDA,
   ~/rocm-gfx906-xnack custom libs) stay by user order ("mention our rocm and custom libs").
+- User follow-up 11: README restructured for readability — contents line, one merged rig table, prose lead-in
+  per feature section, bottom line as blockquote, repo map + hygiene as one tail; no facts changed. Separate
+  "at a glance" feature table produced for the release thread (external copy, not added to the README).
