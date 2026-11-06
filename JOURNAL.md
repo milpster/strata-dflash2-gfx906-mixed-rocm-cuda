@@ -990,3 +990,17 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
   pair-self-heal: "Harden mixed-GPU paired recovery by default", "Record verified production paired-recovery
   cutover"; pair-kill-test.sh SIGKILLs the helper and expects generation bump + health 200). README now states
   both layers: in-flight engine fallback (recompute rows) + supervisor full-pair restart.
+- User follow-up 9 (self-review for completeness/accuracy; subagent aborted twice on infra, done directly):
+  FIXED — STRATA_TESTS → STRATA_BUILD_TESTS (cache: STRATA_BUILD_TESTS:BOOL=ON; CMakeLists option(…)); stale
+  branch row (shortpp-src) → main + full branch list; "origin/main" upmerge wording → upstream/main; helper
+  slot range 4.3–4.6k → 3.6–4.6k (pack-dependent, iq3_s runs ~3.6k); memo dropped from the perfect-score
+  yardstick row (relief + CPU-share only have recorded perfect scores; memo was gated by the ab6s shallow
+  prompt-mode runs, full ab6/ab6b parked); "In flight: f16-KV staged" → f16-KV lineage IS live prod since
+  Nov 6 (serve --config prod-config-swift15-f16kv…, supervisor attached generation 6); prod Locations row now
+  names branch pair-self-heal; self-heal line cites live generation 6. CONFIRMED — all headline numbers
+  (TG 37.7–38.5 vs 27.6 / +48% frame; 80k parity-to-+7.6%; fresh-18k −18%; short-PP 2.4/1.8/1.4×; memo 14–20%;
+  relief −6.2 GiB, 16.0→37.65, 40GB→2.31GB; yardstick 100%/0.0/4.115 over 4995; sha 18/18; arm-E 23.9≈23.6;
+  acceptance 60–65%; sweep verdicts; +13.6% slots; 96–97% hit; H1-r5 25.05 GiB; hardware box; ROCm 6.1 pins +
+  ~/rocm-gfx906-xnack; stock-compile-check-only claim) re-verified against JOURNAL.md, RESULTS*.md, CMakeCache,
+  prod configs/processes. Live knobs (MEMO=1, CPU_SHARE=auto, PREFILL_HELPER=1, ram-relief) verified in the
+  live f16kv config.
