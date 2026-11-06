@@ -223,6 +223,32 @@ struct Helper {
     std::thread chan2;
     ExpertCache cache;
     MappedPack pack;
+    // A v4 pack (the 2026-11-06 prod model): native_experts.txt's per-role shard column places a
+    // blob's roles in DIFFERENT split files at SHARD-RELATIVE offsets, so a fill reads from up to
+    // four maps: `pack` is the primary --experts file, every other shard is mapped ONCE here.
+    std::string pack_path;   // the file `pack` maps (o.pack dir + o.experts_file)
+    std::vector<std::pair<std::string, MappedPack>> shard_maps;
+    // The map for a role's file: the primary pack, or a shard mapped on first use (the split is
+    // four files; mmap stays lazy, only the touched blob pages fault in, and the fill is the only
+    // caller - kFill rides ONE channel, so the map never grows concurrently).
+    MappedPack* shard_map(const std::string& path, std::string& err) {
+        if (path == pack_path) return &pack;
+        for (auto& e : shard_maps)
+            if (e.first == path) return &e.second;
+        shard_maps.emplace_back(path, MappedPack{});
+        if (!shard_maps.back().second.open(path, err)) {
+            shard_maps.pop_back();
+            return nullptr;
+        }
+        return &shard_maps.back().second;
+    }
+    // expert_gguf_file (src/core/expert_source.cpp) mirrored for the sidecar: the role's shard
+    // name (an empty column = the primary file), relative to the --experts file's directory.
+    std::string expert_role_path(const std::vector<std::string>& gguf_file, size_t i) const {
+        if (gguf_file.size() <= i || gguf_file[i].empty()) return pack_path;
+        const size_t cut = pack_path.find_last_of("/\\");
+        return (cut == std::string::npos ? std::string() : pack_path.substr(0, cut + 1)) + gguf_file[i];
+    }
     GroupMeta* h_meta = nullptr;   // pinned, mapped: one upload per window
     GroupMeta* d_meta = nullptr;
     uint8_t* d_q8 = nullptr;       // the window's activations (n_tok * (H/32) * 36)
@@ -356,19 +382,24 @@ int serve_fill(Helper& hp, const std::vector<uint8_t>& body, uint32_t req_id, ui
     }
     if (pairs.empty()) { err = "no expert fits the card's budget"; return kErrRequest; }
     if (!hp.cache.open_sized(sizes, hp.n_layers, hp.n_expert, err)) return kErrRequest;
-    // H14 (r24): a GGUF-mapped pack keeps no packed blob region - the manifest's `offset` column
-    // describes an experts.bin layout this pack does not ship, so blob_offset() lands on unrelated
-    // GGUF bytes (r23 proof: garbage scales there, 191/2560 NaN rows; the engine offsets decode
-    // clean, 0 NaN). Assemble each slot per role exactly like the engine's
-    // FileExpertSource::copy_from_files: role r reads gguf_off[3*layer + r] + expert*role_bytes[r],
-    // roles ordered [gate | up | down] as native_expert_layout expects.
-    const bool per_role = lay.gguf_off.size() == 3 * (size_t) hp.n_layers && lay.gguf_file.empty();
+    // H14 (r24) + the v4 multi-shard pack (2026-11-06): a GGUF-mapped pack keeps no packed blob
+    // region - the manifest's `offset` column describes an experts.bin layout this pack does not
+    // ship, so blob_offset() lands on unrelated GGUF bytes (r23 proof: garbage scales there,
+    // 191/2560 NaN rows; the engine offsets decode clean, 0 NaN). Assemble each slot per role
+    // exactly like the engine's FileExpertSource::copy_from_files: role r reads
+    // gguf_off[3*layer + r] + expert*role_bytes[r] INSIDE THE FILE the manifest names for that
+    // role. A v4 manifest carries a per-role shard column and the offsets are SHARD-RELATIVE -
+    // the primary --experts mapping (a split's first shard is metadata-only) cannot cover a blob,
+    // which is where the 2026-11-06 prod fill died (kErrInternal on the iq3xxs-ud pack). A v3
+    // pack names no shards, every role resolves to the primary file, and the reads are the r24
+    // single-mapping reads byte for byte.
+    const bool gguf_pack = lay.gguf_off.size() == 3 * (size_t) hp.n_layers;
     std::vector<uint8_t> stage, warm_src;
     for (size_t i = 0; i < pairs.size(); ++i) {
         const int32_t slot = hp.cache.admit(pairs[i].first, pairs[i].second);
         const uint64_t bytes = lay.blob_bytes(pairs[i].first);
         const uint8_t* src = nullptr;
-        if (per_role) {
+        if (gguf_pack) {
             const auto& pf = lay.fmt[(size_t) pairs[i].first];
             const auto pl = strata::kernels::native_expert_layout(pf.gu_type, pf.d_type, pf.n_embd, pf.n_ff);
             const uint64_t per[3] = { (uint64_t) pf.n_ff * pl.gu_row, (uint64_t) pf.n_ff * pl.gu_row,
@@ -376,10 +407,17 @@ int serve_fill(Helper& hp, const std::vector<uint8_t>& body, uint32_t req_id, ui
             stage.resize((size_t) bytes);
             uint64_t at = 0;
             for (int r = 0; r < 3; ++r) {
-                const uint64_t roff = lay.gguf_off[3 * (size_t) pairs[i].first + (size_t) r]
-                                    + (uint64_t) pairs[i].second * per[r];
-                if (roff + per[r] > hp.pack.size) { err = "a role region is outside the pack mapping"; return kErrInternal; }
-                std::memcpy(stage.data() + at, hp.pack.addr + roff, (size_t) per[r]);
+                const size_t gi = 3 * (size_t) pairs[i].first + (size_t) r;
+                const std::string role_file = hp.expert_role_path(lay.gguf_file, gi);
+                std::string map_err;
+                MappedPack* mp = hp.shard_map(role_file, map_err);
+                if (mp == nullptr) { err = map_err; return kErrInternal; }
+                const uint64_t roff = lay.gguf_off[gi] + (uint64_t) pairs[i].second * per[r];
+                if (roff + per[r] > mp->size) {
+                    err = "a role region is outside the mapping of " + role_file;
+                    return kErrInternal;
+                }
+                std::memcpy(stage.data() + at, mp->addr + roff, (size_t) per[r]);
                 at += per[r];
             }
             if (at != bytes) { err = "the role bytes do not sum to the blob size"; return kErrInternal; }
@@ -1191,6 +1229,10 @@ accept_peer:
             rc = serve_fill(hp, body, head.req_id, head.seq, g_reserve, g_claimed,
                             g_slots > 0 ? g_slots : INT64_MAX, err, out);
             if (rc != kOk) {
+                // The engine gets the status code; the operator gets the reason. 2026-11-06: the
+                // iq3xxs-ud fill died kErrInternal and the log said only "request failed: helper
+                // internal" - the pack-path detail was swallowed with the kError reply.
+                std::fprintf(stderr, "expert-helper: fill refused: %s\n", err.c_str());
                 ErrResp e;
                 e.status = rc;
                 std::strncpy(e.text, err.c_str(), sizeof(e.text) - 1);
@@ -1368,6 +1410,7 @@ int main(int argc, char** argv) {
         if (!p.empty() && p.back() != '/') p += "/";
         p += o.experts_file;
         if (!hp.pack.open(p, err)) return fail("pack", err);
+        hp.pack_path = p;   // fill resolves per-role shard paths against this file's directory
     }    hp.scratch_bytes = (int64_t) std::max<size_t>(
         (size_t) strata::kernels::moe_hit_grouped_scratch_bytes(CAP, H, FF),
         strata::kernels::native_expert_scratch_bytes(CAP, FF));
