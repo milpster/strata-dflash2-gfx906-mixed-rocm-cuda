@@ -46,8 +46,9 @@ trap cleanup EXIT
 trap 'exit 143' TERM
 trap 'exit 130' INT
 env -i PATH="$PATH" HOME="$HOME" TERM="${TERM:-dumb}" "$HELPER" \
-  --pack /mnt/user/ai/iq3s \
-  --experts ../Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S.gguf \
+  --pack /mnt/user/ai/iq3xxs-ud \
+  --experts ../Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00004.gguf \
+  --persist \
   --device 0 --slots 4600 --reserve-mib 300 --timeout 63115200000 \
   --begin-timeout 1800000 --socket "$SOCKET" --fill-mib 6796 --socket2 "$SOCKET2" \
   >>"$HLOG" 2>&1 < /dev/null &
