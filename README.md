@@ -47,7 +47,7 @@ Serving stack on that hardware:
 
 The point of the rig: a laptop-class CPU, two 2019-vintage Radeon VIIs and an 8 GiB laptop GPU together serve a ~47 GiB MoE model at coding-agent speed.
 
-**ROCm first, CUDA second.** The AMD cards run everything; the NVIDIA card only serves expert rows and prefill rows on request. Helper loss is **self-healing**: in-flight requests finish on the engine alone (it recomputes the claimed rows), and the pair supervisor restarts the whole engine+helper pair on any peer death — the SIGKILL-the-helper kill test passes (generation bump, health back to 200).
+**ROCm first, CUDA second.** The AMD cards run everything; the NVIDIA card only serves expert rows and prefill rows on request. Helper loss is **self-healing**: in-flight requests finish on the engine alone (it recomputes the claimed rows), and the pair supervisor restarts the whole engine+helper pair on any peer death — the SIGKILL-the-helper kill test passes (generation bump, health back to 200). Live evidence: the current prod pair sits at supervisor generation 6.
 
 ## What the fork adds over stock
 
@@ -60,7 +60,7 @@ The point of the rig: a laptop-class CPU, two 2019-vintage Radeon VIIs and an 8 
 
 ### 2. Mixed-GPU CUDA expert helper — architecture
 - Two processes, strictly separated: the HIP engine (AMD-only, **no CUDA runtime mapped**) and `strata-expert-helper` (NVIDIA-only, owns all of that card's expert VRAM).
-- Transport: a local socket pair. The helper fills ~4.3–4.6k cache slots (~6.5 GiB) and keeps them filled (fill-mib / slot caps from bench sweeps: **+13.6 %** decode median vs the old 4000-slot cap); it answers with one grouped launch per decode/verify window (≤ 8 tokens).
+- Transport: a local socket pair. The helper fills ~3.6–4.6k cache slots (pack-dependent), ~6.5 GiB, and keeps them filled (fill-mib / slot caps from bench sweeps: **+13.6 %** decode median vs the old 4000-slot cap); it answers with one grouped launch per decode/verify window (≤ 8 tokens).
 - Two serving tiers:
   - **decode/verify tier** — expert rows for token windows;
   - **prompt tier** (`STRATA_PREFILL_HELPER=1`) — prefill rows for helper-held experts: the CUDA card does work the AMD cards would otherwise stage from host RAM.
@@ -97,7 +97,8 @@ The point of the rig: a laptop-class CPU, two 2019-vintage Radeon VIIs and an 8 
 - `bench/ab-v0210/`: A/B/C arm harness (`run-arm.sh`), traffic driver (`drive.py`), verdict docs, RAM/IO samplers, fail-fast guards, port / VRAM / MemFree boot gates.
 - Quality yardstick (`tools/quant_quality.py`): 4995 teacher-forced positions, full-vocab KL / top-1 / PPL vs the stock binary:
   - relief binary vs stock: top-1 100.00 %, KL 0.00000, PPL 4.115 = 4.115;
-  - CPU-share and memo knobs: identical perfect scores vs their twins and vs stock.
+  - CPU-share knob: identical perfect scores vs its twin and vs stock;
+  - memo knob: promoted after the ab6s shallow prompt-mode gates (int8 + fp16 arms; artifacts in `bench/ab-v0210/quality/out/prompt-*`; the full ab6/ab6b overnight run stayed parked).
 - Parity gates: greedy 80k-infill SHA byte-identical across fork, fork-flags-off, and stock in every kept round (18/18 in the tap-overlap window alone).
 - Standing rule: a new engine version passes BOTH the speed lane and the quality lane before promotion.
 
@@ -124,7 +125,7 @@ Standing rule: every promotion passes BOTH the speed lane and the quality lane, 
 | Gate | What it checks | Result |
 | --- | --- | --- |
 | 80k greedy SHA | deep-infill (80k ctx, ≥5k out) byte-identical across candidate / flags-off / stock binaries | held **18/18** kept rounds (`1c7d4a6d…`) |
-| Teacher-forced yardstick (`tools/quant_quality.py`) | 4995 positions, full-vocab first logits: top-1, KL (p99), PPL — vs stock binary AND vs flags-off twin | top-1 **100.00 %** · KL **0.00000** · PPL **4.115 = 4.115** (relief, CPU-share and memo arms) |
+| Teacher-forced yardstick (`tools/quant_quality.py`) | 4995 positions, full-vocab first logits: top-1, KL (p99), PPL — vs stock binary AND vs flags-off twin | top-1 **100.00 %** · KL **0.00000** · PPL **4.115 = 4.115** (relief and CPU-share arms) |
 | Probe determinism | fixed prompt re-answered every boot; sha must reproduce exactly per config | reproduces exactly, per-config values documented (incl. coverage-dependent texts) |
 | Speed gates | TG median ≥ 33.1 · 80k frame 583–587 · fresh-18k toward 337 · medians over ≥ 2 kept boots/arm | see measured table above |
 
@@ -137,14 +138,15 @@ That is what backs the "faster with zero quality cost" claim: the speed wins abo
 - Small fresh-read stalls (30–140 s on ~200-token cold reads): pre-existing, interactive-UX only; watchdog raised 300 → 900 s so it cannot kill prod.
 - iq3_s at 256/256 MiB reserves → non-finite logits on long prefill (V8); fixed policy: 640/640 + fill 7000 (V9/V10) keeps both cards above the 512 MiB paging line.
 - Not promoted, default off: tap-overlap F1/F2 (flat), `STRATA_REFILL_OVERLAP` / `STRATA_WINDOW_POPULATE` (net-negative on big prompts), `--short-read` window routing (refill poison).
-- In flight: f16-KV variants (launchers staged), helper threading measurement, `promo_check` exact-reply traffic probe.
+- Newer than the tables above: the **f16-KV lineage is live prod** since Nov 6 (swift15/iq3xxs pair, `launch-prod-swift15-f16kv-*`); the measured tables were taken on the int8-KV config.
+- In flight: helper-threading measurement (`STRATA_RPC_PROFILE`), `promo_check` exact-reply traffic probe.
 
 ## Locations
 
 | Path | What |
 | --- | --- |
 | `/home/user/dev/Strata` | dev source tree — branches, `bench/`, `docs/`, `JOURNAL.md` (README canonical here) |
-| `/mnt/user/Strata` | **the live Strata** — `launch-prod-*.sh` launchers, `prod-config-*.json`, supervised engine+helper pair on `:8009`, binaries in `v0210/build-mixed-gpu/`, `logs/` |
+| `/mnt/user/Strata` | **the live Strata** (branch `pair-self-heal`) — `launch-prod-*.sh` launchers, `prod-config-*.json`, supervised engine+helper pair on `:8009`, binaries in `v0210/build-mixed-gpu/`, `logs/` |
 
 ## Build guide — how we built it
 
@@ -167,7 +169,7 @@ cmake -S . -B build-v0210/rpcw-hip -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -Dhipblas_DIR=/opt/rocm-6.1.0/lib/cmake/hipblas \
   -DROCM_PATH=/opt/rocm-6.1.0 -DHIP_PATH=/opt/rocm-6.1.0 -DHIP_ROOT_DIR=/opt/rocm-6.1.0 \
   "-DCMAKE_PREFIX_PATH=$HOME/rocm-gfx906-xnack;/opt/rocm-6.1.0" \
-  -DSTRATA_ENABLE_DFLASH2=ON -DSTRATA_HAVE_DFLASH2=OFF -DSTRATA_TESTS=ON
+  -DSTRATA_ENABLE_DFLASH2=ON -DSTRATA_HAVE_DFLASH2=OFF -DSTRATA_BUILD_TESTS=ON
 ninja -j11 -C build-v0210/rpcw-hip strata       # -j11 = standing order (git config strata.buildJobs)
 ```
 
@@ -177,7 +179,7 @@ ninja -j11 -C build-v0210/rpcw-hip strata       # -j11 = standing order (git con
 cmake -S . -B build-v0210/rpcw-cuda -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DSTRATA_ENABLE_CUDA=ON -DSTRATA_BUILD_EXPERT_HELPER=ON \
   -DCMAKE_CUDA_ARCHITECTURES=86 -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
-  -DSTRATA_ENABLE_DFLASH2=ON -DSTRATA_HAVE_DFLASH2=OFF -DSTRATA_TESTS=ON
+  -DSTRATA_ENABLE_DFLASH2=ON -DSTRATA_HAVE_DFLASH2=OFF -DSTRATA_BUILD_TESTS=ON
 ninja -j11 -C build-v0210/rpcw-cuda strata strata-expert-helper
 ctest -R helper --output-on-failure               # from build-v0210/rpcw-cuda
 ```
@@ -207,10 +209,10 @@ HSA_OVERRIDE_GFX_VERSION=9.0.6  HIP_FORCE_P2P=1  HSA_ENABLE_SDMA=1
 | `docs/work/` | lever calibrations, identity investigations, design docs |
 | `tools/mixed_gpu/` | pair supervisor, window harness, acceptance and maintenance tooling |
 | `strata_control/`, `tools/` | prod control plane, quality yardstick, setup tests |
-| Branches | `shortpp-src` (current), `build-mixed-v0210` (prod line), `stock-v0210-gfx906-buildfix` (stock build fixes) |
+| Branches | `main` (canonical, published), `main-pre-publish` (845-commit upstream-main snapshot), `build-latest`, `build-mixed-v0210` (prod line history), `stock-v0210-gfx906-buildfix` (stock build fixes), `tap-overlap-f1f2` (parked) |
 
 ## Upstream hygiene
 
-- Upmerges from `origin/main` (v0.1.45 → v0.2.10) kept: upstream machinery wins where it supersedes; fork specifics (helper RPC, prompt tier, dflash runtime, gfx906 gates) re-integrated and depth-verified after every merge.
+- Upmerges from upstream (`upstream/main`, Niko1221/Strata; `origin` is this fork) — v0.1.45 → v0.2.10 kept: upstream machinery wins where it supersedes; fork specifics (helper RPC, prompt tier, dflash runtime, gfx906 gates) re-integrated and depth-verified after every merge.
 - Fork features are opt-in flags; the default path stays byte-identical to stock (F1off arm: all shas reproduce, fresh-PP equal).
 - Both backends (HIP gfx906 engine, CUDA helper) build before any promotion.
