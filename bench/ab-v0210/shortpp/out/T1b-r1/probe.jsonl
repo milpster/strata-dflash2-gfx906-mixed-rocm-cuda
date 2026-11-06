@@ -1,0 +1,14 @@
+{"tag": "warmup", "wall_s": 1.338}
+{"tag": "S214", "round": 0, "chars": 607, "wall_s": 8.874}
+{"tag": "S214", "round": 1, "chars": 607, "wall_s": 6.516}
+{"tag": "S214", "round": 2, "chars": 607, "wall_s": 6.512}
+{"tag": "S1k", "round": 0, "chars": 2677, "wall_s": 11.522}
+{"tag": "S1k", "round": 1, "chars": 2677, "wall_s": 11.636}
+{"tag": "S1k", "round": 2, "chars": 2677, "wall_s": 11.526}
+{"tag": "S4k", "round": 0, "chars": 10669, "wall_s": 22.787}
+{"tag": "S4k", "round": 1, "chars": 10669, "wall_s": 23.042}
+{"tag": "S4k", "round": 2, "chars": 10669, "wall_s": 23.044}
+{"tag": "S18k", "round": 0, "chars": 47375, "wall_s": 49.789}
+{"tag": "S18k", "round": 1, "chars": 47375, "wall_s": 77.918}
+{"tag": "S18k", "round": 2, "chars": 47375, "wall_s": 39.008}
+{"tag": "TG128", "wall_s": 14.298}

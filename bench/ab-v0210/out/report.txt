@@ -1,0 +1,90 @@
+== probe parity (temp-0 first request on fresh boot)
+  arm A: ab1b87dceccd74f5
+  arm B: 96e31a1e6eb19d14
+  arm C: 059227cf1c1746d5
+  arm D: e36237606e821d91
+  arm E: ab1b87dceccd74f5
+  -> A vs B (the merge parity gate): *** MISMATCH (correctness failure) ***
+  infill80k sha A A-r1: 1c7d4a6d9be118d8
+  infill80k sha A A-r2: 1c7d4a6d9be118d8
+  infill80k sha B B-r1: 1c7d4a6d9be118d8
+  infill80k sha B B-r2: 1c7d4a6d9be118d8
+  infill80k sha C C-r1: 1c7d4a6d9be118d8
+  infill80k sha D D-r1: 1c7d4a6d9be118d8
+  infill80k sha E E-r1: 1c7d4a6d9be118d8
+  -> C (stock, no drafter) differs by design: differs
+
+== PP fresh read (tok/s, >10k read)
+  arm A r1: 18233 read @ 306.0
+  arm A r2: 18233 read @ 305.6
+  arm A median: 305.8
+  arm B r1: 18233 read @ 306.0
+  arm B r2: 18233 read @ 305.4
+  arm B median: 305.7
+  arm C r1: 18233 read @ 337.2
+  arm C median: 337.2
+  arm D r1: 18233 read @ 306.7
+  arm D median: 306.7
+  arm E r1: 18233 read @ 337.6
+  arm E median: 337.6
+
+== TG cached decode (tok/s, steady segments gen>400)
+  arm A r1:513t: 32.0
+  arm A r1:494t: 36.4
+  arm A r1:512t: 34.5
+  arm A r1:494t: 43.2
+  arm A r1:512t: 33.7
+  arm A r1:494t: 39.8
+  arm A r2:512t: 31.1
+  arm A r2:494t: 36.7
+  arm A r2:513t: 30.5
+  arm A r2:494t: 35.6
+  arm A r2:513t: 29.9
+  arm A r2:494t: 36.1
+  arm A median: 35.0
+  arm B r1:515t: 34.4
+  arm B r1:515t: 31.2
+  arm B r1:512t: 34.7
+  arm B r1:494t: 32.8
+  arm B r2:513t: 30.2
+  arm B r2:494t: 28.5
+  arm B r2:512t: 34.9
+  arm B r2:494t: 36.3
+  arm B r2:512t: 31.1
+  arm B r2:494t: 33.4
+  arm B median: 33.1
+  arm C r1:512t: 23.9
+  arm C r1:494t: 23.3
+  arm C r1:513t: 23.8
+  arm C r1:494t: 23.3
+  arm C r1:513t: 24.0
+  arm C r1:494t: 23.1
+  arm C median: 23.6
+  arm D r1:513t: 30.7
+  arm D r1:494t: 33.3
+  arm D r1:513t: 31.5
+  arm D r1:494t: 35.5
+  arm D r1:513t: 32.4
+  arm D r1:494t: 35.8
+  arm D median: 32.8
+  arm E r1:513t: 23.9
+  arm E r1:494t: 23.3
+  arm E r1:513t: 23.9
+  arm E r1:494t: 23.7
+  arm E r1:513t: 24.0
+  arm E r1:494t: 23.7
+  arm E median: 23.8
+
+== 80k deep infill read (tok/s, >40k read)
+  arm A r1: 87879 read @ 436.0
+  arm A r2: 87879 read @ 481.7
+  arm A median: 458.9
+  arm B r1: 87879 read @ 454.0
+  arm B r2: 87879 read @ 435.9
+  arm B median: 444.9
+  arm C r1: 87879 read @ 550.4
+  arm C median: 550.4
+  arm D r1: 87879 read @ 483.0
+  arm D median: 483.0
+  arm E r1: 87879 read @ 541.6
+  arm E median: 541.6

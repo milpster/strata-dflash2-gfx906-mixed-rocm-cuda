@@ -1,11 +1,14 @@
 // src/core/expert_source.cpp - the adapter.  See the header for the three clauses of the contract.
 #include "strata/core/expert_source.hpp"
+#include "strata/core/expert_nibble.hpp"
 #include "strata/core/foresight_swap.hpp"
 #include "strata/core/on_device.hpp"
+#include "strata/core/ple_residency.hpp"
 #include "strata/platform/aux_cpus.hpp"
 #include "strata/core/remote_experts.hpp"
 #include "strata/core/peer_experts.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
+#include "strata/kernels/window_limits.hpp"
 #include "strata/artifact/gguf_reader.hpp"
 
 #include "strata/core/pinned.hpp"
@@ -18,6 +21,10 @@
 #include "strata/kernels/cpu/pool.hpp"
 
 #include <cuda_runtime.h>
+#ifndef _WIN32
+#include <signal.h>
+#include <unistd.h>
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -58,7 +65,12 @@
 #include <cerrno>
 #include <linux/aio_abi.h>   // the kernel's own asynchronous reads (io_submit): no library, allowed by Docker's seccomp
 #include <sched.h>
+#include <sys/prctl.h>
 #include <sys/syscall.h>
+#endif
+
+#ifndef MADV_COLLAPSE
+#define MADV_COLLAPSE 25   // Linux 6.1; older headers have no name for it.
 #endif
 
 // a 64-bit seek (as in pinned.cu): the 32-bit `fseek` wraps past 4 GiB, and the spelling differs per platform
@@ -69,6 +81,27 @@
 #define STRATA_FSEEK64(f, o) fseeko((f), (off_t) (o), SEEK_SET)
 #endif
 #endif
+
+// The pid of this process and whether a pid still exists (the shared arena's reader election, both OSes)
+static uint64_t arena_this_pid() {
+#ifdef _WIN32
+    return (uint64_t) GetCurrentProcessId();
+#else
+    return (uint64_t) getpid();
+#endif
+}
+static bool arena_pid_alive(uint64_t pid) {
+#ifdef _WIN32
+    HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, (DWORD) pid);
+    if (h == nullptr) return GetLastError() == ERROR_ACCESS_DENIED;     // (denied: it exists; invalid parameter: it does not)
+    DWORD code = 0;
+    const bool alive = GetExitCodeProcess(h, &code) && code == STILL_ACTIVE;
+    CloseHandle(h);
+    return alive;
+#else
+    return !(kill((pid_t) pid, 0) != 0 && errno == ESRCH);
+#endif
+}
 
 namespace strata::core {
 
@@ -101,6 +134,24 @@ uint64_t clamp_resident_budget(uint64_t requested, uint64_t physical, uint64_t c
 
 bool pin_depends_on_reclaim(uint64_t free_now, uint64_t bytes, uint64_t reserve) {
     return bytes > 0 && free_now < bytes + reserve;
+}
+
+bool wait_for_ram(uint64_t need, double max_wait_s, double step_s, double note_s,
+                  const std::function<bool(uint64_t&)>& sample, const std::function<void(double)>& sleep,
+                  const std::function<void(double, uint64_t)>& progress, double& waited, uint64_t& available) {
+    waited = 0.0;
+    if (!sample(available)) return false;
+    double next_note = 0.0;
+    while (available < need && waited < max_wait_s) {
+        if (progress && waited >= next_note) {
+            progress(waited, available);
+            next_note = waited + note_s;
+        }
+        sleep(step_s);
+        waited += step_s;
+        if (!sample(available)) return false;
+    }
+    return available >= need;
 }
 
 bool pin_step_fits(uint64_t available, uint64_t step, uint64_t reserve) {
@@ -3184,6 +3235,10 @@ void RouterLookahead::run() {
         // one (kq_avx1.cpp) or, without AVX, the same sums in plain C++.  From the Strata_Dirigo fork (rwkeyes): an
         // AVX-only Xeon E5-2687W died here (vpmovzxwd) on its first request.  An estimate only (which experts to
         // prefetch); the order of the additions differs between the three, the output does not depend on it.
+#if defined(__aarch64__) && !defined(STRATA_GPU_METAL)   // Metal (Apple silicon) keeps the plain loop below: its bf16_rows_dot_multi is a stub
+        strata::kernels::cpu::bf16_rows_dot_multi(routers_[(size_t) layer].data(), (int) n_expert_, (int) n_embd_,
+                                                  x_.data(), (int) nt, logits.data());
+#else
         if (strata::kernels::cpu::cpu_avx2_ok()) {
             strata::kernels::cpu::bf16_rows_dot_multi(routers_[(size_t) layer].data(), (int) n_expert_, (int) n_embd_,
                                                       x_.data(), (int) nt, logits.data());
@@ -3209,6 +3264,7 @@ void RouterLookahead::run() {
                 }
             }
         }
+#endif
         const int kmax = stats_on_ ? (int) std::min<int64_t>(k_ + 10, n_expert_) : k_;
         const int ks[3] = {k_, (int) std::min<int64_t>(k_ + 4, n_expert_), kmax};
         std::vector<uint64_t> sm;
@@ -4059,6 +4115,14 @@ bool FileExpertSource::pin_cache_complement(
             }
 #endif
             const int64_t done = layers_done.fetch_add(1) + 1;
+#if defined(_WIN32)
+            // R5070: the copy reads through the mapped view, and Windows counts those file pages in this process's working
+            // set, not as available: on the owner's 64 GB PC (8 GiB headroom asked for) available RAM fell to 0.9 GiB for
+            // ~10 s during the copy.  Every 4 layers the mapped pages go to the standby list (VirtualUnlock on pages that
+            // are not locked does exactly that; the same call runs once after the copy below).  No data changes.
+            if (done % 4 == 0 && direct_.empty() && maps_.empty() && !unmapped_) (void) VirtualUnlock((LPVOID) base_, (SIZE_T) mapped_bytes_);
+            if (done % 4 == 0 && direct_.empty()) for (const Map& m : maps_) if (!m.closed) (void) VirtualUnlock((LPVOID) m.base, (SIZE_T) m.bytes);
+#endif
             if (done % 8 == 0 || done == n_layers_)
                 std::fprintf(stderr, "FileExpertSource: copied cache complement through layer %lld/%lld (%.2f GiB, %.0f s)\n",
                              (long long) done, (long long) n_layers_, (double) copied.load() / 1073741824.0,
@@ -4339,6 +4403,33 @@ bool FileExpertSource::replace_resident(int64_t layer, int64_t in, int64_t out) 
                        std::memory_order_relaxed);
     file_read_bytes_.fetch_add(bytes, std::memory_order_relaxed);
     return install_resident(layer, in, out, ram_adapt_buf_.data());
+}
+
+bool FileExpertSource::replace_resident_staged(int64_t layer, int64_t in, int64_t out) {
+    if (!complement_ready_ || complement_host_ == nullptr || exchange_storage_.active() || !staged_.empty() ||
+        layer < 0 || layer >= n_layers_ || in < 0 || out < 0 || in >= n_expert_ || out >= n_expert_ || in == out)
+        return false;
+    const size_t i_in = (size_t) layer * (size_t) n_expert_ + (size_t) in;
+    const size_t i_out = (size_t) layer * (size_t) n_expert_ + (size_t) out;
+    if (i_in >= complement_offsets_.size() || i_out >= complement_offsets_.size()) return false;
+    if (!override_.empty() && (override_[i_in] != nullptr || override_[i_out] != nullptr)) return false;
+    const uint64_t at = complement_offsets_[i_out], bytes = layer_blob_bytes_[(size_t) layer];
+    if (at == kNoComplement || complement_offsets_[i_in] != kNoComplement || at > complement_bytes_ ||
+        bytes > complement_bytes_ - at || bytes > stage_blob_) return false;
+    ForesightSwap* fs = fs_swap_.load(std::memory_order_acquire);
+    bool moved = false;
+    {
+        // held across the copy: claim_stage cannot hand the buffer to another blob meanwhile
+        std::lock_guard<std::mutex> lk(stage_mu_);
+        const auto it = stage_of_.find((int64_t) i_in);
+        if (it == stage_of_.end() || stage_busy_[it->second] || stage_key_[it->second] != (int64_t) i_in) return false;
+        if (fs != nullptr) fs->hold(layer, (int32_t) out);
+        std::memcpy((uint8_t*) complement_host_ + (size_t) at, stage_buf_[it->second].get(), (size_t) bytes);
+        moved = detail::exchange_cache_complement(complement_offsets_, i_out, i_in);
+        if (fs != nullptr) fs->unhold(layer, (int32_t) out);
+    }
+    if (moved) { ++ram_adapts_; ++ram_staged_; }
+    return moved;
 }
 
 // `in`'s bytes (src) into `out`'s place of the compact copy, and the two offsets swapped - the checks again, as the caller
@@ -4780,10 +4871,10 @@ void expert_pool_dispatch(void* user, const float* x_f, const int32_t* ids, cons
 
 namespace {
 // the verify window's per-entry tables in `expert_pool_dispatch_multi` (`kind`, `distinct`, `first_of`)
-// are fixed arrays of this many entries: MAXT tokens of the model's 10 routed experts must fit, and a larger k is
-// refused at run time rather than written past them.
-constexpr int64_t kMaxWindowEntries = 128;
-static_assert(strata::kernels::cpu::MAXT * 10 <= kMaxWindowEntries, "a verify window's entries overflow the tables");
+// are fixed arrays of this many entries: a window's rows (kWindowMaxT) of the model's 10 routed experts must fit, and a
+// larger k is refused at run time rather than written past them.  128 for the 8-row window (as it was), 256 for 16.
+constexpr int64_t kMaxWindowEntries = strata::kernels::kWindowMaxT <= 8 ? 128 : 256;
+static_assert(strata::kernels::kWindowMaxT * 10 <= kMaxWindowEntries, "a verify window's entries overflow the tables");
 }  // namespace
 
 namespace {
@@ -4804,14 +4895,14 @@ int tail_skip_rank() {
 void set_tail_skip_rank(int r) { g_tail_skip_rank.store(r > 0 && r < 10 ? r : 0, std::memory_order_relaxed); }
 
 void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32_t* ids, int64_t n_tok, int64_t k,
-                                float* out) {
+                                float* out, strata::kernels::cpu::NativeArithmetic arithmetic) {
     using namespace strata::kernels::cpu;
     // R2 (opt-in CUDA helper): the (token,k) rows the proxy tiers claimed THIS layer, read by the
     // begin seam (which marks them kind 2) and by the finish seam (which recomputes exactly them
     // when a proxy finish failed).  In-process tiers never fill it.
     static thread_local std::vector<int32_t> helper_claims;
     if (d.failed) return;
-    if (n_tok < 1 || n_tok > MAXT) {
+    if (n_tok < 1 || n_tok > strata::kernels::kWindowMaxT) {
         d.failed = true;
         d.fail = "a verify window has more tokens than the multi-token expert kernel takes";
         d.fail_layer = d.layers;
@@ -4830,12 +4921,13 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
         d.fail_layer = d.layers;
         return;
     }
-    if ((int64_t) d.act_multi.size() < n_tok) d.act_multi.resize((size_t) MAXT);
+    if ((int64_t) d.act_multi.size() < n_tok) d.act_multi.resize((size_t) strata::kernels::kWindowMaxT);
     const ExpertLayout& lay = expert_layout();
     const bool native = lay.native;
-    if (native && d.nact_multi.size() < (size_t) MAXT * kNativeActBytes) d.nact_multi.resize((size_t) MAXT * kNativeActBytes);
+    if (native && d.nact_multi.size() < (size_t) strata::kernels::kWindowMaxT * kNativeActBytes)
+        d.nact_multi.resize((size_t) strata::kernels::kWindowMaxT * kNativeActBytes);
     if (d.job_of.size() != (size_t) d.n_expert) d.job_of.assign((size_t) d.n_expert, (int16_t) -1);
-    if (d.jobs_multi.size() < (size_t) (n_tok * k)) d.jobs_multi.resize((size_t) (MAXT * k));
+    if (d.jobs_multi.size() < (size_t) (n_tok * k)) d.jobs_multi.resize((size_t) (strata::kernels::kWindowMaxT * k));
     static const bool ptrace = std::getenv("STRATA_POOL_TRACE") != nullptr;
     auto pt = [&](const char* what, long long a = -1) {
         if (ptrace) { std::fprintf(stderr, "pool trace: layer %lld %s %lld\n", (long long) d.layers, what, a); std::fflush(stderr); }
@@ -5155,6 +5247,17 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                     ++d.cold_zc;
                 }
             }
+            if (d.jobs_multi[(size_t) jo].nt == MAXT) {
+                // a window of 9..16 rows routes more than MAXT tokens to this expert: the kernels and the pool's scratch
+                // take MAXT tokens a job, so the rest are a further job over the same blob (each token's rows are its own,
+                // so the split changes no value; the blob is read once more)
+                const int16_t prev = jo;
+                jo = (int16_t) njobs++;
+                ExpertJobMulti& nj = d.jobs_multi[(size_t) jo];
+                nj.blob = d.jobs_multi[(size_t) prev].blob;
+                nj.fmt = d.jobs_multi[(size_t) prev].fmt;
+                nj.nt = 0;
+            }
             ExpertJobMulti& jb = d.jobs_multi[(size_t) jo];
             jb.act[jb.nt] = &d.act_multi[(size_t) t];
             jb.nact[jb.nt] = native ? d.nact_multi.data() + (size_t) t * kNativeActBytes : nullptr;
@@ -5167,7 +5270,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     {
         const auto b0 = std::chrono::steady_clock::now();
         if (njobs > 0) {
-            if (native) d.pool->run_split_multi_native(lay.fmt[(size_t) d.layers], d.jobs_multi.data(), njobs);
+            if (native) d.pool->run_split_multi_native(lay.fmt[(size_t) d.layers], d.jobs_multi.data(), njobs, arithmetic);
             else d.pool->run_split_multi(d.jobs_multi.data(), njobs);
             ++d.cold_batches;
         }
@@ -5212,7 +5315,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     if (d.plan != nullptr) d.plan->cpu_jobs = njobs;
     pt("run", njobs);
     if (njobs > 0 && npend == 0) {
-        if (native) d.pool->run_split_multi_native(lay.fmt[(size_t) d.layers], d.jobs_multi.data(), njobs);
+        if (native) d.pool->run_split_multi_native(lay.fmt[(size_t) d.layers], d.jobs_multi.data(), njobs, arithmetic);
         else d.pool->run_split_multi(d.jobs_multi.data(), njobs);
     }
     if (d.remote_count > 0) {
@@ -5284,6 +5387,14 @@ void expert_hit_run(void* user, void* stream, HitPhase phase, const int32_t* ids
         d.hit_pending = false;
         if (!d.hits_ready() || ids == nullptr || k <= 0) return;
         if ((int64_t) d.is_hit.size() < k) d.is_hit.resize((size_t) k);
+        // STRATA_EXPERT_NIBBLE=1: this split computes a resident expert with the GGUF-block kernels and admits + fills
+        // a missed one with its GGUF blob - neither may meet a layer whose slots hold 4-bit codes (a native pack's
+        // experts run in the verify windows, so this is the backstop, never the path)
+#if STRATA_EXPERT_NIBBLE_BUILT   // compiled out of every other build: nothing is added to the hit split there
+        if (strata::core::nibble::layer(d.layers).on)
+            strata::core::nibble::fatal(d.layers, "the expert source's hit split (expert_hit_run)",
+                                        "it computes resident experts as GGUF blocks and fills slots with GGUF blobs");
+#endif
 
         // ================================ THE DECISION, ONCE, ON THIS LAYER'S IDS ================================
         //
@@ -5304,6 +5415,11 @@ void expert_hit_run(void* user, void* stream, HitPhase phase, const int32_t* ids
                 }
                 // `blob` is asked ONLY for an expert about to be filled, so the source's read counter stays a
                 // count of distinct experts moved rather than of looks.
+                // W1: an expert the arena dropped (`--expert-helper-ram-relief`) hands out a staged copy from the
+                // pack files here, and `note_async_read` below is what keeps that buffer alive under the queued
+                // slot copy.  A pair the helper holds is normally never admitted on the primary (the disjoint
+                // gate), and the caches seal before the decode where it is (STRATA_EXPERT_NIBBLE); this is the
+                // path it would take if a config ever let it through.
                 const uint8_t* b = d.src->blob(d.layers, e);
                 std::string ferr;
                 if (b == nullptr || !d.cache->fill_slot(cand, b, cs, ferr, (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(d.layers))) {
@@ -5826,12 +5942,26 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
     // certain to end that way: refused, with the numbers.  Less RAM available than the arena (another program, an
     // engine still exiting) is only a warning - the OS may make room - per the recommend-not-force rule.
     ram_warning_.clear();
+    ram_short_ = false;
     // (a shared arena, --shared-expert-arena, may already be in RAM for another engine: not checked)
     if (detail::HostMemory hm; shared_arena_file.empty() && detail::host_available_memory(hm)) {
-        const uint64_t need = want + (uint64_t) blob;
+        // --ram-keep-gib W: the arena is chosen only if W GiB stay free after it, so its need here is the arena plus W
+        const uint64_t need = arena_need_with_keep(want + (uint64_t) blob, ram_keep_bytes);
+        // under a hard limit the arena also needs the headroom (the engine's own memory comes on top of it, and the arena is never given back)
+        const uint64_t limit_need = arena_hard_limit_need(want + (uint64_t) blob, ram_keep_bytes, hard_limit_headroom_bytes, fall_back_when_ram_short);
         const double gib = 1073741824.0;
         char buf[512];
-        if (hm.cgroup_limit < need) {
+        char keep_note[96] = "";
+        if (ram_keep_bytes > 0)
+            std::snprintf(keep_note, sizeof keep_note, ", with the %.2f GiB --ram-keep-gib asks to leave free", (double) ram_keep_bytes / gib);
+        if (arena_ram_verdict(limit_need, ~uint64_t{0}, hm.cgroup_limit, fall_back_when_ram_short) != ArenaRamVerdict::Load) {
+            if (fall_back_when_ram_short) {   // #4846: the caller reads the experts from the file instead of refusing
+                std::snprintf(buf, sizeof buf, "it needs %.2f GiB (with the %.2f GiB the engine's own memory and the RAM to keep take on top of it) and this process's memory limit is %.2f GiB",
+                              (double) limit_need / gib, (double) (limit_need - (want + (uint64_t) blob)) / gib, (double) hm.cgroup_limit / gib);
+                err = buf;
+                ram_short_ = true;
+                return false;
+            }
             std::snprintf(buf, sizeof buf,
                           "ArenaExpertSource: the expert arena needs %.2f GiB of RAM but this process's memory limit "
                           "(cgroup memory.max / memory.limit_in_bytes) is %.2f GiB: it would be killed while loading. "
@@ -5842,12 +5972,73 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
             return false;
         }
         if (hm.available < need) {
-            std::snprintf(buf, sizeof buf,
-                          "the expert arena needs %.2f GiB of RAM but %.2f GiB is available (%.2f GiB short): the load "
-                          "may swap or be stopped by the OS. Close other programs (or wait for an engine that is "
-                          "still exiting), or run with less RAM: --mmap-experts with --resident-budget-gib N",
-                          (double) need / gib, (double) hm.available / gib, (double) (need - hm.available) / gib);
-            ram_warning_ = buf;
+            // #4051: the shortfall is often an engine that was still exiting (the code's own example), a few seconds
+            // from giving its RAM back: wait for it, not for ever, and say so.  STRATA_ARENA_RAM_WAIT_S changes the
+            // seconds (0 loads at once, as before this wait).  Still short after it (and after the give-back below): the caller's
+            // --mmap-experts fallback (#4846) when it asked for one, otherwise the load goes on and only warns.
+            double wait_s = 20.0;
+            if (const char* w = std::getenv("STRATA_ARENA_RAM_WAIT_S"); w != nullptr && w[0] != '\0') {
+                char* end = nullptr;
+                const double v = std::strtod(w, &end);
+                if (end != w && *end == '\0' && v >= 0.0 && v <= 3600.0) wait_s = v;
+            }
+            double waited = 0.0;
+            uint64_t avail = hm.available;
+            if (wait_s > 0.0) {
+                const bool came = detail::wait_for_ram(
+                    need, wait_s, 0.25, 5.0,
+                    [](uint64_t& a) { detail::HostMemory h; if (!detail::host_available_memory(h)) return false; a = h.available; return true; },
+                    [](double s) { std::this_thread::sleep_for(std::chrono::duration<double>(s)); },
+                    [&](double w, uint64_t a) {
+                        std::fprintf(stderr, "strata generate: the expert arena needs %.2f GiB of RAM%s and %.2f GiB is "
+                                             "available; waiting up to %.0f s for it (another engine still exiting?) - "
+                                             "%.0f s so far (STRATA_ARENA_RAM_WAIT_S changes this)\n",
+                                     (double) need / gib, keep_note, (double) a / gib, wait_s, w);
+                    },
+                    waited, avail);
+                if (came)
+                    std::fprintf(stderr, "strata generate: %.2f GiB of RAM is available now (after %.1f s): loading the "
+                                         "expert arena\n", (double) avail / gib, waited);
+                hm.available = avail;
+            }
+            if (hm.available < need && give_back_ram) {
+                // #4846: the shortfall survived the wait.  A lock the engine took by itself (the PLE table's residency lock) is
+                // given back before the registration starts: its pages stay cached, the OS may take them for the arena.
+                const uint64_t freed = give_back_ram();
+                if (freed > 0) {
+                    detail::HostMemory h2;
+                    if (detail::host_available_memory(h2)) {
+                        std::fprintf(stderr, "strata generate: the expert arena needs %.2f GiB of RAM and %.2f GiB was available: "
+                                             "gave back %.2f GiB of locked RAM, %.2f GiB is available now\n",
+                                     (double) need / gib, (double) hm.available / gib, (double) freed / gib, (double) h2.available / gib);
+                        hm.available = h2.available;
+                    }
+                }
+            }
+            if (arena_ram_verdict(need, hm.available, ~uint64_t{0}, fall_back_when_ram_short) == ArenaRamVerdict::FallBack) {
+                // #4846 (owner 11-01): still short after the wait and the give-back.  Registering anyway can stall the whole host in
+                // reclaim until it is power-cycled: nothing is allocated, the caller takes the --mmap-experts source for this run.
+                std::snprintf(buf, sizeof buf,
+                              "it needs %.2f GiB%s and %.2f GiB is available (%.2f GiB short%s)",
+                              (double) need / gib, keep_note, (double) hm.available / gib, (double) (need - hm.available) / gib,
+                              waited > 0.0 ? ", after waiting" : "");
+                err = buf;
+                ram_short_ = true;
+                return false;
+            }
+            if (hm.available < need) {
+                std::snprintf(buf, sizeof buf,
+                              "the expert arena needs %.2f GiB of RAM but %.2f GiB is available (%.2f GiB short%s): the "
+                              "load may swap or be stopped by the OS%s. Close other programs, or run with less RAM: "
+                              "--mmap-experts with --resident-budget-gib N",
+                              (double) need / gib, (double) hm.available / gib, (double) (need - hm.available) / gib,
+                              waited > 0.0 ? ", after waiting" : "",
+                              hm.available < need / 2 ? " - with this little room the whole machine can stall in "
+                                                        "memory reclaim until it is restarted (#4051); on Linux a "
+                                                        "systemd MemoryHigh= below the RAM keeps one program from "
+                                                        "taking all of it" : "");
+                ram_warning_ = buf;
+            }
         }
     }
 
@@ -5927,8 +6118,19 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
 #else
     const bool deferred = false;
 #endif
-    PinnedArena* a = by_need ? new PinnedArena(arena_bytes + (uint64_t) blob, PinnedArena::ByNeed{}, need_ranges,
-                                               max_pinned_bytes, shared_arena_file, pack_hash)
+    // W1/W2 (opt-in): the whole-arena registration pins every page, and that is exactly what W1's
+    // MADV_DONTNEED and W2's MADV_COLLAPSE refuse to touch (measured: the relief guard refused all
+    // 4116 helper-held pairs; every one of the sweep's 20462 chunks EINVAL'd).  Reserve without
+    // registering and without locking; register_after_fill() restores DMA once the layout is
+    // decided - for W2 right after the collapse sweep below (the whole span), for W1 from the
+    // caller through register_complement() (the helper's held pairs are known only after its fill
+    // report).  Between the fill and that call the arena is registered-less but resident (just
+    // written; nothing else pressures it during boot) and no request has run yet.
+    const bool relief_reserve = !by_need && shared_arena_file.empty() &&
+                                 (ram_relief_ || std::getenv("STRATA_ARENA_COLLAPSE") != nullptr);
+    PinnedArena* a = relief_reserve ? new PinnedArena(want + (uint64_t) blob, PinnedArena::ReserveOnly{})
+                    : by_need ? new PinnedArena(arena_bytes + (uint64_t) blob, PinnedArena::ByNeed{}, need_ranges,
+                                                max_pinned_bytes, shared_arena_file, pack_hash)
                    : deferred ? new PinnedArena(want + (uint64_t) blob, bounds, PinnedArena::Deferred{})
                               : new PinnedArena(want + (uint64_t) blob, bounds, max_pinned_bytes,
                                                 shared_arena_file, pack_hash);
@@ -5956,6 +6158,43 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
     const bool unbuffered = experts_unbuffered(files, want + (uint64_t) blob, why);
     const int readers = unbuffered ? std::max(threads, 16) : threads;   // 16 keep a PCIe 5 drive's queue full
     LoadStats st;
+    // A shared arena (--shared-expert-arena, the replicas): ONE engine reads the experts into it, the others wait and skip the
+    // read.  The state word in the file's header says who: 0 nobody, a pid loading, ~0 filled.  An engine that finds a
+    // pid that is gone takes the load over (the previous one died mid-read: the arena is read again from the start), so a
+    // dead loader never leaves the others waiting, and an engine that waits too long loads it itself.
+    constexpr uint64_t kArenaFilled = ~uint64_t{0};
+    std::atomic<uint64_t>* arena_state = padded_ ? nullptr : a->shared_state;
+    bool arena_leader = false, arena_skip = false;
+    if (arena_state != nullptr) {
+        const uint64_t me = arena_this_pid();
+        const auto t_begin = std::chrono::steady_clock::now();
+        bool said = false;
+        for (;;) {
+            uint64_t cur = arena_state->load(std::memory_order_acquire);
+            if (cur == kArenaFilled) { arena_skip = true; break; }
+            if (cur == 0 || cur == me) {
+                if (arena_state->compare_exchange_strong(cur, me, std::memory_order_acq_rel)) { arena_leader = true; break; }
+                continue;
+            }
+            const bool alive = arena_pid_alive(cur);
+            if (!alive) {
+                if (arena_state->compare_exchange_strong(cur, me, std::memory_order_acq_rel)) {
+                    std::fprintf(stderr, "strata generate: shared expert arena: engine %llu died while reading it; reading it again\n",
+                                 (unsigned long long) cur);
+                    arena_leader = true;
+                    break;
+                }
+                continue;
+            }
+            if (std::chrono::steady_clock::now() - t_begin > std::chrono::minutes(45)) break;   // (loads it on its own)
+            if (!said) {
+                said = true;
+                std::fprintf(stderr, "strata generate: shared expert arena: engine %llu is reading the experts; waiting for it "
+                                     "instead of reading them again\n", (unsigned long long) cur);
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        }
+    }
     std::atomic<int> ready{0};
     std::thread reg;
     if (deferred) {
@@ -5967,7 +6206,12 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
         });
     }
     const std::atomic<int>* rp = deferred ? &ready : nullptr;
-    if (from_gguf) {
+    if (arena_skip) {
+        st.ok = true;
+        st.bytes = want;
+        st.seconds = 0.0;
+        std::fprintf(stderr, "strata generate: shared expert arena: already filled by another engine; the read is skipped\n");
+    } else if (from_gguf) {
         st = load_experts_gguf(gguf_, a->data(), lay, readers, unbuffered, rp, padded_ ? &pad_ : nullptr);
     } else {
         if (unbuffered && !padded_) st = load_experts_direct(path, a->data(), loff, lbytes, readers, /*chunk=*/8u << 20, rp);
@@ -5978,15 +6222,18 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
     std::fprintf(stderr, "strata generate: expert arena read %s (%s)\n", unbuffered ? "unbuffered" : "through the file cache",
                  why.c_str());
     if (!st.ok) {
+        if (arena_leader) arena_state->store(0, std::memory_order_release);   // (somebody else may try)
         delete a;
         err = "ArenaExpertSource: the expert load was refused: " + (st.error.empty() ? std::string("unknown") : st.error);
         return false;
     }
     if (st.bytes != want) {
+        if (arena_leader) arena_state->store(0, std::memory_order_release);
         delete a;
         err = "ArenaExpertSource: the load read " + std::to_string(st.bytes) + " B of " + std::to_string(want);
         return false;
     }
+    if (arena_leader) arena_state->store(kArenaFilled, std::memory_order_release);   // the others may use (and skip reading) it
     if (std::getenv("STRATA_VERIFY_ARENA") != nullptr) {   // tests: the loaded arena's checksum, any loader
         std::fprintf(stderr, "strata generate: expert arena checksum %016llx (%.2f GiB)\n",
                      (unsigned long long) fnv1a64(a->data(), want), (double) want / (1ull << 30));
@@ -6014,6 +6261,71 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
         if (!ok) std::remove(tmp.c_str());
         std::fprintf(stderr, "strata generate: STRATA_ARENA_MMAP: %s %s (the next start maps it)\n",
                      ok ? "wrote" : "could NOT write", path.c_str());
+    }
+    // W2a (opt-in, STRATA_ARENA_COLLAPSE=1): collapse the filled range into 2 MiB huge pages NOW.
+    // MADV_COLLAPSE (Linux 6.1+) takes a range of pages that are already written and fills one 2 MiB
+    // block from them, so the arena's TLB benefit does not depend on the kernel finding a free block at
+    // each of the ten million faults of the load.  Best effort: a chunk the kernel cannot collapse right
+    // now (EAGAIN, ENOMEM, EINTR) is counted and skipped - it stays 4 KB-backed and the kernel still
+    // collapses it at a later fault.  Nothing here fails the boot, and nothing here runs when the
+    // variable is unset.  A hugetlb-backed arena is already all 2 MiB pages: nothing to collapse.
+    if (std::getenv("STRATA_ARENA_COLLAPSE") != nullptr && a->backing != PageBacking::LargePages) {
+        // Launchers can disable THP with prctl; that policy survives fork/exec and vetoes even
+        // MADV_COLLAPSE. Override it only for this explicit, already-filled sweep, then restore it
+        // before registration. There are no throwing operations between the override and restore.
+#if defined(__linux__)
+        const int thp_before = prctl(PR_GET_THP_DISABLE, 0L, 0L, 0L, 0L);
+        const bool thp_override = thp_before == 1 && prctl(PR_SET_THP_DISABLE, 0L, 0L, 0L, 0L) == 0;
+        if (thp_before < 0 || (thp_before == 1 && !thp_override))
+            std::fprintf(stderr, "strata generate: expert arena: THP policy override failed: %s\n", std::strerror(errno));
+        std::fprintf(stderr, "strata generate: expert arena: THP policy before sweep: %d (%s)\n",
+                     thp_before, thp_override ? "temporarily enabled for collapse" : "unchanged");
+#endif
+        // Hint after filling, so this request does not add fault-time compaction to the load.
+        madvise(a->base, (size_t) want, MADV_HUGEPAGE);
+        constexpr uint64_t kHuge = 2ull << 20;
+        // The kernel EINVALs a MADV_COLLAPSE whose START is not 2 MiB-aligned (it clamps only the
+        // length), so the sweep runs over the whole 2 MiB blocks fully inside [base, base+want):
+        // start rounded UP, end rounded DOWN.  A constructor that hands back a merely page-aligned
+        // base would otherwise refuse every chunk (H1-r1: 20463 of 20463 EINVAL).
+        const uintptr_t payload = (uintptr_t) a->base;
+        const uintptr_t start = (payload + kHuge - 1) & ~(uintptr_t) (kHuge - 1);
+        const uintptr_t end = (payload + (uintptr_t) want) & ~(uintptr_t) (kHuge - 1);
+        uint64_t done = 0, tried = 0, eagain = 0, other = 0;
+        int why = 0;
+        for (uintptr_t off = start; off < end; off += kHuge) {
+            ++tried;
+            if (madvise((void*) off, (size_t) kHuge, MADV_COLLAPSE) == 0) {
+                ++done;
+            } else if (errno == EAGAIN || errno == EINTR) {
+                ++eagain;   // no free 2 MiB block right now: the kernel collapses it at a later fault
+            } else {
+                ++other;
+                if (why == 0) why = errno;
+            }
+        }
+#if defined(__linux__)
+        if (thp_override) {
+            if (prctl(PR_SET_THP_DISABLE, 1L, 0L, 0L, 0L) != 0)
+                std::fprintf(stderr, "strata generate: expert arena: THP policy restore failed: %s\n", std::strerror(errno));
+            else
+                std::fprintf(stderr, "strata generate: expert arena: THP policy restored to %d\n", thp_before);
+        }
+#endif
+        a->note += "; STRATA_ARENA_COLLAPSE: " + std::to_string(done) + " of " + std::to_string(tried) +
+                   " 2 MiB chunks collapsed after the fill" +
+                   (eagain ? ", " + std::to_string(eagain) + " refused for room" : "") +
+                   (other ? ", " + std::to_string(other) + " refused (" + std::strerror(why) + ")" : "");
+        std::fprintf(stderr, "strata generate: expert arena: STRATA_ARENA_COLLAPSE: %llu of %llu 2 MiB chunks collapsed"
+                             " after the fill (%llu refused for room, %llu refused: %s)\n",
+                     (unsigned long long) done, (unsigned long long) tried, (unsigned long long) eagain,
+                     (unsigned long long) other, why ? std::strerror(why) : "none");
+        if (!ram_relief_) {
+            // W2 alone: the sweep ran on unregistered pages (that is the point of the ReserveOnly
+            // arena); restore the whole-span DMA registration now, before the alias tables below
+            // are built from it.  W1 defers: its complement is known only after the fill report.
+            a->register_after_fill(std::vector<std::pair<uint64_t, uint64_t>>{{0, (uint64_t) want}}, true);
+        }
     }
     arena_ = a;
     base_ = a->data();
@@ -6069,10 +6381,18 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
     load_read_s_ = st.read_seconds;
     load_copy_s_ = st.copy_seconds;
     record_inputs(path, gguf_, lay, from_gguf);
+    pack_dir_ = pack_dir;              // W1: --expert-helper-ram-relief reads the dropped pairs back from here
+    arena_capacity_ = a->capacity;
+    shared_backing_ = a->shared_state != nullptr;
     return true;
 }
 
 void ArenaExpertSource::close() {
+    // W1: the refill thread writes into this arena, so it is joined before anything is released, and
+    // the residency-release notice that starts it is cleared with the source.
+    set_helper_residency_release_hook(nullptr);
+    if (refill_.joinable()) refill_.join();
+    refill_running_.store(false);
 #if !defined(_WIN32)
     if (map_ != nullptr) munmap(map_, (size_t) map_bytes_);
 #endif
@@ -6086,6 +6406,13 @@ void ArenaExpertSource::close() {
     base_ = nullptr;
     blobs_ = 0;
     n_expert_ = 0;
+    unfilled_flag_.clear();
+    unfilled_.store(0);
+    unfilled_bytes_ = 0;
+    arena_capacity_ = 0;
+    shared_backing_ = false;
+    std::lock_guard<std::mutex> lk(file_mu_);
+    file_.reset();
 }
 
 void ArenaExpertSource::prefetch(int64_t layer, int64_t expert) {
@@ -6141,12 +6468,20 @@ bool ArenaExpertSource::pcie_layer(int64_t layer) const {
 
 bool ArenaExpertSource::pinned(int64_t layer, int64_t expert) const {
     if (base_ == nullptr || layer < 0 || expert < 0 || expert >= n_expert_) return false;
+    if (unfilled_.load(std::memory_order_relaxed) > 0 && unfilled_at(layer, expert)) {   // W1a: lock-free pre-check (see blob())
+        std::lock_guard<std::mutex> lk(file_mu_);
+        if (unfilled_at(layer, expert)) return false;   // W1: a dropped pair is never pinned, and never DMA'd
+    }
     const auto& lay = strata::kernels::cpu::expert_layout();
     if (ranges_) return pin_range_of(arena_off(layer, expert), lay.blob_bytes(layer)) >= 0;   // the whole blob inside ONE registered range
     return lay.blob_offset(layer, expert) + lay.blob_bytes(layer) <= pinned_bytes_;
 }
 
 const uint8_t* ArenaExpertSource::device_alias(int64_t layer, int64_t expert) const {
+    if (unfilled_.load(std::memory_order_relaxed) > 0 && unfilled_at(layer, expert)) {   // W1a: lock-free pre-check (see blob())
+        std::lock_guard<std::mutex> lk(file_mu_);
+        if (unfilled_at(layer, expert)) return nullptr;   // W1: its pages are gone; no alias over them
+    }
     if (ranges_) {   // pin by need: the range's device base + the blob's offset inside it
         if (base_ == nullptr || layer < 0 || expert < 0 || expert >= n_expert_) return nullptr;
         const auto& rl = strata::kernels::cpu::expert_layout();
@@ -6168,6 +6503,20 @@ const uint8_t* ArenaExpertSource::blob(int64_t layer, int64_t expert) {
     const int64_t idx = layer * n_expert_ + expert;
     if (idx < 0 || idx >= blobs_) return nullptr;
     reads_.fetch_add(1, std::memory_order_relaxed);
+    // W1a (TG fix): the drop publishes this bitmap at boot, before any request thread serves
+    // (set_unfilled -> register_complement -> first request), and under relief nothing writes it
+    // again while serving (refill_run is the documented no-op), so a RESIDENT pair - the
+    // overwhelming majority of calls - is decided without file_mu_.  Only a dropped pair takes
+    // the lock; the re-check under it keeps a future flag-writing refill honest.  Before this,
+    // every call locked and the decode threads convoyed behind staged pack reads (V4 TG 16 vs
+    // 38 tok/s, journal 2026-11-04).
+    if (unfilled_.load(std::memory_order_relaxed) > 0 && unfilled_at(layer, expert)) {   // W1: --expert-helper-ram-relief
+        std::lock_guard<std::mutex> lk(file_mu_);
+        if (unfilled_at(layer, expert)) {
+            note_dropped_read(layer, expert);   // STRATA_WINDOW_POPULATE=1: a window read this pair - refill_recorded_pairs refills it at the request's end
+            return file_source() == nullptr ? nullptr : file_->blob(layer, expert);
+        }
+    }
     // Pointer arithmetic into resident memory.  No fault, no copy, no mapping - which is the entire point of
     // this class over `FileExpertSource`.
     return base_ + arena_off(layer, expert);
@@ -6177,7 +6526,387 @@ const uint8_t* ArenaExpertSource::blob_at(int64_t layer, int64_t expert) const {
     if (base_ == nullptr || layer < 0 || expert < 0 || expert >= n_expert_) return nullptr;
     const int64_t idx = layer * n_expert_ + expert;
     if (idx < 0 || idx >= blobs_) return nullptr;
+    if (unfilled_.load(std::memory_order_relaxed) > 0 && unfilled_at(layer, expert)) {   // W1a: lock-free pre-check (see blob())
+        std::lock_guard<std::mutex> lk(file_mu_);
+        if (unfilled_at(layer, expert)) return nullptr;   // W1: a dropped pair has no arena bytes to point at
+    }
     return base_ + arena_off(layer, expert);   // (the padded layout of pin by need too)
+}
+
+// ================================ W1: --expert-helper-ram-relief ================================
+//
+// The out-of-process CUDA helper holds a set of experts in its own VRAM and computes their rows.  The
+// host arena is built BEFORE the helper's fill report arrives and holds a copy of EVERY expert, the
+// helper's pairs included, so those bytes sit in RAM twice.  This hands the host copy of the held
+// pairs back to the OS (MADV_DONTNEED) and keeps the addresses reserved.
+//
+// What a dropped pair is then: no arena pointer (blob_stable/blob_at/pinned/device_alias refuse it),
+// a blob read from the pack files into a short-lived buffer (`transient` is true for it, so every
+// consumer copies it - the CPU windows, the cache fill, the prompt path's stager), and its rows
+// computed by the helper while the channel is open.  The addresses never move, so the refill after a
+// helper loss writes the bytes back where they were and clears the pair: the CPU serves their rows
+// from the arena exactly as a run with no helper does.
+//
+// Two rules keep it honest:
+//   - a pair inside a registered range stays put.  The driver pins those pages and the GPU has an
+//     alias into them; releasing them under an alias is not safe.  Relief is the held pairs that are
+//     not pinned (the arena is registered in a capped prefix or in the pin-by-need ranges, so that is
+//     most of it).
+//   - only the pages WHOLLY INSIDE a blob are given back.  MADV_DONTNEED on anonymous memory zeroes
+//     what it releases; a blob is not 2 MiB-aligned, so a range rounded out to the 2 MiB grid would
+//     zero the neighbours of a dropped pair, which stay in the arena and would read as zeros.
+void ArenaExpertSource::set_unfilled(std::vector<std::pair<int32_t, int32_t>> pairs) {
+#if defined(_WIN32)
+    (void) pairs;   // madvise(MADV_DONTNEED): the POSIX arena
+#else
+    if (base_ == nullptr || pairs.empty() || blobs_ <= 0 || n_expert_ <= 0) return;
+    if (map_ != nullptr) {
+        std::fprintf(stderr, "strata generate: --expert-helper-ram-relief: nothing dropped: this run maps the pack's "
+                             "experts.bin read-only (STRATA_ARENA_MMAP), so its pages are the OS's file cache, not "
+                             "the arena's RAM\n");
+        return;
+    }
+    if (shared_backing_) {
+        std::fprintf(stderr, "strata generate: --expert-helper-ram-relief: nothing dropped: the arena is a shared "
+                             "file (--shared-expert-arena); MADV_DONTNEED on a MAP_SHARED mapping would ZERO the "
+                             "pack's arena for every engine using it\n");
+        return;
+    }
+    const auto& lay = strata::kernels::cpu::expert_layout();
+    const int64_t n_layers = blobs_ / n_expert_;
+    if (unfilled_flag_.empty()) unfilled_flag_.assign((size_t) blobs_, 0);
+    int64_t dropped = 0, registered = 0, out_of_range = 0, refused = 0;
+    int first_refusal = 0;
+    uint64_t bytes = 0;
+    for (const auto& p : pairs) {
+        const int64_t l = p.first, e = p.second;
+        if (l < 0 || l >= n_layers || e < 0 || e >= n_expert_) { ++out_of_range; continue; }
+        const size_t idx = (size_t) (l * n_expert_ + e);
+        if (idx >= unfilled_flag_.size() || unfilled_flag_[idx] != 0) continue;
+        if (pinned(l, e)) { ++registered; continue; }
+        const uint64_t off = arena_off(l, e);
+        const uint64_t end = off + lay.blob_bytes(l);
+        const uint64_t lo = (off + 4095) & ~(uint64_t) 4095;
+        uint64_t hi = end & ~(uint64_t) 4095;
+        if (arena_capacity_ > 0 && hi > arena_capacity_) hi = arena_capacity_;
+        if (hi <= lo) continue;   // a blob inside one page: nothing page-granular to give back
+        if (madvise((uint8_t*) base_ + (size_t) lo, (size_t) (hi - lo), MADV_DONTNEED) != 0) {
+            if (first_refusal == 0) first_refusal = errno;   // V4-r2: 4116 refusals, every one mlock's EINVAL
+            ++refused;
+            continue;
+        }
+        unfilled_flag_[idx] = 1;
+        ++dropped;
+        bytes += hi - lo;
+    }
+    unfilled_.store(dropped);
+    unfilled_bytes_ = bytes;
+    if (dropped <= 0) {
+        std::fprintf(stderr, "strata generate: --expert-helper-ram-relief: nothing dropped (%lld of %lld pairs are "
+                             "pinned memory the GPU has an alias into, %lld madvise refusals, first: %s)\n",
+                     (long long) registered, (long long) pairs.size(), (long long) refused,
+                     first_refusal != 0 ? std::strerror(first_refusal) : "n/a");
+        return;
+    }
+    note_ += "; --expert-helper-ram-relief: " + std::to_string(dropped) + " of " + std::to_string(pairs.size()) +
+             " helper-held pairs given back (" + std::to_string(bytes >> 20) + " MiB); their blobs are read from "
+             "the pack files on request";
+    std::fprintf(stderr, "strata generate: --expert-helper-ram-relief: %lld of the helper's %lld pairs dropped from "
+                         "the arena (%.2f GiB of pages given back; %lld are pinned memory and stay, %lld madvise "
+                         "refusals, %lld out of range); their blobs come from the pack files, their rows from the "
+                         "helper\n",
+                 (long long) dropped, (long long) pairs.size(), (double) bytes / 1073741824.0, (long long) registered,
+                 (long long) refused, (long long) out_of_range);
+    // The channel-loss safety net: on a residency release, read them back so the CPU can serve their rows.
+    set_helper_residency_release_hook([this] { refill_unfilled(); });
+#endif
+}
+
+void ArenaExpertSource::apply_registration() {
+    // W1: rebuild the alias tables after register_complement() - the same build open() does for a
+    // pin-by-need arena, run again now that the registered ranges exist.  Boot-time, one thread.
+    if (base_ == nullptr || arena_ == nullptr) return;
+    PinnedArena* a = static_cast<PinnedArena*>(arena_);   // stored opaque; the type is complete here
+    if (!a->by_need) return;
+    pin_start_.clear(); pin_end_.clear(); pin_dev_.clear();
+    ranges_ = !a->pin_ranges.empty();
+    for (const auto& r : a->pin_ranges) {
+        void* d = nullptr;
+        if (cudaHostGetDevicePointer(&d, (void*) (base_ + r.first), 0) != cudaSuccess) {
+            (void) cudaGetLastError();
+            ranges_ = false;
+            break;
+        }
+        pin_start_.push_back(r.first);
+        pin_end_.push_back(r.first + r.second);
+        pin_dev_.push_back((const uint8_t*) d);
+    }
+    if (!ranges_) {
+        pin_start_.clear(); pin_end_.clear(); pin_dev_.clear();
+        pinned_bytes_ = 0;
+        return;
+    }
+    pinned_bytes_ = a->registered_bytes;
+    layer_pcie_.assign((size_t) (blobs_ / (n_expert_ > 0 ? n_expert_ : 1)), 0);
+    for (int64_t l = 0; l < (int64_t) layer_pcie_.size(); ++l)
+        for (int64_t e = 0; e < n_expert_ && !layer_pcie_[(size_t) l]; ++e)
+            layer_pcie_[(size_t) l] = pinned(l, e) ? 1 : 0;
+}
+
+void ArenaExpertSource::register_complement(const std::vector<std::pair<int32_t, int32_t>>& held) {
+    // W1, AFTER set_unfilled(): register everything that is still servable - every pair EXCEPT the
+    // ones the drop actually gave back.  V4-r2 lesson: a pair that is neither dropped nor
+    // registered has no DMA-legal address, and the first cache fill of such a pair fails with
+    // "invalid argument" and kills the request.  Boot-time, one thread.
+    if (base_ == nullptr || arena_ == nullptr) return;
+    PinnedArena* a = static_cast<PinnedArena*>(arena_);   // stored opaque; the type is complete here
+    const int64_t n_layers = blobs_ / (n_expert_ > 0 ? n_expert_ : 1);
+    if (unfilled_flag_.empty()) unfilled_flag_.assign((size_t) blobs_, 0);
+    std::vector<std::pair<uint64_t, uint64_t>> comp;   // spans of consecutive still-held blobs, merged
+    uint64_t span = 0;
+    bool open = false;
+    int64_t dropped = 0;
+    for (int64_t l = 0; l < n_layers; ++l) {
+        for (int64_t e = 0; e < n_expert_; ++e) {
+            const size_t i = (size_t) (l * n_expert_ + e);
+            const uint64_t off = arena_off(l, e);
+            if (i < unfilled_flag_.size() && unfilled_flag_[i] != 0) {
+                ++dropped;
+                if (open) { comp.emplace_back(span, off > span ? off - span : 0); open = false; }
+            } else if (!open) {
+                span = off;
+                open = true;
+            }
+        }
+    }
+    if (open && arena_capacity_ > span) comp.emplace_back(span, arena_capacity_ - span);
+    // lock_rest = false: the registration itself pins what it covers (the GPU's alias needs the
+    // pages resident), and the dropped pairs' pages are gone on purpose - a working-set lock over
+    // the holes would fault them back in as zero pages.  Run BEFORE the drop instead (V4-r2), it
+    // is what made MADV_DONTNEED EINVAL on every held pair: this box allows unlimited mlock.  The
+    // only unlocked leftovers are the shared edge pages (~a page per range boundary), which no DMA
+    // touches and the kernel keeps absent pressure.
+    const uint64_t got = a->register_after_fill(comp, false);
+    apply_registration();
+    std::fprintf(stderr, "strata generate: --expert-helper-ram-relief: registered what stayed behind the helper's "
+                         "%llu pairs (%lld dropped, %zu range(s), %.2f GiB)\n",
+                 (unsigned long long) held.size(), (long long) dropped, comp.size(), (double) got / 1073741824.0);
+}
+
+FileExpertSource* ArenaExpertSource::file_source() const {
+    if (file_ == nullptr) {
+        auto f = std::make_unique<FileExpertSource>();
+        if (!gguf_.empty()) f->set_gguf(gguf_);
+        std::string err;
+        if (!f->open(pack_dir_, blobs_ / (n_expert_ > 0 ? n_expert_ : 1), n_expert_, err)) {
+            static std::atomic<bool> said{false};
+            if (!said.exchange(true))
+                std::fprintf(stderr, "strata: expert arena: the pack files could not be opened for the dropped "
+                                     "experts (%s); a window that asks for one fails by name\n",
+                             err.c_str());
+            return nullptr;
+        }
+        file_ = std::move(f);
+    }
+    return file_.get();
+}
+
+void ArenaExpertSource::refill_unfilled() {
+    if (base_ == nullptr || unfilled_.load(std::memory_order_relaxed) <= 0) return;
+    bool expect = false;
+    if (!refill_running_.compare_exchange_strong(expect, true)) return;   // one refill in flight
+    if (refill_.joinable()) refill_.join();   // a second release after a finished refill
+    refill_ = std::thread([this] { refill_run(); });
+}
+
+void ArenaExpertSource::refill_run() {
+    if (ram_relief_) {
+        // W1 + complement registration: re-read bytes into addresses the registration does not
+        // cover would put pairs back in serving with no DMA-legal address (the V4-r2 failure in
+        // reverse), and re-registering at runtime would rebuild alias tables under live readers.
+        // The dropped pairs stay file-served (transient) until the next boot: the documented
+        // helper-loss degrade - slower, correct.
+        std::fprintf(stderr, "strata: expert arena: the helper's residency is released; its %lld dropped experts "
+                             "stay file-served until restart (--expert-helper-ram-relief)\n",
+                     (long long) unfilled_.load(std::memory_order_relaxed));
+        refill_running_.store(false);
+        return;
+    }
+    const int64_t asked = unfilled_.load(std::memory_order_relaxed);
+    const auto t0 = std::chrono::steady_clock::now();
+    std::fprintf(stderr, "strata: expert arena: the helper's residency is released; re-reading its %lld dropped "
+                         "experts from the pack files in the background\n",
+                 (long long) asked);
+    const auto& lay = strata::kernels::cpu::expert_layout();
+    int64_t done = 0;
+    uint64_t bytes = 0;
+    for (size_t idx = 0; idx < unfilled_flag_.size(); ++idx) {
+        if (unfilled_flag_[idx] == 0) continue;
+        const int64_t l = (int64_t) (idx / (uint64_t) n_expert_), e = (int64_t) (idx % (uint64_t) n_expert_);
+        std::lock_guard<std::mutex> lk(file_mu_);
+        FileExpertSource* f = file_source();
+        if (f == nullptr) break;   // every later read of a dropped pair fails by name, as it does now
+        uint8_t* dst = (uint8_t*) base_ + arena_off(l, e);
+        if (!f->copy_blob(l, e, dst)) continue;   // stays dropped: blob() re-reads it from the files on demand
+        unfilled_flag_[idx] = 0;   // the bytes are written before the flag clears (this thread holds the lock)
+        ++done;
+        bytes += lay.blob_bytes(l);
+    }
+    unfilled_.fetch_sub(done, std::memory_order_relaxed);
+    unfilled_bytes_ = unfilled_bytes_ > bytes ? unfilled_bytes_ - bytes : 0;
+    set_helper_residency_release_hook(nullptr);   // one shot: nothing listens once the arena is whole
+    std::fprintf(stderr, "strata: expert arena: re-read %lld of %lld dropped experts (%.2f GiB, %.1f s); the CPU "
+                         "serves their rows from the arena again\n",
+                 (long long) done, (long long) asked, (double) bytes / 1073741824.0,
+                 std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+    refill_running_.store(false);
+}
+
+// STRATA_WINDOW_POPULATE=1 (opt-in): the per-pair inverse of set_unfilled for the dropped pairs a window
+// read.  Per pair: read the bytes from the pack files into a staging buffer, register the pair's whole-page
+// range (V4-r2: a pair that is neither dropped nor registered has no DMA-legal address; the outward page
+// rounding follows register_after_fill's V4-r3 rule - the shared edge pages' kept bytes must be DMA-able),
+// take its device alias, INSERT the range into the sorted pin tables, write the bytes, clear the flag.
+// The caller runs it on the request's serial path at the request's end (the generate.cpp gate): the sole
+// reader of pin_start_/pin_end_/pin_dev_/layer_pcie_ at that point, the same single-thread rule
+// apply_registration documents.  A driver refusal leaves the pair dropped: today's file-served degrade.
+int64_t ArenaExpertSource::refill_recorded_pairs() {
+    if (base_ == nullptr || !ram_relief_ || !ranges_ || arena_ == nullptr) return 0;
+    if (unfilled_.load(std::memory_order_relaxed) <= 0) return 0;
+    if (refill_running_.load(std::memory_order_relaxed)) return 0;   // the bulk refill owns the flags
+    std::vector<std::pair<int32_t, int32_t>> todo;
+    todo.swap(dropped_reads_);
+    dropped_reads_seen_.clear();   // the dedup map swaps empty with the vector: the next cycle records again
+    if (todo.empty()) return 0;
+    PinnedArena* a = static_cast<PinnedArena*>(arena_);
+    const auto& lay = strata::kernels::cpu::expert_layout();
+    const uint64_t kPage = 4096;
+    int64_t done = 0;
+    uint64_t bytes = 0;
+    for (const auto& [l, e] : todo) {
+        if (l < 0 || e < 0 || e >= n_expert_) continue;
+        const size_t idx = (size_t) (l * n_expert_ + e);
+        if (idx >= unfilled_flag_.size() || unfilled_flag_[idx] == 0) continue;   // already whole
+        const uint64_t off = arena_off(l, e);
+        const uint64_t end = off + lay.blob_bytes(l);
+        const uint64_t lo = off & ~(uint64_t) 4095;                              // outward, as register_after_fill
+        const uint64_t hi = std::min<uint64_t>((end + kPage - 1) & ~(uint64_t) 4095, arena_capacity_);
+        if (hi <= lo) continue;
+        std::vector<uint8_t> stage;
+        {   // the pack files first (file_mu_ held): a private staging copy, the arena stays untouched
+            std::lock_guard<std::mutex> lk(file_mu_);
+            FileExpertSource* f = file_source();
+            if (f == nullptr) break;   // every later read of a dropped pair fails by name, as it does now
+            stage.assign((size_t) lay.blob_bytes(l), 0);
+            if (!f->copy_blob(l, e, stage.data())) continue;   // stays dropped: blob() re-reads it on demand
+        }
+        void* dp = nullptr;
+        if (cudaHostRegister((uint8_t*) base_ + (size_t) lo, (size_t) (hi - lo),
+                             cudaHostRegisterPortable | cudaHostRegisterMapped) != cudaSuccess) {
+            (void) cudaGetLastError();   // the driver refused: the pair stays dropped, today's degrade
+            continue;
+        }
+        if (cudaHostGetDevicePointer(&dp, (uint8_t*) base_ + (size_t) lo, 0) != cudaSuccess || dp == nullptr) {
+            (void) cudaGetLastError();
+            continue;   // the pair stays dropped (the flag still refuses every DMA use of its address)
+        }
+        // insert the range into the sorted tables (the gate: the request's serial path is the only reader)
+        size_t pos = std::upper_bound(pin_start_.begin(), pin_start_.end(), lo) - pin_start_.begin();
+        pin_start_.insert(pin_start_.begin() + (long) pos, lo);
+        pin_end_.insert(pin_end_.begin() + (long) pos, hi);
+        pin_dev_.insert(pin_dev_.begin() + (long) pos, (const uint8_t*) dp);
+        a->pin_ranges.insert(a->pin_ranges.begin() + (long) pos, std::make_pair(lo, hi - lo));
+        a->registered_bytes += hi - lo;
+        std::memcpy((uint8_t*) base_ + (size_t) off, stage.data(), (size_t) lay.blob_bytes(l));
+        {   // clear the flag with the same lock blob()/pinned() re-check under (refill_run's rule)
+            std::lock_guard<std::mutex> lk(file_mu_);
+            unfilled_flag_[idx] = 0;
+        }
+        unfilled_.fetch_sub(1, std::memory_order_relaxed);
+        ++done;
+        bytes += lay.blob_bytes(l);
+    }
+    if (done > 0) {   // pcie_layer's answers follow the registered ranges
+        for (size_t l = 0; l < layer_pcie_.size(); ++l)
+            for (int64_t e = 0; e < n_expert_ && layer_pcie_[l] == 0; ++e)
+                layer_pcie_[l] = pinned((int64_t) l, e) ? 1 : 0;
+        std::fprintf(stderr, "strata: expert arena: STRATA_WINDOW_POPULATE: re-read %lld of %lld window-read dropped "
+                             "experts from the pack files (%.2f MiB, %lld ranges registered); their refills take the "
+                             "arena path from now on\n", (long long) done, (long long) todo.size(),
+                      (double) bytes / 1048576.0, (long long) pin_start_.size());
+    }
+    return done;
+}
+
+const uint8_t* ArenaExpertSource::blob_stable(int64_t layer, int64_t expert) {
+    if (unfilled_.load(std::memory_order_relaxed) > 0 && unfilled_at(layer, expert)) {   // W1a: lock-free pre-check (see blob())
+        std::lock_guard<std::mutex> lk(file_mu_);
+        if (unfilled_at(layer, expert)) return nullptr;   // no stable blob: the pages are gone
+    }
+    return blob(layer, expert);
+}
+
+bool ArenaExpertSource::transient(int64_t layer, int64_t expert) const {
+    if (unfilled_.load(std::memory_order_relaxed) <= 0) return false;
+    if (!unfilled_at(layer, expert)) return false;   // W1a: lock-free pre-check (see blob()); resident = not transient
+    std::lock_guard<std::mutex> lk(file_mu_);
+    return unfilled_at(layer, expert);
+}
+
+bool ArenaExpertSource::copy_blob(int64_t layer, int64_t expert, uint8_t* dst) {
+    if (dst == nullptr) return false;
+    if (unfilled_.load(std::memory_order_relaxed) > 0 && unfilled_at(layer, expert)) {   // W1a: lock-free pre-check (see blob())
+        std::lock_guard<std::mutex> lk(file_mu_);
+        if (unfilled_at(layer, expert)) {
+            FileExpertSource* f = file_source();
+            return f != nullptr && f->copy_blob(layer, expert, dst);   // the files, straight into the caller's buffer
+        }
+    }
+    return ExpertSource::copy_blob(layer, expert, dst);
+}
+
+void ArenaExpertSource::note_async_read(const uint8_t* blob, void* stream) {
+    std::lock_guard<std::mutex> lk(file_mu_);
+    if (file_) file_->note_async_read(blob, stream);   // a staged dropped-pair blob: its copy is fenced by the file source
+}
+
+void ArenaExpertSource::begin_layer(int64_t layer, const int32_t* ids, int64_t k) {
+    // W1b (TG fix): forward only the ids the file source can serve - a pair that is still in the
+    // arena is blob()'d from RAM and must never reach the file machinery, whose prefetch would
+    // read its pack range from disk for nothing (V4-r8 measured ~40 GB of such reads per drive:
+    // every warmed/routed resident id was being WILLNEED'd/io-enqueued because this file source
+    // has no complement RAM copy to skip against).  The lock-free bitmap check is the same
+    // boot-published invariant as blob()'s (W1a).
+    if (unfilled_.load(std::memory_order_relaxed) <= 0) return;
+    std::vector<int32_t> dropped;
+    dropped.reserve((size_t) std::min<int64_t>(k, 256));
+    for (int64_t i = 0; i < k; ++i)
+        if (ids[i] >= 0 && unfilled_at(layer, ids[i])) dropped.push_back(ids[i]);
+    if (dropped.empty()) return;
+    std::lock_guard<std::mutex> lk(file_mu_);
+    if (file_) file_->begin_layer(layer, dropped.data(), (int64_t) dropped.size());   // ages the staged buffers the dropped pairs came from
+}
+
+void ArenaExpertSource::prefetch(int64_t layer, const int64_t* experts, int64_t n) {
+    if (unfilled_.load(std::memory_order_relaxed) <= 0) return;
+    std::vector<int64_t> dropped;   // W1b: dropped-only forward (see begin_layer)
+    dropped.reserve((size_t) std::min<int64_t>(n, 256));
+    for (int64_t i = 0; i < n; ++i)
+        if (experts[i] >= 0 && unfilled_at(layer, experts[i])) dropped.push_back(experts[i]);
+    if (dropped.empty()) return;
+    std::lock_guard<std::mutex> lk(file_mu_);
+    if (file_) file_->prefetch(layer, dropped.data(), (int64_t) dropped.size());
+}
+
+void ArenaExpertSource::warm(int64_t layer, const int64_t* experts, int64_t n) {
+    if (unfilled_.load(std::memory_order_relaxed) <= 0) return;
+    std::vector<int64_t> dropped;   // W1b: dropped-only forward (see begin_layer)
+    dropped.reserve((size_t) std::min<int64_t>(n, 256));
+    for (int64_t i = 0; i < n; ++i)
+        if (experts[i] >= 0 && unfilled_at(layer, experts[i])) dropped.push_back(experts[i]);
+    if (dropped.empty()) return;
+    std::lock_guard<std::mutex> lk(file_mu_);
+    if (file_) file_->warm(layer, dropped.data(), (int64_t) dropped.size());
 }
 
 }  // namespace strata::core

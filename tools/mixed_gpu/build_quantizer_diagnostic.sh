@@ -28,7 +28,7 @@ common=(-DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_CUDA=ON -DSTRATA_NATIVE_EXPER
   cmake -S . -B "$HIP" "${common[@]}" -DSTRATA_HIP_GFX906=ON \
     -DSTRATA_P2_DIAGNOSTICS=ON -DSTRATA_BUILD_EXPERT_HELPER=OFF \
     -DCMAKE_HIP_COMPILER=/opt/rocm-6.1.0/llvm/bin/clang++ -DCMAKE_HIP_ARCHITECTURES=gfx906 \
-    '-DCMAKE_PREFIX_PATH=${STRATA_ROCM_ROOT:-/home/user/rocm-gfx906-xnack};/opt/rocm-6.1.0'
+    -"-DCMAKE_PREFIX_PATH=${STRATA_ROCM_ROOT:-/home/user/rocm-gfx906-xnack};/opt/rocm-6.1.0"
   cmake --build "$HIP" --target p2_measure_test p2_measure_hip_reference -j 11
   ctest --test-dir "$HIP" -R '^p2_measure_test$' --no-tests=error --output-on-failure
   printf '\n=== CUDA DIAGNOSTIC BUILD (NO ENGINE/HELPER TARGET) ===\n'

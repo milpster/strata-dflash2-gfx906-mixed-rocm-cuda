@@ -1,0 +1,82 @@
+{
+ "probe": {
+  "tag": "probe",
+  "wall": 21.886569261550903,
+  "usage": {
+   "prompt_tokens": 214,
+   "completion_tokens": 247,
+   "total_tokens": 461,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "text": "Speculative decoding works by having a small draft model propose a sequence of tokens, then the target model verifies them in parallel. Each proposed token x is accepted with probability min(1, p(x)/q(x)), where p is the target model's probability and q is the draft model's. If a token is rejected, the next token is drawn from the adjusted distribution (p(x) \u2212 q(x))\u207a, normalized. This is exactly the classical rejection sampling procedure, which guarantees that every token in the final output is drawn from p(x) \u2014 the target model's true distribution \u2014 regardless of how the draft model behaves."
+ },
+ "pp16384": {
+  "tag": "pp16384",
+  "wall": 135.39560556411743,
+  "usage": {
+   "prompt_tokens": 18233,
+   "completion_tokens": 8,
+   "total_tokens": 18241,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "text": ""
+ },
+ "tg1024": [
+  {
+   "tag": "tg1024.0",
+   "wall": 98.50840353965759,
+   "usage": {
+    "prompt_tokens": 225,
+    "completion_tokens": 1024,
+    "total_tokens": 1249,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "text": "**Diary \u2014 2026-01-14 \u2014 Porting the CUDA engine to HIP on gfx906**\n\nToday I moved the core compute engine from CUDA to HIP targeting `gfx906` (Vega 10 / MI50 class). The goal was not a full rewrite, just enough to get the existing CUDA-style kernels running under ROCm with predictable behavior.\n\n**Environment**\n\n- ROCm 6.x\n- Target: `gfx906`\n- Compiler: `hipcc`\n- Device: AMD MI50 / Vega 10\n- Build flags:\n\n```bash\nhipcc -O3 -march=gfx906 -std=c++17 \\\n  -Iinclude -Isrc \\\n  -o engine_hip src/engine_hip.cpp\n```\n\nFor the first pass I used `hipify-perl` to get a rough HIP skeleton, then cleaned it by hand. The automatic translation was useful for boilerplate, not for semantics.\n\n**What translated cleanly**\n\nMost of the CUDA runtime calls mapped directly:\n\n```cpp\ncudaMalloc      -> hipMalloc\ncudaFree        -> hipFree\ncudaMemcpy      -> hipMemcpy\ncudaMemcpyAsync -> hipMemcpyAsync\ncudaMemsetAsync -> hipMemsetAsync\ncudaStream_t    -> hipStream_t\ncudaEvent_t     -> hipEvent_t\ncudaDeviceSynchronize -> hipDeviceSynchronize\n```\n\nKernel launches were mostly mechanical:\n\n```cpp\n__global__ void kernel(...)\n{\n    ...\n}\n\nkernel<<<grid, block, sharedBytes, stream>>>(...);\n```\n\nbecame:\n\n```cpp\n__global__ void kernel(...)\n{\n    ...\n}\n\nhipLaunchKernelGGL(kernel, grid, block, sharedBytes, stream, ...);\n```\n\nI kept the CUDA-style launch syntax in a few places by defining a small macro:\n\n```cpp\n#define LAUNCH_KERNEL(kernel, grid, block, shared, stream, ...) \\\n    hipLaunchKernelGGL(kernel, grid, block, shared, stream, __VA_ARGS__)\n```\n\nThat made the diff smaller and easier to review.\n\n**First real problem: warp semantics**\n\nThe CUDA engine used warp-level primitives heavily:\n\n```cpp\nunsigned mask = __activemask();\nfloat v"
+  },
+  {
+   "tag": "tg1024.1",
+   "wall": 41.032509088516235,
+   "usage": {
+    "prompt_tokens": 225,
+    "completion_tokens": 1024,
+    "total_tokens": 1249,
+    "prompt_tokens_details": {
+     "cached_tokens": 220
+    }
+   },
+   "text": "**Diary \u2014 2026-03-14 \u2014 Porting the CUDA engine to HIP on gfx906**\n\nToday I finished the first end-to-end run of the CUDA engine under HIP on a Vega 10 / MI50-class GPU, `gfx906`. The engine is a mixed workload: a dense linear-algebra core, a sparse graph traversal kernel, and a small RNG-driven Monte Carlo loop. The CUDA version had been tuned for `sm_70`/`sm_75`, so the port was not a simple `hipify-perl` pass.\n\nI started from the CUDA tree:\n\n```text\nsrc/cuda/engine.cu\nsrc/cuda/kernels.cu\nsrc/cuda/blas_bridge.cu\nsrc/cuda/rng_bridge.cu\n```\n\nI created a HIP tree:\n\n```text\nsrc/hip/engine.hip.cpp\nsrc/hip/kernels.hip.cpp\nsrc/hip/blas_bridge.hip.cpp\nsrc/hip/rng_bridge.hip.cpp\n```\n\nThe first build command was:\n\n```bash\nhipcc -O3 -std=c++17 -march=gfx906 \\\n  -Iinclude -Isrc/hip \\\n  src/hip/engine.hip.cpp \\\n  src/hip/kernels.hip.cpp \\\n  src/hip/blas_bridge.hip.cpp \\\n  src/hip/rng_bridge.hip.cpp \\\n  -o build/engine_hip\n```\n\nThe initial compile failed in `kernels.hip.cpp` because of CUDA warp intrinsics. The CUDA code used:\n\n```cpp\n__shfl_sync(0xffffffff, value, lane);\n__ballot_sync(0xffffffff, predicate);\n__syncwarp();\n```\n\nOn `gfx906`, the hardware wavefront is 64 lanes, not 32. `hipcc` reports:\n\n```text\nwarpSize = 64\n```\n\nSo the CUDA 32-lane masks were wrong. I replaced the 32-lane shuffle pattern with a 64-lane pattern. For example:\n\n```cpp\n// CUDA\nunsigned mask = 0xffffffffu;\nfloat v = __shfl_sync(mask, x, lane);\n```\n\nbecame:\n\n```"
+  },
+  {
+   "tag": "tg1024.2",
+   "wall": 38.96334171295166,
+   "usage": {
+    "prompt_tokens": 225,
+    "completion_tokens": 1024,
+    "total_tokens": 1249,
+    "prompt_tokens_details": {
+     "cached_tokens": 220
+    }
+   },
+   "text": "**Diary \u2014 Day 12: Porting the CUDA engine to HIP on gfx906**\n\nToday I moved the core compute engine from CUDA to HIP on an AMD gfx906 device (Vega 10 / MI50/MI60 class). The goal was not a toy kernel, but the real engine: tiled matrix multiply, fused epilogue, stream/event pipeline, and host-side memory management.\n\n### 1. Device inventory\n\nFirst, confirm the target:\n\n```bash\nrocminfo | grep -A 20 \"gfx906\"\n```\n\nRelevant facts:\n\n- Architecture: `gfx906`\n- Compute units: 64\n- Wavefront size: 64\n- Shared memory per block: 64 KB\n- Registers per thread: 255\n- Supported ISA: GCN 9.0\n- FP64 support: present, but throughput is much lower than FP32/FP16\n- No native CUDA `__nv_bfloat16` equivalent; use `__half` for FP16\n\nThe engine originally assumed:\n\n- `cudaStream_t`\n- `cudaEvent_t`\n- `cudaMalloc`\n- `cudaMemcpyAsync`\n- `__launch_bounds__`\n- `__syncthreads()`\n- `__shfl_down_sync()`\n- `__ldg()`\n- `__restrict__`\n- `__half`\n- `__half2`\n- `__expf()`\n- `__exp10f()`\n- `__sincosf()`\n- `__fmaf_rn()`\n- `__fmaf_rd()`\n- `__fmaf_ru()`\n- `__fmaf_rz()`\n- `__fmaf_rd()`\n- `__fmaf_ru()`\n- `__fmaf_rz()`\n- `__fmaf_rd()`\n- `__fmaf_ru()`\n- `__fmaf_rz()`\n- `__fmaf_rd()`\n- `__fmaf_ru()`\n- `__fmaf_rz()`\n- `__fmaf_rd()`\n- `__fmaf_ru()`\n- `__fmaf_rz()`\n- `__fmaf_rd()`\n- `__fmaf_ru"
+  }
+ ],
+ "infill80k": {
+  "tag": "infill80k",
+  "wall": 395.3131539821625,
+  "usage": {
+   "prompt_tokens": 87879,
+   "completion_tokens": 155,
+   "total_tokens": 88034,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "text": "watch memory quick the through dog quick."
+ }
+}

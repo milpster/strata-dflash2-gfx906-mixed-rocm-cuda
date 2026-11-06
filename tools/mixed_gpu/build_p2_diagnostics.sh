@@ -24,7 +24,7 @@ export PATH=/usr/local/cuda/bin:/opt/rocm-6.1.0/bin:$PATH
   sha256sum -c build-mixed-gpu/nmse-tooling1/parent-build1-protected-before.sha256
   printf '\n=== DEFAULT-OFF HIP BUILD ===\n'
   cmake -S . -B "$HIP" -DSTRATA_P2_DIAGNOSTICS=OFF \
-    '-DCMAKE_PREFIX_PATH=${STRATA_ROCM_ROOT:-/home/user/rocm-gfx906-xnack};/opt/rocm-6.1.0' \
+    -"-DCMAKE_PREFIX_PATH=${STRATA_ROCM_ROOT:-/home/user/rocm-gfx906-xnack};/opt/rocm-6.1.0" \
     -DFETCHCONTENT_FULLY_DISCONNECTED=ON -DFETCHCONTENT_UPDATES_DISCONNECTED=ON
   cmake --build "$HIP" -j 11
   printf '\n=== DEFAULT CUDA BUILD (INCLUDING HARNESS) ===\n'
@@ -35,7 +35,7 @@ export PATH=/usr/local/cuda/bin:/opt/rocm-6.1.0/bin:$PATH
   sha256sum -c build-mixed-gpu/nmse-tooling2/default-before-affordance.sha256
   printf '\n=== OPT-IN GFX906 BUILD ===\n'
   cmake -S . -B "$HIP" -DSTRATA_P2_DIAGNOSTICS=ON \
-    '-DCMAKE_PREFIX_PATH=${STRATA_ROCM_ROOT:-/home/user/rocm-gfx906-xnack};/opt/rocm-6.1.0'
+    -"-DCMAKE_PREFIX_PATH=${STRATA_ROCM_ROOT:-/home/user/rocm-gfx906-xnack};/opt/rocm-6.1.0"
   cmake --build "$HIP" -j 11
   printf '\n=== CPU HELPER/REPORT TESTS ===\n'
   for tree in "$HIP" "$CUDA"; do
@@ -51,7 +51,7 @@ export PATH=/usr/local/cuda/bin:/opt/rocm-6.1.0/bin:$PATH
   grep -F 'libamdhip64.so.6 => /opt/rocm-6.1.0/' "$EV/reference-libs.log"
   ldd "$HIP/strata" | tee "$EV/engine-libs.log"
   if grep -F 'not found' "$EV/engine-libs.log"; then exit 1; fi
-  grep -F 'librocblas.so.4 => ${STRATA_ROCM_ROOT:-/home/user/rocm-gfx906-xnack}/lib/' "$EV/engine-libs.log"
+  grep -F "librocblas.so.4 => ${STRATA_ROCM_ROOT:-/home/user/rocm-gfx906-xnack}/lib/" "$EV/engine-libs.log"
   grep -F 'libhipblas.so.2 => /opt/rocm-6.1.0/' "$EV/engine-libs.log"
   printf '\n=== FINAL INTEGRITY ===\n'
   sha256sum -c "$EV/sources-before-build.sha256"

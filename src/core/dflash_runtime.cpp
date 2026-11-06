@@ -158,30 +158,9 @@ struct DFlashSection {
 
 /// The GPU half of the sections opened since the last drain: after a full sync every recorded
 /// event pair is complete, so fold the elapsed times in and recycle the pool.
-void df_timing_drain() {
-    DFlashTiming& t = df_timing();
-    if (!t.on || !t.inited) return;
-    for (const auto& [name, idx] : t.open) {
-        float ms = 0;
-        if (cudaEventElapsedTime(&ms, t.ev[idx], t.ev[idx + 1]) == cudaSuccess) t.acc[name].gpu_ms += ms;
-    }
-    t.open.clear();
-    t.ev_used = 0;
-}
-
-void df_timing_dump() {
-    DFlashTiming& t = df_timing();
-    if (!t.on) return;
-    std::fprintf(stderr, "dflash timing (STRATA_DF_EVENTS=1), section totals: %18s %10s %10s %8s\n",
-                 "gpu ms", "wall ms", "gpu/wall", "calls");
-    double gpu_sum = 0, wall_sum = 0;
-    for (auto& [name, a] : t.acc) { gpu_sum += a.gpu_ms; wall_sum += a.wall_ms; }
-    for (auto& [name, a] : t.acc) {
-        std::fprintf(stderr, "  %-28s %10.2f %10.2f %8.3f %8lld\n", name.c_str(), a.gpu_ms, a.wall_ms,
-                     a.wall_ms > 0 ? a.gpu_ms / a.wall_ms : 0.0, (long long) a.n);
-    }
-    std::fprintf(stderr, "  %-28s %10.2f %10.2f\n", "SUM (not decode wall)", gpu_sum, wall_sum);
-}
+/// NOTE: drain/dump are defined BELOW at strata::core scope (after the anonymous namespace
+/// closes) so generate.cpp's per-request boundary can call them; everything else here stays
+/// file-local.
 
 cudaStream_t& DFlashSection::df_stream() {
     static cudaStream_t s = nullptr;   // one drafter per process; upload() sets it
@@ -209,6 +188,50 @@ bool dflash_mapped(int64_t n, void** host, void** dev) {
 }
 
 }  // namespace
+
+// STRATA_DF_EVENTS=1: drain+dump moved out of the anonymous namespace above (same external-
+// linkage reasoning as deferral_context below) - generate.cpp's per-request boundary calls
+// them so the cumulative section table survives hard stops; DFlashDrafter::release() only
+// ever ran on upload failures.
+void df_timing_drain() {
+    DFlashTiming& t = df_timing();
+    if (!t.on || !t.inited) return;
+    for (const auto& [name, idx] : t.open) {
+        float ms = 0;
+        if (cudaEventElapsedTime(&ms, t.ev[idx], t.ev[idx + 1]) == cudaSuccess) t.acc[name].gpu_ms += ms;
+    }
+    t.open.clear();
+    t.ev_used = 0;
+}
+
+void df_timing_dump() {
+    DFlashTiming& t = df_timing();
+    if (!t.on) return;
+    std::fprintf(stderr, "dflash timing (STRATA_DF_EVENTS=1), section totals: %18s %10s %10s %8s\n",
+                 "gpu ms", "wall ms", "gpu/wall", "calls");
+    double gpu_sum = 0, wall_sum = 0;
+    for (auto& [name, a] : t.acc) { gpu_sum += a.gpu_ms; wall_sum += a.wall_ms; }
+    for (auto& [name, a] : t.acc) {
+        std::fprintf(stderr, "  %-28s %10.2f %10.2f %8.3f %8lld\n", name.c_str(), a.gpu_ms, a.wall_ms,
+                     a.wall_ms > 0 ? a.gpu_ms / a.wall_ms : 0.0, (long long) a.n);
+    }
+    std::fprintf(stderr, "  %-28s %10.2f %10.2f\n", "SUM (not decode wall)", gpu_sum, wall_sum);
+}
+
+// F1 (STRATA_DF_DEFER_CTX, TAP_OVERLAP_DESIGN §1/§2 changes 1-2): the prompt path defers the
+// consumer's fusion drain - add_context keeps its launches enqueued on cs_ in the same order
+// and skips the full stream sync at its tail; the drain lands on the next propose()/idle()
+// and on the collector's D2D barrier.  Read ONCE (like STRATA_DF_EVENTS at upload); the
+// flag-off path is today's code.  Declared in include/strata/core/dflash.hpp.  (Build fix:
+// defined at strata::core scope, NOT in the anonymous namespace above - the collector and
+// the serve wiring call it through the header declaration, which needs external linkage.)
+bool deferral_context() {
+    static const bool on = [] {
+        const char* v = std::getenv("STRATA_DF_DEFER_CTX");
+        return v && v[0] == '1';
+    }();
+    return on;
+}
 
 uint64_t DFlashDrafter::vram_bytes() const {
     uint64_t bytes = vram_;
@@ -263,6 +286,7 @@ void DFlashDrafter::clear_graphs() {
 
 void DFlashDrafter::release() {
     reference_mode_ = false;
+    deferred_ = false;   // F1: a partial upload never leaves a deferred drain behind
     if (device_ >= 0) cudaSetDevice(device_);
     if (cs_) cudaStreamSynchronize(cs_);
     taps_.disable();   // frees the cross-stage planes + pinned staging (stream drained above)
@@ -434,8 +458,17 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
     // physical pools shrink. The ring pools are fixed (no elastic/VMM) and allocated before the
     // expert cache is sized. Legacy and full-attention geometries keep ring_state_.ring = 0 and their old
     // full-capacity allocation untouched.
+    // STRATA_DF_RING_MULT (opt-in, default 1): scale the SWA draft ring's physical cells so deep
+    // segment resumes stay retained - the stale-window guard otherwise re-reads the whole context
+    // through the drafter (generate.cpp's "no longer retains a rewind" path). 1 = stock geometry.
+    static const int64_t df_ring_mult = [] {
+        const char* v = std::getenv("STRATA_DF_RING_MULT");
+        const int64_t m = v != nullptr ? std::atoll(v) : 1;
+        return m < 1 ? 1 : (m > 1024 ? 1024 : m);
+    }();
     ring_state_.ring = dg.is_dflash2() && dg.head_dim == 128 && dg.sliding_window > 0
-        ? dflash_ring_capacity(dg.sliding_window, 8, (int64_t) strata::core::shapes_of(pool_g_).page_size)
+        ? dflash_ring_capacity(dg.sliding_window * df_ring_mult, 8,
+                               (int64_t) strata::core::shapes_of(pool_g_).page_size)
         : 0;
     ring_state_.window = ring_state_.ring ? dg.sliding_window : 0;
     ring_state_.max_rows = 8;      // the widest block: proposals + anchor (propose guards K <= max_rows_)
@@ -757,7 +790,7 @@ const void* DFlashDrafter::head_weights() const {
 /// One batch of up to 8 rows: ctx = hidden_norm(fc(taps)) into `ctx_`, then each draft layer's
 /// K/V projected, k-normed, roped and appended at [pos0, pos0+rows).
 bool DFlashDrafter::add_context(const uint16_t* taps, int n_taps, int64_t stride_rows, int64_t pos0, int64_t rows,
-                                std::string& err) {
+                                std::string& err, bool sync_context) {
     if (!cs_ || st_.empty()) { err = "dflash: upload before adding context"; return false; }
     const OnDevice on_df(device_);   // kernels launch on cs_'s device (MTP pattern)
     if (std::getenv("STRATA_DF_DBG")) std::fprintf(stderr, "dflash dbg: add_context rows=%lld pos0=%lld\n",
@@ -795,9 +828,16 @@ bool DFlashDrafter::add_context(const uint16_t* taps, int n_taps, int64_t stride
     // The prefill callback lends its tap buffer only until this call returns. Its
     // producer runs on another stream and can reuse/free the buffer immediately.
     // Keep this ownership boundary even though fusion no longer stages on the host.
-    if (cudaStreamSynchronize(cs_) != cudaSuccess) {
-        err = "dflash: prompt context consumption failed";
-        return false;
+    // F1 (STRATA_DF_DEFER_CTX, §2 change 2): a deferring prompt call keeps every launch
+    // enqueued on cs_ in the same order and skips this host drain; deferred_ routes the
+    // drain to the next propose()/idle() (the same cudaStreamSynchronize(cs_), the same
+    // error text).  The host-side ring checks above stay synchronous in both modes.
+    if (deferral_context() && !sync_context && cs_ && rows > 0) deferred_ = true;
+    if (sync_context) {
+        if (cudaStreamSynchronize(cs_) != cudaSuccess) {
+            err = "dflash: prompt context consumption failed";
+            return false;
+        }
     }
     ring_state_.note_append(pos0, rows);
     if (cycle_ == 0 && parity_dir_[0]) {
@@ -1049,6 +1089,17 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
         err = "dflash: upload and bind a head and embeddings before proposing"; return false;
     }
     const OnDevice on_df(device_);   // the whole block runs on cs_'s device (MTP pattern)
+    // F1 (§2 change 6): one choke point drains a deferred prompt fusion before any launch of
+    // this forward - stream order already puts propose's work after the deferred fusion, so
+    // the flush buys the earlier, identically-texted failure, not correctness.  No deferral:
+    // no stream work, no behavior.
+    if (deferred_) {
+        if (cudaStreamSynchronize(cs_) != cudaSuccess) {
+            err = "dflash: prompt context consumption failed";
+            return false;
+        }
+        deferred_ = false;
+    }
     using namespace strata::kernels;
     const DFlashGeometry& dg = artifact_.geom();
     const int64_t N = dg.hidden, Q = dg.n_head * dg.head_dim, KVW = dg.n_head_kv * dg.head_dim, I = dg.intermediate;

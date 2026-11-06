@@ -1,4 +1,5 @@
 """Tests for the fixed SHA-256 and size of every model file setup downloads (REPO_PINS): every file a choice can
+import os
 download has one, a wrong file is deleted and setup stops, a pinned commit that answers 404 stops the download
 (STRATA_ALLOW_UNPINNED=1 is the tester's opt-out), and an installed model needs no network.  Mocked network - nothing
 is downloaded.
@@ -241,8 +242,13 @@ class InstalledModelsNeedNoNetwork(unittest.TestCase):
         # DFlash2 drafter address, which only `strata drafting fetch` downloads from, behind acquisition.require (refused
         # under STRATA_NO_ACQUIRE, so a start or a server never reaches it). Dropping just those lines from the scan keeps
         # the rule exact for everything else.
+        # strata_control/pictures.py names the host for the picture-reader files that Load fetches when Read pictures is on and the files
+        # are missing: its download calls acquisition.require first (refused under STRATA_NO_ACQUIRE, so a start or a server never reaches it).
         harmless = ('MODEL_CARD_URL = "https://huggingface.co/Qwen/Qwen3.8-Flash-Next"',
-                    'BASE_URL = f"https://huggingface.co/{REPO}/resolve/{REVISION}/"')
+                    'BASE_URL = f"https://huggingface.co/{REPO}/resolve/{REVISION}/"',
+                    'https://huggingface.co/nazeshinjite/Qwen3.8-Flash-Next-DFlash2-GGUF',   # the credit link in drafting.py's comment and drafting_fetch.py's docstring (nothing opens it)
+                    'HF_DEFAULT = "https://huggingface.co"',
+                    'base = (endpoint if endpoint is not None else (os.environ.get("HF_ENDPOINT") or "").strip().rstrip("/") or HF_DEFAULT)')
         found = []
         for folder in ("strata_cli", "serve", "strata_control"):
             for p in (ROOT / folder).rglob("*.py"):

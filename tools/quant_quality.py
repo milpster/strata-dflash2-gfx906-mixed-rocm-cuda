@@ -65,7 +65,7 @@ def cmd_ids(a) -> int:
         segs.append({"name": name, "ids": ids[:a.seg_tokens]})
         print(f"{name}: {len(ids)} tokens, kept {a.seg_tokens}")
     out = pathlib.Path(a.out or (pathlib.Path(a.set) / "set.ids.json"))
-    out.write_text(json.dumps({"version": pathlib.Path(a.set).name, "seg_tokens": a.seg_tokens, "segments": segs}))
+    out.write_text(json.dumps({"version": pathlib.Path(a.set).name, "seg_tokens": a.seg_tokens, "vocab_size": len(toks), "segments": segs}))
     print(f"wrote {out}")
     return 0
 
@@ -100,9 +100,29 @@ def engine_args(cfg: dict, gpu_experts, seg_tokens: int) -> list[str]:
             "--short-read", str(seg_tokens + 64), "--prefill", "512"]
 
 
+def check_ids_vocab(st: dict, cfg: dict, ids_path: str) -> None:
+    """A wrong ids file fails here, loudly: every id must be inside the model's vocabulary (the vocabulary of the config's tokenizer
+    folder when it names one, else the size the ids file recorded when `ids` made it), or the run reads nonsense - the committed
+    data/quant_quality/v1/set.ids.json is tokenized for Qwen (ids up to 248,069), not for DeepSeek's 129,280."""
+    vocab = None
+    tdir = cfg.get("tokenizer")
+    if tdir and (pathlib.Path(tdir) / "vocab.json").is_file():
+        vocab = len(json.loads((pathlib.Path(tdir) / "vocab.json").read_text(encoding="utf-8")))
+    elif st.get("vocab_size"):
+        vocab = int(st["vocab_size"])
+    if not vocab:
+        return
+    for s in st["segments"]:
+        mx = max(s["ids"]) if s["ids"] else -1
+        if mx >= vocab:
+            raise SystemExit(f"{ids_path}: segment '{s['name']}' has token id {mx} >= the model's vocabulary ({vocab}): this ids file was "
+                             f"made with another tokenizer; make one with `quant_quality.py ids --tokenizer <the model's tokenizer folder>`")
+
+
 def cmd_run(a) -> int:
     cfg = json.load(open(a.config, encoding="utf-8-sig"))
     st = json.load(open(a.ids))
+    check_ids_vocab(st, cfg, a.ids)
     out = pathlib.Path(a.out).resolve()
     out.parent.mkdir(parents=True, exist_ok=True)
     if out.exists():
@@ -199,6 +219,9 @@ def cmd_prompt(a) -> int:
     del args[k:k + 2]                      # the default (64): these prompts take the batched prompt path
     k = args.index("--prefill")
     args[k + 1] = "auto"
+    if a.kv:
+        k = args.index("--kv")
+        args[k + 1] = a.kv
     if a.wrap:
         args = a.wrap.split() + args
     errf = open(out / "stderr.txt", "w")
@@ -210,9 +233,10 @@ def cmd_prompt(a) -> int:
             break
     else:
         raise SystemExit(f"the engine ended before READY (exit {p.wait()}); see {out}/stderr.txt")
+    lens = [int(x) for x in a.lens.split(",")] if a.lens else PROMPT_LENS
     index = []
     for s in st["segments"]:
-        for n in PROMPT_LENS:
+        for n in lens:
             p.stdin.write("GEN 1 " + ",".join(map(str, s["ids"][:n])) + "\n")
             p.stdin.flush()
             done = None
@@ -363,6 +387,8 @@ def main() -> int:
     p.add_argument("--gpu-experts", action="store_true")
     p.add_argument("--min-free-gb", type=float, default=16)
     p.add_argument("--wrap")
+    p.add_argument("--kv", help="override the pinned fp16 kv (int8 = prod's mode)")
+    p.add_argument("--lens", help="comma list overriding PROMPT_LENS (e.g. 256,512 for a shallow gate)")
     p = sub.add_parser("compare")
     p.add_argument("ref")
     p.add_argument("runs", nargs="+")

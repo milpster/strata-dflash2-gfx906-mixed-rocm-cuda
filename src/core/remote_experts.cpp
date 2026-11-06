@@ -11,6 +11,7 @@
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/quantize_act.hpp"
 #include "strata/kernels/s2_expert_grouped.hpp"
+#include "strata/kernels/window_limits.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -23,7 +24,7 @@ namespace strata::core {
 namespace {
 constexpr int64_t H = strata::kernels::cpu::H;
 constexpr int64_t FF = strata::kernels::cpu::FF;
-constexpr int64_t CAP = strata::kernels::cpu::MAXT * 10;
+constexpr int64_t CAP = strata::kernels::kWindowMaxT * 10;   // a window's rows x top-10
 
 // Small enough to copy as one pinned buffer per layer. The kernels read the
 // individual arrays through pointers into the same device allocation.
@@ -101,8 +102,31 @@ bool RemoteExperts::preflight(int device, double& free_gib, std::string& err) {
     return true;
 }
 
+namespace {
+// W1 (--expert-helper-ram-relief): the one listener, set by a source that dropped the helper's pairs
+// out of the arena.  See set_helper_residency_release_hook() in the header.
+std::mutex g_release_mu;
+std::function<void()> g_release_fn;
+/// Fires the notice on the thread that noticed the loss (a decode thread, at a begin/finish that
+/// failed).  The listener starts its own thread; this call never reads a file.
+void fire_helper_residency_release() {
+    std::function<void()> fn;
+    {
+        std::lock_guard<std::mutex> lk(g_release_mu);
+        fn = g_release_fn;
+    }
+    if (fn) fn();
+}
+}  // namespace
+
+void set_helper_residency_release_hook(std::function<void()> fn) {
+    std::lock_guard<std::mutex> lk(g_release_mu);
+    g_release_fn = std::move(fn);
+}
+
 void RemoteExperts::close() {
     if (proxy_) {   // the proxy tier owns no device resource: close the channel, nothing else
+        const bool had_residency = proxy_resident_ > 0;   // W1: the residency this channel releases
         if (helper_ != nullptr) {
             // keep the evidence: the DONE line's helper= counters must survive the channel's
             // close (r15 printed nothing because the stats died with the client object)
@@ -144,6 +168,7 @@ void RemoteExperts::close() {
         proxy_bytes_ = 0;
         proxy_ms_begin_ = proxy_ms_wait_ = 0;
         proxy_claims_.clear();
+        if (had_residency) fire_helper_residency_release();   // W1: its pairs are the host's job again
     }
     if (device_ < 0) return;
     DeviceScope scope(device_);
@@ -544,6 +569,7 @@ bool RemoteExperts::proxy_begin(int64_t layer, const float* x, const int32_t* id
                 if (rc != expert_helper::kOk) {
                     // The begin-time fallback, verbatim: the window is fully CPU-served, the tier
                     // re-arms at the next request, and nothing failed.
+                    if (proxy_residency_live()) fire_helper_residency_release();   // W1
                     healthy_ = false;
                     disabled_ = true;
                     claims.clear();
@@ -569,6 +595,7 @@ bool RemoteExperts::proxy_begin(int64_t layer, const float* x, const int32_t* id
         // stays EMPTY for the caller's begin contract: the dispatch's kind[] keeps these entries
         // CPU-served, so the CPU computes them right here in the same window (the begin-time
         // fallback), and the tier re-arms at the next request.
+        if (proxy_residency_live()) fire_helper_residency_release();   // W1
         healthy_ = false;
         disabled_ = true;
         claims.clear();
@@ -589,6 +616,7 @@ bool RemoteExperts::proxy_finish(float* out, std::string& err) {
     const int rc = helper_->finish(out, proxy_n_embd_, 0, 10, proxy_claims_, proxy_timeout_ms_, got);
     proxy_ms_wait_ = helper_->ms_wait();
     if (rc != expert_helper::kOk) {
+        if (proxy_residency_live()) fire_helper_residency_release();   // W1
         healthy_ = false;
         disabled_ = true;
         proxy_claims_.clear();   // the dispatch recomputes EXACTLY these rows on the CPU
@@ -615,7 +643,7 @@ int RemoteExperts::begin_prompt(int32_t layer, const ExpertHelperPromptPlan& pla
         // disables the prompt tier for the rest of the request while the window tier keeps serving
         // (and the reverse).  Single channel: the shared latch, exactly as before.
         if (ch == helper2_) { healthy2_ = false; disabled2_ = true; }
-        else { healthy_ = false; disabled_ = true; }
+        else { if (proxy_residency_live()) fire_helper_residency_release(); healthy_ = false; disabled_ = true; }
     }
     return rc;
 }
@@ -628,7 +656,7 @@ int RemoteExperts::finish_prompt(float* out, int64_t n_embd, const std::vector<i
     const int rc = ch->finish_prompt(out, n_embd, claims, timeout_ms, rows);
     if (rc != expert_helper::kOk) {
         if (ch == helper2_) { healthy2_ = false; disabled2_ = true; }
-        else { healthy_ = false; disabled_ = true; }
+        else { if (proxy_residency_live()) fire_helper_residency_release(); healthy_ = false; disabled_ = true; }
         rows = 0;   // the client's whole-or-nothing rule: a violation applies NOTHING
     }
     return rc;
@@ -693,7 +721,7 @@ bool RemoteExperts::begin(int64_t layer, const float* x, const int32_t* ids, int
     struct Timer { double& acc; std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
         ~Timer() { acc += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(); } } timer{ms_begin_};
     const int64_t n = n_tok * k;
-    if (n <= 0 || n > CAP || n_tok > strata::kernels::cpu::MAXT || k != 10 || layer < 0 ||
+    if (n <= 0 || n > CAP || n_tok > strata::kernels::kWindowMaxT || k != 10 || layer < 0 ||
         (size_t) layer >= layers_present_.size() || device_ < 0) {
         err = "CUDA" + std::to_string(device_) + " experts: invalid layer, routing width or window size";
         return false;
@@ -767,8 +795,9 @@ bool RemoteExperts::begin(int64_t layer, const float* x, const int32_t* ids, int
                                                groups_, (int64_t) dst_.size(), d_q8_, d_scratch_, zero_copy_ && !reduce ? z_out_ : d_out_, s);
     } else {
         strata::kernels::quantize_q8_0_scaled(zero_copy_ ? z_x_ : d_x_, d_q8_, d_scales_, n_tok * H, s);
-        strata::kernels::moe_grouped_s2(d_ptr_, d_start_, d_count_, d_dst_, d_tok_,
-                                        groups_, (int64_t) dst_.size(), d_q8_, d_scales_, d_scratch_, zero_copy_ && !reduce ? z_out_ : d_out_, s);
+        strata::kernels::moe_grouped_s2_window(d_ptr_, d_start_, d_count_, d_dst_, d_tok_,
+                                               groups_, (int64_t) dst_.size(), d_q8_, d_scales_, d_scratch_, zero_copy_ && !reduce ? z_out_ : d_out_, s,
+                                               (int) n_tok);
     }
     const uint64_t compact_bytes = (uint64_t) (reduce ? n_tok : dst_.size()) * H * sizeof(float);
     if (reduce) {

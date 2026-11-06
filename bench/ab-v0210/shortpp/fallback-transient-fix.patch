@@ -1,0 +1,91 @@
+diff --git a/src/prefill/prefill.cpp b/src/prefill/prefill.cpp
+index e4d8dbfa..8fa9f552 100644
+--- a/src/prefill/prefill.cpp
++++ b/src/prefill/prefill.cpp
+@@ -1038,6 +1038,8 @@ struct Prefill::Impl {
+     std::vector<uint8_t> hp_nact;
+     std::vector<kernels::cpu::ActQ> hp_actq;
+     std::vector<kernels::cpu::ExpertJobMulti> hp_jobs;
++    uint8_t* hp_blob = nullptr;    // the CPU fallback's blobs for transient pairs: a small pinned ring the
++    size_t hp_blob_n = 0;          // source assembles into (the stager's copy_blob shape), refilled per 4 experts
+     // M6 (STRATA_PREFILL_HELPER_PIPE=1, plan §11): the async claim lane. A claim for layer N+1
+     // cannot be SELECTED before combine N, so exactly one claim is ever in flight - by the
+     // dependency law, not by policy. The lane worker owns every blocking step of the claim
+@@ -1162,6 +1164,7 @@ void Prefill::release() {
+     impl_->up_ring.release();
+     for (float* p : {impl_->cpu_x, impl_->cpu_rows, impl_->cpu_ones})
+         if (p) cudaFreeHost(p);
++    if (impl_->hp_blob) cudaFreeHost(impl_->hp_blob);
+     for (cudaEvent_t e : impl_->cpu_ev)
+         if (e) cudaEventDestroy(e);
+     for (cudaEvent_t e : impl_->cpu_wall)
+@@ -5211,14 +5214,57 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
+                             // exit -11): a 256-row claim gives experts up to 64 pairs, and one job per expert
+                             // overran the 8-entry arrays.  Chunk every expert's pairs into MAXT-sized jobs.
+                             constexpr int hp_chunk = (int) strata::kernels::cpu::MAXT;
++                            // THE BLOB OF EACH CLAIMED EXPERT - the shape every other prefill site uses:
++                            // transient() first (:3094, :4816, :4834), and the source assembles a transient
++                            // pair's bytes into the caller's buffer (copy_blob: the stager's own route for
++                            // CS-T pairs, and for pairs a helper's VRAM cache holds).  blob_stable answers
++                            // nullptr for a transient pair when the stage pool has no slot and its own
++                            // assembly fails (staged_blob, expert_source.cpp:2063-2092) - the claim screened
++                            // at :4029 on an assembly that the pool had recycled by here, so this call's
++                            // null failed the request: a helper channel loss with stage-pool pressure
++                            // returned HTTP 400 in the 2026-11-05 benching.  A non-transient pair with no
++                            // blob is the real loss and fails as it did.
++                            // The ring holds 4 assembled blobs - the stager's shape, sized small: the pool
++                            // call is flushable, so a slot is free again once the jobs reading it have run.
++                            constexpr int hp_ring = 4;
++                            int hp_slot = 0;
+                             for (int32_t e = 0; e < m.g->n_expert; ++e) {
+                                 const std::vector<int32_t>& ps = pairs_of[(size_t) e];
+                                 if (ps.empty()) continue;
++                                const uint8_t* blob = nullptr;
++                                if (m.src->transient(l, e)) {
++                                    const size_t bb = (size_t) lay.blob_bytes(l);
++                                    if (m.hp_blob_n < bb * (size_t) hp_ring) {
++                                        if (m.hp_blob) cudaFreeHost(m.hp_blob);
++                                        m.hp_blob = nullptr;
++                                        m.hp_blob_n = 0;
++                                        if (cudaHostAlloc((void**) &m.hp_blob, bb * (size_t) hp_ring,
++                                                          cudaHostAllocDefault) != cudaSuccess) {
++                                            err = "prefill: cannot allocate the helper fallback's blob ring";
++                                            return false;
++                                        }
++                                        m.hp_blob_n = bb * (size_t) hp_ring;
++                                    }
++                                    if (hp_slot == hp_ring) {   // full: run what is built, every slot is free
++                                        cpu_pool_->run_split_multi_native(cf, m.hp_jobs.data(), (int) m.hp_jobs.size());
++                                        m.hp_jobs.clear();
++                                        hp_slot = 0;
++                                    }
++                                    uint8_t* dst = m.hp_blob + (size_t) hp_slot * bb;
++                                    if (!m.src->copy_blob(l, e, dst)) {
++                                        err = "prefill: the helper fallback could not assemble a blob";
++                                        return false;
++                                    }
++                                    blob = dst;
++                                    ++hp_slot;
++                                } else {
++                                    blob = m.src->blob_stable(l, e);
++                                    if (blob == nullptr) { err = "prefill: the helper fallback lost a blob"; return false; }
++                                }
+                                 for (size_t b = 0; b < ps.size(); b += (size_t) hp_chunk) {
+                                     const size_t bend = std::min(b + (size_t) hp_chunk, ps.size());
+                                     strata::kernels::cpu::ExpertJobMulti j;
+-                                    j.blob = m.src->blob_stable(l, e);
+-                                    if (j.blob == nullptr) { err = "prefill: the helper fallback lost a blob"; return false; }
++                                    j.blob = blob;
+                                     j.nt = (int32_t) (bend - b);
+                                     for (size_t r = b; r < bend; ++r) {
+                                         const int32_t p = ps[r];
+@@ -5230,7 +5276,8 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
+                                     m.hp_jobs.push_back(j);
+                                 }
+                             }
+-                            cpu_pool_->run_split_multi_native(cf, m.hp_jobs.data(), (int) m.hp_jobs.size());
++                            if (!m.hp_jobs.empty())
++                                cpu_pool_->run_split_multi_native(cf, m.hp_jobs.data(), (int) m.hp_jobs.size());
+                         }
+                         if (!(hp_pipe && ok_rows))   // M6: the worker's hp_cs copy replaced this in PIPE mode
+                             cudaMemcpyAsync(m.Dm + (size_t) r0h * N, m.hp_stage, (size_t) rows_helper * N * sizeof(float),

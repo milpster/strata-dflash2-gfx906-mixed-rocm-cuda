@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <utility>
@@ -17,6 +18,15 @@
 namespace strata::core {
 class RemoteExpertOpt;
 class ExpertHelperClient;
+
+/// W1 (--expert-helper-ram-relief): the in-process notice that a PROXY tier's mirrored residency was
+/// released - the channel closed, the helper died, the peer is gone.  A source that dropped the
+/// helper's pairs out of the arena re-reads them from the pack files on this, so a mid-run helper
+/// loss degrades exactly as a run with no helper does today (the CPU serves the rows from the arena).
+/// Only a source with dropped pairs registers one, and it clears its own in its close().  With nothing
+/// registered - every run that does not use the flag - the notice costs one empty check on a path
+/// that already only runs when a helper channel fails.
+void set_helper_residency_release_hook(std::function<void()> fn);
 
 /// A static, profile-filled expert tier on another CUDA device. CUDA0 keeps all
 /// dense weights and state; results return through the existing pinned CPU rows.

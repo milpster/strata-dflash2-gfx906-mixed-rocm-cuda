@@ -176,8 +176,12 @@ public:
     /// Context cells for committed positions [pos0, pos0 + rows): `taps` is the prompt path's
     /// capture, BF16 rows [n_taps x stride_rows x n_embd], `stride_rows` the per-tap row stride.
     /// Runs in batches of up to 8 rows through the fusion and one K/V append per draft layer.
+    /// sync_context=false (STRATA_DF_DEFER_CTX, the F1 prototype): the fusion's launches stay
+    /// enqueued on cs_ in the same order and the host does NOT drain the stream at the tail -
+    /// the drain lands on the next propose()/idle() (and the collector's assemble barrier),
+    /// which report the same "prompt context consumption failed".  Default true: today's path.
     bool add_context(const uint16_t* taps, int n_taps, int64_t stride_rows, int64_t pos0, int64_t rows,
-                     std::string& err);
+                     std::string& err, bool sync_context = true);
     /// The same from the verify window's capture: f32 taps [n_taps][stride_floats] (the window's
     /// max_t * n_embd), rows [0, rows) of each tap valid (at most 8).
     /// synchronize=false requires an immediate propose()/idle() before the caller reuses taps.
@@ -221,6 +225,14 @@ public:
     /// history (the checkpoint/snapshot paths check before mounting a rewind).
     bool context_retained(int64_t pos, int rows) const;
     bool idle(std::string& err) {
+        // F1 (STRATA_DF_DEFER_CTX): a prompt-only request and the drafter-pool saves in the
+        // park path never reach propose(), so the deferred prompt fusion drains here - the
+        // same full stream sync, the same error text as add_context's tail.  No deferral:
+        // exactly today's body.
+        if (cs_ && deferred_) {
+            if (cudaStreamSynchronize(cs_) != cudaSuccess) { err = "dflash: prompt context consumption failed"; return false; }
+            deferred_ = false;
+        }
         if (cs_ && cudaStreamSynchronize(cs_) != cudaSuccess) { err = "dflash: its stream failed"; return false; }
         return true;
     }
@@ -258,6 +270,10 @@ private:
     std::array<int64_t, 18> graph_chunks_{}, graph_cap_{};
     bool graph_prob_ = false;
     bool reference_mode_ = false;
+    /// F1 (STRATA_DF_DEFER_CTX): the prompt fusion's launches are enqueued on cs_ and the
+    /// add_context tail did not drain the stream; the next propose()/idle() does.
+    /// Only ever set by a deferring add_context call; false on the flag-off path.
+    bool deferred_ = false;
     DflashRefusal last_refusal_ = DflashRefusal::kNone;   ///< the last propose()'s failure class
     void clear_graphs();
 
@@ -316,5 +332,11 @@ private:
     int64_t cycle_ = 0;              ///< proposes so far (the parity fixture's cycle selector)
     char parity_dir_[512] = {};      ///< STRATA_DF_PARITY: the stage-dump directory (empty: off)
 };
+
+/// True when STRATA_DF_DEFER_CTX=1 (read once at startup): the prompt fusion's drain is
+/// deferred to propose()/idle() and the collector gates the plane's D2D on a barrier event.
+/// A free function - the tap collector and the serve wiring ask it without a drafter
+/// object.  Defined in dflash_runtime.cpp.
+bool deferral_context();
 
 }  // namespace strata::core

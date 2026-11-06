@@ -1,0 +1,5 @@
+warmup 5.22s
+S1k r0: 9.66s
+S1k r1: 6.46s
+S1k r2: 6.18s
+TG128 8.89s

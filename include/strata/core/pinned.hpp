@@ -42,6 +42,13 @@ inline std::atomic<bool>& arena_uma_no_register_flag() {
 /// STRATA_ARENA_PIN_GIB to a number (STRATA_ARENA_PIN_GIB=0 registers the whole arena as before).
 bool arena_no_register();
 
+/// #3431 (Windows, HIP): the stack [lo, hi) of a thread that only waits while the arena is registered (the process's first thread
+/// when the engine runs on its own one); a GPU alias may cover it.  0, 0: none.
+void set_idle_thread_stack(uint64_t lo, uint64_t hi);
+/// #3431 (Windows, HIP): the start addresses of the address-space reservations main() keeps for the life of the process; a GPU
+/// alias inside one is clear, nothing can be placed there.
+void set_held_address_space(std::vector<uint64_t> bases);
+
 struct PinnedArena {
     void* base = nullptr;
     uint64_t capacity = 0;
@@ -86,10 +93,26 @@ struct PinnedArena {
     /// Registers the deferred slices in order, publishing how many are done in `ready`, and INT_MAX once it
     /// returns (a slice CUDA refuses ends the registration, and the rest is kept resident by the working-set lock).
     void register_slices(std::atomic<int>& ready);
+    /// W1/W2 (opt-in): reserve the address space with NOTHING registered and NOTHING locked - the fill
+    /// writes plain anonymous pages, which is what `MADV_DONTNEED` (W1: give the helper-held pairs back)
+    /// and `MADV_COLLAPSE` (W2: huge pages) need.  `register_after_fill()` registers what must be
+    /// DMA-able once the layout decision is made (the helper's fill report for W1, the sweep for W2).
+    /// Teardown is the pin-by-need shape: unregister `pin_ranges`, unlock `locked_ranges`.
+    struct ReserveOnly {};
+    PinnedArena(uint64_t bytes, ReserveOnly);
+    /// Post-fill registration for the ReserveOnly arena: register `ranges` (offset, length) page-inward,
+    /// in order; the first CUDA refusal stops (pin-by-need's rule).  With `lock_rest` the complement is
+    /// locked resident (the arena's "never swaps" rule).  Returns the registered bytes.
+    uint64_t register_after_fill(const std::vector<std::pair<uint64_t, uint64_t>>& ranges, bool lock_rest);
     std::vector<uint64_t> bounds_;
     std::vector<uint64_t> slice_starts;
+    /// #3431 (Windows, HIP): the address-space reservations under the GPU aliases of the registered ranges, released after them
+    std::vector<void*> alias_claims;
     void* mapping_base = nullptr;     ///< actual mapping start; differs from base when a shared-file header exists
     uint64_t mapping_bytes = 0;       ///< bytes to release from mapping_base
+    /// shared-file arena only: the load state word in the file's header (0: nobody has loaded it, a pid: that engine is
+    /// loading it, ~0: it is complete).  Shared by every engine that maps the file; null for a private arena.
+    std::atomic<uint64_t>* shared_state = nullptr;
     ~PinnedArena();
     PinnedArena(const PinnedArena&) = delete;
     PinnedArena& operator=(const PinnedArena&) = delete;

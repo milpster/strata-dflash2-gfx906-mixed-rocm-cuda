@@ -1,0 +1,82 @@
+{
+ "probe": {
+  "tag": "probe",
+  "wall": 16.33211874961853,
+  "usage": {
+   "prompt_tokens": 214,
+   "completion_tokens": 228,
+   "total_tokens": 442,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "text": "Speculative decoding works by having a small draft model propose several tokens, then the target model verifies them in parallel. For each proposed token, the target model checks whether the draft's probability matches its own; if the draft overestimates the target's probability, the token is rejected and resampled from the \"residual\" distribution (target probability minus draft probability, normalized). This rejection-sampling step is the key: it guarantees that every token in the final output is drawn from exactly the target model's distribution, because the acceptance/rejection rule is constructed so that the combined process (accept when draft is under target, resample from the residual when it overestimates) reproduces the target's probabilities exactly."
+ },
+ "pp16384": {
+  "tag": "pp16384",
+  "wall": 54.07328701019287,
+  "usage": {
+   "prompt_tokens": 18233,
+   "completion_tokens": 8,
+   "total_tokens": 18241,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "text": ""
+ },
+ "tg1024": [
+  {
+   "tag": "tg1024.0",
+   "wall": 47.63881993293762,
+   "usage": {
+    "prompt_tokens": 225,
+    "completion_tokens": 1024,
+    "total_tokens": 1249,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "text": "**Diary \u2014 2026-02-14 \u2014 Porting the CUDA engine to HIP on gfx906**\n\nToday I moved the CUDA compute engine onto ROCm/HIP targeting `gfx906` (Vega 20 / MI50 / Radeon VII class). The goal was not a toy demo: I wanted the existing CUDA kernels to run on AMD with the same numerical output, acceptable performance, and a reproducible build.\n\n**Environment**\n\n- ROCm 6.x\n- `hipcc`\n- Target arch: `gfx906`\n- Build flags:\n  ```bash\n  hipcc -O3 -march=gfx906 -std=c++17 \\\n        --offload-arch=gfx906 \\\n        -Iinclude -o engine_hip src/*.cpp\n  ```\n- Runtime:\n  ```bash\n  export HSA_ENABLE_SDMA=0\n  export HIP_VISIBLE_DEVICES=0\n  ```\n\n**Step 1: API translation**\n\nI started with a mechanical CUDA-to-HIP translation:\n\n```cpp\ncudaMalloc      -> hipMalloc\ncudaFree        -> hipFree\ncudaMemcpy      -> hipMemcpy\ncudaMemset      -> hipMemset\ncudaStream_t    -> hipStream_t\ncudaEvent_t     -> hipEvent_t\ncudaDeviceSynchronize -> hipDeviceSynchronize\n```\n\nFor kernel launches, I replaced:\n\n```cpp\nkernel<<<grid, block, shared, stream>>>(args);\n```\n\nwith:\n\n```cpp\nhipLaunchKernelGGL(kernel, grid, block, shared, stream, args);\n```\n\nThis was straightforward, but it exposed the first real issue: CUDA-specific intrinsics.\n\n**Step 2: Warp size is 64, not 32**\n\nThis was the most important gfx906-specific change.\n\nCUDA assumes a warp size of 32. On gfx906, the hardware wavefront size is 64. Any code that assumed 32 lanes was wrong.\n\nExamples that broke:\n\n```cpp\n// CUDA-style warp reduction, assumes 32 lanes\nfor (int offset = 16; offset > 0; offset >>= 1)\n    val += __shfl_down_sync(0xffffffff, val, offset);"
+  },
+  {
+   "tag": "tg1024.1",
+   "wall": 43.106022357940674,
+   "usage": {
+    "prompt_tokens": 225,
+    "completion_tokens": 1024,
+    "total_tokens": 1249,
+    "prompt_tokens_details": {
+     "cached_tokens": 220
+    }
+   },
+   "text": "**Diary \u2014 Day 14: Porting the CUDA engine to HIP on gfx906**\n\nTarget: AMD Vega 10 / MI50, ISA `gfx906`, 64 CUs, 64-lane wavefronts, 64 KB LDS per CU, 4096 threads/CU max occupancy.\n\nToday I moved the core CUDA engine to HIP and got the first numerically identical run on gfx906.\n\n### 1. Build setup\n\nI stopped using the CUDA toolchain and built with ROCm:\n\n```bash\nhipcc -O3 -gencode arch=compute_906,code=arch=gfx906 \\\n      --offload-arch=gfx906 \\\n      -std=c++17 \\\n      -Iinclude \\\n      -o engine_hip src/engine_hip.cpp\n```\n\nFor a clean HIP-only build, the important flags were:\n\n```bash\nhipcc -O3 --offload-arch=gfx906 -std=c++17 engine.cpp -o engine_hip\n```\n\nI also added:\n\n```bash\n-D__HIP_PLATFORM_AMD__\n```\n\nbecause some of the old CUDA headers were still being pulled in by the legacy engine code.\n\n### 2. Runtime API translation\n\nThe CUDA runtime calls mapped almost 1:1:\n\n```cpp\ncudaMalloc      -> hipMalloc\ncudaFree        -> hipFree\ncudaMemcpy      -> hipMemcpy\ncudaMemcpyAsync -> hipMemcpyAsync\ncudaStream_t    -> hipStream_t\ncudaEvent_t     -> hipEvent_t\ncudaDeviceSynchronize -> hipDeviceSynchronize\ncudaGetLastError -> hipGetLastError\ncudaError_t     -> hipError_t\n```\n\nThe launch syntax stayed the same:\n\n```cpp\nkernel<<<grid, block, shared_bytes, stream>>>(args);\n```\n\nHIP accepts the CUDA-style triple-chevron launch, so I did not rewrite the launch sites.\n\n### 3. The first real problem: warp size\n\nThe CUDA engine assumed 32-lane warps.\n\nOn gfx906, the hardware wavefront is 64 lanes.\n\nThat broke the reduction kernels.\n\nOld CUDA code:\n\n```cpp\n__device__ float warp_reduce(float x) {\n    for (int offset"
+  },
+  {
+   "tag": "tg1024.2",
+   "wall": 43.24425506591797,
+   "usage": {
+    "prompt_tokens": 225,
+    "completion_tokens": 1024,
+    "total_tokens": 1249,
+    "prompt_tokens_details": {
+     "cached_tokens": 220
+    }
+   },
+   "text": "**Diary \u2014 2026-03-18 \u2014 Porting the CUDA engine to HIP on gfx906**\n\nToday I moved the core CUDA engine onto HIP for gfx906 (Vega 10 / Radeon VII class). The goal was not a toy demo; I wanted the existing kernel pipeline to run on AMD with the same numerical output and a predictable performance envelope.\n\nThe first concrete change was the build. I replaced the CUDA toolchain with ROCm/HIP and compiled with:\n\n```bash\nhipcc -O3 -std=c++17 \\\n  --offload-arch=gfx906 \\\n  -D__HIP_PLATFORM_AMD__ \\\n  -Iinclude \\\n  src/engine.cu \\\n  src/kernels.cu \\\n  -o engine_hip\n```\n\nI kept the CUDA-style source for now and used `hipify-perl` as a first pass, then manually cleaned the output. The automatic conversion got most of the obvious things:\n\n```cpp\n#include <hip/hip_runtime.h>\n\n__global__ void reduce_kernel(float* out, const float* in, int n) {\n    __shared__ float smem[256];\n\n    int tid = threadIdx.x;\n    int idx = blockIdx.x * blockDim.x + threadIdx.x;\n\n    float v = (idx < n) ? in[idx] : 0.0f;\n\n    smem[tid] = v;\n    __syncthreads();\n\n    for (int s = blockDim.x / 2; s > 0; s >>= 1) {\n        if (tid < s) {\n            smem[tid] += smem[tid + s];\n        }\n        __syncthreads();\n    }\n\n    if (tid == 0) {\n        atomicAdd(out, smem[0]);\n    }\n}\n```\n\nThat compiled, but the first real gfx906-specific issue was the wavefront size. CUDA assumes 32-thread warps. gfx906 uses 64-thread wavefronts. The CUDA shuffle code:\n\n```cpp\nfloat x = __shfl_down_sync(0xffffffff, v, 16);\n```\n\nis not directly portable. I replaced warp-local reductions with shared-memory reductions and explicit"
+  }
+ ],
+ "infill80k": {
+  "tag": "infill80k",
+  "wall": 171.31681632995605,
+  "usage": {
+   "prompt_tokens": 87879,
+   "completion_tokens": 155,
+   "total_tokens": 88034,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "text": "watch memory quick the through dog quick."
+ }
+}

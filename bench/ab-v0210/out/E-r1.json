@@ -1,0 +1,82 @@
+{
+ "probe": {
+  "tag": "probe",
+  "wall": 9.766220808029175,
+  "usage": {
+   "prompt_tokens": 203,
+   "completion_tokens": 102,
+   "total_tokens": 305,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "text": "Your sentence is cut off \u2014 \"keeps the\" what? (e.g., \"keeps the output distribution identical,\" \"keeps the latency low,\" \"keeps the acceptance rate high\"?) Let me know the full prompt and I'll write the paragraph."
+ },
+ "pp16384": {
+  "tag": "pp16384",
+  "wall": 54.39231562614441,
+  "usage": {
+   "prompt_tokens": 18233,
+   "completion_tokens": 8,
+   "total_tokens": 18241,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "text": ""
+ },
+ "tg1024": [
+  {
+   "tag": "tg1024.0",
+   "wall": 46.46258521080017,
+   "usage": {
+    "prompt_tokens": 225,
+    "completion_tokens": 1024,
+    "total_tokens": 1249,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "text": "**Diary \u2014 2026-03-18 \u2014 Porting the CUDA engine to HIP on gfx906**\n\nToday I moved the core solver from CUDA to HIP on an AMD Vega 10 / MI50-class GPU, target `gfx906`. The engine is a fused kernel pipeline: load, normalize, reduce, write. The CUDA version used dynamic parallelism, cooperative groups, and warp-level primitives. The HIP port is mostly mechanical, but the performance tuning is not.\n\n**Build setup**\n\nI compiled with:\n\n```bash\nhipcc -O3 -gencode arch=compute_60,code=gfx906 \\\n      -Iinclude -o engine_hip src/engine_hip.cpp\n```\n\nFor a pure HIP build, I used:\n\n```bash\nhipcc -O3 --offload-arch=gfx906 -o engine_hip src/engine_hip.cpp\n```\n\nThe first form is useful when keeping CUDA-style `-gencode` flags. The second is cleaner for AMD-only builds.\n\n**API translation**\n\nThe CUDA runtime calls mapped cleanly:\n\n```cpp\ncudaMalloc      -> hipMalloc\ncudaFree        -> hipFree\ncudaMemcpyAsync -> hipMemcpyAsync\ncudaStream_t    -> hipStream_t\ncudaEvent_t     -> hipEvent_t\ncudaDeviceSynchronize -> hipDeviceSynchronize\n```\n\nKernel launches changed from:\n\n```cpp\nkernel<<<grid, block, shared, stream>>>(args);\n```\n\nto:\n\n```cpp\nhipLaunchKernelGGL(kernel, grid, block, shared, stream, args);\n```\n\nThe kernel bodies mostly stayed the same. `__global__`, `__device__`, `__shared__`, `__syncthreads()`, and `__threadfence()` all worked.\n\n**What broke**\n\nThe first failure was dynamic parallelism. The CUDA engine launched child kernels from inside a parent kernel. HIP on gfx906 does not support CUDA-style dynamic parallelism. I removed the recursive launch and replaced it with a persistent-kernel state machine:\n\n```cpp\n__global__ void engine_kernel(float* data, int* flags, int n) {\n    int tid = threadIdx.x;\n    int gid = blockIdx.x * blockDim.x + tid;\n\n    __shared__ int done;\n\n"
+  },
+  {
+   "tag": "tg1024.1",
+   "wall": 42.62449598312378,
+   "usage": {
+    "prompt_tokens": 225,
+    "completion_tokens": 1024,
+    "total_tokens": 1249,
+    "prompt_tokens_details": {
+     "cached_tokens": 220
+    }
+   },
+   "text": "**Diary \u2014 2026-03-14 \u2014 Porting the CUDA engine to HIP on gfx906**\n\nToday I moved the old CUDA engine onto ROCm/HIP for a Vega-class GPU, target `gfx906`. The engine is a small compute pipeline: a CUDA kernel for tile reduction, a stream/event pipeline, pinned host buffers, and a cuBLAS-style GEMM path. The goal was not a full rewrite, just a HIP port that compiles for `gfx906` and preserves the kernel semantics.\n\n**Environment**\n\n```bash\n$ hipcc --version\nHIP version: 6.2.41550-...\nAMD clang version 17.0.0\nTarget: x86_64-unknown-linux-gnu\n\n$ rocminfo | grep -A2 \"gfx906\"\nName: gfx906\nMarketing Name: AMD Radeon Instinct MI50\n```\n\nI used:\n\n```bash\nexport HIP_VISIBLE_DEVICES=0\nexport HSA_ENABLE_SDMA=0\nexport ROCM_PATH=/opt/rocm\nexport PATH=$ROCM_PATH/bin:$PATH\n```\n\n`HSA_ENABLE_SDMA=0` was needed early because the engine uses pinned host memory and a custom copy path; SDMA on this box was giving intermittent stalls during host-to-device transfers.\n\n**Step 1: hipify the CUDA source**\n\nI started with `hipify-perl` on the CUDA files:\n\n```bash\nhipify-perl src/engine.cu > src/engine_hip.cpp\nhipify-perl src/kernels.cu > src/kernels_hip.cpp\nhipify-perl src/blas_bridge.cu > src/blas_bridge_hip.cpp\n```\n\nThe translation was mostly mechanical:\n\n```cpp\n// CUDA\ncudaMalloc(&d_x, n * sizeof(float));\ncudaMemcpy(d_x, h_x, n * sizeof(float), cudaMemcpyHostToDevice);\nkernel<<<grid, block, smem, stream>>>(d_x, d_y, n);\ncudaStreamSynchronize(stream);\n```\n\nbecame:\n\n```cpp\n// HIP\nhipMalloc(&d_x, n * sizeof(float));\nhipMemcpy(d_x, h_x, n * sizeof(float), hipMemcpyHostToDevice);\nkernel<<<grid,"
+  },
+  {
+   "tag": "tg1024.2",
+   "wall": 42.62834715843201,
+   "usage": {
+    "prompt_tokens": 225,
+    "completion_tokens": 1024,
+    "total_tokens": 1249,
+    "prompt_tokens_details": {
+     "cached_tokens": 220
+    }
+   },
+   "text": "**Diary \u2014 2026-03-14 \u2014 Porting the CUDA engine to HIP on gfx906**\n\nToday I moved the core compute engine from CUDA to HIP on an AMD MI60-class GPU, target architecture `gfx906`. The engine is a tiled matrix-multiply / reduction pipeline with fused epilogues, dynamic shared memory, cooperative reductions, and a small CUDA graph-style launch scheduler. The goal was not a toy port: I wanted the same numerical contract, same kernel launch semantics, and a measurable performance baseline.\n\n---\n\n### 1. Environment\n\nMachine:\n\n```text\nGPU: AMD Radeon Instinct MI60 / gfx906\nDriver: amdgpu\nROCm: 6.1.x\nCompiler: hipcc\nTarget: gfx906\n```\n\nBuild command:\n\n```bash\nhipcc -O3 -std=c++17 \\\n  --offload-arch=gfx906 \\\n  -Iinclude \\\n  -o engine_hip \\\n  src/engine_hip.cpp\n```\n\nFor a mixed CUDA/HIP codebase, I kept CUDA-specific code behind macros:\n\n```cpp\n#ifdef __HIPCC__\n  #define ENGINE_DEVICE __device__\n  #define ENGINE_GLOBAL __global__\n  #define ENGINE_HOST __host__\n  #define ENGINE_INLINE __forceinline__\n  #define ENGINE_SYNC __syncthreads()\n  #define ENGINE_WARP_SIZE 64\n#else\n  #define ENGINE_DEVICE __device__\n  #define ENGINE_GLOBAL __global__\n  #define ENGINE_HOST __host__\n  #define ENGINE_INLINE __forceinline__\n  #define ENGINE_SYNC __syncthreads()\n  #define ENGINE_WARP_SIZE 32\n#endif\n```\n\nThe important part is `ENGINE_WARP_SIZE`. On `gfx906`, the native wavefront is 64 lanes, not 32. That changed shuffle reductions.\n\n---\n\n### 2. Runtime API replacement\n\nThe CUDA engine used:\n\n```cpp\ncudaMalloc\ncudaFree\ncudaMemcpy\ncudaMemcpyAsync\ncudaMemset\ncudaStream_t\ncudaEvent_t\ncudaDeviceSynchronize\n```\n\nI replaced them mechanically:\n\n```cpp\nhipMalloc\nhipFree\nhipMemcpy\nhipMemcpyAsync\n"
+  }
+ ],
+ "infill80k": {
+  "tag": "infill80k",
+  "wall": 169.02442955970764,
+  "usage": {
+   "prompt_tokens": 87879,
+   "completion_tokens": 155,
+   "total_tokens": 88034,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "text": "watch memory quick the through dog quick."
+ }
+}

@@ -1,0 +1,110 @@
+=== 13:31:33 WEDGE at 220 of 225 tokens | [strata] reading the prompt: 220 of 225 tokens, 5 s so far
+pgmigrate_success 90724866
+pgmigrate_fail 1797181
+compact_stall 638659
+compact_fail 461211
+compact_success 177448
+thp_fault_alloc 1450761
+thp_fault_fallback 10323
+thp_collapse_alloc 5398
+MemFree:         2119460 kB
+MemAvailable:   42072528 kB
+AnonHugePages:    319488 kB
+Rss:            44739548 kB
+Pss:            41182326 kB
+Shared_Clean:    7109896 kB
+Private_Dirty:   6235732 kB
+Anonymous:       6440532 kB
+AnonHugePages:         0 kB
+      03:32 Rl    340 44741408
+=== 13:32:03 WEDGE at 220 of 225 tokens | [strata] reading the prompt: 220 of 225 tokens, 5 s so far
+pgmigrate_success 90724866
+pgmigrate_fail 1797181
+compact_stall 638659
+compact_fail 461211
+compact_success 177448
+thp_fault_alloc 1451223
+thp_fault_fallback 10323
+thp_collapse_alloc 5398
+MemFree:         3780500 kB
+MemAvailable:   42825384 kB
+AnonHugePages:    202752 kB
+Rss:            44228288 kB
+Pss:            40679489 kB
+Shared_Clean:    7093060 kB
+Private_Dirty:   6236768 kB
+Anonymous:       6441568 kB
+AnonHugePages:         0 kB
+      04:02 Sl    399 44230628
+=== 13:32:34 WEDGE at 220 of 225 tokens | [strata] reading the prompt: 220 of 225 tokens, 5 s so far
+pgmigrate_success 90724866
+pgmigrate_fail 1797181
+compact_stall 638659
+compact_fail 461211
+compact_success 177448
+thp_fault_alloc 1451750
+thp_fault_fallback 10323
+thp_collapse_alloc 5398
+MemFree:         2981856 kB
+MemAvailable:   42168932 kB
+AnonHugePages:    321536 kB
+Rss:            43513960 kB
+Pss:            39974517 kB
+Shared_Clean:    7074344 kB
+Private_Dirty:   6125292 kB
+Anonymous:       6330092 kB
+AnonHugePages:         0 kB
+      04:33 Rl    432 43516264
+13:33:04 UNWEDGED ()
+=== 13:36:24 WEDGE at 87,878 of 87,879 tokens | [strata] reading the prompt: 87,878 of 87,879 tokens, 164 s so far
+pgmigrate_success 90724866
+pgmigrate_fail 1797181
+compact_stall 638659
+compact_fail 461211
+compact_success 177448
+thp_fault_alloc 1455401
+thp_fault_fallback 10323
+thp_collapse_alloc 5398
+MemFree:         2407404 kB
+MemAvailable:   42538816 kB
+AnonHugePages:    303104 kB
+Rss:            46556052 kB
+Pss:            46551345 kB
+Shared_Clean:       4880 kB
+Private_Dirty:   6877944 kB
+Anonymous:       7082744 kB
+AnonHugePages:         0 kB
+      08:23 Sl    298 46556052
+=== 13:36:54 WEDGE at 87,878 of 87,879 tokens | [strata] reading the prompt: 87,878 of 87,879 tokens, 164 s so far
+pgmigrate_success 90724866
+pgmigrate_fail 1797181
+compact_stall 638659
+compact_fail 461211
+compact_success 177448
+thp_fault_alloc 1455879
+thp_fault_fallback 10323
+thp_collapse_alloc 5398
+MemFree:         1887724 kB
+MemAvailable:   42058148 kB
+AnonHugePages:    317440 kB
+Rss:            46556052 kB
+Pss:            46551345 kB
+Shared_Clean:       4880 kB
+Private_Dirty:   6877944 kB
+Anonymous:       7082744 kB
+AnonHugePages:         0 kB
+      08:54 Sl    281 46556052
+=== 13:37:25 WEDGE at 87,878 of 87,879 tokens | [strata] reading the prompt: 87,878 of 87,879 tokens, 164 s so far
+pgmigrate_success 90724866
+pgmigrate_fail 1797181
+compact_stall 638659
+compact_fail 461211
+compact_success 177448
+thp_fault_alloc 1456424
+thp_fault_fallback 10323
+thp_collapse_alloc 5398
+MemFree:         8435696 kB
+MemAvailable:   48673104 kB
+AnonHugePages:    354304 kB
+engine process gone
+13:37:25 engine gone; watcher exit

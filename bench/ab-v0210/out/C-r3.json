@@ -1,0 +1,82 @@
+{
+ "probe": {
+  "tag": "probe",
+  "wall": 14.54233717918396,
+  "usage": {
+   "prompt_tokens": 214,
+   "completion_tokens": 228,
+   "total_tokens": 442,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "text": "Speculative decoding works by having a small draft model propose several tokens, then the target model verifies them in parallel. For each proposed token, the target model checks whether the draft's probability matches its own; if the draft overestimates the target's probability, the token is rejected and resampled from the \"residual\" distribution (target probability minus draft probability, normalized). This rejection-sampling step is the key: it guarantees that every token in the final output is drawn from exactly the target model's distribution, because the acceptance/rejection rule is constructed so that the combined process (accept when draft is under target, resample from the residual when it overestimates) reproduces the target's probabilities exactly."
+ },
+ "pp16384": {
+  "tag": "pp16384",
+  "wall": 53.9252667427063,
+  "usage": {
+   "prompt_tokens": 18233,
+   "completion_tokens": 8,
+   "total_tokens": 18241,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "text": ""
+ },
+ "tg1024": [
+  {
+   "tag": "tg1024.0",
+   "wall": 41.16295528411865,
+   "usage": {
+    "prompt_tokens": 225,
+    "completion_tokens": 1024,
+    "total_tokens": 1249,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "text": "**Technical diary \u2014 2026-02-14**  \n**Project:** Porting the CUDA compute engine to HIP on AMD **gfx906**  \n**Target device:** AMD Instinct MI50 / Radeon VII class GPU, ISA `gfx906`  \n**Stack:** CUDA 12.x \u2192 HIP/ROCm 6.x, `hipcc`, `hipify-clang`, CMake  \n**Engine type:** CSR sparse matrix-vector multiply (SpMV) with warp-level reductions, dynamic shared memory, and a small device-side allocator\n\n---\n\n## 1. Goal\n\nThe CUDA engine is a performance-critical kernel library used by the solver. It assumes:\n\n- CUDA streams and events\n- `cudaMalloc` / `cudaMemcpy`\n- `__global__` kernels launched with `<<<grid, block>>>`\n- warp-level primitives\n- cooperative groups\n- dynamic shared memory\n- CUDA-specific intrinsics and compiler assumptions\n\nThe target is **HIP on gfx906**, not CUDA compatibility mode. The goal is not \u201cmake it compile\u201d, but make it **correct, fast, and maintainable** on AMD.\n\n---\n\n## 2. Day plan\n\nToday\u2019s objective:\n\n1. Get the core SpMV kernel compiling under HIP.\n2. Replace CUDA runtime calls with HIP equivalents.\n3. Fix warp semantics differences.\n4. Benchmark against the CUDA baseline.\n5. Identify gfx906-specific tuning knobs.\n\n---\n\n## 3. Initial port: mechanical translation\n\nI started with `hipify-clang` on the CUDA source tree.\n\n```bash\nhipify-clang \\\n  -x cu \\\n  -std=c++17 \\\n  -o hipified/ \\\n  src/cuda/engine.cu \\\n  src/cuda/kernels.cu \\\n  src/cuda/memory.cu\n```\n\nThe tool did a good first pass:\n\n- `cudaMalloc` \u2192 `hipMalloc`\n- `cudaMemcpy` \u2192 `hipMemcpy`\n- `cudaStream_t` \u2192 `hipStream_t`\n- `__global__` \u2192 `__global__`\n- `<<<...>>>` \u2192 `hipLaunchKernelGGL(...)`\n- `cudaEvent_t` \u2192 `hipEvent_t`\n\nExample before:\n\n```cpp\n"
+  },
+  {
+   "tag": "tg1024.1",
+   "wall": 37.21190094947815,
+   "usage": {
+    "prompt_tokens": 225,
+    "completion_tokens": 1024,
+    "total_tokens": 1249,
+    "prompt_tokens_details": {
+     "cached_tokens": 220
+    }
+   },
+   "text": "**Diary \u2014 2026-03-18 \u2014 Porting the CUDA engine to HIP on gfx906**\n\nToday I moved the core CUDA engine onto HIP for AMD gfx906 (Vega/MI50 class). The goal was not a toy demo: I wanted the existing engine to compile, run, and produce bit-compatible results on ROCm.\n\n**Build setup**\n\nI started with the CUDA source tree and used `hipify-perl` as a first pass, then cleaned up manually. The CUDA-specific names were mostly mechanical:\n\n```bash\nhipify-perl engine.cu > engine.hip\n```\n\nAfter that, I replaced the CUDA runtime calls explicitly:\n\n```cpp\ncudaMalloc      -> hipMalloc\ncudaFree        -> hipFree\ncudaMemcpyAsync -> hipMemcpyAsync\ncudaStream_t    -> hipStream_t\ncudaEvent_t     -> hipEvent_t\ncudaDeviceSynchronize -> hipDeviceSynchronize\n```\n\nThe compiler invocation was the first real gfx906-specific decision:\n\n```bash\nhipcc -O3 -std=c++17 \\\n  -march=gfx906 \\\n  -Xcompiler -O3 \\\n  -o engine_hip engine.hip\n```\n\nI added `-march=gfx906` explicitly because the default target on my ROCm install was not gfx906. Without it, the kernels compiled for the wrong ISA and the runtime failed with:\n\n```text\nhipErrorNoBinaryForGpu\n```\n\nThat was the first concrete lesson: on gfx906, target selection is not optional.\n\n**Kernel launch and thread model**\n\nThe CUDA engine used blocks of 256 threads and relied on 32-thread warps. On gfx906, the hardware wavefront is 64 lanes. That caused the first semantic break.\n\nCUDA code:\n\n```cpp\n__global__ void reduce_kernel(float* out, const float* in, int n) {\n    __shared__ float smem[256];\n\n    int tid = threadIdx.x;\n    int idx = blockIdx.x * blockDim.x + threadIdx.x;\n\n    smem[tid] = (idx < n) ? in[idx] : 0.0f;\n    __syncthreads();\n\n    for ("
+  },
+  {
+   "tag": "tg1024.2",
+   "wall": 37.405357122421265,
+   "usage": {
+    "prompt_tokens": 225,
+    "completion_tokens": 1024,
+    "total_tokens": 1249,
+    "prompt_tokens_details": {
+     "cached_tokens": 220
+    }
+   },
+   "text": "**Diary \u2014 2026-02-14 \u2014 Porting the CUDA engine to HIP on gfx906**\n\nToday I finished the first end-to-end run of the CUDA engine under HIP on a Vega 20 / MI50-class GPU, target `gfx906`. The engine is a fused kernel pipeline: input staging, per-tile reduction, a cooperative scan, and a final epilogue. It was originally written for `sm_70`/`sm_75`, so the port was not a simple `sed` job.\n\n**Environment**\n\n- ROCm 6.2.x\n- HIP 6.2\n- LLVM/Clang 17\n- Target: `gfx906`\n- Driver: amdgpu, KFD enabled\n- CPU: EPYC, 64 cores\n- Memory: 32 GB HBM2\n\nBuild command:\n\n```bash\nhipcc -O3 -std=c++17 \\\n  -march=gfx906 \\\n  -D__HIP_PLATFORM_AMD__ \\\n  -Iinclude \\\n  -o engine_hip \\\n  src/engine_hip.cpp\n```\n\nFor the kernel-heavy translation unit:\n\n```bash\nhipcc -O3 -std=c++17 \\\n  -march=gfx906 \\\n  -Xclang -target-feature -Xclang +fp64 \\\n  -Xclang -target-feature -Xclang +wavefrontsize64 \\\n  -Xclang -target-feature -Xclang +dot-inst \\\n  -Xclang -target-feature -Xclang +dot2-inst \\\n  -Xclang -target-feature -Xclang +dot3-inst \\\n  -Xclang -target-feature -Xclang +dot4-inst \\\n  -Xclang -target-feature -Xclang +dot5-inst \\\n  -Xclang -target-feature -Xclang +dot6-inst \\\n  -Xclang -target-feature -Xclang +dot7-inst \\\n  -Xclang -target-feature -Xclang +dot8-inst \\\n  -Xclang -target-feature -Xclang +dot9-inst \\\n  -Xclang -target-feature -Xclang +dot10-inst \\\n  -Xclang -target-feature"
+  }
+ ],
+ "infill80k": {
+  "tag": "infill80k",
+  "wall": 166.0154366493225,
+  "usage": {
+   "prompt_tokens": 87879,
+   "completion_tokens": 155,
+   "total_tokens": 88034,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "text": "watch memory quick the through dog quick."
+ }
+}

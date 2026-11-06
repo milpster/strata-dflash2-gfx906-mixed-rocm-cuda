@@ -1,0 +1,82 @@
+{
+ "probe": {
+  "tag": "probe",
+  "wall": 27.6131329536438,
+  "usage": {
+   "prompt_tokens": 63,
+   "completion_tokens": 252,
+   "total_tokens": 315,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "text": "Speculative decoding uses a small \"draft\" model to quickly propose several tokens, then the large \"target\" model checks them in parallel. For each proposed token, it applies a simple acceptance rule: if the target model thinks that token is at least as likely as the draft model did, it's accepted; if the target model thinks it's less likely, it's accepted with a probability equal to the ratio of the two probabilities. This is exactly the math of rejection sampling, which is a well-known technique that guarantees the final sequence of accepted tokens follows the target model's distribution, not the draft model's."
+ },
+ "pp16384": {
+  "tag": "pp16384",
+  "wall": 80.11730146408081,
+  "usage": {
+   "prompt_tokens": 18082,
+   "completion_tokens": 8,
+   "total_tokens": 18090,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "text": ""
+ },
+ "tg1024": [
+  {
+   "tag": "tg1024.0",
+   "wall": 33.66748046875,
+   "usage": {
+    "prompt_tokens": 74,
+    "completion_tokens": 1024,
+    "total_tokens": 1098,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "text": "**Diary entry \u2014 2024-06-14**  \n**Project:** `fluidsim-cuda` \u2192 HIP port on AMD gfx906  \n**GPU:** AMD Radeon Pro VII / MI50-class, gfx906  \n**Stack:** ROCm 5.7.1, HIP 5.7, CMake 3.27, clang 16, `hipcc`\n\n---\n\n## 07:40 \u2014 Baseline CUDA build\n\nThe CUDA engine is a particle advection + pressure projection solver. It has:\n\n- 12 CUDA kernels\n- ~18k lines of CUDA C++\n- heavy use of:\n  - `__shared__`\n  - `__syncthreads()`\n  - `__shfl_down_sync()`\n  - `__ballot_sync()`\n  - `atomicAdd()`\n  - CUDA streams\n  - CUDA events\n  - `cudaMemcpyAsync()`\n  - `cudaMalloc()` / `cudaFree()`\n  - cooperative groups for warp reductions\n\nBaseline on CUDA:\n\n```bash\ncmake -S . -B build-cuda -DCMAKE_CUDA_ARCHITECTURES=86\ncmake --build build-cuda -j\n./build-cuda/fluidsim --case dam_break --steps 1000\n```\n\nMeasured:\n\n- 1000 steps: **18.42 s**\n- peak memory: **1.82 GB**\n- dominant kernels:\n  - `advect_particles_kernel`\n  - `pressure_solve_kernel`\n  - `divergence_kernel`\n  - `jacobi_kernel`\n\n---\n\n## 08:15 \u2014 First HIP conversion pass\n\nI started with `hipify-perl` on the CUDA sources:\n\n```bash\nfind src -name '*.cu' -o -name '*.cuh' -o -name '*.cpp' -o -name '*.h' \\\n  | xargs hipify-perl -inplace\n```\n\nThis mechanically converted most of the obvious API surface:\n\n```cpp\ncudaMalloc      -> hipMalloc\ncudaFree        -> hipFree\ncudaMemcpyAsync -> hipMemcpyAsync\ncudaStream_t    -> hipStream_t\ncudaEvent_t     -> hipEvent_t\n__shared"
+  },
+  {
+   "tag": "tg1024.1",
+   "wall": 27.177560329437256,
+   "usage": {
+    "prompt_tokens": 74,
+    "completion_tokens": 1024,
+    "total_tokens": 1098,
+    "prompt_tokens_details": {
+     "cached_tokens": 69
+    }
+   },
+   "text": "**Technical Diary \u2014 Day 12: Porting the CUDA Engine to HIP on gfx906**\n\n**Date:** 2026-06-14  \n**Machine:** AMD Radeon VII / MI50-class GPU, `gfx906`  \n**ROCm:** 5.7.1  \n**HIP:** 5.7.23424  \n**Project:** `fluidsim-engine` \u2014 CUDA compute engine for particle advection, pressure solve, and reduction kernels.\n\n---\n\n### 08:40 \u2014 Inventory of CUDA-specific surface area\n\nThe CUDA engine is not a single kernel. It is a mix of:\n\n- CUDA runtime API:\n  - `cudaMalloc`, `cudaFree`, `cudaMemcpy`, `cudaMemcpyAsync`\n  - `cudaStream_t`, `cudaEvent_t`\n  - `cudaDeviceSynchronize`\n- CUDA kernel launch syntax:\n  - `kernel<<<grid, block, sharedMem, stream>>>`\n- CUDA warp intrinsics:\n  - `__shfl_down_sync`\n  - `__ballot_sync`\n  - `__syncwarp`\n- CUDA cooperative groups:\n  - `cg::tiled_partition<32>`\n  - `cg::reduce`\n- cuBLAS:\n  - `cublasSgemm`\n  - `cublasSaxpy`\n- CUDA-specific headers:\n  - `cuda_runtime.h`\n  - `cuda_fp16.h`\n  - `cooperative_groups.h`\n\nThe first pass was mechanical:\n\n```bash\nsed -i 's/cudaMalloc/hipMalloc/g' src/*.cu src/*.cpp\nsed -i 's/cudaFree/hipFree/g' src/*.cu src/*.cpp\nsed -i 's/cudaMemcpy/hipMemcpy/g' src/*.cu src/*.cpp\nsed -i 's/cudaStream_t/hipStream_t/g' src/*.cu src/*.cpp\nsed -i 's/cudaEvent_t/hipEvent_t/g' src/*.cu src/*.cpp\nsed -i 's/cudaDeviceSynchronize/hipDeviceSynchronize/g' src/*.cu src/*.cpp\nsed -i 's/cublasSgemm/hipblasSgemm/g' src/*."
+  },
+  {
+   "tag": "tg1024.2",
+   "wall": 35.064337491989136,
+   "usage": {
+    "prompt_tokens": 74,
+    "completion_tokens": 1024,
+    "total_tokens": 1098,
+    "prompt_tokens_details": {
+     "cached_tokens": 69
+    }
+   },
+   "text": "**Technical Diary \u2014 Day 12: Porting the CUDA engine to HIP on gfx906**\n\n**Target:** AMD gfx906 (Vega 10 / MI50-class)  \n**Toolchain:** ROCm 6.x, `hipcc`, CMake, `hipify-clang`  \n**Goal:** Replace CUDA runtime/kernel launch paths with HIP, keep the engine\u2019s public API stable, and get the main compute pipeline running on gfx906.\n\n---\n\n## 08:40 \u2014 Inventory of CUDA-specific surface area\n\nThe engine has roughly 18k lines of CUDA-specific code. The main offenders are:\n\n- CUDA runtime API:\n  - `cudaMalloc`, `cudaFree`, `cudaMemcpy`, `cudaMemcpyAsync`\n  - `cudaStream_t`, `cudaEvent_t`\n  - `cudaDeviceSynchronize`, `cudaGetLastError`\n- Kernel launch syntax:\n  - `kernel<<<grid, block, smem, stream>>>(...)`\n- CUDA intrinsics:\n  - `__shfl_down_sync`, `__ballot_sync`, `__syncthreads`\n- CUDA math / library calls:\n  - `cublasSgemm`, `cublasSaxpy`\n  - `cufftPlan1d`, `cufftExecC2C`\n- CUDA-specific types:\n  - `dim3`, `cudaDeviceProp`, `cudaError_t`\n\nThe plan is not to rewrite the whole engine. The plan is to create a thin HIP compatibility layer, then port the hot kernels manually.\n\n---\n\n## 09:20 \u2014 First pass with `hipify-clang`\n\nI ran:\n\n```bash\nhipify-clang \\\n  -x cuda \\\n  --cuda-gpu-arch=gfx906 \\\n  --hip-path=/opt/rocm \\\n  src/engine/cuda/*.cu \\\n  -o build/hipified/\n```\n\nThe automatic conversion handled most of the mechanical stuff:\n\n```cpp\n// CUDA\ncudaMalloc(&d_data, bytes);\ncudaMemcpy(d_data, h_data, bytes, cudaMemcpyHostToDevice);\nkernel<<<grid, block, smem, stream>>>(d_data, n);\n```\n\nbecame:\n\n```cpp\n//"
+  }
+ ],
+ "infill80k": {
+  "tag": "infill80k",
+  "wall": 173.33353090286255,
+  "usage": {
+   "prompt_tokens": 87728,
+   "completion_tokens": 155,
+   "total_tokens": 87883,
+   "prompt_tokens_details": {
+    "cached_tokens": 0
+   }
+  },
+  "text": "watch memory quick the through dog quick."
+ }
+}

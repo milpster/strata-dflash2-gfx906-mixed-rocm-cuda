@@ -36,6 +36,7 @@
 #include <cstddef>
 #include <condition_variable>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -93,6 +94,16 @@ struct HostMemory {
 bool host_available_memory(HostMemory& m, const std::string& meminfo = "/proc/meminfo",
                            const std::string& self_cgroup = "/proc/self/cgroup",
                            const std::string& cgroup_root = "/sys/fs/cgroup");
+
+/// #4051: wait for the RAM an arena needs to come back.  An engine that was still exiting (or a program that was ending)
+/// holds memory a few seconds longer than its process; loading into that shortfall sent a 60 GiB host into reclaim for
+/// good.  Calls `sample(available)` (false: the RAM cannot be read; the wait ends) every `step_s` seconds, through
+/// `sleep(step_s)`, until `available >= need` or `max_wait_s` seconds have gone.  `waited` gets the seconds waited,
+/// `available` the last reading.  True when the RAM is there.  `progress(waited, available)` is called about every
+/// `note_s` seconds while waiting.  `max_wait_s <= 0` is no wait at all.
+bool wait_for_ram(uint64_t need, double max_wait_s, double step_s, double note_s,
+                  const std::function<bool(uint64_t&)>& sample, const std::function<void(double)>& sleep,
+                  const std::function<void(double, uint64_t)>& progress, double& waited, uint64_t& available);
 
 /// Bound a resident budget by RAM and commit capacity after headroom; leave 256 MiB more when clamping.
 /// Pass UINT64_MAX for commit when the platform does not report it.
@@ -671,7 +682,7 @@ int tail_skip_rank();
 void set_tail_skip_rank(int r);
 
 void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32_t* ids, int64_t n_tok, int64_t k,
-                                float* out);
+                                float* out, strata::kernels::cpu::NativeArithmetic arithmetic = strata::kernels::cpu::NativeArithmetic::Default);
 
 /// R2 (opt-in, the out-of-process CUDA expert helper; src/core/expert_helper_fallback.cpp): recompute
 /// EXACTLY the claimed (token,k) rows on the CPU after the helper's finish failed.  `claimed` lists
@@ -878,7 +889,11 @@ public:
     /// windows, with no adaptive round in flight.  A failed read leaves the copy as it was.  Not with
     /// STRATA_EXCHANGE_ROTATE (false, nothing changes).
     bool replace_resident(int64_t layer, int64_t in, int64_t out);
+    /// STRATA_RAM_ADAPT: the same move as replace_resident, but `in` is copied out of the finished stage buffer
+    /// a demand read left it in (no file read).  False, nothing changed, when `in` is not staged or still filling.
+    bool replace_resident_staged(int64_t layer, int64_t in, int64_t out);
     int64_t ram_adapts() const { return ram_adapts_; }
+    int64_t ram_staged() const { return ram_staged_; }   ///< of ram_adapts(): copied out of a stage buffer
     // ---- 149-prefetch (STRATA_RAM_ADAPT2): the same promotion, staged.  `ram_stage` queues the read of `in` on an I/O thread
     // (false: already queued, the queue is full, or no compact copy); `ram_install` - called by the decode thread at a window
     // boundary, when no window reads the RAM copy - puts every read that has landed into `out`'s place, unless the GPU tier
@@ -1165,7 +1180,8 @@ private:
     std::unordered_map<int64_t, size_t> stage_of_;
     uint64_t stage_blob_ = 0;
     uint64_t stage_seq_ = 0;
-    int64_t ram_adapts_ = 0;                  ///< replace_resident: experts moved from the file into the compact copy
+    int64_t ram_adapts_ = 0;                  ///< replace_resident(_staged): experts moved into the compact copy
+    int64_t ram_staged_ = 0;                  ///< replace_resident_staged: of those, copied out of a stage buffer
     std::vector<uint8_t> ram_adapt_buf_;      ///< ...one blob, read here before it replaces another
     // 149-prefetch: the staged promotions (ram_stage / ram_install)
     struct RamJob { int64_t layer, in, out; std::vector<uint8_t> buf; int state; };   ///< state 0 queued, 1 reading, 2 landed, 3 failed
@@ -1323,6 +1339,17 @@ public:
     /// `blob` without the read counter: a pure pointer into the arena, safe from another thread (the async adaptive
     /// tier's job thread)
     const uint8_t* blob_at(int64_t layer, int64_t expert) const;
+    /// W1: a dropped pair has no stable blob (its pages are gone), is not pinned, has no device alias, and its
+    /// `blob` is a short-lived staged read from the pack files - so `transient` is true for it and `copy_blob`
+    /// reads it straight into the caller's buffer.  Nothing changes for a pair that is not dropped.
+    const uint8_t* blob_stable(int64_t layer, int64_t expert) override;
+    bool transient(int64_t layer, int64_t expert) const override;
+    bool copy_blob(int64_t layer, int64_t expert, uint8_t* dst) override;
+    void note_async_read(const uint8_t* blob, void* stream) override;
+    void begin_layer(int64_t layer, const int32_t* ids, int64_t k) override;
+    void prefetch(int64_t layer, const int64_t* experts, int64_t n) override;
+    void warm(int64_t layer, const int64_t* experts, int64_t n) override;
+    bool warms() const override { return unfilled_.load(std::memory_order_relaxed) > 0; }
     int64_t reads() const { return reads_.load(std::memory_order_relaxed); }
     bool pinned(int64_t layer, int64_t expert) const override;
     const uint8_t* device_alias(int64_t layer, int64_t expert) const override;
@@ -1345,9 +1372,86 @@ public:
     /// Pin by need, after open(): the registered ranges (0 when the prefix rule, or nothing, is in force)
     size_t pin_ranges() const { return pin_start_.size(); }
 
+    /// W1 (--expert-helper-ram-relief, opt-in): the (layer, expert) pairs the out-of-process expert
+    /// helper holds, given to the source ONCE, after the helper's fill report.  The host arena keeps a
+    /// copy of every expert, the helper's pairs included, so a pair the helper computes rows for sits in
+    /// RAM twice; this gives those pages back to the OS and keeps the addresses (the arena's address
+    /// space is never given back).  A dropped pair is then:
+    ///   - no stable blob (`blob_stable`, `blob_at`), not pinned, no device alias;
+    ///   - `blob` reads it from the pack files into a short-lived buffer, so `transient` is true for it
+    ///     and every consumer copies it (the CPU windows, the cache fill, the prompt path's stager);
+    ///   - its rows come from the helper while the channel is open.
+    /// A pair inside a registered range is left alone: the driver pins those pages and the GPU has an
+    /// alias into them, so releasing them is not safe.  Under the flag the arena is built WITHOUT the
+    /// whole-arena registration and `register_complement()` registers everything but the held pairs
+    /// first, so the held pages are plain and this drops them (measured without that order: all 4116
+    /// held pairs sat inside the registration and nothing could be dropped).
+    /// Never called without the flag: today's behaviour, byte for byte.
+    void set_unfilled(std::vector<std::pair<int32_t, int32_t>> pairs);
+    /// STRATA_WINDOW_POPULATE=1 (opt-in, the per-pair inverse of set_unfilled): a dropped pair a window read
+    /// (`blob` took its pack-file path, note_dropped_read) is read back from the pack files into its arena
+    /// address, its range registered (V4-r2's rule: a pair that is neither dropped nor registered has no
+    /// DMA-legal address) and its flag cleared, so the next refill takes the fast arena path instead of the
+    /// pack files — exactly what refill_run's relief no-op (the documented helper-loss degrade) never does.
+    /// SAFE ONLY on a single-reader call point: the request's serial path (no batch, no pipeline windows, no
+    /// peer/remote/swap caches, single stage, no async tier) at the request's end, the sole reader of the
+    /// pin/alias tables it rebuilds.  A pair the driver refuses to register stays dropped and file-served,
+    /// today's degrade.  Returns the pairs refilled.  Without ram-relief: a no-op (nothing is dropped).
+    int64_t refill_recorded_pairs();
+    /// STRATA_WINDOW_POPULATE=1: record a dropped pair whose `blob` took the pack-file path (file_mu_ HELD).
+    /// Bounded: an overflow loses records, never serves a wrong pair.  A pair the prompt path re-reads in
+    /// every chunk was recorded every time (measured 2026-11-05: a 10.1k-token prompt, ~300 chunks on the
+    /// same pairs), so the 8192 cap filled with duplicates and kept the early chunks.  The seen map records
+    /// a pair once per request cycle: it swaps empty with dropped_reads_ in refill_recorded_pairs, where
+    /// refill's own flag check stays the backstop.
+    void note_dropped_read(int64_t layer, int64_t expert) {
+        if (dropped_reads_.size() >= 8192) return;   // overflow loses records, as before
+        const int64_t key = layer * n_expert_ + expert;
+        if (dropped_reads_seen_.find(key) != dropped_reads_seen_.end()) return;
+        dropped_reads_seen_.emplace(key, 0);
+        dropped_reads_.emplace_back((int32_t) layer, (int32_t) expert);
+    }
+    /// W1 (--expert-helper-ram-relief): build the arena without the whole-arena registration (and
+    /// without the working-set lock), so the fill writes plain pages.  Call before open().
+    void set_ram_relief(bool on) { ram_relief_ = on; }
+    /// W1: after the helper's fill report, register everything EXCEPT the pairs set_unfilled()
+    /// actually gave back (a pair that is neither dropped nor registered has no DMA-legal address;
+    /// V4-r2), then rebuild the alias tables over the registered complement.  No working-set lock:
+    /// the registration pins what it covers, and locking the dropped holes would fault them back
+    /// (or, before the drop, refuse the MADV_DONTNEED itself - unlimited mlock boxes).
+    /// Call after set_unfilled().
+    void register_complement(const std::vector<std::pair<int32_t, int32_t>>& held);
+    /// W1: rebuild pin_start_/pin_end_/pin_dev_/layer_pcie_ from the arena's registered ranges -
+    /// the same build open() does for a pin-by-need arena, run again after register_complement().
+    void apply_registration();
+    /// How many pairs are dropped, and the bytes given back (0: the flag did nothing on this source)
+    int64_t unfilled_pairs() const { return unfilled_.load(std::memory_order_relaxed); }
+    uint64_t unfilled_bytes() const { return unfilled_bytes_; }
+    /// W1, the channel-loss path: read the dropped pairs back into the reserved addresses from the pack
+    /// files, clearing them as each lands.  This runs when the helper's residency is RELEASED - the
+    /// helper died mid-run - and the CPU has to serve their rows: with no host copy there would be
+    /// nothing to serve them from, so the run re-reads them and degrades exactly as a no-helper run.
+    /// Asks a background thread; never blocks the thread that noticed the loss.
+    void refill_unfilled();
+
     /// What backing was obtained and why, for the startup print.  "The engine adapts to the machine it is on" is
     /// only true if the engine says what it got.
     const std::string& note() const { return note_; }
+    /// #4846: called by `open` once, when the RAM still falls short of the arena after the wait and before anything is registered.
+    /// The owner of a lock the engine took on its own (the PLE table's residency lock) gives it back here and returns the bytes
+    /// it released (0: nothing to give); `open` then reads the available RAM again.  Unset: nothing is given back.
+    std::function<uint64_t()> give_back_ram;
+    /// #4846 (owner 11-01): set before `open` when a RAM shortage that survives the wait and the give-back must not be loaded into
+    /// (arena_ram_verdict, ple_residency.hpp).  `open` then registers and allocates nothing, returns false with `ram_short()` true and the
+    /// numbers in `err`; the caller uses the --mmap-experts source for this run.  Unset: the shortage is only warned about, as before.
+    bool fall_back_when_ram_short = false;
+    /// --ram-keep-gib W, in bytes (0: none): the arena is chosen only if this much RAM stays available after it (ple_residency.hpp,
+    /// arena_need_with_keep).  Set before `open`.  With the fallback not allowed the shortfall is only warned about, as for any other.
+    uint64_t ram_keep_bytes = 0;
+    /// The headroom the arena must find under a HARD memory limit (cgroup, container, job object) beyond its own size when the fallback is
+    /// allowed: the RAM copy's headroom (ple_residency.hpp, arena_hard_limit_need).  0: none.  Set before `open`.
+    uint64_t hard_limit_headroom_bytes = 0;
+    bool ram_short() const { return ram_short_; }
     /// #633: set by `open` when the RAM available is less than the arena needs (a recommendation; it still loads)
     const std::string& ram_warning() const { return ram_warning_; }
     uint64_t pinned_arena_bytes() const { return pinned_bytes_; }   ///< what the driver registered (the pinned prefix, or the total by need)
@@ -1371,6 +1475,7 @@ private:
     std::atomic<int64_t> reads_{0};   ///< (a counter only; two threads can read blobs at once)
     std::string note_;
     std::string ram_warning_;
+    bool ram_short_ = false;
     double gib_per_s_ = 0.0;
     double load_seconds_ = 0.0;
     double load_read_s_ = 0.0;
@@ -1393,6 +1498,34 @@ private:
     /// index of the registered range holding [off, off + len), or -1
     int64_t pin_range_of(uint64_t off, uint64_t len) const;
     std::string gguf_;
+
+    // ---- W1 (--expert-helper-ram-relief): the pairs dropped out of the arena, and the pack files they
+    // come back from.  Empty `unfilled_flag_` (never set) is today's source, byte for byte.
+    std::vector<uint8_t> unfilled_flag_;      ///< (layers x experts): 1 = the pages are given back
+    std::vector<std::pair<int32_t, int32_t>> dropped_reads_;   ///< STRATA_WINDOW_POPULATE: dropped pairs a window read (see refill_recorded_pairs)
+    std::unordered_map<int64_t, char> dropped_reads_seen_;     ///< note_dropped_read's dedup: pairs recorded this cycle, swapped empty with dropped_reads_ at refill_recorded_pairs
+    bool ram_relief_ = false;                 ///< W1: open() builds the arena with nothing registered
+    std::atomic<int64_t> unfilled_{0};
+    uint64_t unfilled_bytes_ = 0;
+    uint64_t arena_capacity_ = 0;             ///< open()'s arena bytes (the spare blob on top)
+    bool shared_backing_ = false;             ///< a shared-file arena: MADV_DONTNEED would zero the FILE
+    std::string pack_dir_;                    ///< open()'s pack dir, for the file fallback
+    mutable std::unique_ptr<FileExpertSource> file_;  ///< the pack files: opened on the first dropped-pair read
+    mutable std::mutex file_mu_;
+    std::thread refill_;                      ///< refill_unfilled()'s background read
+    std::atomic<bool> refill_running_{false};
+    /// The pack files, opened on demand (W1).  `file_mu_` HELD by the caller.  Null when they cannot be
+    /// opened: a dropped pair then has no blob and every caller refuses that window with its existing
+    /// named failure.
+    FileExpertSource* file_source() const;
+    /// The refill thread's body: re-read every dropped pair into its arena address, clearing it as it
+    /// lands.  Runs on `refill_`, joined by close().
+    void refill_run();
+    bool unfilled_at(int64_t layer, int64_t expert) const {
+        const size_t i = (size_t) (layer * n_expert_ + expert);
+        return !unfilled_flag_.empty() && layer >= 0 && expert >= 0 && expert < n_expert_ &&
+               i < unfilled_flag_.size() && unfilled_flag_[i] != 0;
+    }
 };
 
 /// Plan v0.3 P6: checks native_experts.txt's GGUF spans against the files, before anything is read: each layer's

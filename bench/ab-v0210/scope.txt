@@ -1,0 +1,8 @@
+# A/B scope 2026-11-03T19:38:52+01:00
+armA: worktree 872e3dac binaries (sha256s in armA/SHA256SUMS), serve=worktree copy
+armB: c6125e09442d7a08c6908ca844a87837bef85c92 (v0.2.10-193-gc6125e09)
+engine args/env: prod-config-swift15-dflash-w4-q4_0-mixed.json minus vision/mcp, port 8019, bench sockets
+model: /mnt/user/ai/iq3xxs-15 + Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf (IQ3_XXS)
+rocm: 6.1.0 + rocm-gfx906-xnack libs; uptime:  19:38:52 up  6:52,  2 users,  load average: 11.80, 9.85, 6.26
+
+arm C note: stock v0.2.10 needed a compile-only fix (iq_kernels.cu alignas int4, upstream issue #778 rule) to build for gfx906; branch stock-v0210-gfx906-buildfix in ../strata-stock-v0210 (8d971374 + 0c404bf8: the alignas int4 macro, STRATA_USE_HIP for dflash2.cpp, two stream-priority compat defines). No runtime mods.

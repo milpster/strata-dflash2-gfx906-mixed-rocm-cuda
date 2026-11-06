@@ -63,6 +63,10 @@ build-vision-cuda12.bat
 /.ccache/
 /.rocm-win/
 
+# Optional MCP raster cache
+*.tool-media/
+/.tool-media/
+
 # local Windows HIP packaging output
 dist-hip/
 
@@ -101,3 +105,21 @@ node_modules/
 .tldr/
 .tldrignore
 /*.o
+# DGX Spark build outputs and local venv (docs/DGX_SPARK_LINUX.md)
+/out-spark/
+/build-spark/
+/build-vision-spark/
+/.venv-build/
+
+# frozen A/B arm copies (provenance: armA/SHA256SUMS)
+bench/ab-v0210/armA/bin/
+bench/ab-v0210/armA/serve/
+bench/ab-v0210/armA/tools/
+bench/ab-v0210/armA/strata_control/
+
+# tool caches / runtime outputs
+.serena/
+strata-server.out
+results.db
+results.json
+results.sysinfo.txt

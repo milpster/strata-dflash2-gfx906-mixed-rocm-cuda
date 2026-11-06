@@ -30,7 +30,7 @@ for spec in ${1:-"rpcw-cuda-nmse2:rpcw-cuda-l8 rpcw-hip-nmse2:rpcw-hip-l8"}; do
     # l8-build.log 2026-11-02; the l3w1 lesson again).
     mapfile -t args < <(grep -E '^(STRATA_|GGML_|CMAKE_BUILD_TYPE|CMAKE_HIP_)' \
           "build-mixed-gpu/$src/CMakeCache.txt" | grep -v ADVANCED | sed 's/^/-D/')
-    args+=('-DCMAKE_PREFIX_PATH=${STRATA_ROCM_ROOT:-/home/user/rocm-gfx906-xnack};/opt/rocm-6.1.0'
+    args+=(-"-DCMAKE_PREFIX_PATH=${STRATA_ROCM_ROOT:-/home/user/rocm-gfx906-xnack};/opt/rocm-6.1.0"
            -DROCM_PATH=/opt/rocm-6.1.0
            -DHIP_PATH=/opt/rocm-6.1.0
            -DHIP_ROOT_DIR=/opt/rocm-6.1.0)

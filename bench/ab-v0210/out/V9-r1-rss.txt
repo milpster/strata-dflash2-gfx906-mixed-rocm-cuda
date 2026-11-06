@@ -1,0 +1,12 @@
+== 23:00:13 V9 r1 RSS snapshot
+pid 4065079 /home/user/dev/Strata/build-v0210/rpcw-hip/strata --serve --gpu 0,1 -
+Rss:            57123144 kB
+Pss:            56361316 kB
+Pss_File:        7356432 kB
+Anonymous:      49004884 kB
+pid 4064339 /home/user/dev/Strata/build-v0210/rpcw-cuda/strata-expert-helper --pa
+Rss:             1705648 kB
+Pss:              942840 kB
+Pss_File:         824088 kB
+Anonymous:         48312 kB
+Mem:              62          54           2           0           9           7

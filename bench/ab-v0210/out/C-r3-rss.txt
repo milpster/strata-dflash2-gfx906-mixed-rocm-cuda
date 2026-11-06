@@ -1,0 +1,7 @@
+== 19:27:43 C r3 RSS snapshot
+pid 1064927 /home/user/dev/strata-stock-v0210/build/rpcw-hip/strata --serve --gpu
+Rss:            46370324 kB
+Pss:            46365687 kB
+Pss_File:         158263 kB
+Anonymous:      46207424 kB
+Mem:              62          54           1           0           9           8
