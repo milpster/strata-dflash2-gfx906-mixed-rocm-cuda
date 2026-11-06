@@ -18,6 +18,7 @@ import re
 import signal
 import stat
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -35,6 +36,8 @@ HELPER_FAILURES = (
 FILLED = re.compile(r"expert-helper: filled [1-9][0-9]* slots\b|"
                     r"expert-helper: fill stopped: [^\n]*\([1-9][0-9]* slots, [0-9.]+ [GM]iB uploaded")
 PROXY = re.compile(r"expert-helper proxy: [1-9][0-9]* experts\b")
+STAGE_SCRIPT = Path(__file__).resolve().parent / "staging_affinity.py"
+STAGE_ATTEMPTS = 10  # Monitor intervals; staging threads exist well before attach.
 
 
 def helper_degraded(line: str) -> bool:
@@ -137,6 +140,21 @@ def engine_process(server: int, executable: Path, known: dict[int, str]) -> tupl
         except OSError:
             continue
     return None
+
+
+def apply_stage_affinity(engine: tuple[int, str], cpus: str, snapshot: Path) -> tuple[bool, int | None, bool, str | None]:
+    """One bounded application of the staging-thread move; the tool snapshots first."""
+    result = subprocess.run(
+        [sys.executable, str(STAGE_SCRIPT), "apply", "--pid", str(engine[0]),
+         "--cpus", cpus, "--snapshot", str(snapshot)],
+        capture_output=True, text=True, timeout=30)
+    moved = re.search(r"Moved (\d+) staging threads", result.stdout)
+    error = None
+    if result.returncode != 0:
+        lines = (result.stderr or result.stdout).strip().splitlines()
+        error = lines[-1] if lines else f"exit status {result.returncode}"
+    return (result.returncode == 0, int(moved.group(1)) if moved else None,
+            "No CPU-0 strata-stage threads found" in result.stderr, error)
 
 
 class LogTail:
@@ -262,6 +280,8 @@ def supervise(args: argparse.Namespace) -> int:
                 owned: dict[Path, tuple[int, int]] = {}
                 healthy = False
                 engine_attached = False
+                stage_attempts = 0
+                stage_result: dict | None = None
                 reason = "launcher exited"
                 publish = dict(supervisor_pid=os.getpid(), launcher_pid=child.pid,
                                generation=generation, state="starting", timestamp=time.time())
@@ -335,6 +355,33 @@ def supervise(args: argparse.Namespace) -> int:
                                 healthy = True
                                 publish.update(state="attached", attached_at=time.time())
                                 write_json(args.state, publish)
+                            # The engine re-pins its strata-stage threads to CPU 0 at
+                            # every start, and the hostapp shares that core. Re-apply the
+                            # approved move for this engine incarnation after attach.
+                            if (args.stage_cpus and healthy and engine is not None
+                                    and stage_result is None
+                                    and stage_attempts < STAGE_ATTEMPTS):
+                                stage_attempts += 1
+                                suffix = "" if stage_attempts == 1 else f".retry{stage_attempts}"
+                                snapshot = args.state.with_name(
+                                    f"{args.state.stem}-affinity-{engine[0]}-{engine[1]}{suffix}.json")
+                                try:
+                                    applied, moved, retryable, error = apply_stage_affinity(
+                                        engine, args.stage_cpus, snapshot)
+                                except subprocess.TimeoutExpired:
+                                    applied, moved, retryable, error = (False, None, False,
+                                                                        "staging-affinity tool timed out")
+                                if applied:
+                                    stage_result = {"state": "applied", "moved": moved,
+                                                    "snapshot": str(snapshot)}
+                                elif not retryable or stage_attempts >= STAGE_ATTEMPTS:
+                                    # Threads may spawn late; otherwise record and move on.
+                                    # An affinity miss never restarts the pair by itself.
+                                    stage_result = {"state": "failed", "error": error}
+                                if stage_result is not None:
+                                    publish["stage_affinity"] = dict(stage_result,
+                                                                    cpus=args.stage_cpus)
+                                    write_json(args.state, publish)
                         if child.poll() is not None:
                             break
                         if not healthy and time.monotonic() - started > args.startup_timeout:
@@ -388,6 +435,8 @@ def main() -> int:
     run.add_argument("--max-backoff", type=float, default=30)
     run.add_argument("--nice", type=int, default=0, choices=range(20), metavar="0..19",
                      help="nice increment inherited by the launcher, helper, server and engine")
+    run.add_argument("--stage-cpus", metavar="CPUS",
+                     help="after attach, move CPU-0 strata-stage threads to these logical CPUs (opt-in)")
     args = parser.parse_args()
     if args.command == "record":
         peers = {key: getattr(args, key) for key in ("helper_pid", "server_pid", "engine_log", "helper_log")}
@@ -408,6 +457,16 @@ def main() -> int:
     if not all(math.isfinite(value) and value > 0 for value in
                (args.interval, args.stop_timeout, args.startup_timeout, args.backoff, args.max_backoff)):
         parser.error("timeouts and backoff must be positive")
+    if args.stage_cpus:
+        if args.config is None:
+            parser.error("--stage-cpus requires --config for engine discovery")
+        try:
+            target = sorted({int(value) for value in args.stage_cpus.split(",")})
+        except ValueError:
+            parser.error("--stage-cpus must be a comma-separated list of logical CPUs")
+        if not target or 0 in target or not set(target) <= os.sched_getaffinity(0):
+            parser.error("--stage-cpus must be allowed on this host and must exclude CPU 0")
+        args.stage_cpus = ",".join(map(str, target))
     return supervise(args)
 
 

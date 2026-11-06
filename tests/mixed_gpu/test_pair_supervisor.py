@@ -20,6 +20,10 @@ if sys.platform.startswith("linux"):
     spec = importlib.util.spec_from_file_location("pair_supervisor", SCRIPT)
     pair = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(pair)
+    staging_spec = importlib.util.spec_from_file_location(
+        "staging_affinity", ROOT / "tools/mixed_gpu/staging_affinity.py")
+    staging = importlib.util.module_from_spec(staging_spec)
+    staging_spec.loader.exec_module(staging)
 
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "Linux process/socket ownership")
@@ -170,6 +174,41 @@ class RecoveryTests(ScratchTest):
         after = self.assert_replaced(before)
         for name in ("helper", "server", "engine"):
             self.assertEqual(os.getpriority(os.PRIO_PROCESS, after[f"{name}_pid"]), min(19, baseline + 1))
+
+    def test_stage_affinity_applied_after_attach_and_each_new_engine(self):
+        allowed = sorted(os.sched_getaffinity(0))
+        if 0 not in allowed:
+            self.skipTest("host does not expose CPU 0")
+        target = [cpu for cpu in allowed if cpu != 0]
+        self.start_pair(extra_args=("--stage-cpus", ",".join(map(str, target))))
+        first = self.attached()
+        applied = self.wait_state(
+            lambda state: state.get("stage_affinity", {}).get("state") == "applied")
+        self.assertEqual(applied["engine_pid"], first["engine_pid"])
+        self.assertGreaterEqual(applied["stage_affinity"]["moved"], 1)
+        saved = json.loads(Path(applied["stage_affinity"]["snapshot"]).read_text())
+        self.assertEqual(saved["pid"], first["engine_pid"])
+        stage_threads = [thread for thread in staging.threads(first["engine_pid"])
+                         if thread["name"] == "strata-stage"]
+        self.assertTrue(stage_threads)
+        self.assertEqual([thread["cpus"] for thread in stage_threads], [target] * len(stage_threads))
+        # The engine re-pins staging threads at every start, so a recovery
+        # generation must re-apply the move for the new incarnation.
+        os.kill(first["engine_pid"], signal.SIGKILL)
+        second = self.assert_replaced(first)
+        again = self.wait_state(
+            lambda state: state["generation"] == second["generation"]
+            and state.get("stage_affinity", {}).get("state") == "applied")
+        self.assertNotEqual(again["stage_affinity"]["snapshot"],
+                            applied["stage_affinity"]["snapshot"])
+        self.assertEqual(json.loads(Path(again["stage_affinity"]["snapshot"]).read_text())["pid"],
+                         second["engine_pid"])
+
+    def test_stage_cpus_rejecting_cpu_zero_refuses_to_run(self):
+        self.start_pair(extra_args=("--stage-cpus", "0,1"))
+        self.assertEqual(self.process.wait(timeout=12), 2)
+        self.assertIn("must exclude CPU 0",
+                      (self.root / "supervisor.log").read_text())
 
     def test_unfilled_live_helper_never_becomes_attached_and_is_retried(self):
         self.start_pair({"FAKE_NO_FILL": "1"}, ("--startup-timeout", "1"))

@@ -116,7 +116,38 @@ request, and the supervisor rebuilt the pair 3 times with all KV lost.
   detected instantly and the supervisor rebuilds the pair.
 - Verified GPU-free: the override line prints only when set, is silent when
   unset; `expert_helper_socket_test` passes; the 27-test `tests/mixed_gpu` suite
-  passes; the config JSON validates. Not yet verified on the live GPU pair.
+  passes; the config JSON validates. Verified live on Nov 6 evening: through a
+  ~7-minute mid-request GPU wedge (19:54-20:01) the helper channel stayed open,
+  no CPU-fallback line appeared, and the pair held `attached` generation 1. The
+  restart that finally came was the server's own STOP watchdog (`engine_silence_s`
+  300) after the client canceled - about 12 minutes end to end. That slowness is
+  the next problem, not the helper's.
+
+### Stage-thread affinity at attach (2026-11-06 evening)
+
+The engine pins its `strata-stage` threads to CPU 0 at every start, and the hostapp
+shares that core (66% host wait was measured on Oct 27 while background-load). A runtime
+move survives only until the next engine start, and the supervisor now restarts
+the engine on every recovery - so the move had to become part of startup.
+
+- `pair_supervisor.py run` gains an opt-in `--stage-cpus CPUS`. After the pair
+  turns `attached`, and again for every later generation, the supervisor runs
+  the existing `staging_affinity.py apply` for the discovered engine PID: only
+  threads named `strata-stage` whose mask is exactly CPU 0 move, snapshot-first,
+  exactly the approved trial from the coexistence journal.
+- Every application writes a rollback snapshot beside the state file
+  (`run/<state-stem>-affinity-<engine-pid>-<start>.json`); roll back with
+  `staging_affinity.py restore --snapshot <file>`. Snapshots accumulate one per
+  engine incarnation.
+- Results land in the state JSON under `stage_affinity` (`applied`/`failed`,
+  moved count, snapshot path). A failure never restarts the pair by itself; the
+  supervisor tries for 10 monitor intervals, records the outcome, and moves on.
+- All six supervised launchers pass `--stage-cpus 3,5,7,9,11,13,15`. Without the
+  flag the supervisor is byte-for-byte the old behavior. `--single-run` (the
+  diagnostic path, no supervisor) does not apply affinity.
+- Verified by the fixture tests: the fake engine now names itself `strata-host`
+  and carries a CPU-0 `strata-stage` thread; the suite (29 tests) checks the
+  move at attach, the fresh move after an engine kill, and the CPU-0 refusal.
 
 ## CPU-only regression tests
 

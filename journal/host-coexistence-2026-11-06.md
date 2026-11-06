@@ -136,3 +136,14 @@
   were 0; inspect newly created engine threads as well if rolling back later.
 - Pre-existing modified supervisor files and untracked runtime files were left
   untouched. Final documentation is committed separately from the trial tool.
+
+## Wired into pair startup (2026-11-06 evening)
+
+The trial above proved the engine re-pins staging threads to CPU 0 at every
+start, so a runtime move dies with each supervisor recovery generation. The
+move is now startup work: `pair_supervisor.py run --stage-cpus 3,5,7,9,11,13,15`
+(what all six prod launchers pass) applies `staging_affinity.py apply` for the
+discovered engine right after `attached`, every generation, snapshot-first,
+results in the state JSON under `stage_affinity`. An affinity miss never
+restarts the pair. `--single-run` runs without it. Details and limits:
+`docs/PAIR_SELF_HEALING.md`, section "Stage-thread affinity at attach".

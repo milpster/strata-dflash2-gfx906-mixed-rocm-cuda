@@ -1,4 +1,5 @@
 """CPU-only pair fixture. All files/sockets belong to the test's scratch tree."""
+import ctypes
 import json
 import os
 from pathlib import Path
@@ -78,6 +79,17 @@ def publish(helper, server, helper_log):
 
 if mode == "engine":
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    libc = ctypes.CDLL(None, use_errno=True)
+    # The staging-affinity tool only accepts a process named strata-host.
+    libc.prctl(15, b"strata-host", 0, 0, 0)  # PR_SET_NAME
+
+    def staging():
+        libc.prctl(15, b"strata-stage", 0, 0, 0)
+        if 0 in os.sched_getaffinity(0):  # Mirror the engine's CPU-0 staging pin.
+            os.sched_setaffinity(0, {0})
+        threading.Event().wait(120)
+
+    threading.Thread(target=staging, daemon=True).start()
     channels = []
     for name in ("one.sock", "two.sock"):
         channel = socket.socket(socket.AF_UNIX)
