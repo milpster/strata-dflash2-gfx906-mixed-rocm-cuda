@@ -17,6 +17,10 @@
 # the CUDA runtime honors; the HIP/ROCR runtime IGNORES it. A --gpu-less run of THIS build can
 # still open a small context on a card - keep the encoder off the cards with the env the ROCm
 # stack honors instead: HIP_VISIBLE_DEVICES="" ROCR_VISIBLE_DEVICES="" strata-vision ... (no --gpu).
+#
+# NOTE (required): -DCMAKE_HIP_FLAGS="-Xcompiler -fPIC". CMake's HIP language does not add PIC to
+# the host code of ggml-hip's .cu objects, and linking libggml-hip.a into the PIE strata-vision
+# fails with "relocation R_X86_64_32 ... recompile with -fPIE".
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BUILD="$ROOT/build-vision-hip"
@@ -30,6 +34,7 @@ cmake -S "$ROOT/tools/vision" -B "$BUILD" -G Ninja \
   -DGGML_HIP=ON \
   -DCMAKE_HIP_COMPILER=/opt/rocm-6.1.0/llvm/bin/clang++ \
   -DCMAKE_HIP_ARCHITECTURES=gfx906 \
+  -DCMAKE_HIP_FLAGS="-Xcompiler -fPIC" \
   -DCMAKE_PREFIX_PATH=/opt/rocm-6.1.0
 cmake --build "$BUILD" --target strata-vision -j "$JOBS"
 echo "strata-vision (HIP/gfx906): $BUILD/bin/strata-vision"
