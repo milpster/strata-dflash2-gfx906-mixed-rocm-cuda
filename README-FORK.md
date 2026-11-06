@@ -2,6 +2,8 @@
 
 An engine fork of [Niko1221/Strata](https://github.com/Niko1221/Strata) (upstream **v0.2.10**) that runs **Qwen3.8-Flash-Next ("Swift 1.5")** on hardware stock Strata does not support — and beats stock on it.
 
+> **Made to be built and run by an agent, not by humans.** Compiling, installing, benching, promoting and operating this fork are agent workflows: pinned toolchains, custom libs, harness scripts and a mandatory speed+quality measurement discipline. A human gives orders and reads results — the agent executes and documents. Start at `JOURNAL.md` (session record), `bench/ab-v0210/out/RESULTS*.md` (verdicts) and the build guide below; `AGENTS.md` is the technical reference for AI tools.
+
 - **Runs where stock cannot**: stock v0.2.10 does not compile for AMD gfx906 (Radeon VII) as tagged; this fork builds and serves on it.
 - **Faster decode**: **+36–39 % tok/s** vs same-day stock (37.7–38.5 vs 27.6 tok/s; +48 % in the widest same-day frame).
 - **Faster chat**: **1.4–2.4×** faster short-prompt reads (214 / 620 / 4k tokens) plus **14–20 %** more from the prompt-stage memo.

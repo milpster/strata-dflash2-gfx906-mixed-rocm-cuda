@@ -964,3 +964,5 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
   libs first on prefix+LD_LIBRARY_PATH, exact configure lines from the build-v0210 caches, helper build, runtime
   env, hard-won configure/build lessons). Configure facts verified from build-v0210/{rpcw-hip,rpcw-cuda}
   CMakeCache.txt + tools/mixed_gpu/build_l3.sh; hardware from lscpu/rocm-smi/nvidia-smi/lsblk.
+- User follow-up 4: top-of-file callout added — the project is made to be compiled/installed/operated by an
+  agent, humans order and read (JOURNAL.md, RESULTS*.md, build guide, AGENTS.md).
