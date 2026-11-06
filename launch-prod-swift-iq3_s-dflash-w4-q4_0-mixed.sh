@@ -14,11 +14,16 @@ CONFIG="$ROOT/prod-config-swift-iq3_s-dflash-w4-q4_0-mixed.json"
 SOCKET="$ROOT/run/prod-swift-iq3_s-mixed.sock"
 SOCKET2="$ROOT/run/prod-swift-iq3_s-mixed2.sock"
 HELPER="$WORK/build-mixed-gpu/rpcw-cuda/strata-expert-helper"
-if [[ ${1:-} == --recover ]]; then
-  exec "$PY" "$WORK/tools/mixed_gpu/pair_supervisor.py" run --launcher "$0" \
-    --state "$ROOT/run/prod-swift-iq3_s-mixed-supervisor.json" --lock "$ROOT/run/mixed-supervisor.lock" \
-    --socket "$SOCKET" --socket "$SOCKET2"
-fi
+case "${1:-}" in
+  --pair-child)
+    [[ -n ${STRATA_PAIR_RECORD:-} ]] || { echo 'REFUSING unowned pair child.' >&2; exit 2; } ;;
+  --single-run) unset STRATA_PAIR_RECORD ;;
+  ''|--recover)
+    exec "$PY" "$ROOT/tools/mixed_gpu/pair_supervisor.py" run --launcher "$0" --config "$CONFIG" \
+      --state "$ROOT/run/prod-swift-iq3_s-mixed-supervisor.json" --lock "$ROOT/run/mixed-supervisor.lock" \
+      --socket "$SOCKET" --socket "$SOCKET2" --nice 1 ;;
+  *) echo 'Usage: launcher [--recover|--single-run]' >&2; exit 2 ;;
+esac
 command -v ss >/dev/null
 [[ -z $(ss -H -ltn 'sport = :8009') ]] || { echo 'REFUSING: port 8009 occupied.' >&2; exit 1; }
 [[ ! -e "$SOCKET" && ! -L "$SOCKET" ]] || { echo "REFUSING: existing socket $SOCKET" >&2; exit 1; }
@@ -52,6 +57,9 @@ env -i PATH="$PATH" HOME="$HOME" TERM="${TERM:-dumb}" "$HELPER" \
   --begin-timeout 1800000 --socket "$SOCKET" --fill-mib 6796 --socket2 "$SOCKET2" \
   >>"$HLOG" 2>&1 < /dev/null &
 helper_pid=$!
+if [[ -n ${STRATA_PAIR_RECORD:-} ]]; then
+  "$PY" "$ROOT/tools/mixed_gpu/pair_supervisor.py" record "$helper_pid" 0 "$LOG" "$HLOG"
+fi
 for ((i=0; i<300; i++)); do
   kill -0 "$helper_pid" 2>/dev/null || { echo "Helper exited; see $HLOG" >&2; exit 1; }
   if grep -q 'expert-helper: listening on' "$HLOG"; then break; fi
@@ -73,6 +81,6 @@ env -u CUDA_VISIBLE_DEVICES -u STRATA_ARENA_MMAP -u GPU_PINNED_MIN_XFER_SIZE \
   >>"$LOG" 2>&1 < /dev/null &
 server_pid=$!
 if [[ -n ${STRATA_PAIR_RECORD:-} ]]; then
-  "$PY" "$WORK/tools/mixed_gpu/pair_supervisor.py" record "$helper_pid" "$server_pid" "$LOG" "$HLOG"
+  "$PY" "$ROOT/tools/mixed_gpu/pair_supervisor.py" record "$helper_pid" "$server_pid" "$LOG" "$HLOG"
 fi
 wait "$server_pid"

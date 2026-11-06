@@ -9,10 +9,11 @@
 #         DIRECTLY with the exact args from prod-config-ud-iq3xxs-dflash-w4-q4_0-mixed.json
 #         (the --native-dense-gguf 4-shard fix). PASS = engine "session is up" + helper "engine
 #         connected" + a real "filled N slots" + NO "helper is absent/fill refused/0 requests" lines.
-# STAGE B (helper robustness): full ud launcher boot, completion #1, kill ONLY the engine, let
+# STAGE B (helper robustness): diagnostic --single-run boot, completion #1, kill ONLY the engine, let
 #         server.py restart it on the next request, and require the PERSISTENT helper to be
 #         reconnected (no permanent "helper connect failed" / CPU-path fallback) + completion #2.
-# STAGE C (cutover): the launcher pair from B is the new prod: verify /v1/models = ud-iq3_xxs.
+# STAGE C (cutover): replace the diagnostic pair with a default supervised pair; verify attachment,
+#         /v1/models = ud-iq3_xxs and a completion. Never leave --single-run as production.
 #
 # Final line: "VERDICT: PASS-CUTOVER" (xxs live) | "VERDICT: RESTORED iq3s-f16kv" + evidence lines.
 set -euo pipefail
@@ -33,6 +34,7 @@ AENG="$ROOT/logs/xxs-boot-test-$STAMP.log"        # stage A engine (contract-nam
 AHEL="$ROOT/logs/xxs-boot-test-$STAMP-helper.log"
 UD_MODEL=ud-iq3_xxs
 IQ3S_MODEL=swift-iq3_s-f16kv
+OWNED_SUPERVISOR= OWNED_SUPERVISOR_START=
 ev() { printf '%s\n' "$*" | tee -a "$SLOG"; }
 die_restore() { ev "STAGE FAILURE: $*"; restore_iq3s; }
 
@@ -42,8 +44,30 @@ engine_pids() { pgrep -f 'rpcw-hip/strata --serve' 2>/dev/null || true; }
 helper_pids() { pgrep -f 'rpcw-cuda/strata-expert-helper' 2>/dev/null || true; }
 ud_engine_pid() { pgrep -f 'rpcw-hip/strata --serve.*iq3xxs-ud' 2>/dev/null | head -1 || true; }
 port_up() { [[ -n $(ss -H -ltn 'sport = :8009' 2>/dev/null) ]]; }
+pid_start() {
+  [[ -r /proc/$1/stat ]] || return 1
+  local fields; fields=$(<"/proc/$1/stat")
+  fields=${fields##*) }
+  local -a parts; read -r -a parts <<< "$fields"
+  [[ ${parts[0]:-Z} != Z && -n ${parts[19]:-} ]] || return 1
+  printf '%s' "${parts[19]}"
+}
 
 stop_all() {  # idempotent: TERM server.py, engine, helper (launchers first: their traps reap children)
+  # Stop only the supervisor this driver started, before touching its children.
+  # A live supervisor otherwise respawns a pair during the restore sequence.
+  if [[ -n "$OWNED_SUPERVISOR" && -n "$OWNED_SUPERVISOR_START" && "$(pid_start "$OWNED_SUPERVISOR" || true)" == "$OWNED_SUPERVISOR_START" ]]; then
+    kill -TERM "$OWNED_SUPERVISOR" 2>/dev/null || true
+    for _ in $(seq 1 20); do
+      [[ "$(pid_start "$OWNED_SUPERVISOR" || true)" != "$OWNED_SUPERVISOR_START" ]] && break
+      sleep 2
+    done
+    if [[ "$(pid_start "$OWNED_SUPERVISOR" || true)" == "$OWNED_SUPERVISOR_START" ]]; then
+      ev 'CRITICAL: owned supervisor did not stop; refusing a competing restore.'
+      exit 1
+    fi
+  fi
+  OWNED_SUPERVISOR= OWNED_SUPERVISOR_START=
   pkill -TERM -f 'bash .*launch-prod-' 2>/dev/null && ev 'stop: launchers TERMed' || true
   sleep 3
   for pat in 'serve/server.py --engine strata' 'rpcw-hip/strata --serve' 'rpcw-cuda/strata-expert-helper'; do
@@ -122,9 +146,14 @@ restore_iq3s() {
 }
 
 start_ud_launcher() {  # sets the globals LPID UDLOG UDHLOG
-  UD_RUNLOG="$ROOT/logs/xxs-cutover-launch-$STAMP.out"
-  setsid nohup "$UD_LAUNCH" >> "$UD_RUNLOG" 2>&1 &
+  UD_RUNLOG="$ROOT/logs/xxs-cutover-launch-$STAMP${1:+-$1}.out"
+  setsid nohup "$UD_LAUNCH" "$@" >> "$UD_RUNLOG" 2>&1 &
   LPID=$!
+  if [[ ${1:-} != --single-run ]]; then
+    OWNED_SUPERVISOR=$LPID
+    OWNED_SUPERVISOR_START=$(pid_start "$LPID" || true)
+    [[ -n "$OWNED_SUPERVISOR_START" ]] || die_restore 'supervised launcher exited before ownership publication'
+  fi
   for _ in $(seq 1 15); do
     UDLOG=$(grep -oP '(?<=log: )[^\s;]+\.log' "$UD_RUNLOG" | head -1 || true)
     UDHLOG=$(grep -oP '(?<=helper: )[^\s]+\.log' "$UD_RUNLOG" | head -1 || true)
@@ -202,7 +231,7 @@ rm -f "$SOCKET" "$SOCKET2"
 
 # ---------- STAGE B: full ud launcher boot + hiccup simulation (engine killed, helper persists) ----------
 port_up && die_restore "port 8009 is still occupied after stage A"
-start_ud_launcher
+start_ud_launcher --single-run
 UD_ENGINE_BASE=$(wc -l < "$UD_ENGINE_LOG" 2>/dev/null || echo 0)
 if ! wait_models "$UD_MODEL" 420; then
   ev "engine log tail:"; tail -15 "$UD_ENGINE_LOG" | tee -a "$SLOG"
@@ -235,8 +264,16 @@ grep -q 'helper connect failed' <<<"$NEWSEG" && die_restore "hiccup: restarted e
 ev "STAGE B PASS: helper re-listened, engine reconnected ($CONNECT1 -> $CONNECT2 connections), completion #2: '${REPLY2:0:60}'"
 
 # ---------- STAGE C: this pair is the new prod ----------
+ev 'diagnostic hiccup passed; handing off to the default supervised production launcher'
+stop_all
+start_ud_launcher
+wait_models "$UD_MODEL" 420 || die_restore 'supervised cutover: model never became ready'
+REPLY3="$(completion "$UD_MODEL" low)"
+[[ -n "$REPLY3" ]] || die_restore 'supervised cutover: completion probe returned no content'
+"$PY" -c 'import json,sys; s=json.load(open(sys.argv[1])); sys.exit(0 if s["state"] == "attached" and s["supervisor_pid"] == int(sys.argv[2]) else 1)' \
+  "$ROOT/run/prod-ud-iq3xxs-mixed-supervisor.json" "$OWNED_SUPERVISOR" || die_restore 'supervised cutover: pair is not attached'
 grep -q "\"id\": \"$UD_MODEL\"" <<<"$(models_json)" || die_restore "cutover: /v1/models lost $UD_MODEL"
-ev "helper log re-listen line: $(grep -m1 -- '--persist: engine session' "$UDHLOG" | head -c 140)"
+ev 'final production pair is supervised; the --persist hiccup proof is in the diagnostic-stage log'
 ev "final pids: launcher $LPID, server $(server_pids | head -1), engine $(ud_engine_pid), helper $(helper_pids | head -1)"
 ev "kv mode: $(tr '\0' ' ' < "/proc/$(ud_engine_pid)/cmdline" | grep -oP '(?<=--kv )\S+')"
 ev "model: $UD_MODEL on 127.0.0.1:8009; server log: $UDLOG; helper log: $UDHLOG"

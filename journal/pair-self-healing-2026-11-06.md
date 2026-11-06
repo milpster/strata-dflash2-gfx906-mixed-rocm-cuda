@@ -1,0 +1,197 @@
+# Paired self-healing — 2026-11-06
+
+## Authorization and boundaries
+
+- User approved default paired supervision, engine/helper degradation detection,
+  and isolated recovery tests across the six mixed-GPU production launchers.
+- Follow-up: **do not kill production; fix its helper**. No live engine/server
+  restart or production failure injection is authorized. Keep hardening tests
+  CPU-only and isolated from production paths, sockets, and port 8009.
+- Branch: `pair-self-heal`, based on the completed background-load-priority work.
+- The deployed `v0210` engine, helper binary, server, and model settings stay
+  unchanged. A later cutover requires separate approval.
+
+## Findings
+
+- Launchers currently supervise the pair only with `--recover`; their normal
+  entry path bypasses recovery. The frozen supervisor detects helper/server death
+  and helper-channel failure, but does not directly watch the engine process.
+- The helper is absent and both original socket paths are absent. At 16:05 the
+  RTX 3080 had 112 MiB used of 8192 MiB, with no helper compute process.
+- Engine PID 233080 (started 15:33:51), server PID 2533023 remain live, serving
+  swift-1.5-iq3_xxs-f16kv. Engine nice +1 remains active.
+- Source inspection confirms helper connection happens during engine startup;
+  failed connection leaves `helper_tier_p` unset for the entire run. The server
+  only forwards helper socket options when starting the engine. No supported
+  hot-attach control was found. Restarting a helper cannot retrofit the already
+  running engine; do not claim it restored GPU expert computation.
+- The helper's normal disconnect exit unbinds its own sockets. Its `--persist`
+  reconnect path has the refill-budget issue already documented in the XXS
+  journal, so the live rescue should use a fresh helper process per session.
+
+## Non-disruptive helper rescue
+
+- User was told the precise change before application: restore the original
+  helper as a helper-only auto-restarting user service, at nice +1. No authority
+  to signal, replace, or restart the engine/server is included.
+- Entry point: `bash tools/mixed_gpu/restore-live-helper.sh`. It refuses existing
+  socket paths and is idempotent when its service is active. It starts a transient
+  `strata-swift15-helper.service` with the original pack, slot and fill budgets,
+  both original sockets, and `Restart=always` (also covers a clean disconnect).
+- This prepares the next natural engine start. The current CPU-fallback run is
+  not expected to connect. A listener alone is not evidence of an active helper
+  tier; require an actual engine connection and fill before claiming that.
+- Caveat: a hard-killed helper can leave socket files. The rescue never removes
+  unknown files; full owned-socket cleanup belongs to the pending pair hardening.
+- This is transient runtime recovery, not boot persistence or full hardening.
+
+Rescue validated:
+
+- Service active/running, MainPID 817332, Restart=always, Nice=1, NRestarts=0.
+- Both original Unix sockets are listening, owned by helper PID 817332; its log
+  reports both listeners. It has not reported an engine connection or fill.
+- Re-running the rescue entry point reports the existing active service and
+  starts no duplicate.
+- `/health` remains HTTP 200, loaded/ok. Engine 233080 and server 2533023 still
+  exist with their original process names. A `ps` diagnostic timed out under
+  host load, so direct `/proc/PID/comm` reads verified them instead.
+- No signal was sent to the engine/server. Neither was restarted by this
+  session. This helper-only rescue was subsequently removed, as recorded below.
+
+### Correction: an unattached listener is not recovery
+
+- User correctly rejected keeping an idle helper alive as self-healing. It
+  restores no GPU computation for the engine already in permanent CPU fallback.
+- Before stopping the rescue, verified the service still had PID 817332 with
+  zero restarts, only two listener log lines, and both sockets in LISTEN state
+  with no accepted engine connection.
+- Stopped only `strata-swift15-helper.service`. It is now inactive/not-found,
+  MainPID=0. `/health` remains HTTP 200, loaded/ok. Engine PID 233080 still has
+  start token 1846487 and parent/server 2533023, at nice +1.
+- Removed the uncommitted helper-only rescue script. No idle rescue service is
+  part of the final solution. A supervisor may claim recovery only after helper
+  attachment and positive fill, never merely because a listener is alive.
+- The live CPU-fallback engine cannot be fixed non-disruptively by this design;
+  enabling paired recovery still requires a separately approved engine restart.
+
+## Hardening evidence plan
+
+- Promote the existing supervisor into tracked local source, not the frozen
+  deployment. Make ordinary production launches supervised, retain `--recover`
+  compatibility, and provide an explicit diagnostic single-run mode.
+- Use one lock for the shared port, preserve process-start ownership and exact
+  socket-inode cleanup, keep bounded teardown and restart backoff.
+- Watch the owned engine as well as helper/server; detect newly logged helper
+  CPU fallback without confusing historical engine-log lines with this boot.
+- CPU-only fixtures will exercise peer deaths, channel/fallback degradation,
+  startup failure, duplicate ownership, cleanup and launcher-mode routing.
+- Production virtualenv lacks pytest; use standard-library unittest without
+  adding dependencies. All fixture artifacts stay under the project logs tree.
+- No live crash test, restart, binary rebuild or model-quality benchmark is
+  authorized by this work. No numerical speed claim is planned.
+
+## Implementation review and verification budget
+
+- Parent session owns all verification; no subagent is running on production.
+- Claim 1, default paired ownership and safe diagnostic dispatch: intercepted
+  executions of all six real launchers, shared-lock contention test, Bash syntax.
+- Claim 2, actual attachment rather than an idle listener: CPU-only two-socket
+  connect/fill exchange, positive helper fill plus current engine proxy ack;
+  listener-only, no-fill, zero-fill and missing-ack negative cases.
+- Claim 3, failure recovery and cleanup: kill owned helper/server/isolated engine,
+  inject helper/engine channel failure and CPU fallback, verify replacement PIDs,
+  bounded cleanup, socket identities, current-generation log handling and backoff.
+- Claim 4, preserving load-favored priority: nice +1 on initial and recovered
+  fixture peers. Observe live production separately; its existing server can
+  automatically replace an engine outside this change's control.
+- Minimum checks: one complete unittest run after code stabilizes, targeted
+  reruns only for failures/changed boundaries, LSP diagnostics, Bash syntax and
+  diff review. No GPU builds are needed: no backend source changes.
+- Verified configured engine `exe` and `/proc/233080/exe` resolve to the same
+  ELF binary, despite its displayed process name `strata-host`; executable
+  identity monitoring does not need a guessed process-name match.
+- LSP caught the startup process-token race in the draft; removed the unchecked
+  optional subscript before tests. The tail now also handles replaced log files.
+- Added early helper publication, positive-fill parsing, engine-side attachment
+  acknowledgment, engine/channel monitoring, nice +1 inheritance and stopped
+  state on interruption during backoff. Existing model/helper options and KSM
+  bootstrap remain in place.
+
+## Verification findings before final acceptance
+
+- Initial suite passed 24 cases; after the publication/snapshot ownership race
+  fix, 25 cases passed in 16.120 seconds. However the explicit final process
+  audit found two orphaned CPU fixture helpers, PIDs 1250000 and 1299520. Those
+  passing suites alone did **not** establish complete cleanup.
+- Cause: stopping during startup could let a launcher fork after the last
+  ancestry snapshot and then exit. An unobserved orphan was adopted by the host
+  rather than remaining discoverable in the launcher's tree.
+- Fix: the private Linux supervisor becomes a child subreaper; discovery and
+  bounded escalation include its adopted descendants, never the supervisor
+  itself. Adopted zombies are reaped; sockets bound during startup/teardown are
+  included before inode-checked release. Every recovery-test teardown now audits
+  for surviving fixture roles and socket files. Added immediate-startup stop and
+  early-server-exit/isolated-engine regressions.
+
+## Independently observed production restart
+
+- During final read-only checks, old engine 233080 disappeared while server
+  2533023 remained. `/health` briefly returned loaded=false (still HTTP 200).
+- Server log: `the engine stopped unexpectedly (exit code -15). Unrecoverable
+  native verification failure: verify: timed out at layer 46; its GPU waits were
+  released and the GPU finished (#267)`, followed by `the engine had stopped ...
+  starting it again`. Engine log records its new startup at **16:39:20**.
+- New engine observed: PID 1300424, parent 2533023, nice 0. This was the existing
+  server's engine-only recovery, not a restart requested by this session. It
+  again logged helper-connect failure and whole-run CPU fallback. The earlier
+  live nice +1 was lost on that automatic replacement; configurations remain
+  unchanged. The new paired launcher will inherit nice +1 when deployed.
+- User asked whether this session caused the restart; answered no with this
+  evidence. User then instructed to continue and finish. No production restart,
+  redeployment or live failure injection was performed or newly inferred as
+  authorized.
+
+## Final isolated verification
+
+- `.venv/bin/python -m unittest discover -s tests/mixed_gpu -v`: **27 tests
+  passed in 18.578 seconds**, Linux, Python 3.11.9, using only CPU subprocesses
+  and private Unix sockets. Every recovery teardown also checks for surviving
+  fixture processes and socket files.
+- `.venv/bin/python tests/mixed_gpu/fixtures/mixed_pair_fake.py --check`: exit 0,
+  no surviving fixtures. The two earlier leftovers were removed by its guarded
+  `--cleanup` mode, restricted to the exact fixture, Python executable, UID,
+  `logs/pair-test-*` environment and matching PID start token.
+- One intermediate 27-case run had four **audit timeouts**, not recovery-case
+  failures. The scanner read unrelated native processes' cmdlines, which can
+  wait on a busy process's mmap lock. It now filters by the fixture's Python
+  executable before reading arguments, and the final full run passed.
+- LSP: no diagnostics in the supervisor, fixture, or tests. `git diff --check`
+  passed. The suite syntax-checks all six launchers, the cutover driver and
+  launcher interception guard. No GPU backend source or binary changed.
+- Establishes default dispatch, peer/channel/fallback recovery, actual attach
+  evidence, ownership isolation, early orphan cleanup, log generation handling,
+  bounded teardown/backoff and inherited nice +1. Does not establish live GPU
+  reload, model output equivalence, performance, or the disruptive XXS cutover.
+
+## Explicit production activation approval
+
+- Asked whether one controlled restart of the current Swift 1.5 engine/server/
+  helper was authorized **after the tests passed**, explaining active-request
+  interruption, same-model reload and the earlier no-restart restriction.
+- User selected **Deploy with restart (Recommended)**: finish verification,
+  restart the current pair under supervision and verify real helper attachment
+  and GPU fill. This explicitly supersedes the no-restart boundary for this one
+  deployment; no live fault injection or model/settings changes were approved.
+- Verified current legacy launcher 2532650 and server 2533023 have the expected
+  parent/group/session relationship and use the Swift 1.5 FP16-KV launcher/config.
+  Do not execute `relaunch-pair-supervised.sh`: it hardcodes another model and
+  delegates to broad process-name kills. Stop only the verified current owner.
+- Deployment plan: commit this tested version; gracefully stop the verified
+  legacy server and confirm its engine/launcher have exited; start the same
+  launcher in a user service owning the **whole supervised pair**, not a helper-
+  only service. Keep the original model/config/binaries and hostapp unchanged.
+- Then require a fresh `attached` state, actual engine proxy and helper fill,
+  RTX VRAM allocation, a real completion and nice +1. Record measured results;
+  do not equate HTTP 200 or a listener with recovered helper computation.
+
+Production activation pending.
