@@ -958,3 +958,9 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
   supervisor, honest D/E attribution) and the DFlash2-advantages section (arm-E attribution, HIP-side drafter,
   exact-match sampled verification, bounded SWA ring + DF_RING_MULT, parking, DF_EVENTS, perf work, closed
   sweep). README copied to the prod tree /mnt/user/Strata (build-latest) on user question; dev copy canonical.
+- User follow-up 3: hardware section expanded to the full box (Ryzen 9 5900HX 8C/16T, 62 GiB, 2× Radeon VII
+  16 GiB, RTX 3080 Laptop 8 GiB helper, SN530 NVMe + BX500 SATA, XanMod 7.2.9) so readers can relate to the
+  numbers; build guide added (ROCm 6.1.0 pins /opt/rocm-6.1.0, custom ~/rocm-gfx906-xnack rocblas gfx906-xnack
+  libs first on prefix+LD_LIBRARY_PATH, exact configure lines from the build-v0210 caches, helper build, runtime
+  env, hard-won configure/build lessons). Configure facts verified from build-v0210/{rpcw-hip,rpcw-cuda}
+  CMakeCache.txt + tools/mixed_gpu/build_l3.sh; hardware from lscpu/rocm-smi/nvidia-smi/lsblk.
