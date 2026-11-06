@@ -1049,3 +1049,6 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
   replaced with real flags/wall-time/verification at the next rebuild. No fake precision.
 - Branches row: main now marked "carries the latest working version; nothing lands before both
   backends build and the gates pass" (matches the existing promotion wording).
+- Addendum (user follow-up 12): rig table gained a rocBLAS row - "custom-built 4.1.0, gfx906-xnack
+  (~/rocm-gfx906-xnack), the GEMM path for both Radeon VIIs, pinned ahead of system rocblas at
+  build and runtime" - so the at-a-glance table names the custom lib and version, not just the README prose.

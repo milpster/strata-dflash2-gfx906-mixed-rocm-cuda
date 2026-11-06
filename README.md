@@ -39,6 +39,7 @@ Every number in this README was measured on exactly this machine; nothing is cla
 | GPU 2 | NVIDIA RTX 3080 Laptop, 8 GiB (sm_86) | **second — the CUDA helper**: expert rows + prefill tier, ~6.5 GiB cache |
 | Storage | 1 TB WD SN530 NVMe + 2 TB Crucial BX500 SATA | model packs, relief reads |
 | OS | Ubuntu 25.04 (Plucky Puffin), kernel XanMod `7.2.9-x64v3-xanmod1` | userland the custom rocBLAS is built against |
+| rocBLAS | custom-built **4.1.0**, gfx906-**xnack** (`~/rocm-gfx906-xnack`) | the GEMM path for both Radeon VIIs — pinned ahead of system rocblas at build and runtime |
 | Model | Swift-1.5-Qwen3.8-Flash-Next, GSQ-RCO IQ3_XXS / IQ3_S packs | ~47 GiB expert set |
 | Server | `serve/server.py` | OpenAI- and Anthropic-compatible API, supervised pair |
 
