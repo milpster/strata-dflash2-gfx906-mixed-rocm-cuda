@@ -18,6 +18,22 @@ CONFIG="$ROOT/prod-config-swift15-f16kv-dflash-w4-q4_0-mixed.json"
 SOCKET="$ROOT/run/prod-swift15-f16kv-mixed.sock"
 SOCKET2="$ROOT/run/prod-swift15-f16kv-mixed2.sock"
 HELPER="$WORK/build-mixed-gpu/rpcw-cuda/strata-expert-helper"
+# Opt in before the supervisor forks; the kernel flag survives exec and env -i.
+if [[ ${STRATA_KSM:-0} == 1 ]]; then
+  unset STRATA_KSM
+  exec "$PY" -c '
+import ctypes
+import os
+import sys
+libc = ctypes.CDLL(None, use_errno=True)
+libc.prctl.argtypes = [ctypes.c_int] + [ctypes.c_ulong] * 4
+if libc.prctl(67, 1, 0, 0, 0) != 0:  # PR_SET_MEMORY_MERGE
+    error = ctypes.get_errno()
+    raise OSError(error, os.strerror(error))
+print("KSM enabled for model launcher and children", flush=True)
+os.execv(sys.argv[1], sys.argv[1:])
+' "$BASH" "$0" "$@"
+fi
 if [[ ${1:-} == --recover ]]; then
   exec "$PY" "$WORK/tools/mixed_gpu/pair_supervisor.py" run --launcher "$0" \
     --state "$ROOT/run/prod-swift15-f16kv-mixed-supervisor.json" --lock "$ROOT/run/f16kv-mixed-supervisor.lock" \
