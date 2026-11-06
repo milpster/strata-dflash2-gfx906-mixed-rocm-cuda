@@ -78,6 +78,27 @@ namespace {
 constexpr int64_t H = strata::kernels::cpu::H;
 constexpr int64_t FF = strata::kernels::cpu::FF;
 constexpr int64_t CAP = strata::kernels::cpu::MAXT * 10;   // 80 entries: the engine's window contract
+
+// 2026-11-06: the Nov 6 17:47 prod chain - the engine's prompt lane froze ~90 s in a reclaim-driven
+// HIP queue suspension (XDMA no-retry faults in the kernel log), its socket stopped draining, and
+// the helper's 10 s kRowsP write deadline closed the second channel ("helper timeout"); the engine
+// fell back to the CPU for the request and the supervisor rebuilt the whole pair (3 generations,
+// all KV lost).  The reply-write deadlines are the helper's patience with a SLOW-BUT-ALIVE engine;
+// a dead one is POLLHUP, detected immediately at any deadline.  STRATA_HELPER_REPLY_TIMEOUT_MS
+// (>= 100, the codebase's own floor) overrides every data-reply deadline at once; unset keeps each
+// call's own default, byte for byte.
+int64_t reply_override_ms() {
+    static const int64_t v = [] {
+        const char* e = std::getenv("STRATA_HELPER_REPLY_TIMEOUT_MS");
+        const int64_t parsed = e == nullptr ? 0 : std::atoll(e);
+        return parsed >= 100 ? parsed : 0;
+    }();
+    return v;
+}
+int64_t reply_deadline_ms(int64_t dflt) {
+    const int64_t ov = reply_override_ms();
+    return ov > 0 ? ov : dflt;
+}
 constexpr int64_t kReserveDefaultMiB = 512;
 
 /// The grouped-kernel metadata, the engine's RemoteMeta layout (src/core/remote_experts.cpp:25):
@@ -613,7 +634,7 @@ int serve_begin(Helper& hp, const std::vector<uint8_t>& body, uint32_t req_id, u
         rep.n_rows = 0;
         std::vector<uint8_t> payload(sizeof(rep), 0);
         std::memcpy(payload.data(), &rep, sizeof(rep));
-        return out.write_reply(kRows, req_id, seq, payload.data(), payload.size(), deadline_after(1000));
+        return out.write_reply(kRows, req_id, seq, payload.data(), payload.size(), deadline_after(reply_deadline_ms(1000)));
     }
     const int32_t groups = (int32_t) grp_expert.size();
     for (int32_t g = 0; g < groups; ++g) {
@@ -689,7 +710,7 @@ int serve_begin(Helper& hp, const std::vector<uint8_t>& body, uint32_t req_id, u
     }
     const auto p_ready = prof ? std::chrono::steady_clock::now()
                               : std::chrono::steady_clock::time_point{};
-    const int rc_w = out.write_reply(kRows, req_id, seq, payload.data(), payload.size(), deadline_after(10000));
+    const int rc_w = out.write_reply(kRows, req_id, seq, payload.data(), payload.size(), deadline_after(reply_deadline_ms(10000)));
     if (prof)   // L3: one line per served window frame; refusals/empty replies stay untimed
         std::fprintf(stderr, "rpcprofile: serve tier=w layer=%d rows=%d queue_us=%lld lock_us=%lld "
                              "reply_us=%lld rows_kb=%lld\n", (int) layer, n_rows,
@@ -795,7 +816,7 @@ int serve_prompt(Helper& hp, const std::vector<uint8_t>& body, uint32_t req_id, 
         rep.n_rows = 0;
         std::vector<uint8_t> payload(sizeof(rep), 0);
         std::memcpy(payload.data(), &rep, sizeof(rep));
-        return out.write_reply(kRowsP, req_id, seq, payload.data(), payload.size(), deadline_after(1000));
+        return out.write_reply(kRowsP, req_id, seq, payload.data(), payload.size(), deadline_after(reply_deadline_ms(1000)));
     }
     const int32_t groups = (int32_t) grp_expert.size();
     for (int32_t g = 0; g < groups; ++g) {
@@ -884,7 +905,7 @@ int serve_prompt(Helper& hp, const std::vector<uint8_t>& body, uint32_t req_id, 
     }
     const auto p_ready = prof ? std::chrono::steady_clock::now()
                               : std::chrono::steady_clock::time_point{};
-    const int rc_w = out.write_reply(kRowsP, req_id, seq, payload.data(), payload.size(), deadline_after(10000));
+    const int rc_w = out.write_reply(kRowsP, req_id, seq, payload.data(), payload.size(), deadline_after(reply_deadline_ms(10000)));
     if (prof)   // L3: one line per served prompt frame; refusals/empty replies stay untimed
         std::fprintf(stderr, "rpcprofile: serve tier=p layer=%d rows=%d queue_us=%lld lock_us=%lld "
                              "reply_us=%lld rows_kb=%lld\n", (int) layer, n_rows,
@@ -957,7 +978,7 @@ int serve_draft_ctx(Helper& hp, const std::vector<uint8_t>& body, uint32_t req_i
     }
     draft_ctx_rows_served += req.n_rows;
     // the empty ack of kDraftCtx (the protocol's own payload shape)
-    return out.write_reply(kDraftAck, req_id, seq, nullptr, 0, deadline_after(10000));
+    return out.write_reply(kDraftAck, req_id, seq, nullptr, 0, deadline_after(reply_deadline_ms(10000)));
 }
 
 int serve_draft_round(Helper& hp, const std::vector<uint8_t>& body, uint32_t req_id, uint32_t seq,
@@ -1016,7 +1037,7 @@ int serve_draft_round(Helper& hp, const std::vector<uint8_t>& body, uint32_t req
     std::memcpy(payload.data(), &rep, sizeof(rep));
     std::memcpy(payload.data() + sizeof(rep), picks, (size_t) block * 4u);
     std::memcpy(payload.data() + sizeof(rep) + (size_t) block * 4u, probs, (size_t) block * 4u);
-    return out.write_reply(kDraftReply, req_id, seq, payload.data(), payload.size(), deadline_after(10000));
+    return out.write_reply(kDraftReply, req_id, seq, payload.data(), payload.size(), deadline_after(reply_deadline_ms(10000)));
 }
 
 
@@ -1114,7 +1135,12 @@ void usage() {
         "  its timeout), keep the card and LISTEN AGAIN: the next engine incarnation reconnects on the\n"
         "  same sockets and re-fills (its own kFill), so an engine death costs the expert tier only for\n"
         "  that session. SIGTERM/SIGINT still exit cleanly; without this flag the helper serves exactly\n"
-        "  one engine session, as in every build before it.\n");
+        "  one engine session, as in every build before it.\n"
+        "  STRATA_HELPER_REPLY_TIMEOUT_MS=N (opt-in env, no flag): every DATA reply's write deadline\n"
+        "  (kRows, kRowsP, kDraftAck, kDraftReply, kHelloAck) uses N ms instead of the call's own\n"
+        "  default, so a slow-but-alive engine that stops draining its socket (a reclaim-suspended\n"
+        "  GPU queue) never costs the channel. Unset = each call's own default, byte for byte; a\n"
+        "  DEAD peer is POLLHUP and is detected at once either way.\n");
 }
 
 /// Serve ONE accepted connection: accept on `listener`, run the frame loop on `out`, answer every
@@ -1206,7 +1232,7 @@ accept_peer:
                     cudaMemGetInfo(&free_b, &total_b);
                     ack.free_mib = (int64_t) free_b / 1048576ll;
                     rc = out.write_reply(kHelloAck, head.req_id, head.seq, (const uint8_t*) &ack, sizeof(ack),
-                                              deadline_after(5000));
+                                              deadline_after(reply_deadline_ms(5000)));
                     // Remember the claimed bitmap for the fill (the engine sends it with kHello).  The wire
                     // packs bit-per-pair (protocol: flat/8, bit 1 = a stage holds it); serve_fill indexes
                     // byte-per-pair, so unpack here.  H8: it used to be stored raw, and every pair of the
@@ -1371,6 +1397,9 @@ int main(int argc, char** argv) {
     Options o;
     std::string err;
     if (!parse(argc, argv, o, err)) return fail("arguments", err);
+    if (reply_override_ms() > 0)
+        std::fprintf(stderr, "expert-helper: reply write deadlines overridden to %lld ms (STRATA_HELPER_REPLY_TIMEOUT_MS)\n",
+                     (long long) reply_override_ms());
     g_fill_mib = o.fill_mib;      // process-wide: the operator's occupancy cap, unlike the hello-bound g_slots
 
     int n_dev = 0;
