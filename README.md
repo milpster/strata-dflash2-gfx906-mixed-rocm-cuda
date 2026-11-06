@@ -39,7 +39,7 @@ Every number in this README was measured on exactly this machine; nothing is cla
 | GPU 2 | NVIDIA RTX 3080 Laptop, 8 GiB (sm_86) | **second — the CUDA helper**: expert rows + prefill tier, ~6.5 GiB cache |
 | Storage | 1 TB WD SN530 NVMe + 2 TB Crucial BX500 SATA | model packs, relief reads |
 | OS | Ubuntu 25.04 (Plucky Puffin), kernel XanMod `7.2.9-x64v3-xanmod1` | userland the custom rocBLAS is built against |
-| rocBLAS | custom-built **4.1.0**, gfx906-**xnack** (`~/rocm-gfx906-xnack`) | the GEMM path for both Radeon VIIs — pinned ahead of system rocblas at build and runtime |
+| rocBLAS | custom-built **4.1.0** for `gfx906:xnack-` (`~/rocm-gfx906-xnack`) | the GEMM path for both Radeon VIIs — stock 6.1 rocBLAS segfaults on gfx906; pinned ahead of it at build and runtime |
 | Model | Swift-1.5-Qwen3.8-Flash-Next, GSQ-RCO IQ3_XXS / IQ3_S packs | ~47 GiB expert set |
 | Server | `serve/server.py` | OpenAI- and Anthropic-compatible API, supervised pair |
 
@@ -152,25 +152,29 @@ The wins are not free, and the defects are on record rather than hidden:
 ### Prerequisites (exactly what this box uses)
 
 - **ROCm 6.1.0, pinned** at `/opt/rocm-6.1.0` — HIP compiler (`/opt/rocm-6.1.0/llvm/bin/clang++`), `libhipblas.so.2`, `libamdhip64.so.6`. Newer ROCm trees on the box (`6.4.4`, `7.2.4`) must **not** leak into the link: the engine then links `.so.3`/`.so.7` SONAMEs it cannot load (exit 127).
-- **Custom libs** at `~/rocm-gfx906-xnack` — a self-built rocBLAS **4.1.0** (`librocblas.so.4.1`, 82 MB; the version matching pinned ROCm 6.1.0) with gfx906-**xnack** kernels. It sits FIRST on `CMAKE_PREFIX_PATH` and on the runtime `LD_LIBRARY_PATH`, overriding the system rocblas.
+- **Custom libs** at `~/rocm-gfx906-xnack` — a self-built rocBLAS **4.1.0** (the exact stock 6.1.0 version/soname, clean drop-in) for the single target `gfx906:xnack-` (the "xnack" in the dir name is lineage; XNACK stays off on this box — nothing enables it). Needed because **stock rocBLAS 6.1.0/6.4.4 segfaults on gfx906** for GEMM shapes without a tuned kernel — see the rebuild section below. It sits FIRST on `CMAKE_PREFIX_PATH` and on the runtime `LD_LIBRARY_PATH`, overriding the system rocblas.
 - **CUDA toolkit** for the helper only: `/usr/local/cuda/bin/nvcc`, arch 86.
 - Ninja + CMake (Release). The pinned ggml source (`3cf03257f`) is fetched automatically at configure.
 
 ### Rebuilding the custom rocBLAS
 
-Not a one-liner, and we won't pretend otherwise: the tree that produced `~/rocm-gfx906-xnack` is gone and the exact configure was never journaled — only the installed prefix survived (version facts above). It is **not a fork of rocBLAS**; it is the standard upstream side-build with a gfx906-**xnack** target. Canonical recipe shape:
+Why it exists at all: stock rocBLAS in ROCm 6.1.0 (and 6.4.4 — identical file) **segfaults on gfx906** for any GEMM shape lacking a tuned kernel. The fallback kernels ship as `.hsaco` only; their Tensile `.dat` metadata is missing from the release (a packaging regression — ROCm 7.15 ships those files, but under a different soname and measured ~25 % slower on the llama.cpp workload that first hit this: ~370 → 277 tps). The result is a NULL pointer from `Tensile::PlaceholderLibrary::loadPlaceholderLibrary()` on first inference. Full crash analysis, minimal `rocblas-bench` repro and a llama.cpp-side workaround patch: `docs/work/rocblas-gfx906-bug-report.md`.
+
+The custom build sidesteps the whole problem class: built for **exactly one target** (`gfx906:xnack-`, proven by the shipped kernel filenames), it produces a merged Tensile library (`TensileLibrary_gfx906.co` + `.dat`) with the fallback metadata embedded — no external per-kernel `.dat` files left to go missing.
+
+Repro status, honestly: the source tree and the literal `cmake` invocation are gone; only the installed prefix survived. The recipe shape below is **not a re-verified run**:
 
 ```sh
 git clone -b rocm-6.1.0 https://github.com/ROCm/rocBLAS.git
 cmake -S rocBLAS -B rocBLAS/build \
   -DCMAKE_INSTALL_PREFIX="$HOME/rocm-gfx906-xnack" \
-  -DAMDGPU_TARGETS="gfx906:xnack+" \
+  -DAMDGPU_TARGETS="gfx906:xnack-" \
   -DCMAKE_PREFIX_PATH=/opt/rocm-6.1.0
 cmake --build rocBLAS/build --parallel 11
 cmake --install rocBLAS/build
 ```
 
-Expect a heavy build: Tensile codegen, hours at high parallelism, tens of GB of disk. The block above is the recipe shape, **not a re-verified run** — when we next rebuild, this section gets the real flags, wall time and verification results, per the usual measurement discipline.
+Expect a heavy build: Tensile codegen, hours at high parallelism, tens of GB of disk. Two local experiments from the same era are kept on disk but are **not** the shipping lib: a 4.1.2 prefix and a "mixed library" graft of 7.15 metadata into 6.1 (fails — the lazy-index format changed between the releases). When we next rebuild, this section gets the real invocation, wall time and verification results, per the usual measurement discipline.
 
 ### Engine — HIP, gfx906 (Radeon VII)
 

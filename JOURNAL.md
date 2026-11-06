@@ -1052,3 +1052,31 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
 - Addendum (user follow-up 12): rig table gained a rocBLAS row - "custom-built 4.1.0, gfx906-xnack
   (~/rocm-gfx906-xnack), the GEMM path for both Radeon VIIs, pinned ahead of system rocblas at
   build and runtime" - so the at-a-glance table names the custom lib and version, not just the README prose.
+
+## 2026-11-06 — custom rocBLAS provenance found (user follow-up 13): bug report, target, fix mechanism
+
+- User pointers led to the llama.cpp-era docs: uf3_rocm6.1_llama.cpp/BUILD-VEGA20.md plus
+  /home/user/rocblas-gfx906-bug-report.md + rocblas-gfx906-workaround.patch.
+- WHY the custom rocBLAS exists (from the bug report): stock ROCm 6.1.0/6.4.4 rocBLAS
+  (librocblas.so.4.1.60100) SEGFAULTS on gfx906 for any GEMM shape without a tuned kernel -
+  fallback kernels ship .hsaco only, the Tensile .dat metadata is missing (packaging regression;
+  ROCm 7.15 ships them but different soname and ~25% slower: ~370 -> 277 tps llama.cpp). NULL deref
+  in Tensile::PlaceholderLibrary::loadPlaceholderLibrary. Minimal repro: rocblas-bench gemm
+  -m 48 -n 384 -k 5120 (gated on m=48/k=5120, any n).
+- Fix mechanism identified: the custom prefix (rocBLAS 4.1.0 - exact stock version/soname, md5
+  DIFFERS from stock 4.1.60100) is a single-target build: lib/rocblas/library holds merged
+  TensileLibrary_gfx906.co (93.5 MB) + .dat (16.4 MB) + Kernels.so-000-gfx906-xnack-.hsaco -
+  fallback metadata embedded, nothing external to go missing.
+- Target string proven by filenames: gfx906:xnack- (NOT xnack+; earlier README recipe guess fixed).
+  Dir name "xnack" is lineage; runtime leaves XNACK off (rocminfo: XNACK enabled: NO; no launcher
+  sets HSA_XNACK - verified against the live launcher + prod config).
+- Failed experiments kept on disk, NOT the shipping lib: rocblas-mixed/ (graft of 7.15 metadata
+  into 6.1 - lazy-index format changed A- vs H-prefixed entries; documented "didn't work") and
+  rocblas-6.1-custom/ (a 4.1.2 prefix, earlier attempt).
+- Still missing: the literal cmake invocation / source tree (gone). README recipe remains
+  labeled "not a re-verified run", now with the evidence-backed target and merged-library layout.
+- Preserved in-repo: docs/work/rocblas-gfx906-bug-report.md + rocblas-gfx906-workaround.patch
+  (both machine-path clean; provenance header notes llama.cpp-era origin).
+- README updated: prerequisites bullet, rebuild section (why-it-exists + mechanism + fixed
+  recipe), rig-table rocBLAS row. "Better GEMM performance than stock" (BUILD-VEGA20) is
+  superseded as the primary story: stock does not run at all on these shapes; correctness first.
