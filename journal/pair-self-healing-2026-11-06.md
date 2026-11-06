@@ -260,3 +260,35 @@ Rescue validated:
 Activation and acceptance complete; operating instructions are in
 `docs/PAIR_SELF_HEALING.md`. Stop/restart the full user unit for future authorized
 maintenance; never revive the removed helper-only rescue as a substitute.
+
+## Post-deployment sluggishness diagnosis (17:10-17:46, read-only)
+
+User reported the server "stalling". Measurements, no changes made:
+
+- **No recovery event occurred.** Pair stayed generation 1, `attached`,
+  NRestarts=0 since 17:08:10. One request paused mid-read (63 s at
+  15,196/124,390) then continued. The supervisor and the server watchdog both
+  correctly did nothing: the engine stayed alive and kept reporting progress.
+- **Root cause of the sustained slowness: continuous swap thrash.** Engine RSS
+  ~49.9 GB (40 GB CPU experts + activations) plus the hostapp on 65 GB RAM.
+  `vmstat` at 17:41-17:46: swap-in 43-140 MB/s and swap-out 38-126 MB/s
+  simultaneously, 48.8 GB in swap, 2.4-2.8 GB free, block reads up to 590 MB/s.
+  Engine itself had ~1.0 GB swapped out (`VmSwap`), `SwapCached` 38 GB.
+- **Prefill degradation matches:** 122,981 tokens in 282.6 s (~435 tok/s, first
+  read after boot) → 124,390 tokens in 704.1 s (~177 tok/s avg) → ~280 tok/s
+  mean on the next read. Radeon VRAM nearly full (~29-61 MB free), so spills
+  go to RAM and then swap.
+- **Full re-reads amplify it.** The same client conversation (122,981 → 124,390
+  tokens) got `reused: 0` both times: the 2,048 MiB conversation park budget
+  cannot hold a ~123k-token fp16 KV, and full VRAM evicts it. Request
+  d94a298dba32 spent 704 s in prefill to emit 81 tokens; requests serialize
+  (queued=1; an earlier one waited 440 s for its first token).
+- The 17:38:54 amdgpu powerplay errors coincide with my own `rocm-smi` sensor
+  polling (common on gfx906) and are not proof of a GPU fault. The proven
+  bottleneck is RAM/swap, not the GPU or the new supervisor.
+
+Remedies (proposals only, none applied): more RAM or a smaller resident expert
+pack; avoid 123k-context client sessions while background-load; optionally raise
+`--conversation-cache-mib` / lower `--kv-resident` via an approved restart.
+Lowering `engine_silence_s` would not help: the engine is slow, not hung, and a
+restart would add a full reload and kill the queue.
