@@ -103,13 +103,15 @@ request, and the supervisor rebuilt the pair 3 times with all KV lost.
   Unset = the per-call defaults, byte for byte. A dead peer is POLLHUP and is
   detected at once at any deadline. One line in the helper log names the active
   override at startup. The original helper binary is untouched next to it.
-- All six launchers start it with `STRATA_HELPER_REPLY_TIMEOUT_MS=180000`
-  (3 min, twice the observed 90 s stall).
-- The Swift 1.5 config also sets `STRATA_PREFILL_HELPER_TIMEOUT_MS=180000` (the
-  engine's prompt-row read bound; hardcoded default 10000) and raises
-  `expert_helper_timeout` 2000 -> 10000 (the per-window bound - a late helper is
-  a CPU window, never a stall).
-- Effect: a transient engine stall up to 3 minutes no longer closes a channel,
+- All six launchers start it with `STRATA_HELPER_REPLY_TIMEOUT_MS=600000`,
+  matching the engine-side patience the configs already carried.
+- The engine's prompt-row read bound `STRATA_PREFILL_HELPER_TIMEOUT_MS` was
+  ALREADY set in every prod config (600000 here and in the other f16kv/ud
+  configs, 120000 in the two dflash ones) - the missing half was always the
+  helper's hardcoded write deadline. All seven configs also raise
+  `expert_helper_timeout` 2000 -> 10000 (the per-window bound - a late helper
+  is a CPU window, never a stall).
+- Effect: a transient engine stall up to 10 minutes no longer closes a channel,
   triggers the CPU fallback, or costs the KV; a real peer death is still
   detected instantly and the supervisor rebuilds the pair.
 - Verified GPU-free: the override line prints only when set, is silent when

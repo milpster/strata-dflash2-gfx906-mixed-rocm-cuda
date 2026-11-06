@@ -76,7 +76,7 @@
  "expert_helper_slots": 4600,
  "expert_helper_socket": "/mnt/user/Strata/run/prod-swift15-f16kv-mixed.sock",
  "expert_helper_socket2": "/mnt/user/Strata/run/prod-swift15-f16kv-mixed2.sock",
- "expert_helper_timeout": 2000,
+ "expert_helper_timeout": 10000,
  "fit_max_tokens": true,
  "gpu": [
   0,

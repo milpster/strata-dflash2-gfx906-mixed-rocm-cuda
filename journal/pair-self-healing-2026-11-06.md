@@ -363,9 +363,13 @@ dir and copied it to `v0210/.../strata-expert-helper-patient` (original
 untouched; md5 fccdb64... vs cf97b6a...).
 
 Main repo: all six launchers use the patient helper with
-`STRATA_HELPER_REPLY_TIMEOUT_MS=180000`; the Swift 1.5 config gains
-`STRATA_PREFILL_HELPER_TIMEOUT_MS=180000` in `env` and `expert_helper_timeout`
-2000 -> 10000.
+`STRATA_HELPER_REPLY_TIMEOUT_MS=600000`; every prod config already set
+`STRATA_PREFILL_HELPER_TIMEOUT_MS` (600000 in this one - discovered while
+aligning: my first edit had accidentally duplicated the key with 180000; the
+duplicate was removed, keeping the pre-existing 600000), which makes the root
+cause airtight: the ENGINE had 10 minutes of patience at 17:47, the HELPER
+closed the channel at its hardcoded 10 s. All seven configs raise
+`expert_helper_timeout` 2000 -> 10000.
 
 Verification so far: build OK; override prints only when set (GPU-free run with
 `--device 99`); `expert_helper_socket_test` passed (6.23 s); 27/27

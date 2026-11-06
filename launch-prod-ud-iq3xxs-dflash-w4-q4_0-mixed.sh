@@ -50,7 +50,7 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 143' TERM
 trap 'exit 130' INT
-env -i STRATA_HELPER_REPLY_TIMEOUT_MS=180000 PATH="$PATH" HOME="$HOME" TERM="${TERM:-dumb}" "$HELPER" \
+env -i STRATA_HELPER_REPLY_TIMEOUT_MS=600000 PATH="$PATH" HOME="$HOME" TERM="${TERM:-dumb}" "$HELPER" \
   --pack /mnt/user/ai/iq3xxs-ud \
   --experts ../Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00004.gguf \
   --persist \
