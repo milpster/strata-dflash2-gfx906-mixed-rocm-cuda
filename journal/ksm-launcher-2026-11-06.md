@@ -1,4 +1,4 @@
-# Opt-in KSM launcher trial — 2026-11-06
+# KSM launcher trial — 2026-11-06
 
 ## Scope and evidence already collected
 
@@ -15,7 +15,7 @@
   zram's measured peak physical allocation was about 6.8 GiB. Do not re-enable
   compression as part of this experiment.
 
-## Launcher preparation
+## Initial opt-in preparation (94cb9214)
 
 Add `STRATA_KSM=1` as an opt-in launch setting. A short-lived Python bootstrap
 calls `PR_SET_MEMORY_MERGE`, then replaces itself with the original Bash launcher.
@@ -34,8 +34,9 @@ KSM status, and `strace` checks the opt-in syscall and re-exec. Do not pass
 
 ## Real-model test — pending manual restart
 
-The operator must use the usual controlled stop/restart procedure, adding
-`STRATA_KSM=1` to the existing launch command and preserving its normal arguments.
+The operator must use the usual controlled stop/restart procedure, preserving
+the normal arguments. Per the follow-up request below, KSM is now requested by
+default; `STRATA_KSM=1` may also be set explicitly.
 Do not start a second model stack while production occupies port 8009.
 
 1. Record the model/configuration, KSM settings and counters, MemAvailable,
@@ -54,11 +55,13 @@ Do not start a second model stack while production occupies port 8009.
    keep the option if net savings justify scanning and copy-on-write overhead.
    Background-load impact still requires actual frame-time measurements.
 
-To remove the launch opt-in, omit `STRATA_KSM=1` on the next planned restart.
+To opt out, use `STRATA_KSM=0` on the next fresh launcher start from a non-KSM
+parent. This skips enabling KSM; it does not unmerge a running process or clear
+KSM already inherited from a parent.
 No production restart or global scan-setting change is authorized by this
 preparation alone. Actual model savings and performance remain unmeasured.
 
-## Focused validation
+## Initial opt-in validation (94cb9214)
 
 - User scope confirmed: add KSM to the launcher, do not touch production yet.
 - Branch: `ksm-launch`; unrelated runtime files were left untouched.
@@ -77,6 +80,32 @@ preparation alone. Actual model savings and performance remain unmeasured.
   No production restart, global KSM change, or inference benchmark was performed.
 - Receipts: `logs/ksm-launcher-20261106-120249-{reference,default,zero,optin,trace,pids-before,pids-after}.log`.
 
-Use `STRATA_KSM=1` on the usual launcher invocation at a separately authorized
-restart. Omitting the flag leaves the existing behavior in place. Real-model
-memory savings and inference/background-load performance remain untested.
+## User follow-up: default on
+
+The user explicitly requested KSM on by default in this launcher, without a
+production restart. Unset `STRATA_KSM` now requests KSM, as does an explicit
+`STRATA_KSM=1`; an explicit `STRATA_KSM=0` skips the bootstrap.
+
+Use a separate inherited `STRATA_KSM_BOOTSTRAPPED=1` marker to prevent a re-exec
+loop. Clearing `STRATA_KSM` no longer works as a recursion guard once its
+default is on. The marker also avoids repeating the bootstrap on supervised
+child launches, which inherit the kernel setting.
+
+This is an operator-selected local default, not a measured performance
+improvement. Actual model-memory savings and inference/background-load impact remain
+untested. Running production and global KSM settings remain untouched.
+
+Default-on guard-only validation passed:
+
+- `bash -n` and `git diff --check` passed.
+- Old default, new default, explicit zero, and explicit one all exited 1 at
+  the forced occupied-port guard; no model stack was started.
+- New default and explicit one produced identical output with
+  `ksm_merge_any: yes` and `ksm_mergeable: yes` in the child.
+- Explicit zero produced output identical to the prior default-off launcher,
+  with both flags disabled.
+- Each traced enabled run made exactly one successful
+  `PR_SET_MEMORY_MERGE` call: the inherited marker prevents re-exec loops.
+- Production PID lists and global KSM scan settings were identical before
+  and after validation. No running production process was modified.
+- Receipts: `logs/ksm-default-20261106-121718-*`.

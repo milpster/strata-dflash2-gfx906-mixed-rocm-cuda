@@ -18,9 +18,9 @@ CONFIG="$ROOT/prod-config-swift15-f16kv-dflash-w4-q4_0-mixed.json"
 SOCKET="$ROOT/run/prod-swift15-f16kv-mixed.sock"
 SOCKET2="$ROOT/run/prod-swift15-f16kv-mixed2.sock"
 HELPER="$WORK/build-mixed-gpu/rpcw-cuda/strata-expert-helper"
-# Opt in before the supervisor forks; the kernel flag survives exec and env -i.
-if [[ ${STRATA_KSM:-0} == 1 ]]; then
-  unset STRATA_KSM
+# Default on before the supervisor forks; STRATA_KSM=0 opts out at startup.
+if [[ ${STRATA_KSM:-1} == 1 && ${STRATA_KSM_BOOTSTRAPPED:-0} != 1 ]]; then
+  export STRATA_KSM_BOOTSTRAPPED=1
   exec "$PY" -c '
 import ctypes
 import os
