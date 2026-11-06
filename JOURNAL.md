@@ -980,3 +980,5 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
   per user order ("push all").
 - User follow-up 7: canonical branch renamed main -> master (user preference; master = latest and greatest).
   Fork README.md swap committed (fork page = README.md, upstream product page = README-upstream.md).
+- Resolution: user indifferent main-vs-master; remote main (the GitHub default) fast-forwarded to master's
+  commit — overview now renders the fork README. master and main kept in sync.
