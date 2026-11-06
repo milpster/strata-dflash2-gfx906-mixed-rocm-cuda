@@ -1277,3 +1277,21 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
   fallback), health 200 in ~36 s, supervisor generation 1, smoke completion OK.
 - Delegation resumes against prod; takedown for QA (upstream merge + validate/test) on explicit
   user command.
+
+## 2026-11-06 — upstream merge landed: v0.2.10 line into main (user order "do the upstream merge")
+
+- Merged the archived dev line (fork branch v0210-dev-line) into main: 2059 commits in, merge-base
+  in the v0.1.45-era upstream, only 11 conflicts (the scrub made both trees converge). Strategy:
+  theirs for shared engine/tooling (newer + location-independent), ours for journal/JOURNAL/prod
+  state. Deliberate keeps: sidecar helper_main.cpp took OURS (theirs lacks the reply-patience fix),
+  prod-config-swift15.json content kept ours (current local tuning, committed form neutral).
+- Verified post-merge: reply-patience x4, supervisor stall-restart x12, stage-affinity x8 present;
+  src/include delta vs the v0.2.10 tag = 58 files/+12,752 (the gfx906 port); bash -n 10/10,
+  py_compile 10/10, ROOT probe -> this tree.
+- Delegated sessions added 5 good engine commits (stage affinity x2, supervisor in-flight-restart)
+  AND two deliberate path-reversion commits (configs/launchers committed with real host paths).
+  Those paths were re-neutralized by one more scrub pass (SHAs after merge rewritten; pickaxe 0);
+  real paths live ONLY as uncommitted runtime state (24 files). RULE for future lanes: committed
+  defaults stay machine-neutral; host paths are local uncommitted state - never commit them.
+- Prod stayed up through the merge (delegation served continuously). QA (build + gates + restart +
+  self-heal test) runs next with prod down.
