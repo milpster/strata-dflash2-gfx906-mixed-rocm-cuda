@@ -141,7 +141,7 @@ The wins are not free, and the defects are on record rather than hidden:
 
 - Fresh ~18k prefill pays **−18 %** for DFlash tap collection (long-context reads gain instead).
 - `#267` gfx906 lost-completion wedge: transient verify-timeout GPU hangs (~1 in 20 long drives, both cards, also on stock 0.1.45); the bench retries the leg once.
-- Small fresh-read stalls (30–140 s on ~200-token cold reads): pre-existing, interactive-UX only; watchdog raised 300 → 900 s so it cannot kill prod.
+- Small fresh-read stalls (30–140 s on ~200-token cold reads): **host co-tenancy, not an engine defect** — this box is also a human's daily machine, and the transient stalls track the human's own load on it. Interactive-UX only; watchdog raised 300 → 900 s so it cannot kill prod, and the helper's reply deadlines tolerate the same stalls.
 - iq3_s at 256/256 MiB reserves → non-finite logits on long prefill (V8); fixed policy: 640/640 + fill 7000 (V9/V10) keeps both cards above the 512 MiB paging line.
 - Not promoted, default off: tap-overlap F1/F2 (flat), `STRATA_REFILL_OVERLAP` / `STRATA_WINDOW_POPULATE` (net-negative on big prompts), `--short-read` window routing (refill poison).
 

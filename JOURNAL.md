@@ -1080,3 +1080,13 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
 - README updated: prerequisites bullet, rebuild section (why-it-exists + mechanism + fixed
   recipe), rig-table rocBLAS row. "Better GEMM performance than stock" (BUILD-VEGA20) is
   superseded as the primary story: stock does not run at all on these shapes; correctness first.
+
+## 2026-11-06 — user correction: transient GPU stalls are host co-tenancy (follow-up 14)
+
+- User statement: the transient GPU stalls are caused by them - the box is their daily machine and
+  their own activity loads it while prod serves. Recorded as user-attributed operational fact.
+- Distinction kept: the one-off 268 s stall was root-caused in source (DFlash2 SWA draft ring,
+  K2/JOURNAL earlier) - that one stays an engine finding. The recurring small fresh-read stalls
+  (30-140 s cold reads) are the transient class -> now attributed to host co-tenancy.
+- README trade-offs row updated: stalls = host co-tenancy, not an engine defect; watchdog 300->900 s
+  and the helper reply-patience deadlines both exist to ride out exactly this.
