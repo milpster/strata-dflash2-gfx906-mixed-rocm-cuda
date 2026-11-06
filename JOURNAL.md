@@ -973,3 +973,10 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
 - Published: fork pushed to github.com/milpster/strata-dflash2-gfx906-mixed-rocm-cuda (origin; old origin
   kept as upstream for future v0.2.10+ upmerges), shortpp-src renamed main per user order. WIP helper files
   stayed uncommitted/local.
+- User follow-up 6: fork README is now README.md (GitHub overview shows it); upstream product page moved to
+  README-upstream.md. src2.tar (68 MB, GitHub large-file warning) identified: upstream artifact from d2a38c9e
+  (2026-10-17, "Linux tester AppImage" repack work) — a staged AppImage payload tarball, deleted from the tree
+  since, history-only; left in place (under the 100 MB hard limit). All local branches + tags pushed to origin
+  per user order ("push all").
+- User follow-up 7: canonical branch renamed main -> master (user preference; master = latest and greatest).
+  Fork README.md swap committed (fork page = README.md, upstream product page = README-upstream.md).
