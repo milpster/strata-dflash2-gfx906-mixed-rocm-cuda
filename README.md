@@ -1,243 +1,216 @@
-<h1 align="center">Strata</h1>
+# Strata — gfx906 Mixed-GPU Fork
 
-**English** · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [Deutsch](README.de.md) · [Français](README.fr.md) · [Español](README.es.md) · [Português](README.pt-BR.md)
+An engine fork of [Niko1221/Strata](https://github.com/Niko1221/Strata) (upstream **v0.2.10**) that runs **Qwen3.8-Flash-Next ("Swift 1.5")** on **2× Radeon VII (gfx906) + an NVIDIA helper card** — hardware stock Strata only compile-checks — and beats stock on it.
 
-<p align="center"><b>Run a 125-billion-parameter AI model on your own background-load PC</b><br>
-NVIDIA or AMD graphics card (12 GB or more) · Windows or Linux · free and open source</p>
+> **Made to be built and run by an agent, not by humans.** Compiling, installing, benching, promoting and operating this fork are agent workflows: pinned toolchains, custom libs, harness scripts and a mandatory speed+quality measurement discipline. A human gives orders and reads results — the agent executes and documents. Start at `JOURNAL.md` (session record), `bench/ab-v0210/out/RESULTS*.md` (verdicts) and the build guide below; `AGENTS.md` is the technical reference for AI tools.
 
-<p align="center"><a href="https://github.com/Niko1221/Strata/releases/download/v0.1.10/Pagoda.mp4"><img src="docs/media/pagoda-preview.webp" width="720" alt="A voxel pagoda garden that Strata's model wrote, running in the browser"></a><br>
-<sub>A voxel pagoda garden, 1 shot prompt running on an RTX 5070 with Strata (IQ3_S, 128K context) ·
-<a href="https://github.com/Niko1221/Strata/releases/download/v0.1.10/Pagoda.mp4">full video (49 s)</a></sub></p>
+- **Runs where stock barely reaches**: stock's gfx906 support is a community source build the maintainers have never run (compile-checked only, absent from its README's supported-hardware table) — and **v0.2.10 as tagged does not compile for gfx906** (three fixes needed); this fork runs it as a daily production server.
+- **Faster decode**: **+36–39 % tok/s** vs same-day stock (37.7–38.5 vs 27.6 tok/s; +48 % in the widest same-day frame).
+- **Faster chat**: **1.4–2.4×** faster short-prompt reads (214 / 620 / 4k tokens) plus **14–20 %** more from the prompt-stage memo.
+- **Less RAM**: **−6.2 GiB** host memory via expert-helper RAM relief, at control speed.
+- **Bit-exact quality**: greedy 80k-token infill byte-identical to stock; teacher-forced gates logprob-identical (KL 0.00000, top-1 100 %, PPL 4.115 = 4.115).
+- **Measured or it didn't happen**: every claim comes from a same-day A/B/C bench window; artifacts in `bench/ab-v0210/out/`, the story in `JOURNAL.md`.
 
-Strata runs **[Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next)** on a normal PC. This is a
-large, smart AI model that usually needs a server. It chats, writes code, reads pictures and works with your apps
-and coding agents. Nothing leaves your PC.
+## Who this benefits
 
-## How fast is it?
+- **gfx906 owners (Radeon VII, MI50, MI60)** — stock ships only a compile-checked community source path (and v0.2.10 as tagged needs three fixes to build at all); this fork runs these cards as a production local-LLM server. MI50/MI60 share the target but are untested here.
+- **Mixed AMD + NVIDIA rigs** — stock has no cross-vendor serving path; here the NVIDIA card pulls expert and prefill duty for the AMD HIP engine.
+- **Big MoE model, small cards** — a ~47 GiB expert set serving from 2× 16 GiB VRAM + 62 GiB host RAM (layer split + expert helper + RAM relief).
+- **RAM-tight hosts** — 6.2 GiB of anonymous memory handed back to the OS.
+- **Interactive agent traffic** (OpenCode, Claude Code-style clients) — 200-token reads in ~3 s instead of 6.5 s; exactly the request shape coding agents produce, on the OpenAI/Anthropic-compatible API.
+- **Quality-critical users** — byte-identical greedy output vs stock, plus KL / top-1 / PPL gates before every promotion.
+- **Bench & tuning work** — the A/B/C harness, sha parity gates and quality yardstick are reusable for any further Strata engine work.
 
-We measured it on two ordinary background-load PCs. A token is about ¾ of a word.
+## Hardware — the box behind every number
 
-- **Writes answers:** how fast the reply appears in a short chat. 60 tokens per second is faster than you can read.
-- **Reads your prompt:** how fast it takes in what you send (here a 32K-token document, code or chat history).
+Every number in this README was measured on exactly this machine; nothing is claimed for other hardware.
 
-<table>
-<tr><th>NVIDIA: RTX 5070 (12 GB), Ryzen 5 7600, 64 GB RAM</th><th>AMD: RX 9070 XT (16 GB), Ryzen 9 3900X, 47 GB RAM</th></tr>
-<tr><td>
-
-| Size | Writes answers | Reads your prompt |
-| --- | ---: | ---: |
-| **Q2_0** | 94 tokens/s | 2,650 tokens/s |
-| **IQ2_XS** | 79 tokens/s | 2,090 tokens/s |
-| **IQ3_XXS** | 62 tokens/s | 1,750 tokens/s |
-| **IQ3_S** | 53 tokens/s | 1,620 tokens/s |
-| **Coder** | 55 tokens/s | 2,180 tokens/s |
-
-</td><td>
-
-| Size | Writes answers | Reads your prompt |
-| --- | ---: | ---: |
-| **Q2_0** | 60 tokens/s | 1,160 tokens/s |
-| **IQ2_XS** | 52 tokens/s | 1,110 tokens/s |
-| **Coder** | 44 tokens/s | 1,420 tokens/s |
-
-</td></tr>
-</table>
-
-NVIDIA: Q2_0 with engine 0.1.36, the other rows with 0.1.26 (4K answers, 32K prompts). The full tables are in
-[DETAILS.md](docs/DETAILS.md#speed-measured). A card with more VRAM is faster: an RTX 3090 (24 GB) should write
-about 100-140 tokens per second. Long chats and other cards: [speed of each model](docs/MODELS.md#how-fast-is-each-size),
-[community results](docs/COMMUNITY_BENCHMARKS.md).
-
-<p align="center"><a href="https://buymeacoffee.com/strataengine"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="50"></a><br>
-<sub>Strata is free. If it runs well on your PC, a coffee keeps the work on it going.</sub></p>
-
-## What you need
-
-| | |
+| Part | Detail |
 | --- | --- |
-| **Graphics card** | **NVIDIA** GeForce RTX 20, 30, 40 or 50 series, or **AMD** Radeon RX 7900 XT / XTX, RX 7800 XT / 7700 XT, RX 9060 XT, RX 9070 / 9070 XT, Radeon AI PRO R9700 or RX 6800 / 6900 series. It needs **12 GB of VRAM or more**. |
-| **RAM** | 32 GB or more. Your RAM decides [which model](#which-model-should-i-pick) fits. 64 GB runs every size. |
-| **Disk** | About 80 GB free. Use an SSD if you can: the first start is much faster. |
-| **System** | Windows 10 / 11 or Linux, and a current graphics driver from NVIDIA or AMD. |
+| CPU | AMD Ryzen 9 5900HX — 8 cores / 16 threads, up to ~4.7 GHz |
+| RAM | 62 GiB |
+| GPU 0+1 | 2× AMD Radeon VII (Vega 20, gfx906, 16 GiB HBM2 each) — **first: the ROCm/HIP engine** |
+| GPU 2 | NVIDIA GeForce RTX 3080 Laptop, 8 GiB (sm_86) — **second: the CUDA helper** |
+| Storage | 1 TB WD SN530 NVMe + 2 TB Crucial BX500 SATA SSD — model packs, relief reads |
+| OS / kernel | Linux, XanMod `7.2.9-x64v3-xanmod1` |
 
-The installer sets up everything else. Two or three cards can share the model ([multi-GPU](docs/MULTI_GPU.md)).
+Serving stack on that hardware:
 
-Experimental, written and tested by community members on their own machines:
+| Part | Role |
+| --- | --- |
+| Radeon VII ×2 | all model execution, layer-split over both cards, DFlash2 drafter included; the engine process maps no CUDA runtime |
+| RTX 3080 Laptop | `strata-expert-helper`, a subordinate expert-row server + prefill prompt tier (~6.5 GiB expert cache), attached over a socket pair |
+| Model | Swift-1.5-Qwen3.8-Flash-Next, GSQ-RCO IQ3_XXS / IQ3_S packs (~47 GiB expert set) |
+| Drafter | DFlash2 (inco draft, q4_0), `--spec 5`, engine-side on the VIIs |
+| Vision | `strata-vision` sidecar, Swift BF16 mmproj |
+| Server | OpenAI- and Anthropic-compatible API (`serve/server.py`), supervised pair on :8009 |
 
-- **Older graphics cards** (Tesla P40 / V100, GTX 10, Radeon VII / MI50, RX 6700 XT, RX 5500 XT): [Older GPUs](docs/OLDER_GPUS.md).
-- **Intel Arc**, built from source on Linux: [Intel Arc](docs/INTEL_ARC.md).
-- **Apple Silicon Macs (M1 to M5)**, built from source by `./setup.sh` (the Metal engine): [Mac](docs/MAC.md).
-- **AMD Ryzen AI Max (Strix Halo)**, built from source on Linux: [Strix Halo](docs/STRIX_HALO.md).
-- **Older processors without AVX2**: they work, but slowly. [Older CPUs](docs/INSTALL.md#older-cpus-experimental).
+The point of the rig: a laptop-class CPU, two 2019-vintage Radeon VIIs and an 8 GiB laptop GPU together serve a ~47 GiB MoE model at coding-agent speed.
 
-The full list: [docs/INSTALL.md](docs/INSTALL.md#what-you-need).
+**ROCm first, CUDA second.** The AMD cards run everything; the NVIDIA card only serves expert rows and prefill rows on request. If the helper dies, the engine recomputes its rows itself and finishes the request — the engine never depends on CUDA.
 
-## Install
+## What the fork adds over stock
 
-### Let your AI set it up
+### 1. gfx906 (Radeon VII) backend
+- Stock keeps gfx906 as a compile-checked community path; this line runs it daily and carries the v0.2.10 compile fixes (`stock-v0210-gfx906-buildfix`).
+- Full HIP wave64 port of the engine, kept compiling through every upstream merge since v0.1.45 → v0.2.10.
+- Compat shims: `cudaStreamCreateWithPriority`, cublas→hipBLAS, `__ldg` / fp16 bit-casts, `STRATA_SHARED_ALIGN16_I4` int4 fix.
+- Tuned gfx906 knobs in prod configs: `STRATA_GFX906_TOPK_FIT17`, `STRATA_GFX906_TOPK_REG`, `STRATA_HIP_PROMPT_F16`.
+- Blackwell-only `mmq_w4a4` and known-broken paths cleanly gated off.
 
-Do you use an AI coding assistant (Claude Code, Cursor, Codex, GitHub Copilot, ...)? Paste this into it:
+### 2. Mixed-GPU CUDA expert helper — architecture
+- Two processes, strictly separated: the HIP engine (AMD-only, **no CUDA runtime mapped**) and `strata-expert-helper` (NVIDIA-only, owns all of that card's expert VRAM).
+- Transport: a local socket pair. The helper fills ~4.3–4.6k cache slots (~6.5 GiB) and keeps them filled (fill-mib / slot caps from bench sweeps: **+13.6 %** decode median vs the old 4000-slot cap); it answers with one grouped launch per decode/verify window (≤ 8 tokens).
+- Two serving tiers:
+  - **decode/verify tier** — expert rows for token windows;
+  - **prompt tier** (`STRATA_PREFILL_HELPER=1`) — prefill rows for helper-held experts: the CUDA card does work the AMD cards would otherwise stage from host RAM.
+- Relief interplay: helper-held pairs are dropped from the host arena (`--expert-helper-ram-relief`); pack-file reads exist only as the emergency fallback.
+- Resilience: helper killed mid-decode → the engine recomputes the claimed rows and finishes the request (measured kill test); `--persist` re-listens for the next engine instead of dying with it; v4 fill supports multi-shard packs; transient-pair fallback instead of hard failures.
+- Supervision: `tools/mixed_gpu/pair_supervisor.py` runs engine + helper as one pair — either dies, both restart; a long idle no longer kills the helper.
+- Honest attribution: the decode tier alone is ~neutral on this pack (96–97 % local cache hit, arms D/E); the helper's measured value is the prompt tier, expert capacity, and RAM relief.
 
-```text
-Set up Strata on this PC for me: https://github.com/Niko1221/Strata - follow docs/AI_SETUP.md in that repository.
-```
+### 3. Host RAM relief
+- `--expert-helper-ram-relief` drops helper-held expert pairs from the anon arena (4116/4116 pairs, 6.24 GiB back).
+- Deferred-complement `cudaHostRegister`: arena built unregistered, only kept ranges registered, outward span rounding.
+- W1a/W1b fixes: lock-free residency pre-checks + dropped-only prefetch forwarding — relief TG 16.0 → 37.65 tok/s (control 38.05), disk reads 40 GB → 2.31 GB per drive.
+- `STRATA_ARENA_COLLAPSE`: opt-in post-fill `MADV_COLLAPSE` sweep (25.05 GiB of the arena collapsed in H1-r5), with a scoped fix for inherited `PR_SET_THP_DISABLE`.
 
-It checks your graphics card, RAM and disk and picks the model that fits. Then it installs and starts it and tells
-you how to connect your apps. AI tools can also install, start and stop Strata through its
-[MCP server](docs/MCP_SERVER.md).
+### 4. Speculative decoding — DFlash2 advantages
+- **The decode win is DFlash2.** Attribution arm E (drafter off) decodes at stock speed (23.9 vs 23.6 tok/s, same day); drafter on = 33–38.5 tok/s — the entire gain is drafting, at byte-identical output.
+- Runs **HIP engine-side on the Radeon VIIs** (stock DFlash2 is CUDA-only) — drafting never touches the helper card.
+- Official Flash-Next draft format (inco draft, q4_0 GGUF); Q8/Q5/Q4 draft weights supported — q4_0 measured optimal, q8_0 flat: the ~60–65 % acceptance ceiling is the draft model itself, not its quantization.
+- Tuned optimum, sweep fully closed: `--spec 5` / block 5 / q4_0 (spec 7 −3 % TG, block 3 flat, acceptance never bought back by sampling arms).
+- Beyond stock drafter behavior:
+  - sampled requests get **target exact-match verification** (`STRATA_DFLASH_SAMPLED`) — non-greedy traffic keeps draft guarantees;
+  - **bounded SWA draft ring** with honest window defaults and recoverable deep rewinds; `STRATA_DF_RING_MULT` scales the ring so long-context segment resumes stop re-reading the whole context (deep-stall class fixed by construction, speed-neutral);
+  - conversation parking keeps the draft image across park/save;
+  - per-section timing (`STRATA_DF_EVENTS=1`) dumps the section table after every request;
+  - perf: batched KV append with device-owned positions, attention probabilities reused across value lanes, batched BF16 projections, confidence gating for fixed blocks.
+- DFlash standalone (the prerequisite layer): GGUF drafter artifacts via `tools/dflash_gguf.py`, target taps [3,15,23,35,43], private draft K/V, block execution + target verification; MTP stays available, mutually exclusive.
 
-### Or do it yourself
+### 5. Short-prompt latency
+- `STRATA_PREFILL_CPU_SHARE=auto` (promoted): 214 tok **2.4×**, 620 tok **1.8×**, 4k **1.4×**, TG128 −5.1 s, ≥18k unchanged, zero regressions.
+- `STRATA_PROMPT_STAGE_MEMO` (promoted): a dropped prompt expert is read once per request — medians **14–20 %** faster across short-prompt legs.
+- `--prefill 16384` dose (promoted): measured peak for long-context serving (24k −10 %, 32k −37 %).
 
-[Download Strata](https://github.com/Niko1221/Strata/archive/refs/heads/main.zip) and unzip it (or `git clone` it).
-**Windows:** double-click **`START-HERE.bat`**. **Linux:** run **`./setup.sh`** in the Strata folder.
+### 6. Bench + quality discipline
+- `bench/ab-v0210/`: A/B/C arm harness (`run-arm.sh`), traffic driver (`drive.py`), verdict docs, RAM/IO samplers, fail-fast guards, port / VRAM / MemFree boot gates.
+- Quality yardstick (`tools/quant_quality.py`): 4995 teacher-forced positions, full-vocab KL / top-1 / PPL vs the stock binary:
+  - relief binary vs stock: top-1 100.00 %, KL 0.00000, PPL 4.115 = 4.115;
+  - CPU-share and memo knobs: identical perfect scores vs their twins and vs stock.
+- Parity gates: greedy 80k-infill SHA byte-identical across fork, fork-flags-off, and stock in every kept round (18/18 in the tap-overlap window alone).
+- Standing rule: a new engine version passes BOTH the speed lane and the quality lane before promotion.
 
-**Mac (Apple Silicon, M1 to M5, macOS 15 or newer):** install Apple's Command Line Tools once
-(`xcode-select --install` in Terminal; Xcode itself is not needed). Then open Terminal in the Strata folder and run
-**`./setup.sh`**. It builds the Mac engine on your Mac (about 7 minutes), asks the same questions, downloads the model
-and starts it. Next time, `./setup.sh` starts it right away. Which size fits your Mac and how fast it is:
-[docs/MAC.md](docs/MAC.md).
+## Measured: fork vs stock v0.2.10 (same day, same box, same pack)
 
-The steps are the same for NVIDIA and AMD. The installer finds your card and sets up the right engine for it. It
-asks you a few questions:
+| Metric | Fork (prod config) | Stock | Delta |
+| --- | ---: | ---: | ---: |
+| TG cached decode, median tok/s | 37.7–38.5 | 27.6 | **+36–39 %** |
+| 80k-token infill read, tok/s | 553 | 550 | parity (relief on) / **+7.6 %** relief-off |
+| Fresh ~18k prefill, tok/s | 272–278 | 337 | **−18 %** (dflash tap-collection cost) |
+| Short prompt 214 tok, s | 2.6–2.9 | own flags-off baseline 6.5 | **2.4×** |
+| Short prompt 620 tok, s | 6.2 | own flags-off baseline 11.5 | **1.8×** |
+| Host anon RAM, GiB | 41.2 | 47.4 | **−6.2** |
+| Greedy 80k output | byte-identical | — | ✓ |
 
-- which model and which size,
-- how much context (how much text the model keeps in mind),
-- whether it should read pictures.
+Attribution (arms D/E): the decode win is entirely DFlash drafting; the helper expert tier alone is ~neutral on this pack (96–97 % local cache hit) — its value is the prompt tier, expert capacity, and RAM relief.
 
-Press Enter each time for the recommended answer. Then it downloads the model (about 70 GB) and starts it. If the
-download stops, run it again: it continues where it left off. Your browser opens the Strata app at
-`http://127.0.0.1:8080`.
+**Bottom line vs stock:** ≈ **1.4× decode throughput** · **1.4–2.4× chat-read latency** · **−6.2 GiB host RAM** · **byte-identical output** — one regression (**−18 %** fresh ~18k bulk prefill) — on hardware where stock, as tagged, does not build.
 
-> **While the model starts, your PC can be slow or stop responding for 1-3 minutes** (longest the first time).
-> Strata loads 35-55 GB into your RAM and locks part of it for the graphics card. This is normal. Wait, and don't
-> close the window. The window shows what Strata is doing.
+## Quality gates
 
-**Next time**, run `START-HERE.bat` (or `./setup.sh`) again. It starts right away and downloads nothing twice. Close
-its window to stop the model. `UPDATE.bat` (`./update.sh`) updates Strata without starting it. Updating, Docker,
-several cards, where the files go and every option: [docs/INSTALL.md](docs/INSTALL.md).
+Standing rule: every promotion passes BOTH the speed lane and the quality lane, same-day, against stock.
 
-**Is it fast on your PC?** Run `BENCH.bat` (`./bench.sh`): about 5-10 minutes, it measures chat, 4K/16K prompts and an agent-style session with your own settings and writes a report to share ([how](docs/COMMUNITY_BENCHMARKS.md#run-the-benchmark)).
-
-## Which model should I pick?
-
-The installer recommends one for your RAM. The same model comes in several sizes, compressed more or less. Smaller
-sizes are faster. Larger sizes are a bit smarter.
-
-| Your RAM | Take | Why |
+| Gate | What it checks | Result |
 | --- | --- | --- |
-| **32 GB** | **Coder** | it fits 32 GB, and it is made for code (with a 24 GB card, Q2_0 and IQ2_XS run too) |
-| **48 GB** | **IQ2_XS** (or Q2_0, the fastest) | the larger sizes do not fit |
-| **64 GB** | **IQ2_XS** (recommended), or IQ3_XXS / IQ3_S | every size fits; IQ3_S is the best and the slowest |
-| **96 GB or more** | **IQ3_S**, or Unsloth's UD-IQ4_XS (~4-bit) | room for the largest sizes with everything else open |
+| 80k greedy SHA | deep-infill (80k ctx, ≥5k out) byte-identical across candidate / flags-off / stock binaries | held **18/18** kept rounds (`1c7d4a6d…`) |
+| Teacher-forced yardstick (`tools/quant_quality.py`) | 4995 positions, full-vocab first logits: top-1, KL (p99), PPL — vs stock binary AND vs flags-off twin | top-1 **100.00 %** · KL **0.00000** · PPL **4.115 = 4.115** (relief, CPU-share and memo arms) |
+| Probe determinism | fixed prompt re-answered every boot; sha must reproduce exactly per config | reproduces exactly, per-config values documented (incl. coverage-dependent texts) |
+| Speed gates | TG median ≥ 33.1 · 80k frame 583–587 · fresh-18k toward 337 · medians over ≥ 2 kept boots/arm | see measured table above |
 
-- **[Coder](docs/MODELS.md#coder):** a coding version with half of the experts removed. It reaches 91% of the full
-  model's SWE-bench Verified score (measured by its authors) and fits 32 GB of RAM. It is weaker outside code,
-  including Chinese and other CJK text (#438). For those, take Q2_0, IQ2_XS or IQ3_S, which keep every expert.
-- **[Swift 1.5](docs/MODELS.md#swift-15):** a fine-tune that thinks for a much shorter time before it answers. You
-  get the answer sooner, at about the same quality.
-- **[Unsloth UD-IQ4_XS](docs/MODELS.md#unsloth-ud-iq4_xs):** Unsloth's ~4-bit version, between IQ3_S and
-  UD-Q4_K_XL in quality. A 94 GB download. With less than ~80 GB of RAM, Strata reads part of it from the SSD
-  while it answers, so it is slower there (an NVMe SSD helps).
-- **[Unsloth UD-Q4_K_XL, UD-Q5_K_XL, UD-Q6_K_XL and Q8_0](docs/MODELS.md#unsloths-files-ud-iq4_xs-to-q8_0):**
-  4- to 8-bit, closer to the full model (93-95% the same next token as Q8_0). Fast where every expert fits in RAM
-  (~88 GB for UD-Q4_K_XL up to ~136 GB for Q8_0); with less RAM Strata reads part of them from the SSD while it
-  answers, which is much slower (7-8.5 tokens/s for UD-Q4_K_XL on a 64 GB PC).
-- **[OrcaRouter's Uncensored IQ3_XXS](docs/MODELS.md#orcarouter-uncensored-iq3_xxs):** you set it up by hand. It is
-  not in the installer's menu.
+That is what backs the "faster with zero quality cost" claim: the speed wins above were promoted only after these gates passed.
 
-Sizes, downloads and what fits where: [docs/MODELS.md](docs/MODELS.md). To add another model later, run
-`SETUP.bat` (Linux: `./setup.sh --setup`).
+## Honest trade-offs and known defects
 
-## Using it
+- Fresh ~18k prefill pays −18 % for DFlash tap collection (long-context reads gain instead).
+- `#267` gfx906 lost-completion wedge: transient verify-timeout GPU hangs (~1 in 20 long drives, both cards, also on stock 0.1.45); the bench retries the leg once.
+- Small fresh-read stalls (30–140 s on ~200-token cold reads): pre-existing, interactive-UX only; watchdog raised 300 → 900 s so it cannot kill prod.
+- iq3_s at 256/256 MiB reserves → non-finite logits on long prefill (V8); fixed policy: 640/640 + fill 7000 (V9/V10) keeps both cards above the 512 MiB paging line.
+- Not promoted, default off: tap-overlap F1/F2 (flat), `STRATA_REFILL_OVERLAP` / `STRATA_WINDOW_POPULATE` (net-negative on big prompts), `--short-read` window routing (refill poison).
+- In flight: f16-KV variants (launchers staged), helper threading measurement, `promo_check` exact-reply traffic probe.
 
-<p align="center"><img src="docs/media/runpagoda.png" width="900" alt="The Strata app's Monitor tab next to a coding agent"><br>
-<sub>The Strata app's <b>Monitor</b> (left) while a coding agent writes the pagoda garden from the video (right)</sub></p>
+## Locations
 
-- **In the browser:** open `http://127.0.0.1:8080`. It has **Chat**, a live **Monitor** of the model and your
-  GPU/CPU/RAM, and **About** with the settings and addresses.
-- **Your apps and coding agents:** add an "OpenAI-compatible" provider with the base URL
-  **`http://127.0.0.1:8080/v1`**. Any API key and any model name work.
-  - Apps that use Anthropic's API: `http://127.0.0.1:8080/v1/messages` (Claude Code:
-    `ANTHROPIC_BASE_URL=http://127.0.0.1:8080`).
-  - Codex CLI and other apps that use the OpenAI Responses API: `/v1/responses`
-    ([setup](docs/DETAILS.md#the-responses-api-and-codex-cli)).
-- **Thinking:** choose **off, low, medium or high** in the chat menu or in your app's "reasoning effort". Off is the
-  fastest. High is best for hard questions.
-- **Pictures:** say yes to "Images?" in setup. Then click **Picture** in the chat, or attach pictures in your app.
-  AMD cards read pictures on Linux through the processor; on Windows they can't yet.
-- **From your phone or another PC:** `START-HERE.bat --setup --host 0.0.0.0 --api-key <secret>`. Always set a key.
-- **One request at a time:** by default Strata answers one request, and the others wait. To answer several at once,
-  set `"parallel": 2` ([BATCHING.md](docs/BATCHING.md)). On a 12 GB card this makes each answer slower.
-- **Long prompts:** Strata reads the first message of a chat in full, about 1 minute per 30,000 tokens. Follow-up
-  messages start in seconds.
+| Path | What |
+| --- | --- |
+| `/home/user/dev/Strata` | dev source tree — branches, `bench/`, `docs/`, `JOURNAL.md` (README canonical here) |
+| `/mnt/user/Strata` | **the live Strata** — `launch-prod-*.sh` launchers, `prod-config-*.json`, supervised engine+helper pair on `:8009`, binaries in `v0210/build-mixed-gpu/`, `logs/` |
 
-More: [where your chats are stored](docs/INSTALL.md#where-things-are-stored), [the API](docs/DETAILS.md#using-it).
+## Build guide — how we built it
 
-### Optional: more speed on one card when the whole model fits in RAM
+### Prerequisites (exactly what this box uses)
 
-Two opt-in settings (by RubenTorney, #1904 and #1905). They help when you run one graphics card and your RAM holds
-every expert (Strata's arena mode, for example Q2_0 or IQ3_XXS on a 64 GB PC). Open your config,
-`strata-<model>.json` in the Strata data folder ([where](docs/INSTALL.md#where-things-are-stored)), and add:
+- **ROCm 6.1.0, pinned** at `/opt/rocm-6.1.0` — HIP compiler (`/opt/rocm-6.1.0/llvm/bin/clang++`), `libhipblas.so.2`, `libamdhip64.so.6`. Newer ROCm trees on the box (`6.4.4`, `7.2.4`) must **not** leak into the link: the engine then links `.so.3`/`.so.7` SONAMEs it cannot load (exit 127).
+- **Custom libs** at `~/rocm-gfx906-xnack` — a self-built rocBLAS (`librocblas.so.4.1`, 82 MB) with gfx906-**xnack** kernels. It sits FIRST on `CMAKE_PREFIX_PATH` and on the runtime `LD_LIBRARY_PATH`, overriding the system rocblas.
+- **CUDA toolkit** for the helper only: `/usr/local/cuda/bin/nvcc`, arch 86.
+- Ninja + CMake (Release). The pinned ggml source (`3cf03257f`) is fetched automatically at configure.
 
-- **Faster decode:** `"--adapt-async", "1"` to the `"args"` list. The expert cache then updates on a helper thread
-  instead of pausing the answer. Measured on an RTX 5070 (Windows, Q2_0): +4-5% decode, +7-10% on code and long
-  documents. Answers can differ slightly from the default (they stay the same from run to run).
-- **Faster prompt reading on Windows:** `"STRATA_PIN_BY_NEED": "1"` in the `"env"` block. Windows can lock only about
-  half the RAM for the graphics card; this locks the experts the card actually needs first. Measured on the RTX 5070:
-  +4.4% prompt reading.
+### Engine — HIP, gfx906 (Radeon VII)
 
-```json
-"args": [ ..., "--adapt-async", "1" ],
-"env": { "STRATA_PIN_BY_NEED": "1" }
+```sh
+export PATH=/opt/rocm-6.1.0/bin:$PATH          # and keep nvcc OUT of this configure
+cmake -S . -B build-v0210/rpcw-hip -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DSTRATA_HIP_GFX906=ON \
+  -DCMAKE_HIP_ARCHITECTURES=gfx906 \
+  -DCMAKE_HIP_COMPILER=/opt/rocm-6.1.0/llvm/bin/clang++ \
+  -Dhip_DIR=/opt/rocm-6.1.0/lib/cmake/hip \
+  -Dhipblas_DIR=/opt/rocm-6.1.0/lib/cmake/hipblas \
+  -DROCM_PATH=/opt/rocm-6.1.0 -DHIP_PATH=/opt/rocm-6.1.0 -DHIP_ROOT_DIR=/opt/rocm-6.1.0 \
+  "-DCMAKE_PREFIX_PATH=$HOME/rocm-gfx906-xnack;/opt/rocm-6.1.0" \
+  -DSTRATA_ENABLE_DFLASH2=ON -DSTRATA_HAVE_DFLASH2=OFF -DSTRATA_TESTS=ON
+ninja -j11 -C build-v0210/rpcw-hip strata       # -j11 = standing order (git config strata.buildJobs)
 ```
 
-Restart Strata (`START-HERE.bat` or `./setup.sh`) after the change. To undo, remove the two entries.
+### Helper — CUDA (RTX 3080 Laptop)
 
-## Something went wrong?
+```sh
+cmake -S . -B build-v0210/rpcw-cuda -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DSTRATA_ENABLE_CUDA=ON -DSTRATA_BUILD_EXPERT_HELPER=ON \
+  -DCMAKE_CUDA_ARCHITECTURES=86 -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
+  -DSTRATA_ENABLE_DFLASH2=ON -DSTRATA_HAVE_DFLASH2=OFF -DSTRATA_TESTS=ON
+ninja -j11 -C build-v0210/rpcw-cuda strata strata-expert-helper
+ctest -R helper --output-on-failure               # from build-v0210/rpcw-cuda
+```
 
-- **My PC froze the first time Strata started.** This is normal while it loads the model. Wait, and don't close the
-  window. Still frozen after 10 minutes? Restart the PC, close other programs and try again, or pick a smaller size.
-- **It stopped while downloading or installing.** Run `START-HERE.bat` (or `./setup.sh`) again. It continues where
-  it stopped.
-- **It's very slow and the disk light keeps blinking, or it says "the engine stopped unexpectedly".** Your PC does
-  not have enough free RAM. Close other programs (browsers use a lot), or pick a smaller size (Q2_0 or IQ2_XS).
-- **It says port 8080 is already in use.** Strata is already running. Look for its window.
+### Runtime (what the launchers set)
 
-More problems and their fixes: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md). Still stuck? Open an
-[issue](https://github.com/Niko1221/Strata/issues) and attach `strata-<model>.log` from the Strata folder. Found a
-security problem? Report it privately: [SECURITY.md](SECURITY.md).
+```sh
+LD_LIBRARY_PATH=$HOME/rocm-gfx906-xnack/lib:/opt/rocm-6.1.0/lib
+HSA_OVERRIDE_GFX_VERSION=9.0.6  HIP_FORCE_P2P=1  HSA_ENABLE_SDMA=1
+```
 
-## How does it work?
+### Lessons baked into the process
 
-Models like this one usually run on servers with hundreds of gigabytes of graphics memory. Your graphics card has
-12-24 GB. Strata makes the model fit by **sharing the work across your whole PC**. Think of a kitchen: the things
-you use all the time stay on the counter, and the rest waits in the pantry.
+- Pin everything; a bare configure finds the newest ROCm and links unloadable SONAMEs. Derived trees are always configured fresh (a reused cache keeps stale `find_library` results).
+- Hide `nvcc` from the HIP configure — a new `/usr/local/cuda-*` under PATH silently wins and produces a mixed-header build (231 errors).
+- Never pipe `ninja` into `head` (SIGPIPE kills it, exit 141) and never compile during a bench round (starves the engine's watchdog).
+- Memory-gentle fallback when the box is busy: `nice ninja -j2`, dropping to `-j1` below 3 GiB MemAvailable.
+- Verify with `ldd`: no `libhipblas.so.3`, no `libamdhip64.so.7`.
 
-<p align="center"><img src="docs/media/how-it-works.svg" width="860" alt="The model's 24,576 experts: the busiest on the graphics card, all of them in RAM, a lookup table on the SSD"></p>
+## Repo map
 
-- **The model is a team of 24,576 small specialists ("experts").** Each word needs only 10 of them.
-- **Your graphics card** keeps the few thousand experts that are used most often. **Your RAM** holds all of them,
-  and **your processor** works on the rest at the same time. **Your SSD** holds a big lookup table.
+| Path | What |
+| --- | --- |
+| `JOURNAL.md` | session-by-session record, verdicts, post-mortems — read this first |
+| `bench/ab-v0210/` | arm configs, drivers, `out/RESULTS*.md` verdict docs, quality artifacts |
+| `docs/MIXED_GPU_HELPER.md`, `docs/DFLASH*.md` | fork feature docs |
+| `docs/work/` | lever calibrations, identity investigations, design docs |
+| `tools/mixed_gpu/` | pair supervisor, window harness, acceptance and maintenance tooling |
+| `strata_control/`, `tools/` | prod control plane, quality yardstick, setup tests |
+| Branches | `shortpp-src` (current), `build-mixed-v0210` (prod line), `stock-v0210-gfx906-buildfix` (stock build fixes) |
 
-<p align="center"><img src="docs/media/guess-and-check.svg" width="860" alt="A small helper guesses the next words; the big model checks them all at once and keeps the right ones"></p>
+## Upstream hygiene
 
-- **Guess, then check:** a small helper guesses the next few words. The big model checks them all at once. You get
-  the same answer, 1.6-1.8x sooner.
-- **Long texts are read in big pieces** (up to 8,192 tokens at a time), at over 1,000 tokens per second.
-
-The longer explanation: [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md). Every part and its numbers:
-[the details](docs/DETAILS.md#how-it-works) and the [paper](docs/paper/Strata-Paper.pdf).
-
-## Credits and license
-
-The model is [Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next) by the Qwen team. It was
-compressed by [ISTA-DASLab](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF), UkisAI (Swift 1.5)
-and Unsloth. Strata uses parts of [llama.cpp / ggml](https://github.com/ggml-org/llama.cpp). All credits:
-[docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md#credits). Strata is open source under the [MIT License](LICENSE). A few
-parts and every model have their own licenses ([which ones](docs/HOW_IT_WORKS.md#license)).
-
-## Support Strata
-
-Strata is free and open source. If it is useful to you, you can support its development:
-
-<p align="center"><a href="https://buymeacoffee.com/strataengine"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="50"></a></p>
+- Upmerges from `origin/main` (v0.1.45 → v0.2.10) kept: upstream machinery wins where it supersedes; fork specifics (helper RPC, prompt tier, dflash runtime, gfx906 gates) re-integrated and depth-verified after every merge.
+- Fork features are opt-in flags; the default path stays byte-identical to stock (F1off arm: all shas reproduce, fresh-PP equal).
+- Both backends (HIP gfx906 engine, CUDA helper) build before any promotion.
