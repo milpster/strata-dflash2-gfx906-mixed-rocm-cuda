@@ -1257,3 +1257,23 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
 - The v0.2.10 dev line is NOT lost: archived on the fork as branch v0210-dev-line (pushed from the
   home tree before its deletion) - the base for the pending upstream merge.
 - TODO (on user command): upmerge upstream into this line + validate/test.
+
+## 2026-11-06 — prod restart after the 10:57 SIGTERM death (user follow-up 15)
+
+- Prod had been down since 10:57: engine got SIGTERM (-15) mid 140k-token prompt read (37.9k/140.7k
+  in, 675 s); not OOM, not a crash - polite terminate, never restarted. Morning context: reboot
+  10:26, xxS cutover round 2 (stages A/B pass, hiccup test fail -> helper reconnect broken on engine
+  restart), restore fell back to the iq3_s lane on CPU expert path.
+- First restart attempt (iq3_s lane) crash-looped 8 generations: root cause = the history scrub had
+  rewritten the TRACKED prod config jsons (model/tokenizer paths -> neutral /mnt/user forms),
+  and serve reads them literally -> "tokenizer is missing". Launcher env vars were fine; configs
+  were not.
+- Fix applied: all 14 prod-config-*.json restored to real machine paths (sed), json-validated.
+  NOTE: these are LOCAL runtime modifications - do NOT commit them (would re-leak paths).
+  Proper fix for the repo (env-interpolating config values or boot-time path rewrite) belongs to
+  the pending QA round.
+- Real prod brought up per user correction: swift15 f16-KV iq3xxs lane (not iq3_s).
+  Boot: KSM on, helper up 4341 slots / 6.64 GiB, SECOND CHANNEL ENGINE CONNECTED (no CPU
+  fallback), health 200 in ~36 s, supervisor generation 1, smoke completion OK.
+- Delegation resumes against prod; takedown for QA (upstream merge + validate/test) on explicit
+  user command.
