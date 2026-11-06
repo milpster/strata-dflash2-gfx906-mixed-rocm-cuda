@@ -1,10 +1,10 @@
 # Strata — gfx906 Mixed-GPU Fork
 
-An engine fork of [Niko1221/Strata](https://github.com/Niko1221/Strata) (upstream **v0.2.10**) that runs **Qwen3.8-Flash-Next ("Swift 1.5")** on hardware stock Strata does not support — and beats stock on it.
+An engine fork of [Niko1221/Strata](https://github.com/Niko1221/Strata) (upstream **v0.2.10**) that runs **Qwen3.8-Flash-Next ("Swift 1.5")** on **2× Radeon VII (gfx906) + an NVIDIA helper card** — hardware stock Strata only compile-checks — and beats stock on it.
 
 > **Made to be built and run by an agent, not by humans.** Compiling, installing, benching, promoting and operating this fork are agent workflows: pinned toolchains, custom libs, harness scripts and a mandatory speed+quality measurement discipline. A human gives orders and reads results — the agent executes and documents. Start at `JOURNAL.md` (session record), `bench/ab-v0210/out/RESULTS*.md` (verdicts) and the build guide below; `AGENTS.md` is the technical reference for AI tools.
 
-- **Runs where stock cannot**: stock v0.2.10 does not compile for AMD gfx906 (Radeon VII) as tagged; this fork builds and serves on it.
+- **Runs where stock barely reaches**: stock's gfx906 support is a community source build the maintainers have never run (compile-checked only, absent from its README's supported-hardware table) — and **v0.2.10 as tagged does not compile for gfx906** (three fixes needed); this fork runs it as a daily production server.
 - **Faster decode**: **+36–39 % tok/s** vs same-day stock (37.7–38.5 vs 27.6 tok/s; +48 % in the widest same-day frame).
 - **Faster chat**: **1.4–2.4×** faster short-prompt reads (214 / 620 / 4k tokens) plus **14–20 %** more from the prompt-stage memo.
 - **Less RAM**: **−6.2 GiB** host memory via expert-helper RAM relief, at control speed.
@@ -13,7 +13,7 @@ An engine fork of [Niko1221/Strata](https://github.com/Niko1221/Strata) (upstrea
 
 ## Who this benefits
 
-- **gfx906 owners (Radeon VII)** — stock v0.2.10 does not compile for these cards; this fork turns them into a production local-LLM server. Other gfx906 cards (Instinct MI50/MI60) share the target but are untested here.
+- **gfx906 owners (Radeon VII, MI50, MI60)** — stock ships only a compile-checked community source path (and v0.2.10 as tagged needs three fixes to build at all); this fork runs these cards as a production local-LLM server. MI50/MI60 share the target but are untested here.
 - **Mixed AMD + NVIDIA rigs** — stock has no cross-vendor serving path; here the NVIDIA card pulls expert and prefill duty for the AMD HIP engine.
 - **Big MoE model, small cards** — a ~47 GiB expert set serving from 2× 16 GiB VRAM + 62 GiB host RAM (layer split + expert helper + RAM relief).
 - **RAM-tight hosts** — 6.2 GiB of anonymous memory handed back to the OS.
@@ -52,6 +52,7 @@ The point of the rig: a laptop-class CPU, two 2019-vintage Radeon VIIs and an 8 
 ## What the fork adds over stock
 
 ### 1. gfx906 (Radeon VII) backend
+- Stock keeps gfx906 as a compile-checked community path; this line runs it daily and carries the v0.2.10 compile fixes (`stock-v0210-gfx906-buildfix`).
 - Full HIP wave64 port of the engine, kept compiling through every upstream merge since v0.1.45 → v0.2.10.
 - Compat shims: `cudaStreamCreateWithPriority`, cublas→hipBLAS, `__ldg` / fp16 bit-casts, `STRATA_SHARED_ALIGN16_I4` int4 fix.
 - Tuned gfx906 knobs in prod configs: `STRATA_GFX906_TOPK_FIT17`, `STRATA_GFX906_TOPK_REG`, `STRATA_HIP_PROMPT_F16`.
@@ -114,7 +115,7 @@ The point of the rig: a laptop-class CPU, two 2019-vintage Radeon VIIs and an 8 
 
 Attribution (arms D/E): the decode win is entirely DFlash drafting; the helper expert tier alone is ~neutral on this pack (96–97 % local cache hit) — its value is the prompt tier, expert capacity, and RAM relief.
 
-**Bottom line vs stock:** ≈ **1.4× decode throughput** · **1.4–2.4× chat-read latency** · **−6.2 GiB host RAM** · **byte-identical output** — one regression (**−18 %** fresh ~18k bulk prefill) — on hardware stock does not build for at all.
+**Bottom line vs stock:** ≈ **1.4× decode throughput** · **1.4–2.4× chat-read latency** · **−6.2 GiB host RAM** · **byte-identical output** — one regression (**−18 %** fresh ~18k bulk prefill) — on hardware where stock, as tagged, does not build.
 
 ## Quality gates
 
