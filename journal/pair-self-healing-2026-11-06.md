@@ -287,8 +287,56 @@ User reported the server "stalling". Measurements, no changes made:
   polling (common on gfx906) and are not proof of a GPU fault. The proven
   bottleneck is RAM/swap, not the GPU or the new supervisor.
 
+## GPU-hiccup recovery traced end to end (17:47-17:51 event)
+
+Trigger and generations (from `logs/prod-pair-supervised.log`, engine stderr,
+helper log, kernel log):
+
+- 17:46-47: prefill of a 124,910-token prompt froze at 15,176 tokens for 90+s.
+  The helper's prompt tier logged `request failed: helper timeout` (limit
+  `--expert-helper-timeout-ms 2000`), then `second channel ended`.
+- Supervisor: `generation 1: helper channel ended; restart/refill in 2s` →
+  gen 2 launcher 17:48:27.
+- Gen 2's engine (17:48:30) refused to start: `cudaMalloc ... failed (out of
+  memory): 170 MiB of 16368 MiB free` — the just-exited gen-1 engine's VRAM
+  was still held by the driver. `generation 2: engine exited; restart in 4s` →
+  gen 3 at 17:48:40.
+- Gen 3's engine loaded and then hit `amdgpu ... no-retry page fault ...
+  Faulty UTCL2 client ID: XDMA` bursts at 17:50:01 (host pages 0x7f9bfe8cxxxx,
+  PERMISSION_FAULTS) and exited. `generation 3: engine exited; restart in 8s`
+  → gen 4 at 17:50:13, attached 17:51:12. Backoff doubled 2→4→8 s as designed.
+- **Temperature is not the evidenced cause**: post-event Radeon VII junction
+  33-34 C, RTX 45 C; no thermal events in the kernel log. The XDMA faults are
+  host-page permission faults during peer-to-peer DMA while the box was
+  swapping ~100 MB/s both ways with 1-2 GB free — memory pressure unmapped or
+  reclaimed pages the GPU was DMA-ing through. The 17:38:54 powerplay spam
+  coincided with rocm-smi polling.
+
+Why recovery takes minutes, measured:
+
+1. Trigger→attached ≈ **3.5 min** = teardown + 3 cold rebuilds. Each rebuild:
+   helper refills 6.61 GiB over PCIe, engine reloads the 39.97 GiB expert
+   arena through a thrashing page cache (1.23 GiB/s vs 1.85 fresh), expert
+   cache fill 6.2 s, 8 verify captures, warmup.
+2. **VRAM release lag** after engine exit cost a whole generation (gen 2's
+   cudaMalloc refusal). The supervisor does not wait for the driver to free
+   the dead engine's VRAM before relaunching.
+3. **Every restart zeroes all KV**: post-recovery requests re-read 51,576 and
+   125,766 tokens with reused=0; a 125,954-token read then ran ~420 tok/s
+   (5 min) with **3 requests queued**. Parking the ~124k-token conversation
+   needs a ~3.9 GiB snapshot vs the 2,048 MiB budget (`skip parking ... exceeds
+   available budget`), so big sessions always pay full re-reads. This dominates
+   the user-visible recovery (10-30 min), not the 3.5 min rebuild.
+4. The engine never self-heals a dead helper channel: it falls back to CPU rows
+   for the rest of the request; only pair replacement restores it.
+
 Remedies (proposals only, none applied): more RAM or a smaller resident expert
 pack; avoid 123k-context client sessions while background-load; optionally raise
 `--conversation-cache-mib` / lower `--kv-resident` via an approved restart.
 Lowering `engine_silence_s` would not help: the engine is slow, not hung, and a
 restart would add a full reload and kill the queue.
+
+New options from this trace (none applied): (a) supervisor waits for VRAM
+release before relaunch (saves gen-2-style refusals); (b) consider a longer
+`--expert-helper-timeout-ms` so transient stalls close no channel; both need
+approval and testing first.
