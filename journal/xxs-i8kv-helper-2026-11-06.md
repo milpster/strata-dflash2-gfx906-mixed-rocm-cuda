@@ -144,3 +144,11 @@ Status: prod UP swift-iq3_s-f16kv (parent). Awaiting cutover round 2 verdict.
 - HIP/gfx906 vision bench (camera img, 2048 tok): Q8 2.16 s / BF16 2.29 s vs CPU 33-36 s — ~16x. Root cause of earlier "no ROCm-capable device": unmasked Cezanne iGPU breaks enumeration; engine env pins HIP_VISIBLE_DEVICES=0,1 — wrapper tools/vision-hip.sh replicates it. Earlier "3080 CUDA" numbers (49-53 s) were silent 4-thread CPU fallbacks — never actual GPU.
 - Helper health re-verified on live request: TG 43.4 tok/s, expert cache hit 71.9% (42021/58449), 8751 rows over PCIe; 3080 util 11-45%, power 16->26 W. /metrics hardware omits the 3080 (blind spot explains "no GPU load" impression). New warning: 231 MiB free on 3080 at request start -> engine suggests --vram-reserve-mib 576 (open decision).
 - New variant committed: prod-config-...-radeonvision.json (vision exe=tools/vision-hip.sh, gpu=true, mmproj Q8, 2048 tok) + launch-...-radeonvision.sh (own sockets prod-swift15-f16kv-rv-mixed*.sock, own supervisor state/lock/logs). Trade: vision takes ~1.2 GiB on gfx906#0 at boot -> engine sizes expert cache around it (~900 fewer slots, ~9%, small TG tax). Not boot-tested yet.
+
+## Round 2 cutover verdict (run 20261106-102854)
+
+- VERDICT: RESTORED iq3s-f16kv (logs/xxs-cutover-20261106-102854.log).
+- STAGE A PASS: engine rc 0, session up, helper filled 3551 slots (6.64 GiB), scratch 672000 B, buffers 180098776 B — round-2 multi-shard fill fix confirmed live.
+- STAGE B PASS: ud-iq3_xxs serving, completion #1 'XXS-OK', helper connection 1.
+- HICCUP FAIL: engine-only kill -> restarted engine logged 'helper connect failed' (CPU-path fallback). Root causes worked out (design, no edits yet): (A) re-fill preflight budgets from CURRENT free VRAM with zero credit for held residents -> refusal -> permanent CPU; (B) engine client closes channel on kError/timeout with no reconnect (expert_helper_socket.cpp ~763) + helper closes on any request failure.
+- Status after run: prod UP swift-iq3_s-f16kv, serving, CPU expert path.
