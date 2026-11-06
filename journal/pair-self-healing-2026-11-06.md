@@ -194,4 +194,69 @@ Rescue validated:
   RTX VRAM allocation, a real completion and nice +1. Record measured results;
   do not equate HTTP 200 or a listener with recovered helper computation.
 
-Production activation pending.
+## Production activation and acceptance
+
+- Tested implementation committed as **2cec8ab** on `pair-self-heal` before
+  stopping production. No subagents were running during the cutover.
+- Sent TERM only to verified legacy server 2533023. The old launcher 2532650
+  still had a same-model replacement server 1709445 (start token 2388181), later
+  with engine 1710012. Its command line named the exact same Swift 1.5 config.
+  Sent TERM to the verified legacy launcher as well. A later escalation attempt
+  reported all three remaining legacy PIDs already absent: **no KILL signal was
+  delivered**. No broad process-name kill or `stop-prod.sh` was used.
+- Started `strata-mixed-pair.service` at **17:08:10 CET** through `systemd-run
+  --user`, executing `/usr/bin/bash` and the same Swift 1.5 FP16-KV launcher with
+  no diagnostic flag. Unit properties: `Restart=on-failure`, `RestartSec=2s`,
+  `StartLimitIntervalSec=60s`, `StartLimitBurst=3`, `KillMode=mixed`,
+  `TimeoutStopSec=30s`, working directory `/mnt/user/Strata`, stdout appended
+  to `logs/prod-pair-supervised.log`, stderr inherited. It is a transient user
+  service, not boot persistence. Invocation: 208715acaae046a1aee12eab3114fc46.
+- The service owns the **whole** supervised pair, not an idle helper. Its cgroup
+  was also verified in `/proc/1775942/cgroup` despite engine session isolation.
+  KSM bootstrap still reports enabled; no model config, binary, hostapp affinity,
+  or hostapp priority was changed.
+
+### Observed live state
+
+- Unit active/running; MainPID/supervisor **1775071**, NRestarts=0.
+- Launcher **1775089**, helper **1775106**, server **1775394**, engine
+  **1775942**. Supervisor generation **1**, state **attached**.
+- Helper log: engine connection, successful finite-output warmup, **4,324 slots,
+  6.61 GiB uploaded**, then second-channel engine connection. No mere listener
+  was counted as success. Engine log line 2215 acknowledges `expert-helper
+  proxy: 4324 experts ... 6.61 GiB (fill report)`.
+- `nvidia-smi --query-compute-apps=pid,process_name,used_gpu_memory
+  --format=csv,noheader`: helper **1775106 using 7,026 MiB**. This includes
+  runtime buffers/context beyond the 6.61 GiB expert weights. The separate host store
+  web helper allocation was left untouched.
+- Helper, server and engine nice **+1**. A later aggregate of engine thread
+  priorities reported **92 threads, all nice +1**. Hostapp priorities remain alone.
+- `/health`: HTTP 200, loaded=true, model **swift-1.5-iq3_xxs-f16kv**, max context
+  262144, images enabled. Final service check still active/running with the same
+  MainPID and zero service restarts; helper still at 7,026 MiB.
+
+### Completion evidence and limits
+
+- The dedicated `PAIR-OK` HTTP probe was **not confirmed**: the first tool call
+  timed out while a large request was active; a longer shell probe was aborted
+  by OpenCode with `Interaction cancelled because the location shut down`.
+  Tools reconnected and the pair remained attached. Neither is claimed as a
+  model failure or a successful dedicated probe. No further requests were
+  injected into the busy server merely to duplicate existing evidence.
+- `/metrics` subsequently confirms three real completed requests on this server,
+  all `finish=stop`: **0a808842aa4a**, 46,471 prompt tokens / 467 output tokens;
+  **820c5b3258a9**, 47,013 / 1,452; **89018bbaa707**, 48,541 / 418. The fresh server
+  log independently records the first completion. This establishes working
+  inference on the deployed attached pair, not just HTTP health or allocated RAM.
+- At final API sample (1793982361.8685), the next 122,981-token request was
+  reading, with 64,328 read and one queued. No interruption or extra parent
+  restart was performed for that active request.
+- CPU-only recovery injections passed; no live engine/helper crash injection
+  was performed. No claim of GPU output equivalence, long-context stability or
+  speedup is made. The earlier native verification timeout #267 is not claimed
+  fixed internally; this change recovers the pair rather than leaving its
+  replacement engine silently helper-less.
+
+Activation and acceptance complete; operating instructions are in
+`docs/PAIR_SELF_HEALING.md`. Stop/restart the full user unit for future authorized
+maintenance; never revive the removed helper-only rescue as a substitute.

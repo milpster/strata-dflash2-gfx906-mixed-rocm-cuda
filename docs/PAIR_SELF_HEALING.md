@@ -54,7 +54,7 @@ but silent engine remains subject to the existing engine/server watchdogs.
 ## Deployment boundary
 
 Editing the launcher does not supervise an already running unsupervised engine.
-The current CPU-fallback engine cannot attach a newly started helper. Deploying
+A CPU-fallback engine cannot attach a newly started helper. Deploying
 this recovery requires a separately approved restart of the current pair, using
 the **same model launcher/configuration**, then verifying attachment, helper VRAM
 fill, and a real completion. Do not run a cutover merely to check these edits.
@@ -63,6 +63,30 @@ The XXS cutover driver's persistent-helper test deliberately uses `--single-run`
 in Stage B. Stage C replaces it with a fresh default-supervised pair and checks
 the supervisor's attachment state before declaring success. It is a disruptive
 model-cutover tool, not the deployment command for the current Swift 1.5 model.
+
+### Activated local service (2026-11-06)
+
+The approved Swift 1.5 FP16-KV deployment runs in the user unit
+`strata-mixed-pair.service`, whose command is the same Swift 1.5 launcher with
+default supervision. Check it with:
+
+```sh
+systemctl --user status strata-mixed-pair.service
+```
+
+The service owns the whole pair's cgroup, including the engine's separate
+session. It restarts the controller on failure after 2 seconds, with a limit of
+3 starts per 60 seconds. `KillMode=mixed` gives the supervisor its cleanup window;
+systemd's stop timeout is 30 seconds. Service output appends to
+`logs/prod-pair-supervised.log`; peer logs and state retain their launcher paths.
+Any authorized manual stop/restart must operate on this **whole unit**, not an
+independent helper service. Do not use the older IQ3_S relaunch script to restart
+this model. This is a transient user service, not a boot-enabled installation.
+
+At activation, the helper filled 4,324 slots (6.61 GiB of expert weights), NVIDIA
+reported 7,026 MiB allocated to it, and the engine acknowledged the same proxy.
+Real API requests completed on the pair. These are deployment measurements on
+the local RTX 3080 helper / Radeon VII engine PC, not performance comparisons.
 
 ## CPU-only regression tests
 
