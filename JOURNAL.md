@@ -1316,3 +1316,34 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
   smoke completion OK. Self-heal test: SIGKILL the helper -> supervisor generation 1 -> 2, health
   back to 200, helper refilled and reconnected, post-kill smoke OK.
 - Prod left UP on the swift15 f16-KV iq3xxs lane; delegation can resume.
+
+## 2026-11-06 — Broken tests fixed; same-day fork-vs-stock A/B on the merged tree
+
+- Test fixes (commit 7e3bd3d): ple_parity now returns 77 (SKIP_RETURN_CODE) when the optional
+  Q2_0 table shard is absent - absent data is a skip, present-but-incompatible still fails.
+  dflash_refusal_test re-pinned 3 drifted static checks to the v0.2.10 serve-branch shape
+  (readiness gate gained !df_draft_dead; recovery branch re-anchored to the draft_tier_p
+  remote-lane form with 3 latches; notice count 2->3; window widened past the new arm).
+  112/112 checks pass. Suite end state: 231 pass, 2 skip, 0 fail.
+- A/B rerun of bench/ab-v0210 on the merged mnt tree (arm B, helper active: 64 windows,
+  32 prompt rows) vs stock v0.2.10 (arm C, no helper), same night, exclusive box:
+  TG 494-tok: fork 37.9/36.9/40.1 vs stock 23.3/23.4/23.0 tok/s (+60-74%);
+  TG 513/514-tok: fork 35.8/36.0 vs stock 23.9 (+50%);
+  tg1024 driver walls: fork 32.5-33.4 s vs stock 43.0-47.7 s (1.34x);
+  PP read 16k: fork 306.5 vs stock 338.2 tok/s (stock reads ~10% faster, no helper hops);
+  PP read 88k: fork 480.7 vs stock 549.0 tok/s; infill-80k completion sha identical both arms.
+  Stock matches its own older rounds (C-r1/r3: PP 337-340, TG 23.9-28.2) - clean baseline.
+- Incident during the first C attempt: kernel amdgpu reset (fence fallback timer, comp ring,
+  23:05:05) wedged one VII mid-prefill; the stock engine stayed alive but crawled (0% GPU,
+  8354/8373 expert routes skipped). Root cause chain: the prod pair supervisor survived every
+  run-arm teardown (its process names never matched the harness pkill patterns) and cycled
+  31 generations, its engines loading on the VIIs while arm C prefilled -> oversubscription
+  -> fence timeout. Operational fix applied: quiesce the pair supervisor before any arm run.
+  Hardening gap recorded: recovery exists (generation bump, QA-verified) but detection does
+  not - a wedged-but-alive device is invisible to liveness watchdogs. Candidates: forward-
+  progress watchdog (segment N x over budget -> engine self-exit rides the existing recovery)
+  and/or amdgpu reset-counter check between requests.
+- Ops pitfalls re-confirmed this round: export CUDA_VISIBLE_DEVICES="" in the user bashrc
+  poisons helper/ctest GPU visibility (env -u it); bench arms need a fully drained pair
+  supervisor, not just engine/helper kills; arm jsons/run-arm.sh carry neutral paths in git
+  and are translated locally (uncommitted) like the 24 prod config/launcher files.
