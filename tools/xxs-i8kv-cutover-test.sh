@@ -7,7 +7,8 @@
 #
 # STAGE A (xxs boot, engine-only, port untouched): ud helper (with --persist) + the ud engine run
 #         DIRECTLY with the exact args from prod-config-ud-iq3xxs-dflash-w4-q4_0-mixed.json
-#         (the --native-dense-gguf 4-shard fix). PASS = engine "session is up" + helper "engine connected".
+#         (the --native-dense-gguf 4-shard fix). PASS = engine "session is up" + helper "engine
+#         connected" + a real "filled N slots" + NO "helper is absent/fill refused/0 requests" lines.
 # STAGE B (helper robustness): full ud launcher boot, completion #1, kill ONLY the engine, let
 #         server.py restart it on the next request, and require the PERSISTENT helper to be
 #         reconnected (no permanent "helper connect failed" / CPU-path fallback) + completion #2.
@@ -70,16 +71,33 @@ wait_models() {  # $1 model id, $2 budget seconds
   done
   return 1
 }
-completion() {  # $1 model id; prints the reply's content (empty = failure)
-  curl -s -m 180 http://127.0.0.1:8009/v1/chat/completions \
+completion_json() {  # $1 model id, $2 reasoning effort; the raw chat.completions JSON
+  # max_tokens 512 + request-level reasoning_effort: this is a REASONING model (config budget
+  # 55k tokens); at 24 tokens everything burned on reasoning_content and message.content stayed
+  # null (finish_reason length) - that probe bug failed stage B and faked a restore CRITICAL.
+  curl -s -m 300 http://127.0.0.1:8009/v1/chat/completions \
     -H 'Content-Type: application/json' \
-    -d "{\"model\":\"$1\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with exactly: XXS-OK\"}],\"max_tokens\":24,\"temperature\":0}" \
-  | "$PY" -c 'import json,sys
+    -d "{\"model\":\"$1\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with exactly: XXS-OK\"}],\"max_tokens\":512,\"temperature\":0,\"reasoning_effort\":\"$2\"}"
+}
+completion() {  # $1 model id, $2 effort; prints the reply's message.content (empty = not a pass)
+  completion_json "$1" "$2" | "$PY" -c 'import json,sys
 try:
-    d = json.load(sys.stdin)
-    print(d["choices"][0]["message"]["content"].strip())
+    print((json.load(sys.stdin)["choices"][0]["message"].get("content") or "").strip())
 except Exception:
     pass' 2>/dev/null
+}
+gen_probe() {  # $1 model id, $2 effort; exit 0 if the endpoint demonstrably GENERATED text:
+  # real content, OR reasoning text that ran the prompt's token budget out (finish_reason
+  # length). The restore path must not print CRITICAL on a reasoning model mid-reasoning.
+  completion_json "$1" "$2" | "$PY" -c 'import json,sys
+try:
+    c = json.load(sys.stdin)["choices"][0]
+    m = c.get("message") or {}
+    ok = bool((m.get("content") or "").strip())
+    gen = bool((m.get("reasoning_content") or "").strip())
+    sys.exit(0 if ok or (gen and c.get("finish_reason") == "length") else 1)
+except Exception:
+    sys.exit(1)' 2>/dev/null
 }
 
 restore_iq3s() {
@@ -89,9 +107,12 @@ restore_iq3s() {
   setsid nohup "$IQ3S_LAUNCH" >> "$RLOG" 2>&1 &
   if wait_models "$IQ3S_MODEL" 420; then
     ev "restore: /v1/models = $IQ3S_MODEL (see $RLOG)"
-    local reply; reply="$(completion "$IQ3S_MODEL")"
-    ev "restore: completion probe: ${reply:0:60}"
-    [[ -n "$reply" ]] && ev 'VERDICT: RESTORED iq3s-f16kv' && exit 1
+    local reply; reply="$(completion "$IQ3S_MODEL" low)"
+    ev "restore: completion probe: '${reply:0:60}'"
+    if [[ -n "$reply" ]] || gen_probe "$IQ3S_MODEL" low; then
+      ev 'VERDICT: RESTORED iq3s-f16kv'
+      exit 1
+    fi
   fi
   ev "CRITICAL: restore FAILED - :8009 not serving $IQ3S_MODEL; launcher log: $RLOG; INTERVENTION NEEDED"
   exit 1
@@ -146,7 +167,7 @@ start_ud_helper_stage_a
 mapfile -t ENGINE_ARGS < <("$PY" -c '
 import json, sys
 c = json.load(open(sys.argv[1]))
-a = list(c["args"])
+a = ["--serve"] + list(c["args"])  # --serve prepended exactly as server.py does (checked vs live cmdline)
 a += ["--layer-split", str(c["layer_split"]),
       "--expert-helper-socket", c["expert_helper_socket"],
       "--expert-helper-socket2", c["expert_helper_socket2"],
@@ -159,12 +180,16 @@ for k, v in c["env"].items(): print(f"{k}={v}")
 print("LD_LIBRARY_PATH=" + ":".join(c["lib_dirs"]))' "$UD_CONFIG")
 ev "STAGE A: engine direct run (${#ENGINE_ARGS[@]} args, $(grep -c -- --native-dense-gguf <<<"${ENGINE_ARGS[*]}") native-dense shards) -> $AENG"
 # stdin /dev/null: the engine exits by itself once its serve loop sees EOF, after session-up.
-timeout -k 10 300 env "${ENGINE_ENV[@]}" "$ENGINE" "${ENGINE_ARGS[@]}" < /dev/null >> "$AENG" 2>&1 && ARC=0 || ARC=$?
-grep -q 'session is up' "$AENG" && grep -q 'engine connected' "$AHEL" \
-  || { ev "STAGE A FAIL (engine rc $ARC); engine log tail:"; tail -12 "$AENG" | tee -a "$SLOG"; \
-       ev "helper log tail:"; tail -6 "$AHEL" | tee -a "$SLOG"; die_restore "stage A: xxs engine did not reach session-up with the helper"; }
-FILL_LINE=$(grep -m1 'expert helper' "$AENG" || grep -m1 'helper' "$AENG" || true)
-ev "STAGE A PASS: engine rc $ARC, 'session is up' + helper 'engine connected' + fill: ${FILL_LINE:0:110}"
+timeout -k 10 600 env "${ENGINE_ENV[@]}" "$ENGINE" "${ENGINE_ARGS[@]}" < /dev/null >> "$AENG" 2>&1 && ARC=0 || ARC=$?
+A_FILL=$(grep -m1 -E 'filled [0-9]+ slots' "$AHEL" || true)
+if ! { grep -q 'session is up' "$AENG" && grep -q 'engine connected' "$AHEL" \
+       && ! grep -Eq 'helper is absent|fill refused|channel closed after 0 requests' "$AENG" \
+       && [[ -n "$A_FILL" ]]; }; then
+  ev "STAGE A FAIL (engine rc $ARC); engine log tail:"; tail -12 "$AENG" | tee -a "$SLOG"
+  ev "helper log tail:"; tail -6 "$AHEL" | tee -a "$SLOG"
+  die_restore "stage A: the xxs engine did not come up ON the expert helper (need session-up + engine connected + a real 'filled N slots' + NO absent/refused/0-requests lines)"
+fi
+ev "STAGE A PASS: engine rc $ARC, 'session is up' + helper 'engine connected' + ${A_FILL:0:110}"
 kill -TERM "$AHPID" 2>/dev/null || true
 for _ in $(seq 1 15); do kill -0 "$AHPID" 2>/dev/null || break; sleep 1; done
 rm -f "$SOCKET" "$SOCKET2"
@@ -178,8 +203,8 @@ if ! wait_models "$UD_MODEL" 420; then
   die_restore "ud launcher boot: /v1/models never served $UD_MODEL"
 fi
 grep -q 'engine connected' "$UDHLOG" || die_restore "ud boot: helper never saw 'engine connected'"
-REPLY1="$(completion "$UD_MODEL")"
-[[ -n "$REPLY1" ]] || die_restore "ud boot: completion #1 returned no content"
+REPLY1="$(completion "$UD_MODEL" low)"
+[[ -n "$REPLY1" ]] || die_restore "ud boot: completion #1 returned no message.content (reasoning burn? engine log tail: $(tail -2 "$UD_ENGINE_LOG" | tr '\n' ' '))"
 CONNECT1=$(grep -c 'connected (peer uid' "$UDHLOG" || true)
 ev "STAGE B boot: $UD_MODEL serving, completion #1: '${REPLY1:0:60}'; helper engine connections so far: $CONNECT1"
 
@@ -190,7 +215,7 @@ kill -TERM "$EPID"
 sleep 5
 REPLY2=''
 for _ in $(seq 1 28); do            # first post-death request ends with an error; the next starts the engine
-  REPLY2="$(completion "$UD_MODEL")"
+  REPLY2="$(completion "$UD_MODEL" low)"
   [[ -n "$REPLY2" ]] && break
   sleep 15
 done

@@ -88,3 +88,45 @@ Final line: `VERDICT: PASS-CUTOVER` | `VERDICT: RESTORED iq3s-f16kv`.
 
 Status at commit time: prod UP on swift-iq3_s-f16kv (parent-restored); cutover NOT yet run.
 VERDICT + pids + log evidence appended to this journal after the parent runs the script.
+
+## Round 2 (cutover run 20261106-071536): the fill kErrInternal + probe fixes
+
+Run verdicts: stage A engine reached "session is up" and the --persist re-listen fired,
+BUT the fill died: helper `request failed: helper internal`, engine fell to
+`the expert helper is absent; the CPU path serves`. Stage B reached /v1/models =
+ud-iq3_xxs + helper connected; completion #1 "no content" was the PROBE bug
+(reasoning model: 24 tokens all burned on reasoning_content, content null,
+finish_reason length) - restore_iq3s false-CRITICALed the same way on a verified-up prod.
+
+### Fill root cause (static, proven)
+serve_fill's H14 per-role GGUF assembly is gated `gguf_off ok && gguf_file.empty()` -
+v3 packs only (single-file, absolute offsets in the mapped --experts file). The
+iq3xxs-ud pack's native_experts.txt is **v4: a per-role shard column** naming shards
+2-4 with SHARD-RELATIVE offsets, while hp.pack maps ONLY the primary --experts file =
+shard 1 (metadata-only, 10.4 MB, 0 tensors). v4 -> per_role false -> the experts.bin
+blob_offset branch -> `off + bytes > hp.pack.size` -> kErrInternal. The engine's
+FileExpertSource::open_gguf maps every shard (role_ptr_, one base per file); the
+sidecar's MappedPack never did. The swallowed detail (err went only into the kError
+reply) is why the log said "helper internal".
+
+### Fix (helper_main.cpp, deployed 5a949542c046; 79abba1e kept as -aside)
+- Helper gains pack_path + shard_maps (a shard is mapped ONCE, lazily, linear <=4
+  entries; only the fill thread touches it - kFill rides one channel).
+- serve_fill assembly: gguf_pack (drop the gguf_file.empty gate) -> per role resolve
+  the file via expert_role_path (mirrors expert_gguf_file: empty column = primary,
+  single name covers all 3 roles - confirmed in expert_layout.cpp:500-522; comma trio
+  per #255) + shard_map, bounds-check per file. v3 packs: every role resolves to the
+  primary file -> byte-for-byte the r24 reads.
+- Fill refusal now prints the reason to stderr (the kError reply alone hid it).
+- persist_selftest PASS + ctest -R helper 5/5 on the new binary. Engine untouched.
+
+### Script (tools/xxs-i8kv-cutover-test.sh; parent's --serve prepend + 600 s kept)
+- completion_json/completion/gen_probe: request-level reasoning_effort=low +
+  max_tokens 512 (server.py:5292 honors per-request effort). STAGE B PASS requires
+  non-empty message.content; restore tolerates reasoning_content + finish_reason
+  length (generation proven, content null is NOT a restore failure).
+- STAGE A PASS gate: session is up + engine connected + helper "filled N slots" +
+  NO engine "helper is absent|fill refused|channel closed after 0 requests".
+- Live-validated against running prod (read-only): content "XXS-OK" returned.
+
+Status: prod UP swift-iq3_s-f16kv (parent). Awaiting cutover round 2 verdict.
