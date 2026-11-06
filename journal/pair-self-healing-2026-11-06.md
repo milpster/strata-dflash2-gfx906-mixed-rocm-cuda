@@ -395,3 +395,19 @@ must show the override line, fill, proxy ack and a completion.
   the patient helper; verify the helper log line
   "reply write deadlines overridden to 600000 ms", then fill/proxy/completion
   as usual.
+
+## Repo alignment: main = what prod runs (2026-11-06 evening)
+
+- User: "this runs on prod - it belongs on main". Merged the full dev tree
+  (`fix/helper-reply-patience`, 1,493 commits / 2,189 files, the lineage the
+  v0210 binaries were built from) into `pair-self-heal` as `2ec6d292`.
+- Conflicts resolved: `tools/mixed_gpu/pair_supervisor.py` OURS (415-line
+  hardened supervisor, not the dev tree's 270-line copy); `serve/telemetry.py`
+  THEIRS (pairs with the dev serve/ that came with the merge); `.gitignore`
+  union; `README.md` OURS (the fork's own doc). Sidecar source byte-identical
+  to the built patient binary. 27/27 mixed_gpu tests pass post-merge.
+- `main` force-moved to the merged tip; the old upstream main (845 commits,
+  Oct 4) preserved as `main-upstream-20261004`. The dev tree also added a new
+  `launch-prod-swift15-dflash-w4-q4_0-v023.sh` (unused, informational).
+- The local README edit stays in `stash@{0}`; the two runtime
+  `run/*-supervisor.json` files restored to their uncommitted state.
