@@ -38,7 +38,8 @@ Every number in this README was measured on exactly this machine; nothing is cla
 | GPU 0+1 | 2× AMD Radeon VII (Vega 20, gfx906, 16 GiB HBM2) | **first — the ROCm/HIP engine**: all model execution, layer-split, DFlash2 drafter |
 | GPU 2 | NVIDIA RTX 3080 Laptop, 8 GiB (sm_86) | **second — the CUDA helper**: expert rows + prefill tier, ~6.5 GiB cache |
 | Storage | 1 TB WD SN530 NVMe + 2 TB Crucial BX500 SATA | model packs, relief reads |
-| OS | Linux, XanMod `7.2.9-x64v3-xanmod1` | — |
+| OS | Ubuntu 25.04 (Plucky Puffin), kernel XanMod `7.2.9-x64v3-xanmod1` | userland the custom rocBLAS is built against |
+| rocBLAS | custom-built **4.1.0** for `gfx906:xnack-` (`~/rocm-gfx906-xnack`) | the GEMM path for both Radeon VIIs — stock 6.1 rocBLAS segfaults on gfx906; pinned ahead of it at build and runtime |
 | Model | Swift-1.5-Qwen3.8-Flash-Next, GSQ-RCO IQ3_XXS / IQ3_S packs | ~47 GiB expert set |
 | Server | `serve/server.py` | OpenAI- and Anthropic-compatible API, supervised pair |
 
@@ -140,7 +141,7 @@ The wins are not free, and the defects are on record rather than hidden:
 
 - Fresh ~18k prefill pays **−18 %** for DFlash tap collection (long-context reads gain instead).
 - `#267` gfx906 lost-completion wedge: transient verify-timeout GPU hangs (~1 in 20 long drives, both cards, also on stock 0.1.45); the bench retries the leg once.
-- Small fresh-read stalls (30–140 s on ~200-token cold reads): pre-existing, interactive-UX only; watchdog raised 300 → 900 s so it cannot kill prod.
+- Small fresh-read stalls (30–140 s on ~200-token cold reads): **host co-tenancy, not an engine defect** — this box is also a human's daily machine, and the transient stalls track the human's own load on it. Interactive-UX only; watchdog raised 300 → 900 s so it cannot kill prod, and the helper's reply deadlines tolerate the same stalls.
 - iq3_s at 256/256 MiB reserves → non-finite logits on long prefill (V8); fixed policy: 640/640 + fill 7000 (V9/V10) keeps both cards above the 512 MiB paging line.
 - Not promoted, default off: tap-overlap F1/F2 (flat), `STRATA_REFILL_OVERLAP` / `STRATA_WINDOW_POPULATE` (net-negative on big prompts), `--short-read` window routing (refill poison).
 
@@ -151,9 +152,29 @@ The wins are not free, and the defects are on record rather than hidden:
 ### Prerequisites (exactly what this box uses)
 
 - **ROCm 6.1.0, pinned** at `/opt/rocm-6.1.0` — HIP compiler (`/opt/rocm-6.1.0/llvm/bin/clang++`), `libhipblas.so.2`, `libamdhip64.so.6`. Newer ROCm trees on the box (`6.4.4`, `7.2.4`) must **not** leak into the link: the engine then links `.so.3`/`.so.7` SONAMEs it cannot load (exit 127).
-- **Custom libs** at `~/rocm-gfx906-xnack` — a self-built rocBLAS (`librocblas.so.4.1`, 82 MB) with gfx906-**xnack** kernels. It sits FIRST on `CMAKE_PREFIX_PATH` and on the runtime `LD_LIBRARY_PATH`, overriding the system rocblas.
+- **Custom libs** at `~/rocm-gfx906-xnack` — a self-built rocBLAS **4.1.0** (the exact stock 6.1.0 version/soname, clean drop-in) for the single target `gfx906:xnack-` (the "xnack" in the dir name is lineage; XNACK stays off on this box — nothing enables it). Needed because **stock rocBLAS 6.1.0/6.4.4 segfaults on gfx906** for GEMM shapes without a tuned kernel — see the rebuild section below. It sits FIRST on `CMAKE_PREFIX_PATH` and on the runtime `LD_LIBRARY_PATH`, overriding the system rocblas.
 - **CUDA toolkit** for the helper only: `/usr/local/cuda/bin/nvcc`, arch 86.
 - Ninja + CMake (Release). The pinned ggml source (`3cf03257f`) is fetched automatically at configure.
+
+### Rebuilding the custom rocBLAS
+
+Why it exists at all: stock rocBLAS in ROCm 6.1.0 (and 6.4.4 — identical file) **segfaults on gfx906** for any GEMM shape lacking a tuned kernel. The fallback kernels ship as `.hsaco` only; their Tensile `.dat` metadata is missing from the release (a packaging regression — ROCm 7.15 ships those files, but under a different soname and measured ~25 % slower on the llama.cpp workload that first hit this: ~370 → 277 tps). The result is a NULL pointer from `Tensile::PlaceholderLibrary::loadPlaceholderLibrary()` on first inference. Full crash analysis, minimal `rocblas-bench` repro and a llama.cpp-side workaround patch: `docs/work/rocblas-gfx906-bug-report.md`.
+
+The custom build sidesteps the whole problem class: built for **exactly one target** (`gfx906:xnack-`, proven by the shipped kernel filenames), it produces a merged Tensile library (`TensileLibrary_gfx906.co` + `.dat`) with the fallback metadata embedded — no external per-kernel `.dat` files left to go missing.
+
+Repro status, honestly: the source tree and the literal `cmake` invocation are gone; only the installed prefix survived. The recipe shape below is **not a re-verified run**:
+
+```sh
+git clone -b rocm-6.1.0 https://github.com/ROCm/rocBLAS.git
+cmake -S rocBLAS -B rocBLAS/build \
+  -DCMAKE_INSTALL_PREFIX="$HOME/rocm-gfx906-xnack" \
+  -DAMDGPU_TARGETS="gfx906:xnack-" \
+  -DCMAKE_PREFIX_PATH=/opt/rocm-6.1.0
+cmake --build rocBLAS/build --parallel 11
+cmake --install rocBLAS/build
+```
+
+Expect a heavy build: Tensile codegen, hours at high parallelism, tens of GB of disk. Two local experiments from the same era are kept on disk but are **not** the shipping lib: a 4.1.2 prefix and a "mixed library" graft of 7.15 metadata into 6.1 (fails — the lazy-index format changed between the releases). When we next rebuild, this section gets the real invocation, wall time and verification results, per the usual measurement discipline.
 
 ### Engine — HIP, gfx906 (Radeon VII)
 
@@ -207,6 +228,6 @@ HSA_OVERRIDE_GFX_VERSION=9.0.6  HIP_FORCE_P2P=1  HSA_ENABLE_SDMA=1
 | `docs/work/` | lever calibrations, identity investigations, design docs |
 | `tools/mixed_gpu/` | pair supervisor, window harness, acceptance and maintenance tooling |
 | `strata_control/`, `tools/` | prod control plane, quality yardstick, setup tests |
-| Branches | `main` (canonical, published), `main-pre-publish` (845-commit upstream-main snapshot), `build-latest`, `build-mixed-v0210` (prod line history), `stock-v0210-gfx906-buildfix` (stock build fixes), `tap-overlap-f1f2` (parked) |
+| Branches | `main` (canonical, published — **carries the latest working version**; nothing lands before both backends build and the gates pass), `main-pre-publish` (845-commit upstream-main snapshot), `build-latest`, `build-mixed-v0210` (prod line history), `stock-v0210-gfx906-buildfix` (stock build fixes), `tap-overlap-f1f2` (parked) |
 
 Upstream hygiene: upmerges from `upstream/main` (Niko1221/Strata; `origin` is this fork) — v0.1.45 → v0.2.10 kept, upstream machinery winning where it supersedes, fork specifics re-integrated and depth-verified after every merge; fork features are opt-in and the default path stays byte-identical to stock (F1off arm: all shas reproduce, fresh-PP equal); both backends build before any promotion.
