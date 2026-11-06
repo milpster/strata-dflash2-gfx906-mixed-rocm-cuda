@@ -130,3 +130,12 @@ reply) is why the log said "helper internal".
 - Live-validated against running prod (read-only): content "XXS-OK" returned.
 
 Status: prod UP swift-iq3_s-f16kv (parent). Awaiting cutover round 2 verdict.
+
+## Vision-HIP build (gfx906) - 2026-11-06
+
+- Built build-vision-hip/bin/strata-vision (103.9 MB): tools/vision source, ggml-HIP backend, gfx906, ROCm 6.1.0 llvm clang++ 17, Release, -march=native, OpenMP.
+- Recipe committed: tools/vision/build-hip.sh (d4f4d22, + f04bfbe -Xcompiler -fPIC fix: CMake HIP omits PIC on ggml-hip host objects, PIE link fails without it).
+- ldd: hipblas/amdhip64 -> /opt/rocm-6.1.0/lib, rocblas -> /home/user/rocm-gfx906-xnack/lib (xnack stack wins), gomp system; no unresolved.
+- Sanity: usage run exits 2 with usage line, no GPU context opened. NO --mmproj run performed (cards are prod's).
+- Benchmark window (parent): LD_LIBRARY_PATH=/home/user/rocm-gfx906-xnack/lib:/opt/rocm-6.1.0/lib HSA_OVERRIDE_GFX_VERSION=9.0.6 strata-vision --mmproj ... --gpu
+- CPU-mode caveat: source's CUDA_VISIBLE_DEVICES=-1 guard is ignored by HIP/ROCR; use HIP_VISIBLE_DEVICES="" ROCR_VISIBLE_DEVICES="" for a no-GPU run of this build.

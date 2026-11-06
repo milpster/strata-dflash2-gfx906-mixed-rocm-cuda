@@ -12,7 +12,7 @@
 set -euo pipefail
 ROOT=/mnt/user/Strata
 PY="$ROOT/.venv/bin/python"
-VISION="$ROOT/build-vision/bin/strata-vision"
+VISION="${VISION:-$ROOT/build-vision/bin/strata-vision}"
 MMPROJ="${MMPROJ:-/mnt/user/ai/mmproj-Swift-Qwen3.8-Flash-Next-BF16.gguf}"
 MODEL="/mnt/user/ai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf"
 IMG="${IMG:-$ROOT/run/vision-gpu-test.png}"
@@ -61,7 +61,7 @@ ev "== vision gpu smoke, run $STAMP"
 stop_prod
 ev "test: starting strata-vision --gpu (log: $VLOG)"
 RC=0
-printf 'ENC %s %s\nQUIT\n' "$IMG" "$OUT" | timeout -k 10 480 env LD_LIBRARY_PATH=/home/user/rocm-gfx906-xnack/lib:/opt/rocm-6.1.0/lib \
+printf 'ENC %s %s\nQUIT\n' "$IMG" "$OUT" | timeout -k 10 480 env LD_LIBRARY_PATH=/home/user/rocm-gfx906-xnack/lib:/opt/rocm-6.1.0/lib HSA_OVERRIDE_GFX_VERSION=9.0.6 \
   "$VISION" --mmproj "$MMPROJ" --model "$MODEL" --gpu --max-tokens "$MAXT" >> "$VLOG" 2>&1 <&0 || RC=$?
 OKLINE=$(grep -m1 '^OK ' "$VLOG" || true)
 ERRLINE=$(grep -m1 -E '^ERR |CUDA|failed|error|no kernel' "$VLOG" || true)
