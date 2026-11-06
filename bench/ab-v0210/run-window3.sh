@@ -3,7 +3,7 @@
 #  K3 = prefill 24576   K4 = prefill 32768   P1 = prefill 16384 + STRATA_DF_RING_MULT=8 (ring-mult build)
 # Usage: run-window3.sh   (one arm at a time; GPUs must be free; continues past arm failures)
 set -uo pipefail
-B=/home/user/dev/Strata/bench/ab-v0210
+B=${STRATA_DEV_TREE:-/home/user/dev/Strata}/bench/ab-v0210
 for spec in "K3 1" "K4 1" "P1 1"; do
   set -- $spec
   echo "=== $(date +%T) arm $1 round $2 ==="

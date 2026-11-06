@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """bench.py LOGFILE LABEL [--runs 3] - fixed prompts straight to the engine (BENCH_PORT, default 8081): thinking off,
+import os
 temperature 0, a random first line so nothing is reused from the prompt / conversation cache; then the speeds the
 engine itself logged.  short = ~565-token prompt + 200 tokens out; long = ~7,047-token prompt + 60 tokens out.
 Prints every request and the medians: prompt tok/s and decode tok/s per case."""

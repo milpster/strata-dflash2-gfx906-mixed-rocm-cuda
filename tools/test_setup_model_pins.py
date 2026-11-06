@@ -1,4 +1,5 @@
 """Tests for the fixed SHA-256 and size of every model file setup downloads (REPO_PINS): every file a choice can
+import os
 download has one, a wrong file is deleted and setup stops, a pinned commit that answers 404 stops the download
 (STRATA_ALLOW_UNPINNED=1 is the tester's opt-out), and an installed model needs no network.  Mocked network - nothing
 is downloaded.

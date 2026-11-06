@@ -4,7 +4,7 @@
 # Mirrors run-arm.sh's serial-lifecycle policy and V9 helper case; drive = probe_shortpp.py.
 set -euo pipefail
 ARM=$1; ROUND=${2:-1}
-ROOT=/home/user/dev/Strata; B=$ROOT/bench/ab-v0210; SP=$B/shortpp
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)"; B=$ROOT/bench/ab-v0210; SP=$B/shortpp
 PY=$ROOT/.venv/bin/python
 case $ARM in
   T1|T1b|T2a|T2b|T2c|T3|T4|T5|T6c|S0|S1|S2|S3|S4|SP|M0|M1|M0b|M1b) ENGINE=$ROOT/build-v0210/rpcw-hip/strata; HELPER=$ROOT/build-v0210/rpcw-cuda/strata-expert-helper; SERVE=$ROOT/serve/server.py; CD=$ROOT ;;
@@ -50,10 +50,10 @@ cleanup() {
 }
 trap cleanup EXIT
 trap 'exit 130' INT
-export LD_LIBRARY_PATH=/home/user/rocm-gfx906-xnack/lib:/opt/rocm-6.1.0/lib
+export LD_LIBRARY_PATH=${STRATA_ROCM_ROOT:-/home/user/rocm-gfx906-xnack}/lib:/opt/rocm-6.1.0/lib
 echo "== arm $ARM round $ROUND: helper up ($HELPER)"
 HSLOTS=4600; HFILL=7000
-PACK=/mnt/user/ai/iq3s; EXPERTS=../Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S.gguf
+PACK=${STRATA_AI_DIR:-/mnt/user/ai}/iq3s; EXPERTS=../Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S.gguf
 env -i PATH="$PATH" HOME="$HOME" TERM="${TERM:-dumb}" LD_LIBRARY_PATH="$LD_LIBRARY_PATH" \
   "$HELPER" --pack "$PACK" \
     --experts "$EXPERTS" \

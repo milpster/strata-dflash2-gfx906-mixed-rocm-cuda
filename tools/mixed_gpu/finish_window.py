@@ -48,16 +48,16 @@ import recovery_window as runtime                                      # noqa: E
 import slots_window                                                    # noqa: E402
 
 WORK = _HERE.parents[1]
-ROOT = Path("/mnt/user/Strata")
+ROOT = Path(os.environ.get("STRATA_PROD_TREE", "/mnt/user/Strata") + "")
 EV_ROOT = WORK / "build-mixed-gpu/p2-finish"
-PACK = Path("/mnt/user/ai/iq3xxs-15")
+PACK = Path(os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3xxs-15")
 EXPERTS_GGUF = "../Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf"
 DIAG_ENGINE = WORK / "build-mixed-gpu/rpcw-hip-nmse2/strata"
 CUDA_HELPER = WORK / "build-mixed-gpu/rpcw-cuda-nmse2/strata-expert-helper"
 HIP_REFERENCE = WORK / "build-mixed-gpu/rpcw-hip-nmse2/p2_measure_hip_reference"
 AUDIT = _HERE / "p2_measure/p2_report_audit.py"
 LAYERS = list(range(32, 48))
-ROCM_LIBS = "/home/user/rocm-gfx906-xnack/lib:/opt/rocm-6.1.0/lib"
+ROCM_LIBS = os.environ.get("STRATA_ROCM_ROOT", "/home/user/rocm-gfx906-xnack") + "/lib:/opt/rocm-6.1.0/lib"
 
 
 # ---------------------------------------------------------------- pure helpers
@@ -135,7 +135,7 @@ def derive_capture_config(prod: dict, *, engine: Path, prefix: Path, log: Path,
     env = dict(cfg.get("env", {}))
     env["STRATA_P2_DUMP_PREFIX"] = str(prefix)
     cfg["env"] = env
-    if cfg.get("lib_dirs") != ["/home/user/rocm-gfx906-xnack/lib", "/opt/rocm-6.1.0/lib"]:
+    if cfg.get("lib_dirs") != [os.environ.get("STRATA_ROCM_ROOT", "/home/user/rocm-gfx906-xnack") + "/lib", "/opt/rocm-6.1.0/lib"]:
         raise ValueError("capture lib_dirs must keep custom rocBLAS before ROCm 6.1")
     if not 1024 <= port <= 65535 or port == 8009:
         raise ValueError("capture port must be private (not 8009)")
@@ -441,7 +441,7 @@ def phase_capture(args, result: dict) -> None:
             body = capture_request(cfg["model_name"], texts[fid], args.max_tokens)
             (ev / f"request-{fid}.json").write_bytes(body)
             with log.open("wb") as elog:
-                server = subprocess.Popen(["/mnt/user/Strata/.venv/bin/python",
+                server = subprocess.Popen([os.environ.get("STRATA_PROD_TREE", "/mnt/user/Strata") + "/.venv/bin/python",
                                            "serve/server.py", "--engine", "strata",
                                            "--config", str(cfg_path), "--port", str(args.port)],
                                           cwd=str(WORK), stdout=elog, stderr=subprocess.STDOUT,

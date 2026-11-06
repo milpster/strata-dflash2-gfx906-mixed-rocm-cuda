@@ -10,10 +10,10 @@ fi
 EV=$1
 HIP=build-mixed-gpu/repro-q81-hip
 CUDA=build-mixed-gpu/repro-q81-cuda
-GGML=/mnt/user/Strata/build-906-new/_deps/strata_llamacpp-src
+GGML=${STRATA_PROD_TREE:-/mnt/user/Strata}/build-906-new/_deps/strata_llamacpp-src
 test -d "$EV"; test ! -L "$EV"; test ! -e "$EV/build.log"
 test ! -L "$HIP"; test ! -L "$CUDA"; test -d "$GGML"
-export LD_LIBRARY_PATH=/home/user/rocm-gfx906-xnack/lib:/opt/rocm-6.1.0/lib
+export LD_LIBRARY_PATH=${STRATA_ROCM_ROOT:-/home/user/rocm-gfx906-xnack}/lib:/opt/rocm-6.1.0/lib
 export PATH=/usr/local/cuda/bin:/opt/rocm-6.1.0/bin:$PATH
 common=(-DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_CUDA=ON -DSTRATA_NATIVE_EXPERTS=ON -DSTRATA_BUILD_TESTS=ON
   -DSTRATA_GGML_DIR="$GGML" -DSTRATA_ENABLE_DFLASH2=ON -DSTRATA_HAVE_DFLASH2=OFF -DSTRATA_MMQ_KQUANTS=ON
@@ -28,7 +28,7 @@ common=(-DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_CUDA=ON -DSTRATA_NATIVE_EXPER
   cmake -S . -B "$HIP" "${common[@]}" -DSTRATA_HIP_GFX906=ON \
     -DSTRATA_P2_DIAGNOSTICS=ON -DSTRATA_BUILD_EXPERT_HELPER=OFF \
     -DCMAKE_HIP_COMPILER=/opt/rocm-6.1.0/llvm/bin/clang++ -DCMAKE_HIP_ARCHITECTURES=gfx906 \
-    '-DCMAKE_PREFIX_PATH=/home/user/rocm-gfx906-xnack;/opt/rocm-6.1.0'
+    -"-DCMAKE_PREFIX_PATH=${STRATA_ROCM_ROOT:-/home/user/rocm-gfx906-xnack};/opt/rocm-6.1.0"
   cmake --build "$HIP" --target p2_measure_test p2_measure_hip_reference -j 11
   ctest --test-dir "$HIP" -R '^p2_measure_test$' --no-tests=error --output-on-failure
   printf '\n=== CUDA DIAGNOSTIC BUILD (NO ENGINE/HELPER TARGET) ===\n'

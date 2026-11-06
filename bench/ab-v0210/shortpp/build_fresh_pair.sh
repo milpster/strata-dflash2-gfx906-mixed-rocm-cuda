@@ -5,7 +5,7 @@
 # Configuration is replicated programmatically from build-v0210/rpcw-hip/CMakeCache.txt
 # (STRATA_* + HIP arch/compiler + build type); nothing under build-v0210 is touched.
 set -u
-ROOT=/home/user/dev/Strata
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)"
 WT=$ROOT-wt-f4e0bc3d
 REF=$ROOT/build-v0210/rpcw-hip/CMakeCache.txt
 log(){ echo "=== $* $(date +%T) ==="; }

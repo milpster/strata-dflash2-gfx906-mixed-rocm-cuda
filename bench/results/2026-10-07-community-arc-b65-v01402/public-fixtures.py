@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Bounded prefill diagnosis; content lives only in RAM and process memory."""
+import os
 import argparse, hashlib, importlib.util, json, os, re, signal, sys, threading, time
 from pathlib import Path
 

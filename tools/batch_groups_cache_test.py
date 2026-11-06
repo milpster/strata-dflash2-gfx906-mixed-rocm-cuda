@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """#1604: with --batch N --batch-groups N on a layer split, two long conversations that alternate must reuse their slot
+import os
 (or the conversation cache) on every later turn instead of reading their prompt from token 0.
 
   python3 tools/batch_groups_cache_test.py CFG OUT.json

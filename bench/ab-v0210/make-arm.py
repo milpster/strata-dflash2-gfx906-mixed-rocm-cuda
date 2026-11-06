@@ -15,8 +15,8 @@ import sys
 
 B = os.path.dirname(os.path.abspath(__file__))
 BASE = json.load(open(f"{B}/armB.json"))
-OLD = "/home/user/dev/Strata/build-v0210/rpcw-hip/strata"
-NEW = "/home/user/dev/Strata/build-tap-overlap/rpcw-hip/strata"
+OLD = os.environ.get("STRATA_DEV_TREE", "/home/user/dev/Strata") + "/build-v0210/rpcw-hip/strata"
+NEW = os.environ.get("STRATA_DEV_TREE", "/home/user/dev/Strata") + "/build-tap-overlap/rpcw-hip/strata"
 
 
 def arm(name, exe, env=None, layer_split=None, prefill=None):

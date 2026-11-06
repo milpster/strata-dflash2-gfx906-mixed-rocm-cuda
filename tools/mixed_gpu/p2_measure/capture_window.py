@@ -32,15 +32,15 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from check_fixture_pins import FIXTURES, c_string_literals  # noqa: E402
 
-WRAPPER_PY = "/mnt/user/Strata/.venv/bin/python"
-WRAPPER_CWD = "/mnt/user/Strata"
+WRAPPER_PY = os.environ.get("STRATA_PROD_TREE", "/mnt/user/Strata") + "/.venv/bin/python"
+WRAPPER_CWD = os.environ.get("STRATA_PROD_TREE", "/mnt/user/Strata") + ""
 TEMPLATE_EXE_ARGS = [
     "--gpu", "0,1",
-    "--pack", "/mnt/user/ai/iq3xxs-15",
-    "--native", "/mnt/user/ai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
-    "--native-dense-gguf", "/mnt/user/ai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
-    "--ple-gguf", "/mnt/user/ai/Qwen3.8-Flash-Next-PLE-Q8_0.gguf",
-    "--expert-profile", "/mnt/user/Strata/data/expert-profile.bin",
+    "--pack", os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3xxs-15",
+    "--native", os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
+    "--native-dense-gguf", os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
+    "--ple-gguf", os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/Qwen3.8-Flash-Next-PLE-Q8_0.gguf",
+    "--expert-profile", os.environ.get("STRATA_PROD_TREE", "/mnt/user/Strata") + "/data/expert-profile.bin",
     "--expert-cache", "auto", "--prefill", "8192", "--spec", "5",
     "--spec-min-p", "0.5", "--max-context", "262144", "--kv", "int8",
     "--vram-reserve-mib", "896", "--vram-reserve-later-mib", "1000",
@@ -48,7 +48,7 @@ TEMPLATE_EXE_ARGS = [
     "--prompt-cache-spread", "--conversation-cache-mib", "2048",
     "--conversation-cache-min-tokens", "2048",
     "--conversation-cache-park-gain", "4096",
-    "--dflash", "/mnt/user/dflash2/artifacts/inco-dflash2-q4_0.gguf",
+    "--dflash", os.environ.get("STRATA_DFLASH2_DIR", "/mnt/user/dflash2") + "/artifacts/inco-dflash2-q4_0.gguf",
     "--dflash-block", "5", "--suffix-draft", "0",
 ]
 TEMPLATE_ENV = {
@@ -139,14 +139,14 @@ def one_pair(fixture, layer, text, args, cfgdir, logdir):
         "env": env, "env_to_user": True, "exe": os.path.abspath(args.engine),
         "fit_max_tokens": True, "gpu": [0, 1], "host": "127.0.0.1",
         "layer_split": "32",
-        "lib_dirs": ["/home/user/rocm-gfx906-xnack/lib", "/opt/rocm-6.1.0/lib"],
+        "lib_dirs": [os.environ.get("STRATA_ROCM_ROOT", "/home/user/rocm-gfx906-xnack") + "/lib", "/opt/rocm-6.1.0/lib"],
         "log": log, "mcp_servers": {}, "model_name": "swift-1.5-iq3_xxs",
         "port": args.port, "reasoning_budget_tokens": 55000,
         "reasoning_effort": "high",
         "sampling": {"min_p": 0.0, "presence_penalty": 0.0,
                      "repetition_penalty": 1.0, "temperature": 1.0,
                      "top_k": 20, "top_p": 0.95},
-        "tokenizer": "/mnt/user/ai/iq3xxs-15/tokenizer",
+        "tokenizer": os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3xxs-15/tokenizer",
     }
     with open(cfg, "w", encoding="utf-8") as fh:
         json.dump(config, fh, indent=1)

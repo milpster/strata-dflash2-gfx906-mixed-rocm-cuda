@@ -1,4 +1,5 @@
 """An engine update beside a loaded model: the notice, the warning, the clean stop and the start again.
+import os
 
 The rule (owner, 11-01): an engine update never starts by itself while a model is loaded, and nothing replaces or removes the engine a running
 model uses.  An update that finds a model loaded does one of three things, and never a fourth:

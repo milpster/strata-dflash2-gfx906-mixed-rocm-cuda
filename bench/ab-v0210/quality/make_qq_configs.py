@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Quality-yardstick configs for the fleet packs (tools/quant_quality.py run).
+import os
 
 Four arms, everything constant except the lineage/pack under test:
   REF  Swift-IQ3_S GGUF, no pack        (live-lineage weights anchor)
@@ -14,11 +15,11 @@ absent on purpose: scored logits come from the target model only.
 import json
 import pathlib
 
-BASE = pathlib.Path("/home/user/dev/Strata/bench/ab-v0210/quality")
-GGUF_IQ3S = "/mnt/user/ai/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S.gguf"
-GGUF_XXS15 = "/mnt/user/ai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf"
-PLE = "/mnt/user/ai/Qwen3.8-Flash-Next-PLE-Q8_0.gguf"  # constant PLE source in every arm
-PROFILE = "/mnt/user/Strata/data/expert-profile.bin"   # same profile file both lineages use
+BASE = pathlib.Path(os.environ.get("STRATA_DEV_TREE", "/home/user/dev/Strata") + "/bench/ab-v0210/quality")
+GGUF_IQ3S = os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S.gguf"
+GGUF_XXS15 = os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf"
+PLE = os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/Qwen3.8-Flash-Next-PLE-Q8_0.gguf"  # constant PLE source in every arm
+PROFILE = os.environ.get("STRATA_PROD_TREE", "/mnt/user/Strata") + "/data/expert-profile.bin"   # same profile file both lineages use
 
 ENV = {
     "STRATA_ENGINE_NICE": "0",
@@ -52,12 +53,12 @@ def cfg(model, pack, tok, name, exe=None, cwd=None):
     if pack:
         args[2:2] = ["--pack", pack]
     return {
-        "exe": exe or "/home/user/dev/Strata/build-v0210/rpcw-hip/strata",
+        "exe": exe or os.environ.get("STRATA_DEV_TREE", "/home/user/dev/Strata") + "/build-v0210/rpcw-hip/strata",
         "args": args,
-        "cwd": cwd or "/home/user/dev/Strata",
+        "cwd": cwd or os.environ.get("STRATA_DEV_TREE", "/home/user/dev/Strata") + "",
         "tokenizer": tok,
         "model_name": name,
-        "lib_dirs": ["/home/user/rocm-gfx906-xnack/lib", "/opt/rocm-6.1.0/lib"],
+        "lib_dirs": [os.environ.get("STRATA_ROCM_ROOT", "/home/user/rocm-gfx906-xnack") + "/lib", "/opt/rocm-6.1.0/lib"],
         "env": dict(ENV),
     }
 
@@ -72,16 +73,16 @@ ARMS = {
     #   REF vs A = the headline stack delta on the live pack (gate: ~0)
     #   C   vs B = the same on the swift15 pack            (gate: ~0)
     #   REF vs C = quant/lineage delta                     (informational)
-    "qqREF": cfg(GGUF_IQ3S, "/mnt/user/ai/iq3s", "/mnt/user/ai/iq3s/tokenizer", "qq-ref-stock-pack-iq3s", exe=STOCK_EXE, cwd=STOCK_CWD),
-    "qqA": cfg(GGUF_IQ3S, "/mnt/user/ai/iq3s", "/mnt/user/ai/iq3s/tokenizer", "qq-a-relief-pack-iq3s"),
+    "qqREF": cfg(GGUF_IQ3S, os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3s", os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3s/tokenizer", "qq-ref-stock-pack-iq3s", exe=STOCK_EXE, cwd=STOCK_CWD),
+    "qqA": cfg(GGUF_IQ3S, os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3s", os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3s/tokenizer", "qq-a-relief-pack-iq3s"),
     # S = A + STRATA_PREFILL_CPU_SHARE=auto: isolates the T-lane winner (promoted to prod 2026-11-05)
     # on our binary. The yardstick pins --prefill 512, so every scored chunk runs through the share
     # path (below the _MAX threshold) — the gate exercises the knob, it cannot bypass it.
     # S vs A = the share's own delta (expect upstream-documented KL~0.004 class); S vs REF = stack+share vs stock.
-    "qqS": {**cfg(GGUF_IQ3S, "/mnt/user/ai/iq3s", "/mnt/user/ai/iq3s/tokenizer", "qq-s-relief-cpushare-iq3s"),
+    "qqS": {**cfg(GGUF_IQ3S, os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3s", os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3s/tokenizer", "qq-s-relief-cpushare-iq3s"),
             "env": {**ENV, "STRATA_PREFILL_CPU_SHARE": "auto"}},
-    "qqC": cfg(GGUF_XXS15, "/mnt/user/ai/iq3xxs-15", "/mnt/user/ai/iq3xxs-15/tokenizer", "qq-c-stock-pack-iq3xxs15", exe=STOCK_EXE, cwd=STOCK_CWD),
-    "qqB": cfg(GGUF_XXS15, "/mnt/user/ai/iq3xxs-15", "/mnt/user/ai/iq3xxs-15/tokenizer", "qq-b-relief-pack-iq3xxs15"),
+    "qqC": cfg(GGUF_XXS15, os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3xxs-15", os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3xxs-15/tokenizer", "qq-c-stock-pack-iq3xxs15", exe=STOCK_EXE, cwd=STOCK_CWD),
+    "qqB": cfg(GGUF_XXS15, os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3xxs-15", os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3xxs-15/tokenizer", "qq-b-relief-pack-iq3xxs15"),
 }
 
 # M-lane quality gate (2026-11-05 evening): quant_quality.py PROMPT mode is the memo-exercising
@@ -92,12 +93,12 @@ ARMS = {
 # Gates: pcompare PM PX (the memo's own delta - same bytes, must be ~0) and pcompare P0 PM
 # (the whole promoted binary, flags off - byte-identity of the default path, measured).
 ARMS.update({
-    "qqP0": {**cfg(GGUF_IQ3S, "/mnt/user/ai/iq3s", "/mnt/user/ai/iq3s/tokenizer", "qq-p0-oldbin-promptpath"),
-             "exe": "/home/user/dev/Strata/build-v0210/rpcw-hip/strata.f5fb0738-aside"},
-    "qqPM": {**cfg(GGUF_IQ3S, "/mnt/user/ai/iq3s", "/mnt/user/ai/iq3s/tokenizer", "qq-pm-memobin-off"),
-             "exe": "/home/user/dev/Strata/build-memo2/rpcw-hip/strata"},
-    "qqPX": {**cfg(GGUF_IQ3S, "/mnt/user/ai/iq3s", "/mnt/user/ai/iq3s/tokenizer", "qq-px-memobin-on"),
-             "exe": "/home/user/dev/Strata/build-memo2/rpcw-hip/strata",
+    "qqP0": {**cfg(GGUF_IQ3S, os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3s", os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3s/tokenizer", "qq-p0-oldbin-promptpath"),
+             "exe": os.environ.get("STRATA_DEV_TREE", "/home/user/dev/Strata") + "/build-v0210/rpcw-hip/strata.f5fb0738-aside"},
+    "qqPM": {**cfg(GGUF_IQ3S, os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3s", os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3s/tokenizer", "qq-pm-memobin-off"),
+             "exe": os.environ.get("STRATA_DEV_TREE", "/home/user/dev/Strata") + "/build-memo2/rpcw-hip/strata"},
+    "qqPX": {**cfg(GGUF_IQ3S, os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3s", os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3s/tokenizer", "qq-px-memobin-on"),
+             "exe": os.environ.get("STRATA_DEV_TREE", "/home/user/dev/Strata") + "/build-memo2/rpcw-hip/strata",
              "env": {**ENV, "STRATA_PROMPT_STAGE_MEMO": "1"}},
 })
 

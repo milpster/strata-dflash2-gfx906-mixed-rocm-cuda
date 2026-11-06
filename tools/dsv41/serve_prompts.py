@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """serve_prompts.py PROMPTS.json OUT.json -- ENGINE CMD...
+import os
 Starts the engine in --serve mode (appended), waits for READY, sends GEN for every prompt (greedy), compares the
 generated ids with the llama.cpp reference's greedy ids (expect_ids), and prints one line each:
   id mode  prompt_tokens  n_gen  match_prefix/n_expect  first_divergence  prefill ms  decode tok/s

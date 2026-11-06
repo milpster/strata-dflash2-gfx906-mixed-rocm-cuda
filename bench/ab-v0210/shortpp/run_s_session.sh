@@ -2,16 +2,16 @@
 # S-lane bench session: stop prod -> arms serially -> ALWAYS restore prod.
 # Watchable: every arm's probe and judge lines stream here as they run.
 set -u
-SP=/home/user/dev/Strata/bench/ab-v0210/shortpp
-PROD=/mnt/user/Strata
+SP=${STRATA_DEV_TREE:-/home/user/dev/Strata}/bench/ab-v0210/shortpp
+PROD=${STRATA_PROD_TREE:-/mnt/user/Strata}
 echo "=== S-SESSION start $(date +%T): stopping prod (GPU window opens) ==="
 bash "$PROD/stop-prod.sh"
 echo "=== warming bench-pack page cache (session 1 paid cold-disk: S214 cold 201s, S18k stages 731s; arms converged as the cache warmed) ==="
-for f in /mnt/user/ai/iq3s/*; do
+for f in ${STRATA_AI_DIR:-/mnt/user/ai}/iq3s/*; do
   [[ -f "$f" ]] || continue
   s=$SECONDS; cat "$f" > /dev/null 2>&1; echo "warm: $(basename "$f") $((SECONDS - s))s"
 done
-EXPERTS=$(find /home/user/dev /mnt/user/ai -maxdepth 2 -name 'Swift-Qwen3.8*IQ3_S*.gguf' 2>/dev/null | head -1)
+EXPERTS=$(find /home/user/dev ${STRATA_AI_DIR:-/mnt/user/ai} -maxdepth 2 -name 'Swift-Qwen3.8*IQ3_S*.gguf' 2>/dev/null | head -1)
 if [[ -n "$EXPERTS" ]]; then s=$SECONDS; cat "$EXPERTS" > /dev/null 2>&1; echo "warm: $EXPERTS $((SECONDS - s))s"; fi
 awk '/^MemAvailable/{print "MemAvailable after warmup:", int($2/1024), "MiB"}' /proc/meminfo
 FAILED=0

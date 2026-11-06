@@ -9,9 +9,9 @@
 # RAM gate + fail-fast relief/proxy gates live inside run_shortpp_arm.sh (exit 3 refuses
 # a tired host; arms run one at a time and wait for VRAM drain between).
 set -u
-SP=/home/user/dev/Strata/bench/ab-v0210/shortpp
-ROOT=/home/user/dev/Strata
-PROD=/mnt/user/Strata
+SP=${STRATA_DEV_TREE:-/home/user/dev/Strata}/bench/ab-v0210/shortpp
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)"
+PROD=${STRATA_PROD_TREE:-/mnt/user/Strata}
 BIN=$ROOT/build-v0210/rpcw-hip/strata
 KEEP=$BIN.f5fb0738-aside            # the canonical bench binary (sha f5fb0738218485a2)
 MEMO=$ROOT/build-memo/rpcw-hip/strata   # sha16 95059fae184f6953

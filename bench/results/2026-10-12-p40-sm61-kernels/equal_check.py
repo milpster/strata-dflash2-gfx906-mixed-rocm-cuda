@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """equal_check.py OUT.json — fixed prompts at temperature 0 straight to the dev engine (BENCH_PORT), the answers saved for a
+import os
 byte comparison between two engines. Run it first after a fresh start so both engines have the same history."""
 import json, os, random, sys, urllib.request
 OUT = sys.argv[1]; PORT = os.environ.get("BENCH_PORT", "8082")

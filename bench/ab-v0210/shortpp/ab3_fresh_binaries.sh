@@ -6,9 +6,9 @@
 #   cell 3  fresh HEAD build (build-fresh-head)              H3 the hunks - slow => hunks guilty
 # Swaps are sha-gated: the copy is verified against its source (retries "Text file busy").
 set -u
-SP=/home/user/dev/Strata/bench/ab-v0210/shortpp
-ROOT=/home/user/dev/Strata
-PROD=/mnt/user/Strata
+SP=${STRATA_DEV_TREE:-/home/user/dev/Strata}/bench/ab-v0210/shortpp
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)"
+PROD=${STRATA_PROD_TREE:-/mnt/user/Strata}
 BIN=$ROOT/build-v0210/rpcw-hip/strata
 KEEP=$BIN.f5fb0738-aside            # the regression binary (sha f5fb0738218485a2)
 F4E0=$ROOT/build-fresh-f4e0/rpcw-hip/strata

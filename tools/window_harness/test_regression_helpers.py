@@ -127,7 +127,7 @@ def synth_prod() -> dict:
             "--vision"]
     return {"exe": "/synth/build/strata", "args": args, "cwd": "/synth/cwd",
             "tokenizer": "/synth/tokenizer", "model_name": "swift-1.5-iq3_xxs",
-            "log": "/mnt/user/dflash2/logs/engine-synth-prod.log", "env": {"HSA_OVERRIDE_GFX_VERSION": "9.0.6"},
+            "log": os.environ.get("STRATA_DFLASH2_DIR", "/mnt/user/dflash2") + "/logs/engine-synth-prod.log", "env": {"HSA_OVERRIDE_GFX_VERSION": "9.0.6"},
             "lib_dirs": ["/synth/lib"], "port": 8009, "host": "127.0.0.1", "gpu": [0, 1],
             "layer_split": "32", "backend": "hip", "vision": {"exe": "/synth/vision"},
             "sampling": {"temperature": 1.0}, "reasoning_effort": "high",
@@ -947,8 +947,8 @@ def test_phase_dispatch():
                           "STRATA_KEEP_LEFTOVERS": "1"},
           "phase env: STRATA_REPO and PYTHONPATH point at the PROTOTYPE tree's tools, and the tool's "
           "leftover/orphan engine signalling (serve/server.py:103) is switched off")
-    check("/mnt/user/Strata" not in R.PHASE_ENV["PYTHONPATH"]
-          and "/mnt/user/Strata" not in R.PHASE_ENV["STRATA_REPO"],
+    check(os.environ.get("STRATA_PROD_TREE", "/mnt/user/Strata") + "" not in R.PHASE_ENV["PYTHONPATH"]
+          and os.environ.get("STRATA_PROD_TREE", "/mnt/user/Strata") + "" not in R.PHASE_ENV["STRATA_REPO"],
           "the prototype imports never resolve into the production install")
     f = R.PHASES["rewind"]["forced"]
     check(f["--max-context"].startswith("4096") and f["--spec"].startswith("2")

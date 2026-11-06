@@ -3,7 +3,7 @@
 #  C  = genuine stock v0.2.10 (no helper, no drafter)   P0 = prod config verbatim (prefill 16384, tier off)
 # Usage: run-window2.sh   (one arm at a time; GPUs must be free; continues past arm failures)
 set -uo pipefail
-B=/home/user/dev/Strata/bench/ab-v0210
+B=${STRATA_DEV_TREE:-/home/user/dev/Strata}/bench/ab-v0210
 for spec in "C 1" "C 2" "P0 1" "P0 2"; do
   set -- $spec
   echo "=== $(date +%T) arm $1 round $2 ==="

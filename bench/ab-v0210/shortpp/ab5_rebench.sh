@@ -7,9 +7,9 @@
 #   M1b  M0b + STRATA_PROMPT_STAGE_MEMO=1           the memo under test
 # Legs S214/S1k/S4k/S18k x3. RAM gate + fail-fast gates live in run_shortpp_arm.sh.
 set -u
-SP=/home/user/dev/Strata/bench/ab-v0210/shortpp
-ROOT=/home/user/dev/Strata
-PROD=/mnt/user/Strata
+SP=${STRATA_DEV_TREE:-/home/user/dev/Strata}/bench/ab-v0210/shortpp
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)"
+PROD=${STRATA_PROD_TREE:-/mnt/user/Strata}
 BIN=$ROOT/build-v0210/rpcw-hip/strata
 KEEP=$BIN.f5fb0738-aside            # the canonical bench binary (sha f5fb0738218485a2)
 MEMO2=$ROOT/build-memo2/rpcw-hip/strata   # shortpp-src + memo + dedup + fallback fix (sha-gated below)

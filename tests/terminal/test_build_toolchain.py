@@ -1,4 +1,5 @@
 """Toolchain tripwire: mixed-GPU HIP binaries must link the ROCm the runtime serves.
+import os
 
 Lesson (2026-11-01, family l3w1): a bare cmake configure resolves ROCm against a
 newer /opt/rocm and links libhipblas.so.3 / libamdhip64.so.7. The canonical
@@ -19,7 +20,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 BUILD = ROOT / "build-mixed-gpu"
-LAUNCHER = Path("/mnt/user/Strata/launch-prod-swift15-dflash-w4-q4_0-mixed.sh")
+LAUNCHER = Path(os.environ.get("STRATA_PROD_TREE", "/mnt/user/Strata") + "/launch-prod-swift15-dflash-w4-q4_0-mixed.sh")
 
 RIGHT = ("libhipblas.so.2", "libamdhip64.so.6")
 WRONG = ("libhipblas.so.3", "libamdhip64.so.7")

@@ -1,4 +1,5 @@
 """q36_venc.py EXE MMPROJ MODEL IMG [IMG ...] : drive strata-vision (ENC protocol), print each picture's header + stats."""
+import os
 import subprocess, sys, struct, os, time
 exe, mm, model, *imgs = sys.argv[1:]
 args = [exe, "--mmproj", mm, "--model", model] + [a for a in os.environ.get("STRATA_VARGS", os.environ.get("VARGS", "")).split() if a]

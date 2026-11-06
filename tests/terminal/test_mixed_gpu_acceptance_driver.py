@@ -579,7 +579,7 @@ def test_tests_use_only_the_fixture_tree(host, world):
               drv.CAND_HELPER, drv.UTILITY, drv.LOCK_PATH):
         assert str(p).startswith(str(host)), p
     assert drv.PROD_CONFIG.parent == host
-    assert not any(str(p).startswith("/mnt/user/Strata/prod") for p in
+    assert not any(str(p).startswith(os.environ.get("STRATA_PROD_TREE", "/mnt/user/Strata") + "/prod") for p in
                    (drv.PY, drv.LAUNCHER, drv.PROD_CONFIG, drv.MERGED_CWD))
 
 

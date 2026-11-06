@@ -100,8 +100,8 @@ _ORIG = {k: getattr(ad, k) for k in ("SAMPLE_SHA256", "DRIVER_SHA256", "CAPTURE_
                                      "OUTPUT_SHA_FILE", "OUTPUT_SHA_HEADER",
                                      "OUTPUT_SHA_COLUMNS")}
 _ORIG_CAND = drv.CAND_ENGINE
-_CANON_GGUF = Path("/mnt/user/dflash2/artifacts/inco-dflash2-q4_0.gguf")
-_CANON_CONFIG = Path("/mnt/user/Strata/prod-config-swift15-dflash-w4-q4_0.json")
+_CANON_GGUF = Path(os.environ.get("STRATA_DFLASH2_DIR", "/mnt/user/dflash2") + "/artifacts/inco-dflash2-q4_0.gguf")
+_CANON_CONFIG = Path(os.environ.get("STRATA_PROD_TREE", "/mnt/user/Strata") + "/prod-config-swift15-dflash-w4-q4_0.json")
 NOTICE_LINE = ("strata generate: at position 41 the drafter returned candidate tokens outside "
                "the vocabulary; drafting is off for the rest of this request\n")
 REPORT_STDOUT = ("stage                        agg cos  row0 cos  row0 max|d|  row0 rel\n"

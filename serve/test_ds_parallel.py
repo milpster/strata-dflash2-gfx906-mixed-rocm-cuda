@@ -1,4 +1,5 @@
 """DeepSeek --parallel (Project Maya #332, mw00): several conversations in one engine, the server's side.
+import os
 
 A fake engine (a Python script speaking maya-ds4's multi protocol: READY ... multi=N, GEN ... rid=<id>, then
 `T <rid> <id>`, `PP <rid> ...`, `DONE <rid> ...`, STOP <rid>) runs behind the real StrataEngine and Service, so the

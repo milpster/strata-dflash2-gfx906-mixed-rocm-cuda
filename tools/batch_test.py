@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Batching test: the same prompts decoded alone (GEN, the usual path with drafts) and together in the batch
+import os
 windows (BGEN), greedy.  Every slot's tokens must equal its solo tokens; prints the aggregate decode rate.
 
   python3 tools/batch_test.py --exe engine/strata --config strata-<model>.json --batch 4 --n 4 \

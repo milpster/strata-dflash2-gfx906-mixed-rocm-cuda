@@ -79,15 +79,15 @@ def _abs_override(env_name: str, default: str) -> str:
     return val
 
 
-PROD_CONFIG = "/mnt/user/Strata/prod-config-swift15.json"
-PROD_BINARY = "/mnt/user/Strata-2966/build-2966/strata"   # observed prod engine (pid cmdline evidence)
+PROD_CONFIG = os.environ.get("STRATA_PROD_TREE", "/mnt/user/Strata") + "/prod-config-swift15.json"
+PROD_BINARY = os.environ.get("STRATA_PROD_TREE", "/mnt/user/Strata") + "-2966/build-2966/strata"   # observed prod engine (pid cmdline evidence)
 # The OLD production arm keeps PROD_BINARY always; only the NEW-binary arms follow the override.
 PROTO_BINARY = _abs_override("STRATA_WINDOW_PROTO_BINARY",
-                            "/mnt/user/dflash2/Strata-wt/build-gfx906-dflash2/strata")
-ARTIFACT = "/mnt/user/dflash2/artifacts/inco-dflash2-bf16.gguf"
-RT_DIR = "/home/user/dev/Strata-data/mtp-bf16/rt"         # ready MTP loader input (read-only)
-CONFIG_DIR = pathlib.Path(_abs_override("STRATA_WINDOW_CONFIG_DIR", "/mnt/user/dflash2/config"))
-LOG_DIR = "/mnt/user/dflash2/logs"                        # absolute: prototype logs NEVER land under prod CWD
+                            os.environ.get("STRATA_DFLASH2_DIR", "/mnt/user/dflash2") + "/Strata-wt/build-gfx906-dflash2/strata")
+ARTIFACT = os.environ.get("STRATA_DFLASH2_DIR", "/mnt/user/dflash2") + "/artifacts/inco-dflash2-bf16.gguf"
+RT_DIR = os.environ.get("STRATA_DATA_DIR", os.environ.get("STRATA_DEV_TREE", "/home/user/dev/Strata") + "-data") + "/mtp-bf16/rt"         # ready MTP loader input (read-only)
+CONFIG_DIR = pathlib.Path(_abs_override("STRATA_WINDOW_CONFIG_DIR", os.environ.get("STRATA_DFLASH2_DIR", "/mnt/user/dflash2") + "/config"))
+LOG_DIR = os.environ.get("STRATA_DFLASH2_DIR", "/mnt/user/dflash2") + "/logs"                        # absolute: prototype logs NEVER land under prod CWD
 PROTO_PORT = 8019
 PROD_PORT = 8009
 PROTO_URL_DEFAULT = f"http://127.0.0.1:{PROTO_PORT}"
@@ -335,7 +335,7 @@ def prod_status() -> str:
         if "serve/server.py" in cmd:
             if "prod-config-swift15.json" in cmd:
                 prod_servers.append(pid)
-            elif "/mnt/user/dflash2/config/" in cmd and f"--port {PROTO_PORT}" in cmd:
+            elif os.environ.get("STRATA_DFLASH2_DIR", "/mnt/user/dflash2") + "/config/" in cmd and f"--port {PROTO_PORT}" in cmd:
                 isolated_servers.append(pid)
         if "build-2966/strata" in cmd and "--serve" in cmd:
             engines.append(pid)
@@ -358,7 +358,7 @@ def prod_status() -> str:
             return "unknown"
         if "prod-config-swift15.json" in parent:
             return "running"
-        if not ("/mnt/user/dflash2/config/" in parent and f"--port {PROTO_PORT}" in parent):
+        if not (os.environ.get("STRATA_DFLASH2_DIR", "/mnt/user/dflash2") + "/config/" in parent and f"--port {PROTO_PORT}" in parent):
             return "unknown"
     return "isolated-8019" if isolated_servers else "unknown"
 

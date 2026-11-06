@@ -5,7 +5,7 @@
 # Phase 1 (window): stop prod -> boot the f16kv-XXS pair manually (port-guarded) ->
 # identical driver run -> restore prod supervised -> print both sides + engine serve lines.
 set -u
-ROOT=/home/user/dev/Strata; PROD=/mnt/user/Strata; PY=$ROOT/.venv/bin/python
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)"; PROD=${STRATA_PROD_TREE:-/mnt/user/Strata}; PY=$ROOT/.venv/bin/python
 D=$ROOT/bench/ab-v0210/rpcprof
 log(){ echo "=== $* $(date +%T) ==="; }
 log "ab8 phase 0: BASELINE against live prod (iq3_s + int8 kv) - no downtime"

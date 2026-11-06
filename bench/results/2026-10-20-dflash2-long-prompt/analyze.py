@@ -1,4 +1,5 @@
 # Local native-protocol probe; run from the repository root. No downloads.
+import os
 import collections, json, re, statistics, os
 from pathlib import Path
 out = Path(os.environ.get('STRATA_LONG_RESULTS', Path(__file__).resolve().parent))

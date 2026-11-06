@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """mkprompts.py: the 10 greedy prompts of the llama.cpp reference run (runs/base1/answers_{chat,think}) as token ids.
+import os
 
 Renders each request with the GGUF's chat template (jinja2, thinking_mode chat | thinking), tokenizes with llama-tokenize
 (--no-bos (special tokens parse by default): the template writes the BOS text itself), and keeps the reference's greedy output ids.

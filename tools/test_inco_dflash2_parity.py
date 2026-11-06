@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Independent checkpoint-parity harness for the Inco DFlash2 drafter (L9, CPU-only).
+import os
 
 Authority: the ORIGINAL safetensors checkpoint (tools/inco_safetensors.py). The engine-side
 oracle is the ONE existing stage formula set (dflash2_stage_parity.check_weights) - no
@@ -449,7 +450,7 @@ def main() -> int:
     ap.add_argument("--integrity", action="store_true")
     ap.add_argument("--hash", action="store_true", help="with --integrity: full sha256 (offline window only)")
     ap.add_argument("--dump-dir", default=None)
-    ap.add_argument("--checkpoint", default="/mnt/user/dflash2/checkpoint")
+    ap.add_argument("--checkpoint", default=os.environ.get("STRATA_DFLASH2_DIR", "/mnt/user/dflash2") + "/checkpoint")
     a = ap.parse_args()
     cp = inco_safetensors.Checkpoint(a.checkpoint)
     if a.selfcheck:

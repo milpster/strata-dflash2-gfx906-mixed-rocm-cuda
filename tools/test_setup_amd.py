@@ -1,4 +1,5 @@
 """Tests for setup.py's AMD card detection on a mocked KFD topology (/sys/class/kfd + /sys/class/drm): the arch
+import os
 names from gfx_target_version, the CPU node skipped, HIP numbering, product names, which cards are supported and
 which TheRock index each family installs from.  No GPU, no ROCm, no downloads.
 

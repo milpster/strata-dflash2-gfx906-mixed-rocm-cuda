@@ -7,7 +7,7 @@
 #   - engine reply-span/finish_prompt lines (helper queue+compute+transfer as the engine saw it)
 # Then stops the manual pair and restores prod supervised.
 set -u
-ROOT=/home/user/dev/Strata; PROD=/mnt/user/Strata; PY=$ROOT/.venv/bin/python
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)"; PROD=${STRATA_PROD_TREE:-/mnt/user/Strata}; PY=$ROOT/.venv/bin/python
 D=$ROOT/bench/ab-v0210/rpcprof
 log(){ echo "=== $* $(date +%T) ==="; }
 log "ab7 start: stopping prod (GPU window: profiled iq3_s pair + load driver; both VIIs; est ~8-12 min)"

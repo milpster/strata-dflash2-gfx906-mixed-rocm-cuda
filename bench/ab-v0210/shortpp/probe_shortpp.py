@@ -50,7 +50,7 @@ def ask(prompt, max_tokens):
 
 
 def main():
-    out = open("/home/user/dev/Strata/bench/ab-v0210/shortpp/out/probe.jsonl", "a", buffering=1)
+    out = open(os.environ.get("STRATA_DEV_TREE", "/home/user/dev/Strata") + "/bench/ab-v0210/shortpp/out/probe.jsonl", "a", buffering=1)
     # warm-up round (first-request cost is measured separately): one tiny throwaway
     t = ask("warm-up ping, reply with ok.", 4)
     out.write(json.dumps({"tag": "warmup", "wall_s": round(t, 3)}) + "\n")

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Small load generator for the OpenAI-compatible server: C clients at once, each a different prompt.
+import os
 
     python3 tools/serve_load.py http://127.0.0.1:8080 --clients 1,2,4,8 --rounds 3 --max-tokens 256
 

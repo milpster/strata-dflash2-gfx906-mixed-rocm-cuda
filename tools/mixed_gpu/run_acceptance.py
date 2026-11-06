@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Hardware-window DRIVER for the mixed HIP/CUDA acceptance runs - RAW EVIDENCE ONLY.
+import os
 
 Implements .slim/deepwork/mixed-cuda-finish/r3-runtime-plan.md (read it for the full contract):
 fresh OFF/ON/ON/OFF arms on loopback 8019, fresh ON chains for the prefill and decode faults,
@@ -52,21 +53,21 @@ TOOL_VERSION = "r3-driver-2"
 EXIT_DONE, EXIT_FAIL, EXIT_REFUSED = 0, 1, 2
 ROOT = Path(__file__).resolve().parents[2]
 UTILITY = ROOT / "tools/mixed_gpu/acceptance.py"
-LAUNCHER = Path("/mnt/user/Strata/launch-prod-swift15-dflash-w4-q4_0.sh")
-PROD_CONFIG = Path("/mnt/user/Strata/prod-config-swift15-dflash-w4-q4_0.json")
-MERGED_CWD = Path("/mnt/user/dflash2/Strata-integ")
-PY = Path("/mnt/user/Strata/.venv/bin/python")
+LAUNCHER = Path(os.environ.get("STRATA_PROD_TREE", "/mnt/user/Strata") + "/launch-prod-swift15-dflash-w4-q4_0.sh")
+PROD_CONFIG = Path(os.environ.get("STRATA_PROD_TREE", "/mnt/user/Strata") + "/prod-config-swift15-dflash-w4-q4_0.json")
+MERGED_CWD = Path(os.environ.get("STRATA_DFLASH2_DIR", "/mnt/user/dflash2") + "/Strata-integ")
+PY = Path(os.environ.get("STRATA_PROD_TREE", "/mnt/user/Strata") + "/.venv/bin/python")
 CAND_ENGINE = ROOT / "build-mixed-gpu/engine-hip/strata"
 CAND_HELPER = ROOT / "build-mixed-gpu/engine-cuda/strata-expert-helper"
 LOCK_PATH = ROOT / "build-mixed-gpu/r3-driver/driver.lock"      # ONE lock, not per --out-dir
-LIB_DIRS = ["/home/user/rocm-gfx906-xnack/lib", "/opt/rocm-6.1.0/lib"]
+LIB_DIRS = [os.environ.get("STRATA_ROCM_ROOT", "/home/user/rocm-gfx906-xnack") + "/lib", "/opt/rocm-6.1.0/lib"]
 PROD_PORT, CAND_PORT = 8009, 8019
 URL = f"http://127.0.0.1:{CAND_PORT}/v1/chat/completions"
 TELEMETRY = {"STRATA_DECODE_TIMING": "1", "STRATA_VERIFY_PROFILE": "1", "LOOKAHEAD_STATS": "1"}
 DROP_ENV_PREFIX = ("STRATA_DF_", "STRATA_DFLASH_", "STRATA_DUMP_", "STRATA_WINDOW_")
 DROP_ENV_EXACT = ("LD_PRELOAD", "CUDA_VISIBLE_DEVICES", "STRATA_ARENA_MMAP",
                   "GPU_PINNED_MIN_XFER_SIZE", "HSA_USERPTR_FOR_PAGED_MEM")
-HELPER_PACK = "/mnt/user/ai/iq3xxs-15"
+HELPER_PACK = os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3xxs-15"
 HELPER_EXPERTS = "../Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf"
 
 

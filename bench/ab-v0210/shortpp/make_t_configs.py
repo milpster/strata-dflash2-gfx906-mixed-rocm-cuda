@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Short-prompt PP / TG<->PP turn-around arms (the T-lane).
+import os
 
 Base = armV9.json (the live prod lineage: iq3s pack, helper relief, dflash spec 5).
 Every arm carries STRATA_TRACE=1 so trace overhead is CONSTANT across the A/B and
@@ -15,7 +16,7 @@ the request-stage/admission lines are present for decomposition.
 import json
 import pathlib
 
-B = pathlib.Path("/home/user/dev/Strata/bench/ab-v0210")
+B = pathlib.Path(os.environ.get("STRATA_DEV_TREE", "/home/user/dev/Strata") + "/bench/ab-v0210")
 BASE = json.loads((B / "armV9.json").read_text())
 
 

@@ -1,4 +1,5 @@
 """#465: "parallel": N - several requests decode together in the engine's batch slots (--batch N).
+import os
 
 A fake engine (a Python script speaking the engine's GEN / BGEN / BT / BDONE / BADM / BSTOP lines) runs behind the
 real StrataEngine and Service, so the server's side is tested without a GPU: requests up to N run at once, more

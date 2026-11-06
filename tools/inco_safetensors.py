@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Safetensors reader + canonical mapping for the Inco DFlash2 checkpoint (authority).
+import os
 
 The checkpoint at /mnt/user/dflash2/checkpoint (incoai/Qwen3.8-Flash-Next-DFlash2,
 rev a22a1744e85c17364dcc54a6a420af7135d4c7f6, model.safetensors sha256
@@ -190,7 +191,7 @@ def canonical_weights(cp: Checkpoint, *, layers: int | None = None) -> dict[str,
 def main() -> int:
     import argparse
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--checkpoint", default="/mnt/user/dflash2/checkpoint")
+    ap.add_argument("--checkpoint", default=os.environ.get("STRATA_DFLASH2_DIR", "/mnt/user/dflash2") + "/checkpoint")
     ap.add_argument("--hash", action="store_true", help="sha256 the safetensors against the recorded authority hash")
     a = ap.parse_args()
     cp = Checkpoint(a.checkpoint)

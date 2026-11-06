@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Shared load harness for the parallelism program (research tool, standard library only).
+import os
 
 Wraps the OpenAI-compatible server the way tools/serve_load.py does, and adds what an SLO-capacity harness needs:
 

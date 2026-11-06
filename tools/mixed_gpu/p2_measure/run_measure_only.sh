@@ -9,7 +9,7 @@
 #   3. VRAM budgeted for 8 GB: helper --reserve-mib 4000, harness --max-device-mib 3000.
 set -uo pipefail
 
-W=/mnt/user/Strata/worktrees/cuda-helper
+W=${STRATA_HELPER_WT:-${STRATA_PROD_TREE:-/mnt/user/Strata}/worktrees/cuda-helper}
 OUT=/tmp/agent/p2win
 EVID=$W/build-mixed-gpu/p2-measure-window1
 HELPER_BIN=$W/build-mixed-gpu/engine-cuda/strata-expert-helper
@@ -34,7 +34,7 @@ trap cleanup EXIT
 log "MEASURE-ONLY START (production stays UP)"
 rm -f "$SOCK"
 : > "$EVID/helper2.log"
-$CLEANENV "$HELPER_BIN" --pack /mnt/user/ai/iq3xxs-15 \
+$CLEANENV "$HELPER_BIN" --pack ${STRATA_AI_DIR:-/mnt/user/ai}/iq3xxs-15 \
   --experts ../Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf \
   --socket "$SOCK" --device 0 --slots 3400 --reserve-mib 4000 \
   --begin-timeout 600000 --timeout 600000 >> "$EVID/helper2.log" 2>&1 &
@@ -55,7 +55,7 @@ fi
 log "HARNESS start (max-device-mib 3000, slots 3400, reserve 4000)"
 # ASAN harness runs need the CUDA shadow-gap workaround (probe-verified 2026-10-29: without it
 # cudaGetDeviceCount sees no device; protect_shadow_gap=0 fixes enumeration); inert for normal binaries.
-$CLEANENV ${ASAN_PASSTHROUGH:+ASAN_OPTIONS=$ASAN_PASSTHROUGH} "$HARNESS" --pack /mnt/user/ai/iq3xxs-15 \
+$CLEANENV ${ASAN_PASSTHROUGH:+ASAN_OPTIONS=$ASAN_PASSTHROUGH} "$HARNESS" --pack ${STRATA_AI_DIR:-/mnt/user/ai}/iq3xxs-15 \
   --socket "$SOCK" --activations "$OUT/moe" \
   --out "$W/build-mixed-gpu/p2-measure-harness/measure.json" \
   --slots 3400 --reserve-mib 4000 \

@@ -5,7 +5,7 @@
 # serve passes a stripped env and rocprof's post-processor (tblextr.py) runs `rocminfo`:
 # give it the 6.1.0 tree's bin, matching the LD_LIBRARY_PATH the harness exports.
 export PATH="/opt/rocm-6.1.0/bin:$PATH"
-mkdir -p /home/user/dev/Strata/bench/ab-v0210/out/rocprof-r1
+mkdir -p ${STRATA_DEV_TREE:-/home/user/dev/Strata}/bench/ab-v0210/out/rocprof-r1
 exec /opt/_rocm-6.4.4/bin/rocprof --stats \
-  -d /home/user/dev/Strata/bench/ab-v0210/out/rocprof-r1 \
-  /home/user/dev/Strata/build-v0210/rpcw-hip/strata "$@"
+  -d ${STRATA_DEV_TREE:-/home/user/dev/Strata}/bench/ab-v0210/out/rocprof-r1 \
+  ${STRATA_DEV_TREE:-/home/user/dev/Strata}/build-v0210/rpcw-hip/strata "$@"

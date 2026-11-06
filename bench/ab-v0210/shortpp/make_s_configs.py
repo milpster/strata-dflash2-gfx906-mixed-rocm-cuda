@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """S-lane arms: the shortpp-src source changes, on the promoted T4 (CPU_SHARE=auto) base.
+import os
 
 Base = armV9.json (iq3s pack, helper relief, dflash spec 5) — identical to the T-lane, so
 S0 (flags off) is directly comparable to T4's measured numbers on the same probe.
@@ -28,7 +29,7 @@ consistent A/B, footnoted vs session-3's default-timeout numbers:
 import json
 import pathlib
 
-B = pathlib.Path("/home/user/dev/Strata/bench/ab-v0210")
+B = pathlib.Path(os.environ.get("STRATA_DEV_TREE", "/home/user/dev/Strata") + "/bench/ab-v0210")
 BASE = json.loads((B / "armV9.json").read_text())
 
 

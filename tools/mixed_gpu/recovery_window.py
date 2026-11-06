@@ -24,7 +24,7 @@ import pair_supervisor as pair
 import window_pair
 
 WORK = Path(__file__).resolve().parents[2]
-ROOT = Path("/mnt/user/Strata")
+ROOT = Path(os.environ.get("STRATA_PROD_TREE", "/mnt/user/Strata") + "")
 LAUNCHER = ROOT / "launch-prod-swift15-dflash-w4-q4_0-mixed.sh"
 CONFIG = ROOT / "prod-config-swift15-dflash-w4-q4_0-mixed.json"
 STATE = ROOT / "run/prod-mixed-supervisor.json"

@@ -47,15 +47,15 @@ import sys
 import time
 import urllib.request
 
-PROD_CWD = "/mnt/user/Strata"
-LAUNCHER = "/mnt/user/Strata/launch-prod-swift15.sh"
-PROD_CONFIG = "/mnt/user/Strata/prod-config-swift15.json"
-PROD_EXE = "/mnt/user/Strata-2966/build-2966/strata"
-MODEL_PATH = "/mnt/user/ai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf"
+PROD_CWD = os.environ.get("STRATA_PROD_TREE", "/mnt/user/Strata") + ""
+LAUNCHER = os.environ.get("STRATA_PROD_TREE", "/mnt/user/Strata") + "/launch-prod-swift15.sh"
+PROD_CONFIG = os.environ.get("STRATA_PROD_TREE", "/mnt/user/Strata") + "/prod-config-swift15.json"
+PROD_EXE = os.environ.get("STRATA_PROD_TREE", "/mnt/user/Strata") + "-2966/build-2966/strata"
+MODEL_PATH = os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf"
 MAX_CTX = "--max-context 262144"
-BUILD = "/mnt/user/dflash2/Strata-wt/build-gfx906-dflash2"
-LOGS = pathlib.Path("/mnt/user/dflash2/logs")
-OPS = pathlib.Path("/mnt/user/dflash2/ops")
+BUILD = os.environ.get("STRATA_DFLASH2_DIR", "/mnt/user/dflash2") + "/Strata-wt/build-gfx906-dflash2"
+LOGS = pathlib.Path(os.environ.get("STRATA_DFLASH2_DIR", "/mnt/user/dflash2") + "/logs")
+OPS = pathlib.Path(os.environ.get("STRATA_DFLASH2_DIR", "/mnt/user/dflash2") + "/ops")
 PORT = 8009
 TESTS = [("dflash_taps_test", 600), ("dflash_rope_parity", 600), ("dflash_head_bf16_test", 600),
          ("dflash_tap_collect_test", 900), ("dflash_owned_kv_test", 900), ("dflash2_parity", 1800)]

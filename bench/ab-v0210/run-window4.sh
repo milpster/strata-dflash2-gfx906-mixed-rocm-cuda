@@ -3,7 +3,7 @@
 #  X0 = P0 + STRATA_DF_EVENTS=1 (section table; capture needs the graceful 100s teardown window)
 #  S1/S2 = spec-min-p 0.4/0.6   S3/S4 = dflash-block 4/6   P0 r3 = same-window TG anchor
 set -uo pipefail
-B=/home/user/dev/Strata/bench/ab-v0210
+B=${STRATA_DEV_TREE:-/home/user/dev/Strata}/bench/ab-v0210
 for spec in "X0 1" "S1 1" "S2 1" "S3 1" "S4 1" "P0 3"; do
   set -- $spec
   echo "=== $(date +%T) arm $1 round $2 ==="

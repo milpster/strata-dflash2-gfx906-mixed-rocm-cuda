@@ -7,7 +7,7 @@
 # and P0-vs-PM (the promoted binary's default path vs the pre-memo binary, measured identity).
 # Prod is down for the window and restored supervised at the end.
 set -u
-ROOT=/home/user/dev/Strata; Q=$ROOT/bench/ab-v0210/quality; PROD=/mnt/user/Strata
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)"; Q=$ROOT/bench/ab-v0210/quality; PROD=${STRATA_PROD_TREE:-/mnt/user/Strata}
 PY=$ROOT/.venv/bin/python
 log(){ echo "=== $* $(date +%T) ==="; }
 sha16(){ sha256sum "$1" | awk '{print substr($1,1,16)}'; }

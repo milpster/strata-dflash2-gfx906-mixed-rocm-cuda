@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """GPU telemetry sampler for an Intel Arc on the xe driver (runs as root: sycl/tools/gpustat.service).
+import os
 Writes /run/gpustat.json every INTERVAL s; Strata's web app (serve/telemetry.py) shows it in the Monitor tab:
   name, vram_used_mb / vram_total_mb (sum of drm-resident-vram0 over unique drm
   clients from /proc/*/fdinfo - the only VRAM accounting xe exposes; root-only),
