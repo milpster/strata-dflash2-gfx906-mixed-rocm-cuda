@@ -94,7 +94,7 @@
 - Receipts: `logs/host-affinity-20261106-{before,control,trial}-metrics.json`
   and the affinity snapshot above; interval samples are in the session output.
 
-## Follow-up: favor the hostapp slightly (awaiting approval)
+## Follow-up: favor the hostapp slightly
 
 - User requested a small loadend-inference priority advantage, while keeping
   the requirement to present changes first.
@@ -108,5 +108,31 @@
   weights, not a CPU quota or guaranteed frame rate.
 - Engine RLIMIT_NICE=30. A disposable `nice -n 1 nice -n -1 nice` process
   returned 0 without a privilege error: a +1 -> 0 rollback is permitted here.
-- No live nice-priority change has been applied. Helper recovery would require
-  separate authorization; it is not included in this priority proposal.
+- At proposal time no live nice-priority change had been applied. Helper recovery
+  requires separate authorization; it is not included in this priority proposal.
+
+### Approved live application
+
+- User selected **Apply live +1**. Saved the engine's original per-thread nice
+  values in `logs/host-priority-20261106-before.txt`, and hostapp values in
+  `logs/host-priority-20261106-hostapp-before.txt`.
+- Verified PID 233080 still named `strata-host` (started 15:33:51); applied nice
+  +1 only to its snapshotted nice-0 threads. Two short-lived threads ended before
+  their `renice` operation, producing `No such process`; every remaining thread
+  was then checked. **All 36 live engine threads reported nice +1.**
+- Saved after snapshots in the corresponding `-after.txt` files. Comparing
+  surviving hostapp TIDs reported **zero changed priorities**.
+- Affinity inspection confirmed host=0, workers=2,4,...,14, all 8 staging
+  threads=0; the staging-affinity trial remains rolled back.
+- `/health` returned loaded/ok. Later live telemetry reported the same prompt
+  at 80139/80144 tokens, mean PP 107.6 tok/s. This is progress evidence, not
+  an attributable nice-priority speedup or a measured hostapp-frame-time result.
+- Retained runtime change: **engine nice +1 only**. No hostapp/engine restart,
+  launcher/configuration edit, KSM/VM tuning, or helper recovery was initiated.
+  This live adjustment resets on engine restart (`STRATA_ENGINE_NICE` stays 0).
+- Rollback is permitted by the verified nice limit. Before restoring saved
+  per-thread priorities, verify this engine's identity (PID 233080, start tick
+  1846487); do not reuse stale TIDs after a restart. All saved original values
+  were 0; inspect newly created engine threads as well if rolling back later.
+- Pre-existing modified supervisor files and untracked runtime files were left
+  untouched. Final documentation is committed separately from the trial tool.
