@@ -105,7 +105,7 @@
  "vision": {
   "exe": "/mnt/user/Strata/build-vision/bin/strata-vision",
   "gpu": false,
-  "max_tokens": 1024,
+  "max_tokens": 2048,
   "mmproj": "/mnt/user/ai/mmproj-Swift-Qwen3.8-Flash-Next-BF16.gguf",
   "model": "/mnt/user/ai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
   "threads": 8
