@@ -1011,3 +1011,26 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
 - User follow-up 11: README restructured for readability — contents line, one merged rig table, prose lead-in
   per feature section, bottom line as blockquote, repo map + hygiene as one tail; no facts changed. Separate
   "at a glance" feature table produced for the release thread (external copy, not added to the README).
+
+## 2026-11-06 — repo PII scrub: history rewritten, tooling made location-independent
+
+- User order: eradicate machine paths/usernames/agent-tooling traces from the published git history
+  (email explicitly out of scope). Full filter-repo pass over ALL branches + 74 tags:
+  machine-local home/mnt roots -> neutral /home/user + /mnt/user forms, agent tmp dir -> /tmp/agent,
+  worktree-tooling path fragment folded away, the one prose username mention dropped, personal
+  host-load phrasing neutralized in JOURNAL + RESULTS + commit messages.
+- Verification: pickaxe over --all = 0 hits for the username; 0 in HEAD. Remaining matches are
+  upstream's own files (community bench submissions, their binary AppImage tarball) - not ours.
+- Follow-up fix commit (this branch): bench/quality/tooling/test scripts now derive the repo root
+  from their own location and take external trees from STRATA_* env vars with neutral defaults
+  (STRATA_DEV_TREE, STRATA_DATA_DIR, STRATA_PROD_TREE, STRATA_HELPER_WT, STRATA_ROCM_ROOT,
+  STRATA_DFLASH2_DIR, STRATA_AI_DIR). All touched scripts bash -n / py_compile clean; ROOT
+  resolution probed at every directory depth. Local shell exports live in the user bashrc;
+  a neutral tmp symlink keeps the terminal tests working.
+- Untracked local bench scripts got the same treatment so future commits stay clean.
+- Pre-scrub bundle backup kept outside the repo on local disk (all refs, pre-rewrite state).
+- Force-pushed everything; every SHA after this point differs from the pre-scrub publish.
+  Old SHAs may stay fetchable on the forge until its GC - full eradication there = delete +
+  re-push (user decision pending). The private prod tree is not published and keeps its own copy.
+- NOTE for future bench rounds: generated arm/config artifacts record whatever the env resolves
+  to; scrub paths before committing new artifacts, or commit only the summarized RESULTS docs.
