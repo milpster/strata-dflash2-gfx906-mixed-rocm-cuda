@@ -948,3 +948,8 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
   bench+quality discipline), the same-evening fork-vs-stock table (TG +36–39 %, 80k parity/+7.6 %, fresh-18k −18 %,
   short-PP 1.4–2.4×, RAM −6.2 GiB, 80k sha byte-identical), honest trade-offs/defects, repo map, upstream hygiene.
 - All numbers cite existing bench artifacts; no new measurements claimed.
+- User follow-ups: added "Who this benefits", the one-line bottom line (≈1.4× decode, 1.4–2.4× chat, −6.2 GiB,
+  −18 % fresh-18k, byte-identical), a Locations table (dev tree /home/user/dev/Strata, live server
+  /mnt/user/Strata on :8009), a dedicated Quality-gates section (80k SHA, yardstick, probe determinism,
+  speed gates), and an explicit "ROCm first, CUDA second" statement (engine maps no CUDA runtime; helper
+  death is survivable).

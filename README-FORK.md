@@ -9,17 +9,29 @@ An engine fork of [Niko1221/Strata](https://github.com/Niko1221/Strata) (upstrea
 - **Bit-exact quality**: greedy 80k-token infill byte-identical to stock; teacher-forced gates logprob-identical (KL 0.00000, top-1 100 %, PPL 4.115 = 4.115).
 - **Measured or it didn't happen**: every claim comes from a same-day A/B/C bench window; artifacts in `bench/ab-v0210/out/`, the story in `JOURNAL.md`.
 
+## Who this benefits
+
+- **gfx906 owners (Radeon VII)** — stock v0.2.10 does not compile for these cards; this fork turns them into a production local-LLM server. Other gfx906 cards (Instinct MI50/MI60) share the target but are untested here.
+- **Mixed AMD + NVIDIA rigs** — stock has no cross-vendor serving path; here the NVIDIA card pulls expert and prefill duty for the AMD HIP engine.
+- **Big MoE model, small cards** — a ~47 GiB expert set serving from 2× 16 GiB VRAM + 62 GiB host RAM (layer split + expert helper + RAM relief).
+- **RAM-tight hosts** — 6.2 GiB of anonymous memory handed back to the OS.
+- **Interactive agent traffic** (OpenCode, Claude Code-style clients) — 200-token reads in ~3 s instead of 6.5 s; exactly the request shape coding agents produce, on the OpenAI/Anthropic-compatible API.
+- **Quality-critical users** — byte-identical greedy output vs stock, plus KL / top-1 / PPL gates before every promotion.
+- **Bench & tuning work** — the A/B/C harness, sha parity gates and quality yardstick are reusable for any further Strata engine work.
+
 ## The rig it is built and measured on
 
 | Part | Role |
 | --- | --- |
-| 2× AMD Radeon VII (gfx906, HIP, ROCm 6.1) | main engine, layer-split over both cards |
-| 1× NVIDIA RTX 3080 (CUDA, sm_86) | `strata-expert-helper`: expert-row server + prefill prompt tier (~6.5 GiB expert cache) |
+| 2× AMD Radeon VII (gfx906, ROCm 6.1 / HIP wave64) | **first — the engine**: all model execution, layer-split over both cards, DFlash2 drafter included; the engine process maps no CUDA runtime |
+| 1× NVIDIA RTX 3080 (CUDA, sm_86) | **second — the helper**: `strata-expert-helper`, a subordinate expert-row server + prefill prompt tier (~6.5 GiB expert cache), attached over a socket pair |
 | 62 GiB host RAM | engine anon ~41 GiB after relief (~34 GiB registered) |
 | Model | Swift-1.5-Qwen3.8-Flash-Next, GSQ-RCO IQ3_XXS / IQ3_S packs |
 | Drafter | DFlash2 (inco draft, q4_0), `--spec 5`, engine-side on the VIIs |
 | Vision | `strata-vision` sidecar, Swift BF16 mmproj |
 | Server | OpenAI- and Anthropic-compatible API (`serve/server.py`), supervised pair on :8009 |
+
+**ROCm first, CUDA second.** The AMD cards run everything; the NVIDIA card only serves expert rows and prefill rows on request. If the helper dies, the engine recomputes its rows itself and finishes the request — the engine never depends on CUDA.
 
 ## What the fork adds over stock
 
@@ -74,6 +86,21 @@ An engine fork of [Niko1221/Strata](https://github.com/Niko1221/Strata) (upstrea
 
 Attribution (arms D/E): the decode win is entirely DFlash drafting; the helper expert tier alone is ~neutral on this pack (96–97 % local cache hit) — its value is the prompt tier, expert capacity, and RAM relief.
 
+**Bottom line vs stock:** ≈ **1.4× decode throughput** · **1.4–2.4× chat-read latency** · **−6.2 GiB host RAM** · **byte-identical output** — one regression (**−18 %** fresh ~18k bulk prefill) — on hardware stock does not build for at all.
+
+## Quality gates
+
+Standing rule: every promotion passes BOTH the speed lane and the quality lane, same-day, against stock.
+
+| Gate | What it checks | Result |
+| --- | --- | --- |
+| 80k greedy SHA | deep-infill (80k ctx, ≥5k out) byte-identical across candidate / flags-off / stock binaries | held **18/18** kept rounds (`1c7d4a6d…`) |
+| Teacher-forced yardstick (`tools/quant_quality.py`) | 4995 positions, full-vocab first logits: top-1, KL (p99), PPL — vs stock binary AND vs flags-off twin | top-1 **100.00 %** · KL **0.00000** · PPL **4.115 = 4.115** (relief, CPU-share and memo arms) |
+| Probe determinism | fixed prompt re-answered every boot; sha must reproduce exactly per config | reproduces exactly, per-config values documented (incl. coverage-dependent texts) |
+| Speed gates | TG median ≥ 33.1 · 80k frame 583–587 · fresh-18k toward 337 · medians over ≥ 2 kept boots/arm | see measured table above |
+
+That is what backs the "faster with zero quality cost" claim: the speed wins above were promoted only after these gates passed.
+
 ## Honest trade-offs and known defects
 
 - Fresh ~18k prefill pays −18 % for DFlash tap collection (long-context reads gain instead).
@@ -82,6 +109,13 @@ Attribution (arms D/E): the decode win is entirely DFlash drafting; the helper e
 - iq3_s at 256/256 MiB reserves → non-finite logits on long prefill (V8); fixed policy: 640/640 + fill 7000 (V9/V10) keeps both cards above the 512 MiB paging line.
 - Not promoted, default off: tap-overlap F1/F2 (flat), `STRATA_REFILL_OVERLAP` / `STRATA_WINDOW_POPULATE` (net-negative on big prompts), `--short-read` window routing (refill poison).
 - In flight: f16-KV variants (launchers staged), helper threading measurement, `promo_check` exact-reply traffic probe.
+
+## Locations
+
+| Path | What |
+| --- | --- |
+| `/home/user/dev/Strata` | this source tree — branches, `bench/`, `docs/`, `JOURNAL.md` |
+| `/mnt/user/Strata` | **the live Strata** — `launch-prod-*.sh` launchers, `prod-config-*.json`, supervised engine+helper pair on `:8009`, binaries in `v0210/build-mixed-gpu/`, `logs/` |
 
 ## Repo map
 
