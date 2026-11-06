@@ -937,3 +937,14 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
 - First S-session (12:47-13:29) ABORTED after S0+S1 rc=1: MemAvailable ~9 GiB with 15 GiB swap (host exhausted after 24 h of crashes/boots); arms thrashed — S18k chunk stages 360-731 s vs T-lane ~39 s; the helper prompt-tier 10 s reply deadline closed the channel mid-prompt -> "prefill: the helper fallback lost a blob" -> HTTP 400. W1a/W1b ancestry verified: the binary was NOT the regression.
 - Promising but not bankable: S2 (populate) short legs hit 2.59/2.91 s (T4-class) before the abort.
 - Rerun preconditions: clean host (reboot = gold standard) + the new gate. Prod restored meanwhile (gen-1 supervised, 13:31, health 200 in ~135 s).
+
+## 2026-11-06 — fork README written (README-FORK.md)
+
+- User-ordered: analyze the fork's latest state and write an at-a-glance README (lists over prose).
+- Sources: full JOURNAL read, `git log origin/main..HEAD` (340 commits, gfx906 mixed line), bench/ab-v0210
+  RESULTS*.md, live prod configs (/mnt/user/Strata, memo + CPU_SHARE confirmed in prod env).
+- Deliverable: README-FORK.md at repo root (stock README.md left untouched for upmerges). Contents: rig table,
+  six feature groups (gfx906 port, CUDA expert helper, RAM relief, DFlash/DFlash2, short-prompt latency,
+  bench+quality discipline), the same-evening fork-vs-stock table (TG +36–39 %, 80k parity/+7.6 %, fresh-18k −18 %,
+  short-PP 1.4–2.4×, RAM −6.2 GiB, 80k sha byte-identical), honest trade-offs/defects, repo map, upstream hygiene.
+- All numbers cite existing bench artifacts; no new measurements claimed.
