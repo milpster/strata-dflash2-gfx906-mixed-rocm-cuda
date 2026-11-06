@@ -61,7 +61,7 @@ ev "== vision gpu smoke, run $STAMP"
 stop_prod
 ev "test: starting strata-vision --gpu (log: $VLOG)"
 RC=0
-printf 'ENC %s %s\nQUIT\n' "$IMG" "$OUT" | timeout -k 10 480 env LD_LIBRARY_PATH=/home/user/rocm-gfx906-xnack/lib:/opt/rocm-6.1.0/lib HSA_OVERRIDE_GFX_VERSION=9.0.6 \
+printf 'ENC %s %s\nQUIT\n' "$IMG" "$OUT" | timeout -k 10 480 env LD_LIBRARY_PATH=/home/user/rocm-gfx906-xnack/lib:/opt/rocm-6.1.0/lib HSA_OVERRIDE_GFX_VERSION=9.0.6 HIP_VISIBLE_DEVICES=${HIP_VISIBLE_DEVICES:-0,1} \
   "$VISION" --mmproj "$MMPROJ" --model "$MODEL" --gpu --max-tokens "$MAXT" >> "$VLOG" 2>&1 <&0 || RC=$?
 OKLINE=$(grep -m1 '^OK ' "$VLOG" || true)
 ERRLINE=$(grep -m1 -E '^ERR |CUDA|failed|error|no kernel' "$VLOG" || true)
@@ -69,7 +69,7 @@ GPU_MEM=$(nvidia-smi --query-gpu=memory.used,memory.free --format=csv,noheader 2
 ev "vision rc=$RC; ok=[$OKLINE]; err=[$ERRLINE]; card=$GPU_MEM"
 [[ -s "$OUT" ]] && ev "output file: $(stat -c '%s bytes' "$OUT") (SVE1 header + embeddings)"
 restore_prod
-if [[ -n "$OKLINE" && -s "$OUT" ]]; then
+if [[ -n "$OKLINE" && -s "$OUT" && -z "$ERRLINE" ]]; then
   ev "VERDICT: GPU-VISION-OK ($(echo "$OKLINE" | cut -d' ' -f2-) tokens/grid/ms; standalone log $VLOG)"
 else
   ev "VERDICT: GPU-VISION-FAILED (see $VLOG)"
