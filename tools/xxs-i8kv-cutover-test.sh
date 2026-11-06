@@ -17,7 +17,7 @@
 #
 # Final line: "VERDICT: PASS-CUTOVER" (xxs live) | "VERDICT: RESTORED iq3s-f16kv" + evidence lines.
 set -euo pipefail
-ROOT=/mnt/user/Strata
+ROOT=${STRATA_PROD_TREE:-/mnt/user/Strata}
 WORK="$ROOT/v0210"
 PY="$ROOT/.venv/bin/python"
 UD_CONFIG="$ROOT/prod-config-ud-iq3xxs-dflash-w4-q4_0-mixed.json"
@@ -166,7 +166,7 @@ start_ud_launcher() {  # sets the globals LPID UDLOG UDHLOG
 
 start_ud_helper_stage_a() {  # same shape as the launcher's helper, logs to AHEL
   env -i PATH="$PATH" HOME="$HOME" TERM="${TERM:-dumb}" "$HELPER" \
-    --pack /mnt/user/ai/iq3xxs-ud \
+    --pack ${STRATA_AI_DIR:-/mnt/user/ai}/iq3xxs-ud \
     --experts ../Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00004.gguf \
     --persist \
     --device 0 --slots 4600 --reserve-mib 300 --timeout 63115200000 \

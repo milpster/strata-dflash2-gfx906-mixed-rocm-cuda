@@ -4,6 +4,7 @@
 # Writes a compilation database first (there is no nvcc here, so CMake cannot make one), then migrates every
 # CUDA-touching source into <out> mirroring the tree. Files dpct leaves alone are not copied - the port's
 # CMake falls back to the original for those, so the diff against upstream stays the port itself.
+import os
 set -euo pipefail
 repo=${1:-/work/Strata_B70}
 out=${2:-$repo/sycl}

@@ -1,4 +1,5 @@
 """AB1 harness regressions (tools/mixed_gpu/helper_ab.py) - OFFLINE ONLY.
+import os
 
 Run:  python -m unittest tests.terminal.test_helper_ab
       python -m pytest tests/terminal/test_helper_ab.py
@@ -45,7 +46,7 @@ assert SPEC and SPEC.loader
 sys.modules[SPEC.name] = helper_ab
 SPEC.loader.exec_module(helper_ab)
 
-PROD_SOCKET = "/mnt/user/Strata/run/prod-mixed.sock"
+PROD_SOCKET = os.environ.get("STRATA_PROD_TREE", "/mnt/user/Strata") + "/run/prod-mixed.sock"
 CAND_SOCKET = "/tmp/agent/ab1-helper.sock"
 SIZES = ["short", "med", "long", "xl"]
 REPS = 3
@@ -53,14 +54,14 @@ REPS = 3
 # The production config's own shape (prod-config-swift15-dflash-w4-q4_0-mixed.json): every key
 # run 1 dropped is here, so a derivation that drops one fails these tests.
 PROD_CONFIG = {
-    "exe": "/mnt/user/Strata/worktrees/cuda-helper/build-mixed-gpu/r4-dflash-after/bin/strata-hip",
+    "exe": os.environ.get("STRATA_HELPER_WT", os.environ.get("STRATA_PROD_TREE", "/mnt/user/Strata") + "/worktrees/cuda-helper") + "/build-mixed-gpu/r4-dflash-after/bin/strata-hip",
     "args": [
         "--gpu", "0,1",
-        "--pack", "/mnt/user/ai/iq3xxs-15",
-        "--native", "/mnt/user/ai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
-        "--native-dense-gguf", "/mnt/user/ai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
-        "--ple-gguf", "/mnt/user/ai/Qwen3.8-Flash-Next-PLE-Q8_0.gguf",
-        "--expert-profile", "/mnt/user/Strata/data/expert-profile.bin",
+        "--pack", os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3xxs-15",
+        "--native", os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
+        "--native-dense-gguf", os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
+        "--ple-gguf", os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/Qwen3.8-Flash-Next-PLE-Q8_0.gguf",
+        "--expert-profile", os.environ.get("STRATA_PROD_TREE", "/mnt/user/Strata") + "/data/expert-profile.bin",
         "--expert-cache", "auto",
         "--prefill", "8192",
         "--spec", "5",
@@ -77,16 +78,16 @@ PROD_CONFIG = {
         "--conversation-cache-min-tokens", "2048",
         "--conversation-cache-park-gain", "4096",
         "--vision",
-        "--dflash", "/mnt/user/dflash2/artifacts/inco-dflash2-q4_0.gguf",
+        "--dflash", os.environ.get("STRATA_DFLASH2_DIR", "/mnt/user/dflash2") + "/artifacts/inco-dflash2-q4_0.gguf",
         "--dflash-block", "5",
         "--suffix-draft", "0",
         "--expert-helper-slots", "4000",
     ],
-    "cwd": "/mnt/user/Strata",
-    "tokenizer": "/mnt/user/ai/iq3xxs-15/tokenizer",
+    "cwd": os.environ.get("STRATA_PROD_TREE", "/mnt/user/Strata") + "",
+    "tokenizer": os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3xxs-15/tokenizer",
     "model_name": "swift-1.5-iq3_xxs",
-    "log": "/mnt/user/Strata/logs/engine-swift15-dflash-w4-q4_0-mixed.log",
-    "lib_dirs": ["/home/user/rocm-gfx906-xnack/lib", "/opt/rocm-6.1.0/lib"],
+    "log": os.environ.get("STRATA_PROD_TREE", "/mnt/user/Strata") + "/logs/engine-swift15-dflash-w4-q4_0-mixed.log",
+    "lib_dirs": [os.environ.get("STRATA_ROCM_ROOT", "/home/user/rocm-gfx906-xnack") + "/lib", "/opt/rocm-6.1.0/lib"],
     "port": 8009,
     "host": "127.0.0.1",
     "gpu": [0, 1],
@@ -98,9 +99,9 @@ PROD_CONFIG = {
     "reasoning_budget_tokens": 55000,
     "sampling": {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0,
                  "presence_penalty": 0.0, "repetition_penalty": 1.0},
-    "vision": {"exe": "/mnt/user/Strata/build-vision/bin/strata-vision",
-               "mmproj": "/mnt/user/ai/mmproj-Swift-Qwen3.8-Flash-Next-BF16.gguf",
-               "model": "/mnt/user/ai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
+    "vision": {"exe": os.environ.get("STRATA_PROD_TREE", "/mnt/user/Strata") + "/build-vision/bin/strata-vision",
+               "mmproj": os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/mmproj-Swift-Qwen3.8-Flash-Next-BF16.gguf",
+               "model": os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
                "gpu": False, "threads": 8, "max_tokens": 1024},
     "env": {
         "STRATA_ENGINE_NICE": "0",
@@ -533,8 +534,8 @@ class ConfigParity(unittest.TestCase):
     def test_real_production_config_and_launcher_parity(self):
         """The same rules against the REAL production config and the REAL canonical launcher
         (read-only).  Skipped where the deployment files are not present."""
-        cfg = Path("/mnt/user/Strata/prod-config-swift15-dflash-w4-q4_0-mixed.json")
-        launcher = Path("/mnt/user/Strata/launch-prod-swift15-dflash-w4-q4_0-mixed.sh")
+        cfg = Path(os.environ.get("STRATA_PROD_TREE", "/mnt/user/Strata") + "/prod-config-swift15-dflash-w4-q4_0-mixed.json")
+        launcher = Path(os.environ.get("STRATA_PROD_TREE", "/mnt/user/Strata") + "/launch-prod-swift15-dflash-w4-q4_0-mixed.sh")
         if not (cfg.is_file() and launcher.is_file()):
             self.skipTest(f"deployment files absent ({cfg}, {launcher})")
         prod = json.loads(cfg.read_text(encoding="utf-8"))

@@ -1,3 +1,4 @@
+import os
 import json
 from pathlib import Path
 import signal
@@ -96,14 +97,14 @@ def test_launcher_matches_after_cd_via_exec_time_pwd(monkeypatch):
     rw = slots_window.runtime
     monkeypatch.setattr(rw, "command", lambda pid: ["bash", "./" + rw.LAUNCHER.name])
     monkeypatch.setattr(rw, "launcher_dirs",
-                        lambda pid: [Path("/mnt/user/dflash2/Strata-integ"), rw.LAUNCHER.parent])
+                        lambda pid: [Path(os.environ.get("STRATA_DFLASH2_DIR", "/mnt/user/dflash2") + "/Strata-integ"), rw.LAUNCHER.parent])
     assert rw.launcher_matches(4242)
 
 
 def test_launcher_rejects_when_no_dir_resolves(monkeypatch):
     rw = slots_window.runtime
     monkeypatch.setattr(rw, "command", lambda pid: ["bash", "./" + rw.LAUNCHER.name])
-    monkeypatch.setattr(rw, "launcher_dirs", lambda pid: [Path("/mnt/user/dflash2/Strata-integ")])
+    monkeypatch.setattr(rw, "launcher_dirs", lambda pid: [Path(os.environ.get("STRATA_DFLASH2_DIR", "/mnt/user/dflash2") + "/Strata-integ")])
     assert not rw.launcher_matches(4242)
 
 

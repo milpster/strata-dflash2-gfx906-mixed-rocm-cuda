@@ -1,4 +1,5 @@
 # Run from the repository root with existing local model artifacts.
+import os
 import json, os, sys
 from pathlib import Path
 root = Path.cwd()

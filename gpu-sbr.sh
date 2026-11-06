@@ -10,7 +10,7 @@
 # with it — seen on Vega 20, where 14a0/14a1 switch ports sit between the root port
 # and the GPU), verifying that NOTHING except the target card hangs below it.
 #
-# Usage:   sudo /mnt/user/Strata/gpu-sbr.sh 0000:09:00.0     (GPU bdf, not a bridge!)
+# Usage:   sudo ${STRATA_PROD_TREE:-/mnt/user/Strata}/gpu-sbr.sh 0000:09:00.0     (GPU bdf, not a bridge!)
 # After:   watch dmesg; if revived, gpu-reset.sh --skip-start (a previously-hung
 #          gpu-reset.sh may resume on its own — let it finish, don't double-start).
 set -euo pipefail

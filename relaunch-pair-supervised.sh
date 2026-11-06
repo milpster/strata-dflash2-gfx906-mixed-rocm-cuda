@@ -5,7 +5,7 @@
 # This file's process cmdline is 'bash ./relaunch-pair-supervised.sh' (no match), and the
 # launcher only starts AFTER stop-prod.sh has fully returned.
 set -u
-ROOT=/mnt/user/Strata
+ROOT=${STRATA_PROD_TREE:-/mnt/user/Strata}
 cd "$ROOT"
 bash stop-prod.sh
 nohup bash "$ROOT/launch-prod-swift-iq3s-f16kv-dflash-w4-q4_0-mixed.sh" --recover \

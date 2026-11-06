@@ -6,8 +6,8 @@
 # Original launch-prod-swift15.sh and prod-config-swift15.json are unchanged.
 set -euo pipefail
 
-ROOT=/mnt/user/Strata
-CLONE=/mnt/user/dflash2/Strata-integ
+ROOT=${STRATA_PROD_TREE:-/mnt/user/Strata}
+CLONE=${STRATA_DFLASH2_DIR:-/mnt/user/dflash2}/Strata-integ
 PY="$ROOT/.venv/bin/python"
 CONFIG="$ROOT/prod-config-swift15-dflash-w3.json"
 LOGDIR="$ROOT/logs"
@@ -22,7 +22,7 @@ fi
 [ -x "$PY" ] || { echo "Missing Python: $PY" >&2; exit 2; }
 [ -x "$CLONE/build-dfsample-1/strata" ] || { echo 'Missing DFlash engine.' >&2; exit 2; }
 [ -f "$CLONE/serve/server.py" ] || { echo 'Missing merged server.' >&2; exit 2; }
-[ -f /mnt/user/dflash2/artifacts/inco-dflash2-bf16.gguf ] || { echo 'Missing DFlash2 model.' >&2; exit 2; }
+[ -f ${STRATA_DFLASH2_DIR:-/mnt/user/dflash2}/artifacts/inco-dflash2-bf16.gguf ] || { echo 'Missing DFlash2 model.' >&2; exit 2; }
 "$PY" -m json.tool "$CONFIG" >/dev/null
 
 # Do not carry test-window probes or dump hooks into the production trial.
@@ -38,7 +38,7 @@ echo "Starting Swift 1.5 DFlash2 w4 on 127.0.0.1:8009; log: $LOG"
 cd "$CLONE"
 exec env -u CUDA_VISIBLE_DEVICES -u STRATA_ARENA_MMAP -u GPU_PINNED_MIN_XFER_SIZE \
   -u HSA_USERPTR_FOR_PAGED_MEM \
-  LD_LIBRARY_PATH=/home/user/rocm-gfx906-xnack/lib:/opt/rocm-6.1.0/lib \
+  LD_LIBRARY_PATH=${STRATA_ROCM_ROOT:-/home/user/rocm-gfx906-xnack}/lib:/opt/rocm-6.1.0/lib \
   setsid nohup "$PY" serve/server.py \
   --engine strata --config "$CONFIG" --port 8009 \
   >> "$LOG" 2>&1 < /dev/null

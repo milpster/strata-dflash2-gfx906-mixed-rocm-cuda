@@ -11,7 +11,7 @@
 # boots THROUGH the supervisor by default (--recover remains an alias),
 # any peer death restarts BOTH (either both run or both reset).
 set -euo pipefail
-ROOT=/mnt/user/Strata
+ROOT=${STRATA_PROD_TREE:-/mnt/user/Strata}
 WORK="$ROOT/v0210"
 PY="$ROOT/.venv/bin/python"
 CONFIG="$ROOT/prod-config-swift15-f16kv-dflash-w4-q4_0-mixed-radeonvision.json"
@@ -51,7 +51,7 @@ command -v ss >/dev/null
 for file in "$PY" "$HELPER" "$WORK/build-mixed-gpu/rpcw-hip/strata"; do
   [[ -x "$file" ]] || { echo "Missing executable: $file" >&2; exit 2; }
 done
-[[ -f "$WORK/serve/server.py" && -f /mnt/user/dflash2/artifacts/inco-dflash2-q4_0.gguf ]]
+[[ -f "$WORK/serve/server.py" && -f ${STRATA_DFLASH2_DIR:-/mnt/user/dflash2}/artifacts/inco-dflash2-q4_0.gguf ]]
 "$PY" -m json.tool "$CONFIG" >/dev/null
 while IFS= read -r name; do
   case "$name" in STRATA_DF_*|STRATA_DFLASH_*|STRATA_DUMP_*|STRATA_WINDOW_*|STRATA_PREFILL_HELPER) unset "$name" ;; esac
@@ -71,7 +71,7 @@ trap cleanup EXIT
 trap 'exit 143' TERM
 trap 'exit 130' INT
 env -i STRATA_HELPER_REPLY_TIMEOUT_MS=600000 PATH="$PATH" HOME="$HOME" TERM="${TERM:-dumb}" "$HELPER" \
-  --pack /mnt/user/ai/iq3xxs-15 \
+  --pack ${STRATA_AI_DIR:-/mnt/user/ai}/iq3xxs-15 \
   --experts ../Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf \
   --device 0 --slots 4600 --reserve-mib 300 --timeout 63115200000 \
   --begin-timeout 63115200000 --socket "$SOCKET" --fill-mib 6796 --socket2 "$SOCKET2" \
@@ -96,7 +96,7 @@ echo "Starting mixed backend on 127.0.0.1:8009; log: $LOG; helper: $HLOG"
 cd "$WORK"
 env -u CUDA_VISIBLE_DEVICES -u STRATA_ARENA_MMAP -u GPU_PINNED_MIN_XFER_SIZE \
   -u HSA_USERPTR_FOR_PAGED_MEM -u LD_PRELOAD \
-  LD_LIBRARY_PATH=/home/user/rocm-gfx906-xnack/lib:/opt/rocm-6.1.0/lib \
+  LD_LIBRARY_PATH=${STRATA_ROCM_ROOT:-/home/user/rocm-gfx906-xnack}/lib:/opt/rocm-6.1.0/lib \
   "$PY" "$WORK/serve/server.py" --engine strata --config "$CONFIG" --port 8009 \
   >>"$LOG" 2>&1 < /dev/null &
 server_pid=$!

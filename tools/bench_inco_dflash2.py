@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Inco DFlash2 benchmark program: PLAN + REAL grouped measurement against the ISOLATED
+import os
 prototype server only (L9, parent executes everything; the fixer ran nothing - NO HTTP by the
 author, no GPU, no production).
 
@@ -84,7 +85,7 @@ import statistics
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-sys.path.insert(0, "/mnt/user/Strata/tools")          # the EXISTING client implementation
+sys.path.insert(0, os.environ.get("STRATA_PROD_TREE", "/mnt/user/Strata") + "/tools")          # the EXISTING client implementation
 import test_inco_dflash2_integration as integ          # reuse cloner/guards/prod detection
 import strata_bench                                      # chat()/digest()/try_json() - reused
 
@@ -314,7 +315,7 @@ def grouped_summary(runs_dir: pathlib.Path) -> int:
 
 def preflight() -> int:
     files = [("proto_binary", integ.PROTO_BINARY), ("prod_binary", integ.PROD_BINARY),
-             ("artifact", integ.ARTIFACT), ("checkpoint", "/mnt/user/dflash2/checkpoint/model.safetensors")]
+             ("artifact", integ.ARTIFACT), ("checkpoint", os.environ.get("STRATA_DFLASH2_DIR", "/mnt/user/dflash2") + "/checkpoint/model.safetensors")]
     out = {}
     for label, p in files:
         try:
@@ -341,7 +342,7 @@ def full_hashes() -> int:
     out = {}
     for label, p in [("proto_binary", integ.PROTO_BINARY), ("prod_binary", integ.PROD_BINARY),
                      ("artifact", integ.ARTIFACT),
-                     ("checkpoint", "/mnt/user/dflash2/checkpoint/model.safetensors")]:
+                     ("checkpoint", os.environ.get("STRATA_DFLASH2_DIR", "/mnt/user/dflash2") + "/checkpoint/model.safetensors")]:
         try:
             out[label] = sha(p)
         except OSError as e:
@@ -440,7 +441,7 @@ def main() -> int:
     ap.add_argument("--prompt-file", default=None, help="long fixture for long contexts")
     ap.add_argument("--max-tokens", type=int, default=256)
     ap.add_argument("--repeats", type=int, default=1)
-    ap.add_argument("--runs", default="/mnt/user/dflash2/bench-runs")
+    ap.add_argument("--runs", default=os.environ.get("STRATA_DFLASH2_DIR", "/mnt/user/dflash2") + "/bench-runs")
     ap.add_argument("--cache-slots", type=int, default=0)
     ap.add_argument("--confirm-execution", action="store_true")
     a = ap.parse_args()

@@ -47,7 +47,7 @@ import helper_ab                                                     # noqa: E40
 import performance_window as perfwin                                 # noqa: E402
 
 WORK = _HERE.parents[1]
-ROOT = Path("/mnt/user/Strata")
+ROOT = Path(os.environ.get("STRATA_PROD_TREE", "/mnt/user/Strata") + "")
 EV_ROOT = WORK / "build-mixed-gpu/p2-finish"
 REQ_DIR = WORK / "build-mixed-gpu/cap1-validation"
 STOCK_ENGINE = WORK / "build-mixed-gpu/rpcw-hip/strata"
@@ -56,8 +56,8 @@ CAND_ENGINE = WORK / "build-mixed-gpu/repro-hip-q8k/strata"
 CAND_HELPER = WORK / "build-mixed-gpu/repro-q81-cuda/strata-expert-helper"
 PY = ROOT / ".venv/bin/python"
 SERVER = WORK / "serve/server.py"
-SERVER_CWD = Path("/mnt/user/dflash2/Strata-integ")
-ROCM_LIBS = "/home/user/rocm-gfx906-xnack/lib:/opt/rocm-6.1.0/lib"
+SERVER_CWD = Path(os.environ.get("STRATA_DFLASH2_DIR", "/mnt/user/dflash2") + "/Strata-integ")
+ROCM_LIBS = os.environ.get("STRATA_ROCM_ROOT", "/home/user/rocm-gfx906-xnack") + "/lib:/opt/rocm-6.1.0/lib"
 BASE_CONFIG = REQ_DIR / "ppf1-a-config.json"
 PROBES = ("r1", "r2", "r3")
 PORT = 18085
@@ -88,7 +88,7 @@ def sha256_file(path: Path) -> str:
 
 def helper_argv(helper: Path, sock: Path, sock2: Path) -> list[str]:
     # ppf1-a-launch.sh lines 49-54 verbatim (the tested window recipe).
-    return [str(helper), "--pack", "/mnt/user/ai/iq3xxs-15",
+    return [str(helper), "--pack", os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3xxs-15",
             "--experts", "../Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
             "--device", "0", "--slots", "4200", "--reserve-mib", "300",
             "--timeout", "7200000", "--begin-timeout", "1800000",

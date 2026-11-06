@@ -8,7 +8,7 @@
 #   4. restarts the strata prod server and waits for :8009/health
 #
 # Usage:
-#   sudo /mnt/user/Strata/gpu-reset.sh [--bdf 0000:09:00.0] [--skip-stop] [--no-start]
+#   sudo ${STRATA_PROD_TREE:-/mnt/user/Strata}/gpu-reset.sh [--bdf 0000:09:00.0] [--skip-stop] [--no-start]
 #
 # Notes:
 # - Never reboots/suspends. If the card does not come back after rescan, it needs a
@@ -20,7 +20,7 @@ BDF="0000:09:00.0"
 SKIP_STOP=0
 NO_START=0
 SVC_USER="${STRATA_USER:-user}"
-STRATA_DIR="/mnt/user/Strata"
+STRATA_DIR="${STRATA_PROD_TREE:-/mnt/user/Strata}"
 LAUNCH="$STRATA_DIR/launch-prod-swift15.sh"
 PORT=8009
 LOGDIR="/tmp/agent"
@@ -61,8 +61,8 @@ else
     as_user pkill -KILL -f 'serve/server\.py --engine strata' || true
   fi
   log "stopping engine + vision (KILL; D-state stragglers may linger, that is ok)"
-  as_user pkill -KILL -f '/mnt/user/Strata-2966/build-2966/strata ' || true
-  as_user pkill -KILL -f '/mnt/user/Strata/build-vision/bin/strata-vision' || true
+  as_user pkill -KILL -f '${STRATA_PROD_TREE:-/mnt/user/Strata}-2966/build-2966/strata ' || true
+  as_user pkill -KILL -f '${STRATA_PROD_TREE:-/mnt/user/Strata}/build-vision/bin/strata-vision' || true
   for _ in $(seq 1 15); do
     [ -z "$(as_user fuser /dev/kfd 2>/dev/null)" ] && break
     log "waiting for /dev/kfd to be released ..."

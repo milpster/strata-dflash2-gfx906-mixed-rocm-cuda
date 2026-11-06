@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import os
 import json, os, subprocess, time, urllib.request, statistics
 
 # Set STRATA_API_KEY in the environment; nothing is committed.

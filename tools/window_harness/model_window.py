@@ -91,7 +91,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import window as W                                      # reviewed snapshot/stop/restore helpers
 
 # The production venv python is the proxy's own and is NEVER overridable.
-VENV_PY = "/mnt/user/Strata/.venv/bin/python"          # production venv python (the proxy's own)
+VENV_PY = os.environ.get("STRATA_PROD_TREE", "/mnt/user/Strata") + "/.venv/bin/python"          # production venv python (the proxy's own)
 
 
 def _abs_override(env_name: str, default: str) -> str:
@@ -119,13 +119,13 @@ def _abs_override(env_name: str, default: str) -> str:
 # ALL FOUR go through _abs_override (no raw os.environ.get on a selected path): the defaults are
 # byte-for-byte the literals the lane used before, PROTO_BINARY/PROTO_SERVER still derive from the
 # selected CLONE, and every controller reads config paths ONLY through mw.CONFIG_DIR.
-CLONE = _abs_override("STRATA_WINDOW_CLONE", "/mnt/user/dflash2/Strata-wt")
+CLONE = _abs_override("STRATA_WINDOW_CLONE", os.environ.get("STRATA_DFLASH2_DIR", "/mnt/user/dflash2") + "/Strata-wt")
 PROTO_BINARY = _abs_override("STRATA_WINDOW_PROTO_BINARY", f"{CLONE}/build-gfx906-dflash2/strata")
 PROTO_SERVER = _abs_override("STRATA_WINDOW_PROTO_SERVER", f"{CLONE}/serve/server.py")
-CONFIG_DIR = pathlib.Path(_abs_override("STRATA_WINDOW_CONFIG_DIR", "/mnt/user/dflash2/config"))
-ARTIFACT = "/mnt/user/dflash2/artifacts/inco-dflash2-bf16.gguf"
+CONFIG_DIR = pathlib.Path(_abs_override("STRATA_WINDOW_CONFIG_DIR", os.environ.get("STRATA_DFLASH2_DIR", "/mnt/user/dflash2") + "/config"))
+ARTIFACT = os.environ.get("STRATA_DFLASH2_DIR", "/mnt/user/dflash2") + "/artifacts/inco-dflash2-bf16.gguf"
 LOGS, OPS = W.LOGS, W.OPS
-DUMPS = pathlib.Path("/mnt/user/dflash2/dumps")       # STRATA_DF_PARITY dump base (parent's compare input)
+DUMPS = pathlib.Path(os.environ.get("STRATA_DFLASH2_DIR", "/mnt/user/dflash2") + "/dumps")       # STRATA_DF_PARITY dump base (parent's compare input)
 PROTO_PORT = 8019
 MODES = [("target_only", 1), ("dflash_w3", 3)]          # this exact order
 STARTUP_S, COLD_S, REQ_TIMEOUT, MAX_TOKENS = 180, 360, 120, 16

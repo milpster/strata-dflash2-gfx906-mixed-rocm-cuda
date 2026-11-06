@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """A client that stops reading a streamed answer early must not leave its tokens to the next request.
+import os
 
   STRATA_KEY=... python3 tools/early_close_test.py http://127.0.0.1:8090
 """

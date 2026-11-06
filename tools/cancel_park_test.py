@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """#1620: a request cancelled right after it restored a parked conversation must not lose that conversation.
+import os
 
   A (long answer) -> B (an unrelated chat parks A) -> A2 = A + a short next turn, STOPped as soon as the engine
   says RESUME (the parked A is restored, nothing or a few windows read) -> A3 = A + another next turn.

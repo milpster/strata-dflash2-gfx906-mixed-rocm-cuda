@@ -18,7 +18,7 @@ case "${1:-}" in
 esac
 [ -f "$SRC" ] || { echo "missing $SRC" >&2; exit 1; }
 if [ "$SRC" = "prod-config-swift15-q8ple.json" ]; then
-  PLE=/mnt/user/ai/Qwen3.8-Flash-Next-PLE-Q8_0.gguf
+  PLE=${STRATA_AI_DIR:-/mnt/user/ai}/Qwen3.8-Flash-Next-PLE-Q8_0.gguf
   [ -f "$PLE" ] || { echo "missing $PLE - not switching (download and verify it first)" >&2; exit 1; }
 fi
 if ! cmp -s prod-config-swift15.json "$SRC"; then

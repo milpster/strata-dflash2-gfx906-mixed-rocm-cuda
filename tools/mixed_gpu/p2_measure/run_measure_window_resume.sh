@@ -7,10 +7,10 @@
 # helper/harness processes, checkpoint.tsv 69 ok. This script resumes capture, measures, RESTORES.
 set -uo pipefail
 
-W=/mnt/user/Strata/worktrees/cuda-helper
+W=${STRATA_HELPER_WT:-${STRATA_PROD_TREE:-/mnt/user/Strata}/worktrees/cuda-helper}
 OUT=/tmp/agent/p2win
 EVID=$W/build-mixed-gpu/p2-measure-window1
-LAUNCHER=/mnt/user/Strata/launch-prod-swift15-dflash-w4-q4_0.sh
+LAUNCHER=${STRATA_PROD_TREE:-/mnt/user/Strata}/launch-prod-swift15-dflash-w4-q4_0.sh
 ENGINE=$W/build-mixed-gpu/r4-dflash-after/bin/strata-hip
 HELPER_BIN=$W/build-mixed-gpu/engine-cuda/strata-expert-helper
 HARNESS=$W/build-mixed-gpu/engine-cuda/p2_measure_harness
@@ -69,7 +69,7 @@ OKC=$(awk -F'\t' '$5=="ok"' "$OUT/moe/checkpoint.tsv" | wc -l)
 log "CAPTURE rc=$CAPTURE_RC ok=$OKC/128"
 
 : > "$EVID/helper.log"
-"$HELPER_BIN" --pack /mnt/user/ai/iq3xxs-15 --socket "$SOCK" --device 0 \
+"$HELPER_BIN" --pack ${STRATA_AI_DIR:-/mnt/user/ai}/iq3xxs-15 --socket "$SOCK" --device 0 \
   --begin-timeout 600000 --timeout 600000 >> "$EVID/helper.log" 2>&1 &
 HELPER_PID=$!
 log "HELPER pid=$HELPER_PID waiting for socket"
@@ -81,7 +81,7 @@ done
 if [ -S "$SOCK" ]; then log "HELPER READY"; else log "HELPER NOT READY - harness will typed-refuse"; fi
 
 log "HARNESS start"
-"$HARNESS" --pack /mnt/user/ai/iq3xxs-15 --socket "$SOCK" \
+"$HARNESS" --pack ${STRATA_AI_DIR:-/mnt/user/ai}/iq3xxs-15 --socket "$SOCK" \
   --activations "$OUT/moe" \
   --out "$W/build-mixed-gpu/p2-measure-harness/measure.json" >> "$EVID/harness.log" 2>&1
 HARNESS_RC=$?

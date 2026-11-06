@@ -1,4 +1,5 @@
 """CPU-only safety tests for finish_window: no hardware, no production action.
+import os
 
 The --execute paths stop real production; these tests pin the PURE helpers the
 window relies on (dump validation, checkpoint resume, OFF-arm derivation with
@@ -25,10 +26,10 @@ def _valid_dump(t=2, n=3, k=4, fill=b"\x01"):
 
 
 PROD = {
-    "exe": "/prod/strata", "cwd": "/mnt/user/Strata", "port": 8009,
+    "exe": "/prod/strata", "cwd": os.environ.get("STRATA_PROD_TREE", "/mnt/user/Strata") + "", "port": 8009,
     "model_name": "swift-1.5-iq3_xxs", "log": "/prod/log",
-    "lib_dirs": ["/home/user/rocm-gfx906-xnack/lib", "/opt/rocm-6.1.0/lib"],
-    "args": ["--gpu", "0,1", "--pack", "/mnt/user/ai/iq3xxs-15",
+    "lib_dirs": [os.environ.get("STRATA_ROCM_ROOT", "/home/user/rocm-gfx906-xnack") + "/lib", "/opt/rocm-6.1.0/lib"],
+    "args": ["--gpu", "0,1", "--pack", os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3xxs-15",
              "--expert-helper-slots", "4200"],
     "env": {"HSA_OVERRIDE_GFX_VERSION": "9.0.6"},
     "expert_helper_socket": "/prod/prod-mixed.sock",
@@ -118,7 +119,7 @@ def test_derive_capture_config_refuses(tmp_path):
         fw.derive_capture_config(PROD, engine=Path("/d"), prefix=Path("/p"),
                                  log=Path("/l"), port=8009, model_name="m")
     wrong_libs = json.loads(json.dumps(PROD))
-    wrong_libs["lib_dirs"] = ["/opt/rocm-6.1.0/lib", "/home/user/rocm-gfx906-xnack/lib"]
+    wrong_libs["lib_dirs"] = ["/opt/rocm-6.1.0/lib", os.environ.get("STRATA_ROCM_ROOT", "/home/user/rocm-gfx906-xnack") + "/lib"]
     with pytest.raises(ValueError, match="rocBLAS"):
         fw.derive_capture_config(wrong_libs, engine=Path("/d"), prefix=Path("/p"),
                                  log=Path("/l"), port=18085, model_name="m")
@@ -166,7 +167,7 @@ def test_helper_and_reference_argv(tmp_path):
     assert rv[rv.index("--reserve-mib") + 1] == "4000"
     assert rv[rv.index("--layers") + 1] == "32-47"        # explicit window
     assert "--arm-groups" not in rv                       # att3: arm walk refused
-    assert fw.ROCM_LIBS == "/home/user/rocm-gfx906-xnack/lib:/opt/rocm-6.1.0/lib"
+    assert fw.ROCM_LIBS == os.environ.get("STRATA_ROCM_ROOT", "/home/user/rocm-gfx906-xnack") + "/lib:/opt/rocm-6.1.0/lib"
 
 
 # ---------------- exclusivity + phases ----------------

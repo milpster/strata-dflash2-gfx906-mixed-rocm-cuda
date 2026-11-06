@@ -44,10 +44,10 @@ import test_inco_dflash2_integration as I                # noqa: E402  the revie
 
 ENV_KEYS = ("STRATA_WINDOW_CLONE", "STRATA_WINDOW_PROTO_BINARY", "STRATA_WINDOW_PROTO_SERVER",
             "STRATA_WINDOW_CONFIG_DIR")
-DEF_PROTO = "/mnt/user/dflash2/Strata-wt/build-gfx906-dflash2/strata"
-DEF_CONFIG = "/mnt/user/dflash2/config"
-DEF_PROD_BINARY = "/mnt/user/Strata-2966/build-2966/strata"
-OVERRIDE_PROTO = "/mnt/user/dflash2/Strata-integ/build-matrix-e1h0/strata"
+DEF_PROTO = os.environ.get("STRATA_DFLASH2_DIR", "/mnt/user/dflash2") + "/Strata-wt/build-gfx906-dflash2/strata"
+DEF_CONFIG = os.environ.get("STRATA_DFLASH2_DIR", "/mnt/user/dflash2") + "/config"
+DEF_PROD_BINARY = os.environ.get("STRATA_PROD_TREE", "/mnt/user/Strata") + "-2966/build-2966/strata"
+OVERRIDE_PROTO = os.environ.get("STRATA_DFLASH2_DIR", "/mnt/user/dflash2") + "/Strata-integ/build-matrix-e1h0/strata"
 FAILS: list[str] = []
 
 
@@ -81,7 +81,7 @@ def synth_prod() -> dict:
             "--vision"]
     return {"exe": DEF_PROD_BINARY, "args": args, "cwd": "/synth/prod-cwd",
             "tokenizer": "/synth/tok", "model_name": "swift-1.5-iq3_xxs",
-            "log": "/mnt/user/dflash2/logs/prod-engine.log", "env": {"HOME": "/synth"},
+            "log": os.environ.get("STRATA_DFLASH2_DIR", "/mnt/user/dflash2") + "/logs/prod-engine.log", "env": {"HOME": "/synth"},
             "env_to_user": {}, "lib_dirs": ["/synth/lib"], "vision": True, "gpu": "0,1",
             "host": "127.0.0.1", "port": 8009, "backend": "strata", "layer_split": "32",
             "fit_max_tokens": 8192, "reasoning_budget_tokens": 4096, "reasoning_effort": "none",
@@ -97,10 +97,10 @@ def fixture_defaults() -> None:
     check(I.PROTO_BINARY == DEF_PROTO, f"cloner default PROTO_BINARY is the literal {DEF_PROTO}")
     check(str(I.CONFIG_DIR) == DEF_CONFIG, f"cloner default CONFIG_DIR is the literal {DEF_CONFIG}")
     check(I.PROD_BINARY == DEF_PROD_BINARY, "cloner PROD_BINARY (OLD production arm) is unchanged")
-    check(mw.CLONE == "/mnt/user/dflash2/Strata-wt" and mw.PROTO_BINARY == DEF_PROTO,
+    check(mw.CLONE == os.environ.get("STRATA_DFLASH2_DIR", "/mnt/user/dflash2") + "/Strata-wt" and mw.PROTO_BINARY == DEF_PROTO,
           "controller default CLONE/PROTO_BINARY are the parent's pre-existing literals")
     check(str(mw.CONFIG_DIR) == DEF_CONFIG, "controller default CONFIG_DIR is the literal /mnt/user/dflash2/config")
-    check(mw.PROTO_SERVER == "/mnt/user/dflash2/Strata-wt/serve/server.py",
+    check(mw.PROTO_SERVER == os.environ.get("STRATA_DFLASH2_DIR", "/mnt/user/dflash2") + "/Strata-wt/serve/server.py",
           "controller default PROTO_SERVER is the parent's pre-existing literal")
     prod = synth_prod()
     check(all(isinstance(a, str) for a in prod["args"]),
@@ -110,7 +110,7 @@ def fixture_defaults() -> None:
     check(exe_ok, "with no env every NEW-binary clone still points at the default prototype binary")
     check(all(I.clone_server_config(m, prod)["port"] == 8019 for m in MODES),
           "every clone stays on the isolated 8019 (production 8009 never appears in a clone)")
-    check(all(I.clone_server_config(m, prod)["log"].startswith("/mnt/user/dflash2/logs/") for m in MODES),
+    check(all(I.clone_server_config(m, prod)["log"].startswith(os.environ.get("STRATA_DFLASH2_DIR", "/mnt/user/dflash2") + "/logs/") for m in MODES),
           "clone logs remain ABSOLUTE under the project log dir (never relative, never the prod tree)")
     check(all(I.clone_server_config(m, prod)["log"] == mw.log_want(m) for m in MODES),
           "the cloner's log names match the controller's exact per-mode log contract (no waived path)")
@@ -119,9 +119,9 @@ def fixture_defaults() -> None:
 # ------------------------------------------------------------------ 2. absolute overrides, both sides
 def fixture_absolute_override(td: pathlib.Path) -> None:
     cfgdir = td / "cfg"
-    set_env({"STRATA_WINDOW_CLONE": "/mnt/user/dflash2/Strata-integ",
+    set_env({"STRATA_WINDOW_CLONE": os.environ.get("STRATA_DFLASH2_DIR", "/mnt/user/dflash2") + "/Strata-integ",
              "STRATA_WINDOW_PROTO_BINARY": OVERRIDE_PROTO,
-             "STRATA_WINDOW_PROTO_SERVER": "/mnt/user/dflash2/Strata-integ/serve/server.py",
+             "STRATA_WINDOW_PROTO_SERVER": os.environ.get("STRATA_DFLASH2_DIR", "/mnt/user/dflash2") + "/Strata-integ/serve/server.py",
              "STRATA_WINDOW_CONFIG_DIR": str(cfgdir)})
     check(I.PROTO_BINARY == OVERRIDE_PROTO, "cloner honors an ABSOLUTE STRATA_WINDOW_PROTO_BINARY")
     check(str(I.CONFIG_DIR) == str(cfgdir), "cloner honors an ABSOLUTE STRATA_WINDOW_CONFIG_DIR")
@@ -253,7 +253,7 @@ def fixture_guards(td: pathlib.Path) -> None:
           "the controller's old-arm binary stays window.PROD_EXE (never env-driven)")
     check(any(s in I.PROD_CONFIG for s in ("prod-config-swift15.json",)),
           "the production config path the cloner reads stays the original production file")
-    check(str(W.LOGS) == "/mnt/user/dflash2/logs" and str(W.OPS) == "/mnt/user/dflash2/ops",
+    check(str(W.LOGS) == os.environ.get("STRATA_DFLASH2_DIR", "/mnt/user/dflash2") + "/logs" and str(W.OPS) == os.environ.get("STRATA_DFLASH2_DIR", "/mnt/user/dflash2") + "/ops",
           "results/logs keep going to the project dirs, never into the source tree")
 
 

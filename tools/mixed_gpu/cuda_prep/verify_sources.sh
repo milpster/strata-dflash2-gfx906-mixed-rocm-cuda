@@ -7,7 +7,7 @@ set -u
 export PYTHONDONTWRITEBYTECODE=1
 
 LOG="${1:?usage: verify_sources.sh <evidence-file> [ggml-checkout-root]}"
-GG="${2:-/mnt/user/Strata/build-906-new/_deps/strata_llamacpp-src}"
+GG="${2:-${STRATA_PROD_TREE:-/mnt/user/Strata}/build-906-new/_deps/strata_llamacpp-src}"
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 mkdir -p "$(dirname "$LOG")"
 : > "$LOG"

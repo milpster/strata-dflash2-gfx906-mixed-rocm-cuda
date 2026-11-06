@@ -1,4 +1,5 @@
 # Local native-protocol probe; run from the repository root. No downloads.
+import os
 import json, os, sys, time
 from pathlib import Path
 root = Path.cwd()

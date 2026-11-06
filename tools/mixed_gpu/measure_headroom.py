@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """tools/mixed_gpu/measure_headroom.py - the P0 split-SERVE measurement runner (plan default).
+import os
 
 STATUS OF THE PREVIOUS DESIGN: the one-shot generate-mode runner this file used to hold is RETIRED AND
 INVALID as production evidence.  Generate mode refuses --layer-split outside --serve (measured 2026-10-27,
@@ -72,7 +73,7 @@ from build_standard_corpus import (RECORD, SUMMARY_QUESTION, TEMPLATE_KWARGS, Co
 import strata_bench                                  # noqa: E402  chat() + digest()
 
 CELLS = {"4k": 4096, "32k": 32768, "128k": 131072}
-PROD_CONFIG = Path("/mnt/user/Strata/prod-config-swift15-dflash-w4-q4_0.json")
+PROD_CONFIG = Path(os.environ.get("STRATA_PROD_TREE", "/mnt/user/Strata") + "/prod-config-swift15-dflash-w4-q4_0.json")
 PROD_PORT = 8009
 ISO_PORT = 8019
 ISO_CONFIG = ROOT / "build-mixed-gpu/p0/config-split-timing.json"

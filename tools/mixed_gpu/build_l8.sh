@@ -10,11 +10,11 @@
 # against the user's custom gfx906-xnack dir + /opt/rocm-6.1.0 - exactly what the
 # canonical launcher's LD_LIBRARY_PATH provides at runtime.  Run this script under the
 # canonical env (CUDA_VISIBLE_DEVICES=0,1 HSA_OVERRIDE_GFX_VERSION=9.0.6 HIP_FORCE_P2P=1,
-# LD_LIBRARY_PATH=/home/user/rocm-gfx906-xnack/lib:/opt/rocm-6.1.0/lib) so a bare
+# LD_LIBRARY_PATH=${STRATA_ROCM_ROOT:-/home/user/rocm-gfx906-xnack}/lib:/opt/rocm-6.1.0/lib) so a bare
 # find_library cannot link a newer ROCm (libhipblas.so.3/.so.7 -> engine exit 127).
 # Usage: build_l8.sh ["rpcw-hip-nmse2:rpcw-hip-l8"]   (default: both trees)
 set -euo pipefail
-ROOT=/mnt/user/Strata/worktrees/cuda-helper
+ROOT=${STRATA_HELPER_WT:-${STRATA_PROD_TREE:-/mnt/user/Strata}/worktrees/cuda-helper}
 cd "$ROOT"
 for spec in ${1:-"rpcw-cuda-nmse2:rpcw-cuda-l8 rpcw-hip-nmse2:rpcw-hip-l8"}; do
   src=${spec%%:*}
@@ -30,7 +30,7 @@ for spec in ${1:-"rpcw-cuda-nmse2:rpcw-cuda-l8 rpcw-hip-nmse2:rpcw-hip-l8"}; do
     # l8-build.log 2026-11-02; the l3w1 lesson again).
     mapfile -t args < <(grep -E '^(STRATA_|GGML_|CMAKE_BUILD_TYPE|CMAKE_HIP_)' \
           "build-mixed-gpu/$src/CMakeCache.txt" | grep -v ADVANCED | sed 's/^/-D/')
-    args+=('-DCMAKE_PREFIX_PATH=/home/user/rocm-gfx906-xnack;/opt/rocm-6.1.0'
+    args+=('-DCMAKE_PREFIX_PATH=${STRATA_ROCM_ROOT:-/home/user/rocm-gfx906-xnack};/opt/rocm-6.1.0'
            -DROCM_PATH=/opt/rocm-6.1.0
            -DHIP_PATH=/opt/rocm-6.1.0
            -DHIP_ROOT_DIR=/opt/rocm-6.1.0)

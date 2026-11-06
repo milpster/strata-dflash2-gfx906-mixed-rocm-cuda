@@ -13,7 +13,7 @@
 # STRATA_RPC_PROFILE precedent; the window's request-SHA parity check guards it.
 # Usage: build_l2.sh          (builds rpcw-cuda-l2 from rpcw-cuda-nmse2)
 set -euo pipefail
-ROOT=/mnt/user/Strata/worktrees/cuda-helper
+ROOT=${STRATA_HELPER_WT:-${STRATA_PROD_TREE:-/mnt/user/Strata}/worktrees/cuda-helper}
 cd "$ROOT"
 src=rpcw-cuda-nmse2
 dst=rpcw-cuda-l2

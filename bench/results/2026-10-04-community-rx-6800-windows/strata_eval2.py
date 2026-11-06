@@ -1,4 +1,5 @@
 """bench-local/strata_eval2.py - round 2: harder coding, JavaScript, SQL, regex, a tool-using agent loop on a small
+import os
 project, fact questions over a ~60K-token file, a long generation.  Writes results2.json next to this file."""
 from __future__ import annotations
 

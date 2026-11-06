@@ -6,5 +6,5 @@
 set -euo pipefail
 export HIP_VISIBLE_DEVICES="${HIP_VISIBLE_DEVICES:-0,1}"
 export HSA_OVERRIDE_GFX_VERSION="${HSA_OVERRIDE_GFX_VERSION:-9.0.6}"
-export LD_LIBRARY_PATH="/home/user/rocm-gfx906-xnack/lib:/opt/rocm-6.1.0/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-exec /mnt/user/Strata/build-vision-hip/bin/strata-vision "$@"
+export LD_LIBRARY_PATH="${STRATA_ROCM_ROOT:-/home/user/rocm-gfx906-xnack}/lib:/opt/rocm-6.1.0/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+exec ${STRATA_PROD_TREE:-/mnt/user/Strata}/build-vision-hip/bin/strata-vision "$@"

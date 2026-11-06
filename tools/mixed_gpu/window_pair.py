@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import helper_ab
 
 WORK = Path(__file__).resolve().parents[2]
-ROOT = Path("/mnt/user/Strata")
+ROOT = Path(os.environ.get("STRATA_PROD_TREE", "/mnt/user/Strata") + "")
 PROD_CONFIG = ROOT / "prod-config-swift15-dflash-w4-q4_0-mixed.json"
 PROD_LAUNCHER = ROOT / "launch-prod-swift15-dflash-w4-q4_0-mixed.sh"
 EVIDENCE = WORK / "build-mixed-gpu/cap1-validation"
@@ -343,7 +343,7 @@ def prepare(family, *, slots=4000, fill_mib=6400, port=18080, evidence=EVIDENCE,
 # config - no helper sockets, no --expert-helper-slots, no STRATA_PREFILL_HELPER.  A
 # --stock-controls arm measures THAT product; how1/how2 measured the mixed engine without
 # the helper instead.
-STOCK_CLONE = Path("/mnt/user/dflash2/Strata-integ")
+STOCK_CLONE = Path(os.environ.get("STRATA_DFLASH2_DIR", "/mnt/user/dflash2") + "/Strata-integ")
 STOCK_EXE = STOCK_CLONE / "build-dfsample-1/strata"
 STOCK_SERVER = STOCK_CLONE / "serve/server.py"
 STOCK_CONFIG = ROOT / "prod-config-swift15-dflash-w4-q4_0.json"

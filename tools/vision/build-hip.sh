@@ -10,7 +10,7 @@
 # Binary: build-vision-hip/bin/strata-vision (build dir stays untracked).
 #
 # RUNTIME (the parent's benchmark window):
-#   LD_LIBRARY_PATH=/home/user/rocm-gfx906-xnack/lib:/opt/rocm-6.1.0/lib HSA_OVERRIDE_GFX_VERSION=9.0.6 \
+#   LD_LIBRARY_PATH=${STRATA_ROCM_ROOT:-/home/user/rocm-gfx906-xnack}/lib:/opt/rocm-6.1.0/lib HSA_OVERRIDE_GFX_VERSION=9.0.6 \
 #     strata-vision --mmproj <mmproj> --model <model> --gpu
 #
 # NOTE (no source change): strata_vision.cpp's CPU-mode guard sets CUDA_VISIBLE_DEVICES=-1, which

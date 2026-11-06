@@ -33,9 +33,9 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-CKPT = Path(os.environ.get("INCO_CKPT", "/mnt/user/dflash2/checkpoint/model.safetensors"))
-GGUF = Path(os.environ.get("INCO_GGUF", "/mnt/user/dflash2/artifacts/inco-dflash2-bf16.gguf"))
-CONFIG = Path(os.environ.get("INCO_CONFIG", "/mnt/user/dflash2/checkpoint/config.json"))
+CKPT = Path(os.environ.get("INCO_CKPT", os.environ.get("STRATA_DFLASH2_DIR", "/mnt/user/dflash2") + "/checkpoint/model.safetensors"))
+GGUF = Path(os.environ.get("INCO_GGUF", os.environ.get("STRATA_DFLASH2_DIR", "/mnt/user/dflash2") + "/artifacts/inco-dflash2-bf16.gguf"))
+CONFIG = Path(os.environ.get("INCO_CONFIG", os.environ.get("STRATA_DFLASH2_DIR", "/mnt/user/dflash2") + "/checkpoint/config.json"))
 PINNED_SHA = "d6723f2a359eaf33ec0c95f22ae8edda896774020c552296a85e1913b4d3186f"
 
 # --------------------------------------------------------------- stdlib readers

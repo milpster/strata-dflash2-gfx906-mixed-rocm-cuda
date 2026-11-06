@@ -1,4 +1,5 @@
 """File-only private-window parity and refusal checks; no production mutation."""
+import os
 import hashlib
 import json
 from pathlib import Path
@@ -113,7 +114,7 @@ def test_draft_pair(tmp_path, enabled):
         expected_env["STRATA_DRAFT_TIMEOUT_MS"] = "30000"
     assert config["env"] == expected_env
     assert config["args"] == prod["args"]
-    assert config["lib_dirs"] == ["/home/user/rocm-gfx906-xnack/lib", "/opt/rocm-6.1.0/lib"]
+    assert config["lib_dirs"] == [os.environ.get("STRATA_ROCM_ROOT", "/home/user/rocm-gfx906-xnack") + "/lib", "/opt/rocm-6.1.0/lib"]
     launcher = Path(result.launcher).read_text()
     artifact = prod["args"][prod["args"].index("--dflash") + 1]
     assert (f"--dflash {artifact} --dflash-window 262144" in launcher) is enabled

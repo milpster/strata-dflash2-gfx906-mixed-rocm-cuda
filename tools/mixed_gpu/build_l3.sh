@@ -10,7 +10,7 @@
 # which the engine cannot load (exit 127; l3w1-lib-diagnosis.log).
 # Usage: build_l3.sh ["rpcw-hip:rpcw-hip-l3"]  (default: both trees)
 set -euo pipefail
-ROOT=/mnt/user/Strata/worktrees/cuda-helper
+ROOT=${STRATA_HELPER_WT:-${STRATA_PROD_TREE:-/mnt/user/Strata}/worktrees/cuda-helper}
 cd "$ROOT"
 TREES=${1:-"rpcw-cuda:rpcw-cuda-l3 rpcw-hip:rpcw-hip-l3"}
 for spec in $TREES; do
@@ -28,7 +28,7 @@ for spec in $TREES; do
   # Pin ROCm resolution to the runtime's libraries; never let CMake wander into a
   # newer /opt/rocm (the unversioned AMDDeviceLibs_DIR of the old cache is NOT
   # replicated on purpose — it resolves through CMAKE_PREFIX_PATH instead).
-  args+=('-DCMAKE_PREFIX_PATH=/home/user/rocm-gfx906-xnack;/opt/rocm-6.1.0'
+  args+=('-DCMAKE_PREFIX_PATH=${STRATA_ROCM_ROOT:-/home/user/rocm-gfx906-xnack};/opt/rocm-6.1.0'
          -DROCM_PATH=/opt/rocm-6.1.0
          -DHIP_PATH=/opt/rocm-6.1.0
          -DHIP_ROOT_DIR=/opt/rocm-6.1.0)

@@ -447,11 +447,11 @@ def fixture(with_prod=True, prio=1500, gpu_used=7544, cls=None):
     if with_prod:
         be.proc_pids |= {str(WRAP_PID), str(ENG_PID)}
         be.files[f"/proc/{WRAP_PID}/cmdline"] = (
-            "/mnt/user/Strata/.venv/bin/python\0server.py\0--engine\0strata\0--config\0"
+            os.environ.get("STRATA_PROD_TREE", "/mnt/user/Strata") + "/.venv/bin/python\0server.py\0--engine\0strata\0--config\0"
             "prod-config.json\0--port\08009\0--api-key-env\0STRATA_KEY\0")
         be.files[f"/proc/{WRAP_PID}/stat"] = stat_line(WRAP_PID, 90000)
         be.files[f"/proc/{ENG_PID}/cmdline"] = (
-            "/mnt/user/Strata/worktrees/v023-merge/build-906-inco/strata\0"
+            os.environ.get("STRATA_PROD_TREE", "/mnt/user/Strata") + "/worktrees/v023-merge/build-906-inco/strata\0"
             "--model\0q4_0\0--max-context\0131072\0")
         be.files[f"/proc/{ENG_PID}/stat"] = stat_line(ENG_PID, 90010)
     be.set_sysctls(150, 1048576)
