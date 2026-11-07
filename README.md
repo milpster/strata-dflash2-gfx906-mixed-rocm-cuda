@@ -1,186 +1,114 @@
 # Strata — gfx906 Mixed-GPU Fork
 
-An engine fork of [Niko1221/Strata](https://github.com/Niko1221/Strata) (upstream **v0.2.11**, all releases v0.1.45 → v0.2.11 kept) that runs **Qwen3.8-Flash-Next ("Swift 1.5")** on **2× Radeon VII (gfx906) + an NVIDIA helper card** — hardware stock Strata only compile-checks — and beats stock on it.
+An engine fork of [Niko1221/Strata](https://github.com/Niko1221/Strata) (all releases v0.1.45 → **v0.2.11** kept) that runs **Qwen3.8-Flash-Next ("Swift 1.5")** on **2× Radeon VII (gfx906) + an NVIDIA helper card** — hardware stock only compile-checks — and beats stock on it.
 
-> **Made to be built and run by an agent, not by humans.** Compiling, installing, benching, promoting and operating this fork are agent workflows: pinned toolchains, custom libs, harness scripts and a mandatory speed+quality measurement discipline. A human gives orders and reads results — the agent executes and documents. Start at `JOURNAL.md` (session record), `bench/ab-v0210/out/RESULTS*.md` (verdicts) and the build guide below; `AGENTS.md` is the technical reference for AI tools.
+> Built and operated agent-first: pinned toolchains, custom libs, harness scripts, and a mandatory measure-before-promote discipline. Start at `JOURNAL.md` (session record + verdicts) and `bench/ab-v0210/out/RESULTS*.md`. Every claim below is measured on the rig in this README.
 
-**Contents:** [At a glance](#at-a-glance) · [Who it's for](#who-its-for) · [The rig](#the-rig) · [How it works](#how-the-fork-works) · [Measured vs stock](#measured-fork-vs-stock-v0210) · [Quality gates](#quality-gates) · [Trade-offs](#trade-offs-and-known-defects) · [Build guide](#build-guide--how-we-built-it) · [Repo map](#repo-map)
+**Contents:** [At a glance](#at-a-glance) · [Who it's for](#who-its-for) · [The rig](#the-rig) · [How the fork works](#how-the-fork-works) · [Measured vs stock](#measured-vs-stock) · [Quality gates](#quality-gates) · [Trade-offs](#trade-offs-and-known-defects) · [Build guide](#build-guide) · [Repo map](#repo-map)
 
 ## At a glance
 
-- **Runs where stock barely reaches** — stock's gfx906 support is a community source build the maintainers have never run, and v0.2.10 as tagged does not even compile for gfx906; this fork runs it as a daily server.
-- **Faster decode** — **+36–39 %** vs same-day stock (37.7–38.5 vs 27.6 tok/s; +48 % in the widest same-day frame). Re-validated same-night on the merged tree: **36.9–40.1 vs 23.0–23.9 tok/s (+50–74 %)**.
-- **Faster chat** — **1.4–2.4×** faster short-prompt reads, plus **14–20 %** more from the prompt-stage memo.
-- **Less RAM** — **−6.2 GiB** host memory via expert-helper RAM relief, at control speed.
-- **Bit-exact quality** — greedy 80k-token infill byte-identical to stock; teacher-forced gates logprob-identical (KL 0.00000, top-1 100 %, PPL 4.115 = 4.115).
-- **Measured or it didn't happen** — every claim comes from a same-day A/B/C bench window; artifacts in `bench/ab-v0210/out/`, the story in `JOURNAL.md`.
+- **Runs where stock barely reaches** — stock's gfx906 support is a compile-checked community port; v0.2.10/v0.2.11 as tagged don't even build there. This fork runs it as a daily server.
+- **~1.5× decode** — pooled median **34.7 vs 23.3 tok/s** vs same-day stock (+49 %); 1.3× on 1024-token completions.
+- **1.4–2.4× faster short-prompt reads** (214–620 tok), plus 14–20 % more from the prompt-stage memo.
+- **−6.2 GiB host RAM** via expert-helper RAM relief.
+- **Exact quality parity** — greedy 80k infill byte-identical; 4995-position teacher-forced yardstick: top-1 100 %, KL 0.00000, PPL equal.
+- **Self-healing pair** — SIGKILL the helper: requests finish, the supervisor rebuilds the pair, health returns.
 
 ## Who it's for
 
-The fork pays off when your hardware or your traffic matches what it was built for:
-
-- **gfx906 owners (Radeon VII, MI50, MI60)** — stock ships only a compile-checked community source path; this fork runs these cards as a production local-LLM server. MI50/MI60 share the target but are untested here.
-- **Mixed AMD + NVIDIA rigs** — stock has no cross-vendor serving path; here the NVIDIA card pulls expert and prefill duty for the AMD HIP engine.
-- **Big MoE model, small cards** — a ~47 GiB expert set serving from 2× 16 GiB VRAM + 62 GiB host RAM.
-- **RAM-tight hosts** — 6.2 GiB of anonymous memory handed back to the OS.
-- **Interactive agent traffic** (OpenCode, Claude Code-style clients) — 200-token reads in ~3 s instead of 6.5 s, on the OpenAI/Anthropic-compatible API.
-- **Quality-critical users** — byte-identical greedy output vs stock, plus KL / top-1 / PPL gates before every promotion.
-- **Bench & tuning work** — the A/B/C harness, sha parity gates and quality yardstick are reusable for any further Strata engine work.
+- **gfx906 owners** (Radeon VII; MI50/MI60 share the target, untested here) wanting a production local-LLM server.
+- **Mixed AMD + NVIDIA rigs** — stock has no cross-vendor path; here the NVIDIA card serves expert/prefill rows to the AMD HIP engine.
+- **Big MoE, small cards** — ~47 GiB expert set serving from 2× 16 GiB VRAM + 62 GiB host RAM.
+- **RAM-tight hosts** — 6.2 GiB handed back to the OS.
+- **Interactive agent traffic** — OpenAI/Anthropic-compatible API (`serve/server.py`), 200-token reads in ~3 s instead of 6.5 s.
+- **Anyone benching engine changes** — the A/B(/C stock) harness, sha parity gates and quality yardstick are reusable.
 
 ## The rig
 
-Every number in this README was measured on exactly this machine; nothing is claimed for other hardware.
+Every number was measured on exactly this machine:
 
-| Part | What | Role here |
+| Part | What | Role |
 | --- | --- | --- |
-| CPU | AMD Ryzen 9 5900HX, 8C/16T, ~4.7 GHz | host staging, quality yardstick |
-| RAM | 62 GiB | expert arena: ~41 GiB anon after relief (~34 GiB registered) |
-| GPU 0+1 | 2× AMD Radeon VII (Vega 20, gfx906, 16 GiB HBM2) | **first — the ROCm/HIP engine**: all model execution, layer-split, DFlash2 drafter |
-| GPU 2 | NVIDIA RTX 3080 Laptop, 8 GiB (sm_86) | **second — the CUDA helper**: expert rows + prefill tier, ~6.5 GiB cache |
-| Storage | 1 TB WD SN530 NVMe + 2 TB Crucial BX500 SATA | model packs, relief reads |
-| OS | Ubuntu 25.04 (Plucky Puffin), kernel XanMod `7.2.9-x64v3-xanmod1` | userland the custom rocBLAS is built against |
-| rocBLAS | custom-built **4.1.0** for `gfx906:xnack-` (`~/rocm-gfx906-xnack`) | the GEMM path for both Radeon VIIs — stock 6.1 rocBLAS segfaults on gfx906; pinned ahead of it at build and runtime |
-| Model | Swift-1.5-Qwen3.8-Flash-Next, GSQ-RCO IQ3_XXS / IQ3_S packs | ~47 GiB expert set |
-| Server | `serve/server.py` | OpenAI- and Anthropic-compatible API, supervised pair |
+| CPU | Ryzen 9 5900HX, 8C/16T | host staging, quality yardstick |
+| RAM | 62 GiB | expert arena (~41 GiB anon after relief) |
+| GPU 0+1 | 2× Radeon VII (gfx906, 16 GiB) | **the HIP engine**: all execution, layer-split, DFlash2 drafter |
+| GPU 2 | RTX 3080 Laptop, 8 GiB (sm_86) | **the CUDA helper**: expert + prefill rows, ~6.5 GiB cache |
+| Storage | 1 TB NVMe + 2 TB SATA | model packs, relief reads |
+| OS | Ubuntu 25.04, XanMod `7.2.9-x64v3` | userland the custom rocBLAS is built against |
+| rocBLAS | custom **4.1.0** for `gfx906:xnack-` (`~/rocm-gfx906-xnack`) | GEMM for both VIIs; stock 6.1/6.4 segfaults on gfx906 |
+| Model | Swift-1.5 packs (IQ3_XXS / IQ3_S) | ~47 GiB expert set |
 
-The point of the rig: a laptop-class CPU, two 2019-vintage Radeon VIIs and an 8 GiB laptop GPU together serve a ~47 GiB MoE model at coding-agent speed.
-
-**ROCm first, CUDA second.** The AMD cards run everything; the NVIDIA card only serves expert rows and prefill rows on request. The engine process maps no CUDA runtime at all. Helper loss is **self-healing**: in-flight requests finish on the engine alone (it recomputes the claimed rows), and the pair supervisor restarts the whole engine+helper pair on any peer death — the SIGKILL-the-helper kill test passes (generation bump, health back to 200; re-verified on the merged tree: generation 1→2, refill, reconnect, post-kill smoke OK).
+**ROCm first, CUDA second.** The engine maps no CUDA runtime; the helper card only serves rows on request. The pack's own Jinja chat template is rendered exactly like HF `apply_chat_template`.
 
 ## How the fork works
 
-Six pieces, each opt-in; the default path stays byte-identical to stock. The first three make the rig possible at all, the last three make it fast.
+Six opt-in pieces; the default path stays byte-identical to stock.
 
-### 1. gfx906 backend (Radeon VII)
+**1. gfx906 backend** — full HIP wave64 port, kept compiling v0.1.45 → v0.2.11; compat shims (cublas→hipBLAS, `__ldg`, int4 align fix); tuned env knobs (`STRATA_GFX906_TOPK_*`, `STRATA_HIP_PROMPT_F16`); Blackwell-only paths gated off.
 
-Stock treats gfx906 as a compile-checked community port; this line runs it daily and carries the v0.2.10 compile fixes (`stock-v0210-gfx906-buildfix`).
+**2. CUDA expert helper** — separate process owning the NVIDIA card: fills ~3.6–4.6k slots (~6.5 GiB; caps from bench sweeps, +13.6 % decode vs old cap); two tiers (decode/verify + prompt via `STRATA_PREFILL_HELPER=1`); RAM relief drops helper-held pairs from the host arena. Decode tier alone ~neutral on this pack (96–97 % cache hit) — its value is the prompt tier, expert capacity, and relief.
 
-- Full HIP wave64 port of the engine, kept compiling through every upstream merge since v0.1.45 → v0.2.10.
-- Compat shims: `cudaStreamCreateWithPriority`, cublas→hipBLAS, `__ldg` / fp16 bit-casts, `STRATA_SHARED_ALIGN16_I4` int4 fix.
-- Tuned knobs in prod configs: `STRATA_GFX906_TOPK_FIT17`, `STRATA_GFX906_TOPK_REG`, `STRATA_HIP_PROMPT_F16`.
-- Blackwell-only `mmq_w4a4` and known-broken paths cleanly gated off.
+**3. Host RAM relief** — `--expert-helper-ram-relief`: 4116/4116 pairs dropped, **6.24 GiB back**; deferred `cudaHostRegister`; W1a/W1b residency fixes (relief TG 16.0 → 37.65, disk reads 40 GB → 2.31 GB per drive); opt-in `STRATA_ARENA_COLLAPSE`.
 
-### 2. The CUDA expert helper
+**4. DFlash2 speculative decoding** — HIP-side drafter (stock is CUDA-only), q4_0 draft measured optimal, `--spec 5` optimum; beyond stock: exact-match verification for sampled requests, bounded SWA draft ring with deep rewinds, draft-image parking, batched KV append, confidence gating. Attribution arm E: with the drafter off, decode = stock speed — the whole win is DFlash2, byte-identical output.
 
-A second process hands the AMD engine the NVIDIA card's VRAM and compute over a local socket pair — the helper is NVIDIA-only and owns all of that card's expert memory.
+**5. Short-prompt latency** — `STRATA_PREFILL_CPU_SHARE=auto` (214 tok 2.4×, 620 tok 1.8×, ≥18k unchanged); `STRATA_PROMPT_STAGE_MEMO` (+14–20 % short legs); `--prefill 16384` peak for long-context serving.
 
-- Fills ~3.6–4.6k cache slots (pack-dependent, ~6.5 GiB) and keeps them filled; caps come from bench sweeps (**+13.6 %** decode median vs the old 4000-slot cap).
-- Two serving tiers: a **decode/verify tier** (expert rows for ≤ 8-token windows) and a **prompt tier** (`STRATA_PREFILL_HELPER=1`) that computes prefill rows for helper-held experts.
-- Relief interplay: helper-held pairs are dropped from the host arena (`--expert-helper-ram-relief`); pack-file reads exist only as the emergency fallback.
-- Resilience, two layers: **in-flight** — the engine recomputes claimed rows and finishes the request (measured kill test); **pair self-heal** — the supervisor restarts the whole pair on ANY peer death (verified prod cutover, default on). `--persist` re-listens for the next engine; v4 fill supports multi-shard packs.
-- Honest attribution: the decode tier alone is ~neutral on this pack (96–97 % local cache hit, arms D/E) — the helper's measured value is the prompt tier, expert capacity, and RAM relief.
+**6. Bench + quality discipline** — `bench/ab-v0210/` arm harness (`run-arm.sh`, `drive.py`, fail-fast gates); `tools/quant_quality.py` yardstick; standing rule: speed lane AND quality lane before any promotion.
 
-### 3. Host RAM relief
+## Measured vs stock
 
-The experts the helper holds in VRAM don't also need to live in host RAM — relief drops them from the anon arena and gives the memory back.
+Serving build = the v0.2.11 upmerge (arm-B lane: helper + `--spec 5`), stock = clean v0.2.10 binary, same night, exclusive box, 2 rounds pooled:
 
-- `--expert-helper-ram-relief`: 4116/4116 pairs dropped, 6.24 GiB back.
-- Deferred-complement `cudaHostRegister`: arena built unregistered, only kept ranges registered, outward span rounding.
-- W1a/W1b fixes: lock-free residency pre-checks + dropped-only prefetch forwarding — relief TG 16.0 → 37.65 tok/s (control 38.05), disk reads 40 GB → 2.31 GB per drive.
-- `STRATA_ARENA_COLLAPSE`: opt-in post-fill `MADV_COLLAPSE` sweep (25.05 GiB of the arena collapsed in H1-r5), with a scoped fix for inherited `PR_SET_THP_DISABLE`.
-
-### 4. DFlash2 speculative decoding
-
-Every decoded token we don't pay for comes from the drafter — attribution arm E (drafter off) decodes at stock speed (23.9 vs 23.6 tok/s), so the entire decode gain is DFlash2, at byte-identical output.
-
-- Runs HIP engine-side on the Radeon VIIs (stock DFlash2 is CUDA-only) — drafting never touches the helper card.
-- Official Flash-Next draft format (inco draft, q4_0 GGUF); Q8/Q5/Q4 draft weights supported — q4_0 measured optimal, q8_0 flat: the ~60–65 % acceptance ceiling is the draft model, not its quantization.
-- Tuned optimum, sweep fully closed: `--spec 5` / block 5 / q4_0 (spec 7 −3 % TG, block 3 flat, acceptance never bought back by sampling arms).
-- Beyond stock drafter behavior: **target exact-match verification** for sampled requests (`STRATA_DFLASH_SAMPLED`); a **bounded SWA draft ring** with recoverable deep rewinds plus `STRATA_DF_RING_MULT` so segment resumes stop re-reading the context; draft image survives conversation parking; per-section timing (`STRATA_DF_EVENTS=1`); batched KV append, attention reuse across value lanes, batched BF16 projections, confidence gating.
-- DFlash standalone (the prerequisite layer): GGUF drafter artifacts via `tools/dflash_gguf.py`, target taps [3,15,23,35,43], private draft K/V; MTP stays available, mutually exclusive.
-
-### 5. Short-prompt latency
-
-Coding agents send small prompts constantly — three promoted knobs make those cheap, and ≥18k prompts don't regress.
-
-- `STRATA_PREFILL_CPU_SHARE=auto`: 214 tok **2.4×**, 620 tok **1.8×**, 4k **1.4×**, TG128 −5.1 s, ≥18k unchanged, zero regressions.
-- `STRATA_PROMPT_STAGE_MEMO`: a dropped prompt expert is read once per request — medians **14–20 %** faster across short-prompt legs.
-- `--prefill 16384`: measured peak for long-context serving (24k −10 %, 32k −37 %).
-
-### 6. Bench + quality discipline
-
-Nothing ships on a hunch — every knob above was an arm in a controlled window before it was promoted.
-
-- `bench/ab-v0210/`: A/B/C arm harness (`run-arm.sh`), traffic driver (`drive.py`), verdict docs, RAM/IO samplers, fail-fast guards, port / VRAM / MemFree boot gates.
-- Quality yardstick (`tools/quant_quality.py`): 4995 teacher-forced positions, full-vocab KL / top-1 / PPL vs the stock binary.
-- Parity gates: greedy 80k-infill SHA byte-identical across fork, fork-flags-off, and stock in every kept round (18/18 in the tap-overlap window alone).
-- Standing rule: a new engine version passes BOTH the speed lane and the quality lane before promotion.
-
-## Measured: fork vs stock v0.2.10
-
-Same day, same box, same pack. Attribution (arms D/E): the decode win is entirely DFlash drafting; the helper expert tier alone is ~neutral on this pack — its value is the prompt tier, expert capacity, and RAM relief.
-
-| Metric | Fork (prod config) | Stock | Delta |
+| Metric | Fork (v0.2.11) | Stock | Delta |
 | --- | ---: | ---: | ---: |
-| TG cached decode, median tok/s | 37.7–38.5 | 27.6 | **+36–39 %** |
-| 80k-token infill read, tok/s | 553 | 550 | parity (relief on) / **+7.6 %** relief-off |
-| Fresh ~18k prefill, tok/s | 272–278 | 337 | **−18 %** (dflash tap-collection cost) |
-| Short prompt 214 tok, s | 2.6–2.9 | own flags-off baseline 6.5 | **2.4×** |
-| Short prompt 620 tok, s | 6.2 | own flags-off baseline 11.5 | **1.8×** |
-| Host anon RAM, GiB | 41.2 | 47.4 | **−6.2** |
-| Greedy 80k output | byte-identical | — | ✓ |
+| TG 494-tok, pooled median tok/s | 34.7 | 23.3 | **+49 %** |
+| TG 512/513-tok, tok/s | 29.3–31.9 | 23.6–23.9 | +26 % |
+| 1024-token completion wall | 30.5–36.4 s | 43.0–47.8 s | **1.3×** |
+| Short prompt 214 tok (prod lane) | 2.6–2.9 s | 6.5 s baseline | **2.4×** |
+| Short prompt 620 tok (prod lane) | 6.2 s | 11.5 s baseline | **1.8×** |
+| Fresh 16k prefill read, tok/s | 299 | 338 | −12 % |
+| 88k infill read, tok/s | 472 | 549 | −14 % |
+| Host anon RAM (prod lane) | 41.2 GiB | 47.4 GiB | **−6.2 GiB** |
+| Greedy 80k output | `1c7d4a6d…` | identical | ✓ |
 
-> **Bottom line vs stock:** ≈ **1.4× decode throughput** · **1.4–2.4× chat-read latency** · **−6.2 GiB host RAM** · **byte-identical output** — one regression (**−18 %** fresh ~18k bulk prefill) — on hardware where stock, as tagged, does not build.
-
-### Post-merge re-validation (2026-11-07, v0.2.11 — now serving)
-
-The v0.2.11 upmerge landed on `main` and passed the full ladder; prod was cut over to the new binaries after the gates:
-
-| Check | Result |
-| --- | --- |
-| Fresh HIP + CUDA builds, SONAME guards | clean (1419 s total, `-j11`) |
-| ctest (291 tests — v0.2.11 adds ~58) | all pass; 1 new upstream test (`gemm_w16_parity`, ~8.2 GiB scratch) skips on the 8 GiB helper card via a free-VRAM guard |
-| TG 494-tok median over 2 rounds | **~35.1** vs stock 23.2 (**+51 %**) — honest note: ~7 % below the v0.2.10 build's 37.9 on this shape; 1024-tok walls at parity (30.5–36.4 s) |
-| Prefill read 16k / 88k, tok/s | 299 / 472 vs stock 338 / 549 |
-| Greedy 80k infill output | `1c7d4a6d…` — identical on the v0.2.11 build, the v0.2.10 build, and stock |
-| Prompt-mode first logits (20 prompts) | **top-1 100.00 % · KL mean/median/max 0.00000** |
-| Prod cutover | old binary archived (`66446e21-aside`); serving sha verified `d01d2ea4…`; health 200 in ~40 s, helper 4341 slots / 6.64 GiB, second channel connected |
-
-The v0.2.10 round (2026-11-06) re-ran the same ladder with matching results (231 pass / 2 skip on 233 tests; TG 36.9–40.1 vs 23.0–23.9; same parity verdicts) — artifacts in `bench/ab-v0210/out/` and `run/qa2-round-*.log`.
-
+Historical multi-round windows (relief/CPU-share/memo arms, prod configs) match or beat these: TG 37.7–38.5 vs 27.6 (+36–39 %). Full per-arm verdicts: `bench/ab-v0210/out/RESULTS*.md`, `JOURNAL.md`.
 
 ## Quality gates
 
-What backs the "faster with zero quality cost" claim: the speed wins above were promoted only after these gates passed.
-
 | Gate | What it checks | Result |
 | --- | --- | --- |
-| 80k greedy SHA | deep-infill (80k ctx, ≥5k out) byte-identical across candidate / flags-off / stock binaries | held **18/18** kept rounds (`1c7d4a6d…`) |
-| Teacher-forced yardstick (`tools/quant_quality.py`) | 4995 positions, full-vocab first logits: top-1, KL (p99), PPL — vs stock binary AND vs flags-off twin | pre-merge arms (iq3s pack): top-1 **100.00 %** · KL **0.00000** · PPL **4.115 = 4.115**; **re-run on v0.2.11** (iq3xxs-15 pack): top-1 **100.00 %** · KL **0.00000** · p99 **0.0000** · PPL **4.052 = 4.052** |
-| Post-merge prompt-mode gate | 20 prompts, first logits, merged fork vs stock binary | top-1 **100.00 %** · KL mean/median/max **0.00000** — v0.2.10 round, re-run on v0.2.11: same verdict |
-| Probe determinism | fixed prompt re-answered every boot; sha must reproduce exactly per config | reproduces exactly, per-config values documented |
-| Speed gates | TG median ≥ 33.1 · 80k frame 583–587 · fresh-18k toward 337 · medians over ≥ 2 kept boots/arm | see measured table above |
+| Greedy 80k SHA | deep-infill byte-identical fork / flags-off / stock | held 18/18 kept rounds; reproduced on the v0.2.10 and v0.2.11 builds |
+| Teacher-forced yardstick | 4995 positions, full-vocab top-1 / KL(p99) / PPL vs stock | **top-1 100.00 % · KL 0.00000 · p99 0.0000 · PPL 4.052 = 4.052** (iq3xxs-15 pack; historical iq3s: 4.115 = 4.115) |
+| Prompt-mode first logits | 20 prompts, fork vs stock | top-1 100 % · KL 0.00000 (both upmerges) |
+| Probe determinism | fixed prompt → exact sha per config | reproduces exactly |
+| ctest | full suite, fresh builds | 291 tests: all pass (guarded skips only) |
 
-The memo knob was gated by the ab6s shallow prompt-mode runs (int8 + fp16 arms; artifacts in `bench/ab-v0210/quality/out/prompt-*`); the full overnight ab6/ab6b run stayed parked.
+Re-run them: `bench/ab-v0210/run-arm.sh` (speed lane), `tools/quant_quality.py run|compare` (yardstick), `ctest` from a built tree.
 
 ## Trade-offs and known defects
 
-The wins are not free, and the defects are on record rather than hidden:
-
-- Fresh ~18k prefill pays **−18 %** for DFlash tap collection (long-context reads gain instead).
-- `#267` gfx906 lost-completion wedge: transient verify-timeout GPU hangs (~1 in 20 long drives, both cards, also on stock 0.1.45); the bench retries the leg once.
-- Small fresh-read stalls (30–140 s on ~200-token cold reads): **host co-tenancy, not an engine defect** — this box is also a human's daily machine, and the transient stalls track the human's own load on it. Interactive-UX only; watchdog raised 300 → 900 s so it cannot kill prod, and the helper's reply deadlines tolerate the same stalls.
-- iq3_s at 256/256 MiB reserves → non-finite logits on long prefill (V8); fixed policy: 640/640 + fill 7000 (V9/V10) keeps both cards above the 512 MiB paging line.
-- Not promoted, default off: tap-overlap F1/F2 (flat), `STRATA_REFILL_OVERLAP` / `STRATA_WINDOW_POPULATE` (net-negative on big prompts), `--short-read` window routing (refill poison).
+- Fresh ~16k prefill reads pay **−12 %** for DFlash tap collection (long-context reads gain instead).
+- `#267` gfx906 lost-completion wedge: transient verify-timeout hangs (~1 in 20 long drives, also on old stock); the bench retries the leg once.
+- Small fresh-read stalls (30–140 s, ~200-token cold reads) — **host co-tenancy**, not the engine; watchdog 900 s, helper reply deadlines tolerant.
+- iq3_s at 256/256 MiB reserves → non-finite logits on long prefill; fixed policy 640/640 + fill 7000.
+- Not promoted, default off: tap-overlap F1/F2, `STRATA_REFILL_OVERLAP`, `STRATA_WINDOW_POPULATE`, `--short-read` routing.
+- New upstream tests sized for big cards may skip here (e.g. `gemm_w16_parity` needs ~8.2 GiB free VRAM → exit 77 below that).
 
 ---
 
-## Build guide — how we built it
+## Build guide
 
-### Prerequisites (exactly what this box uses)
+### Prerequisites
 
-- **ROCm 6.1.0, pinned** at `/opt/rocm-6.1.0` — HIP compiler (`/opt/rocm-6.1.0/llvm/bin/clang++`), `libhipblas.so.2`, `libamdhip64.so.6`. Newer ROCm trees on the box (`6.4.4`, `7.2.4`) must **not** leak into the link: the engine then links `.so.3`/`.so.7` SONAMEs it cannot load (exit 127).
-- **Custom libs** at `~/rocm-gfx906-xnack` — a self-built rocBLAS **4.1.0** (the exact stock 6.1.0 version/soname, clean drop-in) for the single target `gfx906:xnack-` (the "xnack" in the dir name is lineage; XNACK stays off on this box — nothing enables it). Needed because **stock rocBLAS 6.1.0/6.4.4 segfaults on gfx906** for GEMM shapes without a tuned kernel — see the rebuild section below. It sits FIRST on `CMAKE_PREFIX_PATH` and on the runtime `LD_LIBRARY_PATH`, overriding the system rocblas.
-- **CUDA toolkit** for the helper only: `/usr/local/cuda/bin/nvcc`, arch 86.
-- Ninja + CMake (Release). The pinned ggml source (`3cf03257f`) is fetched automatically at configure.
+- **ROCm 6.1.0 pinned** at `/opt/rocm-6.1.0` (`libhipblas.so.2`, `libamdhip64.so.6`); newer trees on the box must not leak into the link (unloadable SONAMEs, exit 127).
+- **Custom rocBLAS 4.1.0** at `~/rocm-gfx906-xnack` — single-target `gfx906:xnack-`, merged Tensile library (stock 6.1.0/6.4.4 segfaults on gfx906: fallback `.dat` metadata missing — analysis + repro: `docs/work/rocblas-gfx906-bug-report.md`). Sits FIRST on `CMAKE_PREFIX_PATH` and runtime `LD_LIBRARY_PATH`.
+- **CUDA toolkit** for the helper only (`nvcc`, arch 86). Ninja + CMake (Release).
 
 ### Rebuilding the custom rocBLAS
 
-Why it exists at all: stock rocBLAS in ROCm 6.1.0 (and 6.4.4 — identical file) **segfaults on gfx906** for any GEMM shape lacking a tuned kernel. The fallback kernels ship as `.hsaco` only; their Tensile `.dat` metadata is missing from the release (a packaging regression — ROCm 7.15 ships those files, but under a different soname and measured ~25 % slower on the llama.cpp workload that first hit this: ~370 → 277 tps). The result is a NULL pointer from `Tensile::PlaceholderLibrary::loadPlaceholderLibrary()` on first inference. Full crash analysis, minimal `rocblas-bench` repro and a llama.cpp-side workaround patch: `docs/work/rocblas-gfx906-bug-report.md`.
-
-The custom build sidesteps the whole problem class: built for **exactly one target** (`gfx906:xnack-`, proven by the shipped kernel filenames), it produces a merged Tensile library (`TensileLibrary_gfx906.co` + `.dat`) with the fallback metadata embedded — no external per-kernel `.dat` files left to go missing.
-
-Repro status, honestly: the source tree and the literal `cmake` invocation are gone; only the installed prefix survived. The recipe shape below is **not a re-verified run**:
+The recipe below is the shape, **not a re-verified run** (the original invocation is lost; only the installed prefix survived):
 
 ```sh
 git clone -b rocm-6.1.0 https://github.com/ROCm/rocBLAS.git
@@ -192,60 +120,59 @@ cmake --build rocBLAS/build --parallel 11
 cmake --install rocBLAS/build
 ```
 
-Expect a heavy build: Tensile codegen, hours at high parallelism, tens of GB of disk. Two local experiments from the same era are kept on disk but are **not** the shipping lib: a 4.1.2 prefix and a "mixed library" graft of 7.15 metadata into 6.1 (fails — the lazy-index format changed between the releases). When we next rebuild, this section gets the real invocation, wall time and verification results, per the usual measurement discipline.
+Heavy: Tensile codegen, hours, tens of GB. When next rebuilt, this section gets the real invocation and verification numbers.
 
-### Engine — HIP, gfx906 (Radeon VII)
+### Engine (HIP) and helper (CUDA)
 
 ```sh
-export PATH=/opt/rocm-6.1.0/bin:$PATH          # and keep nvcc OUT of this configure
-cmake -S . -B build-v0210/rpcw-hip -G Ninja -DCMAKE_BUILD_TYPE=Release \
-  -DSTRATA_HIP_GFX906=ON \
-  -DCMAKE_HIP_ARCHITECTURES=gfx906 \
+# HIP engine — keep nvcc OUT of this configure
+export PATH=/opt/rocm-6.1.0/bin:$(echo $PATH | tr ':' '\n' | grep -v cuda | paste -sd:)
+cmake -S . -B build/rpcw-hip -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DSTRATA_HIP_GFX906=ON -DCMAKE_HIP_ARCHITECTURES=gfx906 \
   -DCMAKE_HIP_COMPILER=/opt/rocm-6.1.0/llvm/bin/clang++ \
-  -Dhip_DIR=/opt/rocm-6.1.0/lib/cmake/hip \
-  -Dhipblas_DIR=/opt/rocm-6.1.0/lib/cmake/hipblas \
+  -Dhip_DIR=/opt/rocm-6.1.0/lib/cmake/hip -Dhipblas_DIR=/opt/rocm-6.1.0/lib/cmake/hipblas \
   -DROCM_PATH=/opt/rocm-6.1.0 -DHIP_PATH=/opt/rocm-6.1.0 -DHIP_ROOT_DIR=/opt/rocm-6.1.0 \
   "-DCMAKE_PREFIX_PATH=$HOME/rocm-gfx906-xnack;/opt/rocm-6.1.0" \
   -DSTRATA_ENABLE_DFLASH2=ON -DSTRATA_HAVE_DFLASH2=OFF -DSTRATA_BUILD_TESTS=ON
-ninja -j11 -C build-v0210/rpcw-hip strata       # -j11 = standing order (git config strata.buildJobs)
-```
+ninja -j11 -C build/rpcw-hip strata
 
-### Helper — CUDA (RTX 3080 Laptop)
-
-```sh
-cmake -S . -B build-v0210/rpcw-cuda -G Ninja -DCMAKE_BUILD_TYPE=Release \
+# CUDA helper + full test tree
+cmake -S . -B build/rpcw-cuda -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DSTRATA_ENABLE_CUDA=ON -DSTRATA_BUILD_EXPERT_HELPER=ON \
   -DCMAKE_CUDA_ARCHITECTURES=86 -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
   -DSTRATA_ENABLE_DFLASH2=ON -DSTRATA_HAVE_DFLASH2=OFF -DSTRATA_BUILD_TESTS=ON
-ninja -j11 -C build-v0210/rpcw-cuda strata strata-expert-helper
-ctest -R helper --output-on-failure               # from build-v0210/rpcw-cuda
+ninja -j11 -C build/rpcw-cuda
+env -u CUDA_VISIBLE_DEVICES ctest --test-dir build/rpcw-cuda
 ```
 
-### Runtime (what the launchers set)
+Runtime env the launchers set:
 
 ```sh
 LD_LIBRARY_PATH=$HOME/rocm-gfx906-xnack/lib:/opt/rocm-6.1.0/lib
 HSA_OVERRIDE_GFX_VERSION=9.0.6  HIP_FORCE_P2P=1  HSA_ENABLE_SDMA=1
 ```
 
-### Lessons baked into the process
+### Lessons baked in
 
-- Pin everything; a bare configure finds the newest ROCm and links unloadable SONAMEs. Derived trees are always configured fresh (a reused cache keeps stale `find_library` results).
-- Hide `nvcc` from the HIP configure — a new `/usr/local/cuda-*` under PATH silently wins and produces a mixed-header build (231 errors).
-- Never pipe `ninja` into `head` (SIGPIPE kills it, exit 141) and never compile during a bench round (starves the engine's watchdog).
-- Memory-gentle fallback when the box is busy: `nice ninja -j2`, dropping to `-j1` below 3 GiB MemAvailable.
-- Verify with `ldd`: no `libhipblas.so.3`, no `libamdhip64.so.7`.
+- Configure derived trees fresh (stale caches keep dead `find_library` results); pin everything.
+- Hide `nvcc` from the HIP configure (mixed-header build, 231 errors).
+- Never pipe `ninja` into `head` (SIGPIPE, exit 141); never compile while serving or benching.
+- Memory-gentle fallback: `nice ninja -j2`, `-j1` below 3 GiB available.
+- Verify `ldd`: no `libhipblas.so.3`, no `libamdhip64.so.7`.
+- Run GPU tests with `env -u CUDA_VISIBLE_DEVICES` if your shell hides the NVIDIA card.
 
 ## Repo map
 
 | Path | What |
 | --- | --- |
-| `JOURNAL.md` | session-by-session record, verdicts, post-mortems — read this first |
-| `bench/ab-v0210/` | arm configs, drivers, `out/RESULTS*.md` verdict docs, quality artifacts |
+| `JOURNAL.md` | session record, verdicts, post-mortems — read first |
+| `bench/ab-v0210/` | arm configs, drivers, `out/RESULTS*.md`, quality artifacts |
 | `docs/MIXED_GPU_HELPER.md`, `docs/DFLASH*.md` | fork feature docs |
-| `docs/work/` | lever calibrations, identity investigations, design docs |
-| `tools/mixed_gpu/` | pair supervisor, window harness, acceptance and maintenance tooling |
-| `strata_control/`, `tools/` | prod control plane, quality yardstick, setup tests |
-| Branches | `main` (canonical, published — **carries the latest working version**; nothing lands before both backends build and the gates pass), `main-pre-publish` (845-commit upstream-main snapshot), `build-latest`, `build-mixed-v0210` (prod line history), `stock-v0210-gfx906-buildfix` (stock build fixes), `tap-overlap-f1f2` (parked), `pair-self-heal` (kill-test validation, synced to `main`), `v0210-dev-line` (pre-merge dev archive) |
+| `docs/work/` | lever calibrations, rocBLAS bug report, design docs |
+| `tools/mixed_gpu/` | pair supervisor, window harness, helper tooling |
+| `tools/quant_quality.py` | quality yardstick (teacher-forced, prompt-mode) |
+| `serve/server.py` | OpenAI/Anthropic-compatible API over the supervised pair |
 
-Upstream hygiene: upmerges from `upstream/main` (Niko1221/Strata; `origin` is this fork) — v0.1.45 → v0.2.11 kept, upstream machinery winning where it supersedes, fork specifics re-integrated and depth-verified after every merge; fork features are opt-in and the default path stays byte-identical to stock (F1off arm: all shas reproduce, fresh-PP equal); both backends build before any promotion. Both the v0.2.10 and v0.2.11 merges are fully landed and validated on `main`: fresh builds, full ctest, same-night speed pairs vs stock, prompt-logit parity gates, and (v0.2.10) the live self-heal test — and prod serves the v0.2.11 build.
+Branches: `main` (canonical, published, always builds + gated), `stock-v0210-gfx906-buildfix`, `build-mixed-v0210` (prod line), `pair-self-heal` (kill-test validation), `v0210-dev-line` (pre-merge archive), `main-pre-publish`, `build-latest`, `tap-overlap-f1f2` (parked).
+
+Upstream hygiene: releases v0.1.45 → v0.2.11 kept; upstream machinery wins where it supersedes, fork specifics re-integrated and depth-verified each merge; fork features stay opt-in with the default path byte-identical to stock; both backends build before any promotion.
