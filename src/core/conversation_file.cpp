@@ -570,6 +570,7 @@ public:
         const size_t padded = f_.direct() ? (used_ + kAlign - 1) / kAlign * kAlign : used_;
         std::memset(buf_.get() + used_, 0, padded - used_);
         bool ok = f_.write_all(buf_.get(), padded);
+        if (ok) report_mode();
         if (ok && used_ && progress) (*progress)(total_, expected);   // the last, partial block
         ok = ok && (padded == used_ || f_.truncate(total_));
         if (ok && durable && phase) phase("flush", total_);
@@ -580,20 +581,32 @@ public:
     }
     std::optional<Ticker> progress;
     SessionPhase phase;
+    std::function<void(bool)> mode;   // SessionWriteOptions::mode, reported at the first block that reaches the OS
     uint64_t expected = 0;
     int write_fault = 0, flush_fault = 0;   // tests: errno values injected at the first block write / the file flush
+    bool direct() const { return f_.direct(); }
 private:
     void fail_with(int e) { fault_ = true; fault_kind_ = errno_kind(e); fault_msg_ = std::strerror(e); }
+    // the mode is reported once, and again only if it changes: leave_direct() can flip the transfer mid-write
+    void report_mode() {
+        if (!mode) return;
+        const bool direct = f_.direct();
+        if (mode_ && *mode_ == direct) return;
+        mode_ = direct;
+        mode(direct);
+    }
     bool drain() {
         if (write_fault) { fail_with(write_fault); return false; }
         if (!f_.write_all(buf_.get(), used_)) return false;
         used_ = 0;
+        report_mode();
         if (progress) (*progress)(total_, expected);
         return true;
     }
     Aligned buf_;
     RawFile& f_;
     bool fault_ = false;
+    std::optional<bool> mode_;
     SessionError fault_kind_ = SessionError::io;
     std::string fault_msg_;
     size_t used_ = 0;
@@ -1079,6 +1092,7 @@ bool write_impl(const std::string& path, const SavedConversation& image, const s
     if (!f.ok()) { st.error = SessionError::memory; error = "session file: " + f.error(); return false; }
     if (opt.progress) f.progress.emplace(opt.progress);
     f.phase = opt.phase;
+    f.mode = opt.mode;
     f.expected = total;
     if (f.progress) (*f.progress)(0, total);   // the temporary file exists: the transfer starts
     const std::function<int(const char*)>* fault = opt.fault ? &opt.fault : nullptr;
@@ -1633,6 +1647,7 @@ public:
     bool ok() const { return buf_ != nullptr; }
     std::string error() const { return buf_ ? f_.error() : std::string("out of memory for the transfer buffer"); }
     SessionError kind() const { return buf_ ? f_.kind() : SessionError::memory; }
+    bool direct() const { return f_.direct(); }
     bool bytes(uint64_t at, uint8_t* dst, size_t n) { return !n || f_.pread_bytes(at, dst, n); }
     // [at, at+n) in blocks of at most 16 MiB, handed to fn block by block
     bool stream(uint64_t at, uint64_t n, const std::function<bool(const uint8_t*, size_t)>& fn) {
@@ -1734,6 +1749,7 @@ bool write_v2_impl(const std::string& path, const SessionFileIdentity& id, const
     if (!f.ok()) { st.error = SessionError::memory; error = "session file v2: " + f.error(); return false; }
     if (opt.progress) f.progress.emplace(opt.progress);
     f.phase = opt.phase;
+    f.mode = opt.mode;
     f.expected = total;
     if (f.progress) (*f.progress)(0, total);
     const std::function<int(const char*)>* fault = opt.fault ? &opt.fault : nullptr;
@@ -1830,6 +1846,7 @@ bool read_v2_impl(const std::string& path, const SessionFileIdentity& id, const 
     if (limits.progress) progress.emplace(limits.progress);
     uint8_t h[kHeader];
     if (!raw.pread_bytes(0, h, kHeader)) { st.error = raw.kind(); error = "session file v2: header read error: " + raw.error(); return false; }
+    if (limits.mode) limits.mode(raw.direct());   // the mode of the opened file at its first transfer
     uint32_t version = 0, hsize = 0;
     uint64_t model = 0, config = 0, payload = 0, manifest_bytes = 0, r1 = 0, hh = 0;
     std::memcpy(&version, h + 8, 4); std::memcpy(&hsize, h + 12, 4);

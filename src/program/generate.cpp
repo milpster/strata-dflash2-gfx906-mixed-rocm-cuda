@@ -30,6 +30,7 @@
 #include "strata/core/expert_cache.hpp"
 #include "strata/core/expert_nibble.hpp"
 #include "strata/core/conversation_snapshot.hpp"
+#include "strata/core/conversation_stream_state.hpp"
 #include "strata/core/dflash_ring.hpp"
 #include "strata/kernels/bf16_bits.hpp"   // M7 (the drafter lane): the remote draft feed widens the bf16 tap plane host-side
 #include "strata/core/lookup_default.hpp"
@@ -991,6 +992,22 @@ struct Options {
     /// (drop_superseded) after writing the same bytes once more, so on a long single conversation every turn pays a
     /// whole-snapshot copy for nothing.  0 = park every turn, as before.
     int64_t conversation_cache_park_gain = 0;
+    /// --conversation-cache-dir PATH (--serve, opt-in): the automatic DISK tier.  Parked conversations are streamed
+    /// to generations in this private directory through format v2 (no host snapshot), and a matching request is
+    /// restored straight into the live pools.  It works with --conversation-cache-mib 0: the RAM budget and the disk
+    /// tier are independent.  Requires a positive --conversation-cache-disk-mib.
+    std::string conversation_cache_dir;
+    /// --conversation-cache-disk-mib N: the disk budget for the automatic tier, in MiB.  Required positive when a
+    /// directory is given; the engine never allocates disk space without it.  (The quota bookkeeping, index and
+    /// eviction are the follow-up lane; this is the ceiling the tier is enabled under.)
+    int64_t conversation_cache_disk_mib = 0;
+    /// --conversation-cache-disk-ram-mib N: what the disk tier may allocate for itself out of host RAM - the
+    /// manifest/region directory and one transfer buffer.  It does not scale with the conversation.  Default 64.
+    int64_t conversation_cache_disk_ram_mib = 64;
+    /// --conversation-cache-disk-io direct|buffered: the transfer mode of the disk tier.  `direct` (the default) is
+    /// strict: a filesystem that refuses direct I/O disables the disk tier with the reason, silently falling back to
+    /// the kernel's page cache would defeat the low-RAM goal.  `buffered` asks for the buffered path explicitly.
+    std::string conversation_cache_disk_io = "direct";
     /// --memory-limit-mib N / STRATA_MEMORY_LIMIT_MIB: the total RAM this engine's container or cgroup may use, for a
     /// container that cannot see its real limit (0 or unset = none; the flag wins over the variable)
     int64_t memory_limit_mib = -1;
@@ -1173,6 +1190,18 @@ void usage() {
                  "  --conversation-cache-park-gain N  --serve: park only after the conversation advanced N tokens past\n"
                  "                       the copy it would supersede, so a turn that grew by a few hundred tokens does not\n"
                  "                       write a whole snapshot that the next turn drops (default 0 = park every turn)\n"
+                 "  --conversation-cache-dir PATH  --serve (opt-in): the automatic DISK tier.  A parked conversation is\n"
+                 "                       streamed to a generation in this private folder and a matching request is\n"
+                 "                       restored straight into the live pools - no host snapshot of the K/V.  Works with\n"
+                 "                       --conversation-cache-mib 0 (the RAM budget and the disk tier are independent)\n"
+                 "  --conversation-cache-disk-mib N  --serve: the disk budget of --conversation-cache-dir (MiB).\n"
+                 "                       Required positive with a directory: the tier never writes unbounded\n"
+                 "  --conversation-cache-disk-ram-mib N  --serve: what the disk tier may take of host RAM for its\n"
+                 "                       manifest, region directory and transfer buffer (default 64; it does not scale\n"
+                 "                       with the conversation)\n"
+                 "  --conversation-cache-disk-io direct|buffered  --serve: the disk tier's transfer mode (default\n"
+                 "                       direct).  A filesystem that refuses direct I/O disables the disk tier, said;\n"
+                 "                       buffered is an explicit choice with no page-cache memory guarantee\n"
                  "  --session-min-free-mib N  --serve: disk space a SAVE must leave free (default 4096; 0 = no check)\n"
                  "  --session-save-reclaim  --serve: reclaim unpinned host caches if SAVE needs RAM (opt-in)\n"
                  "  --vram-elastic       --serve (#533, opt-in, NVIDIA): the expert cache in segments (--vram-segment-mib,\n"
@@ -3810,7 +3839,8 @@ int main(int argc, char** argv) {
         else if (a == "--prompt-cache") o.prompt_cache = std::max(0, std::atoi(next("--prompt-cache")));
         else if (a == "--conversation-cache-mib" || a == "--conversation-cache-slots" ||
                  a == "--conversation-cache-min-free-mib" || a == "--conversation-cache-min-tokens" ||
-                 a == "--conversation-cache-park-gain" ||
+                 a == "--conversation-cache-park-gain" || a == "--conversation-cache-disk-mib" ||
+                 a == "--conversation-cache-disk-ram-mib" ||
                  a == "--session-min-free-mib" || a == "--memory-limit-mib") {
             const std::string value = next(a.c_str());
             int64_t number = 0;
@@ -3826,9 +3856,19 @@ int main(int argc, char** argv) {
             else if (a == "--conversation-cache-min-free-mib") o.conversation_cache_min_free_mib = number;
             else if (a == "--conversation-cache-min-tokens") o.conversation_cache_min_tokens = number;
             else if (a == "--conversation-cache-park-gain") o.conversation_cache_park_gain = number;
+            else if (a == "--conversation-cache-disk-mib") o.conversation_cache_disk_mib = number;
+            else if (a == "--conversation-cache-disk-ram-mib") o.conversation_cache_disk_ram_mib = number;
             else if (a == "--session-min-free-mib") o.session_min_free_mib = number;
             else if (a == "--memory-limit-mib") o.memory_limit_mib = number;
             else o.conversation_cache_slots = (int) number;
+        }
+        else if (a == "--conversation-cache-dir") o.conversation_cache_dir = next("--conversation-cache-dir");
+        else if (a == "--conversation-cache-disk-io") {
+            o.conversation_cache_disk_io = next("--conversation-cache-disk-io");
+            if (o.conversation_cache_disk_io != "direct" && o.conversation_cache_disk_io != "buffered") {
+                std::fprintf(stderr, "--conversation-cache-disk-io takes direct or buffered\n");
+                return 2;
+            }
         }
         else if (a == "--prompt-cache-tail") o.prompt_cache_tail = true;
         else if (a == "--prompt-cache-spread") o.prompt_cache_spread = true;
@@ -12797,6 +12837,852 @@ int main(int argc, char** argv) {
             bool with_reuse;                              ///< the retained K/V describes this source (the main session's)
             std::string what;                             ///< the log's words after the token count ("", " from slot 1")
         };
+        // ============ the automatic DISK tier (--conversation-cache-dir, opt-in) ============
+        // A parked conversation is STREAMED to a generation in a private folder (format v2: the K/V straight from
+        // its pools, no host snapshot of it) and a request that starts with a generation's tokens is streamed back
+        // straight into the live pools.  The RAM budget and the disk tier are independent: --conversation-cache-mib 0
+        // keeps the disk tier on.  Quota bookkeeping, the LRU, the index and the metrics are the follow-up lane; the
+        // tier bounds itself here by the sum of the generations it wrote, and a generation the conversation outgrew
+        // goes with its file (the same #342 rule the RAM cache applies to its copies).  A filesystem that refuses the
+        // requested transfer mode turns the tier off, said: falling back to the kernel's page cache in silence would
+        // defeat the low-RAM goal the tier exists for.
+        struct DiskTier {
+            struct Gen {
+                std::string path;
+                std::vector<int32_t> ids;      // the tokens it holds, for the prefix match (lane 3's index subsumes this)
+                std::vector<ImgKey> imgs;
+                bool cvec = true;
+                uint64_t bytes = 0;
+            };
+            bool on = false;
+            std::string dir;
+            uint64_t budget = 0, ram = 0;
+            bool direct_io = true;
+            std::vector<Gen> gens;
+            int64_t serial = 0;
+        };
+        DiskTier disk;
+        if (!o.conversation_cache_dir.empty()) {
+            if (o.conversation_cache_disk_mib <= 0)
+                std::fprintf(stderr, "strata serve: conversation cache: --conversation-cache-dir needs a positive "
+                                     "--conversation-cache-disk-mib; the disk tier stays off\n");
+            else {
+                std::error_code fec;
+                std::filesystem::create_directories(o.conversation_cache_dir, fec);
+                if (fec)
+                    std::fprintf(stderr, "strata serve: conversation cache: the disk tier stays off (cannot create "
+                                          "%s: %s)\n", o.conversation_cache_dir.c_str(), fec.message().c_str());
+                else {
+#ifndef _WIN32
+                    ::chmod(o.conversation_cache_dir.c_str(), 0700);   // the generations are the engine's own
+#endif
+                    disk.on = true;
+                    disk.dir = o.conversation_cache_dir;
+                    disk.budget = (uint64_t) o.conversation_cache_disk_mib << 20;
+                    disk.ram = (uint64_t) std::max<int64_t>(o.conversation_cache_disk_ram_mib, 16) << 20;
+                    disk.direct_io = o.conversation_cache_disk_io == "direct";
+                    std::fprintf(stderr, "strata serve: conversation cache: the disk tier is on (%s, %lld MiB disk "
+                                         "budget, %lld MiB host budget, %s i/o)\n", disk.dir.c_str(),
+                                 (long long) (disk.budget >> 20), (long long) (disk.ram >> 20),
+                                 disk.direct_io ? "direct" : "buffered");
+                }
+            }
+        }
+        // The layout a v2 file of THIS engine declares: the geometry key, the stage carve, and the KV format the
+        // stage's cells are written in.  The reader requires it byte-equal (check_layout), so a file from another
+        // model, split or KV format is a refusal before a byte is streamed.
+        strata::core::SessionLayoutIdentity disk_layout;
+        std::optional<strata::core::SessionFileIdentity> disk_id;   // computed on the tier's first use
+        auto disk_session = [&](int64_t s) -> strata::core::SessionState& {
+            return s == 0 ? ss : stages[(size_t) s - 1]->ss;
+        };
+        auto disk_dev = [&](int64_t s) { return s == 0 ? 0 : stages[(size_t) s - 1]->dev; };
+        const int64_t disk_stages = (int64_t) stages.size() + 1;
+        const int64_t disk_mtp_stage = (stages.empty() || mtp_first) ? 0 : (int64_t) stages.size();
+        // The K/V pools a stage's session owns, by LAYER ordinal within the stage: the QSA layers carry their
+        // bytes, the layers between them are named with zero-size regions (format v2 names every layer of the range).
+        auto disk_qsa_of = [&](strata::core::SessionState& ses, int64_t layer) -> strata::core::QsaState* {
+            const int64_t I = std::max<int64_t>(g.qsa_interval, 1);
+            if (layer % I) return nullptr;
+            const int64_t ord = layer / I;
+            if (ord < ses.qsa_ord0 || ord >= ses.qsa_ord0 + ses.qsa_alloc) return nullptr;
+            return &ses.qsa_states[ord];
+        };
+        {
+            std::string lwhy;
+            disk_layout.geometry = strata::core::conversation_geometry_key(g);
+            bool ok = true;
+            for (int64_t s = 0; ok && s < disk_stages; ++s) {
+                strata::core::SessionState& ses = disk_session(s);
+                const strata::core::OnDevice on(disk_dev(s));
+                const strata::core::QsaState* probe = &ses.qsa_states[ses.qsa_ord0];   // the format is the stage's
+                strata::core::SessionKvSource kv;
+                if (!strata::core::conversation_kv_source(kv, *probe, g, 1, true, lwhy)) { ok = false; break; }
+                disk_layout.stages.push_back({ses.layer_lo, ses.layer_hi, kv.format});
+            }
+            if (disk.on && !ok) {
+                std::fprintf(stderr, "strata serve: conversation cache: the disk tier stays off (its layout: %s)\n",
+                             lwhy.c_str());
+                disk.on = false;
+            }
+        }
+        // The checkpoints of a split park, in the chain's order: `complete` says which original position each
+        // stage0/parts entry is, `rest` the checkpoints that carry no stage parts (meta.stage_parts 0: their body
+        // is the stage-0 one alone).
+        auto disk_spec_checkpoints = [&](const strata::core::ConversationCheckpointSplit& cs,
+                                         std::vector<strata::core::SessionStreamCheckpoint>& out) {
+            out.clear();
+            const int64_t n_st = (int64_t) stages.size();
+            size_t w0 = 0, wr = 0;
+            for (bool complete : cs.complete) {
+                const strata::core::ConversationCheckpoint* base = nullptr;
+                std::vector<const strata::core::ConversationCheckpoint*> parts;
+                if (complete) {
+                    base = &cs.stage0[w0];
+                    for (int64_t k = 0; k < n_st; ++k) parts.push_back(&cs.parts[(size_t) k][w0]);
+                    ++w0;
+                } else {
+                    base = &cs.rest[wr++];
+                }
+                strata::core::SessionStreamCheckpoint c;
+                c.meta.prefix = (uint64_t) base->ids.size();
+                c.meta.used = base->used;
+                c.meta.pinned = base->pinned;
+                c.meta.stage_parts = complete ? n_st : 0;
+                c.meta.plan = base->plan;
+                c.state.resize((size_t) disk_stages);
+                c.state[0] = {(uint64_t) base->gdn.size(), (uint64_t) base->ple.size(), (uint64_t) base->tails.size(),
+                              (uint64_t) base->dead.size(), (uint64_t) base->block_pos.size()};
+                for (int64_t k = 0; k < n_st; ++k) {
+                    const auto& p = *parts[(size_t) k];
+                    c.state[(size_t) k + 1] = {(uint64_t) p.gdn.size(), (uint64_t) p.ple.size(),
+                                               (uint64_t) p.tails.size(), (uint64_t) p.dead.size(),
+                                               (uint64_t) p.block_pos.size()};
+                }
+                out.push_back(std::move(c));
+            }
+        };
+        // The drafter's ring as format v2 sees it: one region, the states' bytes in state order, each state at the
+        // extent its snapshot takes at this token count (the bounded SWA ring's rule, never the live length).
+        auto disk_dflash_sizes = [&](int64_t T, std::vector<std::array<uint64_t, 5>>& out, uint64_t& total,
+                                     std::string& why) -> bool {
+            out.clear();
+            total = 0;
+            if (!has_dflash) return true;
+            out.resize(dflash.kv_states().size());
+            for (size_t j = 0; j < out.size(); ++j) {
+                const int64_t extent = strata::core::dflash_snapshot_extent(
+                    T, dflash.kv_states()[j].max_cells);
+                if (!strata::core::conversation_kv_part_sizes(dflash.kv_states()[j], dflash.pool_geometry(),
+                                                               extent, false, out[j], why)) return false;
+                for (uint64_t b : out[j]) total += b;
+            }
+            return true;
+        };
+        // Everything a v2 generation of this engine holds at T tokens, as byte counts and identities: the live
+        // state per stage, the K/V layers per stage at T, the drafter's layer on its owner stage, the ring, and
+        // the checkpoints' bodies as given.  It is both the writer's spec and the reader's expectation.
+        auto disk_build_spec = [&](int64_t T, const std::vector<int32_t>& ids, const std::vector<ImgKey>& imgs,
+                                   bool cvec, const std::vector<strata::core::SessionStreamCheckpoint>& cps,
+                                   const std::vector<std::array<uint64_t, 5>>* ring,
+                                   strata::core::SessionStreamSpec& spec, std::string& why) -> bool {
+            spec = {};
+            spec.geometry = disk_layout.geometry;
+            for (int64_t s = 0; s < disk_stages; ++s) {
+                strata::core::SessionState& ses = disk_session(s);
+                strata::core::SessionStreamStage st;
+                st.layout = disk_layout.stages[(size_t) s];
+                const int64_t rows = ses.layer_hi - ses.layer_lo;
+                st.kv.resize((size_t) rows);
+                for (int64_t i = 0; i < rows; ++i) {
+                    const strata::core::QsaState* q = disk_qsa_of(ses, ses.layer_lo + i);
+                    if (!q) continue;   // a layer with no K/V of its own: five zero-size regions name it
+                    if (!strata::core::conversation_kv_part_sizes(*q, g, T, true, st.kv[(size_t) i], why))
+                        return false;
+                }
+                if (!strata::core::conversation_state_part_sizes(g, ses, st.live, why)) return false;
+                if (use_mtp && s == disk_mtp_stage) {
+                    st.has_mtp = true;
+                    if (!strata::core::conversation_kv_part_sizes(mtp.kv_state(), g, T, false, st.mtp, why))
+                        return false;
+                }
+                spec.stages.push_back(std::move(st));
+            }
+            if (has_dflash) {
+                const strata::core::DFlashSnapshotMeta meta = dflash.snapshot_meta();
+                if (meta.committed_end < 0) { why = "the drafter's ring has no captured end yet"; return false; }
+                spec.draft = {2, meta.ring_cells, meta.window, meta.capacity, meta.committed_end,
+                              meta.appended_through, 0};
+                spec.has_dflash = true;
+                for (const auto& one : *ring)
+                    for (uint64_t b : one) spec.dflash_bytes += b;
+            }
+            spec.cvec = cvec;
+            spec.tokens = ids;
+            spec.images = imgs;
+            spec.checkpoints = cps;
+            return true;
+        };
+        auto disk_ram_admit = [&](uint64_t need, std::string& why) {
+            const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib << 20;
+            const auto mem = strata::core::sample_host_memory();
+            const std::optional<uint64_t> avail = mem ? std::optional<uint64_t>(mem->available) : std::nullopt;
+            if (strata::core::conversation_memory_admit(avail, need, floor)) return true;
+            why = "not enough RAM for the disk tier (" + std::to_string(need >> 20) + " MiB plus a floor of " +
+                  std::to_string((long long) o.conversation_cache_min_free_mib) + " MiB needed, " + ram_note(mem) + ")";
+            return false;
+        };
+        // the tier's transfer mode, learned from the first block that reaches the OS: a filesystem that took
+        // O_DIRECT at open and refuses the transfer drops to buffered mid-write, and the tier must know
+        auto disk_mode = [&](bool direct) {
+            if (disk.direct_io && !direct) {
+                disk.on = false;
+                std::fprintf(stderr, "strata serve: conversation cache: %s refuses direct I/O: the disk tier is "
+                                     "disabled (buffered writes are charged to the page cache; "
+                                     "--conversation-cache-disk-io buffered opts in explicitly)\n",
+                             disk.dir.c_str());
+            }
+        };
+        auto disk_identity = [&](std::string& why) -> const strata::core::SessionFileIdentity* {
+            if (!disk_id) {
+                strata::core::SessionFileIdentity id;
+                if (!session_identity(id, why, [&] {
+                        strata::core::progress_at("fingerprinting the model files");
+                        strata::core::progress_allow(strata::core::session_phase_limit_s(2u << 20));
+                    }))
+                    return nullptr;
+                disk_id = id;
+            }
+            return &*disk_id;
+        };
+        // The largest v2 file THIS engine could ever read back: its K/V and live state at the widest context it
+        // restores (the drafter's capacity when it has one), the chain's bodies at --prompt-cache, the manifest's
+        // arrays and the region directory.  The automatic tier bounds itself by --conversation-cache-disk-mib;
+        // a manual SAVE/RESTORE is not the tier, and needs this engine-side bound to bound its reads with.
+        // Computed once, on the first read that needs it.
+        std::optional<uint64_t> disk_v2_cap;
+        auto disk_v2_read_cap = [&](std::string& why) -> const uint64_t* {
+            if (!disk_v2_cap) {
+                const int64_t ctx = std::max<int64_t>(o.max_context, 1);
+                const int64_t T = has_dflash
+                                       ? std::max<int64_t>(std::min(ctx, dflash.snapshot_meta().capacity), 1)
+                                       : ctx;
+                const uint64_t nck = (uint64_t) std::max(o.prompt_cache, 1);
+                uint64_t total = 0, state = 0;
+                auto add = [&](uint64_t b) { total = (b > UINT64_MAX - total) ? UINT64_MAX : total + b; };
+                std::array<uint64_t, strata::core::kSessionKvParts> sizes{};
+                for (int64_t s = 0; s < disk_stages; ++s) {
+                    strata::core::SessionState& ses = disk_session(s);
+                    const strata::core::OnDevice on(disk_dev(s));
+                    for (int64_t i = 0; i < ses.layer_hi - ses.layer_lo; ++i) {
+                        const strata::core::QsaState* q = disk_qsa_of(ses, ses.layer_lo + i);
+                        if (q == nullptr) continue;   // the layer carries no K/V of its own
+                        if (!strata::core::conversation_kv_part_sizes(*q, g, T, true, sizes, why)) return nullptr;
+                        for (uint64_t b : sizes) add(b);
+                    }
+                    if (!strata::core::conversation_state_part_sizes(g, ses, sizes, why)) return nullptr;
+                    for (uint64_t b : sizes) state = (b > UINT64_MAX - state) ? UINT64_MAX : state + b;
+                    if (use_mtp && s == disk_mtp_stage) {
+                        if (!strata::core::conversation_kv_part_sizes(mtp.kv_state(), g, T, false, sizes, why))
+                            return nullptr;
+                        for (uint64_t b : sizes) add(b);
+                    }
+                }
+                add(state * nck);   // the whole checkpoint chain at --prompt-cache
+                if (has_dflash) {
+                    const strata::core::OnDevice on_df(dflash.device());
+                    std::vector<std::array<uint64_t, strata::core::kSessionKvParts>> ring;
+                    uint64_t ring_bytes = 0;
+                    if (!disk_dflash_sizes(T, ring, ring_bytes, why)) return nullptr;
+                    add(ring_bytes);
+                }
+                add((uint64_t) T * 4 + (uint64_t) T * 16);   // the tokens and the image keys
+                add((5ull * (uint64_t) disk_stages * (2ull + (uint64_t) g.n_layers + nck) + 8) * 64 + 4096);
+                disk_v2_cap = total;
+            }
+            return &*disk_v2_cap;
+        };
+        // ---- the automatic park's disk leg: stream the conversation, then book the generation.
+        // It runs BEFORE any host snapshot and before the RAM cache's capacity and admission: the file's bytes
+        // come straight off the pools in bounded blocks, so the park costs no host copy of the K/V at all.
+        // A generation the conversation contributes: the manifest and one source per declared region, built
+        // with the live pools quiesced (the device reads a live-state source performs).  No file is opened.
+        auto disk_plan = [&](int64_t T, const std::vector<int32_t>& ids, const std::vector<ImgKey>& imgs,
+                             bool cvec, const strata::core::ConversationCheckpointSplit& cs,
+                             std::vector<std::array<uint64_t, 5>>& ring, strata::core::SessionManifestV2& manifest,
+                             std::vector<strata::core::SessionRegionSource>& sources, std::string& why) -> bool {
+            // the quiescence a device read of the live state needs, in the park's own order
+            strata::core::conversation_checkpoint_join(nullptr);
+            strata::core::conversation_park_join();   // (STRATA_PARK_ASYNC: the last park's K/V copies landed)
+            for (auto& st : stages) {
+                const strata::core::OnDevice on(st->dev);
+                if (cudaDeviceSynchronize() != cudaSuccess) { why = "stage sync failed"; return false; }
+            }
+            if (cudaDeviceSynchronize() != cudaSuccess) { why = "device sync failed"; return false; }
+            ring.clear();
+            uint64_t ring_bytes = 0;
+            if (has_dflash) {
+                const strata::core::OnDevice on_df(dflash.device());
+                if (strata::core::deferral_context() && !dflash.idle(why)) return false;   // the deferred fusion
+                if (cudaDeviceSynchronize() != cudaSuccess) { why = "drafter sync failed"; return false; }
+                if (!disk_dflash_sizes(T, ring, ring_bytes, why)) return false;
+            }
+            std::vector<strata::core::SessionStreamCheckpoint> cps;
+            disk_spec_checkpoints(cs, cps);
+            strata::core::SessionStreamSpec spec;
+            if (!disk_build_spec(T, ids, imgs, cvec, cps, &ring, spec, why)) return false;
+            if (!strata::core::session_stream_manifest(spec, manifest, why)) return false;
+            // the region sources, one per declared region, in the manifest's order: the live state and the K/V
+            // read from their pools on their stage's device, the checkpoints' bodies from the host vectors the
+            // chain already holds, the ring as the concatenation of its states' parts
+            sources.reserve(manifest.regions.size());
+            std::vector<strata::core::SessionKvSource> ring_kv(ring.size());
+            for (size_t j = 0; j < ring.size(); ++j) {
+                const int64_t extent = strata::core::dflash_snapshot_extent(
+                    T, dflash.kv_states()[j].max_cells);
+                const strata::core::OnDevice on_df(dflash.device());
+                if (!strata::core::conversation_kv_source(ring_kv[j], dflash.kv_states()[j],
+                                                          dflash.pool_geometry(), extent, false, why))
+                    return false;
+            }
+            for (const auto& r : manifest.regions) {
+                const int dev = disk_dev(r.stage);
+                auto wrap = [&](strata::core::SessionRegionSource& s) {
+                    auto inner = s.read;
+                    s.read = [inner, dev](size_t off, void* dst, size_t n) {
+                        const strata::core::OnDevice on(dev);
+                        return inner(off, dst, n);
+                    };
+                };
+                if (r.kind == int32_t(strata::core::SessionRegionKind::live_state)) {
+                    strata::core::SessionRegionSource s;
+                    if (!strata::core::conversation_state_source(s, disk_session(r.stage), g, r.part, why))
+                        return false;
+                    s.stage = r.stage;
+                    wrap(s);
+                    sources.push_back(std::move(s));
+                } else if (r.kind == int32_t(strata::core::SessionRegionKind::kv)) {
+                    strata::core::SessionState& ses = disk_session(r.stage);
+                    const strata::core::QsaState* q = disk_qsa_of(ses, ses.layer_lo + r.index);
+                    if (q == nullptr) {
+                        sources.push_back(strata::core::session_stream_host_source(r.kind, r.stage, r.index,
+                                                                                   r.part, nullptr, 0));
+                        continue;
+                    }
+                    strata::core::SessionKvSource kv;
+                    {
+                        const strata::core::OnDevice on(dev);
+                        if (!strata::core::conversation_kv_source(kv, *q, g, T, true, why)) return false;
+                    }
+                    std::vector<strata::core::SessionRegionSource> five;
+                    if (!strata::core::session_stream_kv_sources(five, r.kind, r.stage, r.index, kv, why))
+                        return false;
+                    for (auto& s : five)
+                        if (s.part == r.part) { wrap(s); sources.push_back(std::move(s)); break; }
+                } else if (r.kind == int32_t(strata::core::SessionRegionKind::checkpoint_state)) {
+                    const strata::core::ConversationCheckpoint* body = nullptr;
+                    if (r.stage == 0) {
+                        size_t w = 0;
+                        for (bool complete : cs.complete) {
+                            if (complete && w == (size_t) r.index) { body = &cs.stage0[w]; break; }
+                            if (complete) ++w;
+                        }
+                    } else {
+                        body = &cs.parts[(size_t) r.stage - 1][(size_t) r.index];
+                    }
+                    if (body == nullptr) { why = "no checkpoint body at stage/index"; return false; }
+                    const std::array<const uint8_t*, 5> v = {body->gdn.data(), body->ple.data(), body->tails.data(),
+                                                             body->dead.data(), body->block_pos.data()};
+                    sources.push_back(strata::core::session_stream_host_source(r.kind, r.stage, r.index, r.part,
+                                                                               v[(size_t) r.part], r.bytes));
+                } else if (r.kind == int32_t(strata::core::SessionRegionKind::mtp)) {
+                    strata::core::SessionKvSource kv;
+                    {
+                        const strata::core::OnDevice on(dev);
+                        if (!strata::core::conversation_kv_source(kv, mtp.kv_state(), g, T, false, why))
+                            return false;
+                    }
+                    std::vector<strata::core::SessionRegionSource> five;
+                    if (!strata::core::session_stream_kv_sources(five, r.kind, r.stage, r.index, kv, why))
+                        return false;
+                    for (auto& s : five)
+                        if (s.part == r.part) { wrap(s); sources.push_back(std::move(s)); break; }
+                } else if (r.kind == int32_t(strata::core::SessionRegionKind::dflash)) {
+                    std::vector<strata::core::SessionStreamPiece> pieces;
+                    for (size_t j = 0; j < ring.size(); ++j)
+                        for (int64_t p = 0; p < strata::core::kSessionKvParts; ++p) {
+                            const auto kv = ring_kv[j];
+                            pieces.push_back({ring[j][(size_t) p], [kv, p](uint64_t off, void* dst, size_t n) {
+                                return kv.read((size_t) p, off, dst, n);
+                            }});
+                        }
+                    strata::core::SessionRegionSource s;
+                    {
+                        const strata::core::OnDevice on_df(dflash.device());
+                        if (!strata::core::session_stream_concat_source(s, r.kind, 0, 0, 0, std::move(pieces), why))
+                            return false;
+                    }
+                    wrap(s);
+                    sources.push_back(std::move(s));
+                } else {
+                    why = "region kind the disk tier does not write";
+                    return false;
+                }
+            }
+            return true;
+        };
+        auto disk_park = [&](const ParkSource& src, const strata::core::ConversationCheckpointSplit& cs,
+                             std::string& why) -> bool {
+            const int64_t T = (int64_t) src.ids.size();
+            const auto t0 = Clock::now();
+            // #342, the disk's shape of it: a generation of this conversation the new one outgrew is superseded
+            size_t dropped = 0;
+            for (size_t i = 0; i < disk.gens.size();) {
+                const DiskTier::Gen& g2 = disk.gens[i];
+                const bool pre = g2.ids.size() <= src.ids.size() &&
+                                 std::equal(g2.ids.begin(), g2.ids.end(), src.ids.begin()) &&
+                                 g2.cvec == src.cvec;
+                std::vector<ImgKey> under;
+                for (const ImgKey& k : src.imgs) if (k.start < (int64_t) g2.ids.size()) under.push_back(k);
+                if (pre && under == g2.imgs) {
+                    std::error_code rec;
+                    std::filesystem::remove(g2.path, rec);
+                    disk.gens.erase(disk.gens.begin() + (std::ptrdiff_t) i);
+                    ++dropped;
+                    continue;
+                }
+                ++i;
+            }
+            strata::core::SessionManifestV2 manifest;
+            std::vector<strata::core::SessionRegionSource> sources;
+            std::vector<std::array<uint64_t, 5>> ring;
+            if (!disk_plan(T, src.ids, src.imgs, src.cvec, cs, ring, manifest, sources, why)) return false;
+            // the tier's own bound, before any file is opened: generations written + this one, over the budget
+            uint64_t used = 0;
+            for (const auto& g2 : disk.gens) used += g2.bytes;
+            uint64_t est = 256 + manifest.tokens.size() * 4 + manifest.images.size() * 16 +
+                           manifest.checkpoints.size() * 88 + manifest.regions.size() * 64;
+            for (const auto& r : manifest.regions) est += r.bytes;
+            if (used + est > disk.budget) {
+                why = "the disk tier is full (" + std::to_string((used + est) >> 20) + " MiB needed of " +
+                      std::to_string(disk.budget >> 20) + " MiB";
+                if (dropped) why += ", " + std::to_string(dropped) + " superseded dropped";
+                why += ")";
+                return false;
+            }
+            const strata::core::SessionFileIdentity* id = disk_identity(why);
+            if (id == nullptr) return false;
+            const std::string path = disk.dir + "/conv-" + std::to_string(disk.serial++) + ".sess";
+            strata::core::SessionWriteOptions wo;
+            wo.min_free_bytes = (uint64_t) o.session_min_free_mib << 20;
+            wo.progress = [](uint64_t done, uint64_t) {
+                strata::core::progress_at("request: streaming the conversation to disk, MiB", (int64_t) (done >> 20));
+                strata::core::progress_allow(0);
+            };
+            wo.phase = [](const char* phase, uint64_t bytes) {
+                strata::core::progress_at(phase);
+                strata::core::progress_allow(strata::core::session_phase_limit_s(bytes));
+            };
+            wo.mode = [&](bool direct) { disk_mode(direct); };
+            strata::core::SessionStatus st;
+            size_t bytes = 0;
+            if (!strata::core::session_file_write_v2(path, *id, manifest, sources, bytes, why, wo, &st))
+                return false;
+            disk.gens.push_back({path, src.ids, src.imgs, src.cvec, (uint64_t) bytes});
+            std::fprintf(stderr, "strata serve: conversation cache: disk park streamed %zu tokens%s to %s in "
+                                 "%.1f ms; generations=%zu bytes=%zu superseded=%zu\n",
+                         src.ids.size(), src.what.c_str(), path.c_str(),
+                         std::chrono::duration<double, std::milli>(Clock::now() - t0).count(), disk.gens.size(),
+                         [&] { uint64_t u = 0; for (const auto& g2 : disk.gens) u += g2.bytes; return u; }() >> 20,
+                         dropped);
+            return true;
+        };
+        // ---- restore a generation straight into the live pools.  Pass 1 reads the file with NO sink: every
+        // checksum, the identities, the manifest and the region directory are validated, and every engine-side
+        // check below runs, before a single byte is mutated - each of those refusals is a safe miss (the live
+        // state is untouched, the prompt is read as if nothing was found).  The K/V growth and the copy-stream
+        // preflight run next.  `live_ok = false` marks the mutation's start: a pass-2 failure after it is
+        // fatal, a half-written session is never decoded from (the same contract as a RAM restore).
+        // Returns 0 = restored, 1 = safe miss, 2 = fatal; `tokens_out` is the conversation's length.
+        auto disk_restore = [&](const std::string& path, const strata::core::SessionFileIdentity& id,
+                                const std::function<void()>& quiesce,
+                                const std::function<void(uint64_t, uint64_t)>& moving,
+                                const std::function<void(const char*, uint64_t)>& blocking,
+                                int64_t& tokens_out, std::string& why, uint64_t max_file_bytes) -> int {
+            strata::core::SessionReadV2Limits lim;
+            lim.max_file_bytes = max_file_bytes;
+            lim.max_manifest_bytes = disk.ram / 2;
+            lim.max_tokens = (uint64_t) std::max<int64_t>(o.max_context, 1);
+            lim.max_images = (uint64_t) std::max<int64_t>(o.max_context, 1);
+            lim.max_checkpoints = (uint64_t) std::max(o.prompt_cache, 1);
+            lim.max_stages = (uint64_t) disk_stages;
+            lim.max_regions = 5ull * (uint64_t) disk_stages *
+                              (2ull + (uint64_t) g.n_layers + (uint64_t) std::max(o.prompt_cache, 1)) + 8;
+            lim.admit = [&](uint64_t need, std::string& a) {
+                if (need > disk.ram) {
+                    a = "the file asks for " + std::to_string(need >> 20) + " MiB of manifest and region directory, " +
+                        "over the disk tier's host budget of " + std::to_string(disk.ram >> 20) + " MiB";
+                    return false;
+                }
+                return disk_ram_admit(need, a);
+            };
+            lim.progress = moving;
+            lim.mode = [&](bool direct) { disk_mode(direct); };
+            strata::core::SessionV2Requirement want;
+            want.check_layout = true;
+            want.check_draft = false;   // the file's ring horizon is RESTORED, not compared to the live one
+            want.layout = disk_layout;
+            strata::core::SessionManifestV2 manifest;
+            size_t fbytes = 0;
+            strata::core::SessionStatus st;
+            if (!strata::core::session_file_read_v2(path, id, want, manifest, fbytes, why, lim, nullptr, &st))
+                return 1;
+            const int64_t T = (int64_t) manifest.tokens.size();
+            if (T == 0 || T > o.max_context) { why = "the conversation is outside this engine's context"; return 1; }
+            for (const ImgKey& k : manifest.images)
+                if (k.start >= T) { why = "an image key starts past the stored tokens"; return 1; }
+            if (has_dflash) {
+                const strata::core::DFlashSnapshotMeta mine = dflash.snapshot_meta();
+                const auto& m = manifest.draft;
+                if (m.type != 2 || m.ring_cells != mine.ring_cells || m.window != mine.window ||
+                    m.capacity != mine.capacity || m.committed_end < 0 || m.appended_through < m.committed_end ||
+                    m.committed_end > m.capacity || m.appended_through > m.capacity || T > m.capacity ||
+                    T < m.committed_end) {
+                    why = "the drafter's ring in the file is not this drafter's, or its captured end is outside "
+                          "the retained history";
+                    return 1;
+                }
+            } else if (manifest.draft.type != 0) {
+                why = "the file holds a drafter this engine does not have";
+                return 1;
+            }
+            // the region directory must be exactly what THIS engine holds at T tokens: same regions, same
+            // sizes.  The checkpoints' bodies are taken as declared (bounded by the RAM admission below).
+            std::vector<strata::core::SessionStreamCheckpoint> cps;
+            uint64_t ck_bytes = 0;
+            const auto region_at = [&](int32_t kind, int64_t stage, int64_t index, int64_t part)
+                    -> const strata::core::SessionRegion* {
+                for (const auto& r : manifest.regions)
+                    if (r.kind == kind && r.stage == stage && r.index == index && r.part == part) return &r;
+                return nullptr;
+            };
+            for (size_t i = 0; i < manifest.checkpoints.size(); ++i) {
+                strata::core::SessionStreamCheckpoint c;
+                c.meta = manifest.checkpoints[i];
+                c.state.assign((size_t) disk_stages, {});
+                for (int64_t s = 0; s < disk_stages; ++s) {
+                    if (s > 0 && c.meta.stage_parts == 0) continue;
+                    for (int64_t p = 0; p < strata::core::kSessionStateParts; ++p) {
+                        const auto* r = region_at(int32_t(strata::core::SessionRegionKind::checkpoint_state), s,
+                                                  (int64_t) i, p);
+                        if (r == nullptr) { why = "a checkpoint body is not in the region directory"; return 1; }
+                        c.state[(size_t) s][(size_t) p] = r->bytes;
+                        ck_bytes += r->bytes;
+                    }
+                }
+                cps.push_back(std::move(c));
+            }
+            std::vector<std::array<uint64_t, 5>> ring;
+            uint64_t ring_bytes = 0;
+            if (!disk_dflash_sizes(T, ring, ring_bytes, why)) return 1;
+            strata::core::SessionStreamSpec spec;
+            if (!disk_build_spec(T, manifest.tokens, manifest.images, manifest.cvec, cps, &ring, spec, why))
+                return 1;
+            strata::core::SessionManifestV2 expect;
+            if (!strata::core::session_stream_manifest(spec, expect, why)) return 1;
+            if (expect.regions.size() != manifest.regions.size()) {
+                why = "the file declares " + std::to_string(manifest.regions.size()) + " regions, this engine has " +
+                      std::to_string(expect.regions.size()) + " at " + std::to_string(T) + " tokens";
+                return 1;
+            }
+            for (size_t i = 0; i < expect.regions.size(); ++i) {
+                const auto& a = expect.regions[i];
+                const auto& b = manifest.regions[i];
+                if (a.kind != b.kind || a.stage != b.stage || a.index != b.index || a.part != b.part ||
+                    a.bytes != b.bytes) {
+                    why = "the file's region (" + std::string(strata::core::session_region_kind_name(b.kind)) +
+                          ", stage " + std::to_string(b.stage) + ", index " + std::to_string(b.index) + ", part " +
+                          std::to_string(b.part) + ") of " + std::to_string(b.bytes) + " bytes is not this engine's " +
+                          "at " + std::to_string(T) + " tokens";
+                    return 1;
+                }
+            }
+            if (ck_bytes) {
+                std::string a;
+                if (!disk_ram_admit(ck_bytes, a)) { why = a; return 1; }
+            }
+            // the chain's host vectors, sized as the file declares; pass 2 fills them
+            std::vector<ConvCheckpoint> built;
+            for (size_t i = 0; i < manifest.checkpoints.size(); ++i) {
+                const auto& m = manifest.checkpoints[i];
+                ConvCheckpoint c;
+                c.ids.assign(manifest.tokens.begin(), manifest.tokens.begin() + (std::ptrdiff_t) m.prefix);
+                for (const ImgKey& k : manifest.images)
+                    if (k.start < (int64_t) m.prefix) c.imgs.push_back(k);
+                c.used = m.used;
+                c.pinned = m.pinned;
+                c.plan = m.plan;
+                const auto fill = [&](ConvCheckpoint& dst, int64_t s) {
+                    dst.gdn.resize(cps[i].state[(size_t) s][0]);
+                    dst.ple.resize(cps[i].state[(size_t) s][1]);
+                    dst.tails.resize(cps[i].state[(size_t) s][2]);
+                    dst.dead.resize(cps[i].state[(size_t) s][3]);
+                    dst.block_pos.resize(cps[i].state[(size_t) s][4]);
+                };
+                fill(c, 0);
+                for (int64_t s = 1; s < disk_stages && m.stage_parts != 0; ++s) {
+                    ConvCheckpoint part;
+                    part.ids = c.ids;
+                    part.imgs = c.imgs;
+                    part.used = c.used;
+                    part.pinned = c.pinned;
+                    fill(part, s);
+                    c.stage_parts.push_back(std::move(part));
+                }
+                built.push_back(std::move(c));
+            }
+            // the K/V must cover the file's cells, and every card must be able to move the bytes, BEFORE the
+            // live state is opened (the same preflights a RAM restore runs; both are safe misses here)
+            if (!kvg_ensure(T + 256, quiesce)) {
+                why = "the K/V cannot grow to the conversation on disk: no VRAM is left";
+                return 1;
+            }
+            std::vector<int> devs{-1};
+            for (const auto& stp : stages) devs.push_back(stp->dev);
+            std::vector<uint64_t> vfree;
+            std::vector<uint8_t> vready;
+            bool sampled = true;
+            for (const int rd : devs) {
+                const strata::core::OnDevice on(rd);
+                int cur = 0;
+                size_t fb = 0, tb = 0;
+                if (cudaGetDevice(&cur) != cudaSuccess || cudaMemGetInfo(&fb, &tb) != cudaSuccess) {
+                    (void) cudaGetLastError();
+                    sampled = false;
+                    break;
+                }
+                vfree.push_back((uint64_t) fb);
+                vready.push_back(strata::core::conversation_copy_stream_ready(cur) ? 1 : 0);
+            }
+            if (sampled && !strata::program::conv_cache::restore_fits(
+                               vfree.data(), vready.data(), vfree.size(),
+                               strata::program::conv_cache::kRestoreFirstUseMib << 20)) {
+                int tight = -1;
+                for (size_t k = 0; k < vfree.size(); ++k)
+                    if (!vready[k] && vfree[k] < (strata::program::conv_cache::kRestoreFirstUseMib << 20)) tight = (int) k;
+                why = std::string(tight <= 0 ? "CUDA0" : "stage " + std::to_string(tight)) +
+                      " has no copy stream for the restore and less than " +
+                      std::to_string(strata::program::conv_cache::kRestoreFirstUseMib) + " MiB free";
+                return 1;
+            }
+            live_ok = false;   // the mutation starts here
+            bool mutated = false;   // set by the first sink write: from there a failure is fatal, never a miss
+            // the live pools must be idle before their bytes go in, exactly as a RAM restore drains them first:
+            // the background copies of the last checkpoint and park land, and every card finishes its queue
+            quiesce();
+            strata::core::conversation_checkpoint_join(nullptr);
+            strata::core::conversation_park_join();
+            for (auto& st : stages) {
+                const strata::core::OnDevice on(st->dev);
+                if (cudaDeviceSynchronize() != cudaSuccess) { why = "stage sync failed before the restore"; return 1; }
+            }
+            if (cudaDeviceSynchronize() != cudaSuccess) { why = "device sync failed before the restore"; return 1; }
+            if (blocking) blocking("transfer", fbytes);
+            // the destinations, one per region family: the live state per stage (with the indexer spare row
+            // and the PLE pair refreshed at its finish), the K/V layers per stage (residency refresh), the
+            // drafter's layer, the ring (its horizon restored with it), and the checkpoints' host vectors
+            std::vector<strata::core::SessionStreamDestination> dests;
+            for (int64_t s = 0; s < disk_stages; ++s) {
+                strata::core::SessionStreamDestination d;
+                d.kind = int32_t(strata::core::SessionRegionKind::kv);
+                d.stage = s;
+                d.index = -1;
+                const auto rows = spec.stages[(size_t) s].kv;
+                d.validate = [&](const strata::core::SessionRegion& r, std::string& w) {
+                    if (r.index < 0 || r.index >= (int64_t) rows.size() || r.part < 0 ||
+                        r.part >= strata::core::kSessionKvParts) { w = "layer or part outside this stage"; return false; }
+                    if (r.bytes != rows[(size_t) r.index][(size_t) r.part]) {
+                        w = "the region is not this engine's K/V extent at this token count";
+                        return false;
+                    }
+                    return true;
+                };
+                d.write = [&](const strata::core::SessionRegion& r, uint64_t off, const void* b,
+                                           size_t n, std::string& w) {
+                    mutated = true;
+                    const strata::core::OnDevice on(disk_dev(s));
+                    strata::core::SessionState& ses = disk_session(s);
+                    strata::core::QsaState* q = disk_qsa_of(ses, ses.layer_lo + r.index);
+                    if (q == nullptr) { w = "this stage has no K/V pool at that layer"; return false; }
+                    return strata::core::conversation_kv_stream_write(*q, g, T, true, (size_t) r.part, off, b, n, w);
+                };
+                d.finish = [&](std::string& w) {
+                    const strata::core::OnDevice on(disk_dev(s));
+                    strata::core::SessionState& ses = disk_session(s);
+                    for (int64_t i = 0; i < (int64_t) rows.size(); ++i) {
+                        strata::core::QsaState* q = disk_qsa_of(ses, ses.layer_lo + i);
+                        if (q == nullptr) continue;
+                        if (!strata::core::conversation_kv_stream_finish(*q, g, T, true, w)) return false;
+                    }
+                    return true;
+                };
+                dests.push_back(std::move(d));
+            }
+            for (int64_t s = 0; s < disk_stages; ++s) {
+                strata::core::SessionStreamDestination d;
+                d.kind = int32_t(strata::core::SessionRegionKind::live_state);
+                d.stage = s;
+                d.index = 0;
+                const auto sizes = spec.stages[(size_t) s].live;
+                d.validate = [&](const strata::core::SessionRegion& r, std::string& w) {
+                    if (r.part < 0 || r.part >= strata::core::kSessionStateParts ||
+                        r.bytes != sizes[(size_t) r.part]) { w = "the region is not this stage's running-state extent"; return false; }
+                    return true;
+                };
+                d.write = [&](const strata::core::SessionRegion& r, uint64_t off, const void* b, size_t n,
+                                        std::string& w) {
+                    mutated = true;
+                    const strata::core::OnDevice on(disk_dev(s));
+                    return strata::core::conversation_state_stream_write(disk_session(s), g, r.part, off, b, n, w);
+                };
+                d.finish = [&](std::string& w) {
+                    const strata::core::OnDevice on(disk_dev(s));
+                    return strata::core::conversation_state_stream_finish(disk_session(s), g, manifest.tokens, w);
+                };
+                dests.push_back(std::move(d));
+            }
+            if (use_mtp) {
+                strata::core::SessionStreamDestination d;
+                d.kind = int32_t(strata::core::SessionRegionKind::mtp);
+                d.stage = disk_mtp_stage;
+                d.index = 0;
+                const auto sizes = spec.stages[(size_t) disk_mtp_stage].mtp;
+                d.validate = [&](const strata::core::SessionRegion& r, std::string& w) {
+                    if (r.part < 0 || r.part >= strata::core::kSessionKvParts ||
+                        r.bytes != sizes[(size_t) r.part]) { w = "the region is not this drafter's extent"; return false; }
+                    return true;
+                };
+                d.write = [&](const strata::core::SessionRegion& r, uint64_t off, const void* b, size_t n,
+                                        std::string& w) {
+                    mutated = true;
+                    const strata::core::OnDevice on(disk_dev(disk_mtp_stage));
+                    return strata::core::conversation_kv_stream_write(mtp.kv_state(), g, T, false, (size_t) r.part,
+                                                                      off, b, n, w);
+                };
+                d.finish = [&](std::string& w) {
+                    const strata::core::OnDevice on(disk_dev(disk_mtp_stage));
+                    return strata::core::conversation_kv_stream_finish(mtp.kv_state(), g, T, false, w);
+                };
+                dests.push_back(std::move(d));
+            }
+            if (has_dflash) {
+                strata::core::SessionStreamDestination d;
+                d.kind = int32_t(strata::core::SessionRegionKind::dflash);
+                d.stage = 0;
+                d.index = 0;
+                d.validate = [&](const strata::core::SessionRegion& r, std::string& w) {
+                    if (r.bytes != ring_bytes) { w = "the ring region is not this drafter's extent at this token count"; return false; }
+                    return true;
+                };
+                // the region is the states' parts concatenated in state order: each block lands in the pool
+                // row range that part occupies at the state's snapshot extent
+                d.write = [&](const strata::core::SessionRegion&, uint64_t off, const void* b,
+                                               size_t n, std::string& w) {
+                    mutated = true;
+                    const strata::core::OnDevice on_df(dflash.device());
+                    uint64_t at = 0, done = 0;
+                    const uint8_t* src = static_cast<const uint8_t*>(b);
+                    for (size_t j = 0; j < ring.size(); ++j) {
+                        const int64_t extent = strata::core::dflash_snapshot_extent(
+                            T, dflash.kv_states()[j].max_cells);
+                        for (int64_t p = 0; p < strata::core::kSessionKvParts; ++p) {
+                            const uint64_t size = ring[j][(size_t) p];
+                            if (done >= n) return true;
+                            if (at + size > off + done) {
+                                const uint64_t take = std::min(size - (off + done - at), n - done);
+                                if (!strata::core::conversation_kv_stream_write(dflash.kv_states()[j],
+                                                                               dflash.pool_geometry(), extent, false,
+                                                                               (size_t) p, off + done - at, src, take, w))
+                                    return false;
+                                src += take;
+                                done += take;
+                            }
+                            at += size;
+                        }
+                    }
+                    return done == n;
+                };
+                d.finish = [&](std::string& w) {
+                    const strata::core::OnDevice on_df(dflash.device());
+                    const strata::core::DFlashSnapshotMeta meta{manifest.draft.committed_end,
+                                                                manifest.draft.appended_through,
+                                                                manifest.draft.ring_cells, manifest.draft.window,
+                                                                manifest.draft.capacity};
+                    if (!dflash.restore_snapshot(meta, w)) return false;
+                    return dflash.idle(w);
+                };
+                dests.push_back(std::move(d));
+            }
+            if (!cps.empty()) {
+                strata::core::SessionStreamDestination d;
+                d.kind = int32_t(strata::core::SessionRegionKind::checkpoint_state);
+                d.stage = -1;
+                d.index = -1;
+                d.validate = [&](const strata::core::SessionRegion& r, std::string& w) {
+                    if (r.index < 0 || r.index >= (int64_t) cps.size()) {
+                        w = "the checkpoint index is outside the chain";
+                        return false;
+                    }
+                    const auto& st = cps[(size_t) r.index].state;
+                    if (r.stage < 0 || r.stage >= (int64_t) st.size() || r.part < 0 ||
+                        r.part >= strata::core::kSessionStateParts) { w = "checkpoint stage or part outside the layout"; return false; }
+                    if (r.bytes != st[(size_t) r.stage][(size_t) r.part]) {
+                        w = "the checkpoint body is not the size the allocation was made for";
+                        return false;
+                    }
+                    return true;
+                };
+                d.write = [&](const strata::core::SessionRegion& r, uint64_t off, const void* b,
+                                                   size_t n, std::string& w) {
+                    mutated = true;
+                    ConvCheckpoint& c = built[(size_t) r.index];
+                    std::vector<uint8_t>* vec = nullptr;
+                    if (r.stage == 0) vec = &c.gdn;
+                    else if (r.stage - 1 < (int64_t) c.stage_parts.size()) {
+                        auto& part = c.stage_parts[(size_t) r.stage - 1];
+                        vec = r.part == 1 ? &part.ple : r.part == 2 ? &part.tails
+                              : r.part == 3 ? &part.dead : r.part == 4 ? &part.block_pos : &part.gdn;
+                    }
+                    if (vec == nullptr) { w = "the checkpoint covers no body at that stage"; return false; }
+                    if (r.part == 1 && r.stage == 0) vec = &c.ple;
+                    else if (r.part == 2 && r.stage == 0) vec = &c.tails;
+                    else if (r.part == 3 && r.stage == 0) vec = &c.dead;
+                    else if (r.part == 4 && r.stage == 0) vec = &c.block_pos;
+                    if (off > vec->size() || n > vec->size() - off) { w = "the region reaches past the checkpoint body"; return false; }
+                    std::memcpy(vec->data() + off, b, n);
+                    return true;
+                };
+                dests.push_back(std::move(d));
+            }
+            strata::core::SessionRegionSink sink;
+            if (!strata::core::session_stream_sink(std::move(dests), sink, why)) return 1;   // nothing mutated yet
+            strata::core::SessionStatus st2;
+            strata::core::SessionManifestV2 got;
+            size_t bytes2 = 0;
+            lim.progress = moving;
+            if (!strata::core::session_file_read_v2(path, id, want, got, bytes2, why, lim, &sink, &st2)) {
+                if (!mutated) return 1;   // the validation pass refused it: every destination is untouched
+                why = "restoring the generation failed after its bytes started landing: " + why;
+                return 2;
+            }
+            live = std::move(got.tokens);
+            live_imgs = std::move(got.images);
+            checks = std::move(built);
+            cvec_cached = got.cvec;
+            live_ok = true;
+            tokens_out = T;
+            return 0;
+        };
         // Save only on a switch/rewind, not on each continuing request. No graph
         // addresses change: all parked images live in ordinary host vectors.
         // STRATA_PARK_ASYNC: set by the request around its park - the live checkpoints it drops right after (they move
@@ -12868,6 +13754,15 @@ int main(int argc, char** argv) {
                 strata::core::ConversationCheckpointSplit& cs; std::vector<ConvCheckpoint>& checks; bool on;
                 ~MergeBack() { if (on && !strata::core::conversation_checkpoints_merge(std::move(cs), checks)) checks.clear(); }
             } merge_back{cs, checks, n_st > 0};
+            // The disk tier streams FIRST: its bytes leave the pools straight into the file, so the park pays no
+            // host copy of the K/V, and its outcome never touches the RAM cache's capacity, admission or copies.
+            // A failure here skips the disk copy alone; the RAM park below runs as it always did.
+            if (disk.on) {
+                std::string dwhy;
+                if (!disk_park(src, cs, dwhy))
+                    std::fprintf(stderr, "strata serve: conversation cache: disk park skipped (%s)\n", dwhy.c_str());
+            }
+            if (!conversations.enabled()) return true;   // the RAM cache is off: the disk tier above was the whole park
             const strata::core::ConversationView view{src.ids, src.imgs, n_st > 0 ? cs.stage0 : checks, src.cvec};
             const int64_t retained_n = src.with_reuse ? conversations.retained_tokens() : 0;
             // a batch slot's image carries no retained K/V (it describes the main session's conversation), and the
@@ -13059,7 +13954,7 @@ int main(int argc, char** argv) {
             return true;
         };
         auto park_current_body = [&](size_t held) -> bool {
-            if (!conversations.enabled() || !live_ok || live.empty()) return true;
+            if ((!conversations.enabled() && !disk.on) || !live_ok || live.empty()) return true;
             const size_t n_st = stages.size();
             ParkSource src{live, live_imgs, checks, cvec_cached, ss, {},
                            (n_st > 0 && !mtp_first) || !use_mtp ? nullptr : &mtp.kv_state(),
@@ -16191,11 +17086,17 @@ int main(int argc, char** argv) {
                 strata::core::conversation_checkpoint_join(nullptr);
                 strata::core::conversation_park_join();   // (STRATA_PARK_ASYNC: the last park's K/V)
                 if (path.empty()) { refuse("missing path"); continue; }
-                if (has_dflash) { refuse("DFlash supports in-memory conversation caching; disk sessions are not supported"); continue; }
-                if (!stages.empty() || multi_gpu) { refuse("session files do not support --layer-split"); continue; }
                 if (o.peer_device >= 1) { refuse("session files do not support --peer-device"); continue; }
                 if (o.batch > 0) { refuse("session files do not support --batch (parallel requests)"); continue; }
                 if (o.prompt_cache <= 0) { refuse("session files need --prompt-cache > 0"); continue; }
+                if (has_dflash && o.dflash_remote_only) {
+                    refuse("session files do not support --dflash-remote-only (the ring's pools live on the helper)");
+                    continue;
+                }
+                if (multi_gpu && stages.empty()) { refuse("session files support a --layer-split, not a peer-device model without one"); continue; }
+                // Format v2 takes the combinations v1 refused: the split stages' regions and the drafter (the
+                // MTP layer, the DFlash ring).  Without them the v1 writer above stays exactly as it was.
+                const bool v2_session = has_dflash || !stages.empty();
                 if (!ver.wait_commit(err)) {
                     std::printf("ERR %s\n", err.c_str());
                     return 1;
@@ -16215,6 +17116,46 @@ int main(int argc, char** argv) {
                 }
                 if (save) {
                     if (!live_ok || live.empty()) { refuse("no complete session to save"); continue; }
+                    if (v2_session) {
+                        // the split stages and the drafter, streamed: the K/V leaves the pools straight into the
+                        // file, the checkpoints' bodies from the host vectors the chain already holds.  The
+                        // chain is moved apart for the write and put back whole whichever way this ends (#752).
+                        size_t v2_bytes = 0;
+                        std::string v2why;
+                        const size_t n_st = stages.size();
+                        strata::core::ConversationCheckpointSplit cs;
+                        if (n_st > 0) cs = strata::core::conversation_checkpoints_split(std::move(checks), n_st);
+                        struct V2MergeBack {
+                            strata::core::ConversationCheckpointSplit& cs; std::vector<ConvCheckpoint>& checks; bool on;
+                            ~V2MergeBack() { if (on && !strata::core::conversation_checkpoints_merge(std::move(cs), checks)) checks.clear(); }
+                        } v2_merge{cs, checks, n_st > 0};
+                        strata::core::SessionManifestV2 manifest;
+                        std::vector<strata::core::SessionRegionSource> sources;
+                        std::vector<std::array<uint64_t, 5>> ring;
+                        if (!disk_plan((int64_t) live.size(), live, live_imgs, cvec_cached, cs, ring, manifest,
+                                       sources, v2why)) {
+                            refuse(v2why, strata::core::SessionError::io);
+                            continue;
+                        }
+                        strata::core::SessionWriteOptions wo;
+                        wo.min_free_bytes = (uint64_t) o.session_min_free_mib << 20;
+                        wo.progress = moving;
+                        wo.phase = blocking;
+                        wo.mode = [&](bool direct) { disk_mode(direct); };
+                        strata::core::SessionStatus st;
+                        if (!strata::core::session_file_write_v2(path, id, manifest, sources, v2_bytes, v2why, wo, &st)) {
+                            refuse(v2why, st.error, st.published);
+                            continue;
+                        }
+                        if (st.dir_flush_unsupported)
+                            std::fprintf(stderr, "strata serve: session saved to %s; this filesystem cannot flush a "
+                                                 "folder, so the new name is not flushed\n", path.c_str());
+                        std::fprintf(stderr, "strata serve: session saved (v2) %zu tokens, %zu checkpoints to %s "
+                                             "in %.1f ms\n", live.size(), checks.size(), path.c_str(), ms());
+                        std::printf("SAVED %zu %zu %.1f\n", live.size(), v2_bytes, ms());
+                        std::fflush(stdout);
+                        continue;
+                    }
                     size_t bytes = 0, kept = 0;
                     double capture_ms = 0;
                     try {
@@ -16302,6 +17243,39 @@ int main(int argc, char** argv) {
                                  path.c_str(), ms(), capture_ms);
                     std::printf("SAVED %zu %zu %.1f\n", live.size(), bytes, ms());
                 } else {
+                    if (v2_session) {
+                        // the same two-pass streaming restore the automatic path runs, with the SAVE's protocol
+                        std::string v2why;
+                        int64_t v2_tokens = 0;
+                        const uint64_t* v2cap = disk_v2_read_cap(v2why);
+                        if (v2cap == nullptr) { refuse(v2why, strata::core::SessionError::io); continue; }
+                        const int rc = disk_restore(path, id, adapt_quiesce, moving, blocking, v2_tokens, v2why,
+                                                    *v2cap);
+                        if (rc == 2) {
+                            std::fprintf(stderr, "strata serve: session restore %s: transfer failed: %s\n",
+                                         path.c_str(), v2why.c_str());
+                            std::printf("FATAL restoring the session file failed after the device state was "
+                                        "changed: %s\n", v2why.c_str());
+                            std::fflush(stdout);
+                            return 1;
+                        }
+                        if (rc == 1) { refuse(v2why, strata::core::SessionError::io); continue; }
+                        conversations.take_reuse();   // retained K/V described the outgoing session
+                        for (const ConvCheckpoint& c : checks) check_clock = std::max(check_clock, c.used);
+                        if (nan_flush) {   // #879: the file replaced the poisoned session; the parked ones go
+                            nan_flush = false;
+                            const size_t n_parked = conversations.clear();
+                            std::fprintf(stderr, "strata serve: after non-finite logits (#879): the restored session "
+                                                 "replaces the live one; dropped %zu parked conversation%s\n", n_parked,
+                                         n_parked == 1 ? "" : "s");
+                        }
+                        std::fprintf(stderr, "strata serve: session restored (v2) %zu tokens, %zu checkpoints from "
+                                             "%s in %.1f ms\n", live.size(), checks.size(), path.c_str(), ms());
+                        std::printf("RESTORED %zu %zu %.1f\n", (size_t) v2_tokens,
+                                    (size_t) std::filesystem::file_size(path), ms());
+                        std::fflush(stdout);
+                        continue;
+                    }
                     strata::core::SavedConversation image;
                     size_t bytes = 0;
                     try {
@@ -16960,9 +17934,32 @@ int main(int argc, char** argv) {
             // start of this prompt wins as before)
             bool borrow = !has_dflash && stages.empty() && parked.tokens > std::max(resume, slot_tokens) &&
                           conversations.borrows(parked);
-            if (parked.tokens > std::max(resume, slot_tokens) && !borrow)
+            // The disk tier's lookup, under the cache's own match rule: a generation whose tokens this prompt
+            // starts with, with the same pictures below it and the same cvec.  It competes with the RAM cache's
+            // match, the checkpoint resumes and a longer batch slot exactly as a parked conversation would, and
+            // it wins on depth alone; a borrowed prefix never beats it (a borrow is shallower by definition).
+            std::string disk_start;
+            int64_t disk_tokens = 0;
+            if (disk.on) {
+                for (const auto& gen : disk.gens) {
+                    const int64_t L = (int64_t) gen.ids.size();
+                    if (L < 1 || L > n - 1 || L > (int64_t) ids.size()) continue;
+                    if (!std::equal(gen.ids.begin(), gen.ids.end(), ids.begin())) continue;
+                    if (gen.cvec != want_cvec) continue;
+                    std::vector<ImgKey> under;
+                    for (const ImgKey& k : req_imgs) if (k.start < L) under.push_back(k);
+                    if (under != gen.imgs) continue;
+                    if (L > disk_tokens) {
+                        disk_tokens = L;
+                        disk_start = gen.path;
+                    }
+                }
+            }
+            const bool disk_wins = disk_tokens > parked.tokens;
+            if (disk_wins) borrow = false;   // the disk holds a deeper start: the RAM entry stays parked
+            if (parked.tokens > std::max(resume, slot_tokens) && !borrow && !disk_wins)
                 incoming.emplace(conversations.take(parked.index));
-            if (incoming || borrow) slot_source = -1;
+            if (incoming || borrow || disk_wins) slot_source = -1;
             // Reject the entire image before parking/overwriting the outgoing
             // state. Invalid entries can safely fall back to its existing prefix.
             if (incoming && incoming->stage_images.size() != stages.size()) {
@@ -17332,6 +18329,43 @@ int main(int argc, char** argv) {
                              (long long) resume, from_live ? "live" : "checkpoint",
                              std::chrono::duration<double, std::milli>(Clock::now() - t0).count(),
                              conversations.size(), conversations.bytes());
+            }
+            // The disk's incoming conversation, if it won the lookup: streamed straight into the live pools.
+            // Every pre-mutation refusal (a damaged file, a foreign layout, a ring horizon outside the
+            // retained history, a card with no copy stream, the K/V unable to grow) is a safe miss: the
+            // prompt reads again as if nothing was found.  A failure after the file's bytes started
+            // landing is fatal - a half-restored session is never decoded from (same contract as RAM).
+            if (!disk_start.empty()) {
+                const auto disk_t0 = Clock::now();
+                const auto disk_moving = [](uint64_t done, uint64_t) {
+                    strata::core::progress_at("request: streaming the conversation from disk, MiB",
+                                              (int64_t) (done >> 20));
+                    strata::core::progress_allow(0);
+                };
+                const auto disk_blocking = [](const char* phase, uint64_t bytes) {
+                    strata::core::progress_at(phase);
+                    strata::core::progress_allow(strata::core::session_phase_limit_s(bytes));
+                };
+                std::string dwhy;
+                int64_t dtokens = 0;
+                const strata::core::SessionFileIdentity* sid = disk_identity(dwhy);
+                const int rc = sid == nullptr ? 1 : disk_restore(disk_start, *sid, kv_quiesce, disk_moving,
+                                                                 disk_blocking, dtokens, dwhy, disk.budget);
+                if (rc == 2) {
+                    std::printf("ERR restoring a parked conversation from disk: %s\n", dwhy.c_str());
+                    return 1;
+                }
+                if (rc == 1)
+                    std::fprintf(stderr, "strata serve: conversation cache: disk restore skipped (%s); rereading "
+                                          "the prompt\n", dwhy.c_str());
+                else {
+                    resume = dtokens;
+                    from_live = false;
+                    std::fprintf(stderr, "strata serve: conversation cache: restored %lld tokens from disk (%s) "
+                                          "in %.1f ms\n", (long long) resume, disk_start.c_str(),
+                                 std::chrono::duration<double, std::milli>(Clock::now() - disk_t0).count());
+                }
+                disk_start.clear();
             }
             if (want_cvec != cvec_cached) {
                 live_ok = false;

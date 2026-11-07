@@ -149,6 +149,10 @@ struct SessionWriteOptions {
     SessionProgress progress;
     // "flush" (the file's flush, `bytes` = the file) and "publish" (rename and folder flush), before each starts
     SessionPhase phase;
+    // the transfer mode, reported at the first block that reaches the OS (and again if it changes mid-write: a
+    // filesystem that took O_DIRECT at open and refuses the transfer drops to buffered).  True = strict direct I/O.
+    // Optional: a caller that needs to know which path its bytes took (the disk tier checks its `direct` promise).
+    std::function<void(bool direct)> mode;
     // tests: return an errno value to make a step fail ("write", "file_flush", "rename", "dir_flush"), 0 to go on
     std::function<int(const char* step)> fault;
 };
@@ -386,6 +390,9 @@ struct SessionReadV2Limits {
     // session_read_v2_peak_bytes; false refuses the file.  Not a reservation.
     std::function<bool(uint64_t need_bytes, std::string& why)> admit;
     SessionProgress progress;
+    // the transfer mode of the opened file, reported once its header has been read (and again mid-read if a
+    // filesystem refuses the aligned transfer and the reader drops to buffered).  Optional, as in the write.
+    std::function<void(bool direct)> mode;
 };
 // What the RAM preflight is asked for: the manifest, the region directory, one 16 MiB transfer buffer (shared by
 // both passes) and the small vectors.  Independent of the payload length.

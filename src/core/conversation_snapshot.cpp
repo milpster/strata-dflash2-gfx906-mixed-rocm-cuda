@@ -534,6 +534,37 @@ bool conversation_kv_source(SessionKvSource& out, const QsaState& st, const Mode
     return true;
 }
 
+// ==================== streaming format v2: one K/V layer's regions ====================
+// The same pools and the same layout conversation_kv_restore writes, taken one region at a time: the writer's
+// staging buffer is the only host memory a layer's bytes pass through.  The caller keeps this thread on the
+// layer's device, writes every region of the layer, then finishes it (the residency refresh, exactly as a restore
+// runs it after its copies).
+bool conversation_kv_stream_write(const QsaState& state, const ModelGeometry& g, int64_t upto, bool include_index,
+                                  size_t part, uint64_t offset, const void* bytes, size_t n, std::string& error) {
+    Layout l{};
+    if (!layout(state, g, upto, include_index, l, error) || !valid(state, l, upto, error)) return false;
+    const std::array<size_t, 5> sizes = {l.data, l.value_data, l.scales, l.value_scales, l.pooled};
+    if (part >= sizes.size()) { error = "conversation snapshot: K/V region part outside 0..4"; return false; }
+    if (offset > sizes[part] || n > sizes[part] - offset) {
+        error = "conversation snapshot: K/V region part " + std::to_string(part) + " of " + std::to_string(sizes[part]) +
+                " bytes cannot take " + std::to_string(n) + " at " + std::to_string(offset);
+        return false;
+    }
+    const auto dst = pools(state);
+    if (n && !dst[part]) {
+        error = "conversation snapshot: missing target state buffer";
+        return false;
+    }
+    return transfer(static_cast<uint8_t*>(dst[part]) + offset, bytes, n, error);
+}
+
+bool conversation_kv_stream_finish(const QsaState& state, const ModelGeometry& g, int64_t upto, bool include_index,
+                                   std::string& error) {
+    Layout l{};
+    if (!layout(state, g, upto, include_index, l, error) || !valid(state, l, upto, error)) return false;
+    return refresh_residency(state, g, upto, error);
+}
+
 bool conversation_kv_verify(const ConversationKv& image, const QsaState& st, const ModelGeometry& g,
                             int64_t upto, bool index, uint64_t& fingerprint, std::string& error) {
     conversation_park_join();

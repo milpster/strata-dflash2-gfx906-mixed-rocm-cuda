@@ -247,6 +247,11 @@ if(STRATA_BUILD_CONVERSATION_TESTS)
   add_executable(conversation_file_v2_test src/core/conversation_file_v2_test.cpp src/core/conversation_file.cpp)
   target_include_directories(conversation_file_v2_test PRIVATE include)
   add_test(NAME conversation_file_v2_test COMMAND conversation_file_v2_test)
+  # the caller-side streaming layer of v2: the region list, the sources and the sink dispatcher
+  add_executable(conversation_stream_state_test src/core/conversation_stream_state_test.cpp
+               src/core/conversation_stream_state.cpp src/core/conversation_file.cpp)
+  target_include_directories(conversation_stream_state_test PRIVATE include)
+  add_test(NAME conversation_stream_state_test COMMAND conversation_stream_state_test)
   add_executable(session_save_reclaim_test src/core/session_save_reclaim_test.cpp src/core/conversation_file.cpp)
   target_include_directories(session_save_reclaim_test PRIVATE include)
   add_test(NAME session_save_reclaim_test COMMAND session_save_reclaim_test)
