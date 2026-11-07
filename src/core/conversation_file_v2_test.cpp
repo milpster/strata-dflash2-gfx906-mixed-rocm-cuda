@@ -155,6 +155,24 @@ Sample plain_sample() {
     return s;
 }
 
+// a PAIRED checkpoint: checkpoint 2 (prefix 1000) carries the ring image captured AT its boundary,
+// on the file's own draft layout, with the exact counters the capture took. The pair region is one
+// more streamed region; its meta names it.
+Sample paired_sample() {
+    Sample s = split_sample();
+    add(s, int32_t(SessionRegionKind::dflash_pair), 0, 2, 0, 3u << 17, 131);
+    auto& c = s.manifest.checkpoints[2];
+    c.ring_id = 0xC0FFEE;
+    c.ring_bytes = s.data.back().size();
+    c.ring_checksum = session_hash64(s.data.back().data(), s.data.back().size(), 0);
+    c.ring_cells = s.manifest.draft.ring_cells;
+    c.ring_window = s.manifest.draft.window;
+    c.ring_capacity = s.manifest.draft.capacity;
+    c.ring_committed_end = int64_t(c.prefix);
+    c.ring_appended_through = 1400;
+    return s;
+}
+
 std::vector<SessionRegionSource> sources_of(const Sample& s) {
     std::vector<SessionRegionSource> out;
     for (size_t i = 0; i < s.manifest.regions.size(); ++i) {
@@ -256,6 +274,12 @@ void reseal(std::vector<char>& f) {
     put64(f, f.size() - 24, session_hash64(f.data() + 64, manifest, 0));
     put64(f, f.size() - 16, session_hash64(f.data() + 64 + payload, table, 0));
 }
+
+// recompute a ring sidecar's header hash after its fields changed (the payload bytes did not)
+void reseal_sidecar(std::vector<char>& h) {
+    const uint64_t hh = session_hash64(h.data(), 80, 0);
+    std::memcpy(h.data() + 80, &hh, 8);
+}
 } // namespace
 
 int main() {
@@ -328,9 +352,18 @@ int main() {
             metas = metas && a.prefix == b.prefix && a.used == b.used && a.pinned == b.pinned &&
                     a.stage_parts == b.stage_parts && a.plan.chunk == b.plan.chunk && a.plan.from == b.plan.from &&
                     a.plan.to == b.plan.to && a.plan.lend == b.plan.lend && a.plan.pipe == b.plan.pipe &&
-                    a.plan.single == b.plan.single && a.plan.chunked == b.plan.chunked;
+                    a.plan.single == b.plan.single && a.plan.chunked == b.plan.chunked &&
+                    a.ring_id == b.ring_id && a.ring_bytes == b.ring_bytes && a.ring_checksum == b.ring_checksum &&
+                    a.ring_cells == b.ring_cells && a.ring_window == b.ring_window && a.ring_capacity == b.ring_capacity &&
+                    a.ring_committed_end == b.ring_committed_end && a.ring_appended_through == b.ring_appended_through;
         }
-        check(metas, "v2 checkpoint prefix references, pin, LRU stamp and prompt plan round-trip");
+        check(metas, "v2 checkpoint prefix references, pin, LRU stamp, prompt plan and pair meta round-trip");
+        bool target_only = true;
+        for (const auto& c : back.checkpoints)
+            target_only = target_only && c.ring_id == 0 && c.ring_bytes == 0 && c.ring_checksum == 0 &&
+                          c.ring_cells == 0 && c.ring_window == 0 && c.ring_capacity == 0 &&
+                          c.ring_committed_end == -1 && c.ring_appended_through == -1;
+        check(target_only, "v2 keeps an unpaired checkpoint target-only with every pair field zero");
         // the descriptors: canonical order, tiled offsets, and the checksums the write computed
         uint64_t at = 0;
         bool tiled = back.regions.size() == split.manifest.regions.size();
@@ -387,6 +420,33 @@ int main() {
         check(session_file_read_v2(p.string(), id, want_of(plain), back, read, error, {}, use), "v2 single-stage read");
         check(region_bytes_match(plain, col), "v2 single-stage round trip");
         check(back.draft.type == 0 && back.draft.committed_end == -1, "v2 keeps an absent draft absent");
+    }
+    // paired checkpoint: the pair streams as its own region and the meta names it exactly
+    {
+        const Sample paired = paired_sample();
+        const fs::path p = dir / "pair.bin";
+        check(session_file_write_v2(p.string(), id, paired.manifest, sources_of(paired), written, error), "v2 paired write");
+        SessionManifestV2 back;
+        Collector col;
+        SessionRegionSink sink = collector_sink(col);
+        SessionRegionSink* use = &sink;
+        size_t read = 0;
+        check(session_file_read_v2(p.string(), id, want_of(paired), back, read, error, {}, use) &&
+              region_bytes_match(paired, col), "v2 paired round trip: the pair region's bytes stream like every region");
+        const auto& a = back.checkpoints[2];
+        const auto& b = paired.manifest.checkpoints[2];
+        check(a.ring_id == b.ring_id && a.ring_bytes == b.ring_bytes && a.ring_checksum == b.ring_checksum &&
+              a.ring_cells == b.ring_cells && a.ring_window == b.ring_window && a.ring_capacity == b.ring_capacity &&
+              a.ring_committed_end == b.ring_committed_end && a.ring_appended_through == b.ring_appended_through,
+              "v2 pair meta round-trips (id, extent, checksum, layout, exact counters)");
+        check(a.ring_committed_end == int64_t(a.prefix), "the read pair's captured end sits at the checkpoint position");
+        bool pair_region = false;
+        for (const auto& r : back.regions)
+            if (r.kind == int32_t(SessionRegionKind::dflash_pair) && r.index == 2)
+                pair_region = r.bytes == a.ring_bytes && r.checksum == a.ring_checksum && r.stage == 0 && r.part == 0;
+        check(pair_region, "the pair region is in the directory with the meta's extent and checksum");
+        check(back.checkpoints[0].ring_id == 0 && back.checkpoints[1].ring_id == 0,
+              "v2 unpaired checkpoints read target-only beside a pair");
     }
     // v1 refuses layer-split state; v2 takes it.  v1's golden test in conversation_file_test is untouched.
     {
@@ -556,6 +616,29 @@ int main() {
         check(rejects(p, want, {}, id, col, err) && col.writes == 0 && err.find("size") != std::string::npos,
               "v2 region lengths not matching the file size refused, sink untouched");
     }
+    // the read's own manifest validation enforces the pair rules on a file the write published
+    {
+        const Sample paired = paired_sample();
+        const fs::path q = dir / "pairread.bin";
+        check(session_file_write_v2(q.string(), id, paired.manifest, sources_of(paired), written, error), "v2 paired write for the patch tests");
+        const std::vector<char> f = slurp(q);
+        const size_t ckpt = section_frame(f, 0x54535043u) + 12 + 8 + 152 * 2;   // checkpoint 2's record (19 fields x 8)
+        auto patch = [&](size_t field, uint64_t value, const char* expect, const char* label) {
+            auto d = f;
+            put64(d, ckpt + 8 * field, value);
+            reseal(d);
+            const fs::path p = dir / "pairpatch.bin";
+            spit(p, d);
+            Collector col;
+            std::string err;
+            check(rejects(p, want, {}, id, col, err) && col.writes == 0 && err.find(expect) != std::string::npos, label);
+        };
+        patch(17, 999, "pairs the ring at position", "v2 read refuses a pair captured off the checkpoint position");
+        patch(11, 0, "target-only with pair bytes", "v2 read refuses a target-only checkpoint with pair bytes");
+        patch(12, field64(f, ckpt + 8 * 12) + 1, "its meta declares", "v2 read refuses a pair meta/region size mismatch");
+        patch(14, 1056, "not the file's draft", "v2 read refuses a pair on a foreign ring layout");
+        patch(18, paired.manifest.draft.capacity + 1, "outside the ring capacity", "v2 read refuses pair counters over the capacity");
+    }
     // the reader's bounds, all of them before anything is allocated
     {
         SessionReadV2Limits l;
@@ -653,6 +736,11 @@ int main() {
             check(!ok && st.error == SessionError::invalid && !err.empty() && err.find(expect) != std::string::npos &&
                   !fs::exists(p) && no_temp(dir), label);
         };
+        const auto pair_with = [&](std::function<void(Sample&)> tweak, const char* expect, const char* label) {
+            Sample s = paired_sample();
+            tweak(s);
+            write_refuse(s, expect, label);
+        };
         {   // a stage's live state saved in part
             Sample s = split_sample();
             drop(s, [](const SessionRegion& r) { return r.stage == 1 && r.part == 4; });
@@ -700,6 +788,64 @@ int main() {
             s = split_sample();
             s.manifest.draft.appended_through = 10;
             write_refuse(s, "capacity", "v2 draft counters below committed_end refused, no file");
+        }
+        {   // the paired capture's manifest rules
+            pair_with([](Sample& s) { s.manifest.checkpoints[2].ring_committed_end = 999; },
+                      "pairs the ring at position", "v2 pair captured off the checkpoint position refused, no file");
+            pair_with([](Sample& s) { s.manifest.checkpoints[2].ring_cells = 1056; },
+                      "not the file's draft", "v2 pair on a foreign ring layout refused, no file");
+            pair_with([](Sample& s) { s.manifest.checkpoints[2].ring_appended_through = s.manifest.draft.capacity + 1; },
+                      "outside the ring capacity", "v2 pair counters over the capacity refused, no file");
+            pair_with([](Sample& s) { s.manifest.checkpoints[2].ring_appended_through = 999; },
+                      "outside the ring capacity", "v2 pair appended below committed refused, no file");
+            pair_with([](Sample& s) { s.manifest.checkpoints[2].ring_bytes = 1000; },
+                      "its meta declares", "v2 pair region/meta size mismatch refused, no file");
+            pair_with([](Sample& s) {
+                          s.manifest.checkpoints[2].ring_bytes = 0;
+                          for (size_t i = 0; i < s.manifest.regions.size(); ++i)
+                              if (s.manifest.regions[i].kind == int32_t(SessionRegionKind::dflash_pair)) {
+                                  s.manifest.regions[i].bytes = 0;
+                                  s.data[i].clear();
+                              }
+                      },
+                      "pair of no bytes", "v2 pair of no bytes refused, no file");
+            pair_with([](Sample& s) { s.manifest.draft = {}; },
+                      "pair with no draft", "v2 checkpoint pair with no draft in the file refused, no file");
+            pair_with([](Sample& s) {
+                          for (auto& r : s.manifest.regions)
+                              if (r.kind == int32_t(SessionRegionKind::dflash_pair)) r.checksum = 1;
+                      },
+                      "checksum differs", "v2 pair region checksum differing from its meta refused, no file");
+            pair_with([](Sample& s) {
+                          for (auto& r : s.manifest.regions)
+                              if (r.kind == int32_t(SessionRegionKind::dflash_pair)) r.stage = 1;
+                      },
+                      "names a stage or part", "v2 pair region naming a stage refused, no file");
+            pair_with([](Sample& s) {
+                          for (auto& r : s.manifest.regions)
+                              if (r.kind == int32_t(SessionRegionKind::dflash_pair)) r.index = 5;
+                      },
+                      "names checkpoint 5", "v2 pair region naming a missing checkpoint refused, no file");
+            {   // pair meta with no region, and a region with no pair meta
+                Sample s = split_sample();
+                auto& c = s.manifest.checkpoints[2];
+                c.ring_id = 7; c.ring_bytes = 262144; c.ring_cells = s.manifest.draft.ring_cells;
+                c.ring_window = s.manifest.draft.window; c.ring_capacity = s.manifest.draft.capacity;
+                c.ring_committed_end = 1000; c.ring_appended_through = 1400;
+                write_refuse(s, "pair with no region", "v2 pair meta with no region refused, no file");
+                s = split_sample();
+                add(s, int32_t(SessionRegionKind::dflash_pair), 0, 1, 0, 0, 132);
+                write_refuse(s, "pair regions for 0 paired", "v2 pair region with no pair meta refused, no file");
+            }
+            {   // a target-only checkpoint carrying pair debris
+                Sample s = split_sample();
+                s.manifest.checkpoints[0].ring_bytes = 5;
+                write_refuse(s, "target-only with pair bytes", "v2 target-only checkpoint with pair bytes refused, no file");
+                s = split_sample();
+                s.manifest.checkpoints[0].ring_window = 2048;
+                write_refuse(s, "target-only with pair counters",
+                             "v2 target-only checkpoint with pair counters refused, no file");
+            }
         }
         {   // an image key out of order
             Sample s = split_sample();
@@ -815,6 +961,63 @@ int main() {
         check(session_file_read_v2(p.string(), id, want, back, read, error, {}, use) && region_bytes_match(split, col),
               "v2 buffered read streams every region");
         set_env("STRATA_SESSION_BUFFERED", inherited ? kept.c_str() : nullptr);
+    }
+    // the checkpoint-boundary ring sidecar: paired capture bytes with the exact counters, fail-closed
+    {
+        const DFlashSnapshotMeta meta{1000, 1400, 2112, 2048, 8192};
+        const std::vector<uint8_t> payload = bytes_of(4096, 5);
+        const fs::path p = dir / "ring.dring";
+        check(session_ring_sidecar_write(p.string(), meta, 1000, payload.data(), payload.size(), error), "ring sidecar write");
+        std::vector<uint8_t> out;
+        check(session_ring_sidecar_read(p.string(), meta, 1000, out, error) && out == payload, "ring sidecar round trip");
+        const fs::path z = dir / "ring-empty.dring";
+        check(session_ring_sidecar_write(z.string(), meta, 0, nullptr, 0, error), "ring sidecar write of an empty ring");
+        check(session_ring_sidecar_read(z.string(), meta, 0, out, error) && out.empty(), "ring sidecar round trip of an empty ring");
+        // an over-cap write is refused before the file is created
+        std::vector<uint8_t> huge((size_t(64) << 20) + 1, 1);
+        const fs::path hp = dir / "ring-huge.dring";
+        check(!session_ring_sidecar_write(hp.string(), meta, 10, huge.data(), uint64_t(huge.size()), error) &&
+              error.find("cap") != std::string::npos && !fs::exists(hp), "ring sidecar write over the 64 MiB cap refused, no file");
+        huge.clear();
+        // refusals: `out` keeps its sentinel every time
+        const std::vector<uint8_t> pristine(3, 0xAB);
+        auto refuse = [&](const fs::path& q, const DFlashSnapshotMeta& want_meta, int64_t tokens, const char* label) {
+            std::vector<uint8_t> kept = pristine;
+            std::string e;
+            check(!session_ring_sidecar_read(q.string(), want_meta, tokens, kept, e) && !e.empty() &&
+                  kept == pristine, label);
+        };
+        refuse(dir / "ring-gone.dring", meta, 1000, "ring sidecar: missing file refused");
+        const std::vector<char> f = slurp(p);
+        auto variant = [&](const std::function<void(std::vector<char>&)>& twist, const char* file) {
+            auto d = f;
+            twist(d);
+            const fs::path q = dir / file;
+            spit(q, d);
+            return q;
+        };
+        refuse(variant([](std::vector<char>& d) { d.resize(80); }, "ring-cut.dring"), meta, 1000,
+               "ring sidecar: header truncated refused");
+        refuse(variant([](std::vector<char>& d) { d[0] = 'X'; reseal_sidecar(d); }, "ring-magic.dring"), meta, 1000,
+               "ring sidecar: foreign magic refused");
+        refuse(variant([](std::vector<char>& d) { d[8] = 3; reseal_sidecar(d); }, "ring-ver.dring"), meta, 1000,
+               "ring sidecar: foreign version refused");
+        refuse(variant([](std::vector<char>& d) { d[40] ^= 0x40; }, "ring-head.dring"), meta, 1000,
+               "ring sidecar: corrupt header refused (header hash)");
+        refuse(variant([](std::vector<char>& d) { put64(d, 16, 999); reseal_sidecar(d); }, "ring-tok.dring"), meta, 1000,
+               "ring sidecar: token extent mismatch refused");
+        refuse(variant([](std::vector<char>& d) { put64(d, 24, 999); reseal_sidecar(d); }, "ring-cnt.dring"), meta, 1000,
+               "ring sidecar: counters that are not the pair's refused");
+        refuse(variant([](std::vector<char>& d) { d.resize(d.size() - 100); }, "ring-trunc.dring"), meta, 1000,
+               "ring sidecar: payload truncated refused");
+        refuse(variant([](std::vector<char>& d) { d.push_back('x'); }, "ring-tail.dring"), meta, 1000,
+               "ring sidecar: trailing bytes refused");
+        refuse(variant([](std::vector<char>& d) { d[88 + 10] ^= 0x40; }, "ring-data.dring"), meta, 1000,
+               "ring sidecar: payload checksum mismatch refused");
+        refuse(variant([](std::vector<char>& d) { put64(d, 64, (uint64_t(64) << 20) + 1); reseal_sidecar(d); },
+                        "ring-cap.dring"), meta, 1000, "ring sidecar: byte count over the cap refused");
+        refuse(p, DFlashSnapshotMeta{1000, 1400, 1056, 2048, 8192}, 1000, "ring sidecar: foreign ring layout refused");
+        refuse(p, meta, 999, "ring sidecar: resume extent mismatch refused");
     }
     // v1 keeps its own format: the v1 API writes and reads what it always did, with its own magic
     {

@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <new>
 #include <unordered_map>
 #include <optional>
@@ -1293,7 +1294,8 @@ constexpr uint64_t kSectionFrame = 12;   // tag:u32 + body length:u64
 constexpr uint32_t kSecLayout = 0x5459414Cu, kSecDraft = 0x54465244u, kSecTokens = 0x4E4B4F54u,
                    kSecImages = 0x47414D49u, kSecChecks = 0x54535043u, kSecRegions = 0x4B534452u, kSecEnd = 0;
 constexpr int64_t kPlanFields = 7;   // chunk, from, to, lend, pipe bits, single, chunked
-constexpr int64_t kCheckpointFields = 4 + kPlanFields;   // prefix, used, pinned, stage parts + the plan
+constexpr int64_t kPairFields = 8;   // ring id, bytes, checksum, cells, window, capacity, committed end, appended through
+constexpr int64_t kCheckpointFields = 4 + kPlanFields + kPairFields;   // prefix, used, pinned, stage parts + the plan + the pair
 constexpr int64_t kRegionFields = 7;   // kind, stage, index, part, offset, bytes, checksum
 const uint64_t kFullParts = (uint64_t(1) << kSessionStateParts) - 1;
 
@@ -1305,7 +1307,7 @@ bool region_less(const SessionRegion& a, const SessionRegion& b) {
 }
 
 bool known_kind(int32_t kind) {
-    return kind >= int32_t(SessionRegionKind::live_state) && kind <= int32_t(SessionRegionKind::dflash);
+    return kind >= int32_t(SessionRegionKind::live_state) && kind <= int32_t(SessionRegionKind::dflash_pair);
 }
 
 // the regions naming one (kind, stage, index): how many, and which parts they cover
@@ -1383,11 +1385,23 @@ bool check_manifest_v2(const SessionManifestV2& m, std::string& error) {
         if (count > uint64_t(kSessionKvParts) || (count && mask != kFullParts))
             return refuse("stage " + std::to_string(s) + " holds a partial MTP region");
     }
-    int dflash_regions = 0;
+    int dflash_regions = 0, pair_regions = 0;
     for (size_t i = 0; i < m.regions.size(); ++i) {
         const auto& r = m.regions[i];
         if (r.kind == int32_t(SessionRegionKind::dflash)) {
             ++dflash_regions;
+            continue;
+        }
+        if (r.kind == int32_t(SessionRegionKind::dflash_pair)) {
+            if (r.stage || r.part) return refuse("a checkpoint pair region names a stage or part");
+            if (r.index >= int64_t(m.checkpoints.size()))
+                return refuse("a checkpoint pair region names checkpoint " + std::to_string(r.index) +
+                              ", the manifest holds " + std::to_string(m.checkpoints.size()));
+            if (m.checkpoints[(size_t) r.index].ring_bytes != r.bytes)
+                return refuse("the pair region of checkpoint " + std::to_string(r.index) + " is " +
+                              std::to_string(r.bytes) + " bytes, its meta declares " +
+                              std::to_string(m.checkpoints[(size_t) r.index].ring_bytes));
+            ++pair_regions;
             continue;
         }
         if (r.kind == int32_t(SessionRegionKind::kv)) {
@@ -1423,9 +1437,42 @@ bool check_manifest_v2(const SessionManifestV2& m, std::string& error) {
                 return refuse("checkpoint " + std::to_string(i) + " saves a part of stage " + std::to_string(s) +
                               " it does not cover");
         }
+        // the paired draft capture: target-only is all-zero; a pair is captured AT the checkpoint
+        // position, on the file's own draft layout, with self-consistent counters
+        const auto& c = m.checkpoints[i];
+        if (c.ring_id == 0) {
+            if (c.ring_bytes || c.ring_checksum)
+                return refuse("checkpoint " + std::to_string(i) + " is target-only with pair bytes");
+            if (c.ring_cells || c.ring_window || c.ring_capacity || c.ring_committed_end != -1 ||
+                c.ring_appended_through != -1)
+                return refuse("checkpoint " + std::to_string(i) + " is target-only with pair counters");
+            continue;
+        }
+        if (d.type == 0) return refuse("a checkpoint pair with no draft in the file");
+        if (c.ring_bytes == 0) return refuse("checkpoint " + std::to_string(i) + " has a pair of no bytes");
+        if (c.ring_committed_end != int64_t(c.prefix))
+            return refuse("checkpoint " + std::to_string(i) + " pairs the ring at position " +
+                          std::to_string(c.ring_committed_end) + ", the checkpoint sits at " +
+                          std::to_string(c.prefix));
+        if (c.ring_cells != d.ring_cells || c.ring_window != d.window || c.ring_capacity != d.capacity)
+            return refuse("checkpoint " + std::to_string(i) + " pairs a ring layout that is not the file's draft");
+        if (c.ring_committed_end < 0 || c.ring_appended_through < c.ring_committed_end ||
+            c.ring_committed_end > d.capacity || c.ring_appended_through > d.capacity)
+            return refuse("checkpoint " + std::to_string(i) + " pair counters outside the ring capacity");
+        const SessionRegion* region = nullptr;
+        for (const auto& r : m.regions)
+            if (r.kind == int32_t(SessionRegionKind::dflash_pair) && r.index == int64_t(i)) { region = &r; break; }
+        if (region == nullptr) return refuse("checkpoint " + std::to_string(i) + " has a pair with no region");
+        if (region->checksum && region->checksum != c.ring_checksum)
+            return refuse("checkpoint " + std::to_string(i) + " pair region checksum differs from its meta");
     }
     if (dflash_regions > 1) return refuse(std::to_string(dflash_regions) + " dflash regions");
     if (dflash_regions && d.type == 0) return refuse("a dflash region with no draft");
+    int paired = 0;
+    for (const auto& c : m.checkpoints) paired += c.ring_id ? 1 : 0;
+    if (pair_regions != paired)
+        return refuse(std::to_string(pair_regions) + " pair regions for " + std::to_string(paired) +
+                      " paired checkpoints");
     return true;
 }
 
@@ -1467,6 +1514,9 @@ void put_manifest_v2(Out& o, const SessionManifestV2& m) {
         o.u64(c.prefix); o.u64(c.used); o.u64(c.pinned ? 1 : 0); o.i64(c.stage_parts);
         o.i64(c.plan.chunk); o.i64(c.plan.from); o.i64(c.plan.to); o.i64(c.plan.lend); o.u64(bits);
         o.u64(c.plan.single ? 1 : 0); o.u64(c.plan.chunked ? 1 : 0);
+        o.u64(c.ring_id); o.u64(c.ring_bytes); o.u64(c.ring_checksum);
+        o.i64(c.ring_cells); o.i64(c.ring_window); o.i64(c.ring_capacity);
+        o.i64(c.ring_committed_end); o.i64(c.ring_appended_through);
     }
     section(kSecRegions, sat_add(8, sat_mul(m.regions.size(), kRegionFields * 8)));
     o.u64(m.regions.size());
@@ -1576,7 +1626,10 @@ bool parse_manifest_v2(const uint8_t* data, uint64_t n, const SessionReadV2Limit
                     uint64_t pinned = 0, single = 0, chunked = 0, bits = 0;
                     if (!sec.u64(c.prefix) || !sec.u64(c.used) || !sec.u64(pinned) || !sec.i64(c.stage_parts) ||
                         !sec.i64(c.plan.chunk) || !sec.i64(c.plan.from) || !sec.i64(c.plan.to) ||
-                        !sec.i64(c.plan.lend) || !sec.u64(bits) || !sec.u64(single) || !sec.u64(chunked)) return false;
+                        !sec.i64(c.plan.lend) || !sec.u64(bits) || !sec.u64(single) || !sec.u64(chunked) ||
+                        !sec.u64(c.ring_id) || !sec.u64(c.ring_bytes) || !sec.u64(c.ring_checksum) ||
+                        !sec.i64(c.ring_cells) || !sec.i64(c.ring_window) || !sec.i64(c.ring_capacity) ||
+                        !sec.i64(c.ring_committed_end) || !sec.i64(c.ring_appended_through)) return false;
                     if (pinned > 1 || single > 1 || chunked > 1) return refuse("invalid checkpoint flag");
                     c.pinned = pinned == 1;
                     c.plan.single = single == 1;
@@ -2011,6 +2064,7 @@ const char* session_region_kind_name(int32_t kind) {
         case int32_t(SessionRegionKind::checkpoint_state): return "checkpoint_state";
         case int32_t(SessionRegionKind::mtp): return "mtp";
         case int32_t(SessionRegionKind::dflash): return "dflash";
+        case int32_t(SessionRegionKind::dflash_pair): return "dflash_pair";
         default: return "unknown";
     }
 }
@@ -2050,6 +2104,104 @@ bool session_file_read_v2(const std::string& path, const SessionFileIdentity& id
     }
     if (status) *status = st;
     return ok;
+}
+
+// ---- the checkpoint-boundary ring sidecar (lane 2b: paired draft capture) ----
+namespace {
+constexpr char kRingMagic[8] = {'S', 'T', 'R', 'D', 'R', 'I', 'N', '2'};
+constexpr size_t kRingHeader = 88;                 // magic, version, size, tokens, 5 counters, bytes, checksum, hash
+constexpr uint64_t kRingMaxBytes = 64ull << 20;    // the sidecar is ring-sized; this is its hard cap
+} // namespace
+
+bool session_ring_sidecar_write(const std::string& path, const DFlashSnapshotMeta& meta, int64_t tokens,
+                                const void* bytes, uint64_t n, std::string& error) {
+    error.clear();
+    if (n > kRingMaxBytes) {
+        error = "ring sidecar: " + std::to_string(n) + " bytes over the " + std::to_string(kRingMaxBytes >> 20) +
+                " MiB cap";
+        return false;
+    }
+    uint8_t h[kRingHeader];
+    std::memset(h, 0, sizeof h);
+    std::memcpy(h, kRingMagic, 8);
+    const uint32_t version = 2, hsize = (uint32_t) kRingHeader;
+    const uint64_t checksum = session_hash64(bytes, n, 0);
+    std::memcpy(h + 8, &version, 4);
+    std::memcpy(h + 12, &hsize, 4);
+    std::memcpy(h + 16, &tokens, 8);
+    std::memcpy(h + 24, &meta.committed_end, 8);
+    std::memcpy(h + 32, &meta.appended_through, 8);
+    std::memcpy(h + 40, &meta.ring_cells, 8);
+    std::memcpy(h + 48, &meta.window, 8);
+    std::memcpy(h + 56, &meta.capacity, 8);
+    std::memcpy(h + 64, &n, 8);
+    std::memcpy(h + 72, &checksum, 8);
+    const uint64_t hh = session_hash64(h, kRingHeader - 8, 0);
+    std::memcpy(h + 80, &hh, 8);
+    std::ofstream f(std::filesystem::path(path), std::ios::binary | std::ios::trunc);
+    if (!f) { error = "ring sidecar: cannot create " + path; return false; }
+    f.write(reinterpret_cast<const char*>(h), (std::streamsize) kRingHeader);
+    if (n) f.write(static_cast<const char*>(bytes), (std::streamsize) n);
+    f.flush();
+    if (!f) {
+        f.close();
+        std::error_code rec;
+        std::filesystem::remove(std::filesystem::path(path), rec);
+        error = "ring sidecar: writing " + path + " failed";
+        return false;
+    }
+    f.close();
+    return !f.fail();
+}
+
+bool session_ring_sidecar_read(const std::string& path, const DFlashSnapshotMeta& want, int64_t tokens,
+                               std::vector<uint8_t>& out, std::string& error) {
+    error.clear();
+    const auto refuse = [&](const std::string& what) {
+        error = "ring sidecar: " + what;
+        return false;
+    };
+    std::ifstream f(std::filesystem::path(path), std::ios::binary);
+    if (!f) return refuse("cannot open " + path);
+    uint8_t h[kRingHeader];
+    f.read(reinterpret_cast<char*>(h), (std::streamsize) kRingHeader);
+    if (f.gcount() != (std::streamsize) kRingHeader) return refuse(path + " is shorter than its header");
+    if (std::memcmp(h, kRingMagic, 8) != 0) return refuse(path + " is not a ring sidecar (magic)");
+    uint32_t version = 0, hsize = 0;
+    std::memcpy(&version, h + 8, 4);
+    std::memcpy(&hsize, h + 12, 4);
+    if (version != 2 || hsize != kRingHeader) return refuse(path + " has a version this engine does not read");
+    uint64_t hh = 0;
+    std::memcpy(&hh, h + 80, 8);
+    if (hh != session_hash64(h, kRingHeader - 8, 0)) return refuse(path + " header is corrupt");
+    int64_t tokens_file = 0;
+    DFlashSnapshotMeta m;
+    std::memcpy(&tokens_file, h + 16, 8);
+    std::memcpy(&m.committed_end, h + 24, 8);
+    std::memcpy(&m.appended_through, h + 32, 8);
+    std::memcpy(&m.ring_cells, h + 40, 8);
+    std::memcpy(&m.window, h + 48, 8);
+    std::memcpy(&m.capacity, h + 56, 8);
+    uint64_t n = 0, checksum = 0;
+    std::memcpy(&n, h + 64, 8);
+    std::memcpy(&checksum, h + 72, 8);
+    if (tokens_file != tokens) return refuse(path + " captured " + std::to_string(tokens_file) +
+                                             " tokens, the checkpoint sits at " + std::to_string(tokens));
+    if (m.committed_end != want.committed_end || m.appended_through != want.appended_through ||
+        m.ring_cells != want.ring_cells || m.window != want.window || m.capacity != want.capacity)
+        return refuse(path + " counters are not the pair's");
+    if (n > kRingMaxBytes) return refuse(path + " claims " + std::to_string(n) + " bytes, over the cap");
+    std::vector<uint8_t> data(n);
+    if (n) {
+        f.read(reinterpret_cast<char*>(data.data()), (std::streamsize) n);
+        if ((uint64_t) f.gcount() != n) return refuse(path + " is truncated inside its ring bytes");
+    }
+    char extra = 0;
+    f.read(&extra, 1);
+    if (f.gcount() == 1) return refuse(path + " has trailing bytes");
+    if (checksum != session_hash64(data.data(), n, 0)) return refuse(path + " ring bytes do not match their checksum");
+    out = std::move(data);
+    return true;
 }
 
 } // namespace strata::core

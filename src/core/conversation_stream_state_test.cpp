@@ -77,6 +77,14 @@ SessionStreamSpec spec() {
     c0.state = {{1000, 64, 24, 12, 6}, {500, 0, 24, 12, 6}};
     SessionStreamCheckpoint c1;
     c1.meta = {200, 42, false, 1, {0, -1, -1, 0, 3.25, false, false}};
+    // a PAIRED checkpoint: the ring image captured at its own boundary, on the drafter's layout
+    c1.meta.ring_id = 9;
+    c1.meta.ring_bytes = 4096;
+    c1.meta.ring_cells = s.draft.ring_cells;
+    c1.meta.ring_window = s.draft.window;
+    c1.meta.ring_capacity = s.draft.capacity;
+    c1.meta.ring_committed_end = 200;
+    c1.meta.ring_appended_through = 260;
     c1.state = {{1000, 64, 24, 12, 6}, {500, 0, 24, 12, 6}};
     s.checkpoints = {c0, c1};
     return s;
@@ -142,6 +150,8 @@ std::vector<SessionStreamDestination> dests_for(const SessionManifestV2& m, Coll
     }
     mk(int32_t(SessionRegionKind::checkpoint_state), -1, -1, "checks");
     mk(int32_t(SessionRegionKind::dflash), 0, 0, "dflash");
+    if (std::ranges::count_if(m.checkpoints, [](const SessionCheckpointMeta& c) { return c.ring_id != 0; }))
+        mk(int32_t(SessionRegionKind::dflash_pair), -1, -1, "pairs");
     return out;
 }
 SessionRegionSink sink_of(std::vector<SessionStreamDestination>& dests, std::string& why) {
@@ -177,7 +187,7 @@ void test_builder() {
     check(m.tokens == s.tokens && m.images == s.images, "token/image directory travels");
     check(m.checkpoints.size() == 2 && m.checkpoints[0].pinned && m.checkpoints[1].prefix == 200, "checkpoint meta travels");
     check(m.checkpoints[0].plan.pipe == 0.5 && m.checkpoints[1].plan.to == -1, "plan bits travel");
-    size_t live = 0, kv = 0, cps = 0, mtp = 0, dfl = 0;
+    size_t live = 0, kv = 0, cps = 0, mtp = 0, dfl = 0, dfp = 0;
     for (const auto& r : m.regions) {
         check(r.offset == 0 && r.checksum == 0, "the writer fills offsets and checksums");
         if (r.kind == int32_t(SessionRegionKind::live_state)) ++live;
@@ -185,6 +195,7 @@ void test_builder() {
         else if (r.kind == int32_t(SessionRegionKind::checkpoint_state)) ++cps;
         else if (r.kind == int32_t(SessionRegionKind::mtp)) ++mtp;
         else if (r.kind == int32_t(SessionRegionKind::dflash)) ++dfl;
+        else if (r.kind == int32_t(SessionRegionKind::dflash_pair)) ++dfp;
         else check(false, "unknown kind from the builder");
     }
     check(live == 10, "five live-state parts per stage");
@@ -192,6 +203,17 @@ void test_builder() {
     check(cps == 20, "a checkpoint body per stage it covers");
     check(mtp == 5, "the drafter's layer once");
     check(dfl == 1, "the ring once");
+    bool pair_region = false, pair_meta = false;
+    for (const auto& r : m.regions)
+        if (r.kind == int32_t(SessionRegionKind::dflash_pair))
+            pair_region = r.stage == 0 && r.index == 1 && r.part == 0 && r.bytes == 4096;
+    const auto& pc = m.checkpoints[1];
+    pair_meta = pc.ring_id == 9 && pc.ring_bytes == 4096 && pc.ring_committed_end == int64_t(pc.prefix) &&
+                pc.ring_appended_through == 260 && pc.ring_cells == s.draft.ring_cells &&
+                pc.ring_window == s.draft.window && pc.ring_capacity == s.draft.capacity;
+    check(dfp == 1 && pair_region, "the builder adds the paired ring image at the checkpoint's ordinal");
+    check(pair_meta, "the pair meta travels with the exact captured counters");
+    check(m.checkpoints[0].ring_id == 0, "the unpaired checkpoint stays target-only");
 }
 
 void test_builder_refusals() {
@@ -260,6 +282,38 @@ void test_builder_refusals() {
     s.stages[1].live[1] = 0;
     s.checkpoints[1].state[1][1] = 64;   // the stage has no PLE history
     check(!session_stream_manifest(s, m, error) && !error.empty(), "a PLE body a stage cannot hold is refused");
+
+    s = spec();
+    s.checkpoints[1].meta.ring_committed_end = 199;
+    error.clear();
+    check(!session_stream_manifest(s, m, error) &&
+          error.find("pairs the ring at 199") != std::string::npos, "a pair captured off the checkpoint position is refused");
+
+    s = spec();
+    s.checkpoints[1].meta.ring_window = 1024;
+    error.clear();
+    check(!session_stream_manifest(s, m, error) &&
+          error.find("not the drafter's") != std::string::npos, "a pair on a foreign ring layout is refused");
+
+    s = spec();
+    s.checkpoints[1].meta.ring_bytes = 0;
+    error.clear();
+    check(!session_stream_manifest(s, m, error) &&
+          error.find("pairs zero ring bytes") != std::string::npos, "a pair of zero bytes is refused");
+
+    s = spec();
+    s.draft = {};
+    s.has_dflash = false;
+    s.dflash_bytes = 0;
+    error.clear();
+    check(!session_stream_manifest(s, m, error) &&
+          error.find("no drafter in the spec") != std::string::npos, "a checkpoint pair with no drafter is refused");
+
+    s = spec();
+    s.checkpoints[0].meta.ring_bytes = 5;
+    error.clear();
+    check(!session_stream_manifest(s, m, error) &&
+          error.find("carries pair fields") != std::string::npos, "a target-only checkpoint with pair debris is refused");
 }
 
 void test_round_trip(const fs::path& dir) {
@@ -298,6 +352,15 @@ void test_round_trip(const fs::path& dir) {
     check(got.layout == m.layout && got.draft == m.draft && got.tokens == m.tokens && got.images == m.images &&
               got.checkpoints.size() == m.checkpoints.size() && got.cvec == m.cvec,
           "the manifest a restore reads matches the spec");
+    bool metas = true;
+    for (size_t i = 0; i < got.checkpoints.size(); ++i) {
+        const auto& a = got.checkpoints[i];
+        const auto& b = m.checkpoints[i];
+        metas = metas && a.prefix == b.prefix && a.ring_id == b.ring_id && a.ring_bytes == b.ring_bytes &&
+                a.ring_cells == b.ring_cells && a.ring_window == b.ring_window && a.ring_capacity == b.ring_capacity &&
+                a.ring_committed_end == b.ring_committed_end && a.ring_appended_through == b.ring_appended_through;
+    }
+    check(metas, "checkpoint meta and pair counters round-trip through the streamed file");
 
     // pass 2 through the sink dispatcher
     Collector c;
@@ -316,8 +379,9 @@ void test_round_trip(const fs::path& dir) {
     }
     check(same, "every region's bytes arrived unchanged, in canonical order");
     check(c.validated.size() == m.regions.size(), "validate_region was asked for every region");
-    check(c.finished.size() == 3 * m.layout.stages.size() + 2 && c.finished.front() == "live0",
-          "each destination finished once, in order");
+    check(c.finished.size() == 3 * m.layout.stages.size() + 2 + 1 && c.finished.front() == "live0" &&
+              c.finished.back() == "pairs",
+          "each destination finished once, in order (the pair destination last)");
     check(c.max_block <= (16u << 20), "blocks stay bounded");
     (void) region_bytes;
 

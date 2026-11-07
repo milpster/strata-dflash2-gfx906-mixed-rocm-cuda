@@ -149,4 +149,13 @@ struct DFlashRingState {
     }
 };
 
+/// The paired-capture rule (the checkpoint-boundary lane): a checkpoint's ring pair is legal
+/// when the checkpoint sits EXACTLY at the confirmed end (never an unrelated target/draft
+/// position) and its block's readable window is retained at this horizon. Capturing under this
+/// predicate freezes a pair whose own counters keep `context_retained(pos, rows)` true at any
+/// later restore - ring wraps after the capture cannot touch it.
+inline bool dflash_pair_capture_ok(const DFlashRingState& s, int64_t pos, int64_t rows) {
+    return s.committed_end == pos && s.context_retained(pos, rows);
+}
+
 }  // namespace strata::core

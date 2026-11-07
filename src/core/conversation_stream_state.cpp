@@ -73,11 +73,24 @@ bool session_stream_manifest(const SessionStreamSpec& spec, SessionManifestV2& o
                           std::to_string(stages - 1) + " later stages");
         // a checkpoint body is one stage's running state at a shorter prefix: never bigger than that stage's live state
         for (size_t s = 0; s < c.state.size(); ++s)
-            for (size_t p = 0; p < kSessionStateParts; ++p)
+            for (int64_t p = 0; p < kSessionStateParts; ++p)
                 if (c.state[s][p] > spec.stages[s].live[p])
                     return refuse("checkpoint " + std::to_string(i) + " of stage " + std::to_string(s) + " part " +
                                   std::to_string(p) + " is " + std::to_string(c.state[s][p]) +
                                   " bytes, the stage's live state is " + std::to_string(spec.stages[s].live[p]));
+        // the paired draft capture: a ring region at the checkpoint's own boundary, on the file's draft layout
+        if (c.meta.ring_id) {
+            if (spec.draft.type <= 0) return refuse("a checkpoint pair with no drafter in the spec");
+            if (c.meta.ring_bytes == 0) return refuse("checkpoint " + std::to_string(i) + " pairs zero ring bytes");
+            if (c.meta.ring_committed_end != int64_t(c.meta.prefix))
+                return refuse("checkpoint " + std::to_string(i) + " pairs the ring at " +
+                              std::to_string(c.meta.ring_committed_end) + ", it sits at " + std::to_string(c.meta.prefix));
+            if (c.meta.ring_cells != spec.draft.ring_cells || c.meta.ring_window != spec.draft.window ||
+                c.meta.ring_capacity != spec.draft.capacity)
+                return refuse("checkpoint " + std::to_string(i) + " pairs a ring layout that is not the drafter's");
+        } else if (c.meta.ring_bytes || c.meta.ring_cells || c.meta.ring_committed_end != -1) {
+            return refuse("a target-only checkpoint carries pair fields");
+        }
     }
     for (size_t i = 0; i < spec.images.size(); ++i) {
         if (spec.images[i].start < 0 || (i && spec.images[i].start <= spec.images[i - 1].start))
@@ -101,7 +114,7 @@ bool session_stream_manifest(const SessionStreamSpec& spec, SessionManifestV2& o
     };
     const int32_t live = int32_t(SessionRegionKind::live_state), kv = int32_t(SessionRegionKind::kv),
                   cps = int32_t(SessionRegionKind::checkpoint_state), mtp = int32_t(SessionRegionKind::mtp),
-                  dfl = int32_t(SessionRegionKind::dflash);
+                  dfl = int32_t(SessionRegionKind::dflash), dfp = int32_t(SessionRegionKind::dflash_pair);
     // the canonical order format v2 requires: by kind, then stage, then index, then part
     for (int64_t s = 0; s < stages; ++s)
         for (int64_t p = 0; p < kSessionStateParts; ++p)
@@ -123,6 +136,10 @@ bool session_stream_manifest(const SessionStreamSpec& spec, SessionManifestV2& o
             add(mtp, s, 0, p, spec.stages[(size_t) s].mtp[(size_t) p]);
     }
     if (spec.has_dflash) add(dfl, 0, 0, 0, spec.dflash_bytes);
+    for (size_t i = 0; i < spec.checkpoints.size(); ++i) {
+        const auto& c = spec.checkpoints[i];
+        if (c.meta.ring_id) add(dfp, 0, int64_t(i), 0, c.meta.ring_bytes);   // paired ring image, one per pair
+    }
 
     out.checkpoints.reserve(spec.checkpoints.size());
     for (const auto& c : spec.checkpoints) out.checkpoints.push_back(c.meta);
@@ -139,7 +156,7 @@ bool session_stream_sources(std::vector<SessionRegionSource>& out, const Session
     out.clear();
     out.reserve(manifest.regions.size());
     for (const auto& r : manifest.regions) {
-        if (r.kind < int32_t(SessionRegionKind::live_state) || r.kind > int32_t(SessionRegionKind::dflash)) {
+        if (r.kind < int32_t(SessionRegionKind::live_state) || r.kind > int32_t(SessionRegionKind::dflash_pair)) {
             error = "session stream: region" + region_name(r) + " has a kind format v2 does not define";
             return false;
         }

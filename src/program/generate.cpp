@@ -12853,6 +12853,10 @@ int main(int argc, char** argv) {
                 std::vector<ImgKey> imgs;
                 bool cvec = true;
                 uint64_t bytes = 0;
+                std::vector<uint64_t> ring_ids;   // the pair sidecars its checkpoint metas reference (reclaim keeps them)
+                int64_t pair_prefix = 0;          // deepest checkpoint prefix with a valid pair (0: none)
+                int64_t anchor = 0;               // deepest checkpoint prefix (the target anchor)
+                bool tail_draft = false;          // the live-tail ring retains a resume at the generation's end
             };
             bool on = false;
             std::string dir;
@@ -12860,6 +12864,9 @@ int main(int argc, char** argv) {
             bool direct_io = true;
             std::vector<Gen> gens;
             int64_t serial = 0;
+            std::map<uint64_t, uint64_t> sidecars;   // capture id -> ring bytes: the checkpoint-boundary pair images
+            uint64_t sidecar_bytes = 0;              // their total, charged to the tier's used bytes
+            uint64_t capture_serial = 0;
         };
         DiskTier disk;
         if (!o.conversation_cache_dir.empty()) {
@@ -12881,6 +12888,27 @@ int main(int argc, char** argv) {
                     disk.budget = (uint64_t) o.conversation_cache_disk_mib << 20;
                     disk.ram = (uint64_t) std::max<int64_t>(o.conversation_cache_disk_ram_mib, 16) << 20;
                     disk.direct_io = o.conversation_cache_disk_io == "direct";
+                    // startup orphan clean: no checkpoints or generations are live yet, so every ring sidecar in
+                    // the tier's own namespace left by a previous run is unreferenced.  Only ring-*.dring files
+                    // are touched - this folder belongs to the tier (0700), and lane 3 owns the fuller inventory.
+                    {
+                        std::error_code sc;
+                        size_t cleared = 0, freed = 0;
+                        for (const auto& e : std::filesystem::directory_iterator(disk.dir, sc)) {
+                            const std::string n = e.path().filename().string();
+                            if (n.rfind("ring-", 0) != 0 || n.size() < 6 || n.compare(n.size() - 5, 5, ".dring") != 0)
+                                continue;
+                            const auto sz = std::filesystem::file_size(e.path(), sc);
+                            if (sc) continue;
+                            std::filesystem::remove(e.path(), sc);
+                            if (sc) continue;
+                            ++cleared;
+                            freed += sz;
+                        }
+                        if (cleared)
+                            std::fprintf(stderr, "strata serve: conversation cache: the disk tier cleared %zu orphan "
+                                                 "ring sidecar(s), %zu KiB\n", cleared, freed >> 10);
+                    }
                     std::fprintf(stderr, "strata serve: conversation cache: the disk tier is on (%s, %lld MiB disk "
                                          "budget, %lld MiB host budget, %s i/o)\n", disk.dir.c_str(),
                                  (long long) (disk.budget >> 20), (long long) (disk.ram >> 20),
@@ -12950,6 +12978,15 @@ int main(int argc, char** argv) {
                 c.meta.pinned = base->pinned;
                 c.meta.stage_parts = complete ? n_st : 0;
                 c.meta.plan = base->plan;
+                // the paired draft capture taken at this checkpoint's boundary (target-only when it has none)
+                c.meta.ring_id = base->draft_pair.id;
+                c.meta.ring_bytes = base->draft_pair.bytes;
+                c.meta.ring_checksum = base->draft_pair.checksum;
+                c.meta.ring_cells = base->draft_pair.ring_cells;
+                c.meta.ring_window = base->draft_pair.window;
+                c.meta.ring_capacity = base->draft_pair.capacity;
+                c.meta.ring_committed_end = base->draft_pair.committed_end;
+                c.meta.ring_appended_through = base->draft_pair.appended_through;
                 c.state.resize((size_t) disk_stages);
                 c.state[0] = {(uint64_t) base->gdn.size(), (uint64_t) base->ple.size(), (uint64_t) base->tails.size(),
                               (uint64_t) base->dead.size(), (uint64_t) base->block_pos.size()};
@@ -13055,6 +13092,103 @@ int main(int argc, char** argv) {
             }
             return &*disk_id;
         };
+        // ---- the checkpoint-boundary PAIR capture (the DFlash-complete resume lane).  A checkpoint's
+        // draft pair is legal only when the drafter's confirmed end sits EXACTLY at the checkpoint
+        // (never an unrelated target/draft position) and the checkpoint's block window is retained at
+        // this horizon; the deferred fusion is drained first, so the counters are this boundary's.
+        // The image is the physical ring clamped at the checkpoint's extent with the EXACT counters,
+        // written to a bounded sidecar in the tier's folder at CAPTURE time - while the window still
+        // exists - and packed into the published generation.  An illegal boundary leaves the
+        // checkpoint target-only, said at the capture; it is never paired later at park time.
+        auto ring_pair_capture = [&](int64_t L, ConvCheckpoint& c, std::string& why) -> bool {
+            if (!disk.on || !has_dflash || L < 1) return false;
+            const strata::core::OnDevice on_df(dflash.device());
+            if (strata::core::deferral_context() && !dflash.idle(why)) return false;   // finish the deferred fusion
+            if (cudaDeviceSynchronize() != cudaSuccess) { why = "the drafter sync at the capture failed"; return false; }
+            const strata::core::DFlashSnapshotMeta meta = dflash.snapshot_meta();
+            const int64_t rows = dflash.max_block() + 1;
+            strata::core::DFlashRingState rs;
+            rs.ring = meta.ring_cells; rs.window = meta.window; rs.max_rows = rows; rs.capacity = meta.capacity;
+            rs.committed_end = meta.committed_end; rs.appended_through = meta.appended_through;
+            if (!strata::core::dflash_pair_capture_ok(rs, L, rows)) {
+                why = "no legal pair boundary at " + std::to_string(L) + " (confirmed end " +
+                      std::to_string(meta.committed_end) + ", horizon " + std::to_string(meta.appended_through) + ")";
+                return false;
+            }
+            std::vector<std::array<uint64_t, 5>> ring;
+            uint64_t ring_bytes = 0;
+            if (!disk_dflash_sizes(L, ring, ring_bytes, why)) return false;
+            std::vector<uint8_t> image(ring_bytes);
+            uint64_t at = 0;
+            for (size_t j = 0; j < ring.size(); ++j) {
+                const int64_t extent = strata::core::dflash_snapshot_extent(L, dflash.kv_states()[j].max_cells);
+                strata::core::SessionKvSource kv;
+                if (!strata::core::conversation_kv_source(kv, dflash.kv_states()[j], dflash.pool_geometry(), extent,
+                                                          false, why))
+                    return false;
+                for (int64_t p = 0; p < strata::core::kSessionKvParts; ++p) {
+                    const uint64_t sz = ring[(size_t) j][(size_t) p];
+                    if (!kv.read((size_t) p, 0, image.data() + at, sz)) { why = "reading the drafter ring failed"; return false; }
+                    at += sz;
+                }
+            }
+            const uint64_t id = ++disk.capture_serial;
+            const std::string path = disk.dir + "/ring-" + std::to_string(id) + ".dring";
+            std::string w2;
+            if (!strata::core::session_ring_sidecar_write(path, meta, L, image.data(), ring_bytes, w2)) {
+                why = w2;
+                return false;
+            }
+            c.draft_pair = {id, ring_bytes, strata::core::session_hash64(image.data(), ring_bytes, 0),
+                            meta.committed_end, meta.appended_through, meta.ring_cells, meta.window, meta.capacity};
+            disk.sidecars[id] = ring_bytes;
+            disk.sidecar_bytes += ring_bytes;
+            return true;
+        };
+        // Reading a retained checkpoint's pair back for a same-conversation rewind: the sidecar's ring
+        // rows land in the drafter's pools at the pair's own extent and its EXACT counters become the
+        // horizon.  Every refusal (missing/truncated/corrupt sidecar, foreign layout, counters that no
+        // longer retain the rewind) is a draft miss the caller answers with the existing safe full
+        // reread - never a stale mount.
+        auto ring_pair_restore = [&](const ConvCheckpoint& c, std::string& why) -> bool {
+            const auto& dp = c.draft_pair;
+            if (!disk.on || !dp.ok()) { why = "this checkpoint has no pair to read"; return false; }
+            const strata::core::DFlashSnapshotMeta want{dp.committed_end, dp.appended_through, dp.ring_cells,
+                                                        dp.window, dp.capacity};
+            const strata::core::DFlashSnapshotMeta mine = dflash.snapshot_meta();
+            if (want.ring_cells != mine.ring_cells || want.window != mine.window || want.capacity != mine.capacity) {
+                why = "the pair's ring layout is not this drafter's";
+                return false;
+            }
+            const int64_t L = (int64_t) c.ids.size();
+            std::vector<uint8_t> image;
+            if (!strata::core::session_ring_sidecar_read(disk.dir + "/ring-" + std::to_string(dp.id) + ".dring", want,
+                                                          L, image, why))
+                return false;
+            std::vector<std::array<uint64_t, 5>> sizes;
+            uint64_t total = 0;
+            if (!disk_dflash_sizes(L, sizes, total, why)) return false;
+            if (total != dp.bytes || image.size() != total) {
+                why = "the pair's ring bytes are not this drafter's extent at " + std::to_string(L) + " tokens";
+                return false;
+            }
+            const strata::core::OnDevice on_df(dflash.device());
+            if (cudaDeviceSynchronize() != cudaSuccess) { why = "the drafter sync before the pair restore failed"; return false; }
+            uint64_t at = 0;
+            for (size_t j = 0; j < sizes.size(); ++j) {
+                const int64_t extent = strata::core::dflash_snapshot_extent(L, dflash.kv_states()[j].max_cells);
+                for (int64_t p = 0; p < strata::core::kSessionKvParts; ++p) {
+                    const uint64_t sz = sizes[(size_t) j][(size_t) p];
+                    if (!strata::core::conversation_kv_stream_write(dflash.kv_states()[j], dflash.pool_geometry(),
+                                                                    extent, false, (size_t) p, 0, image.data() + at,
+                                                                    sz, why))
+                        return false;
+                    at += sz;
+                }
+            }
+            if (!dflash.restore_snapshot(want, why)) return false;
+            return dflash.idle(why);
+        };
         // The largest v2 file THIS engine could ever read back: its K/V and live state at the widest context it
         // restores (the drafter's capacity when it has one), the chain's bodies at --prompt-cache, the manifest's
         // arrays and the region directory.  The automatic tier bounds itself by --conversation-cache-disk-mib;
@@ -13095,9 +13229,11 @@ int main(int argc, char** argv) {
                     uint64_t ring_bytes = 0;
                     if (!disk_dflash_sizes(T, ring, ring_bytes, why)) return nullptr;
                     add(ring_bytes);
+                    add(ring_bytes * nck);   // every checkpoint's pair region is at most the ring at T
                 }
                 add((uint64_t) T * 4 + (uint64_t) T * 16);   // the tokens and the image keys
-                add((5ull * (uint64_t) disk_stages * (2ull + (uint64_t) g.n_layers + nck) + 8) * 64 + 4096);
+                add((5ull * (uint64_t) disk_stages * (2ull + (uint64_t) g.n_layers + nck) + 8ull + nck) * 64 +
+                    nck * 8ull * 8ull + 4096);   // the directory, the pair region frames and the pair meta fields
                 disk_v2_cap = total;
             }
             return &*disk_v2_cap;
@@ -13109,7 +13245,8 @@ int main(int argc, char** argv) {
         // with the live pools quiesced (the device reads a live-state source performs).  No file is opened.
         auto disk_plan = [&](int64_t T, const std::vector<int32_t>& ids, const std::vector<ImgKey>& imgs,
                              bool cvec, const strata::core::ConversationCheckpointSplit& cs,
-                             std::vector<std::array<uint64_t, 5>>& ring, strata::core::SessionManifestV2& manifest,
+                             std::vector<std::array<uint64_t, 5>>& ring, std::vector<std::vector<uint8_t>>& pair_bodies,
+                             strata::core::SessionManifestV2& manifest,
                              std::vector<strata::core::SessionRegionSource>& sources, std::string& why) -> bool {
             // the quiescence a device read of the live state needs, in the park's own order
             strata::core::conversation_checkpoint_join(nullptr);
@@ -13129,6 +13266,31 @@ int main(int argc, char** argv) {
             }
             std::vector<strata::core::SessionStreamCheckpoint> cps;
             disk_spec_checkpoints(cs, cps);
+            // the pair images, read from their capture sidecars; a sidecar the park cannot read
+            // (evicted, truncated, foreign) demotes its checkpoint to TARGET-ONLY here, in the
+            // metas the published generation will carry - the demotion is advertised, never
+            // discovered only at restore
+            pair_bodies.assign(cps.size(), {});
+            for (size_t i = 0; i < cps.size(); ++i) {
+                auto& m = cps[i].meta;
+                if (!m.ring_id) continue;
+                std::vector<uint8_t> body;
+                std::string rwhy;
+                const strata::core::DFlashSnapshotMeta want{m.ring_committed_end, m.ring_appended_through,
+                                                            m.ring_cells, m.ring_window, m.ring_capacity};
+                const std::string spath = disk.dir + "/ring-" + std::to_string(m.ring_id) + ".dring";
+                if (!strata::core::session_ring_sidecar_read(spath, want, (int64_t) m.prefix, body, rwhy) ||
+                    strata::core::session_hash64(body.data(), body.size(), 0) != m.ring_checksum) {
+                    std::fprintf(stderr, "strata serve: conversation cache: the pair of the checkpoint at %llu "
+                                         "tokens is lost (%s): parked target-only\n",
+                                 (unsigned long long) m.prefix, rwhy.c_str());
+                    m.ring_id = 0; m.ring_bytes = 0; m.ring_checksum = 0;
+                    m.ring_cells = 0; m.ring_window = 0; m.ring_capacity = 0;
+                    m.ring_committed_end = -1; m.ring_appended_through = -1;
+                    continue;
+                }
+                pair_bodies[i] = std::move(body);
+            }
             strata::core::SessionStreamSpec spec;
             if (!disk_build_spec(T, ids, imgs, cvec, cps, &ring, spec, why)) return false;
             if (!strata::core::session_stream_manifest(spec, manifest, why)) return false;
@@ -13224,6 +13386,11 @@ int main(int argc, char** argv) {
                     }
                     wrap(s);
                     sources.push_back(std::move(s));
+                } else if (r.kind == int32_t(strata::core::SessionRegionKind::dflash_pair)) {
+                    const auto& body = pair_bodies[(size_t) r.index];
+                    if (body.size() != r.bytes) { why = "a pair region has no sidecar body"; return false; }
+                    sources.push_back(strata::core::session_stream_host_source(r.kind, 0, r.index, 0, body.data(),
+                                                                               r.bytes));
                 } else {
                     why = "region kind the disk tier does not write";
                     return false;
@@ -13256,12 +13423,14 @@ int main(int argc, char** argv) {
             strata::core::SessionManifestV2 manifest;
             std::vector<strata::core::SessionRegionSource> sources;
             std::vector<std::array<uint64_t, 5>> ring;
-            if (!disk_plan(T, src.ids, src.imgs, src.cvec, cs, ring, manifest, sources, why)) return false;
-            // the tier's own bound, before any file is opened: generations written + this one, over the budget
-            uint64_t used = 0;
+            std::vector<std::vector<uint8_t>> pair_bodies;
+            if (!disk_plan(T, src.ids, src.imgs, src.cvec, cs, ring, pair_bodies, manifest, sources, why)) return false;
+            // the tier's own bound, before any file is opened: generations written, the live pair
+            // sidecars and this one, over the budget
+            uint64_t used = disk.sidecar_bytes;
             for (const auto& g2 : disk.gens) used += g2.bytes;
             uint64_t est = 256 + manifest.tokens.size() * 4 + manifest.images.size() * 16 +
-                           manifest.checkpoints.size() * 88 + manifest.regions.size() * 64;
+                           manifest.checkpoints.size() * 152 + manifest.regions.size() * 64;
             for (const auto& r : manifest.regions) est += r.bytes;
             if (used + est > disk.budget) {
                 why = "the disk tier is full (" + std::to_string((used + est) >> 20) + " MiB needed of " +
@@ -13288,13 +13457,50 @@ int main(int argc, char** argv) {
             size_t bytes = 0;
             if (!strata::core::session_file_write_v2(path, *id, manifest, sources, bytes, why, wo, &st))
                 return false;
-            disk.gens.push_back({path, src.ids, src.imgs, src.cvec, (uint64_t) bytes});
+            // what this generation ADVERTISES: the target anchor (deepest checkpoint) and the deepest
+            // checkpoint prefix with a valid pair.  A resume can be a complete target+draft hit only at
+            // a paired position (or on a live-tail ring that still retains it); checkpoints whose
+            // capture was ring-wrapped carry no pair in the manifest and are target-only from here.
+            DiskTier::Gen gen{path, src.ids, src.imgs, src.cvec, (uint64_t) bytes, {}, 0, 0, false};
+            for (const auto& cm : manifest.checkpoints) {
+                gen.anchor = std::max<int64_t>(gen.anchor, (int64_t) cm.prefix);
+                if (cm.ring_id) {
+                    gen.pair_prefix = std::max<int64_t>(gen.pair_prefix, (int64_t) cm.prefix);
+                    gen.ring_ids.push_back(cm.ring_id);
+                }
+            }
+            if (has_dflash) {
+                strata::core::DFlashRingState tail;
+                tail.ring = manifest.draft.ring_cells; tail.window = manifest.draft.window;
+                tail.max_rows = dflash.max_block() + 1; tail.capacity = manifest.draft.capacity;
+                tail.committed_end = manifest.draft.committed_end;
+                tail.appended_through = manifest.draft.appended_through;
+                gen.tail_draft = tail.context_retained(T, dflash.max_block() + 1);
+            }
+            disk.gens.push_back(gen);
+            // reclaim: sidecars no longer referenced by a retained checkpoint or a published generation
+            // go, with their bytes.  Shared references (a slot's copy of a checkpoint) keep the file.
+            for (auto it = disk.sidecars.begin(); it != disk.sidecars.end();) {
+                bool live = false;
+                for (const ConvCheckpoint& k : checks)
+                    if (k.draft_pair.id == it->first) { live = true; break; }
+                if (!live)
+                    for (const auto& g2 : disk.gens)
+                        for (uint64_t rid : g2.ring_ids)
+                            if (rid == it->first) { live = true; break; }
+                if (live) { ++it; continue; }
+                std::error_code rec;
+                std::filesystem::remove(disk.dir + "/ring-" + std::to_string(it->first) + ".dring", rec);
+                disk.sidecar_bytes -= it->second;
+                it = disk.sidecars.erase(it);
+            }
             std::fprintf(stderr, "strata serve: conversation cache: disk park streamed %zu tokens%s to %s in "
-                                 "%.1f ms; generations=%zu bytes=%zu superseded=%zu\n",
+                                 "%.1f ms; generations=%zu bytes=%zu superseded=%zu anchor=%lld pair=%lld "
+                                 "tail-draft=%d\n",
                          src.ids.size(), src.what.c_str(), path.c_str(),
                          std::chrono::duration<double, std::milli>(Clock::now() - t0).count(), disk.gens.size(),
                          [&] { uint64_t u = 0; for (const auto& g2 : disk.gens) u += g2.bytes; return u; }() >> 20,
-                         dropped);
+                         dropped, (long long) gen.anchor, (long long) gen.pair_prefix, gen.tail_draft ? 1 : 0);
             return true;
         };
         // ---- restore a generation straight into the live pools.  Pass 1 reads the file with NO sink: every
@@ -13308,7 +13514,9 @@ int main(int argc, char** argv) {
                                 const std::function<void()>& quiesce,
                                 const std::function<void(uint64_t, uint64_t)>& moving,
                                 const std::function<void(const char*, uint64_t)>& blocking,
-                                int64_t& tokens_out, std::string& why, uint64_t max_file_bytes) -> int {
+                                int64_t& tokens_out, std::string& why, uint64_t max_file_bytes,
+                                std::string& report) -> int {
+            report.clear();
             strata::core::SessionReadV2Limits lim;
             lim.max_file_bytes = max_file_bytes;
             lim.max_manifest_bytes = disk.ram / 2;
@@ -13317,7 +13525,8 @@ int main(int argc, char** argv) {
             lim.max_checkpoints = (uint64_t) std::max(o.prompt_cache, 1);
             lim.max_stages = (uint64_t) disk_stages;
             lim.max_regions = 5ull * (uint64_t) disk_stages *
-                              (2ull + (uint64_t) g.n_layers + (uint64_t) std::max(o.prompt_cache, 1)) + 8;
+                                  (2ull + (uint64_t) g.n_layers + (uint64_t) std::max(o.prompt_cache, 1)) +
+                              8ull + (uint64_t) std::max(o.prompt_cache, 1);
             lim.admit = [&](uint64_t need, std::string& a) {
                 if (need > disk.ram) {
                     a = "the file asks for " + std::to_string(need >> 20) + " MiB of manifest and region directory, " +
@@ -13407,6 +13616,53 @@ int main(int argc, char** argv) {
                     return 1;
                 }
             }
+            // the draft side of the resume: the live-tail ring retains a resume at the generation's
+            // end, or a checkpoint PAIR at exactly that prefix does (the deepest such pair).  Chosen
+            // in this pre-mutation pass - pass 1 has already checksummed every region, the pairs
+            // included - so a draft miss is reported, never discovered mid-write.
+            int64_t pair_pick = -1;
+            bool tail_ok = true;
+            if (has_dflash) {
+                const int64_t rows = dflash.max_block() + 1;
+                const auto state_of = [&](int64_t ring, int64_t window, int64_t cap, int64_t ce, int64_t at) {
+                    strata::core::DFlashRingState s;
+                    s.ring = ring; s.window = window; s.max_rows = rows; s.capacity = cap;
+                    s.committed_end = ce; s.appended_through = at;
+                    return s;
+                };
+                tail_ok = state_of(manifest.draft.ring_cells, manifest.draft.window, manifest.draft.capacity,
+                                   manifest.draft.committed_end, manifest.draft.appended_through)
+                              .context_retained(T, rows);
+                if (!tail_ok) {
+                    const strata::core::DFlashSnapshotMeta mine_df = dflash.snapshot_meta();
+                    for (size_t i = manifest.checkpoints.size(); i-- > 0;) {
+                        const auto& cm = manifest.checkpoints[i];
+                        if (!cm.ring_id || cm.prefix != (uint64_t) T) continue;
+                        if (cm.ring_cells != mine_df.ring_cells || cm.ring_window != mine_df.window ||
+                            cm.ring_capacity != mine_df.capacity)
+                            continue;
+                        if (state_of(cm.ring_cells, cm.ring_window, cm.ring_capacity, cm.ring_committed_end,
+                                     cm.ring_appended_through)
+                                .context_retained(T, rows)) {
+                            pair_pick = (int64_t) i;
+                            break;
+                        }
+                    }
+                }
+            }
+            // the chosen pair's ring geometry, computed from this drafter's pools at the pair's own
+            // prefix, before any mutation
+            std::vector<std::array<uint64_t, 5>> pair_sizes;
+            uint64_t pair_total = 0;
+            int64_t pair_prefix = 0;
+            if (pair_pick >= 0) {
+                pair_prefix = (int64_t) manifest.checkpoints[(size_t) pair_pick].prefix;
+                if (!disk_dflash_sizes(pair_prefix, pair_sizes, pair_total, why)) return 1;
+                if (manifest.checkpoints[(size_t) pair_pick].ring_bytes != pair_total) {
+                    why = "the pair region is not this drafter's ring extent at its checkpoint";
+                    return 1;
+                }
+            }
             if (ck_bytes) {
                 std::string a;
                 if (!disk_ram_admit(ck_bytes, a)) { why = a; return 1; }
@@ -13422,6 +13678,11 @@ int main(int argc, char** argv) {
                 c.used = m.used;
                 c.pinned = m.pinned;
                 c.plan = m.plan;
+                // the pair metadata travels with the restored checkpoint: a later rewind to this
+                // prefix consults it (the sidecar stays in the tier's folder as long as the
+                // generation is published, so the pair survives the restart with it)
+                c.draft_pair = {m.ring_id, m.ring_bytes, m.ring_checksum, m.ring_committed_end,
+                                m.ring_appended_through, m.ring_cells, m.ring_window, m.ring_capacity};
                 const auto fill = [&](ConvCheckpoint& dst, int64_t s) {
                     dst.gdn.resize(cps[i].state[(size_t) s][0]);
                     dst.ple.resize(cps[i].state[(size_t) s][1]);
@@ -13589,6 +13850,7 @@ int main(int argc, char** argv) {
                 d.write = [&](const strata::core::SessionRegion&, uint64_t off, const void* b,
                                                size_t n, std::string& w) {
                     mutated = true;
+                    if (pair_pick >= 0) return true;   // a pair was chosen: the tail ring is validated and consumed
                     const strata::core::OnDevice on_df(dflash.device());
                     uint64_t at = 0, done = 0;
                     const uint8_t* src = static_cast<const uint8_t*>(b);
@@ -13614,6 +13876,7 @@ int main(int argc, char** argv) {
                 };
                 d.finish = [&](std::string& w) {
                     const strata::core::OnDevice on_df(dflash.device());
+                    if (pair_pick >= 0) return dflash.idle(w);   // the counters land with the chosen pair
                     const strata::core::DFlashSnapshotMeta meta{manifest.draft.committed_end,
                                                                 manifest.draft.appended_through,
                                                                 manifest.draft.ring_cells, manifest.draft.window,
@@ -13622,6 +13885,62 @@ int main(int argc, char** argv) {
                     return dflash.idle(w);
                 };
                 dests.push_back(std::move(d));
+                // the pair destination: the CHOSEN pair's rows land in the drafter's pools at its own
+                // extent, and its EXACT counters become the horizon at its finish.  The other pairs
+                // are validated and consumed - their bytes stay on disk for later rewinds, never
+                // touched here.
+                strata::core::SessionStreamDestination pd;
+                pd.kind = int32_t(strata::core::SessionRegionKind::dflash_pair);
+                pd.stage = 0;
+                pd.index = -1;
+                pd.validate = [&](const strata::core::SessionRegion& r, std::string& w) {
+                    if (r.index < 0 || r.index >= (int64_t) manifest.checkpoints.size()) {
+                        w = "the pair region names a checkpoint outside the chain";
+                        return false;
+                    }
+                    if (r.bytes != manifest.checkpoints[(size_t) r.index].ring_bytes) {
+                        w = "the pair region is not its meta's ring size";
+                        return false;
+                    }
+                    return true;
+                };
+                pd.write = [&](const strata::core::SessionRegion& r, uint64_t off, const void* b,
+                                           size_t n, std::string& w) {
+                    mutated = true;
+                    if (r.index != pair_pick) return true;
+                    const strata::core::OnDevice on_df(dflash.device());
+                    uint64_t at = 0, done = 0;
+                    const uint8_t* src = static_cast<const uint8_t*>(b);
+                    for (size_t j = 0; j < pair_sizes.size(); ++j) {
+                        const int64_t extent = strata::core::dflash_snapshot_extent(
+                            pair_prefix, dflash.kv_states()[j].max_cells);
+                        for (int64_t p = 0; p < strata::core::kSessionKvParts; ++p) {
+                            const uint64_t size = pair_sizes[(size_t) j][(size_t) p];
+                            if (done >= n) return true;
+                            if (at + size > off + done) {
+                                const uint64_t take = std::min(size - (off + done - at), n - done);
+                                if (!strata::core::conversation_kv_stream_write(dflash.kv_states()[j],
+                                                                               dflash.pool_geometry(), extent, false,
+                                                                               (size_t) p, off + done - at, src, take, w))
+                                    return false;
+                                src += take;
+                                done += take;
+                            }
+                            at += size;
+                        }
+                    }
+                    return done == n;
+                };
+                pd.finish = [&](std::string& w) {
+                    if (pair_pick < 0) return true;
+                    const strata::core::OnDevice on_df(dflash.device());
+                    const auto& cm = manifest.checkpoints[(size_t) pair_pick];
+                    const strata::core::DFlashSnapshotMeta meta{cm.ring_committed_end, cm.ring_appended_through,
+                                                                cm.ring_cells, cm.ring_window, cm.ring_capacity};
+                    if (!dflash.restore_snapshot(meta, w)) return false;
+                    return dflash.idle(w);
+                };
+                dests.push_back(std::move(pd));
             }
             if (!cps.empty()) {
                 strata::core::SessionStreamDestination d;
@@ -13681,6 +14000,18 @@ int main(int argc, char** argv) {
             cvec_cached = got.cvec;
             live_ok = true;
             tokens_out = T;
+            // classification in the cache's own vocabulary: a complete target+draft hit, a
+            // target-only prefix match with a draft miss, with a concise reason code
+            if (!has_dflash)
+                report = "complete target hit (no drafter)";
+            else if (tail_ok)
+                report = "complete target+draft hit (pair: tail ring)";
+            else if (pair_pick >= 0)
+                report = "complete target+draft hit (pair: checkpoint at " + std::to_string(pair_prefix) + ")";
+            else
+                report = "target-only prefix match, draft miss (no pair at the resume; tail ring horizon " +
+                         std::to_string(manifest.draft.appended_through) + " over ring " +
+                         std::to_string(manifest.draft.ring_cells) + ")";
             return 0;
         };
         // Save only on a switch/rewind, not on each continuing request. No graph
@@ -14154,6 +14485,21 @@ int main(int argc, char** argv) {
                 tail_ckpt_len = L;
             } else if (L == tail_ckpt_len) {
                 tail_ckpt_len = -1;   // the flagged tail was dropped and a normal checkpoint takes its length
+            }
+            // the paired draft capture AT this checkpoint's boundary, while its window still exists
+            // (never later at park).  An illegal boundary leaves the checkpoint target-only, said.
+            if (has_dflash && disk.on) {
+                std::string pwhy;
+                if (ring_pair_capture(L, c, pwhy)) {
+                    if (ckpt_trace)
+                        std::fprintf(stderr, "strata serve: conversation cache: checkpoint at %lld paired with the "
+                                             "ring (sidecar %llu, %llu KiB)\n",
+                                     (long long) L, (unsigned long long) c.draft_pair.id,
+                                     (unsigned long long) (c.draft_pair.bytes >> 10));
+                } else {
+                    std::fprintf(stderr, "strata serve: conversation cache: checkpoint at %lld is target-only "
+                                          "(%s)\n", (long long) L, pwhy.c_str());
+                }
             }
             checks.push_back(std::move(c));
             const Clock::time_point te0 = Clock::now();
@@ -17132,8 +17478,9 @@ int main(int argc, char** argv) {
                         strata::core::SessionManifestV2 manifest;
                         std::vector<strata::core::SessionRegionSource> sources;
                         std::vector<std::array<uint64_t, 5>> ring;
-                        if (!disk_plan((int64_t) live.size(), live, live_imgs, cvec_cached, cs, ring, manifest,
-                                       sources, v2why)) {
+                        std::vector<std::vector<uint8_t>> pair_bodies;
+                        if (!disk_plan((int64_t) live.size(), live, live_imgs, cvec_cached, cs, ring, pair_bodies,
+                                       manifest, sources, v2why)) {
                             refuse(v2why, strata::core::SessionError::io);
                             continue;
                         }
@@ -17245,12 +17592,12 @@ int main(int argc, char** argv) {
                 } else {
                     if (v2_session) {
                         // the same two-pass streaming restore the automatic path runs, with the SAVE's protocol
-                        std::string v2why;
+                        std::string v2why, v2report;
                         int64_t v2_tokens = 0;
                         const uint64_t* v2cap = disk_v2_read_cap(v2why);
                         if (v2cap == nullptr) { refuse(v2why, strata::core::SessionError::io); continue; }
                         const int rc = disk_restore(path, id, adapt_quiesce, moving, blocking, v2_tokens, v2why,
-                                                    *v2cap);
+                                                    *v2cap, v2report);
                         if (rc == 2) {
                             std::fprintf(stderr, "strata serve: session restore %s: transfer failed: %s\n",
                                          path.c_str(), v2why.c_str());
@@ -17270,7 +17617,8 @@ int main(int argc, char** argv) {
                                          n_parked == 1 ? "" : "s");
                         }
                         std::fprintf(stderr, "strata serve: session restored (v2) %zu tokens, %zu checkpoints from "
-                                             "%s in %.1f ms\n", live.size(), checks.size(), path.c_str(), ms());
+                                             "%s in %.1f ms: %s\n", live.size(), checks.size(), path.c_str(), ms(),
+                                     v2report.c_str());
                         std::printf("RESTORED %zu %zu %.1f\n", (size_t) v2_tokens,
                                     (size_t) std::filesystem::file_size(path), ms());
                         std::fflush(stdout);
@@ -18346,11 +18694,12 @@ int main(int argc, char** argv) {
                     strata::core::progress_at(phase);
                     strata::core::progress_allow(strata::core::session_phase_limit_s(bytes));
                 };
-                std::string dwhy;
+                std::string dwhy, dreport;
                 int64_t dtokens = 0;
                 const strata::core::SessionFileIdentity* sid = disk_identity(dwhy);
                 const int rc = sid == nullptr ? 1 : disk_restore(disk_start, *sid, kv_quiesce, disk_moving,
-                                                                 disk_blocking, dtokens, dwhy, disk.budget);
+                                                                 disk_blocking, dtokens, dwhy, disk.budget,
+                                                                 dreport);
                 if (rc == 2) {
                     std::printf("ERR restoring a parked conversation from disk: %s\n", dwhy.c_str());
                     return 1;
@@ -18362,8 +18711,9 @@ int main(int argc, char** argv) {
                     resume = dtokens;
                     from_live = false;
                     std::fprintf(stderr, "strata serve: conversation cache: restored %lld tokens from disk (%s) "
-                                          "in %.1f ms\n", (long long) resume, disk_start.c_str(),
-                                 std::chrono::duration<double, std::milli>(Clock::now() - disk_t0).count());
+                                          "in %.1f ms: %s\n", (long long) resume, disk_start.c_str(),
+                                 std::chrono::duration<double, std::milli>(Clock::now() - disk_t0).count(),
+                                 dreport.c_str());
                 }
                 disk_start.clear();
             }
@@ -18419,17 +18769,38 @@ int main(int argc, char** argv) {
                 // draft history. The target restore below stays valid; this request re-reads
                 // the prompt (the fresh-prefill path), which rebuilds the draft context.
                 // Legacy full-capacity drafters (ring 0) always retain.
-                const bool ring_ok = !has_dflash || dflash.context_retained(resume, dflash.max_block() + 1);
+                bool ring_ok = !has_dflash || dflash.context_retained(resume, dflash.max_block() + 1);
+                std::string pair_why = "no pair at this checkpoint";
+                if (c != nullptr && !ring_ok && has_dflash) {
+                    // Consult the checkpoint's SAVED pair before falling into the full-prompt reread:
+                    // a pair captured at this boundary is retained by its own frozen counters (the
+                    // capture predicate), so its ring rows and counters can be restored from the
+                    // sidecar while the target-side checkpoint mounts unchanged.
+                    const auto& dp = c->draft_pair;
+                    strata::core::DFlashRingState ps;
+                    ps.ring = dp.ring_cells; ps.window = dp.window; ps.max_rows = dflash.max_block() + 1;
+                    ps.capacity = dp.capacity; ps.committed_end = dp.committed_end;
+                    ps.appended_through = dp.appended_through;
+                    if (dp.ok() && (int64_t) c->ids.size() == resume &&
+                        ps.context_retained(resume, dflash.max_block() + 1) && ring_pair_restore(*c, pair_why)) {
+                        ring_ok = true;
+                        std::fprintf(stderr, "strata serve: conversation cache: the draft ring for the rewind to "
+                                             "%lld restored from its pair (captured at %lld tokens)\n",
+                                     (long long) resume, (long long) c->ids.size());
+                    }
+                }
                 static const bool reread = std::getenv("STRATA_CKPT_REREAD") != nullptr;
                 if (c != nullptr && !ring_ok) {
                     // A deep rewind on the bounded ring: the draft window this resume reads was
-                    // overwritten. Never mount stale draft history: rebuild like STRATA_CKPT_REREAD -
-                    // zero the target session and read the resume tokens again from 0 (the prompt
-                    // path re-fuses the draft context and resets the horizon logically). The
-                    // request recovers; the serving process keeps running.
+                    // overwritten, and its checkpoint has no pair that survives.  Never mount stale
+                    // draft history: rebuild like STRATA_CKPT_REREAD - zero the target session and
+                    // read the resume tokens again from 0 (the prompt path re-fuses the draft context
+                    // and resets the horizon logically).  The request recovers; the serving process
+                    // keeps running.
                     std::fprintf(stderr, "strata serve: the draft ring no longer retains a rewind to "
-                                         "%lld; reading the prompt again (%lld tokens) instead of restoring\n",
-                                 (long long) resume, (long long) resume);
+                                         "%lld (draft miss: %s); reading the prompt again (%lld tokens) "
+                                         "instead of restoring\n",
+                                 (long long) resume, pair_why.c_str(), (long long) resume);
                     strata::core::session_zero(ss, g, nullptr, main_cs);
                     cudaStreamSynchronize(main_stream);
                     for (auto& st : stages) {

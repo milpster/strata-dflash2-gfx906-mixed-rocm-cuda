@@ -44,6 +44,17 @@ struct ConversationCheckpoint {
         double pipe = 0.0;
         bool single = false, chunked = false;
     } plan;
+    // The paired draft capture taken AT this checkpoint's boundary: the drafter's ring image at
+    // the checkpoint's own window plus the EXACT counters of that capture (legal only when the
+    // checkpoint sat at the confirmed end with its window retained - dflash_pair_capture_ok).
+    // `id` names the engine's ring sidecar in the disk tier's folder (the path is derived from
+    // it, not stored here); id 0: target-only. Run-time like `pinned`: the v1 session file does
+    // not store it, format v2's checkpoint meta does.
+    struct DraftPair {
+        uint64_t id = 0, bytes = 0, checksum = 0;
+        int64_t committed_end = -1, appended_through = -1, ring_cells = 0, window = 0, capacity = 0;
+        bool ok() const { return id != 0 && bytes > 0 && committed_end >= 0; }
+    } draft_pair;
     // Ordinary layer-split checkpoints retain each device's running state.
     // Whole-session parking is currently single-GPU and rejects these parts.
     std::vector<ConversationCheckpoint> stage_parts;

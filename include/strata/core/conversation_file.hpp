@@ -8,6 +8,7 @@
 #pragma once
 
 #include "strata/core/conversation_cache.hpp"
+#include "strata/core/dflash_ring.hpp"
 
 #include <array>
 #include <cstddef>
@@ -271,6 +272,9 @@ enum class SessionRegionKind : int32_t {
     checkpoint_state = 3,  // a checkpoint's running state for one stage (parts 0..4 as live_state)
     mtp = 4,               // one stage's optional MTP layer K/V (parts 0..4)
     dflash = 5,            // the DFlash physical ring cells (part 0 only, stage 0, index 0)
+    dflash_pair = 6,       // a checkpoint's PAIRED ring image at its own boundary (part 0, stage 0,
+                           // index = the checkpoint ordinal); the manifest's checkpoint meta carries
+                           // the exact counters captured with it
 };
 const char* session_region_kind_name(int32_t kind);   // "live_state", ... ; "unknown" for a kind v2 does not define
 // the part count of the state and K/V regions (gdn/ple/tails/dead/block_pos, k/v/k_scale/v_scale/pooled)
@@ -323,6 +327,15 @@ struct SessionCheckpointMeta {
     bool pinned = false;
     int64_t stage_parts = 0;   // 0: one part (no split); else the number of LATER stages this checkpoint covers
     ConversationCheckpoint::PromptPlan plan;
+    // The paired draft capture at this checkpoint's boundary: the ring image the file carries as
+    // a dflash_pair region of `ring_bytes` bytes (checksum `ring_checksum`), and the EXACT
+    // counters that capture took. ring_id 0: target-only (no pair, no region). A pair is legal
+    // only with ring_committed_end == prefix (captured AT this position), its ring layout equal
+    // to the file's draft, and appended_through >= committed_end inside the capacity - the
+    // counters are kept as captured, never normalized.
+    uint64_t ring_id = 0, ring_bytes = 0, ring_checksum = 0;
+    int64_t ring_cells = 0, ring_window = 0, ring_capacity = 0, ring_committed_end = -1,
+            ring_appended_through = -1;
 };
 
 // Everything a v2 file declares about a conversation, in bounded metadata: the identities it is bound to, the
@@ -410,5 +423,18 @@ bool session_file_read_v2(const std::string& path, const SessionFileIdentity& id
                           SessionManifestV2& manifest, size_t& bytes, std::string& error,
                           const SessionReadV2Limits& limits = {}, SessionRegionSink* sink = nullptr,
                           SessionStatus* status = nullptr);
+
+// A checkpoint's paired ring capture as the engine stores it at the checkpoint boundary: a
+// bounded sidecar in the disk tier's folder - header (magic STRDRIN2, the EXACT counters, the
+// captured token extent, the payload checksum) then the ring bytes in the same state/part order
+// the v2 dflash region uses.  It is the capture-time home of the pair (the published generation
+// packs the same bytes into its dflash_pair region); a rewind reads it back.  The read refuses a
+// missing/truncated/foreign file, counters that are not `want`'s, an extent that is not
+// `tokens`, and a checksum mismatch, leaving `out` untouched every time - a safe miss, never a
+// partial image.  The sidecar is the engine's own bounded file (ring-sized, capped at 64 MiB).
+bool session_ring_sidecar_write(const std::string& path, const DFlashSnapshotMeta& meta, int64_t tokens,
+                                const void* bytes, uint64_t n, std::string& error);
+bool session_ring_sidecar_read(const std::string& path, const DFlashSnapshotMeta& want, int64_t tokens,
+                               std::vector<uint8_t>& out, std::string& error);
 
 } // namespace strata::core

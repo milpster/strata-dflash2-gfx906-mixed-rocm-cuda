@@ -255,6 +255,12 @@ if(STRATA_BUILD_CONVERSATION_TESTS)
   add_executable(session_save_reclaim_test src/core/session_save_reclaim_test.cpp src/core/conversation_file.cpp)
   target_include_directories(session_save_reclaim_test PRIVATE include)
   add_test(NAME session_save_reclaim_test COMMAND session_save_reclaim_test)
+  # The bounded SWA ring math (include/strata/core/dflash_ring.hpp): pure host arithmetic, no GPU headers,
+  # no link - the CPU proof of the mapping the runtime and the snapshots share (docs/DFLASH.md), and of
+  # the paired-capture rule the checkpoint-boundary lane freezes.
+  add_executable(dflash_ring_test tests/core/dflash_ring_test.cpp)
+  target_include_directories(dflash_ring_test PRIVATE include)
+  add_test(NAME dflash_ring_test COMMAND dflash_ring_test)
 endif()
 
 if(STRATA_HIP_GFX906)
@@ -788,6 +794,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     src/core/dflash.cpp src/core/dflash_runtime.cpp src/core/dflash_tap_collect.cpp
     src/core/conversation_snapshot.cpp src/core/conversation_state.cpp src/core/conversation_memory.cpp src/core/peer_experts.cpp
     src/core/arch_defaults.cpp src/core/nv_defaults.cpp src/core/vmm.cpp src/core/conversation_file.cpp
+    src/core/conversation_stream_state.cpp
     # R2 (opt-in CUDA helper): the engine-side proxy client and the CPU recompute of the helper's
     # claimed rows.  Both are CPU-only sources - no device call, no CUDA kernel - and the frame
     # transport is the SAME file the CUDA helper compiles (tools/mixed_gpu/sidecar/helper_frame.cpp),
@@ -2215,11 +2222,6 @@ if(STRATA_BUILD_TESTS)
   add_executable(dflash_policy_test src/spec/dflash_policy_test.cpp)
   target_link_libraries(dflash_policy_test PRIVATE strata_spec)
   add_test(NAME dflash_policy_test COMMAND dflash_policy_test)
-  # The bounded SWA ring math (src/core/dflash_ring.hpp): pure host arithmetic, no GPU headers,
-  # no link - the CPU proof of the mapping the runtime and the snapshots share (docs/DFLASH.md).
-  add_executable(dflash_ring_test tests/core/dflash_ring_test.cpp)
-  target_include_directories(dflash_ring_test PRIVATE include)
-  add_test(NAME dflash_ring_test COMMAND dflash_ring_test)
   # The draft proposal's failure classification (include/strata/core/dflash_refusal.hpp): pure host
   # predicate, classification and validate-then-copy handoff - the same functions the emitter calls
   # and both decode call sites consume.  No GPU headers, no link.  STRATA_DFLASH_SOURCE_ROOT lets the
