@@ -1389,3 +1389,15 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
   helper-patient 2204741d231232d6 (patience env verified in-binary). Health 200 in ~40 s,
   smoke OK, generation 1, helper 4341 slots / 6.64 GiB, second channel connected, serving
   sha verified via /proc/<pid>/exe. build-v0210 symlink now -> build-qa2.
+
+## 2026-11-07 — Teacher-forced yardstick re-run on v0.2.11: perfect pass incl. PPL
+
+- Full 4995-position teacher-forced yardstick (run/yard-v0211.sh, prod-down ~8 min window):
+  v0.2.11 build vs stock on the iq3xxs-15 pack, stock as reference. Verdict over all 4995
+  positions: top-1 100.00%, KL 0.00000, KL p99 0.0000, PPL 4.052 = 4.052. The PPL gap vs the
+  historical 4.115 is the pack (that run used iq3s); fork-vs-stock identity is exact.
+  Per-segment scoring ~33-35 s x5 per arm (code/docs/english/multilingual/agent).
+- Also answered: the pack's chat template remains qwen3.8-froggeric-v22.5.0 (pack-side,
+  untouched by any merge); the only v0.2.11 serve/frontend.py change is upstream #5040
+  (streamed </tool_call> tag no longer ends the value early) - the Jinja rendering contract
+  is unchanged.

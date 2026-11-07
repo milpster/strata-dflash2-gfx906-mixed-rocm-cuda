@@ -146,8 +146,8 @@ What backs the "faster with zero quality cost" claim: the speed wins above were 
 | Gate | What it checks | Result |
 | --- | --- | --- |
 | 80k greedy SHA | deep-infill (80k ctx, ≥5k out) byte-identical across candidate / flags-off / stock binaries | held **18/18** kept rounds (`1c7d4a6d…`) |
-| Teacher-forced yardstick (`tools/quant_quality.py`) | 4995 positions, full-vocab first logits: top-1, KL (p99), PPL — vs stock binary AND vs flags-off twin | top-1 **100.00 %** · KL **0.00000** · PPL **4.115 = 4.115** (relief and CPU-share arms — measured pre-merge; **not re-run** in the v0.2.10/v0.2.11 post-merge rounds) |
-| Post-merge prompt-mode gate | 20 prompts, first logits, merged fork vs stock binary — reports top-1/KL only, **no PPL** | top-1 **100.00 %** · KL mean/median/max **0.00000** — v0.2.10 round, re-run on v0.2.11: same verdict |
+| Teacher-forced yardstick (`tools/quant_quality.py`) | 4995 positions, full-vocab first logits: top-1, KL (p99), PPL — vs stock binary AND vs flags-off twin | pre-merge arms (iq3s pack): top-1 **100.00 %** · KL **0.00000** · PPL **4.115 = 4.115**; **re-run on v0.2.11** (iq3xxs-15 pack): top-1 **100.00 %** · KL **0.00000** · p99 **0.0000** · PPL **4.052 = 4.052** |
+| Post-merge prompt-mode gate | 20 prompts, first logits, merged fork vs stock binary | top-1 **100.00 %** · KL mean/median/max **0.00000** — v0.2.10 round, re-run on v0.2.11: same verdict |
 | Probe determinism | fixed prompt re-answered every boot; sha must reproduce exactly per config | reproduces exactly, per-config values documented |
 | Speed gates | TG median ≥ 33.1 · 80k frame 583–587 · fresh-18k toward 337 · medians over ≥ 2 kept boots/arm | see measured table above |
 
