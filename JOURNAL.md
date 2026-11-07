@@ -1363,3 +1363,29 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
   configs must translate to the mnt repo root. qqB.json, qqC.json, armB/C.json and
   run-arm.sh now carry local real paths (uncommitted, same convention as the prod configs);
   git keeps the neutral forms.
+
+## 2026-11-07 — Upstream v0.2.11 merged, gated, and serving (round 2)
+
+- Merge (delegated to a subagent lane while prod served, per directive): upstream tag v0.2.11
+  into main (eea228b86). Method per the v0.2.10 journal entry, adapted: pristine upstream
+  v0.2.10 fetched as refs/tags/upstream-v0.2.10 (KEPT - graft base for v0.2.12+), graft/replace
+  base made the 3-way merge resolve against upstream v0.2.10 content. 327 files (+21381/-1178),
+  2 conflicts both additive (generate.cpp fork timing decls + their gemm.hpp include; setup.py
+  their copy_gb math + our dflash2_fetch). Fork features depth-verified (refusal latch x12,
+  helper patience x4, pair supervisor, serve helper paths); scrub scan 0 new hits.
+- QA (fresh build-qa2/, prod-down window): HIP + CUDA full builds 1419 s, SONAME guard PASS.
+  ctest now 291 tests (v0.2.11 adds ~58): all pass except gemm_w16_parity - a NEW upstream test
+  whose X/Y scratch is ~8.2 GiB (engine output-head shape), more than the 8 GiB helper card;
+  fixed to exit 77 on insufficient free VRAM (566f4c9), same convention as its no-device exit.
+- Speed pair (arm B = v0.2.11 build, 2 rounds + arm C stock, exclusive box):
+  TG 494-shape median ~35.1 vs stock 23.2 (+51%); honest giveback: the v0.2.10 build held
+  ~37.9 on the same shape (-7%), tg1024 walls at parity (30.5-36.4 s vs 33.3 s), PP 16k 299
+  (was 306/338), PP 88k 472 (was 480/549). Helper stats now inline in serve judge lines
+  (v0.2.11 upstream serve change): 0 timeouts / 0 fallbacks, decode tier 37-50k rows/round.
+  Greedy 80k sha 1c7d4a6d9be118d8 identical across v0.2.11 build, v0.2.10 build, and stock.
+- Parity gate: prompt-mode first logits, 20 prompts, fork d01d2ea42225c391 vs stock
+  a6b862e5b46fd6aa: top-1 100.00%, KL mean/median/max 0.00000 (run/qgate-20261107.sh).
+- Prod cutover: old engine archived (strata.66446e21-aside), new engine d01d2ea42225c391 +
+  helper-patient 2204741d231232d6 (patience env verified in-binary). Health 200 in ~40 s,
+  smoke OK, generation 1, helper 4341 slots / 6.64 GiB, second channel connected, serving
+  sha verified via /proc/<pid>/exe. build-v0210 symlink now -> build-qa2.
