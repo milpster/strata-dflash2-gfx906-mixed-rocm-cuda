@@ -1,6 +1,6 @@
 # Strata — gfx906 Mixed-GPU Fork
 
-An engine fork of [Niko1221/Strata](https://github.com/Niko1221/Strata) (upstream **v0.2.10**) that runs **Qwen3.8-Flash-Next ("Swift 1.5")** on **2× Radeon VII (gfx906) + an NVIDIA helper card** — hardware stock Strata only compile-checks — and beats stock on it.
+An engine fork of [Niko1221/Strata](https://github.com/Niko1221/Strata) (upstream **v0.2.11**, all releases v0.1.45 → v0.2.11 kept) that runs **Qwen3.8-Flash-Next ("Swift 1.5")** on **2× Radeon VII (gfx906) + an NVIDIA helper card** — hardware stock Strata only compile-checks — and beats stock on it.
 
 > **Made to be built and run by an agent, not by humans.** Compiling, installing, benching, promoting and operating this fork are agent workflows: pinned toolchains, custom libs, harness scripts and a mandatory speed+quality measurement discipline. A human gives orders and reads results — the agent executes and documents. Start at `JOURNAL.md` (session record), `bench/ab-v0210/out/RESULTS*.md` (verdicts) and the build guide below; `AGENTS.md` is the technical reference for AI tools.
 
@@ -122,22 +122,21 @@ Same day, same box, same pack. Attribution (arms D/E): the decode win is entirel
 
 > **Bottom line vs stock:** ≈ **1.4× decode throughput** · **1.4–2.4× chat-read latency** · **−6.2 GiB host RAM** · **byte-identical output** — one regression (**−18 %** fresh ~18k bulk prefill) — on hardware where stock, as tagged, does not build.
 
-### Post-merge re-validation (2026-11-06, single same-night pair)
+### Post-merge re-validation (2026-11-07, v0.2.11 — now serving)
 
-The v0.2.10 upmerge landed on `main`; this pair re-ran the full ladder on one quiet night — fresh builds, the whole ctest suite, then fork (arm-B lane: helper + `--spec 5`) vs stock (arm C), exclusive box:
+The v0.2.11 upmerge landed on `main` and passed the full ladder; prod was cut over to the new binaries after the gates:
 
 | Check | Result |
 | --- | --- |
-| Fresh HIP + CUDA builds, SONAME guards | clean (517 s total, `-j11`) |
-| ctest (233 tests) | **231 pass / 2 skip / 0 fail** (skips: optional test data absent) |
-| TG 494-tok ×3, tok/s | **37.9 / 36.9 / 40.1** vs stock 23.3 / 23.4 / 23.0 (**+60–74 %**) |
-| TG 513/514-tok ×3, tok/s | 33.9 / 35.8 / 36.0 vs stock 23.6 / 23.9 / 23.9 (**+50 %**) |
-| 1024-token generation wall | 32.5–33.4 s vs stock 43.0–47.7 s (**1.34×**) |
-| Prefill read 16k, tok/s | 306.5 vs 338.2 (**−9.4 %**) — narrower than the historical −18 % |
-| Prefill read 88k, tok/s | 480.7 vs 549.0 (−12.5 %; single-night pair, arm-B configs — not the relief-on lane of the historical table) |
-| Greedy 80k infill output | `1c7d4a6d…` — identical on both binaries (same sha as every kept round) |
-| Prompt-mode first logits (20 prompts) | **top-1 100.00 % · KL mean/median/max 0.00000** — the merged kernels are numerically transparent |
-| Pair self-heal (SIGKILL helper) | generation 1→2, health 200, refill + reconnect, post-kill smoke OK |
+| Fresh HIP + CUDA builds, SONAME guards | clean (1419 s total, `-j11`) |
+| ctest (291 tests — v0.2.11 adds ~58) | all pass; 1 new upstream test (`gemm_w16_parity`, ~8.2 GiB scratch) skips on the 8 GiB helper card via a free-VRAM guard |
+| TG 494-tok median over 2 rounds | **~35.1** vs stock 23.2 (**+51 %**) — honest note: ~7 % below the v0.2.10 build's 37.9 on this shape; 1024-tok walls at parity (30.5–36.4 s) |
+| Prefill read 16k / 88k, tok/s | 299 / 472 vs stock 338 / 549 |
+| Greedy 80k infill output | `1c7d4a6d…` — identical on the v0.2.11 build, the v0.2.10 build, and stock |
+| Prompt-mode first logits (20 prompts) | **top-1 100.00 % · KL mean/median/max 0.00000** |
+| Prod cutover | old binary archived (`66446e21-aside`); serving sha verified `d01d2ea4…`; health 200 in ~40 s, helper 4341 slots / 6.64 GiB, second channel connected |
+
+The v0.2.10 round (2026-11-06) re-ran the same ladder with matching results (231 pass / 2 skip on 233 tests; TG 36.9–40.1 vs 23.0–23.9; same parity verdicts) — artifacts in `bench/ab-v0210/out/` and `run/qa2-round-*.log`.
 
 
 ## Quality gates
@@ -148,7 +147,7 @@ What backs the "faster with zero quality cost" claim: the speed wins above were 
 | --- | --- | --- |
 | 80k greedy SHA | deep-infill (80k ctx, ≥5k out) byte-identical across candidate / flags-off / stock binaries | held **18/18** kept rounds (`1c7d4a6d…`) |
 | Teacher-forced yardstick (`tools/quant_quality.py`) | 4995 positions, full-vocab first logits: top-1, KL (p99), PPL — vs stock binary AND vs flags-off twin | top-1 **100.00 %** · KL **0.00000** · PPL **4.115 = 4.115** (relief and CPU-share arms) |
-| Post-merge prompt-mode gate | 20 prompts, first logits, merged fork vs stock binary | top-1 **100.00 %** · KL mean/median/max **0.00000** |
+| Post-merge prompt-mode gate | 20 prompts, first logits, merged fork vs stock binary | top-1 **100.00 %** · KL mean/median/max **0.00000** — re-run on v0.2.11: same verdict |
 | Probe determinism | fixed prompt re-answered every boot; sha must reproduce exactly per config | reproduces exactly, per-config values documented |
 | Speed gates | TG median ≥ 33.1 · 80k frame 583–587 · fresh-18k toward 337 · medians over ≥ 2 kept boots/arm | see measured table above |
 
@@ -249,4 +248,4 @@ HSA_OVERRIDE_GFX_VERSION=9.0.6  HIP_FORCE_P2P=1  HSA_ENABLE_SDMA=1
 | `strata_control/`, `tools/` | prod control plane, quality yardstick, setup tests |
 | Branches | `main` (canonical, published — **carries the latest working version**; nothing lands before both backends build and the gates pass), `main-pre-publish` (845-commit upstream-main snapshot), `build-latest`, `build-mixed-v0210` (prod line history), `stock-v0210-gfx906-buildfix` (stock build fixes), `tap-overlap-f1f2` (parked), `pair-self-heal` (kill-test validation, synced to `main`), `v0210-dev-line` (pre-merge dev archive) |
 
-Upstream hygiene: upmerges from `upstream/main` (Niko1221/Strata; `origin` is this fork) — v0.1.45 → v0.2.10 kept, upstream machinery winning where it supersedes, fork specifics re-integrated and depth-verified after every merge; fork features are opt-in and the default path stays byte-identical to stock (F1off arm: all shas reproduce, fresh-PP equal); both backends build before any promotion. The v0.2.10 merge is fully landed and validated on `main`: fresh builds, 231/233 ctest, same-night speed pair vs stock, prompt-logit parity gate, and the live self-heal test all green.
+Upstream hygiene: upmerges from `upstream/main` (Niko1221/Strata; `origin` is this fork) — v0.1.45 → v0.2.11 kept, upstream machinery winning where it supersedes, fork specifics re-integrated and depth-verified after every merge; fork features are opt-in and the default path stays byte-identical to stock (F1off arm: all shas reproduce, fresh-PP equal); both backends build before any promotion. Both the v0.2.10 and v0.2.11 merges are fully landed and validated on `main`: fresh builds, full ctest, same-night speed pairs vs stock, prompt-logit parity gates, and (v0.2.10) the live self-heal test — and prod serves the v0.2.11 build.
