@@ -1197,7 +1197,8 @@ void usage() {
                  "                       short side requests do not take the slots a long one needs (default 0 = park any)\n"
                  "  --conversation-cache-park-gain N  --serve: park only after the conversation advanced N tokens past\n"
                  "                       the copy it would supersede, so a turn that grew by a few hundred tokens does not\n"
-                 "                       write a whole snapshot that the next turn drops (default 0 = park every turn)\n"
+                 "                       write a whole snapshot that the next turn drops (default 0 = park every turn).\n"
+                 "                       It gates the DISK tier's publishes too: within the gain the file stays\n"
                  "  --conversation-cache-dir PATH  --serve (opt-in): the automatic DISK tier.  A parked conversation is\n"
                  "                       streamed to a generation in this private folder and a matching request is\n"
                  "                       restored straight into the live pools - no host snapshot of the K/V.  Works with\n"
@@ -1213,7 +1214,9 @@ void usage() {
                  "  --session-min-free-mib N  --serve: disk space a SAVE must leave free (default 4096; 0 = no check)\n"
                  "  --conversation-cache-disk-idle-save  --serve (opt-in): publish the ACTIVE conversation to the disk\n"
                  "                       tier at a verified complete-request boundary.  A restart reuses the latest\n"
-                 "                       compatible PUBLISHED generation; a tail never published is read again.  It never\n"
+                 "                       compatible PUBLISHED generation; a tail never published is read again.  The\n"
+                 "                       publish is PUBLICATION ONLY: the conversation stays mounted and its next request\n"
+                 "                       continues live; --conversation-cache-park-gain gates the publish.  It never\n"
                  "                       saves a wedged GPU, and a cancellation keeps the last published generation\n"
                  "  --session-save-reclaim  --serve: reclaim unpinned host caches if SAVE needs RAM (opt-in)\n"
                  "  --vram-elastic       --serve (#533, opt-in, NVIDIA): the expert cache in segments (--vram-segment-mib,\n"
@@ -13452,6 +13455,18 @@ int main(int argc, char** argv) {
         auto disk_park = [&](const ParkSource& src, const strata::core::ConversationCheckpointSplit& cs,
                              std::string& why) -> bool {
             const int64_t T = (int64_t) src.ids.size();
+            // --conversation-cache-park-gain gates the DISK tier too: a generation this publish would supersede
+            // is the deepest published prefix of these tokens, and a conversation that advanced fewer than the
+            // gain past it writes nothing - the published file covers that prefix and a restart re-prefills only
+            // the unpublished tail.  An idle publish of the ACTIVE conversation is exactly this at every turn
+            // boundary, which is what the gain gate is for.  (A manual SAVE is not the tier and never comes here.)
+            if (!disk->publish_worth(src.ids, src.imgs, src.cvec, o.conversation_cache_park_gain)) {
+                const int64_t held = disk->parked_prefix_tokens(src.ids, src.imgs, src.cvec);
+                why = "park-gain: advanced " + std::to_string(T - held) + " of " +
+                      std::to_string(o.conversation_cache_park_gain) + " tokens past the published " +
+                      std::to_string(held) + "; the published file stays";
+                return false;
+            }
             const auto t0 = Clock::now();
             strata::core::SessionManifestV2 manifest;
             std::vector<strata::core::SessionRegionSource> sources;
@@ -14397,6 +14412,10 @@ int main(int argc, char** argv) {
         // --conversation-cache-disk-idle-save: publish the ACTIVE conversation to the disk tier at a verified
         // complete-request boundary.  The disk leg ALONE: a host snapshot after every short reply is not what the
         // flag asks for, and the RAM cache's park stays the switch-time decision it has always been.
+        // PUBLICATION ONLY: the mounted session stays mounted and continuable.  A published generation is insurance
+        // for a restart, never an invalidation - this conversation's next request continues from the live session,
+        // and --conversation-cache-park-gain (disk_park's gate) keeps a generation that advanced too little from
+        // rewriting the file it already covers.
         auto disk_idle_save = [&](std::string& why) -> bool {
             const size_t n_st = stages.size();
             ParkSource src{live, live_imgs, checks, cvec_cached, ss, {},
@@ -18419,7 +18438,14 @@ int main(int argc, char** argv) {
                     disk_serial = gen->serial;
                 }
             }
-            const bool disk_wins = disk_tokens > parked.tokens;
+            // The disk leg wins ONLY when it is deeper than every start this session already holds: the live
+            // session and the checkpoints' resume, a longer batch slot, and the RAM cache's parked match.
+            // Comparing with the RAM cache alone was the churn: with the RAM tier off `parked.tokens` is 0, so a
+            // generation idle-published at the last turn boundary won on this SAME conversation's very next
+            // request, re-streamed its identical image over the already-mounted session, and dropped its batch
+            // slot - a full park and a full restore per step, with nothing invalidating the mounted state.
+            const bool disk_wins = disk_tokens > std::max(std::max(resume, slot_tokens), parked.tokens);
+            if (!disk_wins) disk_start.clear();   // not a source for this request: the file stays untouched
             if (disk_wins) {
                 borrow = false;   // the disk holds a deeper start: the RAM entry stays parked
                 // The generation this request mounts is its incoming donor: the park below prices its own
