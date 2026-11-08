@@ -47,6 +47,27 @@
 
 Rescue validated:
 
+- 2026-11-07 11:24: generation-1 supervised pair (engine from 10:32) stalled mid-prefill on a
+  130,081-token prompt — frozen at 15,176 tokens for 450+ s (game was running; known stall class).
+  Prod log ends mid stall-report, no abort line. Supervisor relaunched generation 2 at 11:24:07
+  (helper 1295832, server 1296206, engine 1297006), state attached, stage-affinity re-applied
+  (32 threads → cpus 3,5,7,9,11,13,15, retry counter at 13 across generations). Recovery path
+  worked as designed; the stall itself is the pre-existing blackout class on a giant prompt.
+- Full restart ledger for 2026-11-07 (from prod logs + pair_supervisor.py): 01:22 run was stopped
+  cleanly by hand at 10:25 (not a fault); 10:32 gen-1 killed by the supervisor's --stall-timeout
+  (prompt read frozen 450+ s); 11:24 gen-2 killed at 12:01 after 69 s of zero progress on a fresh
+  131,615-token prompt (same class, caught early); 12:02 gen-3 deployed with the patient helper
+  (reply deadline 600 s). Even "successful" 130k prefills run in chunked freezes: the counter
+  advances 16,384 tokens every ~100–130 s (gen-2 log) — 8–10 min per 130k prompt.
+- 2026-11-07 ~12:4x — user-approved supervisor tuning (log + grace): all six launchers now pass
+  `--stall-timeout 600` (was 300; comment updated to 10 min), and pair_supervisor.py gained
+  `append_event()` — every stopping/recovering/failed/stopped transition with its reason is
+  appended to `<state-stem>-events.log` beside the state json (run/). Reason: gen-2's 12:01 kill
+  reason was unrecoverable (stdout → /dev/null; state json overwritten by gen-3 within a minute);
+  the 69 s kill was mathematically NOT the 300 s stall path (counter frozen ~60 s). Full
+  tests/mixed_gpu/test_pair_supervisor.py suite: 32/32 OK after the patch. Edits are on disk only;
+  the running supervisor (PID 562674, gen 3) keeps its old args until the next supervisor start.
+
 - Service active/running, MainPID 817332, Restart=always, Nice=1, NRestarts=0.
 - Both original Unix sockets are listening, owned by helper PID 817332; its log
   reports both listeners. It has not reported an engine connection or fill.

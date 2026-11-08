@@ -236,6 +236,48 @@ class RecoveryTests(ScratchTest):
         self.wait_state(lambda state: state["state"] == "backoff"
                         and "stalled at 0 of 50" in state.get("reason", ""))
 
+    def test_generation_disarms_the_read_stall_tracker(self):
+        self.start_pair(extra_args=("--stall-timeout", "0.3"))
+        before = self.attached()
+        for progress in (
+            "thinking: 18282 of budget 49152 (max 65536)",
+            "thinking: 18282 of max 65536",
+            "answering: 18282 of max 65536",
+            "writing a tool call: read: 18282 of max 65536",
+            "tool call complete: 18282 of max 65536",
+            "reading the prompt: 18282 of max 65536",
+        ):
+            with self.subTest(progress=progress):
+                with (self.root / "server.log").open("a") as log:
+                    log.write("[strata] reading the prompt: 98,075 of 98,076 tokens, 20 s so far\n")
+                    log.write(f"[strata] {progress} tokens, 30.4 tok/s, 621 s\n")
+                # No request-completion line: generation can outlive the read deadline.
+                time.sleep(0.6)
+                state = json.loads(self.state.read_text())
+                self.assertIsNone(self.process.poll())
+                self.assertEqual((state["generation"], state["state"]), (1, "attached"))
+                for name in ("helper", "server", "engine"):
+                    self.assertEqual(state[f"{name}_pid"], before[f"{name}_pid"])
+
+    def test_read_after_generation_rearms_the_stall_tracker(self):
+        self.start_pair(extra_args=("--stall-timeout", "0.3"))
+        self.attached()
+        with (self.root / "server.log").open("a") as log:
+            log.write("[strata] reading the prompt: 98,075 of 98,076 tokens, 20 s so far\n")
+            log.write("[strata] thinking: 31 of max 65536 tokens, 30.2 tok/s, 21 s\n")
+            log.write("[strata] reading the prompt: 0 of 50 tokens, 0 s so far\n")
+        self.wait_state(lambda state: state["state"] == "backoff"
+                        and "stalled at 0 of 50" in state.get("reason", ""))
+
+    def test_thinking_budget_preamble_does_not_disarm_read_stall_tracking(self):
+        self.start_pair(extra_args=("--stall-timeout", "0.3"))
+        self.attached()
+        with (self.root / "server.log").open("a") as log:
+            log.write("[strata] reading the prompt: 100 of 200 tokens, 10 s so far\n")
+            log.write("[strata] thinking capped at 49152 of max_tokens 65536 to leave room for the answer\n")
+        self.wait_state(lambda state: state["state"] == "backoff"
+                        and "stalled at 100 of 200" in state.get("reason", ""))
+
     def test_progressing_read_ticker_does_not_restart(self):
         self.start_pair(extra_args=("--stall-timeout", "0.3"))
         self.attached()

@@ -38,6 +38,7 @@ FILLED = re.compile(r"expert-helper: filled [1-9][0-9]* slots\b|"
 PROXY = re.compile(r"expert-helper proxy: [1-9][0-9]* experts\b")
 REQUEST_DONE = re.compile(r"strata serve: prompt [0-9,]+ tokens")
 READ_TICK = re.compile(r"reading the prompt: ([0-9,]+ of [0-9,]+) tokens")
+GENERATION_TICK = re.compile(r"^\[strata\] .+: [0-9,]+ of (?:budget|max) ")
 STAGE_SCRIPT = Path(__file__).resolve().parent / "staging_affinity.py"
 STAGE_ATTEMPTS = 30  # The engine renames itself strata-host only after early serve startup.
 
@@ -51,6 +52,14 @@ def write_json(path: Path, data: dict) -> None:
     temporary = path.with_suffix(path.suffix + ".new")
     temporary.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     temporary.replace(path)
+
+
+def append_event(state: Path, generation: int, state_name: str, reason: str) -> None:
+    """Kill reasons are otherwise lost: stdout is /dev/null for the systemd user
+    service and the state json is overwritten by the next generation."""
+    line = f"{time.strftime('%Y-%m-%dT%H:%M:%S')} gen {generation} {state_name}: {reason}\n"
+    with state.with_name(state.stem + "-events.log").open("a", encoding="utf-8") as events:
+        events.write(line)
 
 
 def process_token(pid: int) -> tuple[str, str] | None:
@@ -402,6 +411,10 @@ def supervise(args: argparse.Namespace) -> int:
                                 if server_tail is None:
                                     server_tail = LogTail(Path(peers["engine_log"]))
                                 for line in server_tail.read_lines():
+                                    # Read ticks stop during generation, long before the request ends.
+                                    if GENERATION_TICK.search(line):
+                                        reading = None
+                                        continue
                                     tick = READ_TICK.search(line)
                                     if tick and (reading is None or tick.group(1) != reading[0]):
                                         reading = (tick.group(1), time.monotonic())
@@ -417,6 +430,8 @@ def supervise(args: argparse.Namespace) -> int:
                     publish.update(state="stopping" if stop.is_set() else "recovering",
                                    reason=reason, timestamp=time.time())
                     write_json(args.state, publish)
+                    append_event(args.state, generation,
+                                 "stopping" if stop.is_set() else "recovering", reason)
                 finally:
                     stop_group(child, args.stop_timeout, known)
                     # Include sockets bound during startup/teardown, even if
@@ -429,6 +444,7 @@ def supervise(args: argparse.Namespace) -> int:
                 if peers is None:
                     # Configuration/ownership refusal must not steal a foreign port or socket.
                     write_json(args.state, dict(publish, state="failed", reason=reason))
+                    append_event(args.state, generation, "failed", reason)
                     return 1
                 failures = 1 if healthy and time.monotonic() - started >= 300 else failures + 1
                 delay = min(args.backoff * 2 ** min(failures - 1, 5), args.max_backoff)
@@ -438,6 +454,7 @@ def supervise(args: argparse.Namespace) -> int:
                 stop.wait(delay)
             if generation:
                 write_json(args.state, dict(publish, state="stopped", reason="stop requested", timestamp=time.time()))
+                append_event(args.state, generation, "stopped", "stop requested")
             return 0
 
 
