@@ -388,6 +388,23 @@ public:
         const size_t i = index_of(serial);
         return i == SIZE_MAX ? nullptr : &entries_[i];
     }
+    // The pair sidecars the parked images reference (their checkpoints' capture ids, the main session's and the
+    // stage images').  The disk tier's sidecar reclaim asks for them: a parked conversation restored later
+    // rewinds through these checkpoints, and its pair must still be in the tier's folder.
+    void collect_pair_ids(std::vector<uint64_t>& out) const {
+        std::vector<const SavedConversation*> walk;
+        for (const auto& e : entries_) walk.push_back(&e);
+        while (!walk.empty()) {   // the stage images are one level deeper, so a stack - not a recursive lambda
+            const SavedConversation& e = *walk.back();
+            walk.pop_back();
+            if (e.live.draft_pair.id) out.push_back(e.live.draft_pair.id);
+            for (const auto& c : e.live.stage_parts)
+                if (c.draft_pair.id) out.push_back(c.draft_pair.id);
+            for (const auto& c : e.checkpoints)
+                if (c.draft_pair.id) out.push_back(c.draft_pair.id);
+            for (const auto& si : e.stage_images) walk.push_back(&si);
+        }
+    }
     // While a borrowed entry (the donor) is being restored, parking the outgoing conversation must not evict or drop
     // it: guard() it.  When the outgoing image fits only without it, make_room refuses before evicting anything and
     // guard_blocked() says so: the caller then takes the entry as before, so the conversation that was active a

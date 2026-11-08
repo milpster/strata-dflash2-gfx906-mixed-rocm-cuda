@@ -295,6 +295,45 @@ class Slots(unittest.TestCase):
                 self.assertEqual(s, 500, b)
                 self.assertTrue(self.engine.ended and self.engine.proc.killed)
 
+    def test_disk_cache_lines_keep_a_save_alive(self):
+        """Plan 7: the automatic disk tier's `DCACHE` lines are progress and a heartbeat here too - a manual SAVE
+        that overlaps a tier transfer is not out of step, and a disk step that never ends is still ended."""
+        self.engine.silence_s = 0.3
+        self.engine.script = [0.2, "DCACHE write 16777216 1198691396\n", 0.2, "DCACHE write 33554432 1198691396\n",
+                              0.2, "DCACHE flush 1198691396 1198691396 2.4\n", 0.2,
+                              "SAVED 63000 1198691396 2000.0\n"]
+        t0 = time.monotonic()
+        s, b = self.post("/slots/0?action=save", {"filename": "disk.bin"})
+        self.assertEqual(s, 200, b)
+        self.assertGreater(time.monotonic() - t0, 0.5)
+        self.assertEqual(b["n_written"], 1198691396)
+        self.assertFalse(self.engine.ended)
+        self.assertEqual(self.engine.disk_io, {"phase": "flush", "done": 1198691396, "total": 1198691396,
+                                               "ms": 2400.0})
+
+    def test_a_disk_step_that_never_ends_is_ended(self):
+        """The tier's progress buys no extra allowance: a disk step that stops mid-write times out."""
+        self.engine.silence_s = 0.3
+        self.engine.script = ["DCACHE write 1 1198691396\n"]
+        t0 = time.monotonic()
+        s, b = self.post("/slots/0?action=save", {"filename": "disk-stuck.bin"})
+        self.assertEqual(s, 500, b)
+        self.assertIn("said nothing", b["error"]["message"])
+        self.assertLess(time.monotonic() - t0, 5)
+        self.assertTrue(self.engine.ended and self.engine.proc.killed)
+
+    def test_malformed_disk_cache_lines_end_the_engine(self):
+        """A DCACHE line with the tier's shape broken is out of step, exactly like a malformed SESSION line."""
+        for script in (["DCACHE write x 10\n"], ["DCACHE write 11 10\n"], ["DCACHE bogus 1 10\n"],
+                       ["DCACHE 1 2 3\n"], ["DCACHE write 8 10\n", "DCACHE write 4 10\n"],       # progress back
+                       ["DCACHE write 5 10 nan\n"], ["DCACHE write 5 10 -1\n"], ["DCACHE write 5 10 1 extra\n"]):
+            self.engine.script = script
+            self.engine.ended = False
+            self.engine.proc = FakeProc(self.engine)
+            s, b = self.post("/slots/0?action=save", {"filename": "dbin.bin"})
+            self.assertEqual(s, 500, (script, b))
+            self.assertTrue(self.engine.ended, script)
+
     def test_a_silent_engine_is_ended_not_waited_for(self):
         self.engine.silence_s = 0.3
         self.engine.script = []                      # the engine never answers

@@ -261,6 +261,13 @@ if(STRATA_BUILD_CONVERSATION_TESTS)
   add_executable(dflash_ring_test tests/core/dflash_ring_test.cpp)
   target_include_directories(dflash_ring_test PRIVATE include)
   add_test(NAME dflash_ring_test COMMAND dflash_ring_test)
+  # The automatic disk tier's host policy (include/strata/core/conversation_disk_cache.hpp): the bounded index,
+  # the reserve-before-write quota with its protections, the publication order, the pair-sidecar reclaim and the
+  # restart inventory - on real files in a temporary folder, with injected IO faults.
+  add_executable(conversation_disk_cache_test tests/core/conversation_disk_cache_test.cpp
+               src/core/conversation_disk_cache.cpp src/core/conversation_file.cpp)
+  target_include_directories(conversation_disk_cache_test PRIVATE include)
+  add_test(NAME conversation_disk_cache_test COMMAND conversation_disk_cache_test)
 endif()
 
 if(STRATA_HIP_GFX906)
@@ -794,7 +801,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     src/core/dflash.cpp src/core/dflash_runtime.cpp src/core/dflash_tap_collect.cpp
     src/core/conversation_snapshot.cpp src/core/conversation_state.cpp src/core/conversation_memory.cpp src/core/peer_experts.cpp
     src/core/arch_defaults.cpp src/core/nv_defaults.cpp src/core/vmm.cpp src/core/conversation_file.cpp
-    src/core/conversation_stream_state.cpp
+    src/core/conversation_stream_state.cpp src/core/conversation_disk_cache.cpp
     # R2 (opt-in CUDA helper): the engine-side proxy client and the CPU recompute of the helper's
     # claimed rows.  Both are CPU-only sources - no device call, no CUDA kernel - and the frame
     # transport is the SAME file the CUDA helper compiles (tools/mixed_gpu/sidecar/helper_frame.cpp),

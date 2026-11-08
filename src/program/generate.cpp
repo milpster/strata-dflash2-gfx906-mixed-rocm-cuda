@@ -38,6 +38,7 @@
 #include "strata/core/serve_stop_bound.hpp"
 #endif
 #include "strata/core/conversation_file.hpp"
+#include "strata/core/conversation_disk_cache.hpp"
 #include "strata/core/session_save_reclaim.hpp"
 #include "strata/core/conversation_memory.hpp"
 #include "strata/core/auto_cache.hpp"
@@ -1008,6 +1009,13 @@ struct Options {
     /// strict: a filesystem that refuses direct I/O disables the disk tier with the reason, silently falling back to
     /// the kernel's page cache would defeat the low-RAM goal.  `buffered` asks for the buffered path explicitly.
     std::string conversation_cache_disk_io = "direct";
+    /// --conversation-cache-disk-idle-save (--serve, opt-in): publish the ACTIVE conversation to the disk tier at a
+    /// verified complete-request boundary, coordinated with the watchdog/progress protocol so it can never race a new
+    /// request.  Guarantee: a restart reuses the latest compatible PUBLISHED checkpoint - a tail that was never
+    /// published (or was advanced after the last publish) is read again.  It never saves a wedged GPU, and a
+    /// cancellation or shutdown keeps the last published generation as it is.  Off by default: on by default it
+    /// writes a whole generation after every short reply.
+    bool conversation_cache_disk_idle_save = false;
     /// --memory-limit-mib N / STRATA_MEMORY_LIMIT_MIB: the total RAM this engine's container or cgroup may use, for a
     /// container that cannot see its real limit (0 or unset = none; the flag wins over the variable)
     int64_t memory_limit_mib = -1;
@@ -1203,6 +1211,10 @@ void usage() {
                  "                       direct).  A filesystem that refuses direct I/O disables the disk tier, said;\n"
                  "                       buffered is an explicit choice with no page-cache memory guarantee\n"
                  "  --session-min-free-mib N  --serve: disk space a SAVE must leave free (default 4096; 0 = no check)\n"
+                 "  --conversation-cache-disk-idle-save  --serve (opt-in): publish the ACTIVE conversation to the disk\n"
+                 "                       tier at a verified complete-request boundary.  A restart reuses the latest\n"
+                 "                       compatible PUBLISHED generation; a tail never published is read again.  It never\n"
+                 "                       saves a wedged GPU, and a cancellation keeps the last published generation\n"
                  "  --session-save-reclaim  --serve: reclaim unpinned host caches if SAVE needs RAM (opt-in)\n"
                  "  --vram-elastic       --serve (#533, opt-in, NVIDIA): the expert cache in segments (--vram-segment-mib,\n"
                  "                       default 512), so the command `VRAM <reserve_mib>` (the server's POST /v1/vram) can\n"
@@ -3836,6 +3848,7 @@ int main(int argc, char** argv) {
         else if (a == "--serve") o.serve = true;
         else if (a == "--vision") o.vision = true;
         else if (a == "--session-save-reclaim") o.session_save_reclaim = true;
+        else if (a == "--conversation-cache-disk-idle-save") o.conversation_cache_disk_idle_save = true;
         else if (a == "--prompt-cache") o.prompt_cache = std::max(0, std::atoi(next("--prompt-cache")));
         else if (a == "--conversation-cache-mib" || a == "--conversation-cache-slots" ||
                  a == "--conversation-cache-min-free-mib" || a == "--conversation-cache-min-tokens" ||
@@ -12841,79 +12854,28 @@ int main(int argc, char** argv) {
         // A parked conversation is STREAMED to a generation in a private folder (format v2: the K/V straight from
         // its pools, no host snapshot of it) and a request that starts with a generation's tokens is streamed back
         // straight into the live pools.  The RAM budget and the disk tier are independent: --conversation-cache-mib 0
-        // keeps the disk tier on.  Quota bookkeeping, the LRU, the index and the metrics are the follow-up lane; the
-        // tier bounds itself here by the sum of the generations it wrote, and a generation the conversation outgrew
-        // goes with its file (the same #342 rule the RAM cache applies to its copies).  A filesystem that refuses the
-        // requested transfer mode turns the tier off, said: falling back to the kernel's page cache in silence would
-        // defeat the low-RAM goal the tier exists for.
-        struct DiskTier {
-            struct Gen {
-                std::string path;
-                std::vector<int32_t> ids;      // the tokens it holds, for the prefix match (lane 3's index subsumes this)
-                std::vector<ImgKey> imgs;
-                bool cvec = true;
-                uint64_t bytes = 0;
-                std::vector<uint64_t> ring_ids;   // the pair sidecars its checkpoint metas reference (reclaim keeps them)
-                int64_t pair_prefix = 0;          // deepest checkpoint prefix with a valid pair (0: none)
-                int64_t anchor = 0;               // deepest checkpoint prefix (the target anchor)
-                bool tail_draft = false;          // the live-tail ring retains a resume at the generation's end
-            };
-            bool on = false;
-            std::string dir;
-            uint64_t budget = 0, ram = 0;
-            bool direct_io = true;
-            std::vector<Gen> gens;
-            int64_t serial = 0;
-            std::map<uint64_t, uint64_t> sidecars;   // capture id -> ring bytes: the checkpoint-boundary pair images
-            uint64_t sidecar_bytes = 0;              // their total, charged to the tier's used bytes
-            uint64_t capture_serial = 0;
-        };
-        DiskTier disk;
+        // keeps the disk tier on, and a disk hit never goes through a host-KV snapshot or the RAM cache's retain().
+        // The bounded index, the reserve-before-write quota, the publication order, the LRU/eviction and the restart
+        // inventory are the disk cache's own host module (conversation_disk_cache.hpp); the tier's file is its folder.
+        // A filesystem that refuses the requested transfer mode turns the tier off, said: falling back to the
+        // kernel's page cache in silence would defeat the low-RAM goal the tier exists for.
+        std::unique_ptr<strata::core::DiskCache> disk;
+        std::string disk_dir;
+        uint64_t disk_ram = 0;
+        bool disk_direct_io = true;
+        bool disk_wanted = false;
+        int64_t disk_capture_serial = 0;
+        bool disk_off_by_fs = false;   // the filesystem refused the requested transfer mode: the tier stops here
+        const auto disk_on = [&]() -> bool { return disk != nullptr && !disk_off_by_fs; };
         if (!o.conversation_cache_dir.empty()) {
             if (o.conversation_cache_disk_mib <= 0)
                 std::fprintf(stderr, "strata serve: conversation cache: --conversation-cache-dir needs a positive "
                                      "--conversation-cache-disk-mib; the disk tier stays off\n");
             else {
-                std::error_code fec;
-                std::filesystem::create_directories(o.conversation_cache_dir, fec);
-                if (fec)
-                    std::fprintf(stderr, "strata serve: conversation cache: the disk tier stays off (cannot create "
-                                          "%s: %s)\n", o.conversation_cache_dir.c_str(), fec.message().c_str());
-                else {
-#ifndef _WIN32
-                    ::chmod(o.conversation_cache_dir.c_str(), 0700);   // the generations are the engine's own
-#endif
-                    disk.on = true;
-                    disk.dir = o.conversation_cache_dir;
-                    disk.budget = (uint64_t) o.conversation_cache_disk_mib << 20;
-                    disk.ram = (uint64_t) std::max<int64_t>(o.conversation_cache_disk_ram_mib, 16) << 20;
-                    disk.direct_io = o.conversation_cache_disk_io == "direct";
-                    // startup orphan clean: no checkpoints or generations are live yet, so every ring sidecar in
-                    // the tier's own namespace left by a previous run is unreferenced.  Only ring-*.dring files
-                    // are touched - this folder belongs to the tier (0700), and lane 3 owns the fuller inventory.
-                    {
-                        std::error_code sc;
-                        size_t cleared = 0, freed = 0;
-                        for (const auto& e : std::filesystem::directory_iterator(disk.dir, sc)) {
-                            const std::string n = e.path().filename().string();
-                            if (n.rfind("ring-", 0) != 0 || n.size() < 6 || n.compare(n.size() - 5, 5, ".dring") != 0)
-                                continue;
-                            const auto sz = std::filesystem::file_size(e.path(), sc);
-                            if (sc) continue;
-                            std::filesystem::remove(e.path(), sc);
-                            if (sc) continue;
-                            ++cleared;
-                            freed += sz;
-                        }
-                        if (cleared)
-                            std::fprintf(stderr, "strata serve: conversation cache: the disk tier cleared %zu orphan "
-                                                 "ring sidecar(s), %zu KiB\n", cleared, freed >> 10);
-                    }
-                    std::fprintf(stderr, "strata serve: conversation cache: the disk tier is on (%s, %lld MiB disk "
-                                         "budget, %lld MiB host budget, %s i/o)\n", disk.dir.c_str(),
-                                 (long long) (disk.budget >> 20), (long long) (disk.ram >> 20),
-                                 disk.direct_io ? "direct" : "buffered");
-                }
+                disk_dir = o.conversation_cache_dir;
+                disk_ram = (uint64_t) std::max<int64_t>(o.conversation_cache_disk_ram_mib, 16) << 20;
+                disk_direct_io = o.conversation_cache_disk_io == "direct";
+                disk_wanted = true;
             }
         }
         // The layout a v2 file of THIS engine declares: the geometry key, the stage carve, and the KV format the
@@ -12948,10 +12910,10 @@ int main(int argc, char** argv) {
                 if (!strata::core::conversation_kv_source(kv, *probe, g, 1, true, lwhy)) { ok = false; break; }
                 disk_layout.stages.push_back({ses.layer_lo, ses.layer_hi, kv.format});
             }
-            if (disk.on && !ok) {
+            if (disk_wanted && !ok) {
                 std::fprintf(stderr, "strata serve: conversation cache: the disk tier stays off (its layout: %s)\n",
                              lwhy.c_str());
-                disk.on = false;
+                disk_wanted = false;
             }
         }
         // The checkpoints of a split park, in the chain's order: `complete` says which original position each
@@ -13072,13 +13034,29 @@ int main(int argc, char** argv) {
         // the tier's transfer mode, learned from the first block that reaches the OS: a filesystem that took
         // O_DIRECT at open and refuses the transfer drops to buffered mid-write, and the tier must know
         auto disk_mode = [&](bool direct) {
-            if (disk.direct_io && !direct) {
-                disk.on = false;
+            if (disk_direct_io && !direct) {
+                // the tier stops using this filesystem; what it already published stays as it is.  Destroying the
+                // index mid-transfer would strand a write that is halfway through its own publication.
+                disk_off_by_fs = true;
                 std::fprintf(stderr, "strata serve: conversation cache: %s refuses direct I/O: the disk tier is "
                                      "disabled (buffered writes are charged to the page cache; "
                                      "--conversation-cache-disk-io buffered opts in explicitly)\n",
-                             disk.dir.c_str());
+                             disk_dir.c_str());
+                return;
             }
+            if (disk) disk->set_io_mode(direct);
+        };
+        // The disk tier's typed progress lines (stdout, the server's protocol): `DCACHE <phase> <done> <total>
+        // [<secs>]`.  They are DISK bytes: they never count as prompt evaluation (only PP/RESUME feed the
+        // server's prompt stats).  `secs` is given for a phase that is finished and not known to be fast
+        // (-1: not applicable).  Phases: write/flush/publish (a park), validate/transfer (a restore), done.
+        auto disk_line = [](const char* phase, uint64_t done, uint64_t total, double secs) {
+            if (secs >= 0.0)
+                std::printf("DCACHE %s %llu %llu %.1f\n", phase, (unsigned long long) done,
+                            (unsigned long long) total, secs);
+            else
+                std::printf("DCACHE %s %llu %llu\n", phase, (unsigned long long) done, (unsigned long long) total);
+            std::fflush(stdout);
         };
         auto disk_identity = [&](std::string& why) -> const strata::core::SessionFileIdentity* {
             if (!disk_id) {
@@ -13101,7 +13079,7 @@ int main(int argc, char** argv) {
         // exists - and packed into the published generation.  An illegal boundary leaves the
         // checkpoint target-only, said at the capture; it is never paired later at park time.
         auto ring_pair_capture = [&](int64_t L, ConvCheckpoint& c, std::string& why) -> bool {
-            if (!disk.on || !has_dflash || L < 1) return false;
+            if (!disk_on() || !has_dflash || L < 1) return false;
             const strata::core::OnDevice on_df(dflash.device());
             if (strata::core::deferral_context() && !dflash.idle(why)) return false;   // finish the deferred fusion
             if (cudaDeviceSynchronize() != cudaSuccess) { why = "the drafter sync at the capture failed"; return false; }
@@ -13118,6 +13096,10 @@ int main(int argc, char** argv) {
             std::vector<std::array<uint64_t, 5>> ring;
             uint64_t ring_bytes = 0;
             if (!disk_dflash_sizes(L, ring, ring_bytes, why)) return false;
+            // the capture is priced against the tier's budget BEFORE anything is written: a pair the budget
+            // cannot take is skipped here, at the boundary, and its checkpoint stays target-only (said).
+            // Discovering it unaffordable at park time would demote a checkpoint whose window is gone by then.
+            if (!disk->can_capture_sidecar(ring_bytes, why)) return false;
             std::vector<uint8_t> image(ring_bytes);
             uint64_t at = 0;
             for (size_t j = 0; j < ring.size(); ++j) {
@@ -13132,8 +13114,8 @@ int main(int argc, char** argv) {
                     at += sz;
                 }
             }
-            const uint64_t id = ++disk.capture_serial;
-            const std::string path = disk.dir + "/ring-" + std::to_string(id) + ".dring";
+            const uint64_t id = (uint64_t) ++disk_capture_serial;
+            const std::string path = disk->sidecar_path(id);
             std::string w2;
             if (!strata::core::session_ring_sidecar_write(path, meta, L, image.data(), ring_bytes, w2)) {
                 why = w2;
@@ -13141,8 +13123,7 @@ int main(int argc, char** argv) {
             }
             c.draft_pair = {id, ring_bytes, strata::core::session_hash64(image.data(), ring_bytes, 0),
                             meta.committed_end, meta.appended_through, meta.ring_cells, meta.window, meta.capacity};
-            disk.sidecars[id] = ring_bytes;
-            disk.sidecar_bytes += ring_bytes;
+            disk->note_sidecar(id, ring_bytes);
             return true;
         };
         // Reading a retained checkpoint's pair back for a same-conversation rewind: the sidecar's ring
@@ -13152,7 +13133,7 @@ int main(int argc, char** argv) {
         // reread - never a stale mount.
         auto ring_pair_restore = [&](const ConvCheckpoint& c, std::string& why) -> bool {
             const auto& dp = c.draft_pair;
-            if (!disk.on || !dp.ok()) { why = "this checkpoint has no pair to read"; return false; }
+            if (!disk_on() || !dp.ok()) { why = "this checkpoint has no pair to read"; return false; }
             const strata::core::DFlashSnapshotMeta want{dp.committed_end, dp.appended_through, dp.ring_cells,
                                                         dp.window, dp.capacity};
             const strata::core::DFlashSnapshotMeta mine = dflash.snapshot_meta();
@@ -13162,7 +13143,7 @@ int main(int argc, char** argv) {
             }
             const int64_t L = (int64_t) c.ids.size();
             std::vector<uint8_t> image;
-            if (!strata::core::session_ring_sidecar_read(disk.dir + "/ring-" + std::to_string(dp.id) + ".dring", want,
+            if (!strata::core::session_ring_sidecar_read(disk->sidecar_path(dp.id), want,
                                                           L, image, why))
                 return false;
             std::vector<std::array<uint64_t, 5>> sizes;
@@ -13238,6 +13219,73 @@ int main(int argc, char** argv) {
             }
             return &*disk_v2_cap;
         };
+        // The v2 read bounds the tier applies to every file it opens: its own host budget, this engine's widest
+        // context, and this engine's chain/stage/region counts.  The restart inventory, a restore and a manual
+        // RESTORE read with the same bounds; the caller sets the file-size bound and the progress callbacks.
+        auto disk_read_limits = [&]() -> strata::core::SessionReadV2Limits {
+            strata::core::SessionReadV2Limits lim;
+            lim.max_manifest_bytes = disk_ram / 2;
+            lim.max_tokens = (uint64_t) std::max<int64_t>(o.max_context, 1);
+            lim.max_images = (uint64_t) std::max<int64_t>(o.max_context, 1);
+            lim.max_checkpoints = (uint64_t) std::max(o.prompt_cache, 1);
+            lim.max_stages = (uint64_t) disk_stages;
+            lim.max_regions = 5ull * (uint64_t) disk_stages *
+                                  (2ull + (uint64_t) g.n_layers + (uint64_t) std::max(o.prompt_cache, 1)) +
+                              8ull + (uint64_t) std::max(o.prompt_cache, 1);
+            lim.admit = [&](uint64_t need, std::string& a) {
+                if (need > disk_ram) {
+                    a = "the file asks for " + std::to_string(need >> 20) + " MiB of manifest and region directory, " +
+                        "over the disk tier's host budget of " + std::to_string(disk_ram >> 20) + " MiB";
+                    return false;
+                }
+                return disk_ram_admit(need, a);
+            };
+            return lim;
+        };
+        // ---- open the tier: the owner lock, then the restart inventory (6.4).  The index is rebuilt from the
+        // committed MANIFESTS only - no payload is read at startup - and the folder's orphan temporaries, orphan
+        // pair sidecars and unpublishable generations are reconciled there.  A folder another live engine owns
+        // turns the tier off, said: two engines publishing into one folder is lost generations.
+        if (disk_wanted) {
+            std::string dwhy;
+            const strata::core::SessionFileIdentity* oid = disk_identity(dwhy);
+            if (oid == nullptr) {
+                std::fprintf(stderr, "strata serve: conversation cache: the disk tier stays off (%s)\n", dwhy.c_str());
+                disk_wanted = false;
+            } else {
+                strata::core::DiskCacheOptions dops;
+                dops.dir = disk_dir;
+                dops.budget = (uint64_t) o.conversation_cache_disk_mib << 20;
+                dops.index_cap = disk_ram / 2;
+                dops.max_entries = (size_t) std::max(o.conversation_cache_slots, 1);
+                dops.min_free_bytes = (uint64_t) std::max<int64_t>(o.session_min_free_mib, 0) << 20;
+                dops.direct_io = disk_direct_io;
+                disk = std::make_unique<strata::core::DiskCache>(std::move(dops));
+                strata::core::SessionV2Requirement want;
+                want.check_layout = true;
+                want.check_draft = false;   // a generation's ring horizon is restored, not compared at the scan
+                want.layout = disk_layout;
+                strata::core::SessionReadV2Limits lim = disk_read_limits();
+                lim.max_file_bytes = (uint64_t) o.conversation_cache_disk_mib << 20;
+                if (!disk->open(*oid, want, lim, dwhy)) {
+                    std::fprintf(stderr, "strata serve: conversation cache: the disk tier stays off (%s)\n",
+                                 dwhy.c_str());
+                    disk.reset();
+                } else {
+                    const strata::core::DiskCacheInventory& inv = disk->inventory();
+                    std::fprintf(stderr, "strata serve: conversation cache: disk tier ON at %s (%s, budget %lld MiB): "
+                                         "generations=%zu bytes=%zu sidecars=%zu orphan temps=%zu orphan "
+                                         "sidecars=%zu corrupt=%zu foreign=%zu\n",
+                                 disk_dir.c_str(), disk_direct_io ? "direct I/O" : "buffered",
+                                 (long long) (dops.budget >> 20), inv.generations, inv.bytes >> 20, inv.sidecars,
+                                 inv.orphan_temps, inv.orphan_sidecars, inv.corrupt, inv.foreign);
+                    if (!inv.last_refusal.empty())
+                        std::fprintf(stderr, "strata serve: conversation cache: disk inventory: %s\n",
+                                     inv.last_refusal.c_str());
+                    disk->use_stamp(check_clock);   // the LRU clock continues above the checkpoints' use stamps
+                }
+            }
+        }
         // ---- the automatic park's disk leg: stream the conversation, then book the generation.
         // It runs BEFORE any host snapshot and before the RAM cache's capacity and admission: the file's bytes
         // come straight off the pools in bounded blocks, so the park costs no host copy of the K/V at all.
@@ -13278,7 +13326,7 @@ int main(int argc, char** argv) {
                 std::string rwhy;
                 const strata::core::DFlashSnapshotMeta want{m.ring_committed_end, m.ring_appended_through,
                                                             m.ring_cells, m.ring_window, m.ring_capacity};
-                const std::string spath = disk.dir + "/ring-" + std::to_string(m.ring_id) + ".dring";
+                const std::string spath = disk->sidecar_path(m.ring_id);
                 if (!strata::core::session_ring_sidecar_read(spath, want, (int64_t) m.prefix, body, rwhy) ||
                     strata::core::session_hash64(body.data(), body.size(), 0) != m.ring_checksum) {
                     std::fprintf(stderr, "strata serve: conversation cache: the pair of the checkpoint at %llu "
@@ -13398,75 +13446,32 @@ int main(int argc, char** argv) {
             }
             return true;
         };
+        // The batch slots' live pair ids.  Their slots are declared further down this same body, so the slot
+        // reference set is installed there and read by the sidecar reclaim below (empty until then).
+        std::function<std::vector<uint64_t>()> disk_slot_pair_ids;
         auto disk_park = [&](const ParkSource& src, const strata::core::ConversationCheckpointSplit& cs,
                              std::string& why) -> bool {
             const int64_t T = (int64_t) src.ids.size();
             const auto t0 = Clock::now();
-            // #342, the disk's shape of it: a generation of this conversation the new one outgrew is superseded
-            size_t dropped = 0;
-            for (size_t i = 0; i < disk.gens.size();) {
-                const DiskTier::Gen& g2 = disk.gens[i];
-                const bool pre = g2.ids.size() <= src.ids.size() &&
-                                 std::equal(g2.ids.begin(), g2.ids.end(), src.ids.begin()) &&
-                                 g2.cvec == src.cvec;
-                std::vector<ImgKey> under;
-                for (const ImgKey& k : src.imgs) if (k.start < (int64_t) g2.ids.size()) under.push_back(k);
-                if (pre && under == g2.imgs) {
-                    std::error_code rec;
-                    std::filesystem::remove(g2.path, rec);
-                    disk.gens.erase(disk.gens.begin() + (std::ptrdiff_t) i);
-                    ++dropped;
-                    continue;
-                }
-                ++i;
-            }
             strata::core::SessionManifestV2 manifest;
             std::vector<strata::core::SessionRegionSource> sources;
             std::vector<std::array<uint64_t, 5>> ring;
             std::vector<std::vector<uint8_t>> pair_bodies;
             if (!disk_plan(T, src.ids, src.imgs, src.cvec, cs, ring, pair_bodies, manifest, sources, why)) return false;
-            // the tier's own bound, before any file is opened: generations written, the live pair
-            // sidecars and this one, over the budget
-            uint64_t used = disk.sidecar_bytes;
-            for (const auto& g2 : disk.gens) used += g2.bytes;
-            uint64_t est = 256 + manifest.tokens.size() * 4 + manifest.images.size() * 16 +
-                           manifest.checkpoints.size() * 152 + manifest.regions.size() * 64;
-            for (const auto& r : manifest.regions) est += r.bytes;
-            if (used + est > disk.budget) {
-                why = "the disk tier is full (" + std::to_string((used + est) >> 20) + " MiB needed of " +
-                      std::to_string(disk.budget >> 20) + " MiB";
-                if (dropped) why += ", " + std::to_string(dropped) + " superseded dropped";
-                why += ")";
-                return false;
-            }
-            const strata::core::SessionFileIdentity* id = disk_identity(why);
-            if (id == nullptr) return false;
-            const std::string path = disk.dir + "/conv-" + std::to_string(disk.serial++) + ".sess";
-            strata::core::SessionWriteOptions wo;
-            wo.min_free_bytes = (uint64_t) o.session_min_free_mib << 20;
-            wo.progress = [](uint64_t done, uint64_t) {
-                strata::core::progress_at("request: streaming the conversation to disk, MiB", (int64_t) (done >> 20));
-                strata::core::progress_allow(0);
-            };
-            wo.phase = [](const char* phase, uint64_t bytes) {
-                strata::core::progress_at(phase);
-                strata::core::progress_allow(strata::core::session_phase_limit_s(bytes));
-            };
-            wo.mode = [&](bool direct) { disk_mode(direct); };
-            strata::core::SessionStatus st;
-            size_t bytes = 0;
-            if (!strata::core::session_file_write_v2(path, *id, manifest, sources, bytes, why, wo, &st))
-                return false;
-            // what this generation ADVERTISES: the target anchor (deepest checkpoint) and the deepest
-            // checkpoint prefix with a valid pair.  A resume can be a complete target+draft hit only at
-            // a paired position (or on a live-tail ring that still retains it); checkpoints whose
-            // capture was ring-wrapped carry no pair in the manifest and are target-only from here.
-            DiskTier::Gen gen{path, src.ids, src.imgs, src.cvec, (uint64_t) bytes, {}, 0, 0, false};
+            // What this generation ADVERTISES: the target anchor (deepest checkpoint) and the deepest
+            // checkpoint prefix with a valid pair.  A resume is a complete target+draft hit only at a paired
+            // position (or on a live-tail ring that still retains it); checkpoints whose capture was
+            // ring-wrapped carry no pair in the manifest and are target-only from here.  Built BEFORE the
+            // write: the reservation prices the index entry with it.
+            strata::core::DiskGeneration meta;
+            meta.tokens = src.ids;
+            meta.images = src.imgs;
+            meta.cvec = src.cvec;
             for (const auto& cm : manifest.checkpoints) {
-                gen.anchor = std::max<int64_t>(gen.anchor, (int64_t) cm.prefix);
+                meta.anchor = std::max<int64_t>(meta.anchor, (int64_t) cm.prefix);
                 if (cm.ring_id) {
-                    gen.pair_prefix = std::max<int64_t>(gen.pair_prefix, (int64_t) cm.prefix);
-                    gen.ring_ids.push_back(cm.ring_id);
+                    meta.pair_prefix = std::max<int64_t>(meta.pair_prefix, (int64_t) cm.prefix);
+                    meta.ring_ids.push_back(cm.ring_id);
                 }
             }
             if (has_dflash) {
@@ -13475,32 +13480,88 @@ int main(int argc, char** argv) {
                 tail.max_rows = dflash.max_block() + 1; tail.capacity = manifest.draft.capacity;
                 tail.committed_end = manifest.draft.committed_end;
                 tail.appended_through = manifest.draft.appended_through;
-                gen.tail_draft = tail.context_retained(T, dflash.max_block() + 1);
+                meta.tail_draft = tail.context_retained(T, dflash.max_block() + 1);
             }
-            disk.gens.push_back(gen);
-            // reclaim: sidecars no longer referenced by a retained checkpoint or a published generation
-            // go, with their bytes.  Shared references (a slot's copy of a checkpoint) keep the file.
-            for (auto it = disk.sidecars.begin(); it != disk.sidecars.end();) {
-                bool live = false;
-                for (const ConvCheckpoint& k : checks)
-                    if (k.draft_pair.id == it->first) { live = true; break; }
-                if (!live)
-                    for (const auto& g2 : disk.gens)
-                        for (uint64_t rid : g2.ring_ids)
-                            if (rid == it->first) { live = true; break; }
-                if (live) { ++it; continue; }
-                std::error_code rec;
-                std::filesystem::remove(disk.dir + "/ring-" + std::to_string(it->first) + ".dring", rec);
-                disk.sidecar_bytes -= it->second;
-                it = disk.sidecars.erase(it);
+            // The reservation (plan 6.3): the complete planned write priced BEFORE any file is opened - the
+            // generation's exact file bytes twice (the published file and the writer's own temporary of the
+            // same size) and the index entry it will take.  The pair sidecars are charged at their CAPTURE
+            // (note_sidecar), so they are not priced a second time.  Quota, entry count, index cap, the
+            // volume's free space and --session-min-free-mib are the tier's own decision, and so is eviction.
+            uint64_t exact = 0;
+            if (!strata::core::session_file_v2_size(manifest, exact, why)) return false;
+            meta.bytes = exact;
+            const strata::core::SessionFileIdentity* id = disk_identity(why);
+            if (id == nullptr) return false;
+            strata::core::DiskReservation res;
+            if (!disk->reserve(exact, 0, strata::core::disk_generation_index_bytes(meta), res, why)) return false;
+            strata::core::SessionWriteOptions wo;
+            wo.min_free_bytes = (uint64_t) std::max<int64_t>(o.session_min_free_mib, 0) << 20;
+            wo.progress = [&](uint64_t done, uint64_t total) {
+                strata::core::progress_at("request: streaming the conversation to disk, MiB", (int64_t) (done >> 20));
+                strata::core::progress_allow(0);
+                disk_line("write", done, total, -1.0);
+            };
+            wo.phase = [&](const char* phase, uint64_t bytes) {
+                strata::core::progress_at(phase);
+                strata::core::progress_allow(strata::core::session_phase_limit_s(bytes));
+                disk_line(phase, bytes, bytes, -1.0);
+            };
+            wo.mode = [&](bool direct) { disk_mode(direct); };
+            strata::core::SessionStatus st;
+            size_t bytes = 0;
+            const auto write_t0 = Clock::now();
+            const bool wrote = strata::core::session_file_write_v2(res.path, *id, manifest, sources, bytes, why, wo,
+                                                                   &st);
+            // Lane 1's case: the folder flush AFTER the rename failed.  The file is at its name and the old
+            // one is gone, so this generation IS published - the entry is recorded and marked pending, not
+            // thrown away with a file a restart will find.
+            const bool dir_pending = !wrote && st.published;
+            if (!wrote && !dir_pending) {
+                disk->release(res);
+                return false;
             }
+            if (dir_pending) bytes = (size_t) exact;
+            disk_line("done", (uint64_t) bytes, (uint64_t) bytes,
+                      std::chrono::duration<double, std::milli>(Clock::now() - write_t0).count() / 1000.0);
+            // The index changes only AFTER the rename, and the generations this one outgrew retire only now:
+            // a write that failed keeps the older generation (plan 6.3).  Lane 2 dropped them before opening
+            // the file, which is the order this replaces.
+            meta.bytes = (uint64_t) bytes;
+            strata::core::DiskCache& dc = *disk;
+            const int64_t anchor = meta.anchor, pair_prefix = meta.pair_prefix;
+            const bool tail_draft = meta.tail_draft;
+            if (!dc.publish(res, std::move(meta), dir_pending, why)) return false;
+            const size_t dropped = dc.retire_superseded(src.ids, src.imgs, src.cvec, dc.stats().last_serial);
+            // reclaim: sidecars no live checkpoint and no published generation references any more go, with
+            // their bytes.  The live chain is the split's checkpoints while a split park is in flight (the
+            // main session's moved into it), plus the parked RAM images' and the slots' - a shared reference
+            // (a slot's copy of a checkpoint) keeps the file.
+            std::vector<uint64_t> live_refs;
+            const auto add_refs = [&](const ConvCheckpoint& c) {
+                if (c.draft_pair.id) live_refs.push_back(c.draft_pair.id);
+                for (const ConvCheckpoint& part : c.stage_parts)
+                    if (part.draft_pair.id) live_refs.push_back(part.draft_pair.id);
+            };
+            for (const ConvCheckpoint& c : checks) add_refs(c);
+            for (const ConvCheckpoint& c : cs.stage0) add_refs(c);
+            for (const ConvCheckpoint& c : cs.rest) add_refs(c);
+            for (const std::vector<ConvCheckpoint>& part : cs.parts)
+                for (const ConvCheckpoint& c : part) add_refs(c);
+            conversations.collect_pair_ids(live_refs);
+            if (disk_slot_pair_ids)
+                for (const uint64_t rid : disk_slot_pair_ids()) live_refs.push_back(rid);
+            std::sort(live_refs.begin(), live_refs.end());
+            live_refs.erase(std::unique(live_refs.begin(), live_refs.end()), live_refs.end());
+            uint64_t freed = 0;
+            const size_t sidecars = dc.reclaim_sidecars(
+                [&](uint64_t rid) { return std::binary_search(live_refs.begin(), live_refs.end(), rid); }, freed);
             std::fprintf(stderr, "strata serve: conversation cache: disk park streamed %zu tokens%s to %s in "
-                                 "%.1f ms; generations=%zu bytes=%zu superseded=%zu anchor=%lld pair=%lld "
-                                 "tail-draft=%d\n",
-                         src.ids.size(), src.what.c_str(), path.c_str(),
-                         std::chrono::duration<double, std::milli>(Clock::now() - t0).count(), disk.gens.size(),
-                         [&] { uint64_t u = 0; for (const auto& g2 : disk.gens) u += g2.bytes; return u; }() >> 20,
-                         dropped, (long long) gen.anchor, (long long) gen.pair_prefix, gen.tail_draft ? 1 : 0);
+                                 "%.1f ms; generations=%zu bytes=%zu evicted=%zu superseded=%zu sidecars=%zu "
+                                 "anchor=%lld pair=%lld tail-draft=%d\n",
+                         src.ids.size(), src.what.c_str(), res.path.c_str(),
+                         std::chrono::duration<double, std::milli>(Clock::now() - t0).count(), dc.entries(),
+                         dc.used() >> 20, res.evicted, dropped, sidecars, (long long) anchor,
+                         (long long) pair_prefix, tail_draft ? 1 : 0);
             return true;
         };
         // ---- restore a generation straight into the live pools.  Pass 1 reads the file with NO sink: every
@@ -13510,32 +13571,31 @@ int main(int argc, char** argv) {
         // preflight run next.  `live_ok = false` marks the mutation's start: a pass-2 failure after it is
         // fatal, a half-written session is never decoded from (the same contract as a RAM restore).
         // Returns 0 = restored, 1 = safe miss, 2 = fatal; `tokens_out` is the conversation's length.
-        auto disk_restore = [&](const std::string& path, const strata::core::SessionFileIdentity& id,
+        auto disk_restore = [&](const std::string& path, uint64_t serial, const strata::core::SessionFileIdentity& id,
                                 const std::function<void()>& quiesce,
                                 const std::function<void(uint64_t, uint64_t)>& moving,
                                 const std::function<void(const char*, uint64_t)>& blocking,
                                 int64_t& tokens_out, std::string& why, uint64_t max_file_bytes,
                                 std::string& report) -> int {
             report.clear();
-            strata::core::SessionReadV2Limits lim;
+            strata::core::DiskCache& dc = *disk;
+            // the generation's file is open for the whole read: nothing evicts or removes it while it is
+            struct DiskReadRef {
+                strata::core::DiskCache& d; uint64_t s;
+                ~DiskReadRef() { if (s) d.unreference(s); }
+            } disk_ref{dc, serial};
+            if (serial) dc.reference(serial);
+            strata::core::SessionReadV2Limits lim = disk_read_limits();
             lim.max_file_bytes = max_file_bytes;
-            lim.max_manifest_bytes = disk.ram / 2;
-            lim.max_tokens = (uint64_t) std::max<int64_t>(o.max_context, 1);
-            lim.max_images = (uint64_t) std::max<int64_t>(o.max_context, 1);
-            lim.max_checkpoints = (uint64_t) std::max(o.prompt_cache, 1);
-            lim.max_stages = (uint64_t) disk_stages;
-            lim.max_regions = 5ull * (uint64_t) disk_stages *
-                                  (2ull + (uint64_t) g.n_layers + (uint64_t) std::max(o.prompt_cache, 1)) +
-                              8ull + (uint64_t) std::max(o.prompt_cache, 1);
-            lim.admit = [&](uint64_t need, std::string& a) {
-                if (need > disk.ram) {
-                    a = "the file asks for " + std::to_string(need >> 20) + " MiB of manifest and region directory, " +
-                        "over the disk tier's host budget of " + std::to_string(disk.ram >> 20) + " MiB";
-                    return false;
-                }
-                return disk_ram_admit(need, a);
+            const auto validate_progress = [&](uint64_t done, uint64_t total) {
+                moving(done, total);
+                disk_line("validate", done, total, -1.0);
             };
-            lim.progress = moving;
+            const auto transfer_progress = [&](uint64_t done, uint64_t total) {
+                moving(done, total);
+                disk_line("transfer", done, total, -1.0);
+            };
+            lim.progress = validate_progress;
             lim.mode = [&](bool direct) { disk_mode(direct); };
             strata::core::SessionV2Requirement want;
             want.check_layout = true;
@@ -13544,8 +13604,15 @@ int main(int argc, char** argv) {
             strata::core::SessionManifestV2 manifest;
             size_t fbytes = 0;
             strata::core::SessionStatus st;
-            if (!strata::core::session_file_read_v2(path, id, want, manifest, fbytes, why, lim, nullptr, &st))
+            const auto validate_t0 = Clock::now();
+            if (!strata::core::session_file_read_v2(path, id, want, manifest, fbytes, why, lim, nullptr, &st)) {
+                dc.stats().validate_ms += (uint64_t) std::chrono::duration<double, std::milli>(Clock::now() - validate_t0).count();
+                ++dc.stats().misses;
                 return 1;
+            }
+            dc.stats().validate_ms += (uint64_t) std::chrono::duration<double, std::milli>(Clock::now() - validate_t0).count();
+            dc.stats().validate_bytes += fbytes;
+            dc.stats().transfer_high = std::max(dc.stats().transfer_high, (uint64_t) fbytes);
             const int64_t T = (int64_t) manifest.tokens.size();
             if (T == 0 || T > o.max_context) { why = "the conversation is outside this engine's context"; return 1; }
             for (const ImgKey& k : manifest.images)
@@ -13988,12 +14055,20 @@ int main(int argc, char** argv) {
             strata::core::SessionStatus st2;
             strata::core::SessionManifestV2 got;
             size_t bytes2 = 0;
-            lim.progress = moving;
+            lim.progress = transfer_progress;
+            const auto transfer_t0 = Clock::now();
             if (!strata::core::session_file_read_v2(path, id, want, got, bytes2, why, lim, &sink, &st2)) {
-                if (!mutated) return 1;   // the validation pass refused it: every destination is untouched
+                dc.stats().transfer_ms += (uint64_t) std::chrono::duration<double, std::milli>(Clock::now() - transfer_t0).count();
+                if (!mutated) {   // the validation pass refused it: every destination is untouched
+                    ++dc.stats().misses;
+                    return 1;
+                }
                 why = "restoring the generation failed after its bytes started landing: " + why;
                 return 2;
             }
+            const double transfer_ms = std::chrono::duration<double, std::milli>(Clock::now() - transfer_t0).count();
+            dc.stats().transfer_ms += (uint64_t) transfer_ms;
+            dc.stats().transfer_bytes += bytes2;
             live = std::move(got.tokens);
             live_imgs = std::move(got.images);
             checks = std::move(built);
@@ -14012,6 +14087,18 @@ int main(int argc, char** argv) {
                 report = "target-only prefix match, draft miss (no pair at the resume; tail ring horizon " +
                          std::to_string(manifest.draft.appended_through) + " over ring " +
                          std::to_string(manifest.draft.ring_cells) + ")";
+            disk_line("done", (uint64_t) fbytes, (uint64_t) fbytes, transfer_ms / 1000.0);
+            strata::core::DiskCacheStats& s = dc.stats();
+            ++s.restores;
+            ++s.hits;
+            s.last_serial = serial;
+            s.reused_tokens += (uint64_t) T;
+            if (has_dflash) {
+                if (!tail_ok) ++s.ring_retention_misses;
+                if (pair_pick >= 0) ++s.draft_pair_hits;
+                else ++s.draft_rebuilds;
+            }
+            if (serial) dc.use(serial);   // mounting it is the use the eviction order counts
             return 0;
         };
         // Save only on a switch/rewind, not on each continuing request. No graph
@@ -14088,7 +14175,7 @@ int main(int argc, char** argv) {
             // The disk tier streams FIRST: its bytes leave the pools straight into the file, so the park pays no
             // host copy of the K/V, and its outcome never touches the RAM cache's capacity, admission or copies.
             // A failure here skips the disk copy alone; the RAM park below runs as it always did.
-            if (disk.on) {
+            if (disk_on()) {
                 std::string dwhy;
                 if (!disk_park(src, cs, dwhy))
                     std::fprintf(stderr, "strata serve: conversation cache: disk park skipped (%s)\n", dwhy.c_str());
@@ -14285,7 +14372,7 @@ int main(int argc, char** argv) {
             return true;
         };
         auto park_current_body = [&](size_t held) -> bool {
-            if ((!conversations.enabled() && !disk.on) || !live_ok || live.empty()) return true;
+            if ((!conversations.enabled() && !disk_on()) || !live_ok || live.empty()) return true;
             const size_t n_st = stages.size();
             ParkSource src{live, live_imgs, checks, cvec_cached, ss, {},
                            (n_st > 0 && !mtp_first) || !use_mtp ? nullptr : &mtp.kv_state(),
@@ -14301,6 +14388,24 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "strata serve: conversation cache: allocation failed; skip parking\n");
                 return true;
             }
+        };
+        // --conversation-cache-disk-idle-save: publish the ACTIVE conversation to the disk tier at a verified
+        // complete-request boundary.  The disk leg ALONE: a host snapshot after every short reply is not what the
+        // flag asks for, and the RAM cache's park stays the switch-time decision it has always been.
+        auto disk_idle_save = [&](std::string& why) -> bool {
+            const size_t n_st = stages.size();
+            ParkSource src{live, live_imgs, checks, cvec_cached, ss, {},
+                           (n_st > 0 && !mtp_first) || !use_mtp ? nullptr : &mtp.kv_state(),
+                           use_mtp && !mtp_first && n_st > 0 ? &mtp.kv_state() : nullptr, true, " idle"};
+            for (auto& st : stages) src.stage_sessions.push_back(&st->ss);
+            if (!conversations.wants((int64_t) src.ids.size())) return true;
+            strata::core::ConversationCheckpointSplit cs;
+            if (n_st > 0) cs = strata::core::conversation_checkpoints_split(std::move(checks), n_st);
+            struct IdleMergeBack {
+                strata::core::ConversationCheckpointSplit& cs; std::vector<ConvCheckpoint>& checks; bool on;
+                ~IdleMergeBack() { if (on && !strata::core::conversation_checkpoints_merge(std::move(cs), checks)) checks.clear(); }
+            } idle_merge{cs, checks, n_st > 0};
+            return disk_park(src, cs, why);
         };
         int64_t pp_total = 0, pp_from = 0, pp_next_check = 0;
         bool pp_tail_saved = false;
@@ -14488,7 +14593,7 @@ int main(int argc, char** argv) {
             }
             // the paired draft capture AT this checkpoint's boundary, while its window still exists
             // (never later at park).  An illegal boundary leaves the checkpoint target-only, said.
-            if (has_dflash && disk.on) {
+            if (has_dflash && disk_on()) {
                 std::string pwhy;
                 if (ring_pair_capture(L, c, pwhy)) {
                     if (ckpt_trace)
@@ -16140,6 +16245,18 @@ int main(int argc, char** argv) {
             ConvCheckpoint::PromptPlan partial_plan;   ///< --prefill-pipe: the segment it stopped in, read on in its chunks
         };
         std::vector<BSlot> bs((size_t) std::max(o.batch, 0));
+        // the disk tier's sidecar reclaim reads these slots' live pair ids; the slots are declared here, below
+        // the park, so the reference set is installed here (see `disk_slot_pair_ids` above the park lambda).
+        disk_slot_pair_ids = [&]() -> std::vector<uint64_t> {
+            std::vector<uint64_t> ids;
+            for (const BSlot& sl : bs)
+                for (const ConvCheckpoint& c : sl.checks) {
+                    if (c.draft_pair.id) ids.push_back(c.draft_pair.id);
+                    for (const ConvCheckpoint& part : c.stage_parts)
+                        if (part.draft_pair.id) ids.push_back(part.draft_pair.id);
+                }
+            return ids;
+        };
         // STRATA_BATCH_DF2_DEFER=0: every round drafts for every slot, spare rows or not (the first measurement's behaviour, for the A/B)
         // STRATA_BATCH_DF2_CONF=P (default: --draft-conf, else 0.35; 0 off): a slot's draft rows stop where the product of the selector's probabilities falls below P;
         // STRATA_BATCH_DF2_MAXX=N: at most N draft rows a slot and window (default kDrafts)
@@ -17596,7 +17713,7 @@ int main(int argc, char** argv) {
                         int64_t v2_tokens = 0;
                         const uint64_t* v2cap = disk_v2_read_cap(v2why);
                         if (v2cap == nullptr) { refuse(v2why, strata::core::SessionError::io); continue; }
-                        const int rc = disk_restore(path, id, adapt_quiesce, moving, blocking, v2_tokens, v2why,
+                        const int rc = disk_restore(path, 0, id, adapt_quiesce, moving, blocking, v2_tokens, v2why,
                                                     *v2cap, v2report);
                         if (rc == 2) {
                             std::fprintf(stderr, "strata serve: session restore %s: transfer failed: %s\n",
@@ -18288,23 +18405,22 @@ int main(int argc, char** argv) {
             // it wins on depth alone; a borrowed prefix never beats it (a borrow is shallower by definition).
             std::string disk_start;
             int64_t disk_tokens = 0;
-            if (disk.on) {
-                for (const auto& gen : disk.gens) {
-                    const int64_t L = (int64_t) gen.ids.size();
-                    if (L < 1 || L > n - 1 || L > (int64_t) ids.size()) continue;
-                    if (!std::equal(gen.ids.begin(), gen.ids.end(), ids.begin())) continue;
-                    if (gen.cvec != want_cvec) continue;
-                    std::vector<ImgKey> under;
-                    for (const ImgKey& k : req_imgs) if (k.start < L) under.push_back(k);
-                    if (under != gen.imgs) continue;
-                    if (L > disk_tokens) {
-                        disk_tokens = L;
-                        disk_start = gen.path;
-                    }
+            uint64_t disk_serial = 0;
+            if (disk_on()) {
+                const strata::core::DiskGeneration* gen = disk->best(ids, req_imgs, want_cvec);
+                if (gen != nullptr) {
+                    disk_tokens = (int64_t) gen->tokens.size();
+                    disk_start = gen->path;
+                    disk_serial = gen->serial;
                 }
             }
             const bool disk_wins = disk_tokens > parked.tokens;
-            if (disk_wins) borrow = false;   // the disk holds a deeper start: the RAM entry stays parked
+            if (disk_wins) {
+                borrow = false;   // the disk holds a deeper start: the RAM entry stays parked
+                // The generation this request mounts is its incoming donor: the park below prices its own
+                // write and evicts to fit, and eviction never takes a guarded generation (plan 6.3).
+                disk->guard(disk_serial);
+            }
             if (parked.tokens > std::max(resume, slot_tokens) && !borrow && !disk_wins)
                 incoming.emplace(conversations.take(parked.index));
             if (incoming || borrow || disk_wins) slot_source = -1;
@@ -18428,9 +18544,14 @@ int main(int argc, char** argv) {
             // --conversation-cache-park-gain N: a park now would supersede the entry parked_prefix_tokens() reports (the copy
             // this conversation wrote last), so a conversation that advanced fewer than N tokens since then keeps it:
             // it still holds this conversation's prefix, and re-parking writes the whole snapshot only for the next
-            // turn to drop it again.  0 (the default) parks every turn, as before.
+            // turn to drop it again.  0 (the default) parks every turn, as before.  The disk tier's own published
+            // generation counts too: a conversation that advanced too little keeps the FILE it already wrote.
             const size_t park_held = o.conversation_cache_park_gain > 0
-                                         ? conversations.parked_prefix_tokens(live, live_imgs, checks, cvec_cached)
+                                         ? std::max(conversations.parked_prefix_tokens(live, live_imgs, checks,
+                                                                                       cvec_cached),
+                                                   disk_on() ? (size_t) std::max<int64_t>(
+                                                       disk->parked_prefix_tokens(live, live_imgs, cvec_cached), 0)
+                                                             : 0)
                                          : 0;
             const bool park_worth = o.conversation_cache_park_gain <= 0 || park_held == 0 ||
                                     (int64_t) live.size() >= (int64_t) park_held + o.conversation_cache_park_gain;
@@ -18697,9 +18818,9 @@ int main(int argc, char** argv) {
                 std::string dwhy, dreport;
                 int64_t dtokens = 0;
                 const strata::core::SessionFileIdentity* sid = disk_identity(dwhy);
-                const int rc = sid == nullptr ? 1 : disk_restore(disk_start, *sid, kv_quiesce, disk_moving,
-                                                                 disk_blocking, dtokens, dwhy, disk.budget,
-                                                                 dreport);
+                const int rc = sid == nullptr ? 1 : disk_restore(disk_start, disk_serial, *sid, kv_quiesce,
+                                                                 disk_moving, disk_blocking, dtokens, dwhy,
+                                                                 disk->budget(), dreport);
                 if (rc == 2) {
                     std::printf("ERR restoring a parked conversation from disk: %s\n", dwhy.c_str());
                     return 1;
@@ -18716,6 +18837,7 @@ int main(int argc, char** argv) {
                                  dreport.c_str());
                 }
                 disk_start.clear();
+                disk->unguard(disk_serial);   // the donor is mounted or refused: eviction may take it again
             }
             if (want_cvec != cvec_cached) {
                 live_ok = false;
@@ -21970,6 +22092,18 @@ int main(int argc, char** argv) {
                 live_ok = true;
                 std::fprintf(stderr, "strata serve: cancelled request keeps its conversation: %lld tokens live\n",
                              (long long) pp_reached);
+            }
+            // --conversation-cache-disk-idle-save: publish the ACTIVE conversation at this verified boundary.
+            // The last commit landed above (nothing reads or copies the session after it), live_ok says the
+            // session IS this request's conversation, and a cancelled request is not a boundary - so a
+            // cancellation or a shutdown keeps the last published generation exactly as it is, and a wedged
+            // GPU is never saved.  A restart reuses the latest compatible PUBLISHED generation: a tail that
+            // was never published is read again.
+            if (o.conversation_cache_disk_idle_save && !cancelled && live_ok && disk_on() && !live.empty()) {
+                std::string dwhy;
+                const bool saved = disk_idle_save(dwhy);
+                if (!saved)
+                    std::fprintf(stderr, "strata serve: conversation cache: idle save skipped (%s)\n", dwhy.c_str());
             }
             if (nib::config().recheck && nib::any_on() && !cancelled) {
                 // STRATA_EXPERT_NIBBLE_RECHECK=1 (debug): every converted slot's hash again on its own device, against the

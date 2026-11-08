@@ -411,6 +411,24 @@ struct SessionReadV2Limits {
 // both passes) and the small vectors.  Independent of the payload length.
 uint64_t session_read_v2_peak_bytes(uint64_t manifest_bytes, uint64_t regions);
 
+// The EXACT size a v2 generation of `manifest` publishes at, including the header, the manifest, the region bytes,
+// the region table and the trailer.  The disk tier's quota prices a complete write with this BEFORE opening a file
+// (block padding, the directory and the footer are in it), so the budget covers the file as it lands.  Refuses a
+// manifest `session_file_write_v2` would refuse, with the same reason.
+bool session_file_v2_size(const SessionManifestV2& manifest, uint64_t& bytes, std::string& why);
+
+// Reads a v2 generation's MANIFEST ONLY: the header, the identity, the bounded manifest and the region directory,
+// the committed marker, and the manifest's and region table's checksums.  The region bytes are never read, so the
+// payload checksums are NOT verified here - the restart inventory rebuilds its index with this, and a generation's
+// payload is verified by the two-pass read when it is restored.  The identity/layout checks and every bound of
+// SessionReadV2Limits apply as in the full read.
+bool session_file_manifest_v2(const std::string& path, const SessionFileIdentity& id, const SessionV2Requirement& want,
+                              SessionManifestV2& manifest, size_t& bytes, std::string& error,
+                              const SessionReadV2Limits& limits = {}, SessionStatus* status = nullptr);
+
+// The free space of the volume `dir` lives on (the disk tier's own bound, beside its quota).
+bool session_disk_free_space(const std::string& dir, uint64_t& out);
+
 // Reads a v2 generation through `sink`.  `manifest` receives what the file declares (identities, tokens, images,
 // checkpoints, region descriptors with their offsets and checksums) and is left untouched on failure.  Pass 1
 // streams the regions and verifies their checksums, calling validate_region and reporting progress; pass 2

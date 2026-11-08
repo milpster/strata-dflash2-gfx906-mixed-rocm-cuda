@@ -2055,6 +2055,140 @@ bool read_v2_impl(const std::string& path, const SessionFileIdentity& id, const 
     st.error = SessionError::none;
     return true;
 }
+
+// The restart inventory's read: the committed manifest, the directory and the committed marker, and NOTHING else.
+// The region bytes are never streamed, so the payload checksum is not verified here - a generation's payload is
+// verified by the two-pass read when it is restored.  Every identity check, bound and the directory's size
+// agreement are the full read's, so the index only ever holds a file a full read accepts as far as its metadata.
+bool manifest_v2_impl(const std::string& path, const SessionFileIdentity& id, const SessionV2Requirement& want,
+                      SessionManifestV2& manifest, size_t& bytes, std::string& error,
+                      const SessionReadV2Limits& limits, SessionStatus& st) {
+    error.clear();
+    st = {};
+    st.error = SessionError::invalid;
+    RawFile raw;
+    uint64_t size = 0;
+    if (!raw.open_session(path, size)) {
+        st.error = raw.refused() ? SessionError::invalid : raw.kind();
+        error = "session file v2: " + path + ": " + raw.error();
+        return false;
+    }
+    if (size < kHeader + kTrailer2) { error = "session file v2: size " + std::to_string(size) + " is below the minimum"; return false; }
+    if (size > limits.max_file_bytes) {
+        error = "session file v2: size " + std::to_string(size) + " exceeds this engine's limit of " +
+                std::to_string(limits.max_file_bytes);
+        return false;
+    }
+    uint8_t h[kHeader];
+    if (!raw.pread_bytes(0, h, kHeader)) {
+        st.error = raw.kind();
+        error = "session file v2: header read error: " + raw.error();
+        return false;
+    }
+    if (limits.mode) limits.mode(raw.direct());
+    uint32_t version = 0, hsize = 0;
+    uint64_t model = 0, config = 0, payload = 0, manifest_bytes = 0, r1 = 0, hh = 0;
+    std::memcpy(&version, h + 8, 4); std::memcpy(&hsize, h + 12, 4);
+    std::memcpy(&model, h + 16, 8); std::memcpy(&config, h + 24, 8); std::memcpy(&payload, h + 32, 8);
+    std::memcpy(&manifest_bytes, h + 40, 8); std::memcpy(&r1, h + 48, 8); std::memcpy(&hh, h + 56, 8);
+    if (std::memcmp(h, kMagic2, 8) != 0) { error = "session file v2: not a Strata v2 session file (magic)"; return false; }
+    if (hh != session_hash64(h, 56, 0)) { error = "session file v2: header checksum mismatch"; return false; }
+    if (version != kVersion2) { error = "session file v2: unsupported version " + std::to_string(version); return false; }
+    if (hsize != kHeader || r1) { error = "session file v2: invalid header fields"; return false; }
+    if (model != id.model) { error = "session file v2: saved with another model (model fingerprint differs)"; return false; }
+    if (config != id.config) { error = "session file v2: saved with another engine configuration (config fingerprint differs)"; return false; }
+    if (payload > size - kHeader - kTrailer2 || manifest_bytes > size - kHeader - kTrailer2) {
+        error = "session file v2: size " + std::to_string(size) + " does not match the header (" +
+                std::to_string(kHeader + payload + kTrailer2) + " at least)";
+        return false;
+    }
+    if (manifest_bytes > limits.max_manifest_bytes) {
+        error = "session file v2: manifest of " + std::to_string(manifest_bytes) + " bytes over the runtime limit " +
+                std::to_string(limits.max_manifest_bytes);
+        return false;
+    }
+    if (limits.admit) {
+        std::string why;
+        if (!limits.admit(session_read_v2_peak_bytes(manifest_bytes, limits.max_regions), why)) {
+            st.error = SessionError::memory;
+            error = "session file v2: " + why;
+            return false;
+        }
+    }
+    std::vector<uint8_t> md((size_t) manifest_bytes);
+    if (!raw.pread_bytes(kHeader, md.data(), md.size())) {
+        st.error = raw.kind();
+        error = "session file v2: manifest read error: " + raw.error();
+        return false;
+    }
+    SessionManifestV2 parsed;
+    if (!parse_manifest_v2(md.data(), md.size(), limits, parsed, error)) return false;
+    uint64_t region_bytes = 0;
+    for (const auto& r : parsed.regions) region_bytes = sat_add(region_bytes, r.bytes);
+    const uint64_t table_bytes = sat_add(8, sat_mul(parsed.regions.size(), 8));
+    if (region_bytes != payload - manifest_bytes || kHeader + payload + table_bytes + kTrailer2 != size) {
+        error = "session file v2: size " + std::to_string(size) + " does not match the directory (" +
+                std::to_string(kHeader + payload + table_bytes + kTrailer2) + " expected)";
+        return false;
+    }
+    if (want.check_layout && want.layout != parsed.layout) {
+        error = "session file v2: saved with another split layout than this runtime's";
+        return false;
+    }
+    if (want.check_draft && want.draft != parsed.draft) {
+        error = "session file v2: saved with another draft than this runtime's";
+        return false;
+    }
+    // the region table: its count and its own checksum, so a truncated or rewritten directory cannot enter the index
+    const uint64_t table_at = kHeader + payload;
+    uint64_t tcount = 0;
+    if (!raw.pread_bytes(table_at, (uint8_t*) &tcount, 8)) {
+        st.error = raw.kind();
+        error = "session file v2: region table read error: " + raw.error();
+        return false;
+    }
+    if (tcount != parsed.regions.size()) {
+        error = "session file v2: the region table names " + std::to_string(tcount) + " regions, the manifest " +
+                std::to_string(parsed.regions.size());
+        return false;
+    }
+    SessionHasher manifest_hash(0), table_hash(0);
+    manifest_hash.update(md.data(), md.size());
+    table_hash.update(&tcount, 8);
+    std::vector<uint64_t> table(parsed.regions.size(), 0);
+    if (!table.empty()) {
+        RegionStream f(raw);
+        if (!f.ok()) { st.error = SessionError::memory; error = "session file v2: " + f.error(); return false; }
+        uint64_t filled = 0;
+        if (!f.stream(table_at + 8, table_bytes - 8, [&](const uint8_t* p, size_t c) {
+                table_hash.update(p, c);
+                std::memcpy((uint8_t*) table.data() + filled, p, c);
+                filled += c;
+                return true;
+            })) {
+            st.error = f.kind();
+            error = "session file v2: region table read error: " + f.error();
+            return false;
+        }
+    }
+    uint8_t t[kTrailer2];
+    if (!raw.pread_bytes(size - kTrailer2, t, kTrailer2)) {
+        st.error = raw.kind();
+        error = "session file v2: trailer read error: " + raw.error();
+        return false;
+    }
+    uint64_t ph = 0, mh = 0, th = 0;
+    std::memcpy(&ph, t, 8); std::memcpy(&mh, t + 8, 8); std::memcpy(&th, t + 16, 8);
+    if (mh != manifest_hash.digest()) { error = "session file v2: manifest checksum mismatch"; return false; }
+    if (th != table_hash.digest()) { error = "session file v2: region table checksum mismatch"; return false; }
+    if (std::memcmp(t + 24, kEnd2, 8) != 0) { error = "session file v2: bad committed marker"; return false; }
+    (void) ph;   // the payload hash is verified by the two-pass read, not by the inventory
+    for (size_t i = 0; i < table.size(); ++i) parsed.regions[i].checksum = table[i];
+    manifest = std::move(parsed);
+    bytes = (size_t) size;
+    st.error = SessionError::none;
+    return true;
+}
 } // namespace
 
 const char* session_region_kind_name(int32_t kind) {
@@ -2106,6 +2240,50 @@ bool session_file_read_v2(const std::string& path, const SessionFileIdentity& id
     return ok;
 }
 
+bool session_file_manifest_v2(const std::string& path, const SessionFileIdentity& id, const SessionV2Requirement& want,
+                              SessionManifestV2& manifest, size_t& bytes, std::string& error,
+                              const SessionReadV2Limits& limits, SessionStatus* status) {
+    SessionStatus st;
+    bool ok = false;
+    try {
+        ok = manifest_v2_impl(path, id, want, manifest, bytes, error, limits, st);
+    } catch (const std::bad_alloc&) {
+        error = "session file v2: out of memory while reading the manifest of " + path;
+        st.error = SessionError::memory;
+        ok = false;
+    }
+    if (status) *status = st;
+    return ok;
+}
+
+bool session_file_v2_size(const SessionManifestV2& manifest, uint64_t& bytes, std::string& why) {
+    SessionManifestV2 m = manifest;
+    std::sort(m.regions.begin(), m.regions.end(), region_less);
+    if (!check_manifest_v2(m, why)) return false;
+    uint64_t region_bytes = 0;
+    for (const auto& r : m.regions) region_bytes = sat_add(region_bytes, r.bytes);
+    bool over = false;
+    const uint64_t manifest_bytes = v2_manifest_bytes(m, over);
+    const uint64_t table_bytes = sat_add(8, sat_mul(m.regions.size(), 8));
+    const uint64_t payload = sat_add(manifest_bytes, region_bytes);
+    const uint64_t total = sat_add(kHeader, sat_add(payload, sat_add(table_bytes, kTrailer2)));
+    if (over || manifest_bytes == UINT64_MAX || table_bytes == UINT64_MAX || payload == UINT64_MAX ||
+        total == UINT64_MAX) {
+        why = "session file v2: the state is too large for this build";
+        return false;
+    }
+    bytes = total;
+    return true;
+}
+
+bool session_disk_free_space(const std::string& dir, uint64_t& out) {
+#ifdef _WIN32
+    return free_space(dir + "\\", out);
+#else
+    return free_space(dir + "/", out);
+#endif
+}
+
 // ---- the checkpoint-boundary ring sidecar (lane 2b: paired draft capture) ----
 namespace {
 constexpr char kRingMagic[8] = {'S', 'T', 'R', 'D', 'R', 'I', 'N', '2'};
@@ -2151,6 +2329,9 @@ bool session_ring_sidecar_write(const std::string& path, const DFlashSnapshotMet
         return false;
     }
     f.close();
+#ifndef _WIN32
+    ::chmod(path.c_str(), 0600);   // the tier's own files are private (0700 folder, 0600 files)
+#endif
     return !f.fail();
 }
 

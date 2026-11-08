@@ -226,6 +226,51 @@ class ConversationCacheCard(unittest.TestCase):
             self.assertEqual(c.poll(str(log), log.stat().st_size)["parked"], 0)   # the engine started again
             self.assertEqual(c.poll(None, None)["parked"], 0)
 
+    DISK_ON = ("strata serve: conversation cache: disk tier ON at /var/strata/disk (direct I/O, budget 409600 MiB): "
+               "generations=3 bytes=512 sidecars=1 orphan temps=1 orphan sidecars=2 corrupt=1 foreign=1\n")
+    DISK_PARK = ("strata serve: conversation cache: disk park streamed 9000 tokens idle to /var/strata/disk/"
+                 "conv-7.sess in 410.5 ms; generations=4 bytes=640 evicted=1 superseded=2 sidecars=1 anchor=9000 "
+                 "pair=8192 tail-draft=1\n")
+    DISK_RESTORE = ("strata serve: conversation cache: restored 8192 tokens from disk /var/strata/disk/conv-7.sess "
+                    "in 260.0 ms: complete target+draft hit (pair: checkpoint at 8192)\n")
+    DISK_SKIP = "strata serve: conversation cache: disk park skipped (disk cache: free-space refusal)\n"
+    DISK_OFF = "strata serve: conversation cache: the disk tier stays off (another engine holds this disk cache)\n"
+
+    def test_the_disk_lines(self):
+        """The disk tier's own lines (plan 7): the tier's folder, mode, budget and inventory, its park/restore
+        counters, its concise refusal code, and nothing of the RAM cache's counts."""
+        from serve.server import ConvCacheLog
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / "strata.log"
+            log.write_text("nothing here\n", encoding="utf-8")
+            start = log.stat().st_size
+            c = ConvCacheLog()
+            self.assertEqual(c.poll(str(log), start)["disk"]["enabled"], False)
+            with open(log, "a", encoding="utf-8") as f:
+                f.write(self.DISK_ON + self.PARK + self.DISK_PARK + self.DISK_RESTORE + self.DISK_SKIP)
+            st = c.poll(str(log), start)
+            g = st["disk"]
+            self.assertEqual((g["enabled"], g["dir"], g["io"], g["budget_mib"]), (True, "/var/strata/disk",
+                                                                               "direct", 409600))
+            self.assertEqual((g["generations"], g["bytes"], g["sidecars"], g["corrupt"], g["foreign"]),
+                             (4, 640 << 20, 1, 1, 1))                    # the park line's, being the newer
+            self.assertEqual((g["parks"], g["idle_saves"], g["restores"], g["evictions"], g["superseded"]),
+                             (1, 1, 1, 1, 2))
+            self.assertEqual((g["draft_pair_hits"], g["draft_rebuilds"], g["last_serial"]), (1, 0, 7))
+            # the refusal is the last event; the token and time it reports stay the last transfer's
+            self.assertEqual((g["last_event"], g["last_tokens"], g["last_ms"]), ("skip park", 8192, 260.0))
+            self.assertEqual((g["refusals"], g["last_refusal"]), (1, "free-space"))
+            self.assertEqual((st["parked"], st["bytes"], st["parks"]), (1, 104857600, 1))   # the RAM cache's own
+            with open(log, "a", encoding="utf-8") as f:
+                f.write("strata serve: conversation cache: restored 1000 tokens from disk /x/conv-1.sess in 5.0 ms: "
+                        "target-only prefix match, draft miss (no pair at the resume)\n" + self.DISK_OFF)
+            st = c.poll(str(log), start)
+            self.assertEqual((st["disk"]["enabled"], st["disk"]["restores"], st["disk"]["draft_rebuilds"],
+                              st["disk"]["draft_pair_hits"]), (False, 2, 1, 1))
+            self.assertEqual(st["disk"]["last_refusal"], "another engine holds this disk cache")
+            self.assertEqual(c.poll(str(log), log.stat().st_size)["disk"]["enabled"], False)   # a new run
+
     def test_metrics(self):
         tok = ByteTokenizer()
         engine = MockEngine(tok, "Thought.</think>\nHello.", max_context=4096)
@@ -238,6 +283,7 @@ class ConversationCacheCard(unittest.TestCase):
                 c = json.loads(r.read())["conversation_cache"]
             self.assertEqual((c["enabled"], c["budget_mib"], c["slots"], c["parked"], c["requests"]),
                              (True, 8192, 4, 0, 0))
+            self.assertEqual((c["disk"]["enabled"], c["disk"]["generations"], c["disk"]["bytes"]), (False, 0, 0))
             req = urllib.request.Request(base + "/v1/chat/completions", headers={"Content-Type": "application/json"},
                                          data=json.dumps({"messages": [{"role": "user", "content": "hi"}]}).encode())
             with urllib.request.urlopen(req, timeout=10) as r:
