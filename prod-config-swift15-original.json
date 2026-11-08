@@ -1,16 +1,16 @@
 {
- "exe": "/mnt/user/Strata/v0210/build-mixed-gpu/rpcw-hip/strata",
+ "exe": "/mnt/srcds/Strata/v0210/build-mixed-gpu/rpcw-hip/strata",
  "args": [
   "--gpu",
   "0,1",
   "--pack",
-  "/mnt/user/ai/iq3xxs-15",
+  "/mnt/srcds/ai/iq3xxs-15",
   "--native",
-  "/mnt/user/ai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
+  "/mnt/srcds/ai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
   "--ple-gguf",
-  "/mnt/user/ai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
+  "/mnt/srcds/ai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
   "--expert-profile",
-  "/mnt/user/Strata/data/expert-profile.bin",
+  "/mnt/srcds/Strata/data/expert-profile.bin",
   "--expert-cache",
   "auto",
   "--prefill",
@@ -41,12 +41,12 @@
   "4096",
   "--vision"
  ],
- "cwd": "/mnt/user/Strata",
- "tokenizer": "/mnt/user/ai/iq3xxs-15/tokenizer",
+ "cwd": "/mnt/srcds/Strata",
+ "tokenizer": "/mnt/srcds/ai/iq3xxs-15/tokenizer",
  "model_name": "swift-1.5-iq3_xxs",
  "log": "logs/engine-swift15.log",
  "lib_dirs": [
-  "/home/user/rocm-gfx906-xnack/lib",
+  "/home/srcds/rocm-gfx906-xnack/lib",
   "/opt/rocm-6.1.0/lib"
  ],
  "port": 8009,
@@ -70,9 +70,9 @@
   "repetition_penalty": 1.0
  },
  "vision": {
-  "exe": "/mnt/user/Strata/build-vision/bin/strata-vision",
-  "mmproj": "/mnt/user/ai/mmproj-Swift-Qwen3.8-Flash-Next-BF16.gguf",
-  "model": "/mnt/user/ai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
+  "exe": "/mnt/srcds/Strata/build-vision/bin/strata-vision",
+  "mmproj": "/mnt/srcds/ai/mmproj-Swift-Qwen3.8-Flash-Next-BF16.gguf",
+  "model": "/mnt/srcds/ai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
   "gpu": false,
   "threads": 8,
   "max_tokens": 1024

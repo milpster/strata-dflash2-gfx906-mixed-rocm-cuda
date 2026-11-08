@@ -3,15 +3,15 @@
   "--gpu",
   "0,1",
   "--pack",
-  "/mnt/user/ai/iq3s",
+  "/mnt/srcds/ai/iq3s",
   "--native",
-  "/mnt/user/ai/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S.gguf",
+  "/mnt/srcds/ai/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S.gguf",
   "--native-dense-gguf",
-  "/mnt/user/ai/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S.gguf",
+  "/mnt/srcds/ai/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S.gguf",
   "--ple-gguf",
-  "/mnt/user/ai/Qwen3.8-Flash-Next-PLE-Q8_0.gguf",
+  "/mnt/srcds/ai/Qwen3.8-Flash-Next-PLE-Q8_0.gguf",
   "--expert-profile",
-  "/mnt/user/Strata/data/expert-profile.bin",
+  "/mnt/srcds/Strata/data/expert-profile.bin",
   "--expert-cache",
   "auto",
   "--prefill",
@@ -42,7 +42,7 @@
   "4096",
   "--vision",
   "--dflash",
-  "/mnt/user/dflash2/artifacts/inco-dflash2-q4_0.gguf",
+  "/mnt/srcds/dflash2/artifacts/inco-dflash2-q4_0.gguf",
   "--dflash-block",
   "5",
   "--suffix-draft",
@@ -52,7 +52,7 @@
   "--expert-helper-ram-relief"
  ],
  "backend": "hip",
- "cwd": "/mnt/user/Strata",
+ "cwd": "/mnt/srcds/Strata",
  "env": {
   "CUDA_VISIBLE_DEVICES": "0,1",
   "HIP_FORCE_P2P": "1",
@@ -72,10 +72,10 @@
   "STRATA_WATCHDOG_S": "900"
  },
  "env_to_user": true,
- "exe": "/mnt/user/Strata/v0210/build-mixed-gpu/rpcw-hip/strata",
+ "exe": "/mnt/srcds/Strata/v0210/build-mixed-gpu/rpcw-hip/strata",
  "expert_helper_slots": 4600,
- "expert_helper_socket": "/mnt/user/Strata/run/prod-swift-iq3_s-mixed.sock",
- "expert_helper_socket2": "/mnt/user/Strata/run/prod-swift-iq3_s-mixed2.sock",
+ "expert_helper_socket": "/mnt/srcds/Strata/run/prod-swift-iq3_s-mixed.sock",
+ "expert_helper_socket2": "/mnt/srcds/Strata/run/prod-swift-iq3_s-mixed2.sock",
  "expert_helper_timeout": 10000,
  "fit_max_tokens": true,
  "gpu": [
@@ -85,19 +85,19 @@
  "host": "127.0.0.1",
  "layer_split": "32",
  "lib_dirs": [
-  "/home/user/rocm-gfx906-xnack/lib",
+  "/home/srcds/rocm-gfx906-xnack/lib",
   "/opt/rocm-6.1.0/lib"
  ],
- "log": "/mnt/user/Strata/logs/engine-swift-iq3_s-dflash-w4-q4_0-mixed.log",
+ "log": "/mnt/srcds/Strata/logs/engine-swift-iq3_s-dflash-w4-q4_0-mixed.log",
  "mcp_servers": {
   "docling": {
-   "command": "/home/user/.config/opencode2/bin/docling-mcp-local"
+   "command": "/home/srcds/.config/opencode2/bin/docling-mcp-local"
   },
   "markitdown": {
-   "command": "/home/user/.local/bin/markitdown-mcp"
+   "command": "/home/srcds/.local/bin/markitdown-mcp"
   },
   "pandoc": {
-   "command": "/home/user/.local/bin/mcp-pandoc"
+   "command": "/home/srcds/.local/bin/mcp-pandoc"
   }
  },
  "model_name": "swift-iq3_s",
@@ -112,13 +112,13 @@
   "top_k": 20,
   "top_p": 0.95
  },
- "tokenizer": "/mnt/user/ai/iq3s/tokenizer",
+ "tokenizer": "/mnt/srcds/ai/iq3s/tokenizer",
  "vision": {
-  "exe": "/mnt/user/Strata/build-vision/bin/strata-vision",
+  "exe": "/mnt/srcds/Strata/build-vision/bin/strata-vision",
   "gpu": false,
   "max_tokens": 1024,
-  "mmproj": "/mnt/user/ai/mmproj-Swift-Qwen3.8-Flash-Next-BF16.gguf",
-  "model": "/mnt/user/ai/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S.gguf",
+  "mmproj": "/mnt/srcds/ai/mmproj-Swift-Qwen3.8-Flash-Next-BF16.gguf",
+  "model": "/mnt/srcds/ai/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S.gguf",
   "threads": 8
  }
 }
