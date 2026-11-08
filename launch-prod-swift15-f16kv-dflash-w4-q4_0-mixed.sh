@@ -72,7 +72,13 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 143' TERM
 trap 'exit 130' INT
-env -i STRATA_HELPER_REPLY_TIMEOUT_MS=600000 PATH="$PATH" HOME="$HOME" TERM="${TERM:-dumb}" "$HELPER" \
+# Clean helper env; helper-side profile knobs opt in from the parent (env -i is last-wins,
+# so a parent STRATA_HELPER_REPLY_TIMEOUT_MS overrides the 600000 default).
+helper_env=(STRATA_HELPER_REPLY_TIMEOUT_MS=600000 PATH="$PATH" HOME="$HOME" TERM="${TERM:-dumb}")
+for v in STRATA_RPC_PROFILE STRATA_VERIFY_PROFILE STRATA_HELPER_REPLY_TIMEOUT_MS; do
+  [[ -n ${!v:-} ]] && helper_env+=("$v=${!v}")
+done
+env -i "${helper_env[@]}" "$HELPER" \
   --pack ${STRATA_AI_DIR:-/mnt/srcds/ai}/iq3xxs-15 \
   --experts ../Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf \
   --device 0 --slots 4600 --reserve-mib 300 --timeout 63115200000 \
