@@ -4,7 +4,17 @@ An engine fork of [Niko1221/Strata](https://github.com/Niko1221/Strata) (all rel
 
 > Built and operated agent-first: pinned toolchains, custom libs, harness scripts, and a mandatory measure-before-promote discipline. Start at `JOURNAL.md` (session record + verdicts) and `bench/ab-v0210/out/RESULTS*.md`. Every claim below is measured on the rig in this README.
 
-**Contents:** [At a glance](#at-a-glance) · [Who it's for](#who-its-for) · [The rig](#the-rig) · [How the fork works](#how-the-fork-works) · [Measured vs stock](#measured-vs-stock) · [Quality gates](#quality-gates) · [Trade-offs](#trade-offs-and-known-defects) · [Build guide](#build-guide) · [Repo map](#repo-map)
+**Contents:** [Latest](#latest--2026-11-08) · [At a glance](#at-a-glance) · [Who it's for](#who-its-for) · [The rig](#the-rig) · [How the fork works](#how-the-fork-works) · [Measured vs stock](#measured-vs-stock) · [Quality gates](#quality-gates) · [Trade-offs](#trade-offs-and-known-defects) · [Build guide](#build-guide) · [Repo map](#repo-map)
+
+## Latest — 2026-11-08
+
+**Streaming disk conversation cache** (branch `disk-cache-streaming`, gated on-hardware before promotion): conversations park to and restore from disk with bounded host RAM — no full-RAM snapshot on save or restore, direct I/O so the page cache isn't charged either.
+
+- Split-aware session format v2 + paired DFlash draft-ring resume + automatic tier with opt-in idle-save; disk-only serving via `--conversation-cache-mib 0`.
+- Measured (2× gfx906 + CUDA helper, split-32, fp16 KV, ~12k-token conversations): **park 1.1–1.3 s, restore 7.8–8.1 s vs 42–45 s cold reread** (~5×), `12175 reused + 21 read` on resume; ~0.38 GB on disk per conversation.
+- RAM: the whole conversation RAM tier turns off — the gate's disk-only arm ran its full series ~0.5 GiB below the RAM-tier arms (RSS HWM 48.8 vs 49.4 GiB) with conversations on NVMe instead.
+- Quality gate (A = base, B1 = branch, B2 = branch disk-only, A2 = base repeat; same boot): greedy thinking-on probe and both restore-path continuations **hash-identical across all four arms**; PP 605.1/603.1/602.8/603.6 tok/s (fresh 16k), TG 41.2/41.2/41.6/40.8 tok/s (cached band), drafts accepted 18/20 everywhere — no regression, token-exact restores.
+- Hardened by the harness that found four real defects pre-promotion (dangling stream captures, a missing finish sink, a `from_live` flow bug, and unaligned O_DIRECT preads disabling the tier); scenarios cover A/B alternation, rewind past the ring horizon, restart + idle-save, edited-prefix misses, and corrupt-byte safe refusal.
 
 ## At a glance
 
