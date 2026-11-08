@@ -168,11 +168,21 @@ public:
         }
         return best;
     }
-    // the deepest published generation of THIS conversation (what a park supersedes), in tokens: 0 when none.
-    // --conversation-cache-park-gain compares against it, so a conversation that advanced too little keeps the
-    // generation it already wrote.
+    // the deepest published generation of THIS conversation - the one a publish of these tokens now supersedes - in
+    // tokens: 0 when none.  It is `retire_superseded`'s own rule (the generation's tokens are a PREFIX of these, its
+    // pictures below that length exactly these, the same cvec), so it answers "what would a publish now replace",
+    // which is what --conversation-cache-park-gain compares against.
     int64_t parked_prefix_tokens(const std::vector<int32_t>& ids, const std::vector<ConversationImageKey>& images,
                                  bool cvec) const;
+    // --conversation-cache-park-gain for the DISK tier: false when publishing these tokens now would supersede a
+    // generation this conversation advanced fewer than `gain` tokens past.  The published file already covers that
+    // prefix and a restart re-prefills only the unpublished tail, so rewriting the whole image buys nothing.
+    // Nothing published yet, or gain <= 0: the generation publishes, as before (the rule the RAM park uses).
+    bool publish_worth(const std::vector<int32_t>& ids, const std::vector<ConversationImageKey>& images,
+                       bool cvec, int64_t gain) const {
+        const int64_t held = parked_prefix_tokens(ids, images, cvec);
+        return gain <= 0 || held == 0 || (int64_t) ids.size() >= held + gain;
+    }
     void use(uint64_t serial);
     void use_stamp(uint64_t stamp) { clock_ = std::max(clock_, stamp); }
     uint64_t clock() const { return clock_; }

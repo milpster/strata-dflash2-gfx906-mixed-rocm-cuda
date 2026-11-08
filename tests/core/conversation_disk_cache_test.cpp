@@ -266,6 +266,54 @@ void test_lookup_and_supersession() {
     check(c.find(pb.serial) != nullptr && c.find(pa.serial) == nullptr, "lookup: the retired serial is gone");
 }
 
+// ============ the disk tier's --conversation-cache-park-gain: what a publish now would supersede ============
+// The comparison is `retire_superseded`'s own rule (a published generation whose tokens are a PREFIX of these,
+// the pictures below that length exactly these, the same cvec), so a conversation that only appends keeps the
+// file it already wrote until it advanced the gain past it.
+void test_park_gain() {
+    const fs::path d = dir("gain");
+    std::string why;
+    DiskCache c(opts(d, 256u << 20));
+    check(open(c, why), "gain: open");
+    const Spec a{100, 1, {}, true, false, false, 0, 1, false};
+    const Spec grown{200, 1, {}, true, false, false, 0, 2, false};   // the same conversation, 100 tokens more
+    check(c.parked_prefix_tokens(tokens_of(a), {}, true) == 0, "gain: an empty tier supersedes nothing");
+    check(c.publish_worth(tokens_of(a), {}, true, 4096), "gain: the first generation always publishes");
+    Parked pa;
+    check(park(c, a, why, &pa), "gain: publish A at 100");
+    check(c.parked_prefix_tokens(tokens_of(a), {}, true) == 100, "gain: the published generation is the prefix");
+    check(c.parked_prefix_tokens(tokens_of(grown), {}, true) == 100,
+          "gain: a grown conversation keeps its published prefix (the rule is a prefix, not an equal image)");
+    check(!c.publish_worth(tokens_of(grown), {}, true, 4096), "gain: advanced 100 of 4096 - publish nothing");
+    check(c.publish_worth(tokens_of(grown), {}, true, 100), "gain: advanced exactly the gain - publish");
+    check(!c.publish_worth(tokens_of(grown), {}, true, 101), "gain: one short of the gain - publish nothing");
+    check(c.publish_worth(tokens_of(grown), {}, true, 0), "gain: 0 publishes every turn, as before");
+    Parked pg;
+    check(park(c, grown, why, &pg), "gain: publish the grown generation");
+    check(!c.publish_worth(tokens_of(grown), {}, true, 4096),
+          "gain: republishing what is published is a pure rewrite - publish nothing");
+    const Spec more{400, 1, {}, true, false, false, 0, 3, false};
+    check(c.parked_prefix_tokens(tokens_of(more), {}, true) == 200, "gain: the DEEPEST published prefix counts");
+    check(c.publish_worth(tokens_of(more), {}, true, 200), "gain: advanced exactly 200 past 200 - publish");
+    check(!c.publish_worth(tokens_of(more), {}, true, 201), "gain: short of it - publish nothing");
+    const Spec other{120, 7, {}, true, false, false, 0, 4, false};
+    check(c.parked_prefix_tokens(tokens_of(other), {}, true) == 0, "gain: another conversation has no published prefix");
+    check(c.publish_worth(tokens_of(other), {}, true, 4096), "gain: a new conversation publishes at any gain");
+    check(c.parked_prefix_tokens(tokens_of(grown), {}, false) == 0, "gain: the cvec is part of the identity");
+    const Spec pic{150, 1, {{10, 0x1111ull}}, true, false, false, 0, 5, false};
+    const Spec pic_grown{300, 1, {{10, 0x1111ull}}, true, false, false, 0, 6, false};
+    Parked pp;
+    check(park(c, pic, why, &pp), "gain: publish a conversation with a picture");
+    check(c.parked_prefix_tokens(tokens_of(pic), {{10, 0x1111ull}}, true) == 150, "gain: its picture is part of the match");
+    check(c.parked_prefix_tokens(tokens_of(pic), {{10, 0x2222ull}}, true) == 0, "gain: a re-encoded picture is not this conversation");
+    check(c.parked_prefix_tokens(tokens_of(pic), {}, true) == 100, "gain: the published picture is below its length, so the shorter copy matches");
+    check(c.parked_prefix_tokens(tokens_of(pic_grown), {{10, 0x1111ull}}, true) == 150, "gain: the picture below the published length matches");
+    check(c.publish_worth(tokens_of(pic_grown), {{10, 0x1111ull}}, true, 150), "gain: the picture's conversation gates on the same rule");
+    check(!c.publish_worth(tokens_of(pic_grown), {{10, 0x1111ull}}, true, 151), "gain: one short of it - publish nothing");
+    check(c.parked_prefix_tokens(tokens_of(pic_grown), {{10, 0x1111ull}, {200, 0x3333ull}}, true) == 150,
+          "gain: a picture past the published length is not part of the match");
+}
+
 // A folder is one engine's: the owner lock keeps a second out and a dead owner's is taken over.
 void test_owner_lock() {
     const fs::path d = dir("owner");
@@ -720,6 +768,7 @@ int main() {
     fs::remove_all(g_tmp, ec);
     fs::create_directories(g_tmp, ec);
     test_lookup_and_supersession();
+    test_park_gain();
     test_owner_lock();
     test_quota_and_protections();
     test_space_index_and_count();

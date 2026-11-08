@@ -277,10 +277,19 @@ void DiskCache::use(uint64_t serial) {
 
 int64_t DiskCache::parked_prefix_tokens(const std::vector<int32_t>& ids,
                                         const std::vector<ConversationImageKey>& images, bool cvec) const {
+    // retire_superseded's rule: a published generation whose tokens are a PREFIX of these, whose pictures below
+    // that length are exactly these, with the same cvec.  A conversation only appends, so this is the copy a
+    // publish of `ids` now would replace - the growing conversation's published prefix, not an equal image.
     int64_t longest = 0;
     for (const auto& g : gens_) {
         if (g.cvec != cvec) continue;
-        if (g.tokens == ids && g.images == images) longest = std::max(longest, (int64_t) g.tokens.size());
+        const int64_t L = (int64_t) g.tokens.size();
+        if (L < 1 || L > (int64_t) ids.size()) continue;
+        if (!std::equal(g.tokens.begin(), g.tokens.end(), ids.begin())) continue;
+        std::vector<ConversationImageKey> under;
+        disk_images_below(images, L, under);
+        if (under != g.images) continue;
+        longest = std::max(longest, L);
     }
     return longest;
 }
