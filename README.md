@@ -6,7 +6,16 @@ An engine fork of [Niko1221/Strata](https://github.com/Niko1221/Strata) (all rel
 
 **Contents:** [Latest](#latest--2026-11-08) · [At a glance](#at-a-glance) · [Who it's for](#who-its-for) · [The rig](#the-rig) · [How the fork works](#how-the-fork-works) · [Measured vs stock](#measured-vs-stock) · [Quality gates](#quality-gates) · [Trade-offs](#trade-offs-and-known-defects) · [Build guide](#build-guide) · [Repo map](#repo-map)
 
-## Latest — 2026-11-08
+## Latest — 2026-11-08 (evening)
+
+**Publish-only idle saves + disk-tier park-gain** — the disk cache no longer churns. With `--conversation-cache-mib 0`, every completed request used to park the ACTIVE conversation's whole image to disk AND invalidate the mounted session, so the same conversation's next step restored its own file from disk: on prod, 91% of requests restored (p50 28 s, 62–67 s at 150k ctx, scaling with context) and rewrote the file every turn even at +45 tokens.
+
+- Fix 1 (`e155f3391`): the request-start lookup lets the disk tier win only when deeper than everything the session already holds (live/resume, batch slot, RAM match) — an idle-published generation of the SAME conversation never wins, so sequential steps continue live. Idle-save is publication only.
+- Fix 2 (`5d6e3c4e4`): `--conversation-cache-park-gain` gates the disk tier (prefix-rule `parked_prefix_tokens` + `DiskCache::publish_worth`) — within the gain the published file stays; a restart re-prefills only the unpublished tail.
+- Gated (2× gfx906 + helper, split-32, fp16 KV, one conversation, sequential turns): **0 restores vs 11-of-12 turns pre-fix; sequential turns 16–19 s vs 80–96 s at 130–160k ctx**; publish cadence exactly `advance/4096`; s3 alternation, s5 restart, s4 rewind all reference-identical (2 restores / 24350 reused / 0 refusals, pair hits intact); RSS HWM unchanged (48.8 GiB).
+- Promoted to prod (v0212) and live-verified: same-conversation follow-up continues live (no restore), a real A→B→A switch restores once (`complete target+draft hit`), and the idle boundary logs `park-gain: advanced 23 of 4096 tokens … the published file stays`. Zero new RAM/VRAM.
+
+## 2026-11-08 — Streaming disk conversation cache
 
 **Streaming disk conversation cache** (branch `disk-cache-streaming`, gated on-hardware before promotion): conversations park to and restore from disk with bounded host RAM — no full-RAM snapshot on save or restore, direct I/O so the page cache isn't charged either.
 
