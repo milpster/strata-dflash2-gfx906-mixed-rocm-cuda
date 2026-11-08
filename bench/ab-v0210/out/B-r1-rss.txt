@@ -1,0 +1,12 @@
+== 00:54:31 B r1 RSS snapshot
+pid 821777 /mnt/srcds/Strata/build-v0210/rpcw-hip/strata --serve --gpu 0,1 --pack
+Rss:            47542168 kB
+Pss:            47537385 kB
+Pss_File:         677437 kB
+Anonymous:      46859948 kB
+pid 821294 /mnt/srcds/Strata/build-v0210/rpcw-cuda/strata-expert-helper --pack /m
+Rss:             5955696 kB
+Pss:             5948794 kB
+Pss_File:        5747162 kB
+Anonymous:        109472 kB
+Mem:              62          53           1           0          10           8

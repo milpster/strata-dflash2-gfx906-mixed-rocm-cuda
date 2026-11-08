@@ -1,10 +1,20 @@
-strata serve: prompt 203 tokens = 0 reused + 203 read in 5808 ms (34.9 tok/s), 107 generated in 2942 ms (36.4 tok/s), drafts accepted 66 of 103, 1 checkpoints helper=reqs=1194 rows=6953 bytes=71198720 timeouts=0 fallbacks=0
-strata serve: prompt 18233 tokens = 0 reused + 18233 read in 59578 ms (306.0 tok/s), 12 generated in 255 ms (47.1 tok/s), drafts accepted 8 of 8, 2 checkpoints helper=reqs=118 rows=436 bytes=4464640 timeouts=0 fallbacks=0
-strata serve: prompt 225 tokens = 0 reused + 225 read in 3964 ms (56.8 tok/s), 515 generated in 14968 ms (34.4 tok/s), drafts accepted 263 of 410, 1 checkpoints helper=reqs=7255 rows=36550 bytes=374272000 timeouts=0 fallbacks=0
-strata serve: prompt 755 tokens = 220 reused + 535 read in 4588 ms (116.6 tok/s), 494 generated in 14357 ms (34.4 tok/s), drafts accepted 291 of 466, 1 checkpoints helper=reqs=6022 rows=46748 bytes=478699520 timeouts=0 fallbacks=0
-strata serve: prompt 225 tokens = 220 reused + 5 read in 139 ms (36.0 tok/s), 515 generated in 16486 ms (31.2 tok/s), drafts accepted 220 of 406, 1 checkpoints helper=reqs=8365 rows=38537 bytes=394618880 timeouts=0 fallbacks=0
-strata serve: prompt 755 tokens = 220 reused + 535 read in 4687 ms (114.1 tok/s), 494 generated in 12774 ms (38.7 tok/s), drafts accepted 296 of 438, 1 checkpoints helper=reqs=5938 rows=44663 bytes=457349120 timeouts=0 fallbacks=0
-strata serve: prompt 225 tokens = 220 reused + 5 read in 134 ms (37.4 tok/s), 512 generated in 14756 ms (34.7 tok/s), drafts accepted 264 of 455, 1 checkpoints helper=reqs=7111 rows=37841 bytes=387491840 timeouts=0 fallbacks=0
-strata serve: prompt 755 tokens = 736 reused + 19 read in 281 ms (67.6 tok/s), 494 generated in 15078 ms (32.8 tok/s), drafts accepted 276 of 462, 1 checkpoints helper=reqs=6531 rows=45175 bytes=462592000 timeouts=0 fallbacks=0
-strata serve: prompt 87879 tokens = 0 reused + 87879 read in 193567 ms (454.0 tok/s), 129 generated in 4884 ms (26.4 tok/s), drafts accepted 89 of 120, 6 checkpoints helper=reqs=1196 rows=8449 bytes=86517760 timeouts=0 fallbacks=0
-strata serve: prompt 88025 tokens = 88007 reused + 18 read in 278 ms (64.7 tok/s), 9 generated in 227 ms (39.6 tok/s), drafts accepted 6 of 6, 6 checkpoints helper=reqs=89 rows=620 bytes=6348800 timeouts=0 fallbacks=0
+strata serve: prompt 214 tokens = 0 reused + 214 read in 7039 ms (30.4 tok/s), 227 generated in 6306 ms (36.0 tok/s), drafts accepted 135 of 246, 1 checkpoints
+strata serve: prompt 18233 tokens = 0 reused + 18233 read in 59489 ms (306.5 tok/s), 12 generated in 254 ms (47.2 tok/s), drafts accepted 8 of 8, 2 checkpoints
+strata serve: prompt 225 tokens = 0 reused + 225 read in 4885 ms (46.1 tok/s), 512 generated in 15102 ms (33.9 tok/s), drafts accepted 261 of 449, 1 checkpoints
+strata serve: prompt 755 tokens = 736 reused + 19 read in 269 ms (70.7 tok/s), 494 generated in 13051 ms (37.9 tok/s), drafts accepted 299 of 456, 1 checkpoints
+strata serve: prompt 225 tokens = 220 reused + 5 read in 135 ms (37.0 tok/s), 514 generated in 14369 ms (35.8 tok/s), drafts accepted 256 of 371, 1 checkpoints
+strata serve: prompt 755 tokens = 220 reused + 535 read in 5429 ms (98.5 tok/s), 494 generated in 13395 ms (36.9 tok/s), drafts accepted 283 of 435, 1 checkpoints
+strata serve: prompt 225 tokens = 220 reused + 5 read in 137 ms (36.5 tok/s), 514 generated in 14292 ms (36.0 tok/s), drafts accepted 272 of 456, 1 checkpoints
+strata serve: prompt 755 tokens = 220 reused + 535 read in 5723 ms (93.5 tok/s), 494 generated in 12320 ms (40.1 tok/s), drafts accepted 324 of 486, 1 checkpoints
+strata serve: prompt 87879 tokens = 0 reused + 87879 read in 182814 ms (480.7 tok/s), 129 generated in 3367 ms (38.3 tok/s), drafts accepted 89 of 119, 6 checkpoints
+strata serve: prompt 88025 tokens = 88007 reused + 18 read in 290 ms (62.1 tok/s), 9 generated in 216 ms (41.7 tok/s), drafts accepted 6 of 6, 6 checkpoints
+strata serve: prompt 214 tokens = 0 reused + 214 read in 6236 ms (34.3 tok/s), 208 generated in 5522 ms (37.7 tok/s), drafts accepted 133 of 213, 1 checkpoints helper=reqs=2341 rows=19546 bytes=200151040 timeouts=0 fallbacks=0
+strata serve: prompt 18233 tokens = 0 reused + 18233 read in 60896 ms (299.4 tok/s), 12 generated in 337 ms (35.6 tok/s), drafts accepted 8 of 8, 2 checkpoints helper=reqs=119 rows=437 bytes=4474880 timeouts=0 fallbacks=0
+strata serve: prompt 225 tokens = 0 reused + 225 read in 4252 ms (52.9 tok/s), 513 generated in 16786 ms (30.6 tok/s), drafts accepted 251 of 403, 1 checkpoints helper=reqs=7519 rows=42950 bytes=439808000 timeouts=0 fallbacks=0
+strata serve: prompt 755 tokens = 737 reused + 18 read in 265 ms (67.8 tok/s), 494 generated in 14394 ms (34.3 tok/s), drafts accepted 295 of 465, 1 checkpoints helper=reqs=6016 rows=49785 bytes=509798400 timeouts=0 fallbacks=0
+strata serve: prompt 225 tokens = 220 reused + 5 read in 139 ms (35.9 tok/s), 512 generated in 16050 ms (31.9 tok/s), drafts accepted 243 of 387, 1 checkpoints helper=reqs=7631 rows=37017 bytes=379054080 timeouts=0 fallbacks=0
+strata serve: prompt 755 tokens = 736 reused + 19 read in 279 ms (68.1 tok/s), 494 generated in 19106 ms (25.9 tok/s), drafts accepted 67 of 115, 1 checkpoints helper=reqs=11993 rows=37656 bytes=385597440 timeouts=0 fallbacks=0
+strata serve: prompt 225 tokens = 220 reused + 5 read in 135 ms (37.0 tok/s), 512 generated in 17480 ms (29.3 tok/s), drafts accepted 221 of 441, 1 checkpoints helper=reqs=8326 rows=44684 bytes=457564160 timeouts=0 fallbacks=0
+strata serve: prompt 755 tokens = 736 reused + 19 read in 272 ms (69.9 tok/s), 494 generated in 13971 ms (35.4 tok/s), drafts accepted 295 of 461, 1 checkpoints helper=reqs=6043 rows=49628 bytes=508190720 timeouts=0 fallbacks=0
+strata serve: prompt 87879 tokens = 0 reused + 87879 read in 186156 ms (472.1 tok/s), 129 generated in 3685 ms (35.0 tok/s), drafts accepted 89 of 121, 6 checkpoints helper=reqs=1192 rows=8432 bytes=86343680 timeouts=0 fallbacks=0
+strata serve: prompt 88025 tokens = 88007 reused + 18 read in 283 ms (63.7 tok/s), 9 generated in 231 ms (39.0 tok/s), drafts accepted 6 of 6, 6 checkpoints helper=reqs=88 rows=622 bytes=6369280 timeouts=0 fallbacks=0

@@ -1,7 +1,7 @@
 {
  "probe": {
   "tag": "probe",
-  "wall": 16.33211874961853,
+  "wall": 16.224651336669922,
   "usage": {
    "prompt_tokens": 214,
    "completion_tokens": 228,
@@ -14,7 +14,7 @@
  },
  "pp16384": {
   "tag": "pp16384",
-  "wall": 54.07328701019287,
+  "wall": 54.381569147109985,
   "usage": {
    "prompt_tokens": 18233,
    "completion_tokens": 8,
@@ -28,7 +28,7 @@
  "tg1024": [
   {
    "tag": "tg1024.0",
-   "wall": 47.63881993293762,
+   "wall": 47.84303092956543,
    "usage": {
     "prompt_tokens": 225,
     "completion_tokens": 1024,
@@ -41,7 +41,7 @@
   },
   {
    "tag": "tg1024.1",
-   "wall": 43.106022357940674,
+   "wall": 43.077143907547,
    "usage": {
     "prompt_tokens": 225,
     "completion_tokens": 1024,
@@ -54,7 +54,7 @@
   },
   {
    "tag": "tg1024.2",
-   "wall": 43.24425506591797,
+   "wall": 43.420653343200684,
    "usage": {
     "prompt_tokens": 225,
     "completion_tokens": 1024,
@@ -68,7 +68,7 @@
  ],
  "infill80k": {
   "tag": "infill80k",
-  "wall": 171.31681632995605,
+  "wall": 167.04052782058716,
   "usage": {
    "prompt_tokens": 87879,
    "completion_tokens": 155,

@@ -6,7 +6,7 @@
 set -euo pipefail
 ARM=$1; ROUND=$2; TG_RUNS=${3:-3}
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"; B=$ROOT/bench/ab-v0210
-STOCK=/home/user/dev/strata-stock-v0210
+STOCK=/home/srcds/dev/strata-stock-v0210
 PY=$ROOT/.venv/bin/python
 case $ARM in
   A) ENGINE=$B/armA/bin/strata; HELPER=$B/armA/bin/strata-expert-helper; SERVE=$B/armA/serve/server.py; CD=$B ;;
@@ -74,13 +74,13 @@ cleanup() {
 }
 trap cleanup EXIT
 trap 'exit 130' INT
-export LD_LIBRARY_PATH=${STRATA_ROCM_ROOT:-/home/user/rocm-gfx906-xnack}/lib:/opt/rocm-6.1.0/lib
+export LD_LIBRARY_PATH=${STRATA_ROCM_ROOT:-/home/srcds/rocm-gfx906-xnack}/lib:/opt/rocm-6.1.0/lib
 if [[ -n $HELPER ]]; then
   echo "== arm $ARM round $ROUND: helper up ($HELPER)"
   HSLOTS=4200; HFILL=6400
   case $ARM in V0) HSLOTS=5100; HFILL=7000 ;; V1) HSLOTS=9000; HFILL=0 ;; V4|V5|V6) HSLOTS=4200; HFILL=6400 ;; V7|V8|V10|DF1|DF2|DF3) HSLOTS=4600; HFILL=6700 ;; V9) HSLOTS=4600; HFILL=7000 ;; esac
-  PACK=${STRATA_AI_DIR:-/mnt/user/ai}/iq3xxs-15; EXPERTS=../Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf
-  case $ARM in V6|V8|V9) PACK=${STRATA_AI_DIR:-/mnt/user/ai}/iq3s; EXPERTS=../Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S.gguf ;; esac
+  PACK=${STRATA_AI_DIR:-/mnt/srcds/ai}/iq3xxs-15; EXPERTS=../Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf
+  case $ARM in V6|V8|V9) PACK=${STRATA_AI_DIR:-/mnt/srcds/ai}/iq3s; EXPERTS=../Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S.gguf ;; esac
   env -i PATH="$PATH" HOME="$HOME" TERM="${TERM:-dumb}" LD_LIBRARY_PATH="$LD_LIBRARY_PATH" \
     "$HELPER" --pack "$PACK" \
       --experts "$EXPERTS" \

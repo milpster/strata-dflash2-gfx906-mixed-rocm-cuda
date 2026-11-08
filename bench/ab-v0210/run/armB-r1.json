@@ -1,18 +1,18 @@
 {
- "exe": "/home/user/dev/Strata/build-v0210/rpcw-hip/strata",
+ "exe": "/mnt/srcds/Strata/build-v0210/rpcw-hip/strata",
  "args": [
   "--gpu",
   "0,1",
   "--pack",
-  "/mnt/user/ai/iq3xxs-15",
+  "/mnt/srcds/ai/iq3xxs-15",
   "--native",
-  "/mnt/user/ai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
+  "/mnt/srcds/ai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
   "--native-dense-gguf",
-  "/mnt/user/ai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
+  "/mnt/srcds/ai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
   "--ple-gguf",
-  "/mnt/user/ai/Qwen3.8-Flash-Next-PLE-Q8_0.gguf",
+  "/mnt/srcds/ai/Qwen3.8-Flash-Next-PLE-Q8_0.gguf",
   "--expert-profile",
-  "/mnt/user/Strata/data/expert-profile.bin",
+  "/mnt/srcds/Strata/data/expert-profile.bin",
   "--expert-cache",
   "auto",
   "--prefill",
@@ -42,7 +42,7 @@
   "--conversation-cache-park-gain",
   "4096",
   "--dflash",
-  "/mnt/user/dflash2/artifacts/inco-dflash2-q4_0.gguf",
+  "/mnt/srcds/dflash2/artifacts/inco-dflash2-q4_0.gguf",
   "--dflash-block",
   "5",
   "--suffix-draft",
@@ -50,12 +50,12 @@
   "--expert-helper-slots",
   "4200"
  ],
- "cwd": "/home/user/dev/Strata",
- "tokenizer": "/mnt/user/ai/iq3xxs-15/tokenizer",
+ "cwd": "/mnt/srcds/Strata",
+ "tokenizer": "/mnt/srcds/ai/iq3xxs-15/tokenizer",
  "model_name": "swift-1.5-iq3_xxs",
- "log": "logs/B-r1-engine.log",
+ "log": "/mnt/srcds/Strata/bench/ab-v0210/logs/B-r1-engine.log",
  "lib_dirs": [
-  "/home/user/rocm-gfx906-xnack/lib",
+  "/home/srcds/rocm-gfx906-xnack/lib",
   "/opt/rocm-6.1.0/lib"
  ],
  "port": 8019,
@@ -93,8 +93,8 @@
   "STRATA_DFLASH_SAMPLED": "1",
   "STRATA_PREFILL_HELPER": "1"
  },
- "expert_helper_socket": "/home/user/dev/Strata/bench/ab-v0210/run/bench-mixed.sock",
- "expert_helper_socket2": "/home/user/dev/Strata/bench/ab-v0210/run/bench-mixed2.sock",
+ "expert_helper_socket": "/mnt/srcds/Strata/bench/ab-v0210/run/bench-mixed.sock",
+ "expert_helper_socket2": "/mnt/srcds/Strata/bench/ab-v0210/run/bench-mixed2.sock",
  "expert_helper_slots": 3400,
  "expert_helper_timeout": 100
 }

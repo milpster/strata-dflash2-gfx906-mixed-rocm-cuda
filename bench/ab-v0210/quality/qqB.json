@@ -1,22 +1,22 @@
 {
- "exe": "/home/user/dev/Strata/build-v0210/rpcw-hip/strata",
+ "exe": "/mnt/srcds/Strata/build-v0210/rpcw-hip/strata",
  "args": [
   "--gpu",
   "0,1",
   "--pack",
-  "/mnt/user/ai/iq3xxs-15",
+  "/mnt/srcds/ai/iq3xxs-15",
   "--native",
-  "/mnt/user/ai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
+  "/mnt/srcds/ai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
   "--native-dense-gguf",
-  "/mnt/user/ai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
+  "/mnt/srcds/ai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
   "--ple-gguf",
-  "/mnt/user/ai/Qwen3.8-Flash-Next-PLE-Q8_0.gguf",
+  "/mnt/srcds/ai/Qwen3.8-Flash-Next-PLE-Q8_0.gguf",
   "--spec",
   "5",
   "--spec-min-p",
   "0.5",
   "--expert-profile",
-  "/mnt/user/Strata/data/expert-profile.bin",
+  "/mnt/srcds/Strata/data/expert-profile.bin",
   "--vram-reserve-mib",
   "640",
   "--vram-reserve-later-mib",
@@ -24,11 +24,11 @@
   "--expert-cache-cpu-order",
   "--prompt-cache-spread"
  ],
- "cwd": "/home/user/dev/Strata",
- "tokenizer": "/mnt/user/ai/iq3xxs-15/tokenizer",
+ "cwd": "/mnt/srcds/Strata",
+ "tokenizer": "/mnt/srcds/ai/iq3xxs-15/tokenizer",
  "model_name": "qq-b-relief-pack-iq3xxs15",
  "lib_dirs": [
-  "/home/user/rocm-gfx906-xnack/lib",
+  "/home/srcds/rocm-gfx906-xnack/lib",
   "/opt/rocm-6.1.0/lib"
  ],
  "env": {
