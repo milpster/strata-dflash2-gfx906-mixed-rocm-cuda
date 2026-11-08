@@ -13826,7 +13826,9 @@ int main(int argc, char** argv) {
                 d.stage = s;
                 d.index = -1;
                 const auto rows = spec.stages[(size_t) s].kv;
-                d.validate = [&](const strata::core::SessionRegion& r, std::string& w) {
+                // `s`/`rows` are this iteration's locals; the lambdas outlive the loop, so they go by
+                // value here - everything else they use outlives the restore and stays by reference
+                d.validate = [rows](const strata::core::SessionRegion& r, std::string& w) {
                     if (r.index < 0 || r.index >= (int64_t) rows.size() || r.part < 0 ||
                         r.part >= strata::core::kSessionKvParts) { w = "layer or part outside this stage"; return false; }
                     if (r.bytes != rows[(size_t) r.index][(size_t) r.part]) {
@@ -13835,7 +13837,7 @@ int main(int argc, char** argv) {
                     }
                     return true;
                 };
-                d.write = [&](const strata::core::SessionRegion& r, uint64_t off, const void* b,
+                d.write = [&, s](const strata::core::SessionRegion& r, uint64_t off, const void* b,
                                            size_t n, std::string& w) {
                     mutated = true;
                     const strata::core::OnDevice on(disk_dev(s));
@@ -13844,7 +13846,7 @@ int main(int argc, char** argv) {
                     if (q == nullptr) { w = "this stage has no K/V pool at that layer"; return false; }
                     return strata::core::conversation_kv_stream_write(*q, g, T, true, (size_t) r.part, off, b, n, w);
                 };
-                d.finish = [&](std::string& w) {
+                d.finish = [&, s, rows](std::string& w) {
                     const strata::core::OnDevice on(disk_dev(s));
                     strata::core::SessionState& ses = disk_session(s);
                     for (int64_t i = 0; i < (int64_t) rows.size(); ++i) {
@@ -13862,18 +13864,18 @@ int main(int argc, char** argv) {
                 d.stage = s;
                 d.index = 0;
                 const auto sizes = spec.stages[(size_t) s].live;
-                d.validate = [&](const strata::core::SessionRegion& r, std::string& w) {
+                d.validate = [sizes](const strata::core::SessionRegion& r, std::string& w) {
                     if (r.part < 0 || r.part >= strata::core::kSessionStateParts ||
                         r.bytes != sizes[(size_t) r.part]) { w = "the region is not this stage's running-state extent"; return false; }
                     return true;
                 };
-                d.write = [&](const strata::core::SessionRegion& r, uint64_t off, const void* b, size_t n,
+                d.write = [&, s](const strata::core::SessionRegion& r, uint64_t off, const void* b, size_t n,
                                         std::string& w) {
                     mutated = true;
                     const strata::core::OnDevice on(disk_dev(s));
                     return strata::core::conversation_state_stream_write(disk_session(s), g, r.part, off, b, n, w);
                 };
-                d.finish = [&](std::string& w) {
+                d.finish = [&, s](std::string& w) {
                     const strata::core::OnDevice on(disk_dev(s));
                     return strata::core::conversation_state_stream_finish(disk_session(s), g, manifest.tokens, w);
                 };
@@ -13885,7 +13887,7 @@ int main(int argc, char** argv) {
                 d.stage = disk_mtp_stage;
                 d.index = 0;
                 const auto sizes = spec.stages[(size_t) disk_mtp_stage].mtp;
-                d.validate = [&](const strata::core::SessionRegion& r, std::string& w) {
+                d.validate = [sizes](const strata::core::SessionRegion& r, std::string& w) {
                     if (r.part < 0 || r.part >= strata::core::kSessionKvParts ||
                         r.bytes != sizes[(size_t) r.part]) { w = "the region is not this drafter's extent"; return false; }
                     return true;
@@ -14048,6 +14050,9 @@ int main(int argc, char** argv) {
                     std::memcpy(vec->data() + off, b, n);
                     return true;
                 };
+                // the checkpoint bodies are plain host vectors; the chain itself is adopted at commit,
+                // nothing derives from them at the stream's end (unlike the K/V residency refresh)
+                d.finish = [](std::string&) { return true; };
                 dests.push_back(std::move(d));
             }
             strata::core::SessionRegionSink sink;
@@ -18830,7 +18835,9 @@ int main(int argc, char** argv) {
                                           "the prompt\n", dwhy.c_str());
                 else {
                     resume = dtokens;
-                    from_live = false;
+                    // the file's live image IS the mounted state (every cell at `resume` is in the pools,
+                    // exactly a RAM live restore): the checkpoint-at-resume mount below is not for this path
+                    from_live = true;
                     std::fprintf(stderr, "strata serve: conversation cache: restored %lld tokens from disk (%s) "
                                           "in %.1f ms: %s\n", (long long) resume, disk_start.c_str(),
                                  std::chrono::duration<double, std::milli>(Clock::now() - disk_t0).count(),
@@ -18955,6 +18962,10 @@ int main(int argc, char** argv) {
                                }
                                return false;
                            }()) {
+                    std::fprintf(stderr, "strata serve: checkpoint resume failed: c=%p resume=%lld parts=%zu of "
+                                         "%zu stages, ids=%lld\n", (void*) c, (long long) resume,
+                                 c == nullptr ? 0 : c->stage_parts.size(), stages.size(),
+                                 c == nullptr ? -1LL : (long long) c->ids.size());
                     std::printf("ERR restoring a conversation checkpoint failed\n");
                     return 1;
                 }

@@ -419,10 +419,32 @@ public:
         return true;
     }
     // the v2 streaming read's positioning: reads at `offset` and leaves the descriptor's own sequential position
-    // alone.  A filesystem that refuses this aligned transfer (EINVAL) drops direct I/O and continues buffered.
+    // alone.  O_DIRECT needs offset, length AND address aligned: the small metadata reads (the header, the
+    // manifest, the trailer) and a transfer's head or tail bytes bounce through one aligned block, so only a
+    // filesystem that refuses an ALIGNED transfer (EINVAL) drops direct I/O and continues buffered.
     bool pread_bytes(uint64_t offset, uint8_t* p, size_t n) {
         while (n) {
-            const ssize_t r = ::pread(fd_, p, n, (off_t) offset);
+            const bool aligned_at = offset % kAlign == 0 && (uintptr_t) p % kAlign == 0;
+            size_t c = n;
+            if (direct_ && aligned_at && n % kAlign) c = n / kAlign * kAlign;   // the aligned bulk; the tail bounces
+            if (direct_ && (!aligned_at || c == 0)) {
+                if (!bounce_ && !(bounce_ = Aligned(static_cast<uint8_t*>(std::aligned_alloc(kAlign, kAlign))))) {
+                    kind_ = SessionError::memory; error_ = "out of memory for the read bounce"; return false;
+                }
+                const uint64_t block = offset / kAlign * kAlign;
+                const size_t in = (size_t) (offset - block);
+                const size_t want = (size_t) std::min<uint64_t>((uint64_t) n, (uint64_t) kAlign - in);
+                const ssize_t r = ::pread(fd_, bounce_.get(), kAlign, (off_t) block);
+                if (r < 0 && errno == EINTR) continue;
+                if (r < 0 && errno == EINVAL && direct_ && leave_direct()) continue;
+                if (r < 0) { kind_ = errno_kind(errno); error_ = std::strerror(errno); return false; }
+                if ((size_t) r <= in) { kind_ = SessionError::io; error_ = "file ends early"; return false; }
+                const size_t take = std::min((size_t) r - in, want);
+                std::memcpy(p, bounce_.get() + in, take);
+                p += take; n -= take; offset += (uint64_t) take;
+                continue;
+            }
+            const ssize_t r = ::pread(fd_, p, c, (off_t) offset);
             if (r < 0 && errno == EINTR) continue;
             if (r < 0 && errno == EINVAL && direct_ && leave_direct()) continue;
             if (r <= 0) { kind_ = r < 0 ? errno_kind(errno) : SessionError::io; error_ = r < 0 ? std::strerror(errno) : "file ends early"; return false; }
@@ -470,6 +492,7 @@ private:
     }
     int fd_ = -1;
     bool direct_ = false, missing_ = false, refused_ = false;
+    Aligned bounce_;   // one aligned block: unaligned preads on a direct descriptor bounce through it
     SessionError kind_ = SessionError::io;
     std::string error_;
 };
