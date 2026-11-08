@@ -13579,11 +13579,13 @@ int main(int argc, char** argv) {
                          (long long) pair_prefix, tail_draft ? 1 : 0);
             return true;
         };
-        // ---- restore a generation straight into the live pools.  Pass 1 reads the file with NO sink: every
-        // checksum, the identities, the manifest and the region directory are validated, and every engine-side
-        // check below runs, before a single byte is mutated - each of those refusals is a safe miss (the live
-        // state is untouched, the prompt is read as if nothing was found).  The K/V growth and the copy-stream
-        // preflight run next.  `live_ok = false` marks the mutation's start: a pass-2 failure after it is
+        // ---- restore a generation straight into the live pools.  The pre-mutation pass reads the MANIFEST only
+        // (session_file_manifest_v2): the identities, the manifest, the region directory and the committed marker
+        // with its own checksums - no region byte is streamed here.  Every engine-side check below runs on that
+        // metadata, and each of those refusals is a safe miss (the live state is untouched, the prompt is read as
+        // if nothing was found).  The K/V growth and the copy-stream preflight run next.  The sink read runs its
+        // own full validation pass, and THAT is where every payload byte is checksummed - before its first write.
+        // `live_ok = false` marks the mutation's start: a pass-2 failure after it is
         // fatal, a half-written session is never decoded from (the same contract as a RAM restore).
         // Returns 0 = restored, 1 = safe miss, 2 = fatal; `tokens_out` is the conversation's length.
         auto disk_restore = [&](const std::string& path, uint64_t serial, const strata::core::SessionFileIdentity& id,
@@ -13620,7 +13622,9 @@ int main(int argc, char** argv) {
             size_t fbytes = 0;
             strata::core::SessionStatus st;
             const auto validate_t0 = Clock::now();
-            if (!strata::core::session_file_read_v2(path, id, want, manifest, fbytes, why, lim, nullptr, &st)) {
+            // the manifest-only precheck: header, identities, manifest, region directory and table checksums.
+            // The payload's bytes are verified by the sink read's own validation pass, before its first write.
+            if (!strata::core::session_file_manifest_v2(path, id, want, manifest, fbytes, why, lim, &st)) {
                 dc.stats().validate_ms += (uint64_t) std::chrono::duration<double, std::milli>(Clock::now() - validate_t0).count();
                 ++dc.stats().misses;
                 return 1;
@@ -13700,8 +13704,9 @@ int main(int argc, char** argv) {
             }
             // the draft side of the resume: the live-tail ring retains a resume at the generation's
             // end, or a checkpoint PAIR at exactly that prefix does (the deepest such pair).  Chosen
-            // in this pre-mutation pass - pass 1 has already checksummed every region, the pairs
-            // included - so a draft miss is reported, never discovered mid-write.
+            // in this pre-mutation pass from the manifest's counters - the sink read's validation pass
+            // checksums every region, the pairs included, before its first write - so a draft miss is
+            // reported, never discovered mid-write.
             int64_t pair_pick = -1;
             bool tail_ok = true;
             if (has_dflash) {
