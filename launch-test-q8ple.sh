@@ -6,7 +6,7 @@
 #
 # The 2x 16 GB cards hold ONE engine: stop the prod stack before starting this.
 # Switch the NORMAL prod launcher over with ple-q8-default.sh q8_0 (later, if adopted).
-# Evidence and method: /mnt/user/ple-q8-upgrade/report.md
+# Evidence and method: /mnt/srcds/ple-q8-upgrade/report.md
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -16,9 +16,9 @@ if pgrep -f 'serve/server\.py --engine strata --config prod-config-swift15\.json
   echo "  pkill -f 'serve/server.py --engine strata --config prod-config-swift15.json'" >&2
   exit 1
 fi
-PLE=${STRATA_AI_DIR:-/mnt/user/ai}/Qwen3.8-Flash-Next-PLE-Q8_0.gguf
+PLE=${STRATA_AI_DIR:-/mnt/srcds/ai}/Qwen3.8-Flash-Next-PLE-Q8_0.gguf
 if [ ! -f "$PLE" ]; then
-  echo "missing $PLE - download it first (see /mnt/user/ple-q8-upgrade/report.md)" >&2
+  echo "missing $PLE - download it first (see /mnt/srcds/ple-q8-upgrade/report.md)" >&2
   exit 1
 fi
 

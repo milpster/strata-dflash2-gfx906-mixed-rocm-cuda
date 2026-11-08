@@ -7,8 +7,8 @@
 # prod-config-swift15.json all remain unchanged.
 set -euo pipefail
 
-ROOT=${STRATA_PROD_TREE:-/mnt/user/Strata}
-CLONE=${STRATA_DFLASH2_DIR:-/mnt/user/dflash2}/Strata-integ
+ROOT=${STRATA_PROD_TREE:-/mnt/srcds/Strata}
+CLONE=${STRATA_DFLASH2_DIR:-/mnt/srcds/dflash2}/Strata-integ
 PY="$ROOT/.venv/bin/python"
 CONFIG="$ROOT/prod-config-swift15-dflash-w4-q4_0.json"
 LOGDIR="$ROOT/logs"
@@ -23,7 +23,7 @@ fi
 [ -x "$PY" ] || { echo "Missing Python: $PY" >&2; exit 2; }
 [ -x "$CLONE/build-dfsample-1/strata" ] || { echo 'Missing DFlash engine.' >&2; exit 2; }
 [ -f "$CLONE/serve/server.py" ] || { echo 'Missing merged server.' >&2; exit 2; }
-[ -f ${STRATA_DFLASH2_DIR:-/mnt/user/dflash2}/artifacts/inco-dflash2-q4_0.gguf ] || { echo 'Missing DFlash2 Q4_0 draft model.' >&2; exit 2; }
+[ -f ${STRATA_DFLASH2_DIR:-/mnt/srcds/dflash2}/artifacts/inco-dflash2-q4_0.gguf ] || { echo 'Missing DFlash2 Q4_0 draft model.' >&2; exit 2; }
 "$PY" -m json.tool "$CONFIG" >/dev/null
 
 # Do not carry test-window probes or dump hooks into the production trial.

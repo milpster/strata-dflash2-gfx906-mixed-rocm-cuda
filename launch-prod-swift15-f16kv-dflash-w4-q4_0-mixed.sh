@@ -11,8 +11,8 @@
 # boots THROUGH the supervisor by default (--recover remains an alias),
 # any peer death restarts BOTH (either both run or both reset).
 set -euo pipefail
-ROOT=${STRATA_PROD_TREE:-/mnt/user/Strata}
-WORK="$ROOT/v0210"
+ROOT=${STRATA_PROD_TREE:-/mnt/srcds/Strata}
+WORK="$ROOT/v0211"
 PY="$ROOT/.venv/bin/python"
 CONFIG="$ROOT/prod-config-swift15-f16kv-dflash-w4-q4_0-mixed.json"
 SOCKET="$ROOT/run/prod-swift15-f16kv-mixed.sock"
@@ -43,7 +43,7 @@ case "${1:-}" in
       --state "$ROOT/run/prod-swift15-f16kv-mixed-supervisor.json" --lock "$ROOT/run/mixed-supervisor.lock" \
       --socket "$SOCKET" --socket "$SOCKET2" --nice 1 \
       --stage-cpus 3,5,7,9,11,13,15 \
-      --stall-timeout 300 ;;  # a wedged in-flight read rebuilds the pair after 5 min
+      --stall-timeout 600 ;;  # a wedged in-flight read rebuilds the pair after 10 min
   *) echo 'Usage: launcher [--recover|--single-run]' >&2; exit 2 ;;
 esac
 command -v ss >/dev/null
@@ -53,7 +53,7 @@ command -v ss >/dev/null
 for file in "$PY" "$HELPER" "$WORK/build-mixed-gpu/rpcw-hip/strata"; do
   [[ -x "$file" ]] || { echo "Missing executable: $file" >&2; exit 2; }
 done
-[[ -f "$WORK/serve/server.py" && -f ${STRATA_DFLASH2_DIR:-/mnt/user/dflash2}/artifacts/inco-dflash2-q4_0.gguf ]]
+[[ -f "$WORK/serve/server.py" && -f ${STRATA_DFLASH2_DIR:-/mnt/srcds/dflash2}/artifacts/inco-dflash2-q4_0.gguf ]]
 "$PY" -m json.tool "$CONFIG" >/dev/null
 while IFS= read -r name; do
   case "$name" in STRATA_DF_*|STRATA_DFLASH_*|STRATA_DUMP_*|STRATA_WINDOW_*|STRATA_PREFILL_HELPER) unset "$name" ;; esac
@@ -73,7 +73,7 @@ trap cleanup EXIT
 trap 'exit 143' TERM
 trap 'exit 130' INT
 env -i STRATA_HELPER_REPLY_TIMEOUT_MS=600000 PATH="$PATH" HOME="$HOME" TERM="${TERM:-dumb}" "$HELPER" \
-  --pack ${STRATA_AI_DIR:-/mnt/user/ai}/iq3xxs-15 \
+  --pack ${STRATA_AI_DIR:-/mnt/srcds/ai}/iq3xxs-15 \
   --experts ../Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf \
   --device 0 --slots 4600 --reserve-mib 300 --timeout 63115200000 \
   --begin-timeout 63115200000 --socket "$SOCKET" --fill-mib 6796 --socket2 "$SOCKET2" \
