@@ -78,7 +78,10 @@ for spec in $TREES; do
   else
     guard_arch "build-mixed-gpu/$dst/strata-expert-helper" | grep -q '^sm_86$' \
       || { echo "GUARD FAIL $dst: helper fatbin lacks sm_86 ($(guard_arch "build-mixed-gpu/$dst/strata-expert-helper" | tr '\n' ' '))"; exit 9; }
-    echo "=== guard $dst PASS: helper fatbin sm_86 ==="
+    # rm -rf of derive trees wipes the launcher's manual -patient copy (bit us 2026-11-09 twice:
+    # window arms boot-fail with 'No such file or directory'). The alias is a plain copy - make it.
+    cp "build-mixed-gpu/$dst/strata-expert-helper" "build-mixed-gpu/$dst/strata-expert-helper-patient"
+    echo "=== guard $dst PASS: helper fatbin sm_86; -patient alias refreshed ==="
   fi
   echo "=== $(date -Is) ctest $dst (-R helper) ==="
   (cd "build-mixed-gpu/$dst" && ctest -R helper --output-on-failure)
