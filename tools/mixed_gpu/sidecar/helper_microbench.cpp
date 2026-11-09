@@ -63,7 +63,7 @@ double run_rounds(int client_fd, int server_fd, int64_t n_tok, int32_t n_rows, i
         RxBuffer rx;
         for (int r = 0; r < rounds; ++r) {
             Header head;
-            std::span<const uint8_t> body;
+            PayloadView body;
             const uint32_t req_id = (uint32_t) (r + 1);
             if (server.read_frame(head, rx, body, deadline_after(30000)) != kOk || head.type != kBegin) {
                 std::fprintf(stderr, "helper_microbench: begin read failed\n");
@@ -87,7 +87,7 @@ double run_rounds(int client_fd, int server_fd, int64_t n_tok, int32_t n_rows, i
             std::exit(1);
         }
         Header head;
-        std::span<const uint8_t> body;
+        PayloadView body;
         if (client.read_frame(head, rx, body, deadline_after(30000)) != kOk || head.type != kRows) {
             std::fprintf(stderr, "helper_microbench: rows read failed\n");
             std::exit(1);

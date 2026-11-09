@@ -165,7 +165,7 @@ int handshake(ExpertHelperClient& c, uint32_t extra_feats = 0) {
         s.adopt(fd);
         Header head;
         RxBuffer rx;
-        std::span<const uint8_t> body;
+        PayloadView body;
         if (s.read_frame(head, rx, body, deadline_after(5000)) != kOk || head.type != kHello ||
             body.size() < sizeof(HelloReq)) { wire = 1; return; }
         HelloReq req;
@@ -232,7 +232,7 @@ bool send_begin(ExpertHelperClient& c) {
     srv.adopt(g_server_fd);
     Header head;
     RxBuffer rx;
-    std::span<const uint8_t> body;
+    PayloadView body;
     const int rrc = srv.read_frame(head, rx, body, deadline_after(2000));
     srv.release();
     if (rrc != kOk || head.type != kBegin) return false;
@@ -387,7 +387,7 @@ int handshake_v3(ExpertHelperClient& c, bool features, uint32_t extra_feats = 0)
         s.adopt(fd);
         Header head;
         RxBuffer rx;
-        std::span<const uint8_t> body;
+        PayloadView body;
         if (s.read_frame(head, rx, body, deadline_after(5000)) != kOk || head.type != kHello ||
             body.size() < sizeof(HelloReq)) { wire = 1; return; }
         HelloAck ack;
@@ -416,7 +416,7 @@ int handshake_v3(ExpertHelperClient& c, bool features, uint32_t extra_feats = 0)
 /// field, the byte total, the pair list as the image's (token row, expert), the layer's PRIMARY
 /// residency bits, and the image byte-for-byte - q8 against quantize_q8_1_cpu of the tier's own rows,
 /// fp32 (M4c (b)) against those rows verbatim.
-bool prompt_body_ok(std::span<const uint8_t> body, const ExpertHelperPromptPlan& plan,
+bool prompt_body_ok(PayloadView body, const ExpertHelperPromptPlan& plan,
                     const int32_t* primary, int rows, bool f32) {
     if (body.size() < sizeof(BeginPReq)) return false;
     BeginPReq req;
@@ -469,7 +469,7 @@ bool wire_prompt_ok(const ExpertHelperPromptPlan& plan, const int32_t* primary, 
     srv.adopt(g_server_fd);
     Header head;
     RxBuffer rx;
-    std::span<const uint8_t> body;
+    PayloadView body;
     const int rc = srv.read_frame(head, rx, body, deadline_after(2000));
     srv.release();
     if (rc != kOk || head.type != kBeginP) return false;
@@ -529,7 +529,7 @@ int begin_prompt_drained(ExpertHelperClient& c, const ExpertHelperPromptPlan& pl
         s.adopt(fd);
         Header head;
         RxBuffer rx;
-        std::span<const uint8_t> body;
+        PayloadView body;
         const int rc = s.read_frame(head, rx, body, deadline_after(20000));
         if (rc == kOk && head.type == kBeginP) {
             g_req_head = head;
@@ -639,7 +639,7 @@ SigOutcome run_sigterm_child(int mode) {
         const auto t0 = std::chrono::steady_clock::now();
         Header head;
         RxBuffer rx;
-        std::span<const uint8_t> body;
+        PayloadView body;
         const int rc = s.read_frame(head, rx, body,
                                     deadline_after(mode == kSigControlNoWake ? kSigControlDeadlineMs
                                                                            : kSigBeginTimeoutMs));
@@ -738,7 +738,7 @@ int run_relisten_child() {
                 if (g_child_stop.load()) break;                     // the loop-top latch check
                 Header head;
                 RxBuffer rx;
-                std::span<const uint8_t> body;
+                PayloadView body;
                 const int rc = s.read_frame(head, rx, body, deadline_after(5000));
                 if (rc == kErrTimeout) {
                     if (g_child_stop.load()) break;                 // the wake byte, not an idle engine
@@ -787,7 +787,7 @@ bool send_begin_q8k(ExpertHelperClient& c) {
     srv.adopt(g_server_fd);
     Header head;
     RxBuffer rx;
-    std::span<const uint8_t> body;
+    PayloadView body;
     const int rrc = srv.read_frame(head, rx, body, deadline_after(2000));
     srv.release();
     if (rrc != kOk || head.type != kBeginQ8K) return false;
@@ -816,7 +816,7 @@ bool wire_prompt_q8k_ok(const ExpertHelperPromptPlan& plan, const int32_t* prima
     srv.adopt(g_server_fd);
     Header head;
     RxBuffer rx;
-    std::span<const uint8_t> body;
+    PayloadView body;
     const int rc = srv.read_frame(head, rx, body, deadline_after(2000));
     srv.release();
     if (rc != kOk || head.type != kBeginP || body.size() < sizeof(BeginPReq)) return false;
@@ -1248,7 +1248,7 @@ int main(int argc, char** argv) {
         const auto t0 = std::chrono::steady_clock::now();
         Header head;
         RxBuffer rx;
-        std::span<const uint8_t> body;
+        PayloadView body;
         const int rc = cli.read_frame(head, rx, body, deadline_after(5000));
         const long long ms = (long long) std::chrono::duration_cast<std::chrono::milliseconds>(
                                  std::chrono::steady_clock::now() - t0).count();
@@ -1282,7 +1282,7 @@ int main(int argc, char** argv) {
             s.adopt(fd);
             Header head;
             RxBuffer rx;
-            std::span<const uint8_t> body;
+            PayloadView body;
             if (s.read_frame(head, rx, body, deadline_after(5000)) != kOk || head.type != kHello ||
                 body.size() < sizeof(HelloReq)) { seen = kErrProtocol; return; }
             HelloReq req;
@@ -1506,7 +1506,7 @@ int main(int argc, char** argv) {
             srv.adopt(g_server_fd);
             Header head;
             RxBuffer rx;
-            std::span<const uint8_t> body;
+            PayloadView body;
             check_status(srv.read_frame(head, rx, body, deadline_after(2000)), kOk, "the fake peer reads the kBeginP frame");
             check(head.type == kBeginP, "the frame type on the wire is kBeginP");
             // An R2 helper's own answer for a frame type it does not know (helper_main.cpp: typed
@@ -1955,7 +1955,7 @@ int main(int argc, char** argv) {
             srv.adopt(g_server_fd);
             Header head;
             RxBuffer rx;
-            std::span<const uint8_t> body;
+            PayloadView body;
             check_status(srv.read_frame(head, rx, body, deadline_after(300)), kErrTimeout,
                          "and the wire stayed silent (the frame never reaches an unadvertising peer)");
             srv.release();

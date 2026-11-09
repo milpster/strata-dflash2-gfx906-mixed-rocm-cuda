@@ -818,7 +818,7 @@ int smoke_full(const std::string& path, const std::vector<std::pair<int32_t, int
         probe(2);
         eh::Header head;
         eh::RxBuffer rx;
-        std::span<const uint8_t> body;
+        eh::PayloadView body;
         if (srv.read_frame(head, rx, body, eh::deadline_after(30000)) != eh::kOk || head.type != eh::kHello) {
             wire = 2; return;
         }
@@ -978,7 +978,7 @@ void section_framing() {
             srv.adopt(afd);
             eh::Header head;
             eh::RxBuffer rx;
-            std::span<const uint8_t> body;
+            eh::PayloadView body;
             if (srv.read_frame(head, rx, body, eh::deadline_after(8000)) != eh::kOk || head.type != eh::kHello) {
                 wire = 2; return;
             }
@@ -1027,7 +1027,7 @@ void section_framing() {
             srv.adopt(afd);
             eh::Header head;
             eh::RxBuffer rx;
-            std::span<const uint8_t> body;
+            eh::PayloadView body;
             if (srv.read_frame(head, rx, body, eh::deadline_after(8000)) != eh::kOk) return;
             eh::ErrResp err;
             err.status = eh::kErrRequest;

@@ -71,7 +71,7 @@ void fake_helper(const std::string& path, int fill_n, std::atomic<bool>& up) {
     RxBuffer rx;
     for (;;) {
         Header head;
-        std::span<const uint8_t> body;
+        PayloadView body;
         if (conn.read_frame(head, rx, body, deadline_after(4000)) != kOk) break;
         if (head.type == kHello) {
             HelloAck ack;
@@ -277,7 +277,7 @@ void fake_channel(const std::string& path, std::atomic<bool>& up, std::atomic<bo
     RxBuffer rx;
     for (;;) {
         Header head;
-        std::span<const uint8_t> body;
+        PayloadView body;
         // A SHORT read with the stop flag checked at every round: the test kills one channel by
         // setting `stop`, and the fake then closes THAT channel within one poll - deterministically,
         // with no frame served after the kill.  `up` drops with it, which is what the test waits on.

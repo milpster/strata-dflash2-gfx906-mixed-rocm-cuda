@@ -353,7 +353,7 @@ bool cuda_check(cudaError_t e, const char* what, std::string& err) {
 }
 
 // ---- kFill: fill the cache within the card's budget, in the engine's rank order ----
-int serve_fill(Helper& hp, std::span<const uint8_t> body, uint32_t req_id, uint32_t seq, int64_t reserve_mib,
+int serve_fill(Helper& hp, PayloadView body, uint32_t req_id, uint32_t seq, int64_t reserve_mib,
                const std::vector<uint8_t>& claimed, int64_t max_slots, std::string& err, Socket& out) {
     // The fill mutates the shared cache (and the card's free memory the budget reads), so it is
     // serialized against every served frame: the two-channel engine sends kFill on ONE channel only,
@@ -565,7 +565,7 @@ int serve_fill(Helper& hp, std::span<const uint8_t> body, uint32_t req_id, uint3
 // ---- kBegin / kBeginQ8K: one grouped launch over the claimed entries; kRows answers with the
 // original indices.  image_q8k: the frame's activation image is ggml's Q8_K blocks (the CPU
 // reference's own gate/up image) and the launch is native_expert_grouped_q8k. ----
-int serve_begin(Helper& hp, std::span<const uint8_t> body, uint32_t req_id, uint32_t seq, std::string& err,
+int serve_begin(Helper& hp, PayloadView body, uint32_t req_id, uint32_t seq, std::string& err,
                 Socket& out, bool image_q8k) {
     // ONE served frame holds the device lock (see Helper::gpu_mtx): the window tier's staging
     // (h_meta/d_meta/d_q8/d_out/scratch) and the prompt tier's are shared device state, and with
@@ -735,7 +735,7 @@ static inline cudaStream_t prompt_stream(const Helper& hp) {
     return hp.streams_split ? hp.stream_p : hp.stream;
 }
 
-int serve_prompt(Helper& hp, std::span<const uint8_t> body, uint32_t req_id, uint32_t seq, std::string& err,
+int serve_prompt(Helper& hp, PayloadView body, uint32_t req_id, uint32_t seq, std::string& err,
                  Socket& out) {
     // The prompt tier's OWN staging (h_meta_p/d_meta_p/d_q8_p/d_out_p/scratch_p) and the grouped
     // kernel it launches are shared device state: with --socket2 this frame and a window frame can
@@ -967,7 +967,7 @@ void stage_draft_rows(Helper& hp, const uint8_t* wire, int64_t rows, bool bf16) 
         }
 }
 
-int serve_draft_ctx(Helper& hp, std::span<const uint8_t> body, uint32_t req_id, uint32_t seq, bool bf16_taps,
+int serve_draft_ctx(Helper& hp, PayloadView body, uint32_t req_id, uint32_t seq, bool bf16_taps,
                     std::string& err, Socket& out) {
     // The drafter's ring, its tap staging (h_taps) and its forward are shared device state too: a
     // draft frame on channel A and a prompt frame on channel B can reach the device together.
@@ -1000,7 +1000,7 @@ int serve_draft_ctx(Helper& hp, std::span<const uint8_t> body, uint32_t req_id, 
     return out.write_reply(kDraftAck, req_id, seq, nullptr, 0, deadline_after(reply_deadline_ms(10000)));
 }
 
-int serve_draft_round(Helper& hp, std::span<const uint8_t> body, uint32_t req_id, uint32_t seq,
+int serve_draft_round(Helper& hp, PayloadView body, uint32_t req_id, uint32_t seq,
                       bool bf16_taps, std::string& err, Socket& out) {
     std::optional<std::lock_guard<std::mutex>> gpu_lk_off;
     std::optional<std::shared_lock<std::shared_mutex>> gpu_lk_on;
@@ -1200,7 +1200,7 @@ accept_peer:
             break;
         }
         Header head;
-        std::span<const uint8_t> body;
+        PayloadView body;
         // NO lock is held across this read: an idle channel must never block the other channel's
         // work (that is the split's whole point, and the shared device lock is taken per frame only).
         int rc = out.read_frame(head, rx, body, deadline_after(o.begin_timeout_ms));

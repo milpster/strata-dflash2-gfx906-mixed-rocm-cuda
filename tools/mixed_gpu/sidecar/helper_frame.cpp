@@ -408,7 +408,7 @@ int Socket::write_seq(uint32_t seq, uint32_t type, uint32_t req_id, const uint8_
     return kOk;
 }
 
-int Socket::read_frame(Header& head, RxBuffer& rx, std::span<const uint8_t>& payload, int64_t deadline_ms) const {
+int Socket::read_frame(Header& head, RxBuffer& rx, PayloadView& payload, int64_t deadline_ms) const {
     uint8_t raw[kHeaderBytes];
     int rc = read_all(raw, kHeaderBytes, deadline_ms);
     if (rc != kOk) { payload = {}; return rc; }
@@ -426,7 +426,7 @@ int Socket::read_frame(Header& head, RxBuffer& rx, std::span<const uint8_t>& pay
         rx.cap = want;
     }
     if (head.len && read_all(rx.p, head.len, deadline_ms) != kOk) { payload = {}; return kErrUnhealthy; }
-    payload = std::span<const uint8_t>(rx.p, (size_t) head.len);
+    payload = PayloadView{rx.p, (size_t) head.len};
     return kOk;
 }
 

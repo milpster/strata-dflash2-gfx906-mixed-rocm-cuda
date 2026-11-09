@@ -20,7 +20,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
-#include <span>
 #include <string>
 #include <sys/types.h>
 #include <type_traits>
@@ -402,7 +401,7 @@ const char* status_name(int status);
 /// entirely (page faults on fresh pages dominate).  The caller OWNS one RxBuffer - the engine's
 /// client keeps ONE per connection, a helper channel keeps one per accepted socket, a test keeps
 /// one per scope - so repeated frames of similar size reuse the same pages: no per-frame alloc, no
-/// zero-fill.  read_frame fills it and hands back a contiguous span view of exactly head.len
+/// zero-fill.  read_frame fills it and hands back a contiguous PayloadView of exactly head.len
 /// bytes, valid until the next read_frame on the same socket; a caller that must KEEP a payload
 /// copies it out (the transport never mutates rx_ outside read_frame).
 struct RxBuffer {
@@ -412,6 +411,21 @@ struct RxBuffer {
     ~RxBuffer() { std::free(p); }
     RxBuffer(const RxBuffer&) = delete;
     RxBuffer& operator=(const RxBuffer&) = delete;
+};
+
+/// The payload view read_frame returns: a contiguous byte window into the caller's RxBuffer.
+/// Deliberately NOT std::span - the CUDA sidecar's host code compiles this header at C++17
+/// (CUDA_STANDARD 17), and the view's whole API (data/size/empty/subscript/range-for) is what
+/// every call site already used on the old std::vector out-parameter.
+struct PayloadView {
+    const uint8_t* p = nullptr;
+    size_t n = 0;
+    const uint8_t* data() const { return p; }
+    size_t size() const { return n; }
+    bool empty() const { return n == 0; }
+    const uint8_t& operator[](size_t i) const { return p[i]; }
+    const uint8_t* begin() const { return p; }
+    const uint8_t* end() const { return p + n; }
 };
 
 class Socket {
@@ -445,7 +459,7 @@ public:
     /// Read the next frame.  The payload lands in the caller's grow-only `rx` (see RxBuffer) and
     /// `payload` views exactly head.len of it, valid until the next read_frame on THIS socket.
     /// A non-ok return leaves `payload` empty - never a stale view.
-    int read_frame(Header& head, RxBuffer& rx, std::span<const uint8_t>& payload, int64_t deadline_ms) const;
+    int read_frame(Header& head, RxBuffer& rx, PayloadView& payload, int64_t deadline_ms) const;
     /// SO_PEERCRED on the accepted/connected stream: the peer must run as the SAME uid.  0 = ok.
     static int peer_uid(int fd);
     static int peer_ok(int fd, uid_t expect);
