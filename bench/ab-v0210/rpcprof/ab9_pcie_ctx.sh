@@ -319,7 +319,7 @@ stop_sidecar(){ kill "$DMON_PID" "$VRAM_PID" 2>/dev/null || true; wait "$DMON_PI
 stage2_legs(){   # 2x 8k PP + 1x TG512 drift legs
   arm=$1
   for seq in 1 2; do
-    sidecar "$arm" "${8000}-${seq}"
+    sidecar "$arm" "8000-${seq}"
     $PY "$D/ab9_driver.py" --arm "$arm" --leg "8000-${seq}" --kind prefill --ctx 8000 --max-tokens 8 \
         --out "$OUT" --elog "$ELOG" --hlog "$HLOG" || { stop_sidecar; return 9; }
     stop_sidecar
