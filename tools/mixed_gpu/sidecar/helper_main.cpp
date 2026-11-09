@@ -860,11 +860,27 @@ int serve_prompt(Helper& hp, std::span<const uint8_t> body, uint32_t req_id, uin
     if (!cuda_check(cudaMemcpyAsync(hp.d_meta_p, hp.h_meta_p, sizeof(GroupMetaP), cudaMemcpyHostToDevice, prompt_stream(hp)),
                     "prompt meta upload", err)) return kErrInternal;
     const auto L = strata::kernels::native_expert_layout(fmt.gu_type, fmt.d_type, fmt.n_embd, fmt.n_ff);
-    // H14, mirrored: clear the output rows and the scratch first - a stale value from a window, from
-    // the warmup, or cudaMalloc junk carrying NaN fp16 patterns must never reach a reply row.
-    if (!cuda_check(cudaMemsetAsync(hp.d_out_p, 0, (size_t) dst.size() * (size_t) H * 4, prompt_stream(hp)),
-                    "prompt output clear", err)) return kErrInternal;
-    if (!cuda_check(cudaMemsetAsync(hp.d_scratch_p, 0, (size_t) hp.prompt_scratch_bytes, prompt_stream(hp)),
+    // H14's output clear is GONE here (helper-ipc-diet, 2026-11), and the scratch clear is narrowed
+    // to the bytes this claim's kernels can dirty - a 24 MB pinned-memory PCIe memset per claim was
+    // the single biggest GPU-side cost in the ab9 window.  The coverage facts, from the kernels:
+    //  - out: native_down_kernel's grid covers EVERY column r < n_embd and, for every group g <
+    //    n_groups, every entry e in [grp_start[g], grp_start[g+1]) writes out[ent_dst[e]*n_embd + r]
+    //    (iq_kernels.cu:2207-2228).  ent_dst is the 0..dst.size()-1 sequence built above (:822-831),
+    //    grp_start covers every entry, and the q8k path launches the same down kernel - so the
+    //    memset's exact range [0, dst.size()*H*4) is fully overwritten in this stream BEFORE the
+    //    cudaStreamSynchronize below, and the finite scan and the reply read ONLY that range.  A
+    //    stale window/warmup/cudaMalloc value cannot reach a reply row: the clear guards nothing.
+    //  - scratch: the gu/SwiGLU/down chain derives gate/up/h/hq from cap_entries = dst.size()
+    //    (native_expert_scratch_bytes' own formula; the q8k kernel states the same layout) and
+    //    writes every byte of that prefix before reading it.  The memset follows the claim's cap
+    //    (max of the two layout formulas, the same max that sizes the buffer at :1477-1479) so it
+    //    covers every byte the kernels touch this claim and leaves the never-read tail alone.
+    //    The output rows keep NO clear: verified fully overwritten above - correctness over
+    //    cleverness was applied to the scratch, where the write-before-read proof is layout-wide.
+    const size_t scratch_dirty = (size_t) std::max(
+        strata::kernels::native_expert_scratch_bytes((int64_t) dst.size(), L.n_ff),
+        strata::kernels::moe_hit_grouped_scratch_bytes((int64_t) dst.size(), H, FF));
+    if (!cuda_check(cudaMemsetAsync(hp.d_scratch_p, 0, scratch_dirty, prompt_stream(hp)),
                     "prompt scratch clear", err)) return kErrInternal;
     if (img_q8k)
         strata::kernels::native_expert_grouped_q8k(L, hp.d_meta_p->ptr, hp.d_meta_p->start, &hp.d_meta_p->count,
