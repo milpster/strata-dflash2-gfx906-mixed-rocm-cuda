@@ -68,10 +68,11 @@ void fake_helper(const std::string& path, int fill_n, std::atomic<bool>& up) {
     Socket conn;
     conn.adopt(peer);
     up = true;
+    RxBuffer rx;
     for (;;) {
         Header head;
-        std::vector<uint8_t> body;
-        if (conn.read_frame(head, body, deadline_after(4000)) != kOk) break;
+        std::span<const uint8_t> body;
+        if (conn.read_frame(head, rx, body, deadline_after(4000)) != kOk) break;
         if (head.type == kHello) {
             HelloAck ack;
             ack.max_tok = (int32_t) kMaxTok;
@@ -273,13 +274,14 @@ void fake_channel(const std::string& path, std::atomic<bool>& up, std::atomic<bo
     Socket conn;
     conn.adopt(peer);
     up = true;
+    RxBuffer rx;
     for (;;) {
         Header head;
-        std::vector<uint8_t> body;
+        std::span<const uint8_t> body;
         // A SHORT read with the stop flag checked at every round: the test kills one channel by
         // setting `stop`, and the fake then closes THAT channel within one poll - deterministically,
         // with no frame served after the kill.  `up` drops with it, which is what the test waits on.
-        const int rrc = conn.read_frame(head, body, deadline_after(300));
+        const int rrc = conn.read_frame(head, rx, body, deadline_after(300));
         if (rrc == kErrTimeout) {
             if (stop) break;
             continue;

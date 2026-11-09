@@ -164,8 +164,9 @@ int handshake(ExpertHelperClient& c, uint32_t extra_feats = 0) {
         Socket s;
         s.adopt(fd);
         Header head;
-        std::vector<uint8_t> body;
-        if (s.read_frame(head, body, deadline_after(5000)) != kOk || head.type != kHello ||
+        RxBuffer rx;
+        std::span<const uint8_t> body;
+        if (s.read_frame(head, rx, body, deadline_after(5000)) != kOk || head.type != kHello ||
             body.size() < sizeof(HelloReq)) { wire = 1; return; }
         HelloReq req;
         std::memcpy(&req, body.data(), sizeof(req));
@@ -182,7 +183,7 @@ int handshake(ExpertHelperClient& c, uint32_t extra_feats = 0) {
         ack.free_mib = 4096;
         ack.features = extra_feats;   // (19): a peer advertising e.g. the Q8_K wire
         if (s.write_frame(kHelloAck, head.req_id, (const uint8_t*) &ack, sizeof(ack), deadline_after(5000)) != kOk) { wire = 3; return; }
-        if (s.read_frame(head, body, deadline_after(5000)) != kOk || head.type != kFill ||
+        if (s.read_frame(head, rx, body, deadline_after(5000)) != kOk || head.type != kFill ||
             body.size() < sizeof(FillReq)) { wire = 4; return; }
         FillReq f;
         std::memcpy(&f, body.data(), sizeof(f));
@@ -230,8 +231,9 @@ bool send_begin(ExpertHelperClient& c) {
     Socket srv;
     srv.adopt(g_server_fd);
     Header head;
-    std::vector<uint8_t> body;
-    const int rrc = srv.read_frame(head, body, deadline_after(2000));
+    RxBuffer rx;
+    std::span<const uint8_t> body;
+    const int rrc = srv.read_frame(head, rx, body, deadline_after(2000));
     srv.release();
     if (rrc != kOk || head.type != kBegin) return false;
     if (body.size() < sizeof(BeginReq)) return false;
@@ -384,8 +386,9 @@ int handshake_v3(ExpertHelperClient& c, bool features, uint32_t extra_feats = 0)
         Socket s;
         s.adopt(fd);
         Header head;
-        std::vector<uint8_t> body;
-        if (s.read_frame(head, body, deadline_after(5000)) != kOk || head.type != kHello ||
+        RxBuffer rx;
+        std::span<const uint8_t> body;
+        if (s.read_frame(head, rx, body, deadline_after(5000)) != kOk || head.type != kHello ||
             body.size() < sizeof(HelloReq)) { wire = 1; return; }
         HelloAck ack;
         ack.max_tok = (int32_t) kMaxTok;
@@ -413,7 +416,7 @@ int handshake_v3(ExpertHelperClient& c, bool features, uint32_t extra_feats = 0)
 /// field, the byte total, the pair list as the image's (token row, expert), the layer's PRIMARY
 /// residency bits, and the image byte-for-byte - q8 against quantize_q8_1_cpu of the tier's own rows,
 /// fp32 (M4c (b)) against those rows verbatim.
-bool prompt_body_ok(const std::vector<uint8_t>& body, const ExpertHelperPromptPlan& plan,
+bool prompt_body_ok(std::span<const uint8_t> body, const ExpertHelperPromptPlan& plan,
                     const int32_t* primary, int rows, bool f32) {
     if (body.size() < sizeof(BeginPReq)) return false;
     BeginPReq req;
@@ -465,8 +468,9 @@ bool wire_prompt_ok(const ExpertHelperPromptPlan& plan, const int32_t* primary, 
     Socket srv;
     srv.adopt(g_server_fd);
     Header head;
-    std::vector<uint8_t> body;
-    const int rc = srv.read_frame(head, body, deadline_after(2000));
+    RxBuffer rx;
+    std::span<const uint8_t> body;
+    const int rc = srv.read_frame(head, rx, body, deadline_after(2000));
     srv.release();
     if (rc != kOk || head.type != kBeginP) return false;
     return prompt_body_ok(body, plan, primary, rows, f32);
@@ -524,11 +528,12 @@ int begin_prompt_drained(ExpertHelperClient& c, const ExpertHelperPromptPlan& pl
         Socket s;
         s.adopt(fd);
         Header head;
-        std::vector<uint8_t> body;
-        const int rc = s.read_frame(head, body, deadline_after(20000));
+        RxBuffer rx;
+        std::span<const uint8_t> body;
+        const int rc = s.read_frame(head, rx, body, deadline_after(20000));
         if (rc == kOk && head.type == kBeginP) {
             g_req_head = head;
-            g_req_body = std::move(body);
+            g_req_body.assign(body.begin(), body.end());
             g_req_rc = kOk;
         } else {
             g_req_rc = rc;
@@ -633,8 +638,9 @@ SigOutcome run_sigterm_child(int mode) {
         s.adopt(fds[0]);
         const auto t0 = std::chrono::steady_clock::now();
         Header head;
-        std::vector<uint8_t> body;
-        const int rc = s.read_frame(head, body,
+        RxBuffer rx;
+        std::span<const uint8_t> body;
+        const int rc = s.read_frame(head, rx, body,
                                     deadline_after(mode == kSigControlNoWake ? kSigControlDeadlineMs
                                                                            : kSigBeginTimeoutMs));
         const long long ms = (long long) std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -731,8 +737,9 @@ int run_relisten_child() {
             for (;;) {
                 if (g_child_stop.load()) break;                     // the loop-top latch check
                 Header head;
-                std::vector<uint8_t> body;
-                const int rc = s.read_frame(head, body, deadline_after(5000));
+                RxBuffer rx;
+                std::span<const uint8_t> body;
+                const int rc = s.read_frame(head, rx, body, deadline_after(5000));
                 if (rc == kErrTimeout) {
                     if (g_child_stop.load()) break;                 // the wake byte, not an idle engine
                     break;                                          // the engine idled: the helper exits
@@ -779,8 +786,9 @@ bool send_begin_q8k(ExpertHelperClient& c) {
     Socket srv;
     srv.adopt(g_server_fd);
     Header head;
-    std::vector<uint8_t> body;
-    const int rrc = srv.read_frame(head, body, deadline_after(2000));
+    RxBuffer rx;
+    std::span<const uint8_t> body;
+    const int rrc = srv.read_frame(head, rx, body, deadline_after(2000));
     srv.release();
     if (rrc != kOk || head.type != kBeginQ8K) return false;
     if (body.size() < sizeof(BeginReq)) return false;
@@ -807,8 +815,9 @@ bool wire_prompt_q8k_ok(const ExpertHelperPromptPlan& plan, const int32_t* prima
     Socket srv;
     srv.adopt(g_server_fd);
     Header head;
-    std::vector<uint8_t> body;
-    const int rc = srv.read_frame(head, body, deadline_after(2000));
+    RxBuffer rx;
+    std::span<const uint8_t> body;
+    const int rc = srv.read_frame(head, rx, body, deadline_after(2000));
     srv.release();
     if (rc != kOk || head.type != kBeginP || body.size() < sizeof(BeginPReq)) return false;
     BeginPReq req;
@@ -1238,8 +1247,9 @@ int main(int argc, char** argv) {
         cli.adopt(fds[0]);                     // the reader owns fds[0] for the whole exchange
         const auto t0 = std::chrono::steady_clock::now();
         Header head;
-        std::vector<uint8_t> body;
-        const int rc = cli.read_frame(head, body, deadline_after(5000));
+        RxBuffer rx;
+        std::span<const uint8_t> body;
+        const int rc = cli.read_frame(head, rx, body, deadline_after(5000));
         const long long ms = (long long) std::chrono::duration_cast<std::chrono::milliseconds>(
                                  std::chrono::steady_clock::now() - t0).count();
         writer.join();                         // nothing can still be in flight when the reader closes
@@ -1271,8 +1281,9 @@ int main(int argc, char** argv) {
             Socket s;
             s.adopt(fd);
             Header head;
-            std::vector<uint8_t> body;
-            if (s.read_frame(head, body, deadline_after(5000)) != kOk || head.type != kHello ||
+            RxBuffer rx;
+            std::span<const uint8_t> body;
+            if (s.read_frame(head, rx, body, deadline_after(5000)) != kOk || head.type != kHello ||
                 body.size() < sizeof(HelloReq)) { seen = kErrProtocol; return; }
             HelloReq req;
             std::memcpy(&req, body.data(), sizeof(req));
@@ -1494,8 +1505,9 @@ int main(int argc, char** argv) {
             Socket srv;
             srv.adopt(g_server_fd);
             Header head;
-            std::vector<uint8_t> body;
-            check_status(srv.read_frame(head, body, deadline_after(2000)), kOk, "the fake peer reads the kBeginP frame");
+            RxBuffer rx;
+            std::span<const uint8_t> body;
+            check_status(srv.read_frame(head, rx, body, deadline_after(2000)), kOk, "the fake peer reads the kBeginP frame");
             check(head.type == kBeginP, "the frame type on the wire is kBeginP");
             // An R2 helper's own answer for a frame type it does not know (helper_main.cpp: typed
             // kErrProtocol, then the channel closes).
@@ -1942,8 +1954,9 @@ int main(int argc, char** argv) {
             Socket srv;
             srv.adopt(g_server_fd);
             Header head;
-            std::vector<uint8_t> body;
-            check_status(srv.read_frame(head, body, deadline_after(300)), kErrTimeout,
+            RxBuffer rx;
+            std::span<const uint8_t> body;
+            check_status(srv.read_frame(head, rx, body, deadline_after(300)), kErrTimeout,
                          "and the wire stayed silent (the frame never reaches an unadvertising peer)");
             srv.release();
         }

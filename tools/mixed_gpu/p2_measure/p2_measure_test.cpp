@@ -817,13 +817,14 @@ int smoke_full(const std::string& path, const std::vector<std::pair<int32_t, int
         srv.adopt(afd);
         probe(2);
         eh::Header head;
-        std::vector<uint8_t> body;
-        if (srv.read_frame(head, body, eh::deadline_after(30000)) != eh::kOk || head.type != eh::kHello) {
+        eh::RxBuffer rx;
+        std::span<const uint8_t> body;
+        if (srv.read_frame(head, rx, body, eh::deadline_after(30000)) != eh::kOk || head.type != eh::kHello) {
             wire = 2; return;
         }
         write_ack(srv, head, true, free_mib);
         probe(3);
-        if (srv.read_frame(head, body, eh::deadline_after(30000)) != eh::kOk) { wire = 20; return; }
+        if (srv.read_frame(head, rx, body, eh::deadline_after(30000)) != eh::kOk) { wire = 20; return; }
         if (head.type != eh::kFill) { wire = 21; return; }
         probe(4);
         // the fill REQUEST: the header, and every (layer, expert) pair, in the client's order
@@ -841,7 +842,7 @@ int smoke_full(const std::string& path, const std::vector<std::pair<int32_t, int
         write_fill_report(srv, head, resident, fill_bytes);
         probe(41);
         // the tier: read the kBeginP, verify its shape, answer with every claimed pair's row
-        if (srv.read_frame(head, body, eh::deadline_after(20000)) != eh::kOk || head.type != eh::kBeginP) {
+        if (srv.read_frame(head, rx, body, eh::deadline_after(20000)) != eh::kOk || head.type != eh::kBeginP) {
             wire = 4; return;
         }
         probe(5);
@@ -976,12 +977,13 @@ void section_framing() {
             if (afd < 0) { wire = 1; return; }
             srv.adopt(afd);
             eh::Header head;
-            std::vector<uint8_t> body;
-            if (srv.read_frame(head, body, eh::deadline_after(8000)) != eh::kOk || head.type != eh::kHello) {
+            eh::RxBuffer rx;
+            std::span<const uint8_t> body;
+            if (srv.read_frame(head, rx, body, eh::deadline_after(8000)) != eh::kOk || head.type != eh::kHello) {
                 wire = 2; return;
             }
             write_ack(srv, head, false);                 // the R2 helper's 24-byte LEGACY ack
-            if (srv.read_frame(head, body, eh::deadline_after(3000)) != eh::kOk) {
+            if (srv.read_frame(head, rx, body, eh::deadline_after(3000)) != eh::kOk) {
                 wire = 3; return;                        // the harness refused at the ack: nothing follows
             }
             if (head.type == eh::kBeginP) { tiers = 1; wire = 4; return; }   // the tier reached a legacy peer
@@ -1024,8 +1026,9 @@ void section_framing() {
             if (afd < 0) return;
             srv.adopt(afd);
             eh::Header head;
-            std::vector<uint8_t> body;
-            if (srv.read_frame(head, body, eh::deadline_after(8000)) != eh::kOk) return;
+            eh::RxBuffer rx;
+            std::span<const uint8_t> body;
+            if (srv.read_frame(head, rx, body, eh::deadline_after(8000)) != eh::kOk) return;
             eh::ErrResp err;
             err.status = eh::kErrRequest;
             std::strncpy(err.text, "geometry refused", sizeof(err.text) - 1);

@@ -301,6 +301,9 @@ private:
     void* ext_x_ = nullptr;                         // the tier's OWN pinned rows (never cpu_x)
     size_t ext_x_bytes_ = 0;
     int64_t ext_x_embd_ = 0;
+    expert_helper::RxBuffer rx_;                    // helper-ipc-diet: ONE grow-only receive buffer for
+                                                    // every read_frame (all reads run under io_mtx_ after
+                                                    // the startup handshake, so it never races itself)
     int64_t prompt_pairs_ = 0;                      // the outstanding kBeginP's pair count
     uint64_t requests_ = 0, rows_ = 0, bytes_ = 0, timeouts_ = 0, fallbacks_ = 0;
     uint64_t prompt_requests_ = 0, prompt_rows_returned_ = 0, prompt_bytes_ = 0;

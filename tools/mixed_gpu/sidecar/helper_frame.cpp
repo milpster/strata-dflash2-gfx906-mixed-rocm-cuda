@@ -408,14 +408,25 @@ int Socket::write_seq(uint32_t seq, uint32_t type, uint32_t req_id, const uint8_
     return kOk;
 }
 
-int Socket::read_frame(Header& head, std::vector<uint8_t>& payload, int64_t deadline_ms) const {
+int Socket::read_frame(Header& head, RxBuffer& rx, std::span<const uint8_t>& payload, int64_t deadline_ms) const {
     uint8_t raw[kHeaderBytes];
     int rc = read_all(raw, kHeaderBytes, deadline_ms);
-    if (rc != kOk) return rc;
+    if (rc != kOk) { payload = {}; return rc; }
     rc = decode_header(raw, head);
-    if (rc != kOk) return rc;
-    payload.assign(head.len, 0);
-    if (head.len && read_all(payload.data(), head.len, deadline_ms) != kOk) return kErrUnhealthy;
+    if (rc != kOk) { payload = {}; return rc; }
+    // helper-ipc-diet: grow-only, doubling from a 2 MiB floor - a 24 MB reply reaches its size in a
+    // few reallocs at startup and never touches the allocator again; the bytes the read overwrites
+    // are never zero-filled first (the pre-fix assign did exactly that, pages and all).
+    if (head.len > rx.cap) {
+        size_t want = rx.cap ? rx.cap * 2 : (size_t) 2u << 20;
+        while (want < (size_t) head.len) want *= 2;
+        uint8_t* grown = (uint8_t*) ::realloc(rx.p, want);
+        if (grown == nullptr) { payload = {}; return kErrInternal; }   // alloc failure: named, no throw
+        rx.p = grown;
+        rx.cap = want;
+    }
+    if (head.len && read_all(rx.p, head.len, deadline_ms) != kOk) { payload = {}; return kErrUnhealthy; }
+    payload = std::span<const uint8_t>(rx.p, (size_t) head.len);
     return kOk;
 }
 

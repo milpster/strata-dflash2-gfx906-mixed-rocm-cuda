@@ -325,8 +325,8 @@ int ExpertHelperClient::hello(int64_t n_layers, int64_t n_expert, int64_t n_embd
     int rc = s.write_frame(expert_helper::kHello, ++req_id_, payload.data(), payload.size(), deadline);
     if (rc != expert_helper::kOk) { s.release(); close(); return rc; }
     expert_helper::Header head;
-    std::vector<uint8_t> body;
-    rc = s.read_frame(head, body, deadline);
+    std::span<const uint8_t> body;
+    rc = s.read_frame(head, rx_, body, deadline);
     if (rc != expert_helper::kOk) { s.release(); close(); return rc; }
     if (head.type != expert_helper::kHelloAck) { s.release(); close(); return head.type == expert_helper::kError ? expert_helper::kErrRequest : expert_helper::kErrProtocol; }
     if (head.req_id != req_id_) { s.release(); close(); return expert_helper::kErrSeq; }
@@ -378,8 +378,8 @@ int ExpertHelperClient::fill_report(const std::vector<std::pair<int32_t, int32_t
                            rel(deadline_ms, kDeadlineDefaultMs));
     if (rc != expert_helper::kOk) { s.release(); close(); return rc; }
     expert_helper::Header head;
-    std::vector<uint8_t> body;
-    rc = s.read_frame(head, body, rel(deadline_ms, 600000));   // the fill copies GiB: a long, bounded wait
+    std::span<const uint8_t> body;
+    rc = s.read_frame(head, rx_, body, rel(deadline_ms, 600000));   // the fill copies GiB: a long, bounded wait
     if (rc != expert_helper::kOk) { s.release(); close(); return rc; }
     if (head.type == expert_helper::kError) { s.release(); close(); return expert_helper::kErrRequest; }
     if (head.type != expert_helper::kFillReport || head.req_id != req_id_) { s.release(); close(); return expert_helper::kErrSeq; }
@@ -497,8 +497,8 @@ int ExpertHelperClient::finish(float* out, int64_t n_embd, int32_t n_tok, int64_
     s.adopt(fd_);
     const auto t0 = std::chrono::steady_clock::now();
     expert_helper::Header head;
-    std::vector<uint8_t> body;
-    int rc = s.read_frame(head, body, rel(timeout_ms, kDeadlineDefaultMs));
+    std::span<const uint8_t> body;
+    int rc = s.read_frame(head, rx_, body, rel(timeout_ms, kDeadlineDefaultMs));
     ms_wait_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     if (rc == expert_helper::kErrTimeout) {
         ++timeouts_;
@@ -707,8 +707,8 @@ int ExpertHelperClient::finish_prompt(float* out, int64_t n_embd, const std::vec
     s.adopt(fd_);
     const auto t0 = std::chrono::steady_clock::now();
     expert_helper::Header head;
-    std::vector<uint8_t> body;
-    int rc = s.read_frame(head, body, rel(timeout_ms, kDeadlineDefaultMs));
+    std::span<const uint8_t> body;
+    int rc = s.read_frame(head, rx_, body, rel(timeout_ms, kDeadlineDefaultMs));
     ms_wait_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     if (rc == expert_helper::kErrTimeout) {
         ++timeouts_;
@@ -889,8 +889,8 @@ int ExpertHelperClient::draft_context(const float* rows, int64_t n_rows, int64_t
         }
         const uint32_t seq = s.seq_out();
         Header head;
-        std::vector<uint8_t> body;
-        rc = s.read_frame(head, body, deadline);
+        std::span<const uint8_t> body;
+        rc = s.read_frame(head, rx_, body, deadline);
         if (rc == kErrTimeout) {
             ++timeouts_;
             std::fprintf(stderr, "expert-helper: the draft ctx ack at pos %lld missed its %lld ms "
@@ -1003,8 +1003,8 @@ int ExpertHelperClient::draft_round(const float* rows, int64_t n_new, int64_t po
     }
     const uint32_t seq = s.seq_out();
     Header head;
-    std::vector<uint8_t> body;
-    rc = s.read_frame(head, body, deadline);
+    std::span<const uint8_t> body;
+    rc = s.read_frame(head, rx_, body, deadline);
     if (rc == kErrTimeout) {
         ++timeouts_;
         std::fprintf(stderr, "expert-helper: the draft round reply at pos %lld missed its %lld ms "
