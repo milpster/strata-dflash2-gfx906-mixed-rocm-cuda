@@ -30,6 +30,7 @@
 #include <vector>
 
 #include <sys/socket.h>
+#include <sys/stat.h>   // helper-ipc-diet: mkdir("/tmp/agent") - the ownership sockets' parent
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -518,6 +519,10 @@ void run_window_channel_dies() {
 }  // namespace
 
 int main() {
+    // helper-ipc-diet: the sockets live under /tmp/agent, which a reboot's tmp wipe removes -
+    // the fake helper then cannot bind and all 38 checks cascade-fail on connect (seen
+    // 2026-11-09 after the box restarted; both baseline and diet trees failed identically).
+    ::mkdir("/tmp/agent", 0700);   // EEXIST is fine
     std::string why;
     check(socket_path_ok(test_path("probe").c_str(), why), "the test's socket paths satisfy the bind rules");
     run_registered_lifecycle();
