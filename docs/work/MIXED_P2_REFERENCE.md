@@ -411,3 +411,61 @@ Limits: the first generated token only, three prompts, one machine,
 temperature 0; evidence only, never a gate. This does not contradict the
 message-level divergence — 512 autoregressive steps amplify distribution
 differences of exactly this size.
+
+## The prompt tier's CLAIM BATCH: `kBeginPB` / `kRowsPB` (built, OFF by default)
+
+The transport for K consecutive prompt-tier claims in ONE exchange, served by
+the helper under ONE device-lock acquisition. It is armed by `STRATA_CLAIM_BATCH`
+(read per client, never cached; clamped to 1..`kMaxClaimBatch` = 16, **default 1**)
+AND a helper that advertises `kFeaturePromptBatch` (HelloAck bit 5). A peer
+without the bit never sees the new frame types; with the env unset (K = 1)
+`begin_prompt`/`finish_prompt` keep today's `kBeginP`/`kRowsP` code path and
+today's bytes, and the ack gains no bytes (the `features` field already exists,
+`sizeof(HelloAck) == 32`).
+
+Wire (`include/strata/core/expert_helper_protocol.hpp`):
+
+- request `kBeginPB` (18): `BeginPBReq{n_parts, flags, reserved0}` (16 B, layout
+  pinned by `static_assert`), then `n_parts` parts concatenated in the engine's
+  **claim order**, each part byte-for-byte a standalone `kBeginP` payload
+  (`BeginPReq` + pairs + the layer's primary bitmap + the image).
+- reply `kRowsPB` (19): `RowsPBResp{n_parts, reserved0}` (8 B), then `n_parts`
+  parts in the request's part order, each byte-for-byte a standalone `kRowsP`
+  payload (`RowsPResp` + `n_rows * (4 + n_embd*4)`).
+- Caps, all refused **before any write**: parts ≤ `kMaxClaimBatch`, request bytes
+  ≤ `kMaxBatchPayload` (64 MiB, so a batch never crowds the 128 MiB frame cap),
+  reply rows ≤ `kMaxBatchPayload / (4 + n_embd*4)`. The helper slices by
+  `kBeginP`'s own byte contract and length-checks every part against the frame's
+  exact total before any device work.
+
+The batch is transport-only: the same rows are claimed, the same rows return, and
+the parts are applied in claim order — the helper runs `serve_prompt_core` per
+part, which is the parse, caps, launch and reply layout a standalone `kBeginP`
+runs, so downstream parity gates (greedy sha) see one claim at a time. Each part
+is validated against **its own** claims by the same whole-or-nothing
+`validate_rows_payload` a single `kRowsP` uses; a missing row stays the caller's
+same-layer CPU fallback. A caller whose claims do not match the queued front part
+is refused `kErrSeq` **before the flush** (nothing on the wire, channel closed).
+`kMaxRowsPerLayer`-scale batching semantics are unchanged: nothing reorders rows.
+
+Engine-side finding (why K>1 is gated at the claim site, not the win): in the
+current prefill pipeline a layer's reply is consumed **inside that layer's walk**
+— the gather into the single-slot `m.Dm`/`hp_stage` and the same-layer fallback
+both read it, and `m.hp_rows`/`ext_x_` are single-slot per layer
+(`src/prefill/prefill.cpp`, send ~5229–5368, reply/gather ~6408–6450). A
+per-layer begin/finish walk therefore flushes a **one-part** batch: the client
+coalescing (K `begin_prompt` calls before the first `finish_prompt`) pays off
+only where a caller runs its begins ahead of its finishes. The transport and the
+helper's single-lock serving are in place; giving the pipeline that depth is
+follow-up work and needs a GPU window to prove it.
+
+Host tests: `tests/core/expert_helper_socket_test.cpp` section (20a–20d) pins
+the batch=1 byte identity, the K=3 round trip (wire silent while queueing, one
+`kBeginPB` whose parts are byte-exact `kBeginP` payloads, one `kRowsPB`, parts
+applied in claim order at their own pair indices, one exchange for 18 rows), the
+queue cap and order refusal with a silent wire, and that the frame type never
+reaches a peer without the bit. Evidence: `build-mixed-gpu/claim-batch-build.log`
+(`tools/mixed_gpu/build_l3.sh`, both trees CPU-only): CUDA tree guard PASS
+(helper fatbin sm_86) + `ctest -R helper` 5/5 passed (socket test 7.03 s); HIP
+tree guard PASS (gfx906 HIP: `libamdhip64` + `.hip_fatbin` + `STRATA_HIP_GFX906`)
++ `ctest -R helper` 1/1. No GPU run, no measurement, no golden conf touched.

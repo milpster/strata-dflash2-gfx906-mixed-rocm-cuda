@@ -1401,3 +1401,34 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
   untouched by any merge); the only v0.2.11 serve/frontend.py change is upstream #5040
   (streamed </tool_call> tag no longer ends the value early) - the Jinja rendering contract
   is unchanged.
+
+## 2026-11-09 — Prompt-tier claim batch on the wire (kBeginPB/kRowsPB), default OFF
+
+- `helper-ipc-diet` 1ea98dae3: K consecutive prompt-tier claims in ONE socket
+  exchange, served by the CUDA helper under ONE device-lock acquisition.
+  `STRATA_CLAIM_BATCH` (read per client, clamped 1..16) AND the helper's
+  `kFeaturePromptBatch` (HelloAck bit 5); default 1 = today's kBeginP/kRowsP
+  bytes and code path exactly (the ack's `features` field already existed).
+- Wire: `kBeginPB`=18 is `BeginPBReq{n_parts,flags,reserved0}` + K parts
+  concatenated in claim order, each part byte-for-byte a full kBeginP payload;
+  `kRowsPB`=19 is `RowsPBResp{n_parts,reserved0}` + K parts, each byte-for-byte a
+  full kRowsP payload.  Caps (16 parts, 64 MiB per direction) refuse BEFORE any
+  write; the helper length-checks every slice before device work; each part is
+  validated against ITS OWN claims by the existing whole-or-nothing validator.
+- Refusals: part beyond the queue cap = kErrGeometry (silent wire); a caller
+  whose claims differ from the queued front part = kErrSeq checked BEFORE the
+  flush, so no reply is burned and no row lands out of order; a new claim after
+  the batch's reply is answered = kErrBusy.
+- Engine-side finding (the reason K>1 is gated, not a win yet): a layer's reply
+  is consumed INSIDE that layer's walk (gather into single-slot m.Dm/hp_stage,
+  same-layer fallback on single-slot ext_x_), so a per-layer begin/finish walk
+  flushes a ONE-part batch.  The transport and the single-lock serving are in
+  place; giving the prefill walk the depth to run K begins ahead of the first
+  finish is follow-up and needs a GPU window.
+- Evidence (CPU-only, prod untouched): expert_helper_socket_test PASS, 288
+  checks (new section 20a-20d); build_l3.sh both trees green - CUDA guard PASS
+  (helper fatbin sm_86) + ctest -R helper 5/5 (socket 7.03 s), HIP guard PASS
+  (gfx906 HIP: libamdhip64 + .hip_fatbin + STRATA_HIP_GFX906) + ctest -R helper
+  1/1 (that tree's frozen conf has STRATA_BUILD_TESTS=OFF).  Log
+  `build-mixed-gpu/claim-batch-build.log`.  Goldens, launcher and /mnt/srcds/Strata
+  untouched; wire documented in docs/work/MIXED_P2_REFERENCE.md.
