@@ -9,6 +9,7 @@
 #include <atomic>
 #include <cerrno>
 #include <climits>
+#include <cstdio>
 #include <cstring>
 #include <ctime>
 #include <fcntl.h>
@@ -72,7 +73,29 @@ int poll_once(int fd, short events, int64_t deadline_ms) {
 uint32_t rd32(const uint8_t* p) { uint32_t v = 0; std::memcpy(&v, p, 4); return v; }
 void wr32(uint8_t* p, uint32_t v) { std::memcpy(p, &v, 4); }
 
+// helper-ipc-diet (2026-11, the ab9 measurement): AF_UNIX's default socket buffers (net.core
+// rmem/wmem_default, ~200 KB) fit a fraction of ONE 24 MB rows reply, so a kRowsP frame ping-pongs
+// thousands of EAGAIN/poll round-trips between the writer's full buffer and the reader's drain.
+// Ask for 8 MiB per side at socket creation on BOTH sides of the channel: the kernel clamps at
+// net.core.rmem_max/wmem_max and stores 2*opt, so the achieved pair is read back at hello
+// (log_socket_buffers) - which is what the channel runs with, and all that changes is the clamp.
+// A listen-side set is inherited by every accepted channel (Linux clones sk_sndbuf/sk_rcvbuf at
+// accept), so the helper's bound socket covers all its connections.
+void set_socket_buffers(int fd) {
+    const int want = 8 << 20;
+    ::setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &want, sizeof(want));
+    ::setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &want, sizeof(want));
+}
+
 }  // namespace
+
+void log_socket_buffers(int fd, const char* side) {
+    int snd = 0, rcv = 0;
+    socklen_t len = sizeof(int);
+    ::getsockopt(fd, SOL_SOCKET, SO_SNDBUF, &snd, &len);
+    ::getsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcv, &len);
+    std::fprintf(stderr, "expert-helper: %s socket buffers achieved snd=%d rcv=%d\n", side, snd, rcv);
+}
 
 int64_t deadline_after(int64_t ms) { return now_ms() + (ms > 0 ? ms : 0); }
 
@@ -197,6 +220,7 @@ int Socket::connect(const std::string& path, int64_t connect_timeout_ms, bool ch
     std::strncpy(addr.sun_path, path.c_str(), sizeof(addr.sun_path) - 1);
     int fd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (fd < 0) return kErrConnect;
+    set_socket_buffers(fd);   // the 8 MiB ask (see above): this side owns the request
     const long fl = ::fcntl(fd, F_GETFL, 0);
     if (fl < 0 || ::fcntl(fd, F_SETFL, fl | O_NONBLOCK) != 0) { ::close(fd); return kErrConnect; }
     int rc = ::connect(fd, (sockaddr*) &addr, sizeof(addr));
@@ -227,6 +251,7 @@ int Socket::listen_bind(const std::string& path) {
     std::strncpy(addr.sun_path, path.c_str(), sizeof(addr.sun_path) - 1);
     int fd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (fd < 0) return kErrConnect;
+    set_socket_buffers(fd);   // accepted channels inherit this buffer pair at accept (Linux clones it)
     const mode_t old = ::umask(0777);
     const int rc = ::bind(fd, (sockaddr*) &addr, sizeof(addr));
     ::umask(old);

@@ -438,6 +438,11 @@ private:
     uint32_t seq_out_ = 0;
 };
 
+// helper-ipc-diet: print the channel's ACHIEVED SO_SNDBUF/SO_RCVBUF once per hello (the 8 MiB ask
+// at socket creation is clamped by net.core.rmem_max/wmem_max; this reports the pair the channel
+// actually runs with).  Observability only - the hello log lines are stderr, not the wire.
+void log_socket_buffers(int fd, const char* side);
+
 // Header codec (host order <-> wire bytes; little-endian on the wire).
 void encode_header(const Header& h, uint8_t* out);
 int decode_header(const uint8_t* in, Header& out);   // kOk / kErrProtocol / kErrShort

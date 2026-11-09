@@ -1246,6 +1246,7 @@ accept_peer:
                     g_reserve = req.reserve_mib;
                     g_slots = req.slots;
                     hello_seen = true;   // from here on the connection is the engine's, one-shot again
+                    log_socket_buffers(out.fd(), "helper");   // helper-ipc-diet: the achieved buffer pair
                 }
             }
             if (rc != kOk) { rc_loop = rc; break; }

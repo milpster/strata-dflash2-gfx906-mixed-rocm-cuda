@@ -356,6 +356,7 @@ int ExpertHelperClient::hello(int64_t n_layers, int64_t n_expert, int64_t n_embd
     q8k_ = (body.size() >= sizeof(expert_helper::HelloAck)) &&
            (ack.features & expert_helper::kFeatureQ8K) != 0;   // the Q8_K activation wire
     seq_ = head.seq;
+    log_socket_buffers(fd_, "engine");   // helper-ipc-diet: the achieved buffer pair, once per hello
     s.release();
     return expert_helper::kOk;
 }
