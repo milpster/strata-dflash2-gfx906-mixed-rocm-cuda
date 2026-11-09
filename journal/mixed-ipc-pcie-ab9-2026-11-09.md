@@ -84,9 +84,33 @@ a perf cost. TG512 all on par (29.6–33.3 s vs C-shape legs).
   `bench/ab-v0210/rpcprof/logs/ab9-20261109-130510-*`
 - SPECs: `SPEC-ab9.md`, `SPEC-stage2.md`; plan: `~/.opencode/plan/mixed-ipc-pcie-prefill-8k80k.md`
 
+## Wire-map corrections (2026-11-09, post-window recon)
+
+- **"96 claims" was a misread**: claims are per (chunk × layer); 96 = 3 legs × 32 MoE
+  layers × 1 chunk (both harness prompts fit one 16 384-tok chunk). A 262k-token prompt
+  would be 16 chunks → 512 claims. Deep (T ≤ 2048) vs shallow row caps flip at
+  `prefill.cpp:5088-5093`.
+- **Arm C's "claims 0" in the table is a profiling blind spot**, not helper-off: the PIPE
+  path (`prefill.cpp:6434` "sync path only") never emits engine rpcprofile claim lines.
+- **The IPC overhead is helper-side serialization, not bandwidth**: engine reply_us
+  1.734 s/prompt vs helper lock 1.567 s, queue 0; visible wire transfer ≈ 166 ms/prompt
+  at ~4.4 GB/s. Cost sits in the helper's scalar finite scan (2330×2560 ≈ 6 M float
+  checks/claim), per-claim memsets, 24 MB payload zero-fill+copy per claim, the engine's
+  O(rows×claims) claim lookup (5.4 M comparisons/claim), and per-4-KiB poll loops
+  (no SO_SNDBUF/SO_RCVBUF anywhere).
+- **bf16 reply wire is DEAD**: reply rows are fp32 compute outputs (10 244 B/row) —
+  bf16 = parity break by construction, saves only ~83 ms of an 8.5 s prompt (~1 %), and
+  the L8 bf16 tap-wire precedent measured 5.5 % slower (`docs/work/L8_BF16_TAP_WIRE`).
+- **shm reply ring**: parity-safe but highest structural cost (epoch/stale protection,
+  channel-death semantics) for a modest copy share — deferred behind the cheap bundle.
+
 ## Next lanes
 
-1. bf16 reply wire (claim reply payload halving — attacks the measured 22 % 8k share).
+1. **Helper serialization diet** (parity-safe, no wire changes): SO_SNDBUF/SO_RCVBUF,
+   streaming fast-path past per-chunk poll, payload zero-fill elimination, sorted claim
+   lookup, SIMD finite checks (both sides), memset-only-written-rows. Target: a slice of
+   the 1.57 s helper lock + 1.73 s engine reply per 8k prompt — the only path that could
+   push the 8k helper gain (+3.0 %) over the 5 % bar.
 2. Stage-2 redo with mem-baseline fixed (arm-process discovery) + cache-cap pairing on
    fp16-compatible levers only (m1/m3 class; KV stays fp16 per user policy; m4 parity
    failure means layer-split is off the table unless parity is re-gated).
