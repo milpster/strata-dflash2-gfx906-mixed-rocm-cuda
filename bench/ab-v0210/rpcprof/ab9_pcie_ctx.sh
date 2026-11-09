@@ -138,17 +138,34 @@ log "gate5 host guard: MemAvailable $((avail_kb/1048576)) GiB (need >=12), swap 
 (( swap_used_kb < 12*1048576 )) || { echo "GATE5 FAIL swap debt"; exit 2; }
 
 # ---------- gate 1: prod pair healthy BEFORE we take it down ----------
-curl -sf -m 3 -o /dev/null "http://127.0.0.1:$AB9_PORT/health" || { echo "GATE1 FAIL health"; exit 3; }
-epids=$(pgrep -f "$AB9_ENGINE --serve" || true); hpids=$(pgrep -f "$AB9_HELPER" || true)
-[[ -n $epids && -n $hpids ]] || { echo "GATE1 FAIL engine/helper pids absent"; exit 3; }
-[[ -S $AB9_SOCKET && -S $AB9_SOCKET2 ]] || { echo "GATE1 FAIL sockets absent"; exit 3; }
-log "gate1 PASS: engine $epids helper $hpids sockets present health200"
+# Accepted states: (a) live+healthy pair, or (b) an already-down CLEAN state (no pids,
+# no sockets, port free) when the user took prod down deliberately before the window.
+PRE_DOWN=0
+if curl -sf -m 3 -o /dev/null "http://127.0.0.1:$AB9_PORT/health"; then
+  epids=$(pgrep -f "$AB9_ENGINE --serve" || true); hpids=$(pgrep -f "$AB9_HELPER" || true)
+  [[ -n $epids && -n $hpids ]] || { echo "GATE1 FAIL engine/helper pids absent"; exit 3; }
+  [[ -S $AB9_SOCKET && -S $AB9_SOCKET2 ]] || { echo "GATE1 FAIL sockets absent"; exit 3; }
+  log "gate1 PASS: engine $epids helper $hpids sockets present health200"
+else
+  epids=$(pgrep -f "$AB9_ENGINE --serve" || true); hpids=$(pgrep -f "$AB9_HELPER" || true)
+  port_held=$(ss -ltn 2>/dev/null | grep -c ":$AB9_PORT ")
+  if [[ -z $epids && -z $hpids && ! -e $AB9_SOCKET && ! -e $AB9_SOCKET2 && $port_held -eq 0 ]]; then
+    PRE_DOWN=1
+    log "gate1 PASS (prod already down clean: no pids, no sockets, port $AB9_PORT free)"
+  else
+    echo "GATE1 FAIL: health down but not a clean state (pids='$epids/$hpids' port_held=$port_held)"; exit 3
+  fi
+fi
 
 bash "$D/mem-baseline.sh" "ab9-start-$TS" > "$LOGS/ab9-memstart-$TS.log" 2>&1 || echo "mem-baseline start failed (non-fatal)"
 
 # ---------- take prod down (window begins) ----------
-log "stopping prod (pair supervisor first)"
-bash "$ROOT/stop-prod.sh"
+if (( PRE_DOWN )); then
+  log "prod already down (user-ordered): skipping stop-prod; window opens now"
+else
+  log "stopping prod (pair supervisor first)"
+  bash "$ROOT/stop-prod.sh"
+fi
 window_open=1     # from here every exit path must restore prod supervised
 for i in $(seq 1 60); do
   vram_b=$(rocm-smi --showmeminfo vram --csv 2>/dev/null | awk -F, '/^card[01]/{u+=$3} END{print u+0}')
