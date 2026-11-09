@@ -1,0 +1,21 @@
+{
+ "arm": "C",
+ "leg": "8000-2",
+ "kind": "prefill",
+ "ctx": 8000,
+ "max_tokens": 8,
+ "ts": 1794226717.586,
+ "walls": [
+  8.521
+ ],
+ "wall_s": 8.521,
+ "content_from": "reasoning",
+ "prompt_bytes": 8000,
+ "sha256": "01db7a9d154bb188430b234246589661629c627462db9ec632e33137f49bb45e",
+ "elog": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/logs/ab9-20261109-130510-C-engine.log",
+ "elog_start": 15866,
+ "elog_end": 17768,
+ "hlog": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/logs/ab9-20261109-130510-C-helper.log",
+ "hlog_start": 95971,
+ "hlog_end": 107288
+}

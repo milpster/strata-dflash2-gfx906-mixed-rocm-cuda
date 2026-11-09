@@ -1,0 +1,113 @@
+mem-baseline label=stage2-base ts=2026-11-08 17:22:08
+host=7.3.3-x64v3-xanmod1 cwd=/mnt/srcds/Strata
+main
+a6e465117 docs(readme): restructure for adapters - at-a-glance tables over prose, pooled current-build numbers, full fact re-check
+
+== meminfo ==
+               total        used        free      shared  buff/cache   available
+Mem:           63644       54483        1594         193       11137        9161
+Swap:         196607        8453      188154
+MemTotal:       65171996 kB
+MemFree:         1632536 kB
+MemAvailable:    9381212 kB
+Buffers:           52092 kB
+Cached:         10958116 kB
+SwapTotal:      201326568 kB
+SwapFree:       192670136 kB
+Dirty:             44244 kB
+AnonPages:      48276340 kB
+Mapped:          9268152 kB
+Shmem:            198164 kB
+Committed_AS:   79418248 kB
+ShmemHugePages:        0 kB
+ShmemPmdMapped:        0 kB
+NAME        TYPE SIZE USED PRIO
+/mnt/swap5  file  32G 2.7G    2
+/mnt/swap4  file  32G 2.8G    2
+/mnt/swap2  file  32G 2.7G    2
+/home/swap  file  32G   0B    1
+/home/swap3 file  32G   0B    1
+/home/swap4 file  32G   0B    1
+
+== ksm ==
+ksm.run=1
+ksm.pages_to_scan=100
+ksm.pages_sharing=141
+ksm.pages_shared=3
+ksm.general_profit=-121575232
+ksm.max_page_sharing=256
+ksmd_cpu=0.2
+
+== processes (RSS/ANON/FILE/SWAP, GiB) ==
+pid=1119294 rss=47.42G anon=39.70G file=7.72G swap=0.00G pin=0.00G ksm=n/a cmd=/mnt/srcds/Strata/v0211/build-mixed-gpu/rpcw-hip/strata --se
+Pss:=44.19G Pss_Dirty:=39.51G Pss_Anon:=39.70G Pss_File:=4.48G 
+pid=1118344 rss=6.76G anon=0.11G file=6.56G swap=0.00G pin=0.00G ksm=n/a cmd=/mnt/srcds/Strata/v0211/build-mixed-gpu/rpcw-cuda/strata-exp
+Pss:=3.52G Pss_Dirty:=0.20G Pss_Anon:=0.11G Pss_File:=3.32G 
+pid=1118827 rss=0.93G anon=0.93G file=0.01G swap=0.00G pin=0.00G ksm=n/a cmd=/mnt/srcds/Strata/build-vision/bin/strata-vision --mmproj /m
+Pss:=0.93G Pss_Dirty:=0.93G Pss_Anon:=0.93G Pss_File:=0.00G 
+pid=1118818 rss=0.25G anon=0.23G file=0.01G swap=0.00G pin=0.00G ksm=n/a cmd=/mnt/srcds/Strata/.venv/bin/python /mnt/srcds/Strata/v0211/s
+Pss:=0.24G Pss_Dirty:=0.23G Pss_Anon:=0.23G Pss_File:=0.00G 
+
+== engine memory lines (newest engine log) ==
+log=/mnt/srcds/Strata/logs/engine-swift15-f16kv-dflash-w4-q4_0-mixed.log
+expert-helper: 4324 rows on /mnt/srcds/Strata/run/prod-swift15-f16kv-mixed.sock (mirrored 4324/4600 slots, 6.61 GiB, device free at hello 7471 MiB)
+strata generate: expert-helper proxy: 4324 experts on /mnt/srcds/Strata/run/prod-swift15-f16kv-mixed.sock, 6.61 GiB (fill report)
+strata generate: --expert-helper-ram-relief: 4324 of the helper's 4324 pairs dropped from the arena (6.60 GiB of pages given back; 0 are pinned memory and stay, 0 madvise refusals, 0 out of range); th
+strata generate: --expert-helper-ram-relief: registered what stayed behind the helper's 4324 pairs (4324 dropped, 3100 range(s), 33.37 GiB)
+strata serve: the prompt path borrows 4520 CUDA0 cache slots (6.77 GiB)
+strata serve:   CUDA1 prompt path borrows 3608 of its 4407 slots (6.77 GiB)
+strata serve: 404 MiB of VRAM free with everything loaded
+strata serve: CUDA1: 504 MiB of VRAM free with everything loaded - LOW: its window graphs are captured on first use and need room too, and a full card can stall a request; add --vram-reserve-later-mib
+strata serve: WARNING: only 404 MiB of VRAM free at the start of this request (below 512 MiB): when the card is this full the driver can page GPU memory to system RAM, decode falls to a few tok/s and 
+strata verify: capturing the 5-token window (284 MiB of VRAM free)
+strata verify: capturing the 5-token window (372 MiB of VRAM free)
+strata verify: capturing the 1-token window (246 MiB of VRAM free)
+strata verify: capturing the 1-token window (350 MiB of VRAM free)
+strata serve: WARNING: only 231 MiB of VRAM free at the start of this request (below 512 MiB): when the card is this full the driver can page GPU memory to system RAM, decode falls to a few tok/s and 
+strata verify: capturing the 4-token window (231 MiB of VRAM free)
+strata verify: capturing the 4-token window (333 MiB of VRAM free)
+strata verify: capturing the 3-token window (175 MiB of VRAM free)
+strata verify: capturing the 3-token window (296 MiB of VRAM free)
+strata verify: capturing the 2-token window (175 MiB of VRAM free)
+strata verify: capturing the 2-token window (296 MiB of VRAM free)
+
+== gpu vram ==
+
+
+============================ ROCm System Management Interface ============================
+================================== Memory Usage (Bytes) ==================================
+GPU[0]		: VRAM Total Memory (B): 17163091968
+GPU[0]		: VRAM Total Used Memory (B): 17101103104
+GPU[1]		: VRAM Total Memory (B): 17163091968
+GPU[1]		: VRAM Total Used Memory (B): 16997007360
+GPU[2]		: VRAM Total Memory (B): 536870912
+GPU[2]		: VRAM Total Used Memory (B): 468373504
+==========================================================================================
+================================== End of ROCm SMI Log ===================================
+index, memory.used [MiB], memory.total [MiB], utilization.gpu [%]
+0, 7145 MiB, 8192 MiB, 4 %
+3080 free MiB: 698 MiB
+
+== fault + paging rate (vmstat 1 5) ==
+procs -----------memory---------- ---swap-- -----io---- -system-- -------cpu-------
+ r  b   swpd   free   buff  cache   si   so    bi    bo   in   cs us sy id wa st gu
+ 1  1 8656432 1601868  52452 11353488 2120 2559 23042  4468 25962   20 23  3 74  0  0  0
+ 1  1 8656432 1613588  52452 11355224    0    0 259236   232 84986 170442  9  4 83  4  0  0
+ 8  0 8656432 1595576  52452 11356500    0    0 260040     4 85255 170841  9  4 83  4  0  0
+ 1  1 8656432 1590528  52452 11357012    0    0 256352     4 84656 168983  9  4 83  4  0  0
+ 1  1 8656432 1567320  52464 11357600    0    0 260932   220 85674 171325  9  4 83  4  0  0
+pswpin 54371451
+pswpout 65613093
+pgmajfault 13887683
+
+== file cache pressure ==
+Cached:         10962924 kB
+SwapCached:      1779864 kB
+Dirty:             44272 kB
+Writeback:             0 kB
+WritebackTmp:          0 kB
+vm.524288
+
+== prod liveness proof (read-only) ==
+engine_pids=1119294 
+health={"status": "ok", "max_context": 262144, "model": "swift-1.5-iq3_xxs-f16kv", "images": true, "api_key": false, "image_gen

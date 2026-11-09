@@ -1,0 +1,22 @@
+{
+ "arm": "D",
+ "leg": "tg1024",
+ "kind": "tg",
+ "ctx": 2048,
+ "max_tokens": 1024,
+ "ts": 1794246044.958,
+ "walls": [
+  26.197,
+  21.662
+ ],
+ "wall_s": 47.859,
+ "content_from": "content",
+ "prompt_bytes": 2048,
+ "sha256": "5020e1c64b452472ef2c08b35d7bcec7480a3ccabad5cd24e458ea60747dd66e",
+ "elog": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/logs/ab9-20261109-183120-D-engine.log",
+ "elog_start": 52221,
+ "elog_end": 58992,
+ "hlog": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/logs/ab9-20261109-183120-D-helper.log",
+ "hlog_start": 140473,
+ "hlog_end": 1984292
+}

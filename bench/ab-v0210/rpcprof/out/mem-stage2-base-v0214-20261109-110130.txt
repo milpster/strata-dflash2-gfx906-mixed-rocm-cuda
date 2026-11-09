@@ -1,0 +1,115 @@
+mem-baseline label=stage2-base-v0214 ts=2026-11-09 11:01:30
+host=7.3.3-x64v3-xanmod1 cwd=/mnt/srcds/Strata
+ab9-window-harness
+0b5118ad4 fix(prod): pass profile env to the mixed helper
+
+== meminfo ==
+               total        used        free      shared  buff/cache   available
+Mem:           63644       53717        1823         268       11778        9927
+Swap:         196607        8481      188126
+MemTotal:       65171996 kB
+MemFree:         1867156 kB
+MemAvailable:   10165260 kB
+Buffers:           87216 kB
+Cached:         11520004 kB
+SwapTotal:      201326568 kB
+SwapFree:       192641080 kB
+Dirty:               292 kB
+AnonPages:      47130920 kB
+Mapped:          9026296 kB
+Shmem:            275452 kB
+Committed_AS:   81077812 kB
+ShmemHugePages:        0 kB
+ShmemPmdMapped:        0 kB
+NAME        TYPE SIZE USED PRIO
+/mnt/swap5  file  32G 2.7G    2
+/mnt/swap4  file  32G 2.8G    2
+/mnt/swap2  file  32G 2.7G    2
+/home/swap  file  32G   0B    1
+/home/swap3 file  32G   0B    1
+/home/swap4 file  32G   0B    1
+
+== ksm ==
+ksm.run=1
+ksm.pages_to_scan=100
+ksm.pages_sharing=0
+ksm.pages_shared=0
+ksm.general_profit=-636111680
+ksm.max_page_sharing=256
+ksmd_cpu=0.1
+
+== processes (RSS/ANON/FILE/SWAP, GiB) ==
+pid=916551 rss=47.02G anon=39.57G file=7.44G swap=0.02G pin=0.00G ksm=n/a cmd=/mnt/srcds/Strata/v0214/build-mixed-gpu/rpcw-hip/strata --se
+Pss:=46.26G Pss_Dirty:=39.38G Pss_Anon:=39.57G Pss_File:=6.69G 
+pid=421964 rss=0.09G anon=0.00G file=0.09G swap=0.02G pin=0.00G ksm=n/a cmd=/mnt/srcds/Strata/v0210/build-mixed-gpu/rpcw-cuda/strata-exp
+Pss:=0.07G Pss_Dirty:=0.00G Pss_Anon:=0.00G Pss_File:=0.07G 
+pid=915143 rss=1.73G anon=0.08G file=1.59G swap=0.02G pin=0.00G ksm=n/a cmd=/mnt/srcds/Strata/v0214/build-mixed-gpu/rpcw-cuda/strata-exp
+Pss:=0.96G Pss_Dirty:=0.15G Pss_Anon:=0.08G Pss_File:=0.82G 
+pid=916084 rss=0.04G anon=0.03G file=0.00G swap=0.89G pin=0.00G ksm=n/a cmd=/mnt/srcds/Strata/build-vision/bin/strata-vision --mmproj /m
+Pss:=0.03G Pss_Dirty:=0.03G Pss_Anon:=0.03G Pss_File:=0.00G 
+pid=915617 rss=0.16G anon=0.14G file=0.01G swap=0.08G pin=0.00G ksm=n/a cmd=/mnt/srcds/Strata/.venv/bin/python /mnt/srcds/Strata/v0214/s
+Pss:=0.14G Pss_Dirty:=0.14G Pss_Anon:=0.14G Pss_File:=0.00G 
+
+== engine memory lines (newest engine log) ==
+log=/mnt/srcds/Strata/logs/engine-swift15-f16kv-dflash-w4-q4_0-mixed.log
+expert-helper: 4187 rows on /mnt/srcds/Strata/run/prod-swift15-f16kv-mixed.sock (mirrored 4187/4600 slots, 6.39 GiB, device free at hello 7239 MiB)
+strata generate: expert-helper proxy: 4187 experts on /mnt/srcds/Strata/run/prod-swift15-f16kv-mixed.sock, 6.39 GiB (fill report)
+strata generate: --expert-helper-ram-relief: 4187 of the helper's 4187 pairs dropped from the arena (6.37 GiB of pages given back; 0 are pinned memory and stay, 0 madvise refusals, 0 out of range); th
+strata generate: --expert-helper-ram-relief: registered what stayed behind the helper's 4187 pairs (4187 dropped, 3040 range(s), 33.59 GiB)
+strata serve: the prompt path borrows 4520 CUDA0 cache slots (6.77 GiB)
+strata serve:   CUDA1 prompt path borrows 3608 of its 4407 slots (6.77 GiB)
+strata serve: 404 MiB of VRAM free with everything loaded
+strata serve: CUDA1: 504 MiB of VRAM free with everything loaded - LOW: its window graphs are captured on first use and need room too, and a full card can stall a request; add --vram-reserve-later-mib
+strata serve: WARNING: only 404 MiB of VRAM free at the start of this request (below 512 MiB): when the card is this full the driver can page GPU memory to system RAM, decode falls to a few tok/s and 
+strata verify: capturing the 4-token window (228 MiB of VRAM free)
+strata verify: capturing the 4-token window (316 MiB of VRAM free)
+strata verify: capturing the 1-token window (190 MiB of VRAM free)
+strata verify: capturing the 1-token window (300 MiB of VRAM free)
+strata verify: capturing the 5-token window (175 MiB of VRAM free)
+strata verify: capturing the 5-token window (298 MiB of VRAM free)
+strata verify: capturing the 2-token window (175 MiB of VRAM free)
+strata verify: capturing the 2-token window (298 MiB of VRAM free)
+strata verify: capturing the 3-token window (175 MiB of VRAM free)
+strata verify: capturing the 3-token window (298 MiB of VRAM free)
+strata serve: WARNING: only 175 MiB of VRAM free at the start of this request (below 512 MiB): when the card is this full the driver can page GPU memory to system RAM, decode falls to a few tok/s and 
+
+== gpu vram ==
+
+
+============================ ROCm System Management Interface ============================
+================================== Memory Usage (Bytes) ==================================
+GPU[0]		: VRAM Total Memory (B): 17163091968
+GPU[0]		: VRAM Total Used Memory (B): 17100328960
+GPU[1]		: VRAM Total Memory (B): 17163091968
+GPU[1]		: VRAM Total Used Memory (B): 16970997760
+GPU[2]		: VRAM Total Memory (B): 536870912
+GPU[2]		: VRAM Total Used Memory (B): 486494208
+==========================================================================================
+================================== End of ROCm SMI Log ===================================
+index, memory.used [MiB], memory.total [MiB], utilization.gpu [%]
+0, 7145 MiB, 8192 MiB, 5 %
+3080 free MiB: 698 MiB
+
+== fault + paging rate (vmstat 1 5) ==
+procs -----------memory---------- ---swap-- -----io---- -system-- -------cpu-------
+ r  b   swpd   free   buff  cache   si   so    bi    bo   in   cs us sy id wa st gu
+ 2  0 8685452 1910368  88736 11984608 1594 2046 35655 10291 28023   23 20  3 76  1  0  0
+ 1  0 8685452 1862304  88736 11986988    0    0   936     4 25857 46138  8  4 89  0  0  0
+ 1  0 8685452 1862448  88736 11987732    0    0  1428     4 21830 40918  5  2 93  0  0  0
+ 0  0 8685452 1860412  88748 11989856    0    0  1628   228 27366 48518  8  3 88  0  0  0
+ 0  0 8685452 1842844  88784 11991356    0    0  1508   264 24049 45085  7  2 91  0  0  0
+pswpin 66224116
+pswpout 85001745
+pgmajfault 16477626
+
+== file cache pressure ==
+Cached:         11537276 kB
+SwapCached:       934276 kB
+Dirty:               588 kB
+Writeback:             4 kB
+WritebackTmp:          0 kB
+vm.524288
+
+== prod liveness proof (read-only) ==
+engine_pids=916551 
+health={"status": "ok", "max_context": 262144, "model": "swift-1.5-iq3_xxs-f16kv", "images": true, "api_key": false, "image_gen

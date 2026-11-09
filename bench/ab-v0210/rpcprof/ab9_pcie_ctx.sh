@@ -316,14 +316,18 @@ arm_legs(){   # $1=arm; stage1 legs with sidecars
       # the 512-B warm never triggers tier=p (that aborted arm B on the first window run).
       if [[ $ctx == 8000 && $seq == 1 ]]; then
         he=$(stat -c %s "$HLOG")
-        if [[ $arm != A ]]; then
+        # gate2 branches on what the ARM'S CONFIG asked for, not the arm name (E is a
+        # helper-off arm that is not A): helper-on arms must show tier=p prompt claims,
+        # helper-off arms only the window-tier profile lines.
+        hp=$($PY -c 'import json,sys;print(json.load(open(sys.argv[1])).get("env",{}).get("STRATA_PREFILL_HELPER","0"))' "$RUN/$arm.json")
+        if [[ $hp == 1 ]]; then
           n2=$(dd if="$HLOG" bs=1 skip="$hb" count=$((he-hb)) 2>/dev/null | grep -c "rpcprofile: serve tier=p")
           (( n2 > 0 )) || { echo "GATE6 FAIL: no helper serve tier=p lines after the first 8k leg (arm $arm)"; return 6; }
           log "arm $arm gate2 PASS: $n2 serve tier=p lines (warm + first 8k)"
         else
           n=$(dd if="$HLOG" bs=1 skip="$hb" count=$((he-hb)) 2>/dev/null | grep -c 'rpcprofile: serve tier=')
           (( n > 0 )) || { echo "GATE6 FAIL: no helper profile lines at all (arm $arm)"; return 6; }
-          log "arm $arm gate2 PASS (helper off arm): $n serve lines (warm + first 8k)"
+          log "arm $arm gate2 PASS (helper off): $n serve lines (warm + first 8k)"
         fi
       fi
     done

@@ -1,0 +1,22 @@
+{
+ "arm": "m3",
+ "leg": "tg512",
+ "kind": "tg",
+ "ctx": 2048,
+ "max_tokens": 512,
+ "ts": 1794227272.502,
+ "walls": [
+  18.245,
+  14.831
+ ],
+ "wall_s": 33.076,
+ "content_from": "content",
+ "prompt_bytes": 2048,
+ "sha256": "bb5ea7cd326b6273c286b1173ca613e5522a4af50355903c2b2580a0f3c4cb32",
+ "elog": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/logs/ab9-20261109-130510-m3-engine.log",
+ "elog_start": 22803,
+ "elog_end": 41150,
+ "hlog": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/logs/ab9-20261109-130510-m3-helper.log",
+ "hlog_start": 23827,
+ "hlog_end": 930691
+}

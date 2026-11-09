@@ -200,7 +200,8 @@ def gates(data: dict) -> int:
         if len(set(vals.values())) > 1:
             print(f"GATE3 FAIL ctx={ctx}: helper-on arms disagree {vals}")
             mismatch = True
-        if all(v == 0 for v in vals.values()):
+        # an all-helper-off run (A E) legitimately has no helper-on arm: skip, not fail
+        if vals and all(v == 0 for v in vals.values()):
             print(f"GATE3 FAIL ctx={ctx}: no helper-on arm shows participation")
             mismatch = True
     a_lines = sum(v for (arm, _), v in counts.items() if arm == "A")
