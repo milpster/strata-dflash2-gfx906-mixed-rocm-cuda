@@ -2202,6 +2202,83 @@ int main(int argc, char** argv) {
               "the frame on the wire is kBeginP - the new frame type never reaches an unadvertising peer");
         ::unsetenv("STRATA_CLAIM_BATCH");
     }
+    {
+        // (20e) ONE part queued IS one claim: the flush sends today's kBeginP and reads today's
+        // kRowsP - no BeginPBReq, no RowsPBResp, no per-part split.  The prefill walk consumes a
+        // layer's reply INSIDE that layer, so at K>1 every flush of that walk is a one-part batch
+        // (measured 2026-11-09: 256 of the 256 'serve tier=p' lines of the 8k window carried
+        // parts=1), which is why the GPU run lost ~6% of the 8k prefill to the wrapper.  The pin
+        // here is byte equality with the batch=1 frame, so an inert K>1 costs exactly batch=1.
+        ::setenv("STRATA_CLAIM_BATCH", "1", 1);
+        ExpertHelperClient c1;
+        check_status(handshake_v3(c1, true, kFeaturePromptBatch), kOk, "batch=1 control handshake for 20e");
+        ExpertHelperPromptPlan plan;
+        for (int i = 0; i < 4; ++i) { plan.pair_token.push_back(i); plan.pair_expert.push_back(7 + i); }
+        for (int i = 0; i < 4; ++i) plan.tokens.push_back(i);
+        fill_prompt_buffer(c1, 4);
+        std::vector<int32_t> primary((size_t) kLayers * kExperts, -1);
+        check_status(begin_prompt_drained(c1, plan, primary.data(), 2000), kOk, "batch=1 sends its claim");
+        check(g_req_rc.load() == kOk && g_req_head.type == kBeginP, "the control frame is a kBeginP");
+        const std::vector<uint8_t> control_bytes = g_req_body;   // today's bytes, compared against below
+        c1.close();
+        ::unsetenv("STRATA_CLAIM_BATCH");
+
+        ::setenv("STRATA_CLAIM_BATCH", "8", 1);
+        ExpertHelperClient c;
+        check_status(handshake_v3(c, true, kFeaturePromptBatch), kOk, "handshake for the one-part flush");
+        check(c.claim_batch() == 8, "the env reaches the client");
+        fill_prompt_buffer(c, 4);
+        const std::vector<int32_t> claims4 = {0, 1, 2, 3};
+        std::vector<float> out((size_t) 4 * kH, -1.0f);
+        int32_t rows = -1;
+        std::atomic<int> peer_rc{kErrInternal};
+        int client_rc = kErrInternal;
+        uint32_t frame_type = 0;
+        std::vector<uint8_t> frame_body;
+        // The peer reads the ONE frame the flush sends (pinning its type and bytes), answers a plain
+        // kRowsP, and the client applies it - concurrently, as two processes do.
+        auto flush = [&]() {
+            peer_rc = kErrInternal;
+            client_rc = kErrInternal;
+            frame_type = 0;
+            frame_body.clear();
+            std::thread srv([&] {
+                Socket s;
+                s.adopt(g_server_fd);
+                Header head;
+                RxBuffer rx;
+                PayloadView pv;
+                const int rc = s.read_frame(head, rx, pv, deadline_after(20000));
+                if (rc != kOk) { peer_rc = rc; s.release(); return; }
+                frame_type = head.type;
+                frame_body.assign(pv.begin(), pv.end());
+                const auto payload = rowsp_payload(claims4, row_val);
+                peer_rc = s.write_reply(kRowsP, head.req_id, head.seq, payload.data(), payload.size(),
+                                        deadline_after(20000));
+                s.release();
+            });
+            client_rc = c.finish_prompt(out.data(), kH, claims4, 8000, rows);
+            srv.join();
+        };
+        check_status(c.begin_prompt(kLayer, plan, primary.data(), 2000), kOk, "the claim is queued");
+        check(nothing_on_wire(200), "the queued claim wrote nothing");
+        flush();
+        check_status(peer_rc.load(), kOk, "the peer read the flush and answered a plain kRowsP");
+        check_status(client_rc, kOk, "the client applied the flush's rows in ONE exchange");
+        check(frame_type == kBeginP, "a ONE-part flush sends kBeginP - no kBeginPB wrapper");
+        check(frame_body == control_bytes, "and its frame equals batch=1's frame, byte for byte");
+        check(rows == 4, "the four rows landed");
+        // The walk's NEXT claim flushes alone too: at K=8 nothing accumulates on the queue.
+        std::fill(out.begin(), out.end(), -1.0f);
+        check_status(c.begin_prompt(kLayer, plan, primary.data(), 2000), kOk, "the next claim is queued");
+        flush();
+        check(frame_type == kBeginP && peer_rc.load() == kOk,
+              "the next flush is a kBeginP as well (a one-part flush never wraps)");
+        check_status(client_rc, kOk, "and its rows apply the same way");
+        check(frame_body == control_bytes, "the second flush's frame equals batch=1's too");
+        check(c.open(), "the channel stays open - a one-part flush is an ordinary exchange");
+        ::unsetenv("STRATA_CLAIM_BATCH");
+    }
 
     std::printf("expert_helper_socket_test: %s\n", failures == 0 ? "PASS" : "FAIL");
     return failures == 0 ? 0 : 1;

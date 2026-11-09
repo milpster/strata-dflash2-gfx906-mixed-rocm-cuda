@@ -189,10 +189,12 @@ public:
 
     /// The CLAIM BATCH (default OFF, the engine's STRATA_CLAIM_BATCH): when `claim_batch_ > 1` AND the
     /// peer advertised kFeaturePromptBatch, `begin_prompt` builds the part and QUEUES it (nothing is
-    /// written), and the first `finish_prompt` of the batch flushes the K queued parts as ONE kBeginPB
-    /// and reads its ONE kRowsPB; the batch's parts are then answered in claim order, each part
-    /// validated against its OWN claims by the same validator a single kRowsP runs.  With the env
-    /// unset (K = 1) begin_prompt/finish_prompt are exactly today's code path and today's bytes.
+    /// written).  Two parts or more queued: the first `finish_prompt` flushes them as ONE kBeginPB and
+    /// reads its ONE kRowsPB, and the parts are then answered in claim order, each validated against
+    /// its OWN claims by the same validator a single kRowsP runs.  EXACTLY ONE part queued (a caller
+    /// that finishes before its next begin - the prefill walk's shape): that flush is a plain kBeginP
+    /// and a plain kRowsP, so an inert pipeline costs exactly batch=1.  With the env unset (K = 1)
+    /// begin_prompt/finish_prompt are exactly today's code path and today's bytes.
     /// The queue's caps are hard and refused BEFORE any write: more than kMaxClaimBatch parts, a
     /// request over kMaxBatchPayload, more reply rows than kMaxBatchPayload covers.  The caller's
     /// per-claim `claims` must match the queued part's claims (the batch's order is the claim order);
@@ -316,20 +318,29 @@ private:
     bool prompt_batch_ = false;                     // the peer advertised kFeaturePromptBatch
     int64_t claim_batch_ = 1;                       // STRATA_CLAIM_BATCH, clamped: 1 = today's wire
     /// One queued prompt-tier claim (the batch's part): the full kBeginP payload bytes the client
-    /// built, the engine's claims for it, and - once the batch's kRowsPB is in hand - the part's own
-    /// kRowsP payload bytes, validated by the same validator a standalone reply runs through.
+    /// built, the engine's claims for it, the begin's own write deadline (the one-part flush sends
+    /// these bytes as a plain kBeginP and keeps that deadline), and - once a multi-part batch's
+    /// kRowsPB is in hand - the part's own kRowsP payload bytes, validated by the same validator a
+    /// standalone reply runs through.
     struct PromptPart {
         std::vector<uint8_t> request;
         std::vector<int32_t> claims;
         std::vector<uint8_t> reply;
+        int64_t deadline_ms = 0;
     };
     std::vector<PromptPart> prompt_parts_;          // queued claims, then the answered batch in order
     int64_t batch_rows_ = 0;                        // the queued batch's total claimed rows (reply cap)
     bool batch_answered_ = false;                   // the queue's kRowsPB is read; staged parts remain
-    /// The first finish_prompt of a queued batch: flush (ONE kBeginPB), read its ONE kRowsPB, split
-    /// it per part, then answer the front part.  Runs under io_mtx_ (the caller holds it).
+    /// The first finish_prompt of a MULTI-part queued batch: flush ONE kBeginPB, read its ONE kRowsPB,
+    /// split it per part, then answer the front part.  Runs under io_mtx_ (the caller holds it).  A
+    /// queue of EXACTLY ONE part never reaches here: finish_prompt sends it as a plain kBeginP and
+    /// reads a plain kRowsP, so an inert pipeline costs exactly batch=1.
     int finish_prompt_batch(float* out, int64_t n_embd, const std::vector<int32_t>& claims,
                             int64_t timeout_ms, int32_t& rows);
+    /// The single-claim WRITE both transports share: `begin_prompt` sends the payload it just built,
+    /// and a one-part flush sends the staged bytes as the same frame.  The caller holds io_mtx_ (the
+    /// protocol's one-outstanding-request rule spans the write and the reply's read).
+    int write_beginp(const std::vector<uint8_t>& payload, int64_t rows, int64_t deadline_ms);
     /// The prompt tier's request body (BeginPReq + pairs + primary bitmap + the image quantized from
     /// the tier's own rows) with every cap begin_prompt enforces.  One builder for both transports: a
     /// single claim writes these bytes as kBeginP, a batch queues them as one kBeginPB part, so a

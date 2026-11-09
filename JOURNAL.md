@@ -1432,3 +1432,34 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
   1/1 (that tree's frozen conf has STRATA_BUILD_TESTS=OFF).  Log
   `build-mixed-gpu/claim-batch-build.log`.  Goldens, launcher and /mnt/srcds/Strata
   untouched; wire documented in docs/work/MIXED_P2_REFERENCE.md.
+
+## 2026-11-09 — Claim batch after the GPU windows: one-part flush = batch=1; the lever is structural
+
+- Operator ran the two GPU windows on prod (arms of ab9-20261109-215940/220431-D):
+  STRATA_CLAIM_BATCH=1 parity exact (greedy sha 01db7a9d… every leg) and perf
+  identical to the pre-batching build; STRATA_CLAIM_BATCH=8 parity exact on real
+  hardware (kBeginPB/kRowsPB proven end-to-end) but 8k prefill ~6% SLOWER
+  (8.60 vs 8.11 s) - all 256 exchanges flushed as parts=1, so K>1 bought only
+  wrapper cost.
+- VERIFIED CLAIM STRUCTURE (code + the D helper logs): exactly ONE prompt claim
+  per MoE layer - the layer's whole pair list in one dense plan (begin
+  prefill.cpp:5377 / M6 lane :5317, finish :6450, single-slot hp_rows/hp_claims/
+  hp_stage).  256 'serve tier=p' lines = 32 layers x 8 walks, layers strictly
+  ascending per walk, 490-1245 rows per line = the layer's full row set; the
+  batch=8 arm logged parts=1 on 256/256 lines.  Layer l+1's routing reads layer
+  l's MoE output, so cross-layer begin-ahead is not definable, and within a
+  layer there is exactly one claim.  => TASK B (within-layer coalescing) has
+  nothing to coalesce: the lever is dead in this pipeline, not unimplemented.
+  Engine-side change: the claim-site comment now records the structure and the
+  evidence; no pipeline change (a forced split of one layer's rows would add
+  bytes and lock round-trips, not remove them).
+- TASK A (the perf fix): a queue of exactly ONE part flushes as a plain
+  kBeginP/kRowsP exchange (write_beginp shared with begin_prompt; the part
+  carries its begin deadline; the reply goes through the single-claim read and
+  validator; the claims-order refusal runs before the flush).  begin_outstanding_/
+  req_id_/seq_/prompt_requests_/prompt_rows_returned_ bookkeeping identical.
+  K>=2 keeps multi-part batching for callers whose shape supplies it.
+- Test: socket section 20e pins the one-part flush's frame TYPE and its byte
+  equality with a batch=1 frame captured in the same run, twice (the walk's next
+  claim flushes alone too), and that the channel stays open.
+  expert_helper_socket_test PASS, 305 checks.

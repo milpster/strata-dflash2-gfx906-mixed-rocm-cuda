@@ -757,6 +757,7 @@ int ExpertHelperClient::begin_prompt(int32_t layer, const ExpertHelperPromptPlan
             return kErrGeometry;                                  // a reply no single frame can carry
         PromptPart part;
         part.request = std::move(payload);
+        part.deadline_ms = deadline_ms;   // the one-part flush sends these bytes as kBeginP, with it
         part.claims.resize((size_t) rows);
         for (int64_t i = 0; i < rows; ++i) part.claims[(size_t) i] = (int32_t) i;   // the dense pair list
         prompt_parts_.push_back(std::move(part));
@@ -764,13 +765,22 @@ int ExpertHelperClient::begin_prompt(int32_t layer, const ExpertHelperPromptPlan
         return kOk;
     }
 
-    expert_helper::Socket s;
-    s.adopt(fd_);
-    const auto t0 = std::chrono::steady_clock::now();
     // M7 (sect12a, BUG E): see begin/finish - the prompt tier's pair is the ONE outstanding
     // request across the layer's compute, under io_mtx_, and the drafter lane's gate (the FIX A
     // tap callback on the successor stage's thread) waits for exactly this flag.
     std::lock_guard<std::mutex> io_lk(io_mtx_);
+    return write_beginp(payload, rows, deadline_ms);
+}
+
+// The single-claim write, shared by the two transports (the caller holds io_mtx_): a standalone
+// begin_prompt sends the payload it built, and a one-part batch flush sends the staged bytes.
+// Same frame type, same req_id_/seq_ bookkeeping, same counters, so a claim that took the batch's
+// queue and flushed alone is byte-for-byte and counter-for-counter the claim batch=1 sends.
+int ExpertHelperClient::write_beginp(const std::vector<uint8_t>& payload, int64_t rows, int64_t deadline_ms) {
+    using namespace expert_helper;
+    expert_helper::Socket s;
+    s.adopt(fd_);
+    const auto t0 = std::chrono::steady_clock::now();
     const int rc = s.write_frame(kBeginP, ++req_id_, payload.data(), payload.size(),
                                  rel(deadline_ms, kDeadlineDefaultMs));
     ms_begin_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
@@ -793,7 +803,29 @@ int ExpertHelperClient::finish_prompt(float* out, int64_t n_embd, const std::vec
     std::lock_guard<std::mutex> io_lk(io_mtx_);
     // The claim batch (default OFF, K = 1 never queues): the queued parts answer in claim order, the
     // first call flushing the batch and the rest reading their staged parts.
-    if (!prompt_parts_.empty()) return finish_prompt_batch(out, n_embd, claims, timeout_ms, rows);
+    if (!prompt_parts_.empty()) {
+        // Two parts queued, or a batch whose reply is already in hand: the multi-part transport.
+        if (prompt_parts_.size() > 1 || batch_answered_)
+            return finish_prompt_batch(out, n_embd, claims, timeout_ms, rows);
+        // A queue of EXACTLY ONE part IS one claim: send the staged bytes as today's kBeginP and read
+        // today's kRowsP.  An inert pipeline pays exactly batch=1 - no BeginPBReq, no RowsPBResp, no
+        // per-part split.  (2026-11-09 GPU measurement: at STRATA_CLAIM_BATCH=8 every one of the 256
+        // exchanges of the 8k window flushed as a one-part batch - the prefill walk consumes a layer's
+        // reply inside that layer - and the wrapper alone cost ~6% of the prefill.)
+        if (prompt_parts_.front().claims != claims) {   // the batch's order rule, same as K>1
+            std::fprintf(stderr, "expert-helper: the prompt tier answers a claim in claim order; the "
+                                 "caller's %zu claims do not match the queued part's %zu; closing the "
+                                 "channel before it is sent\n",
+                         claims.size(), prompt_parts_.front().claims.size());
+            close();
+            return expert_helper::kErrSeq;
+        }
+        const PromptPart part = std::move(prompt_parts_.front());
+        prompt_parts_.clear();
+        batch_rows_ = 0;
+        const int rc_part = write_beginp(part.request, (int64_t) part.claims.size(), part.deadline_ms);
+        if (rc_part != expert_helper::kOk) return rc_part;
+    }
     if (!begin_outstanding_) return expert_helper::kErrSeq;   // a reply with no outstanding request
     expert_helper::Socket s;
     s.adopt(fd_);
@@ -849,7 +881,9 @@ int ExpertHelperClient::finish_prompt(float* out, int64_t n_embd, const std::vec
     return expert_helper::kOk;
 }
 
-// ---- The claim batch's reply path (STRATA_CLAIM_BATCH > 1 AND the peer's kFeaturePromptBatch). ----
+// ---- The claim batch's MULTI-part reply path (STRATA_CLAIM_BATCH > 1 AND the peer's
+// kFeaturePromptBatch).  A queue of exactly ONE part never reaches here: finish_prompt sends it as a
+// plain kBeginP and reads a plain kRowsP. ----
 //
 // io_mtx_ is held by finish_prompt for the whole call, so the flush's write, the reply's read and the
 // pairing test are ONE transaction of the protocol's ONE-outstanding-request rule - identical to what

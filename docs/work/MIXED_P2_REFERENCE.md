@@ -438,6 +438,17 @@ Wire (`include/strata/core/expert_helper_protocol.hpp`):
   `kBeginP`'s own byte contract and length-checks every part against the frame's
   exact total before any device work.
 
+**A queue of exactly ONE part is sent as a plain `kBeginP`/`kRowsP` exchange**:
+no `BeginPBReq`, no `RowsPBResp`, no per-part split. The flush sends the staged
+bytes with the same frame type, the same `req_id_`/`seq_` bookkeeping and the
+same counters a batch=1 claim uses, and the reply is read and validated by the
+same single-claim path. Section 20e pins the frame type and byte equality with a
+batch=1 frame captured in the same run. This matters because of the claim
+structure measured in the ab9-D windows (below): at K>1 every flush of the
+prefill walk is one part, and on the GPU the wrapper alone cost ~6% of an 8k
+prefill (8.60 s vs 8.11 s at `STRATA_CLAIM_BATCH=8`, parity exact) — so an inert
+pipeline must pay exactly batch=1, which is what the one-part flush guarantees.
+
 The batch is transport-only: the same rows are claimed, the same rows return, and
 the parts are applied in claim order — the helper runs `serve_prompt_core` per
 part, which is the parse, caps, launch and reply layout a standalone `kBeginP`
@@ -448,24 +459,37 @@ same-layer CPU fallback. A caller whose claims do not match the queued front par
 is refused `kErrSeq` **before the flush** (nothing on the wire, channel closed).
 `kMaxRowsPerLayer`-scale batching semantics are unchanged: nothing reorders rows.
 
-Engine-side finding (why K>1 is gated at the claim site, not the win): in the
-current prefill pipeline a layer's reply is consumed **inside that layer's walk**
-— the gather into the single-slot `m.Dm`/`hp_stage` and the same-layer fallback
-both read it, and `m.hp_rows`/`ext_x_` are single-slot per layer
-(`src/prefill/prefill.cpp`, send ~5229–5368, reply/gather ~6408–6450). A
-per-layer begin/finish walk therefore flushes a **one-part** batch: the client
-coalescing (K `begin_prompt` calls before the first `finish_prompt`) pays off
-only where a caller runs its begins ahead of its finishes. The transport and the
-helper's single-lock serving are in place; giving the pipeline that depth is
-follow-up work and needs a GPU window to prove it.
+Verified claim structure (ab9-D windows, 2026-11-09 — why K>1 is a gate and not
+a win): the prefill walk issues **exactly ONE prompt claim per MoE layer**. The
+layer's whole pair list travels in a single dense plan — one begin
+(`src/prefill/prefill.cpp:5377`, or the M6 lane worker at `:5317`) and one finish
+(`:6450`), with single-slot `m.hp_rows`/`hp_claims`/`hp_stage` per layer. The
+helper's own profile lines confirm it: 256 `serve tier=p` lines = 32 MoE layers ×
+8 walks, the layers strictly ascending inside a walk, each line one claim of
+490–1245 rows (that layer's full row set), and at `STRATA_CLAIM_BATCH=8` all 256
+lines carried `parts=1`.
 
-Host tests: `tests/core/expert_helper_socket_test.cpp` section (20a–20d) pins
+So coalescing is unavailable to this pipeline **by structure, not by omission**:
+layer `l+1`'s routing reads layer `l`'s MoE output, so a begin for `l+1` cannot
+precede `l`'s reply (cross-layer batching is not definable here), and within a
+layer there is exactly one claim to coalesce. The transport keeps multi-part
+batching for any caller whose call shape supplies it (the socket test's K=3 round
+trip), the helper serves K parts under one lock acquisition, and the engine's
+per-layer walk pays nothing for it — at K>1 its flushes are one-part, i.e.
+today's wire.
+
+Host tests: `tests/core/expert_helper_socket_test.cpp` section (20a–20e) pins
 the batch=1 byte identity, the K=3 round trip (wire silent while queueing, one
 `kBeginPB` whose parts are byte-exact `kBeginP` payloads, one `kRowsPB`, parts
 applied in claim order at their own pair indices, one exchange for 18 rows), the
-queue cap and order refusal with a silent wire, and that the frame type never
-reaches a peer without the bit. Evidence: `build-mixed-gpu/claim-batch-build.log`
-(`tools/mixed_gpu/build_l3.sh`, both trees CPU-only): CUDA tree guard PASS
-(helper fatbin sm_86) + `ctest -R helper` 5/5 passed (socket test 7.03 s); HIP
-tree guard PASS (gfx906 HIP: `libamdhip64` + `.hip_fatbin` + `STRATA_HIP_GFX906`)
-+ `ctest -R helper` 1/1. No GPU run, no measurement, no golden conf touched.
+queue cap and order refusal with a silent wire, that the frame type never reaches
+a peer without the bit, and (20e) that a one-part flush sends `kBeginP` with
+bytes equal to a batch=1 frame captured in the same run — twice, because the
+walk's next claim flushes alone too. Evidence:
+`build-mixed-gpu/claim-batch-build.log` and
+`build-mixed-gpu/claim-batch-onepart-build.log` (`tools/mixed_gpu/build_l3.sh`,
+both trees CPU-only): CUDA tree guard PASS (helper fatbin sm_86) + `ctest -R
+helper` 5/5 passed; HIP tree guard PASS (gfx906 HIP: `libamdhip64` +
+`.hip_fatbin` + `STRATA_HIP_GFX906`) + `ctest -R helper` 1/1. The GPU windows in
+the ab9-D logs were run by the operator; this tree ran no GPU program and
+touched no golden conf.
