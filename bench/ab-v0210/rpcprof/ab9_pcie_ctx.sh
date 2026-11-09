@@ -64,13 +64,24 @@ restore_prod(){   # every exit path lands here (trap EXIT); idempotent
   nohup bash "$AB9_LAUNCHER" --recover > "$ROOT/logs/ab9-restore-$TS.log" 2>&1 &
   local rp=$!
   echo "supervisor launcher pid $rp (log logs/ab9-restore-$TS.log)"
+  # HONEST health: a bare 200 can come from an orphaned arm serve wrapper with a dead
+  # engine behind it (runs 1-4: launcher wrote REFUSING, port was held by a leftover
+  # wrapper, the poll was fooled and prod sat down silently). Require the model actually
+  # loaded AND a live engine process, and fail fast if the launcher refused.
   for i in $(seq 1 40); do
-    curl -sf -m 2 -o /dev/null "http://127.0.0.1:$AB9_PORT/health" 2>/dev/null && {
-      echo "health 200 after ~$((i*15))s"; restore_done=2; return 0; }
-    echo "$(date +%T) restore: no health yet ($((i*15))s)"
+    if grep -q REFUSING "$ROOT/logs/ab9-restore-$TS.log" 2>/dev/null; then
+      echo "RESTORE FAILED - launcher REFUSED (port busy?):"; tail -5 "$ROOT/logs/ab9-restore-$TS.log"
+      return 10
+    fi
+    if curl -sf -m 2 "http://127.0.0.1:$AB9_PORT/health" 2>/dev/null | grep -q '"loaded": *true' \
+       && pgrep -f "$AB9_ENGINE --serve" >/dev/null; then
+      echo "restore verified after ~$((i*15))s: health 200, loaded:true, engine pid $(pgrep -f "$AB9_ENGINE --serve" | head -1)"
+      restore_done=2; return 0
+    fi
+    echo "$(date +%T) restore: not ready yet ($((i*15))s)"
     sleep 15
   done
-  echo "RESTORE FAILED - no health in 10 min; tail:"; tail -15 "$ROOT/logs/ab9-restore-$TS.log"
+  echo "RESTORE FAILED - no loaded engine in 10 min; tail:"; tail -15 "$ROOT/logs/ab9-restore-$TS.log"
   return 10
 }
 on_exit(){ rc=$?; trap - EXIT; restore_prod; rc2=$?; [[ $rc2 != 0 ]] && rc=$rc2; exit $rc; }
