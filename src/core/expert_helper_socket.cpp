@@ -48,24 +48,31 @@ int validate_rows_payload(const uint8_t* payload, size_t n, int64_t n_embd,
     const size_t row_bytes = (size_t) (4 + 4 * (size_t) n_embd);
     if (n != sizeof(h) + (size_t) h.n_rows * row_bytes) return expert_helper::kErrShort;  // length must be exact
     const uint8_t* p = payload + sizeof(h);
-    std::vector<uint8_t> seen(claims.size(), 0);
+    // helper-ipc-diet: ONE sorted index of the claims, then a binary search per row.  The pre-fix
+    // code compared every returned row against every claim - 2330 rows x 2330 claims = 5.4 M
+    // comparisons per kRows reply, the engine-side twin of the wire cost the bundle attacks.  The
+    // answers are identical: an index is claimed iff the binary search finds it; the slot the seen
+    // flag occupies is the index's position in the sorted list (unique per claim), so duplicates,
+    // unclaimed indices and the missing-claim sweep reject exactly what the scan rejected.
+    std::vector<int32_t> sorted(claims.begin(), claims.end());
+    std::sort(sorted.begin(), sorted.end());
+    std::vector<uint8_t> seen(sorted.size(), 0);
     // Validate EVERYTHING first: one bad index, one duplicate, one missing claim, one non-finite
     // value, and no row is applied - the dispatch's CPU recompute owns the whole claimed set then.
     for (int32_t i = 0; i < h.n_rows; ++i) {
         int32_t idx = 0;
         std::memcpy(&idx, p + (size_t) i * row_bytes, 4);
         if (idx < 0) return expert_helper::kErrBadId;
-        size_t slot = claims.size();
-        for (size_t c = 0; c < claims.size(); ++c)
-            if (claims[c] == idx) { slot = c; break; }
-        if (slot == claims.size()) return expert_helper::kErrBadId;   // not a claimed entry
-        if (seen[slot]) return expert_helper::kErrBadId;              // a row the engine would add twice
+        const auto slot = std::lower_bound(sorted.begin(), sorted.end(), idx);
+        if (slot == sorted.end() || *slot != idx) return expert_helper::kErrBadId;   // not a claimed entry
+        const size_t s = (size_t) (slot - sorted.begin());
+        if (seen[s]) return expert_helper::kErrBadId;                                // a row the engine would add twice
         const float* row = (const float*) (p + (size_t) i * row_bytes + 4);
         for (int64_t v = 0; v < n_embd; ++v)
             if (!std::isfinite(row[v])) return expert_helper::kErrNonFinite;
-        seen[slot] = 1;
+        seen[s] = 1;
     }
-    for (size_t c = 0; c < claims.size(); ++c)
+    for (size_t c = 0; c < sorted.size(); ++c)
         if (!seen[c]) return expert_helper::kErrMissing;
     for (int32_t i = 0; i < h.n_rows; ++i) {
         int32_t idx = 0;
