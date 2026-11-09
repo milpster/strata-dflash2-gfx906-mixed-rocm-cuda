@@ -60,12 +60,14 @@ a perf cost. TG512 all on par (29.6–33.3 s vs C-shape legs).
 - **Parity: m4 FAILS** — its cold 8k sha `c2e533c4…` breaks the canonical `01db7a9d…`
   that every other arm/leg/run produces (layer placement changes reduction order →
   different logits on first inference). m1/m2/m3 keep parity.
-- **m2 (`--kv int8`) is the keeper candidate**: perf-neutral (hot 217.9 tok/s, tg 12.0 s
-  run-2), parity holds. AB8's "no speed delta" confirmed at 8k.
+- **KV policy (user, 2026-11-09): KV stays fp16 — `--kv int8` is NOT adoptable**, so m2's
+  measured perf-neutrality + parity are experiment evidence only, not a keeper
+  candidate. This supersedes any earlier "m2 keeper" note.
 - **No VII headroom materialized**: every m arm ended 8k legs at 229–489 MiB free with
   sub-512-MiB warnings that A/B/C never hit — freed VRAM is absorbed by adaptive caches
   (expert-cache auto) or offset by other growth. Levers as configured buy nothing
-  measurable on the VIIs; next Stage-2 step = pair a lever with an explicit cache cap.
+  measurable on the VIIs; next Stage-2 step = pair an fp16-compatible lever (m1/m3 class)
+  with an explicit cache cap.
 - Harness gap: `mem-baseline.sh` found no processes during window arms (its discovery
   patterns target prod launchers) — all before/after baselines empty; VII-only vram
   sidecar (no 3080). Fix before the next memory lane.
@@ -80,5 +82,6 @@ a perf cost. TG512 all on par (29.6–33.3 s vs C-shape legs).
 ## Next lanes
 
 1. bf16 reply wire (claim reply payload halving — attacks the measured 22 % 8k share).
-2. Stage-2 redo with mem-baseline fixed (arm-process discovery) + cache-cap pairing; m4
-   parity failure means layer-split is off the table unless parity is re-gated.
+2. Stage-2 redo with mem-baseline fixed (arm-process discovery) + cache-cap pairing on
+   fp16-compatible levers only (m1/m3 class; KV stays fp16 per user policy; m4 parity
+   failure means layer-split is off the table unless parity is re-gated).
