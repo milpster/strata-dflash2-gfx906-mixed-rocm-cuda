@@ -203,6 +203,19 @@ kill_pair(){   # our own manual pair only
     kill -TERM "$pid" 2>/dev/null || true
   done
   PAIR_PIDS=""
+  # the serve wrapper can outlive its engine and keep :$AB9_PORT bound (run 3: arm B's serve
+  # died to "port already in use" while arm A's server.py was still shutting down) — the
+  # port must be free before the next arm boots.
+  for i in $(seq 1 30); do
+    ss -ltn 2>/dev/null | grep -q ":$AB9_PORT " || break
+    for pid in $(ss -ltnp 2>/dev/null | grep ":$AB9_PORT " | grep -oP 'pid=\K[0-9]+' | sort -u); do
+      echo "$(date +%T) kill_pair: port $AB9_PORT still held by pid $pid - TERM then KILL"
+      kill -TERM "$pid" 2>/dev/null || true; sleep 3
+      kill -9 "$pid" 2>/dev/null || true
+    done
+    sleep 2
+  done
+  if ss -ltn 2>/dev/null | grep -q ":$AB9_PORT "; then echo "kill_pair: port $AB9_PORT never released"; return 4; fi
   for i in $(seq 1 60); do
     used=$(rocm-smi --showmeminfo vram --csv 2>/dev/null | awk -F, '/^card[01]/{s+=$3} END{print s+0}')
     (( used < 200000000 )) && break
