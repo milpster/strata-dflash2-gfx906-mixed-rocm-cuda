@@ -420,6 +420,11 @@ struct RxBuffer {
 struct PayloadView {
     const uint8_t* p = nullptr;
     size_t n = 0;
+    PayloadView() = default;
+    PayloadView(const uint8_t* p_, size_t n_) : p(p_), n(n_) {}
+    /// The retention case: a call site that copies a payload out to a vector passes the copy back
+    /// (wire_prompt_ok's cap-shape twin, begin_prompt_drained's captured frame).
+    PayloadView(const std::vector<uint8_t>& v) : p(v.data()), n(v.size()) {}
     const uint8_t* data() const { return p; }
     size_t size() const { return n; }
     bool empty() const { return n == 0; }
