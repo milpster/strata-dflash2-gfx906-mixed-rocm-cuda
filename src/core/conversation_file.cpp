@@ -1756,7 +1756,7 @@ public:
         while (true) {
             uint8_t* nxt = nullptr;
             size_t nx = 0;
-            if (pos + c < stop && (nxt = second()) != nullptr) {
+            if (pos + c < stop && (nxt = second(cur)) != nullptr) {
                 nx = size_t(std::min<uint64_t>(kBlock, stop - (pos + c)));
                 issue(pos + c, nxt, nx);   // the drive starts the next block ...
             }
@@ -1805,7 +1805,10 @@ private:
             cv_.notify_all();
         }
     }
-    uint8_t* second() {
+    // The read-ahead's target: never the buffer fn() is consuming (cur ping-pongs after each swap), always
+    // the other one.  A second buffer that cannot be allocated leaves the serial path (a null return).
+    uint8_t* second(uint8_t* in_use) {
+        if (in_use != buf_.get()) return buf_.get();
         if (!buf2_) buf2_ = aligned_block();
         return buf2_.get();
     }
@@ -1813,7 +1816,7 @@ private:
     // Windows reads through the handle's own position: pread there is not thread-safe, so no read-ahead
     void issue(uint64_t, uint8_t*, size_t) {}
     bool await() { return true; }
-    uint8_t* second() { return nullptr; }
+    uint8_t* second(uint8_t*) { return nullptr; }
 #endif
     Aligned buf_, buf2_;
     RawFile& f_;

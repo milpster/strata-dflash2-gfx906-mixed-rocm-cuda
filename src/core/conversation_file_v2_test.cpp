@@ -186,8 +186,10 @@ Sample stride_sample() {
     for (size_t i = 0; i < 8; ++i) m.tokens.push_back(int32_t(3000 + i));
     const auto K = int32_t(SessionRegionKind::kv), L = int32_t(SessionRegionKind::live_state);
     const size_t B = 16u << 20;
-    // the K/V parts of three layers: the block-boundary sizes ride on layer 0, the small tails on 1 and 2
-    const size_t k0[5] = {B + 1, B, B - 1, 2 * B + 5, 4097};
+    // the K/V parts of three layers: the block-boundary sizes ride on layer 0, the small tails on 1 and 2.
+    // The 3-block region makes the read-ahead's ping-pong serve a stale first block if its target ever
+    // aliases the buffer being consumed - position-varied content makes that a hard byte mismatch.
+    const size_t k0[5] = {B + 1, B, B - 1, 3 * B + 7, 4097};
     const size_t k1[5] = {4096, 4095, 1, 3, 4096};
     const size_t k2[5] = {512, 513, 514, 515, 516};
     for (size_t p = 0; p < 5; ++p) add(s, K, 0, 0, int64_t(p), k0[p], uint8_t(10 + p));
