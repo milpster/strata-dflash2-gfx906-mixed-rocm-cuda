@@ -407,8 +407,8 @@ struct SessionReadV2Limits {
     // filesystem refuses the aligned transfer and the reader drops to buffered).  Optional, as in the write.
     std::function<void(bool direct)> mode;
 };
-// What the RAM preflight is asked for: the manifest, the region directory, one 16 MiB transfer buffer (shared by
-// both passes) and the small vectors.  Independent of the payload length.
+// What the RAM preflight is asked for: the manifest, the region directory, the two 16 MiB transfer buffers of
+// the read-ahead walk (shared by both passes) and the small vectors.  Independent of the payload length.
 uint64_t session_read_v2_peak_bytes(uint64_t manifest_bytes, uint64_t regions);
 
 // The EXACT size a v2 generation of `manifest` publishes at, including the header, the manifest, the region bytes,

@@ -16,8 +16,11 @@
 #include <limits>
 #include <memory>
 #include <random>
+#include <condition_variable>
+#include <mutex>
 #include <string>
 #include <system_error>
+#include <thread>
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -1716,10 +1719,27 @@ void header_bytes_v2(uint8_t* h, const SessionFileIdentity& id, uint64_t payload
 }
 
 // One bounded transfer buffer over the opened file, positioned by pread: the v2 read's streaming walk.  Blocks are
-// at most 16 MiB, so its memory is fixed whatever the conversation is.
+// at most 16 MiB, so its memory is fixed whatever the conversation is.  Linux pipelines a second block: the reader
+// thread issues pread(block i+1) while this thread checksums and sinks block i, so the drive and the hash run at
+// the same time; the two buffers ping-pong, which bounds the walk at 2 x 16 MiB per stream.  Every pread of a walk
+// runs on one thread at a time (the file, its bounce block and its error state have a single owner per moment),
+// and the buffers hand over under the mutex.  A walk of a single block, a second buffer that cannot be allocated,
+// and systems without pread's thread safety (Windows shares the handle's position) all keep the serial path.
 class RegionStream {
 public:
     explicit RegionStream(RawFile& f) : buf_(aligned_block()), f_(f) {}
+    ~RegionStream() {
+#ifdef __linux__
+        if (reader_.joinable()) {
+            {
+                std::lock_guard<std::mutex> lk(mu_);
+                stop_ = true;
+            }
+            cv_.notify_all();
+            reader_.join();
+        }
+#endif
+    }
     bool ok() const { return buf_ != nullptr; }
     std::string error() const { return buf_ ? f_.error() : std::string("out of memory for the transfer buffer"); }
     SessionError kind() const { return buf_ ? f_.kind() : SessionError::memory; }
@@ -1727,18 +1747,84 @@ public:
     bool bytes(uint64_t at, uint8_t* dst, size_t n) { return !n || f_.pread_bytes(at, dst, n); }
     // [at, at+n) in blocks of at most 16 MiB, handed to fn block by block
     bool stream(uint64_t at, uint64_t n, const std::function<bool(const uint8_t*, size_t)>& fn) {
-        uint64_t done = 0;
-        while (done < n) {
-            const size_t c = std::min<uint64_t>(kBlock, n - done);
-            if (!f_.pread_bytes(at + done, buf_.get(), c)) return false;
-            if (!fn(buf_.get(), c)) return false;
-            done += c;
+        if (!n) return true;
+        uint8_t* cur = buf_.get();
+        uint64_t pos = at;
+        size_t c = size_t(std::min<uint64_t>(kBlock, n));
+        if (!f_.pread_bytes(pos, cur, c)) return false;   // the first block: this thread, so a short walk starts no thread
+        const uint64_t stop = at + n;
+        while (true) {
+            uint8_t* nxt = nullptr;
+            size_t nx = 0;
+            if (pos + c < stop && (nxt = second()) != nullptr) {
+                nx = size_t(std::min<uint64_t>(kBlock, stop - (pos + c)));
+                issue(pos + c, nxt, nx);   // the drive starts the next block ...
+            }
+            if (!fn(cur, c)) return false;   // ... while this block is checksummed and sunk
+            if (nxt == nullptr) {
+                if (pos + c >= stop) return true;
+                pos += c;
+                c = size_t(std::min<uint64_t>(kBlock, stop - pos));
+                if (!f_.pread_bytes(pos, cur, c)) return false;
+                continue;
+            }
+            if (!await()) return false;   // the read-ahead of the block about to be consumed failed
+            std::swap(cur, nxt);
+            pos += c;
+            c = nx;
         }
-        return true;
     }
 private:
-    Aligned buf_;
+#ifdef __linux__
+    void issue(uint64_t off, uint8_t* dst, size_t len) {
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            off_ = off; dst_ = dst; len_ = len; ++seq_; landed_ = false; ok_ = false; work_ = true;
+        }
+        if (!reader_.joinable()) reader_ = std::thread([this] { read_loop(); });
+        cv_.notify_all();
+    }
+    bool await() {
+        std::unique_lock<std::mutex> lk(mu_);
+        const uint64_t seq = seq_;
+        cv_.wait(lk, [&] { return landed_ && seq_ == seq; });
+        return ok_;
+    }
+    void read_loop() {
+        for (;;) {
+            uint64_t off = 0; uint8_t* dst = nullptr; size_t len = 0; uint64_t seq = 0;
+            {
+                std::unique_lock<std::mutex> lk(mu_);
+                cv_.wait(lk, [&] { return work_ || stop_; });
+                if (stop_) return;
+                off = off_; dst = dst_; len = len_; seq = seq_; work_ = false;
+            }
+            const bool ok = f_.pread_bytes(off, dst, len);
+            std::lock_guard<std::mutex> lk(mu_);
+            ok_ = ok; landed_ = true; seq_ = seq;
+            cv_.notify_all();
+        }
+    }
+    uint8_t* second() {
+        if (!buf2_) buf2_ = aligned_block();
+        return buf2_.get();
+    }
+#else
+    // Windows reads through the handle's own position: pread there is not thread-safe, so no read-ahead
+    void issue(uint64_t, uint8_t*, size_t) {}
+    bool await() { return true; }
+    uint8_t* second() { return nullptr; }
+#endif
+    Aligned buf_, buf2_;
     RawFile& f_;
+#ifdef __linux__
+    std::thread reader_;
+    std::mutex mu_;
+    std::condition_variable cv_;
+    uint64_t off_ = 0, seq_ = 0, len_ = 0;
+    uint8_t* dst_ = nullptr;
+    bool work_ = false, landed_ = false, ok_ = false, stop_ = false;
+#endif
 };
 
 bool write_v2_impl(const std::string& path, const SessionFileIdentity& id, const SessionManifestV2& manifest,
@@ -2227,8 +2313,9 @@ const char* session_region_kind_name(int32_t kind) {
 }
 
 uint64_t session_read_v2_peak_bytes(uint64_t manifest_bytes, uint64_t regions) {
-    // the manifest, the region directory and table, one 16 MiB transfer buffer, the small vectors
-    return sat_add(sat_add(sat_add(manifest_bytes, kBlock), sat_mul(regions, 128)), uint64_t(1) << 20);
+    // the manifest, the region directory and table, the two 16 MiB transfer buffers of the read-ahead walk,
+    // the small vectors
+    return sat_add(sat_add(sat_add(manifest_bytes, 2 * uint64_t(kBlock)), sat_mul(regions, 128)), uint64_t(1) << 20);
 }
 
 bool session_file_write_v2(const std::string& path, const SessionFileIdentity& id, const SessionManifestV2& manifest,

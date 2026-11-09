@@ -173,6 +173,31 @@ Sample paired_sample() {
     return s;
 }
 
+// The read-ahead walk's boundary shapes: regions smaller than a 16 MiB block, regions straddling one, a region
+// running past two, and regions ending in a partial and an unaligned tail block.  The reader pipelines consecutive
+// blocks of one region; every shape a stream can end on lives in this fixture.
+Sample stride_sample() {
+    Sample s;
+    auto& m = s.manifest;
+    for (size_t i = 0; i < m.layout.geometry.size(); ++i) m.layout.geometry[i] = int64_t(200 + i);
+    m.layout.stages = {{0, 3, 2}};
+    m.draft = {};
+    m.cvec = false;
+    for (size_t i = 0; i < 8; ++i) m.tokens.push_back(int32_t(3000 + i));
+    const auto K = int32_t(SessionRegionKind::kv), L = int32_t(SessionRegionKind::live_state);
+    const size_t B = 16u << 20;
+    // the K/V parts of three layers: the block-boundary sizes ride on layer 0, the small tails on 1 and 2
+    const size_t k0[5] = {B + 1, B, B - 1, 2 * B + 5, 4097};
+    const size_t k1[5] = {4096, 4095, 1, 3, 4096};
+    const size_t k2[5] = {512, 513, 514, 515, 516};
+    for (size_t p = 0; p < 5; ++p) add(s, K, 0, 0, int64_t(p), k0[p], uint8_t(10 + p));
+    for (size_t p = 0; p < 5; ++p) add(s, K, 0, 1, int64_t(p), k1[p], uint8_t(20 + p));
+    for (size_t p = 0; p < 5; ++p) add(s, K, 0, 2, int64_t(p), k2[p], uint8_t(30 + p));
+    const size_t lv[5] = {B + 3, 4099, 1, 7, 4096};
+    for (size_t p = 0; p < 5; ++p) add(s, L, 0, 0, int64_t(p), lv[p], uint8_t(40 + p));
+    return s;
+}
+
 std::vector<SessionRegionSource> sources_of(const Sample& s) {
     std::vector<SessionRegionSource> out;
     for (size_t i = 0; i < s.manifest.regions.size(); ++i) {
@@ -533,6 +558,110 @@ int main() {
         std::string err;
         check(rejects(p, want, {}, id, col, err) && col.writes == 0 && err.find("checksum") != std::string::npos,
               "v2 tampered region checksum refused, sink untouched");
+    }
+    // the read-ahead walk: every block-boundary shape streams byte-exactly, in the direct and the buffered mode
+    {
+        const Sample stride = stride_sample();
+        const fs::path p = dir / "stride.bin";
+        check(session_file_write_v2(p.string(), id, stride.manifest, sources_of(stride), written, error),
+              "v2 block-boundary fixture writes");
+        check(written == fs::file_size(p), "v2 block-boundary fixture reports the file size");
+        const SessionV2Requirement swant = want_of(stride);
+        SessionManifestV2 back;
+        Collector col;
+        SessionRegionSink sink = collector_sink(col);
+        SessionRegionSink* use = &sink;
+        size_t read = 0;
+        std::vector<std::pair<uint64_t, uint64_t>> seen;
+        SessionReadV2Limits limits;
+        limits.progress = [&](uint64_t d, uint64_t t) { seen.push_back({d, t}); };
+        check(session_file_read_v2(p.string(), id, swant, back, read, error, limits, use) &&
+              region_bytes_match(stride, col),
+              "v2 read-ahead: regions below, straddling and past a 16 MiB block stream byte-exactly");
+        check(col.finishes == 1 && col.max_block <= (16u << 20), "v2 read-ahead keeps the 16 MiB block bound");
+        bool sums = back.regions.size() == stride.manifest.regions.size();
+        for (size_t i = 0; i < back.regions.size() && sums; ++i) {
+            const auto it = std::find_if(stride.manifest.regions.begin(), stride.manifest.regions.end(),
+                                          [&](const SessionRegion& x) { return key(x) == key(back.regions[i]); });
+            sums = it != stride.manifest.regions.end() &&
+                   back.regions[i].checksum == session_hash64(stride.data[size_t(it - stride.manifest.regions.begin())].data(),
+                                                              stride.data[size_t(it - stride.manifest.regions.begin())].size(), 0);
+        }
+        check(sums, "v2 read-ahead: every region checksums the same across block boundaries and tail blocks");
+        bool monotone = seen.size() >= 2 && seen.back().first == seen.back().second;
+        for (size_t i = 1; i < seen.size(); ++i)
+            monotone = monotone && seen[i].first >= seen[i - 1].first && seen[i].first - seen[i - 1].first <= (16u << 20);
+        check(monotone, "v2 read-ahead reports every block in order, at most 16 MiB apart, ending at both passes");
+        seen.clear();
+        limits.progress = [&](uint64_t d, uint64_t t) { seen.push_back({d, t}); };
+        check(session_file_read_v2(p.string(), id, swant, back, read, error, limits, nullptr) &&
+              seen.back().first == seen.back().second && seen.back().second == written,
+              "v2 read-ahead validates a block-straddling file with no sink");
+        const char* inherited = std::getenv("STRATA_SESSION_BUFFERED");
+        const std::string kept = inherited ? inherited : "";
+        set_env("STRATA_SESSION_BUFFERED", "1");
+        Collector bcol;
+        SessionRegionSink bsink = collector_sink(bcol);
+        SessionRegionSink* buse = &bsink;
+        check(session_file_read_v2(p.string(), id, swant, back, read, error, {}, buse) && region_bytes_match(stride, bcol),
+              "v2 read-ahead in buffered mode: the same bytes, the same tails");
+        set_env("STRATA_SESSION_BUFFERED", inherited ? kept.c_str() : nullptr);
+        SessionManifestV2 meta;
+        size_t mbytes = 0;
+        check(session_file_manifest_v2(p.string(), id, swant, meta, mbytes, error) &&
+              meta.regions.size() == back.regions.size() && mbytes == read && meta.tokens == back.tokens,
+              "v2 manifest-only read names the same directory for the block-boundary file");
+    }
+    // the restore's precheck reads the MANIFEST only: a payload-corrupted generation passes it, and the full
+    // read's own validation pass refuses it before the sink writes a byte (the mutation witness is col.writes)
+    {
+        auto d = slurp(good);
+        const uint64_t payload = field64(d, 32), manifest = field64(d, 40);
+        d[64 + (size_t) manifest + (size_t) (payload - manifest) / 2] ^= 0x40;   // a payload byte, mid-region
+        const fs::path p = dir / "precheck.bin";
+        spit(p, d);
+        SessionManifestV2 meta;
+        size_t mbytes = 0;
+        check(session_file_manifest_v2(p.string(), id, want, meta, mbytes, error) && error.empty() &&
+              mbytes == good_size && meta.regions.size() == split.manifest.regions.size(),
+              "v2 manifest precheck accepts a payload-corrupted file (it verifies metadata only)");
+        Collector col;
+        std::string err;
+        check(rejects(p, want, {}, id, col, err) && col.writes == 0 && err.find("checksum") != std::string::npos,
+              "v2 full read refuses a payload-corrupted file with the sink untouched, pre-mutation");
+        // the manifest precheck refuses what the metadata carries, with no payload read at all
+        auto refuse_meta = [&](const std::vector<char>& f, const char* expect, const char* label) {
+            const fs::path q = dir / "metaref.bin";
+            spit(q, f);
+            SessionManifestV2 m;
+            size_t n = 0;
+            std::string e;
+            SessionStatus st;
+            check(!session_file_manifest_v2(q.string(), id, want, m, n, e, {}, &st) && !e.empty() &&
+                  st.error == SessionError::invalid && e.find(expect) != std::string::npos && n == 0, label);
+        };
+        auto bad = slurp(good);
+        bad[64 + 300] ^= 0x40;   // a manifest byte: its own checksum catches it
+        refuse_meta(bad, "manifest", "v2 manifest precheck refuses a damaged manifest byte");
+        bad = slurp(good);
+        put64(bad, 64 + payload + 8, field64(bad, 64 + payload + 8) ^ 1);   // a region checksum in the table
+        refuse_meta(bad, "region table", "v2 manifest precheck refuses a tampered region table (its own hash)");
+        bad = slurp(good);
+        put64(bad, 64 + payload, 999);   // the table's count lies about the directory
+        reseal(bad);
+        refuse_meta(bad, "regions, the manifest", "v2 manifest precheck refuses a region-table count that lies");
+        bad = slurp(good);
+        const size_t lay = section_frame(bad, 0x5459414Cu);
+        uint64_t g0 = 0;
+        std::memcpy(&g0, bad.data() + lay + 12, 8);
+        put64(bad, lay + 12, g0 + 1);   // the geometry identity moves
+        reseal(bad);
+        refuse_meta(bad, "layout", "v2 manifest precheck refuses another split layout");
+        bad = slurp(good);
+        bad.resize(bad.size() - 100);   // a truncated generation
+        refuse_meta(bad, "size", "v2 manifest precheck refuses a truncated file");
+        check(session_file_manifest_v2((dir / "absent-meta.bin").string(), id, want, meta, mbytes, error) == false &&
+              !error.empty(), "v2 manifest precheck refuses a missing file");
     }
     // unknown, missing and repeated sections of the required manifest are refusals
     {

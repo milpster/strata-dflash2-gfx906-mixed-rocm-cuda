@@ -1003,7 +1003,8 @@ struct Options {
     /// eviction are the follow-up lane; this is the ceiling the tier is enabled under.)
     int64_t conversation_cache_disk_mib = 0;
     /// --conversation-cache-disk-ram-mib N: what the disk tier may allocate for itself out of host RAM - the
-    /// manifest/region directory and one transfer buffer.  It does not scale with the conversation.  Default 64.
+    /// manifest/region directory and the read-ahead's two transfer buffers.  It does not scale with the
+    /// conversation.  Default 64.
     int64_t conversation_cache_disk_ram_mib = 64;
     /// --conversation-cache-disk-io direct|buffered: the transfer mode of the disk tier.  `direct` (the default) is
     /// strict: a filesystem that refuses direct I/O disables the disk tier with the reason, silently falling back to
@@ -1206,8 +1207,8 @@ void usage() {
                  "  --conversation-cache-disk-mib N  --serve: the disk budget of --conversation-cache-dir (MiB).\n"
                  "                       Required positive with a directory: the tier never writes unbounded\n"
                  "  --conversation-cache-disk-ram-mib N  --serve: what the disk tier may take of host RAM for its\n"
-                 "                       manifest, region directory and transfer buffer (default 64; it does not scale\n"
-                 "                       with the conversation)\n"
+                 "                       manifest, region directory and read-ahead transfer buffers (default 64; it\n"
+                 "                       does not scale with the conversation)\n"
                  "  --conversation-cache-disk-io direct|buffered  --serve: the disk tier's transfer mode (default\n"
                  "                       direct).  A filesystem that refuses direct I/O disables the disk tier, said;\n"
                  "                       buffered is an explicit choice with no page-cache memory guarantee\n"
