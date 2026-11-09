@@ -25,10 +25,15 @@ Arms: A=PREFILL_HELPER off, B=on, C=on+PIPE. PP = judge-line fresh-read tok/s
 Gates: gate3 participation A=0 / B=C=96 claims (both ctx); gate4 8k sha byte-identical
 across A/B/C (`01db7a9d…`) in runs 2, 4 and 5; gate6 no flags on A/B/C.
 
-| ctx | A tok/s | B tok/s | C tok/s | gain(B) | best arm vs A | transfer_share(B) | pipe_recovery |
+| ctx | A tok/s | B tok/s | C tok/s | gain(B) | C vs A | transfer_share(B) | pipe effect |
 |---|---|---|---|---|---|---|---|
-| 8k  | 192.25 | 198.0 | 196.4 | **+3.0 %** | C +2.2 % | **22.2 %** of prompt wall (Σbegin+Σreply+Σd2h; Σreply 5.20 s of 5.65 s) | 27.8 % |
-| 80k | 308.1  | 305.7 | 305.3 | **−0.8 %** | C −0.9 % | 0.7 % | −16.7 % (slightly worse) |
+| 8k  | 192.25 | 198.0 | 196.4 | **+3.0 %** | +2.2 % | **22.2 %** of prompt wall (Σbegin+Σreply+Σd2h; Σreply 5.20 s of 5.65 s) | par-to-slightly-negative: C 196.4 < B 198.0 — the pipe GAVE BACK ~28 % of B's small gain (the collector's "recovery 0.278" is C sliding from B toward A, not an improvement) |
+| 80k | 308.1  | 305.7 | 305.3 | **−0.8 %** | −0.9 % | 0.7 % | no help (C ≈ B, both below A) |
+
+Correction 2026-11-09: the pipe did not measurably help at ANY length — it is par with
+plain-helper at 8k (hot walls B 8.49 s vs C 8.49 s) and slightly negative on judge
+medians; this matches the banked "M6 pipe par/dead". The +3 % at 8k belongs to the plain
+helper (B) alone.
 
 Mechanism: claims are capped at 96 regardless of prompt size — rows/claim collapses
 2330→256 from 8k→80k, so helper contribution dilutes to nothing at 80k while its fixed
