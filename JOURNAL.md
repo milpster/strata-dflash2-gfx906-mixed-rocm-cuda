@@ -1498,3 +1498,46 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
 - CPU-only verification: build_l3.sh both trees green, guards PASS (helper fatbin
   sm_86 + -patient alias refreshed; gfx906 HIP), ctest -R helper 5/5 and 1/1.
   The GPU window that reads these fields is the operator's to run.
+
+## 2026-11-10 — Format 0: the engine quantizes the prompt image, the helper's lock stops paying for it
+
+- WHY format 1 today (the answer, with evidence): the chooser is
+  `src/core/expert_helper_socket.cpp` `build_beginp_payload`:
+  `f32_img = prompt_f32_ && !q8k_img`, and the CUDA helper's hello ack advertises
+  `kFeaturePromptF32` unconditionally (`tools/mixed_gpu/sidecar/helper_main.cpp`),
+  so an f32-capable peer always wins the choice. M4c (b) made that deliberately:
+  its own comment says the quantize "leaves THIS critical path; the helper
+  quantizes in its own process, overlapped with the primary's compute". Format 0
+  was never unwired (the else branch is `quantize_q8_1_cpu` per row) - only
+  shadowed by the peer's fp32 bit.
+- The span profile killed that premise: the helper quantizes INSIDE its device
+  lock, so nothing overlaps it. 256 claims, `ab9-20261109-235338-D-helper.log`:
+  quant 2.630 s = 44.9% of lock (med 6036 us/claim), ksync 39.1%, pack 11.1%.
+- Implementation is a GATE, not a new path: `STRATA_HELPER_Q8_IMAGE` (read per
+  call, default OFF = today's bytes) makes the engine send image_format 0 - the
+  tier's original wire, uploaded verbatim by the helper, quant span ~0, no
+  helper change. Q8_K keeps precedence; a peer without the fp32 bit was already
+  format 0 (env inert); env unset = byte-identical default.
+- Parity verdict: NO shift. `quantize_q8_1_cpu` (src/core/expert_helper_socket.cpp
+  :126) and the helper's `quantize_q8_1_twin` (helper_main.cpp :120) are the
+  same statements - a mechanical diff of the two bodies differs only by the
+  engine's 3 comment lines. Same constants/clamps/amax+sum order/fp16 scales/
+  std::roundf/36-byte block layout, so the grouped kernel gets the exact bytes it
+  makes for itself. No re-baseline needed.
+- Size math (real numbers, same window): image 1469 MiB fp32 -> 413 MiB q8_1
+  over 256 claims = 3.56x, ~1056 MiB and ~0.25 s of wire at the measured
+  4.42 GB/s. Per row 10240 B -> 2880 B. The quantize cost is MOVED (helper lock
+  -> engine begin path), not deleted; the lock gain is the point (it is the M7
+  serialization point, measurable in queue_us).
+- Tests: socket section (21) pins the format-0 round trip (frame type stays
+  kBeginP; image_format 0, n_q8 = n_sel*(H/32)*36, image = quantize_q8_1_cpu of
+  the tier's rows byte-exact, kRowsP reply applied in one exchange in claim
+  order), the env's inertness (no fp32 bit -> format 0; Q8_K keeps precedence),
+  and the frame byte totals with the delta pinned to n_sel*(H*4-(H/32)*36).
+- CPU-only: build_l3.sh both trees, guards, ctest -R helper. No GPU program run.
+- Build note (transparency): the first run FAILED - my gate edit dropped the
+  existing `q8k_img` declaration (compile error at expert_helper_socket.cpp:691,
+  log `build-mixed-gpu/q8-image-build.log`). Restored verbatim, amended
+  (`fa733f62d`), rebuilt green. Final: socket test 326 checks (21 new), PASS;
+  CUDA guard PASS + ctest -R helper 5/5; HIP guard PASS + 1/1
+  (`build-mixed-gpu/q8-image-final-build.log`).

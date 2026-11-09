@@ -493,3 +493,54 @@ helper` 5/5 passed; HIP tree guard PASS (gfx906 HIP: `libamdhip64` +
 `.hip_fatbin` + `STRATA_HIP_GFX906`) + `ctest -R helper` 1/1. The GPU windows in
 the ab9-D logs were run by the operator; this tree ran no GPU program and
 touched no golden conf.
+
+## The engine-side q8_1 prompt image: `STRATA_HELPER_Q8_IMAGE` (default OFF, 2026-11-10)
+
+The L3 serve sub-spans (appended to `rpcprofile: serve tier=p …`, same env gate)
+decomposed the helper's per-claim device lock on the 8k window
+(`ab9-20261109-235338-D-helper.log`, 256 claims with spans): `quant 2.630 s =
+44.9 %` of lock (median 6036 µs/claim), `ksync 2.292 s = 39.1 %` (the GEMM),
+`pack 0.652 s = 11.1 %`, `scan 0.150 s`, `upload 0.099 s`, `lookup 0.022 s`,
+`parse ~0`. The `quant` span is the fp32→q8_1 twin the helper runs on its CPU
+**inside the device lock**, and it is there only because M4c (b) shipped the
+tier's image as fp32 (`image_format 1`) for an fp32-advertising peer to get the
+quantize off the ENGINE's critical path.
+
+`image_format 0` — the tier's original wire — is fully wired on both sides:
+`build_beginp_payload` quantizes with `quantize_q8_1_cpu` and the helper uploads
+the blocks verbatim (its quant span collapses to ~0, no helper change). So the
+lever is a gate, not a new path: with `STRATA_HELPER_Q8_IMAGE=1` (read per call,
+like the other envs) and an fp32-capable peer, the engine quantizes and sends
+format 0. Q8_K keeps precedence; a peer without the fp32 bit was already on
+format 0, so the env is inert there; env unset keeps today's bytes exactly.
+
+Parity is byte-identity, not approximation: the helper's `quantize_q8_1_twin`
+(`tools/mixed_gpu/sidecar/helper_main.cpp`) is `quantize_q8_1_cpu`'s body
+verbatim — a mechanical diff of the two function bodies differs only by the
+engine-side comments. Same constants, same clamps, same amax/sum order, same
+FP16 scales, same `std::roundf`, same 36-byte block layout, so the grouped
+kernel receives the exact bytes it produces for itself today and no output
+moves; the gate4 greedy-sha baseline does not shift.
+
+Request size (measured on the same window's engine lines, 256 claims, sel median
+335 rows at H=2560): the image is 1469 MiB as fp32 (`sel*H*4`) and 413 MiB as
+q8_1 (`sel*(H/32)*36`) — 3.56× smaller, 1056 MiB and ~0.25 s of wire at the
+measured 4.42 GB/s stream rate. Per row: 10240 B → 2880 B.
+
+The cost is MOVED, not deleted: ~2.6 s of quantize leaves the helper's device
+lock and lands on the engine's begin path (synchronous in the prefill walk),
+where M4c (b) picked it up from. What the window gains is the wire saving and a
+device lock that no longer spends 45 % of its time on CPU quantization — that
+lock is the M7 single-socket serialization point, so the gain shows up in
+`queue_us` and in any tier that contends with the prompt claim.
+
+Host tests: section (21) pins, with a socketpair mock helper, the format-0 round
+trip (frame type unchanged `kBeginP`; `image_format 0`, `n_q8 =
+n_sel*(H/32)*36`, the image byte-exact against `quantize_q8_1_cpu` of the tier's
+own rows; a plain `kRowsP` reply applied in one exchange at the pair indices),
+the env's inertness (peer without the fp32 bit keeps format 0; Q8_K keeps
+precedence, never format 0), and the frame's byte total in both env states with
+the difference pinned to `n_sel*(H*4 − (H/32)*36)`. Evidence
+`build-mixed-gpu/q8-image-final-build.log` (both trees, CPU-only: CUDA guard
+PASS + `ctest -R helper` 5/5, HIP guard PASS + 1/1, socket test 326 checks):
+this tree ran no GPU program.

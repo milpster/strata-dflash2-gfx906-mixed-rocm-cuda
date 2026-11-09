@@ -175,6 +175,14 @@ public:
     /// payload over kMaxFramePayload, a buffer that does not cover the plan.  MSG_NOSIGNAL semantics
     /// are the transport's (sendmsg), unchanged.  Preserves the one-outstanding-request invariant: the
     /// layer's reply must be read by finish_prompt before any further request.
+    ///
+    /// The image's FORMAT is chosen by env + peer bit only: the fp32 rows (image_format 1) with a
+    /// peer that advertised kFeaturePromptF32 - the default since M4c (b); ggml's Q8_K blocks
+    /// (image_format 2) with STRATA_EXPERT_HELPER_Q8K and kFeatureQ8K; and the engine-quantized
+    /// q8_1 blocks (image_format 0, this tier's original wire, `quantize_q8_1_cpu`'s bytes) with
+    /// STRATA_HELPER_Q8_IMAGE - the helper uploads those verbatim and quantizes NOTHING on its
+    /// device-lock path.  Byte-identity between the engine's quantizer and the helper's twin is what
+    /// keeps the outputs fixed; see build_beginp_payload.
     int begin_prompt(int32_t layer, const ExpertHelperPromptPlan& plan, const int32_t* host_res,
                      int64_t deadline_ms);
 

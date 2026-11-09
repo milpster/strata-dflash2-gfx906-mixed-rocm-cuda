@@ -2280,6 +2280,123 @@ int main(int argc, char** argv) {
         ::unsetenv("STRATA_CLAIM_BATCH");
     }
 
+    // ============ (21) THE ENGINE-SIDE q8_1 IMAGE (STRATA_HELPER_Q8_IMAGE, default OFF) ==========
+    // image_format 0 is this tier's ORIGINAL wire: the engine quantizes with quantize_q8_1_cpu and
+    // the helper uploads the blocks VERBATIM (no quantize on its device-lock path).  M4c (b) moved
+    // the quantize to the helper for an fp32-capable peer; the 2026-11-09 span profile priced that
+    // quantize at 45% of the helper's lock (6.0 ms/claim median), so the env lets the engine take it
+    // back.  Parity rests on byte-identity, not on "close": the helper's quantize_q8_1_twin is this
+    // quantizer's body verbatim, so the grouped kernel receives the same bytes either way.  The pins
+    // are the wire shape (format 0, the q8_1 size, the exact bytes), the whole exchange, the size
+    // math, and the env's inertness where it must be inert.
+    {
+        std::vector<int32_t> primary((size_t) kLayers * kExperts, -1);
+        const std::vector<int32_t> claims4 = {0, 1, 2, 3};
+        ::setenv("STRATA_HELPER_Q8_IMAGE", "1", 1);
+        ExpertHelperClient c;
+        check_status(handshake_v3(c, true, kFeaturePromptF32), kOk,
+                     "(21) handshake advertising the fp32 bit: the env must win over it");
+        ExpertHelperPromptPlan plan;
+        for (int i = 0; i < 4; ++i) { plan.pair_token.push_back(i); plan.pair_expert.push_back(7 + i); }
+        for (int i = 0; i < 4; ++i) plan.tokens.push_back(i);
+        fill_prompt_buffer(c, 4);
+        std::vector<float> out((size_t) 4 * kH, -1.0f);
+        int32_t rows = -1;
+        std::atomic<int> peer_rc{kErrInternal};
+        std::atomic<bool> wire_ok{false};
+        std::atomic<uint32_t> peer_type{0};
+        check_status(c.begin_prompt(kLayer, plan, primary.data(), 8000), kOk, "(21) the claim is sent");
+        std::thread srv([&] {
+            Socket s;
+            s.adopt(g_server_fd);
+            Header head;
+            RxBuffer rx;
+            PayloadView body;
+            const int rc = s.read_frame(head, rx, body, deadline_after(20000));
+            if (rc != kOk) { peer_rc = rc; s.release(); return; }
+            peer_type = head.type;
+            wire_ok = prompt_body_ok(body, plan, primary.data(), 4, /*f32=*/false);
+            const auto payload = rowsp_payload(claims4, row_val);
+            peer_rc = s.write_reply(kRowsP, head.req_id, head.seq, payload.data(), payload.size(),
+                                    deadline_after(20000));
+            s.release();
+        });
+        const int client_rc = c.finish_prompt(out.data(), kH, claims4, 8000, rows);
+        srv.join();
+        check(peer_type.load() == kBeginP, "(21) the env does not change the frame type");
+        check(wire_ok.load(), "(21) the frame is image_format 0 with n_q8 = n_sel*(H/32)*36 and the image "
+                              "is quantize_q8_1_cpu of the tier's own rows, byte for byte");
+        check_status(peer_rc.load(), kOk, "(21) the peer read the frame and answered a plain kRowsP");
+        check_status(client_rc, kOk, "(21) the reply applies in ONE exchange");
+        check(rows == 4, "(21) four rows landed");
+        bool placed = true;
+        for (int i = 0; i < 4 && placed; ++i)
+            for (int64_t col = 0; col < kH; ++col)
+                if (out[(size_t) i * kH + (size_t) col] != (float) row_val(i, col)) { placed = false; break; }
+        check(placed, "(21) the rows land in the caller's claim order, exactly as an f32 reply's do");
+        ::unsetenv("STRATA_HELPER_Q8_IMAGE");
+    }
+    {
+        // (21b) where the env must be INERT: a peer that never advertised the fp32 bit was already on
+        // format 0 (nothing changes), and the Q8_K wire keeps precedence over it (never format 0 on
+        // a Q8_K layer).  The env OFF keeps today's f32 bytes; (19d) pins that default.
+        std::vector<int32_t> primary((size_t) kLayers * kExperts, -1);
+        ::setenv("STRATA_HELPER_Q8_IMAGE", "1", 1);
+        ExpertHelperClient c;
+        check_status(handshake_v3(c, true), kOk, "(21b) handshake WITHOUT the fp32 bit");
+        ExpertHelperPromptPlan plan;
+        for (int i = 0; i < 3; ++i) { plan.pair_token.push_back(i); plan.pair_expert.push_back(7 + i); }
+        for (int i = 0; i < 3; ++i) plan.tokens.push_back(i);
+        fill_prompt_buffer(c, 3);
+        check_status(c.begin_prompt(kLayer, plan, primary.data(), 2000), kOk, "(21b) the claim is sent");
+        check(wire_prompt_ok(plan, primary.data(), 3),
+              "(21b) a peer without the bit was already on format 0: the env changes nothing there");
+
+        ExpertHelperClient c2;
+        check_status(handshake_v3(c2, true, kFeaturePromptF32 | kFeatureQ8K), kOk,
+                     "(21b) handshake advertising fp32 AND the Q8_K bit");
+        ExpertHelperPromptPlan plan2;
+        for (int i = 0; i < 4; ++i) { plan2.pair_token.push_back(i); plan2.pair_expert.push_back(7); }
+        for (int i = 0; i < 4; ++i) plan2.tokens.push_back(i);
+        fill_prompt_buffer(c2, 4);
+        ::setenv("STRATA_EXPERT_HELPER_Q8K", "1", 1);
+        check_status(c2.begin_prompt(kLayer, plan2, primary.data(), 4000), kOk, "(21b) the claim is sent");
+        check(wire_prompt_q8k_ok(plan2, primary.data()),
+              "(21b) the Q8_K wire keeps precedence: format 2, never the q8_1 env's format 0");
+        ::unsetenv("STRATA_EXPERT_HELPER_Q8K");
+        ::unsetenv("STRATA_HELPER_Q8_IMAGE");
+    }
+    {
+        // (21c) the request-size math the GPU window will see, pinned on the frame's byte total:
+        // q8_1 costs (H/32)*36 = 2880 B per selected row against fp32's H*4 = 10240 B (3.56x), so
+        // the whole frame shrinks by n_sel*(H*4 - (H/32)*36).  The caps are untouched.
+        std::vector<int32_t> primary((size_t) kLayers * kExperts, -1);
+        ExpertHelperPromptPlan plan;
+        for (int i = 0; i < 4; ++i) { plan.pair_token.push_back(i); plan.pair_expert.push_back(7 + i); }
+        for (int i = 0; i < 4; ++i) plan.tokens.push_back(i);
+        ::setenv("STRATA_HELPER_Q8_IMAGE", "1", 1);
+        ExpertHelperClient c;
+        check_status(handshake_v3(c, true, kFeaturePromptF32), kOk, "(21c) handshake, env on");
+        fill_prompt_buffer(c, 4);
+        check_status(begin_prompt_drained(c, plan, primary.data(), 2000), kOk, "(21c) the q8_1 frame is sent");
+        const size_t res_bytes = (size_t) ((4 * kExperts + 7) / 8);
+        const size_t want_q8 = sizeof(BeginPReq) + 4 * 8 + res_bytes + (size_t) (4 * (kH / 32) * 36);
+        check(g_req_body.size() == want_q8, "(21c) the format-0 frame's byte total is header + pairs + "
+                                            "bitmap + n_sel*(H/32)*36");
+        c.close();
+        ::unsetenv("STRATA_HELPER_Q8_IMAGE");
+        ExpertHelperClient c2;
+        check_status(handshake_v3(c2, true, kFeaturePromptF32), kOk, "(21c) handshake, env off");
+        fill_prompt_buffer(c2, 4);
+        check_status(begin_prompt_drained(c2, plan, primary.data(), 2000), kOk, "(21c) the f32 frame is sent");
+        const size_t want_f32 = sizeof(BeginPReq) + 4 * 8 + res_bytes + (size_t) (4 * kH * (int64_t) sizeof(float));
+        check(g_req_body.size() == want_f32, "(21c) the default frame's byte total is header + pairs + "
+                                             "bitmap + n_sel*H*4");
+        check(g_req_body.size() - want_q8 == (size_t) (4 * (kH * 4 - (kH / 32) * 36)),
+              "(21c) the env shrinks the request by exactly n_sel*(H*4 - (H/32)*36) = 3.56x on the image");
+        c2.close();
+    }
+
     std::printf("expert_helper_socket_test: %s\n", failures == 0 ? "PASS" : "FAIL");
     return failures == 0 ? 0 : 1;
 }

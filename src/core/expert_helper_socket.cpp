@@ -678,7 +678,22 @@ int ExpertHelperClient::build_beginp_payload(int32_t layer, const ExpertHelperPr
     // mixed build can never misparse (the format never reaches a peer without the bit).
     const bool q8k_img = std::getenv("STRATA_EXPERT_HELPER_Q8K") != nullptr && q8k_ &&
                          n_embd_ > 0 && n_embd_ % 256 == 0;
-    const bool f32_img = prompt_f32_ && !q8k_img;
+    // The engine-side q8_1 image (default OFF: STRATA_HELPER_Q8_IMAGE).  image_format 0 is this
+    // tier's ORIGINAL wire - the quantize here, the blocks uploaded verbatim, no helper quantize -
+    // and M4c (b) moved that quantize to the helper for an fp32-capable peer.  The 2026-11-09 span
+    // profile put the helper's quantize at 45% of its device lock (6.0 ms/claim median, on its CPU,
+    // serialized under the lock, overlapped with nothing), so the engine may take the cost back off
+    // the helper's critical path.  Parity is byte-identity, not "close": quantize_q8_1_cpu below and
+    // the helper's quantize_q8_1_twin (tools/mixed_gpu/sidecar/helper_main.cpp) are the same
+    // statements - constants, clamps, amax/sum order, fp16 scales, std::roundf, block layout - the
+    // twin's body is this function's minus its comments, so the grouped kernel receives the exact
+    // bytes it produces for itself today and no output moves.  The image also shrinks 32/9x per
+    // element (H*4 -> (H/32)*36 = 3.56x: 10240 B -> 2880 B per row at H = 2560).  Q8_K keeps
+    // precedence; a peer without the fp32 bit is already on this wire, so the env changes nothing
+    // there.
+    const bool q8_img = std::getenv("STRATA_HELPER_Q8_IMAGE") != nullptr && !q8k_img &&
+                        n_embd_ > 0 && n_embd_ % 32 == 0;
+    const bool f32_img = prompt_f32_ && !q8k_img && !q8_img;
     const int64_t n_img = q8k_img ? n_sel * (n_embd_ / 256) * 292
                                   : f32_img ? n_sel * n_embd_ * (int64_t) sizeof(float)
                                             : n_sel * (n_embd_ / 32) * 36;
