@@ -23,8 +23,13 @@ for spec in $TREES; do
   # One cache line = one array element: spaced values (CMAKE_HIP_FLAGS_*=-O3
   # -DNDEBUG) must stay a single argument or cmake sees a bare '-g'/'-O3' and
   # dies with "Unknown argument" (l3-hip-rebuild.log, 2026-11-01).
-  mapfile -t args < <(grep -E '^(STRATA_|GGML_|CMAKE_BUILD_TYPE|CMAKE_HIP_)' "build-mixed-gpu/$src/CMakeCache.txt" \
-          | grep -v ADVANCED | sed 's/^/-D/')
+  mapfile -t args < <(grep -E '^(STRATA_|GGML_|CMAKE_BUILD_TYPE|CMAKE_HIP_|CMAKE_CUDA_ARCHITECTURES)' "build-mixed-gpu/$src/CMakeCache.txt" \
+          | grep -v ADVANCED | sed -e 's/^/-D/' -e 's/:UNINITIALIZED=/:STRING=/')
+  # CMAKE_CUDA_ARCHITECTURES added 2026-11-09: the qa2 caches store it as :UNINITIALIZED=86,
+  # the replication grep missed it, and the diet tree defaulted to sm_120 - the helper's
+  # fatbin had no sm_86 image and died on the 3080's first kernel ("no kernel image is
+  # available", ab9 window attempt 4, arm D). UNINITIALIZED is normalized to STRING because
+  # -DVAR:UNINITIALIZED=86 is not a cmake-legal type spec.
   # Pin ROCm resolution to the runtime's libraries; never let CMake wander into a
   # newer /opt/rocm (the unversioned AMDDeviceLibs_DIR of the old cache is NOT
   # replicated on purpose — it resolves through CMAKE_PREFIX_PATH instead).
