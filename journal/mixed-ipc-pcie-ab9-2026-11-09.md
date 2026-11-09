@@ -285,3 +285,21 @@ build could wake it - no agent died. Two lessons applied going forward:
 1. Sentinels on append-only build logs must track tail offset, not grep the whole file for a marker.
 2. Before ANY stop-prod: pgrep for agent build/test activity - "session idle" is not "lane terminal".
 Span window reruns only after the fixer lane reports fully terminal and the alias exists.
+
+## 00:00 SPAN DECOMPOSITION (window 23:53, instrumented build 2e39a74ee) - quant is the lever
+
+256 claims, spans sum = lock (gap 0.1%). Parity exact, gates green, 8k 8.05-8.20s (== baseline).
+| span | %lock | med/claim |
+|---|---|---|
+| quant | 45% | 6.0ms | fp32->q8_1 twin quantize ON THE HELPER CPU (image_format 1 only!)
+| ksync | 39% | 7.6ms | the GPU GEMM itself
+| pack  | 11% | 1.75ms | reply serialize (PCIe read of mapped rows)
+| parse/lookup/launch/scan/upload | 5% | ~0 |
+
+Protocol: image_format 0 = engine pre-quantized q8_1 (NO helper quant), 1 = f32 rows the helper quantizes,
+2 = Q8_K. Prod's prefill sends format 1 -> the helper burns 45% of its serve re-quantizing on CPU.
+Next lane: make the engine send format 0 (engine-side quantize, ~9x smaller request wire too) or
+GPU-quantize on the helper; parity requires the q8_1 algorithm to match the helper's (gate4 will tell).
+Prize: ~0.19-0.33s/prompt @8k (+2.5-4%), more @80k; pack-overlap a small follow-up.
+NOTE: external SIGTERM killed two chained shells (stop-prod+window+restore) - split shells survive;
+killer unidentified (not the user). Keep windows as single-purpose background shells.
