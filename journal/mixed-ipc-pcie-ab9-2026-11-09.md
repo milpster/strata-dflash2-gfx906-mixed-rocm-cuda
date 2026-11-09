@@ -303,3 +303,22 @@ GPU-quantize on the helper; parity requires the q8_1 algorithm to match the help
 Prize: ~0.19-0.33s/prompt @8k (+2.5-4%), more @80k; pack-overlap a small follow-up.
 NOTE: external SIGTERM killed two chained shells (stop-prod+window+restore) - split shells survive;
 killer unidentified (not the user). Keep windows as single-purpose background shells.
+
+## 01:00 FMT0 VERDICT (window 00:50, STRATA_HELPER_Q8_IMAGE=1, commit fa733f62d) - lever DEAD for wall, code kept gated-off
+
+Mechanism PROVEN: quant 45%->0% (collapsed), helper lock sum 5.856->3.376s (-42%), p10-floor 5783->1916us,
+request image 3.56x smaller (1469->413 MiB/window), parity EXACT (gate4 sha 01db7a9d... unchanged; engine
+quantizer = helper twin, same statements). Walls @8k med 8.072 vs 8.126 baseline (-0.8% = wire only, sub-noise);
+80k 48.9 vs 48.8 wash; TG 20.8 vs 20.5 noise. exit 0, gates green.
+
+VERDICT: the 45% quant span was HIDDEN, not critical. M4c(b)'s "overlapped with the primary's compute" was
+correct - helper CPU quant overlapped engine work. Busy-span != critical-path (span decomposition measures
+busy, only a wall A/B measures critical). Helper claim path is NOT the bottleneck at 8k or 80k.
+
+DISPOSITION: fa733f62d stays (default-off env gate, zero-risk, -42% helper lock headroom + 3.56x less request
+wire = useful if future levers stack or PCIe contention appears). NOT enabled on prod (no measurable wall win;
+adoption bar unmet). Prod stays v0215 default bytes.
+
+NEXT: engine is the pacer (~190ms of ~256ms layer cycle). ksync now 70% of a mostly-hidden lock - GEMM
+speedups may partially hide too; validate with wall A/B before investing. Real direction: engine-side profile
+(80k attention ride-along), or close the program at v0215 (+2.2%).
