@@ -320,17 +320,26 @@ int Socket::read_all(uint8_t* data, size_t n, int64_t deadline_ms) const {
     if (fd_ < 0) return kErrUnhealthy;
     size_t off = 0;
     while (off < n) {
+        // helper-ipc-diet: ONE poll per burst, then recv until the socket runs dry.  The pre-fix
+        // loop polled before EVERY recv; a 24 MB reply arriving as fast as the pipe allows cost
+        // ~6000 poll+recv syscall pairs the kernel never needed (the data was already there).
+        // The fd is nonblocking, so the drain ends on EAGAIN and the deadline stays the poll's:
+        // same absolute CLOCK_MONOTONIC bound, same kErrTimeout/kErrUnhealthy, same 2 s poll cap.
         const int pr = poll_once(fd_, POLLIN, deadline_ms);
         if (pr < 0) return kErrUnhealthy;
         if (pr == 0) return kErrTimeout;
-        const ssize_t r = ::recv(fd_, data + off, n - off, MSG_NOSIGNAL);
-        if (r == 0) return kErrUnhealthy;   // EOF: the peer is gone
-        if (r < 0) {
+        for (;;) {
+            const ssize_t r = ::recv(fd_, data + off, n - off, MSG_NOSIGNAL);
+            if (r > 0) {
+                off += (size_t) r;
+                if (off >= n) return kOk;
+                continue;
+            }
+            if (r == 0) return kErrUnhealthy;   // EOF: the peer is gone
             if (errno == EINTR) continue;
-            if (errno == EAGAIN || errno == EWOULDBLOCK) continue;   // spurious readiness: re-wait
+            if (errno == EAGAIN || errno == EWOULDBLOCK) break;   // drained: re-poll the same deadline
             return kErrUnhealthy;
         }
-        off += (size_t) r;
     }
     return kOk;
 }
@@ -360,34 +369,41 @@ int Socket::write_seq(uint32_t seq, uint32_t type, uint32_t req_id, const uint8_
     void* bases[2] = {head, (void*) payload};
     size_t off = 0;
     while (off < kHeaderBytes + n) {
+        // helper-ipc-diet: ONE poll per burst, then sendmsg until the socket buffer is full (see
+        // read_all's identical shape).  Same absolute deadline, same EAGAIN-then-re-poll rule,
+        // same MSG_NOSIGNAL (H15's sendmsg carries it for real); only the per-chunk poll is gone.
         const int pr = poll_once(fd_, POLLOUT, deadline_ms);
         if (pr < 0) return kErrUnhealthy;
         if (pr == 0) return kErrTimeout;
-        struct iovec v[2];
-        int cnt = 0;
-        size_t skip = off;
-        for (int i = 0; i < 2; ++i) {
-            if (skip >= lens[i]) { skip -= lens[i]; continue; }
-            v[cnt].iov_base = (char*) bases[i] + skip;
-            v[cnt].iov_len = lens[i] - skip;
-            ++cnt;
-            skip = 0;
-        }
-        // H15 (r25a): writev takes no flags, so the MSG_NOSIGNAL claim above was never true and a
-        // dead peer killed the writer with SIGPIPE (engine exit -13 mid-fault-injection). sendmsg
-        // carries the same iovec AND the flag; EPIPE now lands in the error path below ->
-        // kErrUnhealthy -> channel closed -> the engine's proven fallback.
-        struct msghdr mh = {};
-        mh.msg_iov = v;
-        mh.msg_iovlen = cnt;
-        const ssize_t w = ::sendmsg(fd_, &mh, MSG_NOSIGNAL);
-        if (w < 0) {
+        for (;;) {
+            struct iovec v[2];
+            int cnt = 0;
+            size_t skip = off;
+            for (int i = 0; i < 2; ++i) {
+                if (skip >= lens[i]) { skip -= lens[i]; continue; }
+                v[cnt].iov_base = (char*) bases[i] + skip;
+                v[cnt].iov_len = lens[i] - skip;
+                ++cnt;
+                skip = 0;
+            }
+            // H15 (r25a): writev takes no flags, so the MSG_NOSIGNAL claim above was never true and a
+            // dead peer killed the writer with SIGPIPE (engine exit -13 mid-fault-injection). sendmsg
+            // carries the same iovec AND the flag; EPIPE now lands in the error path below ->
+            // kErrUnhealthy -> channel closed -> the engine's proven fallback.
+            struct msghdr mh = {};
+            mh.msg_iov = v;
+            mh.msg_iovlen = cnt;
+            const ssize_t w = ::sendmsg(fd_, &mh, MSG_NOSIGNAL);
+            if (w > 0) {
+                off += (size_t) w;
+                if (off >= kHeaderBytes + n) return kOk;
+                continue;
+            }
+            if (w == 0) return kErrUnhealthy;   // the transport's existing rule: a zero write is a dead channel
             if (errno == EINTR) continue;
-            if (errno == EAGAIN || errno == EWOULDBLOCK) continue;   // buffer full: re-poll against the same deadline
-            return kErrUnhealthy;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) break;   // buffer full: re-poll against the same deadline
+            return kErrUnhealthy;   // EPIPE / ECONNRESET / anything: the channel is done
         }
-        if (w == 0) return kErrUnhealthy;
-        off += (size_t) w;
     }
     return kOk;
 }
