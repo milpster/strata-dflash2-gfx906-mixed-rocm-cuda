@@ -1,0 +1,21 @@
+{
+ "arm": "E",
+ "leg": "warm",
+ "kind": "warm",
+ "ctx": 512,
+ "max_tokens": 64,
+ "ts": 1794246729.377,
+ "walls": [
+  9.357
+ ],
+ "wall_s": 9.357,
+ "content_from": "content",
+ "prompt_bytes": 512,
+ "sha256": "8e6e87b6ee4673e77a1bb6784bb06fad4e601c69295cf0252508d8b94a9ac063",
+ "elog": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/logs/ab9-20261109-184625-E-engine.log",
+ "elog_start": 9286,
+ "elog_end": 12325,
+ "hlog": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/logs/ab9-20261109-184625-E-helper.log",
+ "hlog_start": 1386,
+ "hlog_end": 81631
+}

@@ -99,3 +99,22 @@ follow it whether a person or an agent writes the text. The short version:
   [docs/COMMUNITY_BENCHMARKS.md](docs/COMMUNITY_BENCHMARKS.md), compare against a same-day run of the build you are
   testing, and say what you did not test.
 - Open test requests and the hardware that is wanted are listed in [docs/TEST_REQUESTS.md](docs/TEST_REQUESTS.md).
+
+## MACHINE FACTS — this box (GUAM, 2× Radeon VII gfx906) — do not deviate
+
+- **gfx906 builds LINK AND RUN against the ROCm 6.1.0 userspace, never `/opt/rocm` (7.x).**
+  `/opt/rocm` is at most a syntax-check compiler host; linking or running against it produces
+  wrong sonames (`libhipblas.so.3`, `libamdhip64.so.7`, `librocblas.so.5`) that this deployment
+  cannot load and lacks gfx906 kernels for.
+- **Configure (from JOURNAL-2026-10-24-strata-merge-prep.md, verified 2026-11-08):**
+  `PATH=/opt/rocm-6.1.0/bin:$PATH cmake -S . -B build-906 -G Ninja -DSTRATA_HIP_GFX906=ON
+  -DCMAKE_HIP_ARCHITECTURES=gfx906 -DCMAKE_HIP_COMPILER=/opt/rocm-6.1.0/llvm/bin/clang++
+  -DCMAKE_PREFIX_PATH=/opt/rocm-6.1.0` (+ `-DSTRATA_ENABLE_DFLASH2=ON -DSTRATA_HAVE_DFLASH2=OFF`
+  for the serve/layer-split DFlash runtime this box runs).
+- **Expected `ldd` of the engine:** `libhipblas.so.2` and `libamdhip64.so.6` →
+  `/opt/rocm-6.1.0/lib`; `librocblas.so.4` → `/home/srcds/rocm-gfx906-xnack/lib` (custom xnack
+  build with gfx906 Tensile kernels). Anything else is a misbuild.
+- **Runtime env:** `LD_LIBRARY_PATH=/home/srcds/rocm-gfx906-xnack/lib:/opt/rocm-6.1.0/lib` and
+  `HSA_OVERRIDE_GFX_VERSION=9.0.6` (see `launch-prod-*.sh`, prod config `lib_dirs`).
+- `/home/user/rocm-gfx906-xnack` in old journals does not exist here; the real tree is
+  `/home/srcds/rocm-gfx906-xnack`.
