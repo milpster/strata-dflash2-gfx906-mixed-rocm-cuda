@@ -161,3 +161,11 @@ Window A/E 18:46-18:56 (all legs ran; gate3 initially misfired counting E as hel
 **Verdict: the diet engine binary alone is par with prod. Attempt-4's 7.67s leg was a fluke. The full +6.61% @8k (arm D) is the helper/IPC diet's contribution.** Attribution clean: A≈E < D. Cutover config if adopted: diet binaries + STRATA_HELPER on (D shape). TG: E 45.9s vs A 46.8s — no loss.
 
 Prod restored 18:57 (verified loaded:true); pair self-restarted once after (supervisor recovered).
+
+## Post-E prod blip + clean relaunch 19:12
+
+The 18:57 restored pair died ~19:00 (lifeline request_stop + helper SIGTERM; likely my 19:05 relaunch racing the 18:56 supervisor's restart cycle — both died; stale empty lock files removed). One clean supervised launch at 19:12: prod UP, loaded:true after 60s (launcher 746169, engine 746167).
+
+## Cutover decision pending (user)
+
+D shape (diet binaries + helper on) is the validated winner: +6.61% @8k, parity, no TG loss, 80k neutral. Blocker: the diet engine lacks the 4 conversation-cache-disk flags (disk-cache-streaming branch). Options: (a) merge disk-cache-streaming + helper-ipc-diet, build from golden confs, quick A/D' validation window, cut over with disk cache intact; (b) cut over now with disk flags stripped (loses prod disk conversation cache until merged); (c) hold.
