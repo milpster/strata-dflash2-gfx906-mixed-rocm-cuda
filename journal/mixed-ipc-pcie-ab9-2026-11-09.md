@@ -238,3 +238,24 @@ User approved adoption despite +2.2% vs bar (tighter p50, no regressions, disk-c
 NUMA DEAD - single CPU socket (user, 2026-11-09). VII2 helper DEAD - no VRAM (0.3-0.5 GiB free vs 6.8 GiB needed).
 Queue: (1) claim batching xN ~+3% PP; (2) claim-lifecycle pipelining (begin overlap +~1.7%, reply streaming +~1.4%) ~+3% combined; (3) helper async/2nd connection (subsumed by 1 mostly). TG insight: decode = 17,177 tier=w claims/1024 tok, lock mean 0.2ms, Sum-lock 3.4s of ~20s (17%) - TG is engine-paced; levers are PP levers. TG-specific candidate (unmeasured): engine-side RAM expert cache to cut 1.7 GB/1024 tok decode weight traffic.
 Dev discipline: agents code/build on CPU with prod UP; GPU validation windows are parent-only, prod down only for those.
+
+## 22:15 claim-batch validation chain (2 D-windows, prod down, AB9_NO_RESTORE=1)
+
+Fixer lane delivered batching (1ea98dae3 + docs 7d38420c8): kBeginPB/kRowsPB + feature bit, K caps,
+refuse-before-write, one lock per batch on the helper; batch=1 byte-identical (test 20a). Guard now
+auto-refreshes the -patient alias (8b386c5a8) - the fixer's rebuild wiped it AGAIN (window boot-fail
+x2 at 21:59, alias trap); third strike, now impossible.
+
+- Window 1 D batch=1 (new binary): parity exact x3 legs, 8k 8.05-8.15s (== attempt-7 D, no regression),
+  80k/tg wash. Binary is a clean prod candidate.
+- Window 2 D STRATA_CLAIM_BATCH=8 (real GPUs): parity exact EVERY leg - kBeginPB wire functionally
+  proven end-to-end. Perf: 8k 8.53-8.71s (~+6% SLOWER): walk flushes one-part batches; K>1 = wrapper
+  overhead only, as the fixer's deviation #2 predicted. Default stays 1; prod unaffected (still v0215).
+- Key dependency insight for the follow-up: MoE layers are sequential (L+1 routing needs L's MoE
+  output) -> cross-layer begin-ahead impossible; real batching = coalescing a layer's own claim pair
+  (96 claims/8k prompt ~= 2 per MoE layer, to be verified from code+logs). Prize if 2x: ~48 saved
+  RTTs x 5.8ms ~= +3% @8k.
+
+Prod restored v0215 after the chain (health ok, 48s boot). Walk-depth follow-up dispatched to the
+same fixer session (TASK A: one-part flush falls back to plain kBeginP so any K is safe; TASK B:
+same-layer coalescing with verified claim structure).
