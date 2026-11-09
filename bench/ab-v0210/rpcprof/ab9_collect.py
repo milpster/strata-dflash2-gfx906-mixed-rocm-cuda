@@ -97,7 +97,7 @@ def collect(dirpath: pathlib.Path) -> dict:
         rec["hlog_slice"] = read_slice(rec["hlog"], rec["hlog_start"], rec["hlog_end"])
         rec["dmon"] = dmon_stats(str(dirpath / f"{rec['arm']}-{rec['leg']}-dmon.txt"))
         legs.append(rec)
-    return {"legs": legs}
+    return {"legs": legs, "out_dir": str(dirpath)}
 
 
 def agg(legs: list[dict], arm: str, ctx: int, kind: str = "prefill") -> dict | None:
@@ -191,12 +191,21 @@ def gates(data: dict) -> int:
         if l.get("kind") != "prefill":
             continue
         counts[(l["arm"], l["ctx"])] = counts.get((l["arm"], l["ctx"]), 0) + len(DBG.findall(l["elog_slice"]))
+    # helper-on arms are those whose runtime cfg asked for STRATA_PREFILL_HELPER=1 (E is a
+    # helper-OFF arm that is not A - counting it as helper-on failed gate3 on the A/E window)
+    run_dir = pathlib.Path(str(data.get("out_dir", ".")), "run")
+    def helper_on(arm: str) -> bool:
+        try:
+            cfg = json.loads((run_dir / f"{arm}.json").read_text())
+            return cfg.get("env", {}).get("STRATA_PREFILL_HELPER") == "1"
+        except Exception:
+            return arm != "A"   # old behavior when the cfg is gone
     mismatch = False
     print("gate3 participation (DBG helper lines per arm+ctx):")
     for (arm, ctx), n in sorted(counts.items()):
         print(f"  {arm} ctx={ctx}: {n}")
     for ctx in {c for _, c in counts}:
-        vals = {arm: n for (arm, c), n in counts.items() if c == ctx and arm != "A"}
+        vals = {arm: n for (arm, c), n in counts.items() if c == ctx and helper_on(arm)}
         if len(set(vals.values())) > 1:
             print(f"GATE3 FAIL ctx={ctx}: helper-on arms disagree {vals}")
             mismatch = True
