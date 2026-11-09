@@ -60,9 +60,9 @@ def main() -> int:
     if begins:
         print(f"begin_us : n={len(begins)} sum={sum(begins)/1e6:.3f}s med={st.median(begins):.0f}")
     print("--- lever prizes (per prompt = sum/legs; assumes 1 prompt per leg) ---")
-    # batching prize must use the p10 FLOOR as the fixed cost (the median carries real
-    # per-row work that does not amortize) - this is an upper bound
-    print(f"batching x8 : <= {(sum(locks) - 8*floor)/1e6:.3f}s saved (fixed floor {floor:.0f}us x {n} claims -> {n*floor/1e6:.2f}s total fixed)")
+    # batching prize = each ELIMINATED round-trip saves one fixed floor (per-row work
+    # stays, just packed into bigger claims): (n - exchanges) x floor, upper bound
+    print(f"batching x8 : <= {(n-8)*floor/1e6:.3f}s saved (({n}-8) x floor {floor:.0f}us; total fixed {n*floor/1e6:.2f}s)")
     print(f"wire overlap: ~{wire_us/1e6:.3f}s max (hide wire behind compute)")
     print(f"begin overlap: ~{sum(begins)/1e6:.3f}s max")
     return 0
