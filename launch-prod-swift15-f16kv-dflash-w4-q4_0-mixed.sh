@@ -18,8 +18,11 @@ CONFIG="$ROOT/prod-config-swift15-f16kv-dflash-w4-q4_0-mixed.json"
 SOCKET="$ROOT/run/prod-swift15-f16kv-mixed.sock"
 SOCKET2="$ROOT/run/prod-swift15-f16kv-mixed2.sock"
 HELPER="$WORK/build-mixed-gpu/rpcw-cuda/strata-expert-helper-patient"
-# Default on before the supervisor forks; STRATA_KSM=0 opts out at startup.
-if [[ ${STRATA_KSM:-1} == 1 && ${STRATA_KSM_BOOTSTRAPPED:-0} != 1 ]]; then
+# KSM is OPT-IN here (SPEC-stage2 lever 4): measured general_profit -109.9 MB on this pair
+# (2026-11-08 17:22 baseline; -636 MB by 2026-11-09 11:01, pages_sharing 141 -> 0, ksmd ~0.1-0.2 %
+# CPU) - the merge costs more than it saves, so the default is OFF and STRATA_KSM=1 opts in
+# explicitly at the next natural pair start. The other five launchers keep the old default.
+if [[ ${STRATA_KSM:-0} == 1 && ${STRATA_KSM_BOOTSTRAPPED:-0} != 1 ]]; then
   export STRATA_KSM_BOOTSTRAPPED=1
   exec "$PY" -c '
 import ctypes
