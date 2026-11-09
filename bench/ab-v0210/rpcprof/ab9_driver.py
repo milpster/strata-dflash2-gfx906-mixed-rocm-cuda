@@ -51,12 +51,13 @@ def build_prompt(arm: str, leg: str, ctx: int) -> str:
     return prompt
 
 
-def post(url: str, prompt: str, max_tokens: int, timeout: int) -> tuple[float, str]:
+def post(url: str, prompt: str, max_tokens: int, timeout: int) -> tuple[float, str, str]:
     body = json.dumps({
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": max_tokens,
         "temperature": 0,
         "enable_thinking": False,
+        "reasoning_effort": "low",
         "stream": False,
     }).encode()
     req = urllib.request.Request(URL, data=body, headers={"Content-Type": "application/json"})
@@ -64,8 +65,14 @@ def post(url: str, prompt: str, max_tokens: int, timeout: int) -> tuple[float, s
     with urllib.request.urlopen(req, timeout=timeout) as r:
         resp = json.load(r)
     wall = time.time() - t0
-    content = resp["choices"][0]["message"]["content"]
-    return wall, content
+    m = resp["choices"][0]["message"]
+    # reasoning models can return content=null (budget eaten by reasoning_content, the
+    # promo_check precedent): never crash, fall back, and record where the text came from.
+    if m.get("content"):
+        return wall, m["content"], "content"
+    if m.get("reasoning_content"):
+        return wall, m["reasoning_content"], "reasoning"
+    return wall, "", "empty"
 
 
 def size(path: str) -> int:
@@ -86,14 +93,15 @@ def main() -> int:
     a = ap.parse_args()
 
     prompt = build_prompt(a.arm, a.leg, a.ctx)
-    max_tokens = 16 if a.kind == "warm" else a.max_tokens
+    max_tokens = 64 if a.kind == "warm" else a.max_tokens
     runs = 2 if a.kind == "tg" else 1
     e0, h0 = size(a.elog), size(a.hlog)
     t0 = time.time()
     walls: list[float] = []
     content = ""
+    content_from = "empty"
     for _ in range(runs):
-        wall, content = post(a.url, prompt, max_tokens, timeout=1800 if a.ctx >= 80000 else 900)
+        wall, content, content_from = post(a.url, prompt, max_tokens, timeout=1800 if a.ctx >= 80000 else 900)
         walls.append(round(wall, 3))
     wall = round(time.time() - t0, 3)
     e1, h1 = size(a.elog), size(a.hlog)
@@ -101,7 +109,7 @@ def main() -> int:
     rec = {
         "arm": a.arm, "leg": a.leg, "kind": a.kind, "ctx": a.ctx,
         "max_tokens": max_tokens, "ts": round(time.time(), 3),
-        "walls": walls, "wall_s": wall,
+        "walls": walls, "wall_s": wall, "content_from": content_from,
         "prompt_bytes": len(prompt.encode()),
         "sha256": hashlib.sha256(content.encode()).hexdigest(),
         "elog": a.elog, "elog_start": e0, "elog_end": e1,
