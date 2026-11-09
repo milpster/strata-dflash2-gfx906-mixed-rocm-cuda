@@ -274,3 +274,14 @@ per ~256ms layer-cycle @8k = begin 13.7ms + lock 44ms + reply ~4ms + engine comp
 Next lane (dispatched): decompose the 44ms lock (parse/lookup/enqueue/kernel-wait/scan/reply-DMA) with
 env-gated sub-span timers on the rpcprofile line + tolerant collector/breakdown. One GPU window after
 that decides: kernel efficiency vs launch overhead vs span trims. 80k profile still rides along.
+
+## 23:40 near-miss: window raced the fixer's final build; prod briefly down mid-agent-turn
+
+The reopened fixer session started its own final verification build (its report's "final two-tree build");
+my sentinel fired on the PREVIOUS run's GREEN line still present in the appended serve-spans-build.log,
+so I believed the lane idle, stopped prod, and launched the span window - which raced the build's
+rm -rf (alias gone, boot fail, exit 5, no legs run). Restored prod within ~2 min, BEFORE the fixer's
+build could wake it - no agent died. Two lessons applied going forward:
+1. Sentinels on append-only build logs must track tail offset, not grep the whole file for a marker.
+2. Before ANY stop-prod: pgrep for agent build/test activity - "session idle" is not "lane terminal".
+Span window reruns only after the fixer lane reports fully terminal and the alias exists.
