@@ -169,3 +169,59 @@ The 18:57 restored pair died ~19:00 (lifeline request_stop + helper SIGTERM; lik
 ## Cutover decision pending (user)
 
 D shape (diet binaries + helper on) is the validated winner: +6.61% @8k, parity, no TG loss, 80k neutral. Blocker: the diet engine lacks the 4 conversation-cache-disk flags (disk-cache-streaming branch). Options: (a) merge disk-cache-streaming + helper-ipc-diet, build from golden confs, quick A/D' validation window, cut over with disk cache intact; (b) cut over now with disk flags stripped (loses prod disk conversation cache until merged); (c) hold.
+
+## 21:40 window attempt 6 (A B D) - D boot fail; root cause: golden hip conf was a CUDA conf
+
+**Window**: A ok (8k 8.61/8.41/8.61, 80k 47.75/47.53/47.54, tg 48.6; gate2 helper-off PASS, gate4 sha all `01db7a9d…`).
+B ok (8k 8.57/8.45/8.37, 80k 49.29/48.92/48.90, tg 51.5; gate2 helper-on 64 lines PASS, sha same).
+D **boot fail exit 2**: `conversation parking does not support a layer split on one GPU (--split-device 0)`.
+Watcher killed the auto-restore per user order (prod stays down; results first).
+
+**Chain** (each step verified, not guessed):
+1. B.json ≡ D.json except exe/helper -> not a config diff. v0214 boots it, merged build refuses.
+2. Check fires iff split_devs==[0] iff cudaGetDeviceCount()<=1 at option-parse.
+3. ldd: merged "hip" engine links **libcudart.so.13 + libcublas** (v0214: libamdhip64 + libhipblas);
+   fatbin 70x sm_120, **zero gfx906**; sm_86 boot line absent in v0214 logs, present in D.
+   => real CUDA runtime, saw only the 3080, n_dev=1. Deterministic (probe x2 on idle GPUs).
+4. Not the merge, not rocm: `golden/rpcw-hip.cmake` had GGML_HIP=OFF/STRATA_ENABLE_CUDA=ON
+   (those are actually fine - build-906r = v0214's exact build tree, md5 b9d8162f, says the same)
+   but was missing **STRATA_HIP_GFX906** (CMakeLists:93 - the option that picks
+   enable_language(HIP) at :295 over enable_language(CUDA) at :333) and **STRATA_ENABLE_DFLASH2**.
+5. Root cause: `freeze_build_conf.sh` grep `STRATA_[A-Z_]+` lacks `0-9` (GGML_ pattern had it).
+   Digit vars silently dropped; tree configured pure CUDA sm_120. "ALL L3 BUILDS GREEN" was
+   false confidence - helper tests pass in a CUDA-built tree too.
+
+**Fixes** (worktree helper-ipc-diet, commit `3f62ee815`):
+- freeze regex -> `STRATA_[A-Z0-9_]+`; golden/rpcw-hip.cmake re-frozen from **build-906r**
+  (the tree whose strata md5-matches running prod v0214): STRATA_HIP_GFX906=ON, DFLASH2=ON,
+  HIP clang rocm-6.1.0, gfx906, zero CMAKE_CUDA keys.
+- build_l3.sh post-build backend guard: hip trees must show cache ON + no nvcc key +
+  ldd libamdhip64 + .hip_fatbin section + gfx906 strings; cuda trees must show helper sm_86.
+  (cuobjdump --list-elf shows nothing useful on HIP binaries - "does not contain device code".)
+
+**Rebuild** rpcw-hip-diet from fixed golden in flight; then boot probe, then full A/B/D rerun.
+Window verdicts table for attempt 6: A/B numbers above stand as the same-window baseline for the rerun.
+
+## 20:05 window attempt 7 (A B D) - CLEAN, all gates green; verdict: diet = +2.2% vs prod, below the 5% bar
+
+Rebuilt merged HIP engine from fixed golden (guard PASS) + v0214-mirror B + helper-off A, same window.
+Gates: g2 PASS (A off 1284 lines; B/D 64), g3 PASS (A 0 claims, B/D 96 each), g4 exact sha
+`01db7a9d…` across A/B/D/E 8k, g6 none. Watcher intercepted restore (19:59:40); prod stays down per user order.
+
+| arm | 8k PP med (spread) | 80k PP med | tg walls |
+|---|---|---|---|
+| A helper-off | 195.6 (3.7)  | 309.1 | 26.3/23.5 |
+| B prod mirror| 199.7 (23.5) | 305.4 | 25.8/8.8  |
+| D merged     | 204.1 (1.1)  | 306.3 | 19.5/20.8 |
+
+- D vs B: **+2.2% @8k**, +0.3% @80k (wash), TG no loss (D fastest consistent legs).
+- D vs A: +4.3% @8k. Helper internals confirm the diet: fixed_cost/claim 56.8->49.1 ms (-13.5%),
+  Sigma-reply -14.8%, Sigma-lock -7.7%, transfer_share 0.209->0.192. D spread 1.1 vs B 23.5 (B leg-1 9.37s outlier).
+- **Why run-5 showed +6.61% and this shows +2.2%**: run-5's pre-merge tree ran the old rpcw-hip conf;
+  tonight's D runs EXACTLY v0214's build conf (build-906r golden). Same-conf, same-window: the true
+  diet effect on wall-clock @8k in prod's conf is ~2.2% vs prod mirror, ~4.3% vs helper-off control.
+  The IPC savings are real but largely overlap engine compute in this configuration.
+- ADOPTION BAR (>=5% PP, no TG loss, parity): parity + TG met; PP +2.2% vs prod - **NOT met**. User decides.
+
+Lever analysis (claim_breakdown.py, 256 claims from attempt-5 D logs): transport stack ceiling ~+4-5%
+(batching x8 <= ~+3%, wire overlap ~+1.4%, begin overlap ~+1.5%); compute (HIP helper on VII2) remains the big lever.
