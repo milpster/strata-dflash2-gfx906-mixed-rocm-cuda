@@ -1,5 +1,5 @@
 {
- "_ab9_diff": "helper-ipc-diet validation arm: prod config verbatim EXCEPT exe -> the helper-ipc-diet worktree engine (branch helper-ipc-diet, builds rpcw-hip-diet/rpcw-cuda-diet from build-qa2 cache templates). Runtime env adds STRATA_PREFILL_HELPER=1 + PIPE=0 (arm-B shape); the helper binary for this arm comes from _ab9_helper_exe (the diet CUDA helper), all else identical to prod.",
+ "_ab9_diff": "helper-ipc-diet validation arm: prod config verbatim EXCEPT exe -> the helper-ipc-diet worktree engine (branch helper-ipc-diet, builds rpcw-hip-diet/rpcw-cuda-diet from build-qa2 cache templates). NOTE 2: the 4 --conversation-cache-disk* flags are stripped - they need the disk-cache-streaming branch (v0212-14 engines) which helper-ipc-diet does not include; inert within a fresh boot (cross-boot persistence only), RAM conversation cache identical. Runtime env: STRATA_PREFILL_HELPER=1 + PIPE=0 (arm-B shape); helper binary from _ab9_helper_exe (the diet CUDA helper), all else identical to prod.",
  "_ab9_helper_exe": "/mnt/srcds/Strata-wt-helper-ipc/build-mixed-gpu/rpcw-cuda-diet/strata-expert-helper-patient",
  "args": [
   "--gpu",
@@ -51,14 +51,7 @@
   "0",
   "--expert-helper-slots",
   "4600",
-  "--expert-helper-ram-relief",
-  "--conversation-cache-dir",
-  "/mnt/srcds/Strata/data/conversation-cache",
-  "--conversation-cache-disk-mib",
-  "24576",
-  "--conversation-cache-disk-ram-mib",
-  "64",
-  "--conversation-cache-disk-idle-save"
+  "--expert-helper-ram-relief"
  ],
  "backend": "hip",
  "cwd": "/mnt/srcds/Strata",
