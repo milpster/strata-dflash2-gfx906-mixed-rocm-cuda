@@ -1463,3 +1463,38 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
   equality with a batch=1 frame captured in the same run, twice (the walk's next
   claim flushes alone too), and that the channel stays open.
   expert_helper_socket_test PASS, 305 checks.
+
+## 2026-11-09 — Serve-path sub-spans: where the 44 ms per prompt claim actually goes
+
+- Instrumentation ONLY (no behavior change), CUDA helper `serve_prompt_core` /
+  `serve_prompt` / `serve_prompt_batch`: steady_clock sub-spans, gated on the
+  existing STRATA_RPC_PROFILE (the span sink is a nullptr when profiling is off,
+  so the default path reads no clock and writes no extra text).
+- Spans named for the phases the code actually has: `parse_us` (BeginPReq header,
+  geometry caps, layer/format gates), `lookup_us` (pair loop: primary bitmap +
+  cache.slot_of + per-expert cap, AND the grouped entry map), `quant_us` (the
+  fp32->q8_1 twin, image_format 1 only), `upload_us` (the three async enqueues:
+  q8 H2D, GroupMetaP H2D, scratch clear), `launch_us` (grouped kernel enqueue +
+  cudaGetLastError), `ksync_us` (cudaStreamSynchronize - THE GEMM span: it drains
+  the queued uploads, the clear and the kernels), `scan_us` (H14 all_finite over
+  the mapped-host rows), `pack_us` (reply serialize = the rows' PCIe read out of
+  the mapped cudaHostAlloc d_out_p).  Their sum is lock_us; reply_us stays the
+  socket-write span.
+- The serve line grows ADDITIVELY after the unchanged prefix (and after the
+  batch's `parts=N`): single-claim and batch lines both append
+  `parse_us= lookup_us= quant_us= upload_us= launch_us= ksync_us= scan_us=
+  pack_us=`; the batch line reports the WHOLE batch's spans (slice pass folded
+  into parse_us, every part summed).  Each line is written in ONE fprintf so two
+  --socket2 serve threads cannot interleave it (the reason the first draft,
+  which split the line across writes, was replaced).
+- Readers: ab9_collect.py matches the line PREFIX (search/finditer) and ignores
+  what follows - confirmed unaffected, unchanged.  claim_breakdown.py extended
+  (tolerantly): a SPAN regex collects the 8 fields per prompt claim when present,
+  prints sum/median/share-of-lock per span plus the spans-sum vs lock gap, and
+  behaves exactly as before for logs without them.  Verified on tonight's
+  220431-D log (256 claims, no spans -> identical output) and on a synthetic
+  mixed log (5 of 6 claims with spans -> share table, ksync 95%).  The two bench
+  scripts are left UNCOMMITTED in /mnt/srcds/Strata for the operator to commit.
+- CPU-only verification: build_l3.sh both trees green, guards PASS (helper fatbin
+  sm_86 + -patient alias refreshed; gfx906 HIP), ctest -R helper 5/5 and 1/1.
+  The GPU window that reads these fields is the operator's to run.

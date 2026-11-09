@@ -735,6 +735,60 @@ static inline cudaStream_t prompt_stream(const Helper& hp) {
     return hp.streams_split ? hp.stream_p : hp.stream;
 }
 
+// ---- L3 sub-spans of ONE prompt-tier claim's serve body (STRATA_RPC_PROFILE only) ----
+// The names follow the code's own phases in serve_prompt_core, nothing is invented:
+//   parse  - the BeginPReq header, the geometry caps and the layer/format gates;
+//   lookup - the pair loop (the primary bitmap, cache.slot_of, the per-expert cap) and the grouped
+//            entry map (start/dst/tok/compact_claim);
+//   quant  - the fp32 -> q8_1 twin quantize (image_format 1 only; ~0 for formats 0 and 2);
+//   upload - the three async enqueues: the q8 image H2D, the GroupMetaP H2D, the scratch clear;
+//   launch - the grouped kernel launch enqueue (native_expert_grouped / _q8k) + cudaGetLastError;
+//   ksync  - cudaStreamSynchronize: the device compute to completion (it drains the queued uploads,
+//            the clear and the kernels - that is the GEMM time);
+//   scan   - the H14 finite-row scan of the mapped-host output rows;
+//   pack   - the reply serialize, i.e. the rows' PCIe read out of the mapped cudaHostAlloc d_out_p.
+// Their SUM is lock_us (the existing lock span); reply_us stays the socket write span.
+// `sp` is nullptr when profiling is OFF, so no clock is read on the default path.
+struct ServeSpans {
+    int64_t parse_us = 0, lookup_us = 0, quant_us = 0, upload_us = 0;
+    int64_t launch_us = 0, ksync_us = 0, scan_us = 0, pack_us = 0;
+};
+
+inline int64_t span_us(const std::chrono::steady_clock::time_point& from) {
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - from).count();
+}
+
+inline std::chrono::steady_clock::time_point span_mark(const ServeSpans* sp) {
+    return sp != nullptr ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+}
+
+// The appended L3 fields of one serve line: the span decomposition of lock_us, formatted ONLY when
+// profiling.  The existing prefix stays byte-identical and these fields are appended after it, so the
+// ab9 collectors (which match the prefix and ignore what follows) keep parsing.  The caller formats
+// them INTO its line and writes the line ONCE: with --socket2 two serve threads write profile lines to
+// the same stderr, and a line split across writes could interleave.
+inline void format_serve_spans(const ServeSpans& sp, char* buf, size_t n) {
+    std::snprintf(buf, n, " parse_us=%lld lookup_us=%lld quant_us=%lld upload_us=%lld launch_us=%lld "
+                          "ksync_us=%lld scan_us=%lld pack_us=%lld",
+                  (long long) sp.parse_us, (long long) sp.lookup_us, (long long) sp.quant_us,
+                  (long long) sp.upload_us, (long long) sp.launch_us, (long long) sp.ksync_us,
+                  (long long) sp.scan_us, (long long) sp.pack_us);
+}
+
+// The batch's line reports ONE set of spans for the WHOLE batch, so the per-part spans sum here.
+inline ServeSpans& operator+=(ServeSpans& a, const ServeSpans& b) {
+    a.parse_us += b.parse_us;
+    a.lookup_us += b.lookup_us;
+    a.quant_us += b.quant_us;
+    a.upload_us += b.upload_us;
+    a.launch_us += b.launch_us;
+    a.ksync_us += b.ksync_us;
+    a.scan_us += b.scan_us;
+    a.pack_us += b.pack_us;
+    return a;
+}
+
 // The per-part BODY of a prompt-tier request: every cap kBeginP enforces, the claims, the grouped
 // launch, the H14 finite scan, and the reply BYTES - the exact kRowsP payload (RowsPResp + rows in
 // claim order with the original pair indices).  It takes no lock and writes no socket: serve_prompt
@@ -742,7 +796,9 @@ static inline cudaStream_t prompt_stream(const Helper& hp) {
 // them as K parts of one kRowsPB.  One code path per claim, so a batched part is byte-for-byte the
 // request and reply a standalone kBeginP/kRowsP pair carries.
 static int serve_prompt_core(Helper& hp, PayloadView body, std::vector<uint8_t>& reply,
-                             int32_t& n_rows_out, int32_t& layer_out, std::string& err) {
+                             int32_t& n_rows_out, int32_t& layer_out, std::string& err,
+                             ServeSpans* sp = nullptr) {
+    const auto t_parse = span_mark(sp);   // L3: spans are only marked when sp is non-null (prof ON)
     if (body.size() < sizeof(BeginPReq)) return kErrShort;
     BeginPReq req;
     std::memcpy(&req, body.data(), sizeof(req));
@@ -773,6 +829,8 @@ static int serve_prompt_core(Helper& hp, PayloadView body, std::vector<uint8_t>&
         if (!strata::kernels::native_expert_q8k_supported(fmt.gu_type, fmt.n_embd))
             return kErrGeometry;   // this layer's gate/up weight type has no Q8_K kernel
     }
+    if (sp != nullptr) sp->parse_us = span_us(t_parse);
+    const auto t_lookup = span_mark(sp);
 
     // The claims: the pairs whose expert the helper holds and the primary does not own.  A pair whose
     // expert is primary-resident or not resident HERE is ABSENT from the reply - the engine's
@@ -823,6 +881,8 @@ static int serve_prompt_core(Helper& hp, PayloadView body, std::vector<uint8_t>&
     }
     start.push_back((int32_t) dst.size());
     if (dst.size() != claim_of.size()) return kErrInternal;   // the entry map covers every claim, once
+    if (sp != nullptr) sp->lookup_us = span_us(t_lookup);   // the pair resolution AND the entry map
+    const auto t_quant = span_mark(sp);
 
     // The activations: image_format 0 arrives exactly as the engine quantized them (quantize_q8_1_cpu,
     // the same quantizer the decode contract pins) - upload verbatim, no requantization.  image_format
@@ -842,6 +902,8 @@ static int serve_prompt_core(Helper& hp, PayloadView body, std::vector<uint8_t>&
                                hp.h_q8_p_scratch.data() + (size_t) r * (size_t) (H / 32) * 36);
         img = hp.h_q8_p_scratch.data();
     }
+    if (sp != nullptr) sp->quant_us = span_us(t_quant);   // 0 work for image_format 0/2 (uploaded verbatim)
+    const auto t_upload = span_mark(sp);
     if (!cuda_check(cudaMemcpyAsync(hp.d_q8_p, img, up_bytes, cudaMemcpyHostToDevice, prompt_stream(hp)),
                     "prompt q8 upload", err)) return kErrInternal;
     std::memcpy(hp.h_meta_p->ptr, grp_ptr.data(), grp_ptr.size() * sizeof(grp_ptr[0]));
@@ -874,6 +936,8 @@ static int serve_prompt_core(Helper& hp, PayloadView body, std::vector<uint8_t>&
         strata::kernels::moe_hit_grouped_scratch_bytes((int64_t) dst.size(), H, FF));
     if (!cuda_check(cudaMemsetAsync(hp.d_scratch_p, 0, scratch_dirty, prompt_stream(hp)),
                     "prompt scratch clear", err)) return kErrInternal;
+    if (sp != nullptr) sp->upload_us = span_us(t_upload);   // the THREE async enqueues, not their drain
+    const auto t_launch = span_mark(sp);
     if (img_q8k)
         strata::kernels::native_expert_grouped_q8k(L, hp.d_meta_p->ptr, hp.d_meta_p->start, &hp.d_meta_p->count,
                                                    hp.d_meta_p->dst, hp.d_meta_p->tok, groups, (int64_t) dst.size(),
@@ -884,7 +948,11 @@ static int serve_prompt_core(Helper& hp, PayloadView body, std::vector<uint8_t>&
                                                (const uint8_t*) hp.d_q8_p, hp.d_scratch_p, hp.d_out_p, prompt_stream(hp));
     if (!cuda_check(cudaGetLastError(), img_q8k ? "native_expert_grouped_q8k prompt launch"
                                                 : "native_expert_grouped prompt launch", err)) return kErrInternal;
+    if (sp != nullptr) sp->launch_us = span_us(t_launch);   // the kernel enqueue + cudaGetLastError
+    const auto t_ksync = span_mark(sp);
     if (!cuda_check(cudaStreamSynchronize(prompt_stream(hp)), "prompt row sync", err)) return kErrInternal;
+    if (sp != nullptr) sp->ksync_us = span_us(t_ksync);   // THE GEMM SPAN: queued uploads, clear, kernels
+    const auto t_scan = span_mark(sp);
 
     // H14's finite-row scan, mirrored: prove the rows before the engine refuses them.
     for (int32_t i = 0; i < (int32_t) compact_claim.size(); ++i) {
@@ -901,8 +969,11 @@ static int serve_prompt_core(Helper& hp, PayloadView body, std::vector<uint8_t>&
         }
     }
 
+    if (sp != nullptr) sp->scan_us = span_us(t_scan);   // the H14 all_finite pass over the mapped rows
+
     // The rows in claim order, with the ORIGINAL pair indices (the engine validates every index
     // against its own claims and refuses a row it did not claim).
+    const auto t_pack = span_mark(sp);
     const int32_t n_rows = (int32_t) compact_claim.size();
     const size_t row_bytes = 4 + (size_t) H * 4;
     RowsPResp rep;
@@ -914,6 +985,7 @@ static int serve_prompt_core(Helper& hp, PayloadView body, std::vector<uint8_t>&
         std::memcpy(reply.data() + sizeof(rep) + (size_t) i * row_bytes + 4,
                     hp.d_out_p + (size_t) i * H, (size_t) H * 4);
     }
+    if (sp != nullptr) sp->pack_us = span_us(t_pack);   // reply serialize + the rows' PCIe read from d_out_p
     n_rows_out = n_rows;
     layer_out = layer;
     return kOk;
@@ -939,20 +1011,24 @@ int serve_prompt(Helper& hp, PayloadView body, uint32_t req_id, uint32_t seq, st
                                           std::chrono::steady_clock::now() - p_entry).count() : 0;
     std::vector<uint8_t> payload;
     int32_t n_rows = 0, layer = 0;
-    const int rc = serve_prompt_core(hp, body, payload, n_rows, layer, err);
+    ServeSpans spans;   // L3: the core gets a span sink ONLY when profiling; off = no clocks read
+    const int rc = serve_prompt_core(hp, body, payload, n_rows, layer, err, prof ? &spans : nullptr);
     if (rc != kOk) return rc;
     const auto p_ready = prof ? std::chrono::steady_clock::now()
                               : std::chrono::steady_clock::time_point{};
     const int rc_w = out.write_reply(kRowsP, req_id, seq, payload.data(), payload.size(), deadline_after(reply_deadline_ms(10000)));
-    if (prof)   // L3: one line per served prompt frame; refusals/empty replies stay untimed
+    if (prof) {   // L3: one line per served prompt frame; refusals/empty replies stay untimed
+        char spans_txt[320];
+        format_serve_spans(spans, spans_txt, sizeof(spans_txt));   // appended, same write as the line
         std::fprintf(stderr, "rpcprofile: serve tier=p layer=%d rows=%d queue_us=%lld lock_us=%lld "
-                             "reply_us=%lld rows_kb=%lld\n", (int) layer, n_rows,
+                             "reply_us=%lld rows_kb=%lld%s\n", (int) layer, n_rows,
                      (long long) p_queue_us,
                      (long long) (std::chrono::duration_cast<std::chrono::microseconds>(
                                       p_ready - p_entry).count() - p_queue_us),
                      (long long) std::chrono::duration_cast<std::chrono::microseconds>(
                                       std::chrono::steady_clock::now() - p_ready).count(),
-                     (long long) ((payload.size() - sizeof(RowsPResp)) / 1024));
+                     (long long) ((payload.size() - sizeof(RowsPResp)) / 1024), spans_txt);
+    }
     return rc_w;
 }
 
@@ -979,6 +1055,9 @@ int serve_prompt_batch(Helper& hp, PayloadView body, uint32_t req_id, uint32_t s
     else gpu_lk.lock();
     const int64_t p_queue_us = prof ? std::chrono::duration_cast<std::chrono::microseconds>(
                                           std::chrono::steady_clock::now() - p_entry).count() : 0;
+    ServeSpans spans;   // L3: the batch's ONE span set - the slice pass plus every part's spans
+    const ServeSpans* sp = prof ? &spans : nullptr;
+    const auto t_slice = span_mark(sp);
     if (body.size() < sizeof(BeginPBReq)) return kErrShort;
     BeginPBReq req;
     std::memcpy(&req, body.data(), sizeof(req));
@@ -1004,6 +1083,7 @@ int serve_prompt_batch(Helper& hp, PayloadView body, uint32_t req_id, uint32_t s
         off += len;
     }
     if (off != body.size()) return kErrShort;   // the parts' byte total is the frame's, exactly
+    if (sp != nullptr) spans.parse_us += span_us(t_slice);   // the batch's header check + slice pass
     // ONE reply for the batch: RowsPBResp + the parts' kRowsP payloads, in the request's part order.
     std::vector<uint8_t> reply;
     int64_t rows_total = 0;
@@ -1011,8 +1091,11 @@ int serve_prompt_batch(Helper& hp, PayloadView body, uint32_t req_id, uint32_t s
     for (size_t i = 0; i < parts.size(); ++i) {
         std::vector<uint8_t> part_reply;
         int32_t n_rows = 0, layer = 0;
-        const int rc = serve_prompt_core(hp, parts[i], part_reply, n_rows, layer, err);
+        ServeSpans part_spans;   // L3: summed into the batch's spans; nullptr when profiling is off
+        const int rc = serve_prompt_core(hp, parts[i], part_reply, n_rows, layer, err,
+                                         sp != nullptr ? &part_spans : nullptr);
         if (rc != kOk) return rc;
+        if (sp != nullptr) spans += part_spans;
         if (i == 0) layer0 = layer;
         rows_total += n_rows;
         reply.insert(reply.end(), part_reply.begin(), part_reply.end());
@@ -1028,15 +1111,18 @@ int serve_prompt_batch(Helper& hp, PayloadView body, uint32_t req_id, uint32_t s
                                      deadline_after(reply_deadline_ms(10000)));
     if (prof) {
         // L3: the line's PREFIX is the single-claim line's exactly, so the existing parsers keep
-        // reading it; `parts` is the appended field naming the batch this line covers.
+        // reading it; `parts` is the appended field naming the batch this line covers, and the
+        // sub-spans are the WHOLE batch's (slice pass + every part), summed - one write per line.
+        char spans_txt[320];
+        format_serve_spans(spans, spans_txt, sizeof(spans_txt));
         std::fprintf(stderr, "rpcprofile: serve tier=p layer=%d rows=%lld queue_us=%lld lock_us=%lld "
-                             "reply_us=%lld rows_kb=%lld parts=%d\n", (int) layer0, (long long) rows_total,
+                             "reply_us=%lld rows_kb=%lld parts=%d%s\n", (int) layer0, (long long) rows_total,
                       (long long) p_queue_us,
                       (long long) (std::chrono::duration_cast<std::chrono::microseconds>(
                                        p_ready - p_entry).count() - p_queue_us),
                       (long long) std::chrono::duration_cast<std::chrono::microseconds>(
                                        std::chrono::steady_clock::now() - p_ready).count(),
-                      (long long) ((payload.size() - sizeof(rep)) / 1024), (int) parts.size());
+                      (long long) ((payload.size() - sizeof(rep)) / 1024), (int) parts.size(), spans_txt);
     }
     return rc_w;
 }
