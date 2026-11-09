@@ -114,3 +114,37 @@ a perf cost. TG512 all on par (29.6–33.3 s vs C-shape legs).
 2. Stage-2 redo with mem-baseline fixed (arm-process discovery) + cache-cap pairing on
    fp16-compatible levers only (m1/m3 class; KV stays fp16 per user policy; m4 parity
    failure means layer-split is off the table unless parity is re-gated).
+
+## Diet validation window (A D) — started 17:16
+
+- Prod down (user-ordered 17:08): port free, VRAM drained, MemAvailable 52.7 GiB.
+- Diet trees built from `helper-ipc-diet` (build-qa2 cache templates, `-j11`):
+  - `rpcw-cuda-diet` (16:50): 5/5 helper tests; `-patient` alias = copy of cmake `strata-expert-helper` (timeouts come from harness cmdline, `AB9_HELPER_TIMEOUT=63115200000`).
+  - `rpcw-hip-diet` (17:15): 5/5 helper tests incl. ownership (mkdir fix built in).
+- En-route fixes: `build_l3.sh` double-dash cmake arg (`929bc2632`); ownership test mkdirs `/tmp/agent` (`3a80ed0be`, reboot wiped it — baseline failed identically, NOT a diet regression); harness arm-scoped engine/helper pgrep paths (`89ce527eb`); arm D + `AB9_ARMS` support (`883a097ad`).
+- Run-5 outputs archived to `out/ab9-run5-20261109` (stale m4 sha would poison gate4).
+- Window: `AB9_ARMS="A D"` — A = v0214 helper-off control, D = diet binaries helper-on. Decision: gate4 byte-parity A↔D + PP delta vs ≥5% bar (B measured +3.0% @8k, −0.8% @80k).
+
+## Diet validation window (A D) — COMPLETE 18:41, attempt 5
+
+Attempt history: 1 (17:16) D boot died on 4 conversation-cache-disk flags (disk-cache-streaming branch only — stripped from arm D, `7c5cb8490`); 2/3 (17:26/17:59) box hung mid-arm-A (user SysRq reboots — GPU hiccups, out of scope); 4 (18:13) D helper died at fill: `native_expert_grouped/gu: no kernel image` — rpcw-cuda-diet fatbin was sm_120 (CMake default) because build_l3.sh's replication grep misses `CMAKE_CUDA_ARCHITECTURES` (stored :UNINITIALIZED=86 in qa2). Fixed (`84eaac524`) + rebuilt for sm_86 + **golden frozen build confs** (`freeze_build_conf.sh`, `golden/rpcw-{cuda,hip}.cmake`, build_l3 `-C` mode, `9765bac6c`) — template-cache drift ends here.
+
+### Results (out/ab9, run of 18:31:20)
+
+| arm | ctx | PP med tok/s | gain vs A | claims | parity |
+|---|---|---|---|---|---|
+| A (v0214, helper off) | 8000 | 195.3 | — | 0 | sha 01db7a… |
+| D (diet, helper on) | 8000 | **208.2** | **+6.61%** | 96 | same sha |
+| A | 80000 | 308.4 | — | 0 | same sha |
+| D | 80000 | 306.9 | −0.49% (within noise; A spread 1.9%) | 96 (256 rows) | same sha |
+
+- gate3 participation: A=0, D=96 both ctx ✓. gate4 byte parity A↔D ✓. gate6 flags: none ✓. Fresh-judge: True.
+- TG 1024: D 47.86s vs A 50.22s — **no TG loss** (slightly better).
+- Helper-side @8k: Σlock 1.40s/leg (B was 1.57), Σreply 1.40s/leg (B was 1.73) — wire+lock diet landed; fixed_cost/claim 48.0ms (B ~54ms).
+- **Verdict vs bar (≥5% PP, no TG loss, byte parity): CLEARED at 8k (+6.61%); 80k neutral; adoptable.**
+
+### Open anomaly (follow-up arm E, one cheap window)
+
+Attempt 4's D ran one 8k leg with the helper DEAD (sm_120 crash → engine CPU-path fallback): 7.672s ≈ 250 tok/s pace — FASTER than helper-on D (8.03–8.19s) and A (8.48–8.62s). Single leg, but beyond A's spread. If it holds, diet engine + PREFILL_HELPER=0 beats helper-on by ~3% more at 8k (and frees the 3080's 6.8 GiB). Proposal: arm E = diet engine, helper off, same protocol (~10 min window).
+
+Prod restored supervised 18:41 (verified health 200, loaded:true, engine pid 450257, sockets).
