@@ -774,7 +774,7 @@ bool conversation_state_source(SessionRegionSource& out, const SessionState& ses
 }
 
 bool conversation_state_stream_write(SessionState& session, const ModelGeometry& g, int64_t part, uint64_t offset,
-                                     const void* bytes, size_t n, std::string& error) {
+                                     const void* bytes, size_t n, std::string& error, bool queued) {
     std::vector<std::pair<void*, size_t>> pieces;
     if (!state_pieces(g, session, part, pieces, error)) return false;
     const uint8_t* src = static_cast<const uint8_t*>(bytes);
@@ -782,7 +782,7 @@ bool conversation_state_stream_write(SessionState& session, const ModelGeometry&
     for (const auto& p : pieces) {
         if (at >= p.second) { at -= p.second; continue; }
         const size_t take = size_t(std::min<uint64_t>(p.second - at, left));
-        if (!copy(static_cast<uint8_t*>(p.first) + at, src, take, error)) return false;
+        if (!copy(static_cast<uint8_t*>(p.first) + at, src, take, error, queued)) return false;
         src += take;
         left -= take;
         at = 0;

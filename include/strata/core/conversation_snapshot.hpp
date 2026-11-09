@@ -73,15 +73,19 @@ bool conversation_state_source(SessionRegionSource& out, const SessionState& ses
 // buffers.  The sizes are checked against this session's carve, so a foreign file is refused region by region
 // before a byte lands.  finish() runs the state's own refresh (the indexer's moving spare row, the PLE pair) and
 // synchronizes: the bytes alone are not a restored state.  `tokens` is the conversation the state describes.
+// `queued` leaves the copy on the thread's private stream: the caller must synchronize the device before this
+// region's finish runs its own copies and launches, and keep the source bytes alive until that sync.
 bool conversation_state_stream_write(SessionState& session, const ModelGeometry& g, int64_t part, uint64_t offset,
-                                     const void* bytes, size_t n, std::string& error);
+                                     const void* bytes, size_t n, std::string& error, bool queued = false);
 bool conversation_state_stream_finish(SessionState& session, const ModelGeometry& g, const std::vector<int32_t>& ids,
                                       std::string& error);
 // One K/V layer's part written straight into its authoritative pool (the same pools conversation_kv_restore
 // writes); the sizes are checked against the layer's layout at `upto`.  finish() runs the residency refresh, as a
-// restore does.  Caller keeps the device current for the layer's device.
+// restore does.  Caller keeps the device current for the layer's device.  `queued` is the same contract as
+// conversation_state_stream_write's: a device sync before this layer's finish, the source alive until it.
 bool conversation_kv_stream_write(const QsaState& state, const ModelGeometry& g, int64_t upto, bool include_index,
-                                  size_t part, uint64_t offset, const void* bytes, size_t n, std::string& error);
+                                  size_t part, uint64_t offset, const void* bytes, size_t n, std::string& error,
+                                  bool queued = false);
 bool conversation_kv_stream_finish(const QsaState& state, const ModelGeometry& g, int64_t upto, bool include_index,
                                    std::string& error);
 

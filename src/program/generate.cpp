@@ -13580,6 +13580,17 @@ int main(int argc, char** argv) {
                          (long long) pair_prefix, tail_draft ? 1 : 0);
             return true;
         };
+        // The restore's host-to-device copies: HIP completes a memcpyAsync from pageable host memory when the
+        // call returns (the runtime stages it through pinned memory during the call - hipMemcpyAsync's own
+        // contract), so the restore queues its copies on the thread's private stream and synchronizes the device
+        // once per destination, before that destination's finish runs its refresh.  CUDA's async copy from
+        // pageable memory keeps reading the source after the call returns, so that build keeps the per-block
+        // stream sync every copy has always had, and no sync is added anywhere.
+#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)
+        constexpr bool kDiskRestoreQueued = true;
+#else
+        constexpr bool kDiskRestoreQueued = false;
+#endif
         // ---- restore a generation straight into the live pools.  The pre-mutation pass reads the MANIFEST only
         // (session_file_manifest_v2): the identities, the manifest, the region directory and the committed marker
         // with its own checksums - no region byte is streamed here.  Every engine-side check below runs on that
@@ -13865,10 +13876,15 @@ int main(int argc, char** argv) {
                     strata::core::SessionState& ses = disk_session(s);
                     strata::core::QsaState* q = disk_qsa_of(ses, ses.layer_lo + r.index);
                     if (q == nullptr) { w = "this stage has no K/V pool at that layer"; return false; }
-                    return strata::core::conversation_kv_stream_write(*q, g, T, true, (size_t) r.part, off, b, n, w);
+                    return strata::core::conversation_kv_stream_write(*q, g, T, true, (size_t) r.part, off, b, n, w,
+                                                                     kDiskRestoreQueued);
                 };
                 d.finish = [&, s, rows](std::string& w) {
                     const strata::core::OnDevice on(disk_dev(s));
+                    if (kDiskRestoreQueued && cudaDeviceSynchronize() != cudaSuccess) {
+                        w = "the queued K/V copies did not land on this stage";
+                        return false;
+                    }
                     strata::core::SessionState& ses = disk_session(s);
                     for (int64_t i = 0; i < (int64_t) rows.size(); ++i) {
                         strata::core::QsaState* q = disk_qsa_of(ses, ses.layer_lo + i);
@@ -13894,10 +13910,15 @@ int main(int argc, char** argv) {
                                         std::string& w) {
                     mutated = true;
                     const strata::core::OnDevice on(disk_dev(s));
-                    return strata::core::conversation_state_stream_write(disk_session(s), g, r.part, off, b, n, w);
+                    return strata::core::conversation_state_stream_write(disk_session(s), g, r.part, off, b, n, w,
+                                                                        kDiskRestoreQueued);
                 };
                 d.finish = [&, s](std::string& w) {
                     const strata::core::OnDevice on(disk_dev(s));
+                    if (kDiskRestoreQueued && cudaDeviceSynchronize() != cudaSuccess) {
+                        w = "the queued running-state copies did not land on this stage";
+                        return false;
+                    }
                     return strata::core::conversation_state_stream_finish(disk_session(s), g, manifest.tokens, w);
                 };
                 dests.push_back(std::move(d));
@@ -13918,10 +13939,14 @@ int main(int argc, char** argv) {
                     mutated = true;
                     const strata::core::OnDevice on(disk_dev(disk_mtp_stage));
                     return strata::core::conversation_kv_stream_write(mtp.kv_state(), g, T, false, (size_t) r.part,
-                                                                      off, b, n, w);
+                                                                      off, b, n, w, kDiskRestoreQueued);
                 };
                 d.finish = [&](std::string& w) {
                     const strata::core::OnDevice on(disk_dev(disk_mtp_stage));
+                    if (kDiskRestoreQueued && cudaDeviceSynchronize() != cudaSuccess) {
+                        w = "the queued drafter copies did not land";
+                        return false;
+                    }
                     return strata::core::conversation_kv_stream_finish(mtp.kv_state(), g, T, false, w);
                 };
                 dests.push_back(std::move(d));
@@ -13954,7 +13979,8 @@ int main(int argc, char** argv) {
                                 const uint64_t take = std::min(size - (off + done - at), n - done);
                                 if (!strata::core::conversation_kv_stream_write(dflash.kv_states()[j],
                                                                                dflash.pool_geometry(), extent, false,
-                                                                               (size_t) p, off + done - at, src, take, w))
+                                                                               (size_t) p, off + done - at, src, take, w,
+                                                                               kDiskRestoreQueued))
                                     return false;
                                 src += take;
                                 done += take;
@@ -13966,6 +13992,10 @@ int main(int argc, char** argv) {
                 };
                 d.finish = [&](std::string& w) {
                     const strata::core::OnDevice on_df(dflash.device());
+                    if (kDiskRestoreQueued && cudaDeviceSynchronize() != cudaSuccess) {
+                        w = "the queued ring copies did not land on the drafter";
+                        return false;
+                    }
                     if (pair_pick >= 0) return dflash.idle(w);   // the counters land with the chosen pair
                     const strata::core::DFlashSnapshotMeta meta{manifest.draft.committed_end,
                                                                 manifest.draft.appended_through,
@@ -14011,7 +14041,8 @@ int main(int argc, char** argv) {
                                 const uint64_t take = std::min(size - (off + done - at), n - done);
                                 if (!strata::core::conversation_kv_stream_write(dflash.kv_states()[j],
                                                                                dflash.pool_geometry(), extent, false,
-                                                                               (size_t) p, off + done - at, src, take, w))
+                                                                               (size_t) p, off + done - at, src, take, w,
+                                                                               kDiskRestoreQueued))
                                     return false;
                                 src += take;
                                 done += take;
@@ -14024,6 +14055,10 @@ int main(int argc, char** argv) {
                 pd.finish = [&](std::string& w) {
                     if (pair_pick < 0) return true;
                     const strata::core::OnDevice on_df(dflash.device());
+                    if (kDiskRestoreQueued && cudaDeviceSynchronize() != cudaSuccess) {
+                        w = "the queued pair copies did not land on the drafter";
+                        return false;
+                    }
                     const auto& cm = manifest.checkpoints[(size_t) pair_pick];
                     const strata::core::DFlashSnapshotMeta meta{cm.ring_committed_end, cm.ring_appended_through,
                                                                 cm.ring_cells, cm.ring_window, cm.ring_capacity};

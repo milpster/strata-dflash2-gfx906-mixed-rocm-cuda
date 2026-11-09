@@ -255,11 +255,11 @@ bool park_trace_on() {
     return on;
 }
 
-bool transfer(void* dst, const void* src, size_t n, std::string& error) {
+bool transfer(void* dst, const void* src, size_t n, std::string& error, bool queued = false) {
     if (!n) return true;
     if (!src || !dst) { error = "conversation snapshot: missing state buffer"; return false; }
     // Default handles both device allocations and device-mapped host pool aliases.
-    const cudaError_t e = conversation_detail::copy_nonblocking(dst, src, n);
+    const cudaError_t e = conversation_detail::copy_nonblocking(dst, src, n, queued);
     if (e == cudaSuccess) return true;
     error = std::string("conversation snapshot copy: ") + cudaGetErrorString(e);
     return false;
@@ -540,7 +540,8 @@ bool conversation_kv_source(SessionKvSource& out, const QsaState& st, const Mode
 // layer's device, writes every region of the layer, then finishes it (the residency refresh, exactly as a restore
 // runs it after its copies).
 bool conversation_kv_stream_write(const QsaState& state, const ModelGeometry& g, int64_t upto, bool include_index,
-                                  size_t part, uint64_t offset, const void* bytes, size_t n, std::string& error) {
+                                  size_t part, uint64_t offset, const void* bytes, size_t n, std::string& error,
+                                  bool queued) {
     Layout l{};
     if (!layout(state, g, upto, include_index, l, error) || !valid(state, l, upto, error)) return false;
     const std::array<size_t, 5> sizes = {l.data, l.value_data, l.scales, l.value_scales, l.pooled};
@@ -555,7 +556,7 @@ bool conversation_kv_stream_write(const QsaState& state, const ModelGeometry& g,
         error = "conversation snapshot: missing target state buffer";
         return false;
     }
-    return transfer(static_cast<uint8_t*>(dst[part]) + offset, bytes, n, error);
+    return transfer(static_cast<uint8_t*>(dst[part]) + offset, bytes, n, error, queued);
 }
 
 bool conversation_kv_stream_finish(const QsaState& state, const ModelGeometry& g, int64_t upto, bool include_index,
