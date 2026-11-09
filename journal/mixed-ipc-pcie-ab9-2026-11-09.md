@@ -148,3 +148,16 @@ Attempt history: 1 (17:16) D boot died on 4 conversation-cache-disk flags (disk-
 Attempt 4's D ran one 8k leg with the helper DEAD (sm_120 crash → engine CPU-path fallback): 7.672s ≈ 250 tok/s pace — FASTER than helper-on D (8.03–8.19s) and A (8.48–8.62s). Single leg, but beyond A's spread. If it holds, diet engine + PREFILL_HELPER=0 beats helper-on by ~3% more at 8k (and frees the 3080's 6.8 GiB). Proposal: arm E = diet engine, helper off, same protocol (~10 min window).
 
 Prod restored supervised 18:41 (verified health 200, loaded:true, engine pid 450257, sockets).
+
+## Arm E (diet engine, helper OFF) — COMPLETE 18:57
+
+Window A/E 18:46-18:56 (all legs ran; gate3 initially misfired counting E as helper-on — collector fixed to derive helper-on from run cfgs, gates now pass offline, `results.md` regenerated).
+
+| arm | 8k PP | 80k PP | parity |
+|---|---|---|---|
+| A (v0214, helper off) | 194.5 | 307.5 | sha 01db7a… |
+| E (diet engine, helper off) | 195.1 (+0.3%) | 309.7 (+0.7%) | same sha |
+
+**Verdict: the diet engine binary alone is par with prod. Attempt-4's 7.67s leg was a fluke. The full +6.61% @8k (arm D) is the helper/IPC diet's contribution.** Attribution clean: A≈E < D. Cutover config if adopted: diet binaries + STRATA_HELPER on (D shape). TG: E 45.9s vs A 46.8s — no loss.
+
+Prod restored 18:57 (verified loaded:true); pair self-restarted once after (supervisor recovered).
