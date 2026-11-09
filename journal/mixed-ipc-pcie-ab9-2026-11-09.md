@@ -259,3 +259,18 @@ x2 at 21:59, alias trap); third strike, now impossible.
 Prod restored v0215 after the chain (health ok, 48s boot). Walk-depth follow-up dispatched to the
 same fixer session (TASK A: one-part flush falls back to plain kBeginP so any K is safe; TASK B:
 same-layer coalescing with verified claim structure).
+
+## 23:05 walk-depth verdict + next lane
+
+Fixer 227f13bf6: one-part claim-batch flush = plain kBeginP (test 20e, 305 checks; any K now safe).
+TASK B DEAD BY STRUCTURE (evidence): prefill issues exactly ONE prompt claim per MoE layer (32 layers,
+full row set 490-1245 rows per claim; gate3's 96/ctx = 32x3 legs); layers strictly sequential
+(L+1 routes on L's MoE output) -> nothing to coalesce, begin-ahead impossible. My earlier "+3% batching"
+prize was built on a wrong 2-claims-per-layer read - withdrawn. Batching machinery stays as zero-cost
+insurance (K default 1; one-part flush byte-identical).
+
+Remaining lever reality (helper COMPUTES expert GEMMs on the 3080, activations in / f32 rows out):
+per ~256ms layer-cycle @8k = begin 13.7ms + lock 44ms + reply ~4ms + engine compute ~190ms; wire floor 0.5ms.
+Next lane (dispatched): decompose the 44ms lock (parse/lookup/enqueue/kernel-wait/scan/reply-DMA) with
+env-gated sub-span timers on the rpcprofile line + tolerant collector/breakdown. One GPU window after
+that decides: kernel efficiency vs launch overhead vs span trims. 80k profile still rides along.
