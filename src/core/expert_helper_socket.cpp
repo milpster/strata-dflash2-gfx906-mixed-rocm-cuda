@@ -4,6 +4,7 @@
 #include "strata/core/expert_helper_socket.hpp"
 
 #include "strata/core/expert_helper_protocol.hpp"
+#include "strata/core/finite_rows.hpp"   // helper-ipc-diet: the AVX2 twin of the reply's finiteness pass
 
 #include "ggml.h"   // the fp16 contract of the q8_1 activation blocks the proxy sends (CPU-safe, no ggml compute)
 
@@ -68,8 +69,7 @@ int validate_rows_payload(const uint8_t* payload, size_t n, int64_t n_embd,
         const size_t s = (size_t) (slot - sorted.begin());
         if (seen[s]) return expert_helper::kErrBadId;                                // a row the engine would add twice
         const float* row = (const float*) (p + (size_t) i * row_bytes + 4);
-        for (int64_t v = 0; v < n_embd; ++v)
-            if (!std::isfinite(row[v])) return expert_helper::kErrNonFinite;
+        if (!expert_helper::all_finite(row, (size_t) n_embd)) return expert_helper::kErrNonFinite;
         seen[s] = 1;
     }
     for (size_t c = 0; c < sorted.size(); ++c)

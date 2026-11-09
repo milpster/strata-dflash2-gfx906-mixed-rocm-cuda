@@ -31,6 +31,7 @@
 // read.  WITH --socket2 ABSENT: one socket, one accept, one thread, the loop exactly as it was.
 #include "strata/core/expert_helper_protocol.hpp"
 #include "strata/core/expert_cache.hpp"
+#include "strata/core/finite_rows.hpp"   // helper-ipc-diet: the AVX2 twin of the row finiteness scan
 // M7 (the drafter lane, docs/work/MIXED_BACKEND_RPC_PLAN.md sect12/12a): the serve-runtime drafter
 // (include/strata/core/dflash.hpp's DFlashDrafter: add_context_f32 / propose), the target's native
 // head + pinned embedding it binds, and the metadata-only weight table the bind reads.
@@ -880,8 +881,10 @@ int serve_prompt(Helper& hp, std::span<const uint8_t> body, uint32_t req_id, uin
     // H14's finite-row scan, mirrored: prove the rows before the engine refuses them.
     for (int32_t i = 0; i < (int32_t) compact_claim.size(); ++i) {
         const float* row = hp.d_out_p + (size_t) i * H;
-        bool bad = false;
-        for (int64_t c = 0; c < H; ++c) if (!std::isfinite(row[c])) { bad = true; break; }
+        // helper-ipc-diet: all_finite is the scalar rule's bit-exact twin (subnormals pass, only
+        // NaN/inf flag), AVX2-width where the CPU has it; the first bad row is the same row the
+        // scalar loop stopped on, so the log line and the refusal trigger byte-for-byte unchanged.
+        const bool bad = !all_finite(row, (size_t) H);
         if (bad) {
             std::fprintf(stderr, "expert-helper: prompt row %d of %d (pair %d, expert %d) is non-finite "
                                  "(first floats %g %g %g %g)\n", i, (int32_t) compact_claim.size(),

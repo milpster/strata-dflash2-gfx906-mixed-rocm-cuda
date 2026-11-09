@@ -1104,6 +1104,13 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     # runtime; the CUDA runtime symbols arrive through ${_strata_gpu_runtime_target}.
     set_property(SOURCE tools/mixed_gpu/sidecar/helper_main.cpp PROPERTY LANGUAGE CUDA)
     set_property(SOURCE tools/mixed_gpu/sidecar/helper_main.cpp PROPERTY CUDA_STANDARD 17)
+    # helper-ipc-diet: -mavx2 for helper_main.cpp's HOST code (the prompt path's finite-row scan,
+    # include/strata/core/finite_rows.hpp).  The file is host-only; nvcc forwards the flag through
+    # -Xcompiler, x86 non-MSVC only - everywhere else the header's scalar loop compiles and runs.
+    if(STRATA_CPU_X86 AND NOT MSVC)
+      set_property(SOURCE tools/mixed_gpu/sidecar/helper_main.cpp APPEND PROPERTY
+                   COMPILE_OPTIONS $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-mavx2>)
+    endif()
     target_include_directories(strata-expert-helper PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
     target_link_libraries(strata-expert-helper PRIVATE
       strata_engine strata_kernels_cpu strata_warnings ${_strata_gpu_runtime_target})
@@ -2357,6 +2364,12 @@ else()
   set_source_files_properties(src/kernels/cpu/expert.cpp
                               PROPERTIES COMPILE_OPTIONS "-mavx512f;-mavx512bw;-mavx512vl;-mavx512dq;-mavx512vnni;-mavx512vbmi;-mf16c;-mfma")
   set_source_files_properties(src/kernels/cpu/q2_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c")
+  # helper-ipc-diet (2026-11): the expert-helper reply check's finite-row scan (include/strata/core/
+  # finite_rows.hpp) compiles its 8-lane AVX2 path only where the TU sees -mavx2; the run-time gate in
+  # the header (__builtin_cpu_supports) decides per CPU, so an AVX2-less machine keeps the scalar loop.
+  if(STRATA_CPU_X86)
+    set_source_files_properties(src/core/expert_helper_socket.cpp PROPERTIES COMPILE_OPTIONS "-mavx2")
+  endif()
 endif()
 # AVX-VNNI (Alder Lake, Sapphire Rapids and later): the AVX-2 expert kernels' vpdpwssd / vpdpbusd copies (q2_avx2.cpp,
 # iq_avx2.cpp; *_rows.inl), taken at run time where cpu_avxvnni_ok().  GCC and Clang compile only those functions with
