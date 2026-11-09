@@ -156,13 +156,15 @@ def build_table(data: dict) -> tuple[list[dict], list[dict]]:
     rows: list[dict] = []
     for ctx in sorted({l["ctx"] for l in legs if l["kind"] == "prefill"}):
         pp = {}
-        for arm in STAGE1 + [a for a in {l["arm"] for l in legs} if a.startswith("m")]:
+        # every arm present in the legs (A first, then the rest) - the table follows the
+        # run, not a hardcoded list (arm D was silently missing from the first A/D window)
+        for arm in sorted({l["arm"] for l in legs}, key=lambda x: (x != "A", x)):
             a = agg(legs, arm, ctx)
             if not a:
                 continue
             pp[arm] = a["pp_med"]
-            if arm == "B" and "A" in pp and pp["A"]:
-                a["gain_vs_A"] = round(pp["B"] / pp["A"] - 1, 4)
+            if arm != "A" and pp.get("A"):
+                a["gain_vs_A"] = round(a["pp_med"] / pp["A"] - 1, 4)
             if arm == "C" and {"A", "B"} <= pp.keys() and pp["A"] != pp["B"]:
                 a["pipelining_recovery"] = round((pp["C"] - pp["B"]) / (pp["A"] - pp["B"]), 4)
             if arm.startswith("m") and pp.get("C"):
