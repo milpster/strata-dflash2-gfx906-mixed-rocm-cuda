@@ -187,12 +187,21 @@ log "port $AB9_PORT free; window open"
 # ---------- per-arm boot / drive / teardown ----------
 PAIR_PIDS=""
 kill_pair(){   # our own manual pair only
+  # PAIR_PIDS first, then pattern fallback: a missed engine pid must not orphan the pair
+  # on the port (first window run: pgrep raced the engine fork, teardown drained 5 min
+  # against a live engine holding 34 GB until the final restore reaped it).
   for pid in $PAIR_PIDS; do kill -INT "$pid" 2>/dev/null || true; done
+  for pid in $(pgrep -f "$AB9_ENGINE --serve" || true) $(pgrep -f "$AB9_HELPER --pack" || true); do
+    kill -INT "$pid" 2>/dev/null || true
+  done
   for i in $(seq 1 20); do
     [[ -z $(pgrep -f "$AB9_ENGINE --serve" 2>/dev/null) ]] && [[ -z $(pgrep -f "$AB9_HELPER" 2>/dev/null) ]] && break
     sleep 3
   done
   for pid in $PAIR_PIDS; do kill -TERM "$pid" 2>/dev/null || true; done
+  for pid in $(pgrep -f "$AB9_ENGINE --serve" || true) $(pgrep -f "$AB9_HELPER --pack" || true); do
+    kill -TERM "$pid" 2>/dev/null || true
+  done
   PAIR_PIDS=""
   for i in $(seq 1 60); do
     used=$(rocm-smi --showmeminfo vram --csv 2>/dev/null | awk -F, '/^card[01]/{s+=$3} END{print s+0}')
@@ -229,18 +238,27 @@ boot_pair(){   # $1=arm name; exports STRATA_RPC_PROFILE/DBG; writes runtime cfg
       "$PY" "$AB9_SERVE" --engine strata --config "$RUN/$arm.json" --port "$AB9_PORT" \
       >>"$ROOT/logs/ab9-$TS-$arm-serve.log" 2>&1 </dev/null & echo $! ) > "$RUN/$arm.servepid"
   PAIR_PIDS="$PAIR_PIDS $(cat "$RUN/$arm.servepid")"
+  ready=0
   for i in $(seq 1 1800); do
     kill -0 "$(cat "$RUN/$arm.servepid")" 2>/dev/null || { echo "arm $arm serve exited; tail:"; tail -10 "$ROOT/logs/ab9-$TS-$arm-serve.log"; return 5; }
-    curl -sf -m 2 -o /dev/null "http://127.0.0.1:$AB9_PORT/health" && break
+    # /health answers 200 at the serve wrapper BEFORE the engine is loaded; legs must not
+    # fire mid-load (first window run, arm B: warm went out instantly, 56 s wall, elog absent)
+    if curl -sf -m 2 "http://127.0.0.1:$AB9_PORT/health" 2>/dev/null | grep -q '"loaded": *true'; then ready=1; break; fi
     (( i % 30 == 0 )) && echo "$(date +%T) arm $arm model loading ($i s)"
     sleep 1
   done
-  curl -sf -m 2 -o /dev/null "http://127.0.0.1:$AB9_PORT/health" || { echo "arm $arm readiness timed out"; return 5; }
+  (( ready )) || { echo "arm $arm readiness timed out (health loaded:true)"; return 5; }
   # serve is a wrapper: the engine is its child and holds the port + sockets. kill_pair must own
   # it too, or a teardown leaves an orphan on :$AB9_PORT and the next arm cannot boot.
-  engine_pid=$(pgrep -f "$AB9_ENGINE --serve" | head -1)
-  [[ -n $engine_pid ]] && PAIR_PIDS="$PAIR_PIDS $engine_pid"
-  log "arm $arm: serve pid $(cat "$RUN/$arm.servepid") engine pid ${engine_pid:-none}"
+  engine_pid=""
+  for i in $(seq 1 120); do
+    engine_pid=$(pgrep -f "$AB9_ENGINE --serve" | head -1)
+    [[ -n $engine_pid && -s "$ELOG" ]] && break
+    sleep 1
+  done
+  [[ -n $engine_pid && -s "$ELOG" ]] || { echo "arm $arm engine pid or engine log missing after 120 s"; return 5; }
+  PAIR_PIDS="$PAIR_PIDS $engine_pid"
+  log "arm $arm: serve pid $(cat "$RUN/$arm.servepid") engine pid $engine_pid elog $(stat -c %s "$ELOG")B"
   return 0
 }
 arm_legs(){   # $1=arm; stage1 legs with sidecars
@@ -251,23 +269,26 @@ arm_legs(){   # $1=arm; stage1 legs with sidecars
       --elog "$ELOG" --hlog "$HLOG" || { echo "leg $arm/warm driver failed"; return 9; }
   he=$(stat -c %s "$HLOG"); ee=$(stat -c %s "$ELOG")
   echo "$hb $he $eb $ee" > "$warm_slice"
-  # gate 2: helper profile lines in the warmup slice (tier=p on prompt-helper arms, tier=w on A)
-  want='rpcprofile: serve tier='
-  n=$(dd if="$HLOG" bs=1 skip="$hb" count=$((he-hb)) 2>/dev/null | grep -c "$want")
-  if [[ $arm != A ]]; then
-    n2=$(dd if="$HLOG" bs=1 skip="$hb" count=$((he-hb)) 2>/dev/null | grep -c "rpcprofile: serve tier=p")
-    (( n2 > 0 )) || { echo "GATE6 FAIL: no helper serve tier=p lines after warmup (arm $arm)"; return 6; }
-    log "arm $arm gate2 PASS: $n2 serve tier=p lines in warmup slice"
-  else
-    (( n > 0 )) || { echo "GATE6 FAIL: no helper profile lines at all (arm $arm)"; return 6; }
-    log "arm $arm gate2 PASS (helper off arm): $n serve lines in warmup slice"
-  fi
   for ctx in 8000 80000; do
     for seq in 1 2 3; do
       sidecar "$arm" "${ctx}-${seq}"
       $PY "$D/ab9_driver.py" --arm "$arm" --leg "${ctx}-${seq}" --kind prefill --ctx "$ctx" --max-tokens 8 \
           --out "$OUT" --elog "$ELOG" --hlog "$HLOG" || { stop_sidecar; echo "leg $arm/${ctx}-${seq} driver failed"; return 9; }
       stop_sidecar
+      # gate 2 runs after the FIRST 8k leg: prompt-tier claims need a real prefill window —
+      # the 512-B warm never triggers tier=p (that aborted arm B on the first window run).
+      if [[ $ctx == 8000 && $seq == 1 ]]; then
+        he=$(stat -c %s "$HLOG")
+        if [[ $arm != A ]]; then
+          n2=$(dd if="$HLOG" bs=1 skip="$hb" count=$((he-hb)) 2>/dev/null | grep -c "rpcprofile: serve tier=p")
+          (( n2 > 0 )) || { echo "GATE6 FAIL: no helper serve tier=p lines after the first 8k leg (arm $arm)"; return 6; }
+          log "arm $arm gate2 PASS: $n2 serve tier=p lines (warm + first 8k)"
+        else
+          n=$(dd if="$HLOG" bs=1 skip="$hb" count=$((he-hb)) 2>/dev/null | grep -c 'rpcprofile: serve tier=')
+          (( n > 0 )) || { echo "GATE6 FAIL: no helper profile lines at all (arm $arm)"; return 6; }
+          log "arm $arm gate2 PASS (helper off arm): $n serve lines (warm + first 8k)"
+        fi
+      fi
     done
   done
   sidecar "$arm" "tg1024"
