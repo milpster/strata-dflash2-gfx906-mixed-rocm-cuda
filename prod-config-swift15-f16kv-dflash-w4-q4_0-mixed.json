@@ -35,7 +35,7 @@
   "--expert-cache-cpu-order",
   "--prompt-cache-spread",
   "--conversation-cache-mib",
-  "0",
+  "4096",
   "--conversation-cache-min-tokens",
   "2048",
   "--conversation-cache-park-gain",
@@ -79,7 +79,7 @@
   "STRATA_WATCHDOG_S": "900"
  },
  "env_to_user": true,
- "exe": "/mnt/srcds/Strata/v0211/build-mixed-gpu/rpcw-hip/strata",
+ "exe": "/mnt/srcds/Strata/v0215/build-mixed-gpu/rpcw-hip/strata",
  "expert_helper_slots": 4600,
  "expert_helper_socket": "/mnt/srcds/Strata/run/prod-swift15-f16kv-mixed.sock",
  "expert_helper_socket2": "/mnt/srcds/Strata/run/prod-swift15-f16kv-mixed2.sock",

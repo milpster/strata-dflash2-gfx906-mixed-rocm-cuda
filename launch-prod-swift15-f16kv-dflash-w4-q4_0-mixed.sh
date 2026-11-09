@@ -12,7 +12,7 @@
 # any peer death restarts BOTH (either both run or both reset).
 set -euo pipefail
 ROOT=${STRATA_PROD_TREE:-/mnt/srcds/Strata}
-WORK="$ROOT/v0211"
+WORK="$ROOT/v0215"
 PY="$ROOT/.venv/bin/python"
 CONFIG="$ROOT/prod-config-swift15-f16kv-dflash-w4-q4_0-mixed.json"
 SOCKET="$ROOT/run/prod-swift15-f16kv-mixed.sock"

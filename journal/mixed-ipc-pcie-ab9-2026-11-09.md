@@ -225,3 +225,16 @@ Gates: g2 PASS (A off 1284 lines; B/D 64), g3 PASS (A 0 claims, B/D 96 each), g4
 
 Lever analysis (claim_breakdown.py, 256 claims from attempt-5 D logs): transport stack ceiling ~+4-5%
 (batching x8 <= ~+3%, wire overlap ~+1.4%, begin overlap ~+1.5%); compute (HIP helper on VII2) remains the big lever.
+
+## 20:50 CUTOVER COMPLETE - prod on v0215 (merged disk-cache + IPC diet)
+
+User approved adoption despite +2.2% vs bar (tighter p50, no regressions, disk-cache comes along).
+- v0215 tree: serve/strata_control/tools from v0214 + engine (md5 edca7d15...) + helper-patient (1471783d...) - byte-faithful copies of the validated attempt-7 arm-D binaries.
+- launcher WORK=v0215; config exe -> v0215. Verified: /health ok, smoke completion OK, both helper sockets present, VIIs 16.9/16.8 GB, 3080 7.1/8.2 GB.
+- Rollback = launcher WORK=v0214 + config exe back (v0214 tree intact).
+
+## Lever plan (user-approved)
+
+NUMA DEAD - single CPU socket (user, 2026-11-09). VII2 helper DEAD - no VRAM (0.3-0.5 GiB free vs 6.8 GiB needed).
+Queue: (1) claim batching xN ~+3% PP; (2) claim-lifecycle pipelining (begin overlap +~1.7%, reply streaming +~1.4%) ~+3% combined; (3) helper async/2nd connection (subsumed by 1 mostly). TG insight: decode = 17,177 tier=w claims/1024 tok, lock mean 0.2ms, Sum-lock 3.4s of ~20s (17%) - TG is engine-paced; levers are PP levers. TG-specific candidate (unmeasured): engine-side RAM expert cache to cut 1.7 GB/1024 tok decode weight traffic.
+Dev discipline: agents code/build on CPU with prod UP; GPU validation windows are parent-only, prod down only for those.
