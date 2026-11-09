@@ -18616,14 +18616,14 @@ int main(int argc, char** argv) {
             // --conversation-cache-park-gain N: a park now would supersede the entry parked_prefix_tokens() reports (the copy
             // this conversation wrote last), so a conversation that advanced fewer than N tokens since then keeps it:
             // it still holds this conversation's prefix, and re-parking writes the whole snapshot only for the next
-            // turn to drop it again.  0 (the default) parks every turn, as before.  The disk tier's own published
-            // generation counts too: a conversation that advanced too little keeps the FILE it already wrote.
+            // turn to drop it again.  0 (the default) parks every turn, as before.  This gate is the RAM tier's OWN
+            // held copy alone; the disk tier gates its publishes with the same gain inside disk_park (publish_worth),
+            // so each tier answers for its own copy.  Counting the disk generation here was lane 6's dead RAM tier:
+            // idle-save keeps it at live minus the last reply, so the max was true at every switch and park_current
+            // - the only main-session RAM-park caller - never ran, leaving the slot tier empty beside the disk tier.
             const size_t park_held = o.conversation_cache_park_gain > 0
-                                         ? std::max(conversations.parked_prefix_tokens(live, live_imgs, checks,
-                                                                                       cvec_cached),
-                                                   disk_on() ? (size_t) std::max<int64_t>(
-                                                       disk->parked_prefix_tokens(live, live_imgs, cvec_cached), 0)
-                                                             : 0)
+                                         ? conversations.parked_prefix_tokens(live, live_imgs, checks,
+                                                                            cvec_cached)
                                          : 0;
             const bool park_worth = o.conversation_cache_park_gain <= 0 || park_held == 0 ||
                                     (int64_t) live.size() >= (int64_t) park_held + o.conversation_cache_park_gain;
