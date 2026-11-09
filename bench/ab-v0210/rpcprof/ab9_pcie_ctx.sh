@@ -200,19 +200,25 @@ log "port $AB9_PORT free; window open"
 # ---------- per-arm boot / drive / teardown ----------
 PAIR_PIDS=""
 kill_pair(){   # our own manual pair only
+  # arm-scoped paths (arm D runs the diet-tree engine+helper): the pattern fallback must
+  # catch what THIS arm booted as well as the prod defaults (a boot that failed before
+  # mkconfig set them still tears down via the defaults).
+  local eng="${ARM_ENG:-$AB9_ENGINE}" hlp="${ARM_HLP:-$AB9_HELPER}"
   # PAIR_PIDS first, then pattern fallback: a missed engine pid must not orphan the pair
   # on the port (first window run: pgrep raced the engine fork, teardown drained 5 min
   # against a live engine holding 34 GB until the final restore reaped it).
   for pid in $PAIR_PIDS; do kill -INT "$pid" 2>/dev/null || true; done
-  for pid in $(pgrep -f "$AB9_ENGINE --serve" || true) $(pgrep -f "$AB9_HELPER --pack" || true); do
+  for pid in $(pgrep -f "$eng --serve" || true) $(pgrep -f "$AB9_ENGINE --serve" || true) \
+             $(pgrep -f "$hlp --pack" || true) $(pgrep -f "$AB9_HELPER --pack" || true); do
     kill -INT "$pid" 2>/dev/null || true
   done
   for i in $(seq 1 20); do
-    [[ -z $(pgrep -f "$AB9_ENGINE --serve" 2>/dev/null) ]] && [[ -z $(pgrep -f "$AB9_HELPER" 2>/dev/null) ]] && break
+    [[ -z $(pgrep -f "$eng --serve" 2>/dev/null) ]] && [[ -z $(pgrep -f "$hlp" 2>/dev/null) ]] && break
     sleep 3
   done
   for pid in $PAIR_PIDS; do kill -TERM "$pid" 2>/dev/null || true; done
-  for pid in $(pgrep -f "$AB9_ENGINE --serve" || true) $(pgrep -f "$AB9_HELPER --pack" || true); do
+  for pid in $(pgrep -f "$eng --serve" || true) $(pgrep -f "$AB9_ENGINE --serve" || true) \
+             $(pgrep -f "$hlp --pack" || true) $(pgrep -f "$AB9_HELPER --pack" || true); do
     kill -TERM "$pid" 2>/dev/null || true
   done
   PAIR_PIDS=""
@@ -242,8 +248,12 @@ boot_pair(){   # $1=arm name; exports STRATA_RPC_PROFILE/DBG; writes runtime cfg
      --helper-args "$RUN/$arm.helper" || { echo "mkconfig failed arm $arm"; exit 5; }
   read -r hslots hfill hreserve < "$RUN/$arm.helper"
   hbin=$(head -1 "$RUN/$arm.helper.bin" 2>/dev/null); hbin=${hbin:-$AB9_HELPER}
+  # THIS arm's engine exe comes from its runtime cfg (arm D: the diet tree) — pid discovery
+  # and teardown must match what actually booted, not the prod default path.
+  ebin=$($PY -c 'import json,sys; print(json.load(open(sys.argv[1]))["exe"])' "$RUN/$arm.json")
+  ARM_ENG=$ebin; ARM_HLP=$hbin
   export STRATA_RPC_PROFILE=1 STRATA_DBG_PROMPT_HELPER=1
-  log "arm $arm: helper up slots=$hslots fill=$hfill reserve=$hreserve bin=$hbin"
+  log "arm $arm: helper up slots=$hslots fill=$hfill reserve=$hreserve bin=$hbin engine=$ebin"
   env -i PATH="$PATH" HOME="$HOME" TERM="${TERM:-dumb}" LD_LIBRARY_PATH="$AB9_ROCM_LIBS" \
       STRATA_RPC_PROFILE=1 "$hbin" \
     --pack /mnt/srcds/ai/iq3xxs-15 --experts ../Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf \
@@ -279,7 +289,7 @@ boot_pair(){   # $1=arm name; exports STRATA_RPC_PROFILE/DBG; writes runtime cfg
   # it too, or a teardown leaves an orphan on :$AB9_PORT and the next arm cannot boot.
   engine_pid=""
   for i in $(seq 1 120); do
-    engine_pid=$(pgrep -f "$AB9_ENGINE --serve" | head -1)
+    engine_pid=$(pgrep -f "$ebin --serve" | head -1)
     [[ -n $engine_pid && -s "$ELOG" ]] && break
     sleep 1
   done
