@@ -1,0 +1,6 @@
+strata serve: prompt 8000 tokens = 0 reused + 8000 read in 20000.0 ms (400.0 tok/s)
+rpcprofile: claim layer=1 rows=10 sel=8 d2h_us=2500 begin_us=500 reply_us=1500 img_kb=40 reply_kb=20 fallback=0
+rpcprofile: claim layer=2 rows=10 sel=8 d2h_us=2500 begin_us=500 reply_us=1500 img_kb=40 reply_kb=20 fallback=0
+rpcprofile: claim layer=3 rows=10 sel=8 d2h_us=2500 begin_us=500 reply_us=1500 img_kb=40 reply_kb=20 fallback=0
+rpcprofile: claim layer=4 rows=10 sel=8 d2h_us=2500 begin_us=500 reply_us=1500 img_kb=40 reply_kb=20 fallback=0
+strata serve: WARNING: only 404 MiB of VRAM free at the start of this request (below 512 MiB): when the card is this full the driver can page GPU memory to system RAM

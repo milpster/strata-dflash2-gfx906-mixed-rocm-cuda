@@ -1,0 +1,21 @@
+{
+ "arm": "C",
+ "leg": "tg1024",
+ "kind": "tg",
+ "ctx": 2048,
+ "max_tokens": 1024,
+ "ts": 1730000000.0,
+ "walls": [
+  12.0,
+  3.0
+ ],
+ "wall_s": 15.0,
+ "prompt_bytes": 2048,
+ "sha256": "5116c344f518e3ac60158715652501df5d5221f2dc52bf0e14c177acfff84b60",
+ "elog": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/fixtures/elog/C-tg1024-engine.elog",
+ "elog_start": 0,
+ "elog_end": 78,
+ "hlog": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/fixtures/elog/C-tg1024-helper.hlog",
+ "hlog_start": 0,
+ "hlog_end": 0
+}

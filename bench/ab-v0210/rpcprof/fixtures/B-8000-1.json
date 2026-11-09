@@ -1,0 +1,20 @@
+{
+ "arm": "B",
+ "leg": "8000-1",
+ "kind": "prefill",
+ "ctx": 8000,
+ "max_tokens": 8,
+ "ts": 1730000000.0,
+ "walls": [
+  40.0
+ ],
+ "wall_s": 40.0,
+ "prompt_bytes": 8000,
+ "sha256": "5116c344f518e3ac60158715652501df5d5221f2dc52bf0e14c177acfff84b60",
+ "elog": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/fixtures/elog/B-8000-1-engine.elog",
+ "elog_start": 0,
+ "elog_end": 700,
+ "hlog": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/fixtures/elog/B-8000-1-helper.hlog",
+ "hlog_start": 0,
+ "hlog_end": 376
+}

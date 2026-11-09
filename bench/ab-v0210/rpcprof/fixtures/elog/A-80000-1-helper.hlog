@@ -1,0 +1,2 @@
+rpcprofile: serve tier=w layer=1 rows=10 queue_us=100 lock_us=50 reply_us=200 rows_kb=160
+rpcprofile: serve tier=w layer=2 rows=10 queue_us=100 lock_us=50 reply_us=200 rows_kb=160

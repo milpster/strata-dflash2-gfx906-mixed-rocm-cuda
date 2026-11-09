@@ -1,0 +1,8 @@
+rpcprofile: serve tier=p layer=1 rows=10 queue_us=2000 lock_us=1000 reply_us=1500 rows_kb=160
+rpcprofile: serve tier=p layer=2 rows=10 queue_us=2000 lock_us=1000 reply_us=1500 rows_kb=160
+rpcprofile: serve tier=p layer=3 rows=10 queue_us=2000 lock_us=1000 reply_us=1500 rows_kb=160
+rpcprofile: serve tier=p layer=4 rows=10 queue_us=2000 lock_us=1000 reply_us=1500 rows_kb=160
+rpcprofile: serve tier=p layer=5 rows=10 queue_us=2000 lock_us=1000 reply_us=1500 rows_kb=160
+rpcprofile: serve tier=p layer=6 rows=10 queue_us=2000 lock_us=1000 reply_us=1500 rows_kb=160
+rpcprofile: serve tier=p layer=7 rows=10 queue_us=2000 lock_us=1000 reply_us=1500 rows_kb=160
+rpcprofile: serve tier=p layer=8 rows=10 queue_us=2000 lock_us=1000 reply_us=1500 rows_kb=160

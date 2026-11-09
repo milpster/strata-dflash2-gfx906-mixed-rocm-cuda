@@ -1,0 +1,1 @@
+strata serve: prompt 2048 tokens = 2048 reused + 0 read in 3 ms (682.7 tok/s)

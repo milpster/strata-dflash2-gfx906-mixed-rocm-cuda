@@ -1,0 +1,9 @@
+strata serve: prompt 8000 tokens = 0 reused + 8000 read in 40000.0 ms (200.0 tok/s)
+rpcprofile: claim layer=1 rows=10 sel=8 d2h_us=2500 begin_us=500 reply_us=1500 img_kb=40 reply_kb=20 fallback=0
+rpcprofile: claim layer=2 rows=10 sel=8 d2h_us=2500 begin_us=500 reply_us=1500 img_kb=40 reply_kb=20 fallback=0
+rpcprofile: claim layer=3 rows=10 sel=8 d2h_us=2500 begin_us=500 reply_us=1500 img_kb=40 reply_kb=20 fallback=0
+rpcprofile: claim layer=4 rows=10 sel=8 d2h_us=2500 begin_us=500 reply_us=1500 img_kb=40 reply_kb=20 fallback=0
+prefill helper: layer 1, 10 rows (helper)
+prefill helper: layer 2, 10 rows (helper)
+prefill helper: layer 3, 10 rows (helper)
+prefill helper: layer 4, 10 rows (helper)
