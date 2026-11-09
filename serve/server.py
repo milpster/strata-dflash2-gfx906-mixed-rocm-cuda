@@ -322,6 +322,10 @@ STREAM_WRITE_TIMEOUT_S = float(os.environ.get("STRATA_STREAM_WRITE_TIMEOUT_S", "
 # Disk sessions: the longest allowance an engine may announce (`SWAIT <phase> <s>`) for one step that blocks in a
 # single call (a file flush, the host->device transfer); the engine's own bound is the same (session_phase_limit_s).
 SESSION_WAIT_MAX_S = 3600
+# The automatic disk tier's typed progress lines (`DCACHE <phase> <done> <total> [<secs>]`, plan 7): disk bytes on
+# stdout, understood by the request parser and the manual SAVE/RESTORE parser.  They are heartbeats and never
+# prompt evaluation: only PP and RESUME feed the server's prompt statistics.
+DCACHE_PHASES = frozenset(("write", "flush", "publish", "validate", "transfer", "done"))
 # ... except while a prompt is read: a PP line comes once per chunk (up to 32768 tokens with --prefill auto, issue
 # #282), and the slowest PCs read ~100 tok/s, so a first chunk can take minutes before the first line.  Until the first
 # PP the wait adds the chunk's tokens at PP_FLOOR_TOK_S; after one, a chunk may take PP_SLACK x the last one's time.
@@ -874,10 +878,26 @@ def narrate_start(log_path: str, offset: int, args: list, done: threading.Event,
 class ConvCacheLog:
     """#596: the engine's conversation cache as its log tells it (the engine writes "strata serve: conversation
     cache: parked N tokens ...; parked=P bytes=B evictions=E" and "restored N tokens ...; parked=P bytes=B" to stderr,
-    which is the log): read on from where it was last read, from the start of the engine's current run."""
+    which is the log): read on from where it was last read, from the start of the engine's current run.
+
+    The automatic DISK tier's lines (plan 7) are read here too: its ON/off line names the folder, transfer mode,
+    budget and what the restart inventory found; its park/restore lines the generations, their bytes, the evictions
+    and supersessions, the pair hits and refusals.  Only counts and short reason codes - never prompt contents."""
     EVENT = re.compile(r"conversation cache: (parked|skipped|restored) (\d+) tokens.*?parked=(\d+) bytes=(\d+)"
                        r"(?: evictions=(\d+))?")
     DROPPED = re.compile(r"conversation cache: dropped \d+ superseded .*?parked=(\d+)")
+    # the disk tier: the tier's own words, matched by their shape, and the tier's concise refusal code
+    DISK_ON = re.compile(r"conversation cache: disk tier ON at (\S+) \((direct I/O|buffered), budget (\d+) MiB\): "
+                         r"generations=(\d+) bytes=(\d+) sidecars=(\d+) orphan temps=(\d+) orphan sidecars=(\d+) "
+                         r"corrupt=(\d+) foreign=(\d+)")
+    DISK_OFF = re.compile(r"conversation cache: the disk tier stays off \((.*)\)")
+    DISK_PARK = re.compile(r"conversation cache: disk park streamed (\d+) tokens(.*?) to (\S+) in ([\d.]+) ms; "
+                           r"generations=(\d+) bytes=(\d+) evicted=(\d+) superseded=(\d+) sidecars=(\d+) "
+                           r"anchor=(-?\d+) pair=(-?\d+) tail-draft=([01])")
+    DISK_RESTORE = re.compile(r"conversation cache: restored (\d+) tokens from disk (\S*) in ([\d.]+) ms: (.*)$")
+    DISK_SKIP = re.compile(r"conversation cache: disk (park|restore) skipped \((.*)\)")
+    DISK_REFUSAL = re.compile(r"disk cache: ([a-z-]+) refusal")
+    DISK_SERIAL = re.compile(r"conv-(\d+)\.sess")
     READ_MAX = 1 << 20                                  # at most the last MiB of new lines per read
 
     def __init__(self):
@@ -885,9 +905,22 @@ class ConvCacheLog:
         self.lock = threading.Lock()                    # polls come from several request / monitor threads at once
         self.reset()
 
+    @staticmethod
+    def disk_state() -> dict:
+        """What the disk tier's card shows: the folder and its budget, what it holds, and its counters."""
+        return {"enabled": False, "dir": None, "io": None, "budget_mib": None, "generations": 0, "bytes": 0,
+                "sidecars": 0, "corrupt": 0, "foreign": 0, "parks": 0, "idle_saves": 0, "restores": 0,
+                "evictions": 0, "superseded": 0, "refusals": 0, "draft_pair_hits": 0, "draft_rebuilds": 0,
+                "last_event": None, "last_tokens": None, "last_ms": None, "last_at": None,
+                "last_serial": None, "last_refusal": None}
+
     def reset(self):
         self.state = {"parked": 0, "bytes": 0, "evictions": 0, "parks": 0, "restores": 0, "last_event": None,
-                      "last_tokens": None, "last_at": None}
+                      "last_tokens": None, "last_at": None, "disk": self.disk_state()}
+
+    def snapshot(self) -> dict:
+        """A copy the card may keep: the nested disk state is not shared with the live one."""
+        return {**self.state, "disk": dict(self.state["disk"])}
 
     def poll(self, path, start) -> dict:
         """The state after the log's new lines; `start` is where the engine's current run began in it.  One poll at a
@@ -897,7 +930,7 @@ class ConvCacheLog:
 
     def _poll(self, path, start) -> dict:
         if not path or start is None:
-            return dict(self.state)
+            return self.snapshot()
         if self.key != (path, start):                   # another start of the engine: its cache starts empty
             self.key, self.pos = (path, start), start
             self.reset()
@@ -911,12 +944,14 @@ class ConvCacheLog:
                 f.seek(self.pos)
                 data = f.read(size - self.pos)
         except OSError:
-            return dict(self.state)
+            return self.snapshot()
         end = data.rfind(b"\n") + 1                     # whole lines only: the rest is read next time
         self.pos += end
         now = time.time()
         for line in data[:end].decode("utf-8", "replace").splitlines():
             if "conversation cache:" not in line:
+                continue
+            if self._disk_line(line, now):
                 continue
             m = self.EVENT.search(line)
             if m:
@@ -931,7 +966,61 @@ class ConvCacheLog:
             m = self.DROPPED.search(line)
             if m:
                 self.state["parked"] = int(m.group(1))
-        return dict(self.state)
+        return self.snapshot()
+
+    def _disk_line(self, line: str, now: float) -> bool:
+        """Fold one of the disk tier's log lines into the card's disk state; True when the line was one of them.
+        The tier's park line reports what the tier holds AFTER the park, so its counts are the current ones;
+        evictions and supersessions are per park and add up."""
+        d = self.state["disk"]
+        m = self.DISK_ON.search(line)
+        if m:
+            d.update(enabled=True, dir=m.group(1), io="direct" if m.group(2) == "direct I/O" else "buffered",
+                     budget_mib=int(m.group(3)), generations=int(m.group(4)), bytes=int(m.group(5)) << 20,
+                     sidecars=int(m.group(6)), corrupt=int(m.group(9)), foreign=int(m.group(10)),
+                     last_event="open", last_at=now)
+            return True
+        m = self.DISK_OFF.search(line)
+        if m:
+            d.update(enabled=False, generations=0, bytes=0, sidecars=0, last_event="off", last_at=now,
+                     last_refusal=self._refusal(m.group(1)))
+            return True
+        m = self.DISK_PARK.search(line)
+        if m:
+            d["parks"] += 1
+            if m.group(2).strip() == "idle":
+                d["idle_saves"] += 1
+            d["generations"], d["bytes"], d["sidecars"] = int(m.group(5)), int(m.group(6)) << 20, int(m.group(9))
+            d["evictions"] += int(m.group(7))
+            d["superseded"] += int(m.group(8))
+            serial = self.DISK_SERIAL.search(m.group(3))
+            d["last_serial"] = int(serial.group(1)) if serial else None
+            d.update(last_event="park", last_tokens=int(m.group(1)), last_ms=float(m.group(4)), last_at=now,
+                     last_refusal=None)
+            return True
+        m = self.DISK_RESTORE.search(line)
+        if m:
+            d["restores"] += 1
+            if "pair:" in m.group(4):
+                d["draft_pair_hits"] += 1
+            if "draft miss" in m.group(4):
+                d["draft_rebuilds"] += 1
+            d.update(last_event="restore", last_tokens=int(m.group(1)), last_ms=float(m.group(3)), last_at=now,
+                     last_refusal=None)
+            return True
+        m = self.DISK_SKIP.search(line)
+        if m:
+            d["refusals"] += 1
+            d.update(last_event="skip " + m.group(1), last_at=now, last_refusal=self._refusal(m.group(2)))
+            return True
+        return False
+
+    @classmethod
+    def _refusal(cls, why: str) -> str:
+        """The tier's concise reason code ("quota", "free-space", "protected", ...); a caller's own words when
+        the line names no code.  Never more than a short phrase."""
+        m = cls.DISK_REFUSAL.search(why)
+        return (m.group(1) if m else why.strip())[:120]
 
 
 def conversation_slots(engine) -> int | None:
@@ -949,7 +1038,9 @@ def conversation_slots(engine) -> int | None:
 
 def conversation_cache_view(info: dict, hist: list, totals: dict, parked: dict) -> dict:
     """#596: the Monitor's Conversation cache card: the parked conversations (the engine's opt-in
-    --conversation-cache-mib: budget, slots, what its log says) and how much of the prompts the cache gave back."""
+    --conversation-cache-mib: budget, slots, what its log says), the same for the automatic disk tier (its own
+    budget, folder, what it holds and its counters, all from the engine's log) and how much of the prompts the
+    cache gave back."""
     mib = info.get("conversation_cache_mib")
     last = hist[-1] if hist else None
     return {"enabled": isinstance(mib, int) and mib > 0, "budget_mib": mib if isinstance(mib, int) else None,
@@ -1167,6 +1258,7 @@ class StrataEngine:
         self.progress = None             # (read, total) prompt tokens while a prompt is read, from PP lines
         self.progress_ms = 0             # PP's own milliseconds since the prompt started (its third field)
         self.reused = 0                  # RESUME: prompt tokens not read again (a client takes them out of the work)
+        self.disk_io = None              # the disk tier's last DCACHE line: {"phase","done","total","ms"}
         self.silent_note = None
         self.last_err = None
         try:                            # a ready-made engine's BUILD.json says its version
@@ -1563,6 +1655,22 @@ class StrataEngine:
                     self.slot_cv.notify_all()    # new engine, or (it did not start) end with a clean EngineDied
         self.info = {**info, **self.info}
 
+    def _note_disk_line(self, line: str) -> None:
+        """The disk tier's `DCACHE <phase> <done> <total> [<secs>]` progress line: disk bytes, so it is recorded
+        for the card and never touches the prompt statistics.  A malformed one is ignored: the tier's own line is
+        not an answer to anything, and a silent transfer is the watchdog's business, not a reason to kill a step."""
+        f = line.split()
+        if len(f) not in (4, 5) or f[1] not in DCACHE_PHASES:
+            return
+        try:
+            done, total = int(f[2]), int(f[3])
+            secs = float(f[4]) if len(f) == 5 else 0.0
+        except ValueError:
+            return
+        if done > total or not math.isfinite(secs) or secs < 0.0:
+            return
+        self.disk_io = {"phase": f[1], "done": done, "total": total, "ms": round(secs * 1000.0, 1)}
+
     def _parse_done(self, line):
         f = line.split()
         self.last = {"generated": int(f[1]), "prompt_tokens": int(f[2]), "prompt_ms": float(f[3]),
@@ -1888,6 +1996,9 @@ class StrataEngine:
                 f = line.split()
                 if len(f) >= 3 and f[1].lstrip("-").isdigit() and f[2].isdigit():
                     self._yielded = (int(f[1]), int(f[2]))
+            elif line.startswith("DCACHE "):             # the disk tier's transfer: disk bytes, a heartbeat only
+                self._note_disk_line(line)
+                yield None
             elif line.startswith("ERR"):
                 self._ctl_erred = True                   # #1059: the engine refused it and is idle: no DONE follows
                 self._raise_if_fatal_gpu(line)
@@ -2738,6 +2849,7 @@ class StrataEngine:
             return
         self.progress, self.progress_ms, self.reused = None, 0, 0
         self.prefill_tok_s_mean = None
+        self.disk_io = None
         # DeepSeek --parallel: the engine holds several conversations; this request is one of them (GEN ... rid=<id>), its
         # lines come on a queue of their own and its STOP names it.  One at a time (self.multi 0): the one queue, as before.
         rid, lines_q, stop_line = None, self.lines, "STOP\n"
@@ -2851,6 +2963,10 @@ class StrataEngine:
                         read_to = self.reused = int(line.split()[1])
                     except (IndexError, ValueError):
                         pass
+                elif line.startswith("DCACHE "):          # the disk tier's transfer: disk bytes, a heartbeat only
+                    self._note_disk_line(line)
+                    allow = silence                       # no extra allowance for a disk step: a stalled one times out
+                    yield None
                 elif line.startswith("DONE"):
                     self._parse_done(line)
                     self._last_done = line   # mixed-GPU acceptance: keep the raw line (helper= tail) for the done log
@@ -2992,7 +3108,8 @@ class StrataEngine:
         block of the file moved, at most 16 MiB) counts only when its numbers are.  `SWAIT <phase> <seconds>` announces
         a step that blocks in one call (a flush, the device transfer): until the next line the wait is that step's
         explicit allowance (at most SESSION_WAIT_MAX_S) when it is longer than engine_silence_s - no more, so a step
-        that never ends is still ended."""
+        that never ends is still ended.  `DCACHE <phase> <done> <total> [<secs>]` (the automatic disk tier's transfer,
+        plan 7) is accepted as progress and a heartbeat, with the same number rules as a SESSION line."""
         if action not in ("save", "restore") or any(c in path for c in "\r\n\0"):
             raise ValueError("invalid session command")
         try:
@@ -3020,6 +3137,7 @@ class StrataEngine:
             return int(s)
 
         last_done = -1
+        dcache: dict = {}        # the disk tier's last `done` per phase (its progress must be monotonic)
         allow = 0.0                                         # the announced blocking step's allowance, seconds
         while True:
             limit = max(silence, allow)
@@ -3045,6 +3163,23 @@ class StrataEngine:
                 except ValueError:
                     raise out_of_step(line) from None
                 last_done = done
+                heard, allow = time.monotonic(), 0.0
+                continue
+            if head == "DCACHE":                         # the automatic disk tier's transfer (a park's write/flush/
+                # publish, a restore's validate/transfer): progress and a heartbeat, with SESSION's rules - the
+                # tier's own phase, done never past total and never backwards within it, a finite time.  It buys
+                # no extra allowance: a disk step that stops is timed out like any other silence.
+                try:
+                    if len(f) not in (4, 5) or f[1] not in DCACHE_PHASES:
+                        raise ValueError
+                    done, total = count(f[2]), count(f[3])
+                    secs = float(f[4]) if len(f) == 5 else 0.0
+                    if done > total or done < dcache.get(f[1], -1) or not math.isfinite(secs) or secs < 0.0:
+                        raise ValueError
+                except ValueError:
+                    raise out_of_step(line) from None
+                dcache[f[1]] = done
+                self._note_disk_line(line)
                 heard, allow = time.monotonic(), 0.0
                 continue
             if head == "SWAIT":                            # a blocking step starts: its bounded allowance
@@ -5723,6 +5858,9 @@ class Service:
                 "tok_s_window_s": RATE_WINDOW_S if state == "generating" else None}
         if state == "reading" and progress:
             live["prompt_read"], live["prompt_total"] = progress
+        disk_io = getattr(self.engine, "disk_io", None)
+        if disk_io and s.get("busy"):                   # the disk tier is moving bytes for this request
+            live["disk_io"] = disk_io
         par = int(getattr(self.engine, "batch", 0) or 0)
         if par:                                         # #465: the requests running together, slot by slot
             with self.status_lock:

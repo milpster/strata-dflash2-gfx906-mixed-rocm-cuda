@@ -179,6 +179,57 @@ int main() {
               "a corrupted horizon marker rejects the restore's own window (no stale read)");
     }
 
+    // ---- Paired capture boundaries (the checkpoint-pair lane).  A pair is legal only AT the
+    // confirmed end with its window retained; its frozen counters keep that resume retained forever,
+    // and a boundary the ring has already wrapped demotes to target-only at capture/advertisement.
+    {
+        const int64_t T = 100000;
+        DFlashRingState st;
+        st.ring = RING; st.window = W; st.max_rows = ROWS; st.capacity = 262144;
+        st.note_append(0, T);   // a full confirmed prefill
+        check(dflash_pair_capture_ok(st, T, ROWS), "a capture at the confirmed end is legal");
+        check(!dflash_pair_capture_ok(st, T - 1, ROWS),
+              "a capture off the confirmed end is refused: never pair unrelated target/draft positions");
+        st.note_propose(T, ROWS);   // rejected speculation rows land on top of the confirmed end
+        check(st.appended_through == T + ROWS && st.committed_end == T,
+              "rejected rows advance the horizon only (appended_through > committed_end is valid state)");
+        check(dflash_pair_capture_ok(st, T, ROWS), "a capture at the confirmed end with a noise horizon is legal");
+        check(st.context_retained(T, ROWS), "appended_through > committed_end retains the checkpoint's own resume");
+
+        // Window survival: the pair frozen at T, then the live ring runs a full wrap.  The live
+        // horizon overwrites T's window; the FROZEN pair's counters keep T retained.
+        const DFlashSnapshotMeta frozen{st.committed_end, st.appended_through, RING, W, 262144};
+        check(frozen.appended_through > frozen.committed_end, "the frozen pair keeps the rejected-speculation rows");
+        DFlashRingState live = st;
+        for (int64_t p = T; p <= T + RING; p += 4) {
+            live.note_propose(p, ROWS);
+            live.note_append(live.committed_end, 4);   // the conversation advances past a full ring
+        }
+        check(!live.context_retained(T, ROWS), "after the ring wraps, the live horizon no longer retains T");
+        check(!dflash_pair_capture_ok(live, T, ROWS), "a capture at T after the wrap is target-only (advertisement demotion)");
+        DFlashRingState fresh2;
+        fresh2.ring = RING; fresh2.window = W; fresh2.max_rows = ROWS; fresh2.capacity = 262144;
+        check(fresh2.restore(frozen), "the pair restores its frozen counters verbatim");
+        check(fresh2.context_retained(T, ROWS), "the restored pair retains the checkpoint's resume: no old-prefix reread");
+        check(!fresh2.context_retained(T + 1, ROWS), "the pair refuses a resume past its captured confirmed end");
+
+        // The retention boundary follows the horizon exactly: the oldest resumable position at a
+        // horizon H is H - ring + window - 1, one deeper is overwritten (a ring-wrap capture miss).
+        DFlashRingState wrap;
+        wrap.ring = RING; wrap.window = W; wrap.max_rows = ROWS; wrap.capacity = 262144;
+        wrap.note_append(0, T);
+        wrap.note_propose(T, ROWS);
+        const int64_t oldest = wrap.appended_through - RING + W - 1;
+        check(oldest == T + ROWS - RING + W - 1, "boundary identity: H - ring + window - 1 at the noise horizon H = T + rows");
+        check(wrap.context_retained(oldest, ROWS), "the oldest retained resume captures legally");
+        check(!wrap.context_retained(oldest - 1, ROWS), "one deeper reaches rows a newer append overwrote");
+
+        // A snapshot extent is the clamped ring image at the checkpoint's own extent, never the
+        // live token count: the pair at T writes the ring, the pair at 1000 parks the prefix.
+        check(dflash_snapshot_extent(T, RING) == RING, "a deep checkpoint clamps the pair image to the ring");
+        check(dflash_snapshot_extent(1000, RING) == 1000, "a short checkpoint's pair image is its own extent");
+    }
+
     if (failures) {
         std::printf("dflash_ring_test: %d FAILURES\n", failures);
         return 1;

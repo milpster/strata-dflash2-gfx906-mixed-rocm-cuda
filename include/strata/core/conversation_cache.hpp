@@ -44,6 +44,17 @@ struct ConversationCheckpoint {
         double pipe = 0.0;
         bool single = false, chunked = false;
     } plan;
+    // The paired draft capture taken AT this checkpoint's boundary: the drafter's ring image at
+    // the checkpoint's own window plus the EXACT counters of that capture (legal only when the
+    // checkpoint sat at the confirmed end with its window retained - dflash_pair_capture_ok).
+    // `id` names the engine's ring sidecar in the disk tier's folder (the path is derived from
+    // it, not stored here); id 0: target-only. Run-time like `pinned`: the v1 session file does
+    // not store it, format v2's checkpoint meta does.
+    struct DraftPair {
+        uint64_t id = 0, bytes = 0, checksum = 0;
+        int64_t committed_end = -1, appended_through = -1, ring_cells = 0, window = 0, capacity = 0;
+        bool ok() const { return id != 0 && bytes > 0 && committed_end >= 0; }
+    } draft_pair;
     // Ordinary layer-split checkpoints retain each device's running state.
     // Whole-session parking is currently single-GPU and rejects these parts.
     std::vector<ConversationCheckpoint> stage_parts;
@@ -376,6 +387,23 @@ public:
     const SavedConversation* find(uint64_t serial) const {
         const size_t i = index_of(serial);
         return i == SIZE_MAX ? nullptr : &entries_[i];
+    }
+    // The pair sidecars the parked images reference (their checkpoints' capture ids, the main session's and the
+    // stage images').  The disk tier's sidecar reclaim asks for them: a parked conversation restored later
+    // rewinds through these checkpoints, and its pair must still be in the tier's folder.
+    void collect_pair_ids(std::vector<uint64_t>& out) const {
+        std::vector<const SavedConversation*> walk;
+        for (const auto& e : entries_) walk.push_back(&e);
+        while (!walk.empty()) {   // the stage images are one level deeper, so a stack - not a recursive lambda
+            const SavedConversation& e = *walk.back();
+            walk.pop_back();
+            if (e.live.draft_pair.id) out.push_back(e.live.draft_pair.id);
+            for (const auto& c : e.live.stage_parts)
+                if (c.draft_pair.id) out.push_back(c.draft_pair.id);
+            for (const auto& c : e.checkpoints)
+                if (c.draft_pair.id) out.push_back(c.draft_pair.id);
+            for (const auto& si : e.stage_images) walk.push_back(&si);
+        }
     }
     // While a borrowed entry (the donor) is being restored, parking the outgoing conversation must not evict or drop
     // it: guard() it.  When the outgoing image fits only without it, make_room refuses before evicting anything and
