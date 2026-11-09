@@ -54,6 +54,32 @@ for spec in $TREES; do
   cmake -S . -B "build-mixed-gpu/$dst" "${args[@]}"
   echo "=== $(date -Is) build $dst (-j11) ==="
   cmake --build "build-mixed-gpu/$dst" -j 11
+  # POST-BUILD BACKEND GUARD (2026-11-09 lesson): ctest stays green in a wrong-backend
+  # build - the fatbin, the section table and the linkage are the truth. That night the
+  # freeze regex dropped STRATA_HIP_GFX906 (a digit var), the "HIP" tree configured as
+  # pure CUDA sm_120 (libcudart.so.13, no gfx906 anywhere), and only the arm-D boot
+  # caught it - the parking check saw n_dev=1 because real cudaGetDeviceCount only
+  # sees the 3080. Nothing wrong-backend passes this line again.
+  guard_arch() { cuobjdump --list-elf "$1" 2>/dev/null | grep -oE 'sm_[0-9]+' | sort -u; }
+  if [[ $dst == *hip* ]]; then
+    grep -q '^STRATA_HIP_GFX906:BOOL=ON' "build-mixed-gpu/$dst/CMakeCache.txt" \
+      || { echo "GUARD FAIL $dst: STRATA_HIP_GFX906 not ON - wrong backend configured"; exit 9; }
+    if grep -q '^CMAKE_CUDA_COMPILER:' "build-mixed-gpu/$dst/CMakeCache.txt"; then
+      echo "GUARD FAIL $dst: nvcc entered a HIP tree's cache"; exit 9
+    fi
+    ldd "build-mixed-gpu/$dst/strata" 2>/dev/null | grep -q libamdhip64 \
+      || { echo "GUARD FAIL $dst: engine does not link libamdhip64"; exit 9; }
+    objdump -h "build-mixed-gpu/$dst/strata" | grep -q '\.hip_fatbin' \
+      || { echo "GUARD FAIL $dst: no .hip_fatbin section - not a HIP build"; exit 9; }
+    if [[ $(strings -a "build-mixed-gpu/$dst/strata" | grep -c gfx906) -eq 0 ]]; then
+      echo "GUARD FAIL $dst: no gfx906 target strings in the engine"; exit 9
+    fi
+    echo "=== guard $dst PASS: gfx906 HIP (libamdhip64 + .hip_fatbin + STRATA_HIP_GFX906) ==="
+  else
+    guard_arch "build-mixed-gpu/$dst/strata-expert-helper" | grep -q '^sm_86$' \
+      || { echo "GUARD FAIL $dst: helper fatbin lacks sm_86 ($(guard_arch "build-mixed-gpu/$dst/strata-expert-helper" | tr '\n' ' '))"; exit 9; }
+    echo "=== guard $dst PASS: helper fatbin sm_86 ==="
+  fi
   echo "=== $(date -Is) ctest $dst (-R helper) ==="
   (cd "build-mixed-gpu/$dst" && ctest -R helper --output-on-failure)
   echo "=== $(date -Is) $dst OK ==="

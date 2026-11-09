@@ -19,7 +19,9 @@ cache="$tree/CMakeCache.txt"
 # compiler/arch/toolchain facts that decide what the binaries can run on.
 # STRATA_GGML_DIR/STRATA_ORACLE_* are machine-local paths - kept, the golden
 # file is per-repo-checkout anyway. UNINITIALIZED is normalized to STRING.
-grep -E '^(STRATA_[A-Z_]+|GGML_[A-Z0-9_]+|CMAKE_BUILD_TYPE|CMAKE_HIP_[A-Z_]+|CMAKE_CUDA_ARCHITECTURES|CMAKE_CUDA_COMPILER|CMAKE_CXX_COMPILER|CMAKE_C_COMPILER):' "$cache" \
+# [0-9] is required: STRATA_HIP_GFX906 and STRATA_ENABLE_DFLASH2 were silently
+# dropped by [A-Z_]+ on 2026-11-09 - the tree configured as pure CUDA sm_120.
+grep -E '^(STRATA_[A-Z0-9_]+|GGML_[A-Z0-9_]+|CMAKE_BUILD_TYPE|CMAKE_HIP_[A-Z_]+|CMAKE_CUDA_ARCHITECTURES|CMAKE_CUDA_COMPILER|CMAKE_CXX_COMPILER|CMAKE_C_COMPILER):' "$cache" \
   | grep -v ADVANCED | grep -v 'NOTFOUND' \
   | sed -e 's/:UNINITIALIZED=/:STRING=/' -e 's/:INTERNAL=.*//' \
   | awk -F: '{ key=$1; rest=substr($0, length($1)+2); split(rest, kv, "="); type=kv[1]; sub(/^[^=]*=/, "", rest); val=rest;
