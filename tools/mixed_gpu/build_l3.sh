@@ -28,7 +28,10 @@ for spec in $TREES; do
   # Pin ROCm resolution to the runtime's libraries; never let CMake wander into a
   # newer /opt/rocm (the unversioned AMDDeviceLibs_DIR of the old cache is NOT
   # replicated on purpose — it resolves through CMAKE_PREFIX_PATH instead).
-  args+=(-"-DCMAKE_PREFIX_PATH=${STRATA_ROCM_ROOT:-/home/user/rocm-gfx906-xnack};/opt/rocm-6.1.0"
+  # The leading "-" before "-DCMAKE_PREFIX_PATH" (sic) made bash emit "--DCMAKE_PREFIX_PATH"
+  # and cmake abort with "Unknown argument" - single dash fixed 2026-11-09 (first run off
+  # /home/user; the bug is unconditional, so this line could never have worked as written).
+  args+=("-DCMAKE_PREFIX_PATH=${STRATA_ROCM_ROOT:-/home/srcds/rocm-gfx906-xnack};/opt/rocm-6.1.0"
          -DROCM_PATH=/opt/rocm-6.1.0
          -DHIP_PATH=/opt/rocm-6.1.0
          -DHIP_ROOT_DIR=/opt/rocm-6.1.0)
