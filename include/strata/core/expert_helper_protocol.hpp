@@ -85,6 +85,7 @@ inline constexpr uint32_t kFeaturePromptF32 = 2u;        // HelloAck.features bi
 inline constexpr uint32_t kFeatureDraft = 4u;            // HelloAck.features bit 2 (M7: the drafter lane)
 inline constexpr uint32_t kFeatureDraftBf16 = 8u;        // HelloAck.features bit 3 (L8: bf16 draft taps)
 inline constexpr uint32_t kFeatureQ8K = 16u;             // bit 4: Q8_K activation images (kBeginQ8K, image_format 2)
+inline constexpr uint32_t kFeaturePromptBatch = 32u;     // bit 5: K prompt-tier claims in ONE exchange (kBeginPB/kRowsPB)
 
 // Frame types.  Exactly one request is outstanding: the engine sends hello, fill, and a begin; each
 // expect a reply of the named type with the same request id.  A frame with an unexpected type, version,
@@ -128,6 +129,16 @@ enum FrameType : uint32_t {
     // contract.  The SAME extension rule as the frames above: a peer that never advertised the bit
     // never sees the frame type - a mixed build gets the typed refusal, never a misparse.
     kBeginQ8K = 17,       // engine -> helper: the window's activations as Q8_K blocks (reply stays kRows)
+    // The prompt tier's CLAIM BATCH (default OFF - the engine's STRATA_CLAIM_BATCH, and only to a
+    // peer that advertised kFeaturePromptBatch): K consecutive prompt-tier claims in ONE exchange,
+    // served by the helper under ONE device-lock acquisition.  The SAME extension rule as the frames
+    // above: a new frame type, never sent to a peer that did not advertise the bit, so a mixed build
+    // answers with this transport's own typed refusal and batch=1 keeps kBeginP's bytes exactly.
+    // Every part is transport-only: same rows requested, same rows returned, same order of
+    // application - a part's request and reply are byte-for-byte a standalone kBeginP / kRowsP
+    // payload, concatenated in the engine's claim order.
+    kBeginPB = 18,        // engine -> helper: n_parts prompt-tier sub-requests in one frame
+    kRowsPB = 19,         // helper -> engine: n_parts kRowsP replies in one frame
 };
 
 // Frame limits the reader enforces before allocating anything.
@@ -263,6 +274,42 @@ struct RowsPResp {
 // contract: rows for a pair the engine did not claim are refused there, every claim it made must be
 // answered, and all floats must be finite.
 
+// ---- The prompt tier's CLAIM BATCH (default OFF): kBeginPB / kRowsP payloads. ----
+//
+// The exchange is transport-only: the engine groups K consecutive prompt-tier claims (the frames it
+// sends one-per-layer today) into ONE frame, and the helper serves them under ONE lock acquisition.
+// Nothing about the claim changes: part i's request is EXACTLY a standalone kBeginP payload
+// (BeginPReq + pairs + primary bitmap + image, its own caps checked per part), part i's reply is
+// EXACTLY a standalone kRowsP payload (RowsPResp + rows), and the parts travel in the engine's
+// claim order - the order the engine applies them.  kMaxFramePayload (128 MiB) is the frame's own
+// cap on both directions, so the batch's caps below keep a batch inside ONE frame each way: the
+// request's parts sum, and the reply's rows sum (rows * (4 + n_embd*4)).
+inline constexpr int64_t kMaxClaimBatch = 16;    // parts in one kBeginPB (1 is never sent: kBeginP is that frame)
+inline constexpr size_t kMaxBatchPayload = kMaxFramePayload / 2;   // 64 MiB per direction, so a batch never
+                                                                    // crowds the 128 MiB frame cap
+
+struct BeginPBReq {
+    int32_t n_parts = 0;      // 1..kMaxClaimBatch
+    int32_t flags = 0;        // reserved, 0 today: the shape an extended batch will negotiate in
+    int64_t reserved0 = 0;    // must stay 0
+};
+
+// The kBeginPB body, in this exact order after sizeof(BeginPBReq):
+//   part 0: sizeof(BeginPReq) + its pairs + its primary bitmap + its image  (a full kBeginP payload)
+//   part 1: .. and so on, n_parts times, in the engine's claim order.
+// The frame's total is exact: every part is length-checked as kBeginP is, and the sum is checked
+// against the frame's own len before a part is parsed.
+
+struct RowsPBResp {
+    int32_t n_parts = 0;      // the parts the helper answered == the request's n_parts
+    int32_t reserved0 = 0;
+};
+
+// The kRowsPB body: n_parts times, in the request's part order, each one EXACTLY a kRowsP payload:
+// sizeof(RowsPResp) + n_rows * (4 + n_embd*4).  A part whose rows the helper did not compute is
+// absent INSIDE its own part (the per-part contract), and the engine validates each part against
+// that part's own claims - a missing row is the same-layer CPU fallback, never a silent zero.
+
 // ---- M7 (the drafter lane; docs/work/MIXED_BACKEND_RPC_PLAN.md sect12): the draft frames. ----
 //
 // The displaced drafter is Dflash2Drafter's contract over the wire: the engine owns the target's
@@ -349,6 +396,11 @@ static_assert(sizeof(BeginPReq) == 24 && offsetof(BeginPReq, n_q8) == 16 &&
               offsetof(BeginPReq, image_format) == 20,
               "BeginPReq's layout is pinned on the wire (pairs start at sizeof)");
 static_assert(sizeof(RowsPResp) == 8, "RowsPResp's layout is pinned on the wire");
+static_assert(sizeof(BeginPBReq) == 16 && offsetof(BeginPBReq, flags) == 4 &&
+              offsetof(BeginPBReq, reserved0) == 8,
+              "BeginPBReq's layout is pinned on the wire (part 0 starts at sizeof; the int32/int64 "
+              "mix pads, so the offset is asserted)");
+static_assert(sizeof(RowsPBResp) == 8, "RowsPBResp's layout is pinned on the wire (part 0 starts at sizeof)");
 static_assert(sizeof(DraftCtxReq) == 24 && offsetof(DraftCtxReq, reset) == 12 &&
               offsetof(DraftCtxReq, pos0) == 16,
               "DraftCtxReq's layout is pinned on the wire (pos0 sits on the 8-byte boundary "

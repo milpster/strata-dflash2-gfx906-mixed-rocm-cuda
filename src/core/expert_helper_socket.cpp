@@ -37,6 +37,25 @@ constexpr int64_t kDeadlineDefaultMs = 3000;
 constexpr int64_t kDeadlineDraftMs = 5000;
 int64_t rel(int64_t ms, int64_t dflt) { return expert_helper::deadline_after(ms > 0 ? ms : dflt); }
 }
+}  // namespace
+
+// The STRATA_CLAIM_BATCH knob (default 1 = EXACTLY today's wire), declared here and read by the
+// hello latch and the prompt tier's begin path.  NOT cached: the value is read per client and per
+// begin, so a claim loop cannot mix a queued part built under one K with a batch built under
+// another within one process (the host test sets the env between handshakes; the engine sets it
+// once at startup).  Values above kMaxClaimBatch clamp (the frame's own part cap); a non-numeric or
+// non-positive reading is 1.
+static int64_t claim_batch_env() {
+    const char* v = std::getenv("STRATA_CLAIM_BATCH");
+    if (v == nullptr) return 1;
+    const long long n = std::atoll(v);
+    if (n < 1) return 1;
+    return n > (long long) strata::core::expert_helper::kMaxClaimBatch
+               ? (int64_t) strata::core::expert_helper::kMaxClaimBatch
+               : (int64_t) n;
+}
+
+namespace strata::core {
 
 int validate_rows_payload(const uint8_t* payload, size_t n, int64_t n_embd,
                           const std::vector<int32_t>& claims, float* out, int32_t& rows) {
@@ -260,7 +279,7 @@ int select_prompt_rows(const int32_t* cnt, const int32_t* toks, const int32_t* h
     return kOk;
 }
 
-ExpertHelperClient::ExpertHelperClient() = default;
+ExpertHelperClient::ExpertHelperClient() : claim_batch_(claim_batch_env()) {}
 ExpertHelperClient::~ExpertHelperClient() { close(); release_prompt_buffer(); }
 
 int ExpertHelperClient::attach_socket(int fd, bool owned) {
@@ -283,6 +302,9 @@ int ExpertHelperClient::connect(const std::string& path, int64_t connect_timeout
     begin_outstanding_ = false;
     seq_ = 0;
     req_id_ = 0;
+    prompt_parts_.clear();   // a fresh channel starts with no queued claim
+    batch_rows_ = 0;
+    batch_answered_ = false;
     return expert_helper::kOk;
 }
 
@@ -292,6 +314,9 @@ void ExpertHelperClient::close() {
     owned_ = false;
     begin_outstanding_ = false;
     prompt_pairs_ = 0;
+    prompt_parts_.clear();   // the claim batch dies with the channel: no queued claim survives a close
+    batch_rows_ = 0;
+    batch_answered_ = false;
 }
 
 void ExpertHelperClient::bye() {
@@ -362,6 +387,13 @@ int ExpertHelperClient::hello(int64_t n_layers, int64_t n_expert, int64_t n_embd
                   (ack.features & expert_helper::kFeatureDraftBf16) != 0;   // L8: bf16 taps
     q8k_ = (body.size() >= sizeof(expert_helper::HelloAck)) &&
            (ack.features & expert_helper::kFeatureQ8K) != 0;   // the Q8_K activation wire
+    // The claim batch's PEER half of the gate: the bit says this helper serves kBeginPB/kRowsPB.
+    // The ENGINE half is STRATA_CLAIM_BATCH (default 1).  Both must hold for a batch frame to exist;
+    // with the env unset the prompt tier writes kBeginP exactly as today, so the bit changes nothing
+    // on the wire for a K=1 engine, and a K>1 engine against a bit-less helper keeps kBeginP too.
+    prompt_batch_ = (body.size() >= sizeof(expert_helper::HelloAck)) &&
+                    (ack.features & expert_helper::kFeaturePromptBatch) != 0;
+    claim_batch_ = claim_batch_env();
     seq_ = head.seq;
     expert_helper::log_socket_buffers(fd_, "engine");   // helper-ipc-diet: the achieved buffer pair, once per hello
     s.release();
@@ -593,10 +625,15 @@ void ExpertHelperClient::release_prompt_buffer() {
     }
 }
 
-int ExpertHelperClient::begin_prompt(int32_t layer, const ExpertHelperPromptPlan& plan,
-                                     const int32_t* host_res, int64_t deadline_ms) {
+// The prompt tier's OWN request body: every gate and cap begin_prompt runs, and the frame's exact
+// bytes (BeginPReq + pairs + the layer's PRIMARY residency bitmap + the image quantized from the
+// tier's own rows).  Shared by the single-claim path (writes it as kBeginP, today's bytes exactly)
+// and the claim batch (queues it as one part of a kBeginPB), so a batched part is byte-for-byte the
+// request a standalone kBeginP carries.
+int ExpertHelperClient::build_beginp_payload(int32_t layer, const ExpertHelperPromptPlan& plan,
+                                             const int32_t* host_res, std::vector<uint8_t>& payload,
+                                             int64_t& rows_out) {
     using namespace expert_helper;
-    if (fd_ < 0) return kErrUnhealthy;
     // The negotiation gate, BEFORE any write: a peer that never advertised the tier (an R2 helper,
     // whose 24-byte ack has no features field) gets a typed refusal here and the new frame type never
     // reaches it.  There is nothing to misparse and nothing to wait on.
@@ -649,7 +686,7 @@ int ExpertHelperClient::begin_prompt(int32_t layer, const ExpertHelperPromptPlan
     const size_t total = sizeof(BeginPReq) + (size_t) rows * 8 + res_bytes + (size_t) n_img;
     if (n_img <= 0 || total > kMaxFramePayload) return kErrGeometry;   // 84 MB fp32 at the caps; over = refusal
 
-    std::vector<uint8_t> payload(total, 0);
+    payload.assign(total, 0);
     BeginPReq req;
     req.layer = layer;
     req.n_sel_tok = (int32_t) n_sel;
@@ -681,6 +718,51 @@ int ExpertHelperClient::begin_prompt(int32_t layer, const ExpertHelperPromptPlan
         for (int64_t r = 0; r < n_sel; ++r)
             quantize_q8_1_cpu(src + (size_t) r * (size_t) n_embd_, n_embd_, q8 + (size_t) r * (size_t) (n_embd_ / 32) * 36);
     }
+    rows_out = rows;
+    return kOk;
+}
+
+int ExpertHelperClient::begin_prompt(int32_t layer, const ExpertHelperPromptPlan& plan,
+                                     const int32_t* host_res, int64_t deadline_ms) {
+    using namespace expert_helper;
+    if (fd_ < 0) return kErrUnhealthy;
+    std::vector<uint8_t> payload;
+    int64_t rows = 0;
+    const int rc_build = build_beginp_payload(layer, plan, host_res, payload, rows);
+    if (rc_build != kOk) return rc_build;
+
+    // ---- The claim batch (default OFF: STRATA_CLAIM_BATCH = 1 is the path below, byte for byte). ----
+    //
+    // K>1 with a peer that advertised kFeaturePromptBatch: this claim becomes ONE PART of a kBeginPB
+    // and NOTHING goes on the wire yet.  The part carries exactly the bytes a standalone kBeginP
+    // would (the builder above ran on the tier's rows, which are final at this call - the caller
+    // synced its activation download before it), so the helper parses it with kBeginP's own checks.
+    // The batch's FIRST finish_prompt flushes the queue as one frame and reads its one reply; the
+    // parts answer in queue order, which is the engine's claim order, so the order of application is
+    // unchanged.  The caps are hard refusals BEFORE any write: the queue's part count, the request's
+    // byte sum, and the reply's row sum (rows * (4 + n_embd*4) inside kMaxBatchPayload).  A refusal
+    // leaves the queue exactly as it was: the layer stays with the caller's same-layer fallback.
+    if (claim_batch_ > 1 && prompt_batch_) {
+        // A new claim cannot join a batch whose reply is already in hand: its staged parts answer the
+        // calls that are already queued, and a part appended behind them would never be answered.
+        // The caller's rule for a refused begin is its same-layer fallback, so this is a named
+        // refusal with nothing written and the queue untouched.
+        if (batch_answered_) return kErrBusy;
+        if ((int64_t) prompt_parts_.size() >= claim_batch_) return kErrGeometry;   // the queue is full
+        size_t req_bytes = sizeof(BeginPBReq) + payload.size();
+        for (const PromptPart& p : prompt_parts_) req_bytes += p.request.size();
+        if (req_bytes > kMaxBatchPayload) return kErrGeometry;   // a batch the reader would refuse
+        const int64_t row_bytes = 4 + n_embd_ * (int64_t) sizeof(float);
+        if (row_bytes <= 0 || batch_rows_ + rows > (int64_t) (kMaxBatchPayload / (size_t) row_bytes))
+            return kErrGeometry;                                  // a reply no single frame can carry
+        PromptPart part;
+        part.request = std::move(payload);
+        part.claims.resize((size_t) rows);
+        for (int64_t i = 0; i < rows; ++i) part.claims[(size_t) i] = (int32_t) i;   // the dense pair list
+        prompt_parts_.push_back(std::move(part));
+        batch_rows_ += rows;
+        return kOk;
+    }
 
     expert_helper::Socket s;
     s.adopt(fd_);
@@ -709,6 +791,9 @@ int ExpertHelperClient::finish_prompt(float* out, int64_t n_embd, const std::vec
     // M7 (sect12a, BUG E): see finish - the read, the pairing and the flag clear all run under
     // io_mtx_, and the flag is what the drafter lane's gate waits on.
     std::lock_guard<std::mutex> io_lk(io_mtx_);
+    // The claim batch (default OFF, K = 1 never queues): the queued parts answer in claim order, the
+    // first call flushing the batch and the rest reading their staged parts.
+    if (!prompt_parts_.empty()) return finish_prompt_batch(out, n_embd, claims, timeout_ms, rows);
     if (!begin_outstanding_) return expert_helper::kErrSeq;   // a reply with no outstanding request
     expert_helper::Socket s;
     s.adopt(fd_);
@@ -762,6 +847,145 @@ int ExpertHelperClient::finish_prompt(float* out, int64_t n_embd, const std::vec
     begin_outstanding_ = false;
     s.release();
     return expert_helper::kOk;
+}
+
+// ---- The claim batch's reply path (STRATA_CLAIM_BATCH > 1 AND the peer's kFeaturePromptBatch). ----
+//
+// io_mtx_ is held by finish_prompt for the whole call, so the flush's write, the reply's read and the
+// pairing test are ONE transaction of the protocol's ONE-outstanding-request rule - identical to what
+// begin_prompt/finish_prompt do for a single claim.  The batch is transport-only:
+//   * the flush's payload is BeginPBReq + the queued parts' bytes in queue order, and every part is
+//     the exact kBeginP payload build_beginp_payload produced, so the helper runs kBeginP's own parse
+//     and kBeginP's own caps per part;
+//   * the reply's parts are split by length (RowsPResp + n_rows * (4 + n_embd*4) each) and EACH part
+//     is validated by validate_rows_payload against THAT part's own claims - the same whole-or-nothing
+//     rule a standalone kRowsP has, so a missing row is the caller's same-layer fallback and a
+//     reordering cannot survive (an index the part did not claim is kErrBadId);
+//   * the parts answer in queue order, which is the order the claims were made, so the order of
+//     application is unchanged.
+int ExpertHelperClient::finish_prompt_batch(float* out, int64_t n_embd, const std::vector<int32_t>& claims,
+                                            int64_t timeout_ms, int32_t& rows) {
+    using namespace expert_helper;
+    PromptPart& front = prompt_parts_.front();
+    // The batch's parts answer in CLAIM order, so a caller asking for any other set is a caller
+    // that cannot use these rows.  The refusal is checked BEFORE the flush: the batch never
+    // reaches the wire, so no reply is burned and no row can be applied out of order.
+    if (front.claims != claims) {
+        std::fprintf(stderr, "expert-helper: the prompt batch answers its parts in claim order; the "
+                             "caller's %zu claims do not match the front part's %zu (first claim %d, "
+                             "asked %d); closing the channel before the batch is sent\n",
+                     claims.size(), front.claims.size(),
+                     front.claims.empty() ? -1 : front.claims.front(),
+                     claims.empty() ? -1 : claims.front());
+        close();
+        return kErrSeq;
+    }
+    if (!batch_answered_) {
+        const int64_t parts = (int64_t) prompt_parts_.size();
+        size_t total = sizeof(BeginPBReq);
+        for (const PromptPart& p : prompt_parts_) total += p.request.size();
+        std::vector<uint8_t> payload(total, 0);
+        BeginPBReq head;
+        head.n_parts = (int32_t) parts;
+        head.flags = 0;
+        head.reserved0 = 0;
+        std::memcpy(payload.data(), &head, sizeof(head));
+        size_t off = sizeof(head);
+        for (const PromptPart& p : prompt_parts_) {
+            std::memcpy(payload.data() + off, p.request.data(), p.request.size());
+            off += p.request.size();
+        }
+        expert_helper::Socket s;
+        s.adopt(fd_);
+        const auto t0 = std::chrono::steady_clock::now();
+        const int64_t deadline = rel(timeout_ms, kDeadlineDefaultMs);
+        int rc = s.write_frame(kBeginPB, ++req_id_, payload.data(), payload.size(), deadline);
+        ms_begin_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        if (rc != kOk) { s.release(); close(); return rc; }
+        begin_outstanding_ = true;
+        begin_seq_ = s.seq_out();
+        seq_ = begin_seq_;
+        prompt_pairs_ = batch_rows_;
+        ++prompt_requests_;   // ONE exchange served K claims: the counter counts exchanges
+        const auto t1 = std::chrono::steady_clock::now();
+        Header head2;
+        PayloadView body;
+        rc = s.read_frame(head2, rx_, body, deadline);
+        ms_wait_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t1).count();
+        if (rc == kErrTimeout) {
+            ++timeouts_;
+            std::fprintf(stderr, "expert-helper: the prompt batch reply (%lld parts) missed its %lld ms "
+                                 "deadline (timeouts now %lld); closing the channel - the tier falls back "
+                                 "for this request\n", (long long) parts, (long long) timeout_ms,
+                         (long long) timeouts_);
+            s.release(); close(); return rc;
+        }
+        if (rc != kOk) {
+            std::fprintf(stderr, "expert-helper: reading the prompt batch reply failed: %s; closing the "
+                                 "channel\n", status_name(rc));
+            s.release(); close(); return rc;
+        }
+        if (head2.type == kError) {
+            ErrResp err{};
+            if (body.size() >= sizeof(err)) std::memcpy(&err, body.data(), sizeof(err));
+            std::fprintf(stderr, "expert-helper: the helper refused the prompt batch request: %lld %s; "
+                                 "closing the channel\n", (long long) err.status, err.text);
+            s.release(); close(); return kErrRequest;
+        }
+        if (head2.type != kRowsPB) {
+            std::fprintf(stderr, "expert-helper: unexpected prompt batch reply frame type %u; closing "
+                                 "the channel\n", head2.type);
+            s.release(); close(); return kErrProtocol;
+        }
+        if (head2.req_id != req_id_ || head2.seq != begin_seq_) {
+            std::fprintf(stderr, "expert-helper: prompt batch reply rejected: req_id %u (want %u) seq "
+                                 "%u (want %u); closing the channel\n", head2.req_id, req_id_,
+                         head2.seq, begin_seq_);
+            s.release(); close(); return kErrSeq;
+        }
+        if (body.size() < sizeof(RowsPBResp)) { s.release(); close(); return kErrShort; }
+        RowsPBResp rep;
+        std::memcpy(&rep, body.data(), sizeof(rep));
+        if (rep.n_parts != (int32_t) parts || rep.reserved0 != 0) {
+            std::fprintf(stderr, "expert-helper: the prompt batch reply answered %d parts, %lld were "
+                                 "asked; closing the channel\n", rep.n_parts, (long long) parts);
+            s.release(); close(); return kErrShort;
+        }
+        const size_t row_bytes = 4 + (size_t) n_embd * 4;
+        size_t off2 = sizeof(rep);
+        for (int64_t i = 0; i < parts; ++i) {
+            if (off2 + sizeof(RowsPResp) > body.size()) { s.release(); close(); return kErrShort; }
+            RowsPResp pr;
+            std::memcpy(&pr, body.data() + off2, sizeof(pr));
+            if (pr.n_rows < 0 || pr.reserved0 != 0) { s.release(); close(); return kErrShort; }
+            const size_t need = sizeof(pr) + (size_t) pr.n_rows * row_bytes;
+            if (off2 + need > body.size()) { s.release(); close(); return kErrShort; }
+            const uint8_t* p = body.data() + off2;
+            prompt_parts_[(size_t) i].reply.assign(p, p + need);
+            off2 += need;
+        }
+        if (off2 != body.size()) { s.release(); close(); return kErrShort; }   // the parts' total is exact
+        s.release();
+        begin_outstanding_ = false;
+        batch_answered_ = true;
+    }
+    // The front part, validated and applied by the SAME whole-or-nothing rule a standalone kRowsP runs.
+    const int rc = validate_rows_payload(front.reply.data(), front.reply.size(), n_embd, front.claims,
+                                         out, rows);
+    if (rc != kOk) {
+        std::fprintf(stderr, "expert-helper: the prompt batch's part failed row validation: %s (%lld "
+                             "rows for %lld claims); closing the channel\n", status_name(rc),
+                      (long long) rows, (long long) front.claims.size());
+        close();
+        return rc;
+    }
+    prompt_rows_returned_ += (uint64_t) rows;
+    prompt_bytes_ += (uint64_t) rows * (uint64_t) n_embd * 4ull;
+    const int64_t claimed = (int64_t) front.claims.size();   // read before the erase invalidates it
+    prompt_parts_.erase(prompt_parts_.begin());
+    batch_rows_ -= claimed;
+    if (prompt_parts_.empty()) { batch_answered_ = false; prompt_pairs_ = 0; }
+    return kOk;
 }
 
 // ---- M7 (the drafter lane, docs/work/MIXED_BACKEND_RPC_PLAN.md sect12/12a): kDraftCtx / kDraftReq. ----

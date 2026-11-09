@@ -735,24 +735,14 @@ static inline cudaStream_t prompt_stream(const Helper& hp) {
     return hp.streams_split ? hp.stream_p : hp.stream;
 }
 
-int serve_prompt(Helper& hp, PayloadView body, uint32_t req_id, uint32_t seq, std::string& err,
-                 Socket& out) {
-    // The prompt tier's OWN staging (h_meta_p/d_meta_p/d_q8_p/d_out_p/scratch_p) and the grouped
-    // kernel it launches are shared device state: with --socket2 this frame and a window frame can
-    // arrive at the same moment, on different channels.  Same lock as serve_begin, never across a
-    // channel's idle read.
-    // L3 (STRATA_RPC_PROFILE=1): queue_us = the head-of-line wait for the shared device lock (the
-    // M7 gate's single-socket failure mechanism, now measurable per frame); the lock spans parse ->
-    // (optional fp32->q8 twin quantize) -> upload -> kernel -> sync -> gather.  Default off.
-    static const bool prof = std::getenv("STRATA_RPC_PROFILE") != nullptr;
-    const auto p_entry = prof ? std::chrono::steady_clock::now()
-                              : std::chrono::steady_clock::time_point{};
-    std::unique_lock<std::mutex> gpu_lk(hp.gpu_mtx, std::defer_lock);
-    std::optional<std::shared_lock<std::shared_mutex>> gpu_lk_on;
-    if (hp.streams_split) gpu_lk_on.emplace(hp.gpu_gate);   // L2: a served frame is a reader
-    else gpu_lk.lock();
-    const int64_t p_queue_us = prof ? std::chrono::duration_cast<std::chrono::microseconds>(
-                                          std::chrono::steady_clock::now() - p_entry).count() : 0;
+// The per-part BODY of a prompt-tier request: every cap kBeginP enforces, the claims, the grouped
+// launch, the H14 finite scan, and the reply BYTES - the exact kRowsP payload (RowsPResp + rows in
+// claim order with the original pair indices).  It takes no lock and writes no socket: serve_prompt
+// locks and writes it, and serve_prompt_batch serves K parts under ONE lock acquisition and writes
+// them as K parts of one kRowsPB.  One code path per claim, so a batched part is byte-for-byte the
+// request and reply a standalone kBeginP/kRowsP pair carries.
+static int serve_prompt_core(Helper& hp, PayloadView body, std::vector<uint8_t>& reply,
+                             int32_t& n_rows_out, int32_t& layer_out, std::string& err) {
     if (body.size() < sizeof(BeginPReq)) return kErrShort;
     BeginPReq req;
     std::memcpy(&req, body.data(), sizeof(req));
@@ -815,9 +805,11 @@ int serve_prompt(Helper& hp, PayloadView body, uint32_t req_id, uint32_t seq, st
     if (claim_of.empty()) {   // nothing resident: an empty reply, the local path serves every row
         RowsPResp rep;
         rep.n_rows = 0;
-        std::vector<uint8_t> payload(sizeof(rep), 0);
-        std::memcpy(payload.data(), &rep, sizeof(rep));
-        return out.write_reply(kRowsP, req_id, seq, payload.data(), payload.size(), deadline_after(reply_deadline_ms(1000)));
+        reply.assign(sizeof(rep), 0);
+        std::memcpy(reply.data(), &rep, sizeof(rep));
+        n_rows_out = 0;
+        layer_out = layer;
+        return kOk;
     }
     const int32_t groups = (int32_t) grp_expert.size();
     for (int32_t g = 0; g < groups; ++g) {
@@ -915,13 +907,40 @@ int serve_prompt(Helper& hp, PayloadView body, uint32_t req_id, uint32_t seq, st
     const size_t row_bytes = 4 + (size_t) H * 4;
     RowsPResp rep;
     rep.n_rows = n_rows;
-    std::vector<uint8_t> payload(sizeof(rep) + (size_t) n_rows * row_bytes, 0);
-    std::memcpy(payload.data(), &rep, sizeof(rep));
+    reply.assign(sizeof(rep) + (size_t) n_rows * row_bytes, 0);
+    std::memcpy(reply.data(), &rep, sizeof(rep));
     for (int32_t i = 0; i < n_rows; ++i) {
-        std::memcpy(payload.data() + sizeof(rep) + (size_t) i * row_bytes, &compact_claim[i], 4);
-        std::memcpy(payload.data() + sizeof(rep) + (size_t) i * row_bytes + 4,
+        std::memcpy(reply.data() + sizeof(rep) + (size_t) i * row_bytes, &compact_claim[i], 4);
+        std::memcpy(reply.data() + sizeof(rep) + (size_t) i * row_bytes + 4,
                     hp.d_out_p + (size_t) i * H, (size_t) H * 4);
     }
+    n_rows_out = n_rows;
+    layer_out = layer;
+    return kOk;
+}
+
+int serve_prompt(Helper& hp, PayloadView body, uint32_t req_id, uint32_t seq, std::string& err,
+                 Socket& out) {
+    // The prompt tier's OWN staging (h_meta_p/d_meta_p/d_q8_p/d_out_p/scratch_p) and the grouped
+    // kernel it launches are shared device state: with --socket2 this frame and a window frame can
+    // arrive at the same moment, on different channels.  Same lock as serve_begin, never across a
+    // channel's idle read - and the SAME lock the batch below takes ONCE for its K parts.
+    // L3 (STRATA_RPC_PROFILE=1): queue_us = the head-of-line wait for the shared device lock (the
+    // M7 gate's single-socket failure mechanism, now measurable per frame); the lock spans parse ->
+    // (optional fp32->q8 twin quantize) -> upload -> kernel -> sync -> gather.  Default off.
+    static const bool prof = std::getenv("STRATA_RPC_PROFILE") != nullptr;
+    const auto p_entry = prof ? std::chrono::steady_clock::now()
+                              : std::chrono::steady_clock::time_point{};
+    std::unique_lock<std::mutex> gpu_lk(hp.gpu_mtx, std::defer_lock);
+    std::optional<std::shared_lock<std::shared_mutex>> gpu_lk_on;
+    if (hp.streams_split) gpu_lk_on.emplace(hp.gpu_gate);   // L2: a served frame is a reader
+    else gpu_lk.lock();
+    const int64_t p_queue_us = prof ? std::chrono::duration_cast<std::chrono::microseconds>(
+                                          std::chrono::steady_clock::now() - p_entry).count() : 0;
+    std::vector<uint8_t> payload;
+    int32_t n_rows = 0, layer = 0;
+    const int rc = serve_prompt_core(hp, body, payload, n_rows, layer, err);
+    if (rc != kOk) return rc;
     const auto p_ready = prof ? std::chrono::steady_clock::now()
                               : std::chrono::steady_clock::time_point{};
     const int rc_w = out.write_reply(kRowsP, req_id, seq, payload.data(), payload.size(), deadline_after(reply_deadline_ms(10000)));
@@ -933,7 +952,92 @@ int serve_prompt(Helper& hp, PayloadView body, uint32_t req_id, uint32_t seq, st
                                       p_ready - p_entry).count() - p_queue_us),
                      (long long) std::chrono::duration_cast<std::chrono::microseconds>(
                                       std::chrono::steady_clock::now() - p_ready).count(),
-                     (long long) ((payload.size() - sizeof(rep)) / 1024));
+                     (long long) ((payload.size() - sizeof(RowsPResp)) / 1024));
+    return rc_w;
+}
+
+// ---- The CLAIM BATCH (kBeginPB / kRowsPB, default OFF - the engine's STRATA_CLAIM_BATCH): K
+// consecutive prompt-tier claims in ONE exchange, served by the helper under ONE lock acquisition.
+//
+// Transport-only by construction: the frame's parts are sliced by kBeginP's own byte contract
+// (BeginPReq + pairs + the layer's primary bitmap + the image, length-checked per part against the
+// frame's exact total), each part runs the SAME serve_prompt_core a standalone kBeginP runs - same
+// claims, same caps, same launch, same reply layout - and the parts are answered in the request's
+// part order.  Nothing reorders rows: the engine validates each part against ITS OWN claims, so a
+// row belonging to another part is kErrBadId there and the caller's same-layer fallback owns the set.
+//
+// The lock is the frame's point: K claims pay the device lock and the queue handshake ONCE
+// (measured on the 8k-token window: 96 prompt claims, a per-claim fixed floor of ~5.8 ms).
+int serve_prompt_batch(Helper& hp, PayloadView body, uint32_t req_id, uint32_t seq, std::string& err,
+                       Socket& out) {
+    static const bool prof = std::getenv("STRATA_RPC_PROFILE") != nullptr;
+    const auto p_entry = prof ? std::chrono::steady_clock::now()
+                              : std::chrono::steady_clock::time_point{};
+    std::unique_lock<std::mutex> gpu_lk(hp.gpu_mtx, std::defer_lock);
+    std::optional<std::shared_lock<std::shared_mutex>> gpu_lk_on;
+    if (hp.streams_split) gpu_lk_on.emplace(hp.gpu_gate);   // L2: a served frame is a reader
+    else gpu_lk.lock();
+    const int64_t p_queue_us = prof ? std::chrono::duration_cast<std::chrono::microseconds>(
+                                          std::chrono::steady_clock::now() - p_entry).count() : 0;
+    if (body.size() < sizeof(BeginPBReq)) return kErrShort;
+    BeginPBReq req;
+    std::memcpy(&req, body.data(), sizeof(req));
+    if (req.n_parts < 1 || req.n_parts > (int32_t) kMaxClaimBatch || req.flags != 0 ||
+        req.reserved0 != 0) return kErrGeometry;
+    // Slice the parts and length-check EVERY part before any device work: the frame's byte total is
+    // exact, so a truncated or padded part is refused as kErrShort with nothing computed.
+    std::vector<PayloadView> parts;
+    size_t off = sizeof(req);
+    for (int32_t i = 0; i < req.n_parts; ++i) {
+        if (off + sizeof(BeginPReq) > body.size()) return kErrShort;
+        BeginPReq part;
+        std::memcpy(&part, body.data() + off, sizeof(part));
+        if (part.n_sel_tok < 1 || part.n_sel_tok > (int32_t) kPromptTok || part.n_pairs < 1 ||
+            part.n_pairs > (int32_t) kPromptRows) return kErrGeometry;
+        const int64_t img = part.image_format == 1 ? (int64_t) part.n_sel_tok * H * (int64_t) sizeof(float)
+                          : part.image_format == 2 ? (int64_t) part.n_sel_tok * (H / 256) * 292
+                                                   : (int64_t) part.n_sel_tok * (H / 32) * 36;
+        const size_t res_bytes = (size_t) (((int64_t) part.n_sel_tok * hp.n_expert + 7) / 8);
+        const size_t len = sizeof(part) + (size_t) part.n_pairs * 8 + res_bytes + (size_t) img;
+        if (img <= 0 || off + len > body.size()) return kErrShort;
+        parts.push_back(PayloadView(body.data() + off, len));
+        off += len;
+    }
+    if (off != body.size()) return kErrShort;   // the parts' byte total is the frame's, exactly
+    // ONE reply for the batch: RowsPBResp + the parts' kRowsP payloads, in the request's part order.
+    std::vector<uint8_t> reply;
+    int64_t rows_total = 0;
+    int32_t layer0 = 0;
+    for (size_t i = 0; i < parts.size(); ++i) {
+        std::vector<uint8_t> part_reply;
+        int32_t n_rows = 0, layer = 0;
+        const int rc = serve_prompt_core(hp, parts[i], part_reply, n_rows, layer, err);
+        if (rc != kOk) return rc;
+        if (i == 0) layer0 = layer;
+        rows_total += n_rows;
+        reply.insert(reply.end(), part_reply.begin(), part_reply.end());
+    }
+    RowsPBResp rep;
+    rep.n_parts = (int32_t) parts.size();
+    std::vector<uint8_t> payload(sizeof(rep) + reply.size(), 0);
+    std::memcpy(payload.data(), &rep, sizeof(rep));
+    std::memcpy(payload.data() + sizeof(rep), reply.data(), reply.size());
+    const auto p_ready = prof ? std::chrono::steady_clock::now()
+                              : std::chrono::steady_clock::time_point{};
+    const int rc_w = out.write_reply(kRowsPB, req_id, seq, payload.data(), payload.size(),
+                                     deadline_after(reply_deadline_ms(10000)));
+    if (prof) {
+        // L3: the line's PREFIX is the single-claim line's exactly, so the existing parsers keep
+        // reading it; `parts` is the appended field naming the batch this line covers.
+        std::fprintf(stderr, "rpcprofile: serve tier=p layer=%d rows=%lld queue_us=%lld lock_us=%lld "
+                             "reply_us=%lld rows_kb=%lld parts=%d\n", (int) layer0, (long long) rows_total,
+                      (long long) p_queue_us,
+                      (long long) (std::chrono::duration_cast<std::chrono::microseconds>(
+                                       p_ready - p_entry).count() - p_queue_us),
+                      (long long) std::chrono::duration_cast<std::chrono::microseconds>(
+                                       std::chrono::steady_clock::now() - p_ready).count(),
+                      (long long) ((payload.size() - sizeof(rep)) / 1024), (int) parts.size());
+    }
     return rc_w;
 }
 
@@ -1238,7 +1342,7 @@ accept_peer:
                     // helper serves, bounded by kMaxSelTok / kMaxRowsPerLayer).  Appended field: an R2
                     // client reads its 24-byte prefix and ignores this; a new client that sees the bit
                     // may use the tier, one that does not (an R2 helper) never sends kBeginP.
-                    ack.features = kFeaturePromptRows | kFeaturePromptF32 | kFeatureQ8K;
+                    ack.features = kFeaturePromptRows | kFeaturePromptF32 | kFeatureQ8K | kFeaturePromptBatch;
                     //   M4c (b): fp32 images accepted.  The Q8_K wire (kBeginQ8K / image_format 2 -
                     //   the CPU reference's own gate/up image through native_expert_grouped_q8k) is
                     //   advertised because this build compiled it; the ENGINE still opts in with
@@ -1327,6 +1431,26 @@ accept_peer:
             }
             ++prompt_requests_served;
             if (o.once) { std::fprintf(stderr, "expert-helper: --once: one prompt row request served, exiting\n"); break; }
+            continue;
+        }
+        if (head.type == kBeginPB) {
+            // The claim batch (default OFF - the engine's STRATA_CLAIM_BATCH with our
+            // kFeaturePromptBatch): K prompt-tier claims in ONE frame, served under ONE device-lock
+            // acquisition.  A peer that never saw the bit never sends it, and an engine that predates
+            // it keeps kBeginP byte for byte.  The same gate and the same typed-refusal path as
+            // kBeginP above.
+            if (!filled) { rc = kErrRequest; }
+            else rc = serve_prompt_batch(hp, body, head.req_id, head.seq, err, out);
+            if (rc != kOk) {
+                ErrResp e;
+                e.status = rc;
+                std::strncpy(e.text, err.c_str(), sizeof(e.text) - 1);
+                out.write_reply(kError, head.req_id, head.seq, (const uint8_t*) &e, sizeof(e), deadline_after(5000));
+                rc_loop = rc;
+                break;
+            }
+            ++prompt_requests_served;
+            if (o.once) { std::fprintf(stderr, "expert-helper: --once: one prompt batch frame served, exiting\n"); break; }
             continue;
         }
         if (head.type == kDraftCtx || head.type == kDraftReq ||

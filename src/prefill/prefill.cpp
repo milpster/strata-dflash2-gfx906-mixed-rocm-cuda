@@ -5060,6 +5060,26 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                           cpu_pool_ != nullptr && lay.native &&
                                           !lay.fmt[(size_t) l].had_gu && !lay.fmt[(size_t) l].had_d;
                         if (hp_l) {
+                            // The claim batch gate (STRATA_CLAIM_BATCH, default 1 = today's one
+                            // kBeginP per layer).  The transport supports K claims in one kBeginPB
+                            // exchange and the helper serves them under one device-lock acquisition;
+                            // the batch is armed here, at the claim site, and the client coalesces
+                            // what its call pattern gives it: K begin_prompt calls must precede the
+                            // first finish_prompt of the batch.  In this pipeline the reply of layer l
+                            // is read INSIDE layer l's walk (the gather into m.Dm and the same-layer
+                            // fallback below both consume it, and m.hp_rows / ext_x_ are single-slot
+                            // per layer), so a per-layer begin/finish walk flushes a one-part batch:
+                            // the coalescing pays off only where a caller runs its begins ahead of its
+                            // finishes.  Printed once per run so the A/B log says which wire ran.
+                            static const int64_t hp_batch = m.hp->prompt_claim_batch();
+                            static const bool hp_batch_noted = [hp_batch] {
+                                if (hp_batch != 1)
+                                    std::fprintf(stderr, "strata: prefill helper: claim batch %lld armed "
+                                                         "(kBeginPB; 1 = today's kBeginP per claim)\n",
+                                                 (long long) hp_batch);
+                                return true;
+                            }();
+                            (void) hp_batch_noted;
                             std::vector<int32_t> toks((size_t) (T * K));   // per-expert token lists, EXPERT order
                             {
                                 std::vector<int32_t> hp_cur((size_t) m.g->n_expert);

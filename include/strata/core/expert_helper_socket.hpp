@@ -133,6 +133,14 @@ public:
     bool prompt_rows_supported() const { return prompt_rows_; }
     bool prompt_f32_supported() const { return prompt_f32_; }   // M4c (b): the peer quantizes fp32 itself
     bool q8k_supported() const { return q8k_; }   // the peer takes Q8_K activation images (kFeatureQ8K)
+    /// True when the peer ADVERTISED the claim batch (kFeaturePromptBatch: it serves kBeginPB/kRowsPB).
+    /// A peer without the bit never sees the frame type: begin_prompt keeps the kBeginP path.
+    bool prompt_batch_supported() const { return prompt_batch_; }
+    /// The engine's claim batch: STRATA_CLAIM_BATCH clamped to 1..kMaxClaimBatch, DEFAULT 1.
+    /// 1 is EXACTLY today's wire - one kBeginP per claim, one kRowsP per reply, no new frame type
+    /// on the channel at all.  K>1 coalesces K consecutive begin_prompt calls into ONE kBeginPB and
+    /// answers them with ONE kRowsPB (transport-only: same rows, same order of application).
+    int64_t claim_batch() const { return claim_batch_; }
 
     /// The tier's OWN pinned host activation buffer (`ext_x` in the design): the tier owns it,
     /// allocates it ONCE, and it never exceeds kMaxSelTok * n_embd * 4 (2.5 MB at the pack's N=2560).
@@ -178,6 +186,17 @@ public:
     /// request, and the shared healthy_/disabled_ latch (no reconnect exists) for later windows.
     int finish_prompt(float* out, int64_t n_embd, const std::vector<int32_t>& claims,
                       int64_t timeout_ms, int32_t& rows);
+
+    /// The CLAIM BATCH (default OFF, the engine's STRATA_CLAIM_BATCH): when `claim_batch_ > 1` AND the
+    /// peer advertised kFeaturePromptBatch, `begin_prompt` builds the part and QUEUES it (nothing is
+    /// written), and the first `finish_prompt` of the batch flushes the K queued parts as ONE kBeginPB
+    /// and reads its ONE kRowsPB; the batch's parts are then answered in claim order, each part
+    /// validated against its OWN claims by the same validator a single kRowsP runs.  With the env
+    /// unset (K = 1) begin_prompt/finish_prompt are exactly today's code path and today's bytes.
+    /// The queue's caps are hard and refused BEFORE any write: more than kMaxClaimBatch parts, a
+    /// request over kMaxBatchPayload, more reply rows than kMaxBatchPayload covers.  The caller's
+    /// per-claim `claims` must match the queued part's claims (the batch's order is the claim order);
+    /// a mismatch is kErrSeq and closes the channel - the engine's same-layer fallback owns the rows.
 
     // ================= M7 (the drafter lane, docs/work/MIXED_BACKEND_RPC_PLAN.md sect12/12a):
     // kDraftCtx / kDraftReq =================
@@ -294,6 +313,29 @@ private:
     bool prompt_rows_ = false;                      // the peer advertised kFeaturePromptRows
     bool prompt_f32_ = false;                       // the peer advertised kFeaturePromptF32 (M4c (b))
     bool q8k_ = false;                              // the peer advertised kFeatureQ8K (the Q8_K wire)
+    bool prompt_batch_ = false;                     // the peer advertised kFeaturePromptBatch
+    int64_t claim_batch_ = 1;                       // STRATA_CLAIM_BATCH, clamped: 1 = today's wire
+    /// One queued prompt-tier claim (the batch's part): the full kBeginP payload bytes the client
+    /// built, the engine's claims for it, and - once the batch's kRowsPB is in hand - the part's own
+    /// kRowsP payload bytes, validated by the same validator a standalone reply runs through.
+    struct PromptPart {
+        std::vector<uint8_t> request;
+        std::vector<int32_t> claims;
+        std::vector<uint8_t> reply;
+    };
+    std::vector<PromptPart> prompt_parts_;          // queued claims, then the answered batch in order
+    int64_t batch_rows_ = 0;                        // the queued batch's total claimed rows (reply cap)
+    bool batch_answered_ = false;                   // the queue's kRowsPB is read; staged parts remain
+    /// The first finish_prompt of a queued batch: flush (ONE kBeginPB), read its ONE kRowsPB, split
+    /// it per part, then answer the front part.  Runs under io_mtx_ (the caller holds it).
+    int finish_prompt_batch(float* out, int64_t n_embd, const std::vector<int32_t>& claims,
+                            int64_t timeout_ms, int32_t& rows);
+    /// The prompt tier's request body (BeginPReq + pairs + primary bitmap + the image quantized from
+    /// the tier's own rows) with every cap begin_prompt enforces.  One builder for both transports: a
+    /// single claim writes these bytes as kBeginP, a batch queues them as one kBeginPB part, so a
+    /// batched part is byte-for-byte the request a standalone kBeginP carries.
+    int build_beginp_payload(int32_t layer, const ExpertHelperPromptPlan& plan, const int32_t* host_res,
+                             std::vector<uint8_t>& payload, int64_t& rows_out);
     bool draft_ = false;                            // the peer advertised kFeatureDraft (M7)
     bool draft_bf16_ = false;                       // the peer advertised kFeatureDraftBf16 (L8 wire v2)
     int64_t draft_planes_ = 0, draft_hidden_ = 0;   // the draft geometry the engine pinned

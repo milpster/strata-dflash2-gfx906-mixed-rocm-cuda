@@ -210,6 +210,14 @@ public:
         const ExpertHelperClient* c = prompt_chan();
         return c != nullptr ? c->prompt_buffer_bytes() : 0;
     }
+    /// The prompt tier's CLAIM BATCH: the engine's STRATA_CLAIM_BATCH (1 = today's wire exactly, one
+    /// kBeginP per claim) and the peer's kFeaturePromptBatch bit, read from the tier's channel so the
+    /// claim loop's gate and the transport agree.  0 for an in-process tier (no channel, no batch).
+    int64_t prompt_claim_batch() const {
+        if (!proxy_) return 0;
+        const ExpertHelperClient* ch = prompt_chan();
+        return ch != nullptr && ch->prompt_batch_supported() ? ch->claim_batch() : 1;
+    }
     /// Send one layer's selected-token rows.  A send failure latches the tier out for the rest of
     /// the request (the decode rule, proxy_begin) and returns the named status; the caller's
     /// fallback is same-layer local recompute of the plan's rows.  An UNUSABLE tier refuses by name

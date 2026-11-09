@@ -2017,6 +2017,192 @@ int main(int argc, char** argv) {
         }
     }
 
+    // ================= (20) THE PROMPT CLAIM BATCH (kBeginPB / kRowsPB, STRATA_CLAIM_BATCH) =========
+    // The batch is transport-only, so the pins are: batch=1 keeps kBeginP's bytes exactly (the peer's
+    // bit changes nothing), K>1 puts ONE frame with K byte-exact kBeginP parts on the wire, ONE reply
+    // answers them, and the parts apply in claim order - a part applied out of order is refused.
+    // CPU mocks only: the fake helper is this test's socketpair peer.
+    {
+        // (20a) STRATA_CLAIM_BATCH=1 with the bit advertised: today's frame, today's exchange.
+        ::setenv("STRATA_CLAIM_BATCH", "1", 1);
+        ExpertHelperClient c;
+        check_status(handshake_v3(c, true, kFeaturePromptBatch), kOk,
+                     "v3 handshake advertising kFeaturePromptBatch");
+        check(c.prompt_batch_supported(), "the client records the batch bit");
+        check(c.claim_batch() == 1, "STRATA_CLAIM_BATCH=1 is today's wire (the default, unset included)");
+        ExpertHelperPromptPlan plan;
+        for (int i = 0; i < 6; ++i) { plan.pair_token.push_back(i); plan.pair_expert.push_back(7 + i); }
+        for (int i = 0; i < 6; ++i) plan.tokens.push_back(i);
+        fill_prompt_buffer(c, 6);
+        std::vector<int32_t> primary((size_t) kLayers * kExperts, -1);
+        check_status(c.begin_prompt(kLayer, plan, primary.data(), 4000), kOk,
+                     "batch=1: the claim is SENT, not queued");
+        check(wire_prompt_ok(plan, primary.data(), 6),
+              "batch=1 puts a kBeginP on the wire and the frame is today's exact bytes");
+        std::vector<float> out((size_t) 6 * kH, -1.0f);
+        int32_t rows = -1;
+        check_status(write_prompt_reply_thread({0, 2}, row_val, 4000, c, out.data(), {0, 2}, rows), kOk,
+                     "batch=1 reads a kRowsP reply - the exchange is unchanged");
+        check(rows == 2 && out[(size_t) 2 * kH] == (float) row_val(2, 0), "the rows land at their pair indices");
+        ::unsetenv("STRATA_CLAIM_BATCH");
+    }
+    {
+        // (20b) K = 3: three claims queue (wire silent), ONE kBeginPB carries three byte-exact
+        // kBeginP parts, ONE kRowsPB answers them, and the three finish_prompt calls apply the parts
+        // in claim order.  This is the shape the engine pays for: 3 exchanges -> 1.
+        ::setenv("STRATA_CLAIM_BATCH", "3", 1);
+        ExpertHelperClient c;
+        check_status(handshake_v3(c, true, kFeaturePromptBatch), kOk,
+                     "v3 handshake advertising the batch bit for the K=3 round trip");
+        check(c.claim_batch() == 3, "the env reaches the client");
+        const int rows_of[3] = {6, 5, 7};
+        ExpertHelperPromptPlan plans[3];
+        std::vector<int32_t> claims[3];
+        for (int p = 0; p < 3; ++p) {
+            for (int i = 0; i < rows_of[p]; ++i) {
+                plans[p].pair_token.push_back(i);
+                plans[p].pair_expert.push_back(7 + 20 * p + i);   // disjoint experts per part
+            }
+            for (int i = 0; i < rows_of[p]; ++i) plans[p].tokens.push_back(i);
+            for (int i = 0; i < rows_of[p]; ++i) claims[p].push_back(i);
+        }
+        fill_prompt_buffer(c, 7);   // the tier's rows the three parts quantize at their begin times
+        std::vector<int32_t> primary((size_t) kLayers * kExperts, -1);
+        for (int p = 0; p < 3; ++p)
+            check_status(c.begin_prompt(kLayer, plans[p], primary.data(), 4000), kOk,
+                         "the batch's claims are accepted and queued (nothing written yet)");
+        check(nothing_on_wire(200), "K claims sit on the queue: the wire stayed silent (no kBeginP per claim)");
+
+        std::atomic<int> srv_rc{kErrInternal};
+        std::atomic<bool> srv_parts_ok{false};
+        std::atomic<int> srv_parts{0};
+        std::thread srv([&] {
+            Socket s;
+            s.adopt(g_server_fd);
+            Header head;
+            RxBuffer rx;
+            PayloadView body;
+            if (s.read_frame(head, rx, body, deadline_after(20000)) != kOk || head.type != kBeginPB) {
+                srv_rc = kErrProtocol; s.release(); return;
+            }
+            if (body.size() < sizeof(BeginPBReq)) { srv_rc = kErrShort; s.release(); return; }
+            BeginPBReq pb;
+            std::memcpy(&pb, body.data(), sizeof(pb));
+            srv_parts = pb.n_parts;
+            if (pb.n_parts != 3 || pb.flags != 0 || pb.reserved0 != 0) { srv_rc = kErrGeometry; s.release(); return; }
+            size_t off = sizeof(pb);
+            bool ok = true;
+            for (int p = 0; p < 3; ++p) {
+                if (off + sizeof(BeginPReq) > body.size()) { ok = false; break; }
+                BeginPReq pr;
+                std::memcpy(&pr, body.data() + off, sizeof(pr));
+                const int64_t n_sel = pr.n_sel_tok;
+                const size_t res = (size_t) ((n_sel * kExperts + 7) / 8);
+                const size_t len = sizeof(pr) + (size_t) pr.n_pairs * 8 + res + (size_t) n_sel * (kH / 32) * 36;
+                if (off + len > body.size()) { ok = false; break; }
+                ok = ok && prompt_body_ok(PayloadView(body.data() + off, len), plans[p], primary.data(),
+                                          rows_of[p], false);
+                off += len;
+            }
+            srv_parts_ok = ok && off == body.size();   // the parts' byte total is the frame's, exactly
+            if (!srv_parts_ok) { srv_rc = kErrShort; s.release(); return; }
+            std::vector<uint8_t> rep;
+            RowsPBResp rh;
+            rh.n_parts = 3;
+            rep.resize(sizeof(rh));
+            std::memcpy(rep.data(), &rh, sizeof(rh));
+            for (int p = 0; p < 3; ++p) {   // part p's answer: its own claims, in part order
+                const std::vector<uint8_t> part = rowsp_payload(claims[p], row_val);
+                rep.insert(rep.end(), part.begin(), part.end());
+            }
+            srv_rc = s.write_reply(kRowsPB, head.req_id, head.seq, rep.data(), rep.size(), deadline_after(20000));
+            s.release();
+        });
+        std::vector<float> out0((size_t) 6 * kH, -1.0f), out1((size_t) 5 * kH, -1.0f), out2((size_t) 7 * kH, -1.0f);
+        int32_t r0 = -1, r1 = -1, r2 = -1;
+        const int rc0 = c.finish_prompt(out0.data(), kH, claims[0], 8000, r0);   // flushes + reads the ONE reply
+        const int rc1 = c.finish_prompt(out1.data(), kH, claims[1], 8000, r1);
+        const int rc2 = c.finish_prompt(out2.data(), kH, claims[2], 8000, r2);
+        srv.join();
+        check_status(srv_rc.load(), kOk, "the fake helper read one kBeginPB and answered with one kRowsPB");
+        check(srv_parts.load() == 3, "the frame declared 3 parts");
+        check(srv_parts_ok.load(), "every part is byte-for-byte a standalone kBeginP payload (pairs, bitmap, image)");
+        check_status(rc0, kOk, "the batch's first part is applied by the first finish_prompt");
+        check_status(rc1, kOk, "the second part by the second");
+        check_status(rc2, kOk, "the third by the third (no socket I/O on those calls)");
+        check(r0 == 6 && r1 == 5 && r2 == 7, "each part reports its own rows");
+        bool placed = true;
+        for (int i = 0; i < 6; ++i)
+            for (int64_t col = 0; col < kH; col += 251)
+                if (out0[(size_t) i * kH + col] != (float) row_val(i, col)) placed = false;
+        for (int i = 0; i < 5; ++i)
+            for (int64_t col = 0; col < kH; col += 251)
+                if (out1[(size_t) i * kH + col] != (float) row_val(i, col)) placed = false;
+        for (int i = 0; i < 7; ++i)
+            for (int64_t col = 0; col < kH; col += 251)
+                if (out2[(size_t) i * kH + col] != (float) row_val(i, col)) placed = false;
+        check(placed, "every part's rows land at ITS OWN pair indices - the batch applied in claim order");
+        check(c.stat_prompt_requests() == 1 && c.stat_prompt_rows() == 18,
+              "the counters show ONE exchange for 18 rows (batch=1 would show 3 and 18)");
+        ::unsetenv("STRATA_CLAIM_BATCH");
+    }
+    {
+        // (20c) the batch's caps and the order rule.  The queue is HARD: a part beyond
+        // kMaxClaimBatch refuses with NOTHING written.  And a caller that asks for a part out of
+        // order is refused by name: the batch's order IS the claim order, so a reordering cannot
+        // reach the engine's rows.
+        ::setenv("STRATA_CLAIM_BATCH", "2", 1);
+        ExpertHelperClient c;
+        check_status(handshake_v3(c, true, kFeaturePromptBatch), kOk, "handshake for the batch's cap case");
+        ExpertHelperPromptPlan plan;
+        for (int i = 0; i < 4; ++i) { plan.pair_token.push_back(i); plan.pair_expert.push_back(7 + i); }
+        for (int i = 0; i < 4; ++i) plan.tokens.push_back(i);
+        fill_prompt_buffer(c, 4);
+        std::vector<int32_t> primary((size_t) kLayers * kExperts, -1);
+        check_status(c.begin_prompt(kLayer, plan, primary.data(), 2000), kOk, "part 1 queued");
+        check_status(c.begin_prompt(kLayer, plan, primary.data(), 2000), kOk, "part 2 queued");
+        check_status(c.begin_prompt(kLayer, plan, primary.data(), 2000), kErrGeometry,
+                     "part 3 of a K=2 batch is refused (the queue's part cap is hard)");
+        check(nothing_on_wire(200), "and the wire stayed silent: the refusal wrote nothing");
+        // The batch's order rule is checked BEFORE the flush: a caller asking for the SECOND part
+        // first is refused by name, the batch is never written, so no reply is burned and no row
+        // can land out of order.  The fake peer reads EOF, which proves the refusal is local.
+        std::atomic<int> srv_rc{kErrInternal};
+        std::thread srv([&] {
+            Socket s;
+            s.adopt(g_server_fd);
+            Header head;
+            RxBuffer rx;
+            PayloadView body;
+            srv_rc = s.read_frame(head, rx, body, deadline_after(8000));
+            s.release();
+        });
+        std::vector<float> out((size_t) 4 * kH, -1.0f);
+        int32_t rows = -1;
+        const int rc_seq = c.finish_prompt(out.data(), kH, {3, 2, 1, 0}, 8000, rows);   // not the queued set
+        srv.join();
+        check_status(srv_rc.load(), kErrUnhealthy, "the refused batch never reached the wire: the peer read EOF");
+        check_status(rc_seq, kErrSeq, "a caller whose claims do not match the queued part is refused by name");
+        check(rows == 0, "no row is applied out of order");
+        check(!c.open(), "and the channel closed - the caller's same-layer fallback owns the rows");
+        ::unsetenv("STRATA_CLAIM_BATCH");
+    }
+    {
+        // (20d) a peer that never advertised the bit: the env is inert, every claim keeps kBeginP.
+        ::setenv("STRATA_CLAIM_BATCH", "8", 1);
+        ExpertHelperClient c;
+        check_status(handshake_v3(c, true), kOk, "v3 handshake WITHOUT the batch bit (the mixed build)");
+        check(!c.prompt_batch_supported(), "no bit: the batch is off regardless of the env");
+        ExpertHelperPromptPlan plan;
+        for (int i = 0; i < 3; ++i) { plan.pair_token.push_back(i); plan.pair_expert.push_back(7 + i); }
+        for (int i = 0; i < 3; ++i) plan.tokens.push_back(i);
+        fill_prompt_buffer(c, 3);
+        check_status(c.begin_prompt(kLayer, plan, nullptr, 2000), kOk, "the claim is sent, not queued");
+        check(wire_prompt_ok(plan, nullptr, 3),
+              "the frame on the wire is kBeginP - the new frame type never reaches an unadvertising peer");
+        ::unsetenv("STRATA_CLAIM_BATCH");
+    }
+
     std::printf("expert_helper_socket_test: %s\n", failures == 0 ? "PASS" : "FAIL");
     return failures == 0 ? 0 : 1;
 }
