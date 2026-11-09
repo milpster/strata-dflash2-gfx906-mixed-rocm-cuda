@@ -19,6 +19,8 @@
 # Arms (one variable each; prod configs are NEVER edited — per-arm runtime configs are
 # generated from the prod config / validated arm-m*.json into out/ab9/run/):
 #   A STRATA_PREFILL_HELPER=0            B =1,PIPE=0            C =1,PIPE=1 (prod parity)
+#   D = B env on the helper-ipc-diet binaries (arm-d.json exe/_ab9_helper_exe override;
+#       run with AB9_ARMS="A D" for the diet validation window)
 #   m1 expert-helper-slots 4600->4400    m2 --kv int8           m3 helper fill 7200+reserve 128
 #   m4 layer-split 36
 #
@@ -239,10 +241,11 @@ boot_pair(){   # $1=arm name; exports STRATA_RPC_PROFILE/DBG; writes runtime cfg
   $PY "$D/ab9_mkconfig.py" --arm "$arm" --out "$RUN/$arm.json" --elog "$ELOG" \
      --helper-args "$RUN/$arm.helper" || { echo "mkconfig failed arm $arm"; exit 5; }
   read -r hslots hfill hreserve < "$RUN/$arm.helper"
+  hbin=$(head -1 "$RUN/$arm.helper.bin" 2>/dev/null); hbin=${hbin:-$AB9_HELPER}
   export STRATA_RPC_PROFILE=1 STRATA_DBG_PROMPT_HELPER=1
-  log "arm $arm: helper up slots=$hslots fill=$hfill reserve=$hreserve"
+  log "arm $arm: helper up slots=$hslots fill=$hfill reserve=$hreserve bin=$hbin"
   env -i PATH="$PATH" HOME="$HOME" TERM="${TERM:-dumb}" LD_LIBRARY_PATH="$AB9_ROCM_LIBS" \
-      STRATA_RPC_PROFILE=1 "$AB9_HELPER" \
+      STRATA_RPC_PROFILE=1 "$hbin" \
     --pack /mnt/srcds/ai/iq3xxs-15 --experts ../Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf \
     --device 0 --slots "$hslots" --reserve-mib "$hreserve" --timeout "$AB9_HELPER_TIMEOUT" \
     --begin-timeout "$AB9_HELPER_TIMEOUT" --socket "$AB9_SOCKET" --fill-mib "$hfill" \
@@ -341,8 +344,9 @@ stage2_legs(){   # 2x 8k PP + 1x TG512 drift legs
   stop_sidecar
 }
 
-# ---------- Stage 1: A, B, C ----------
-for arm in A B C; do
+# ---------- Stage 1: A, B, C (or the AB9_ARMS subset; "A D" = helper-ipc-diet validation) ----------
+ARMS=${AB9_ARMS:-"A B C"}
+for arm in $ARMS; do
   log "STAGE1 arm $arm"
   boot_pair "$arm" || { rc=$?; kill_pair; echo "arm $arm boot failed"; exit $rc; }
   arm_legs "$arm" || { rc=$?; kill_pair; echo "arm $arm legs failed"; exit $rc; }
@@ -352,7 +356,8 @@ done
 log "STAGE1 gates 3/4/6 via ab9_collect.py --gates"
 $PY "$D/ab9_collect.py" --dir "$OUT" --gates || { rc=$?; echo "collector gates rc=$rc"; exit $rc; }
 
-# ---------- Stage 2: m1..m4 ----------
+# ---------- Stage 2: m1..m4 (full protocol only; a focused AB9_ARMS run skips it) ----------
+if [[ "$ARMS" == "A B C" ]]; then
 for arm in m1 m2 m3 m4; do
   log "STAGE2 arm $arm (mem-baseline before)"
   bash "$D/mem-baseline.sh" "ab9-$arm-before-$TS" > "$LOGS/ab9-mem-$arm-before-$TS.log" 2>&1 || true
@@ -361,6 +366,9 @@ for arm in m1 m2 m3 m4; do
   kill_pair
   bash "$D/mem-baseline.sh" "ab9-$arm-after-$TS" > "$LOGS/ab9-mem-$arm-after-$TS.log" 2>&1 || true
 done
+else
+  log "stage2 skipped (focused AB9_ARMS='$ARMS')"
+fi
 
 log "window legs done; collecting derived table"
 $PY "$D/ab9_collect.py" --dir "$OUT" --tsv "$OUT/results.tsv" --md "$OUT/results.md" \

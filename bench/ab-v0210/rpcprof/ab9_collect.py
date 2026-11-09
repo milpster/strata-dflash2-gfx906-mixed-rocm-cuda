@@ -182,7 +182,8 @@ TSV_COLS = ["arm", "ctx", "legs", "pp_med", "pp_spread", "fresh_judge_ok", "clai
 
 def gates(data: dict) -> int:
     legs = data["legs"]
-    # gate 3: participation identity — DBG helper-row lines per (ctx) equal across B and C
+    # gate 3: participation identity — DBG helper-row lines per ctx equal across every
+    # helper-on arm present (B/C/D/...); the helper-off control (A) must show none.
     counts: dict[tuple[str, int], int] = {}
     for l in legs:
         if l.get("kind") != "prefill":
@@ -193,9 +194,12 @@ def gates(data: dict) -> int:
     for (arm, ctx), n in sorted(counts.items()):
         print(f"  {arm} ctx={ctx}: {n}")
     for ctx in {c for _, c in counts}:
-        b, c = counts.get(("B", ctx), 0), counts.get(("C", ctx), 0)
-        if b != c:
-            print(f"GATE3 FAIL ctx={ctx}: B={b} C={c}")
+        vals = {arm: n for (arm, c), n in counts.items() if c == ctx and arm != "A"}
+        if len(set(vals.values())) > 1:
+            print(f"GATE3 FAIL ctx={ctx}: helper-on arms disagree {vals}")
+            mismatch = True
+        if all(v == 0 for v in vals.values()):
+            print(f"GATE3 FAIL ctx={ctx}: no helper-on arm shows participation")
             mismatch = True
     a_lines = sum(v for (arm, _), v in counts.items() if arm == "A")
     if a_lines:

@@ -22,6 +22,8 @@ STAGE1_ENV = {
     "A": {"STRATA_PREFILL_HELPER": "0"},
     "B": {"STRATA_PREFILL_HELPER": "1", "STRATA_PREFILL_HELPER_PIPE": "0"},
     "C": {"STRATA_PREFILL_HELPER": "1", "STRATA_PREFILL_HELPER_PIPE": "1"},
+    # D: arm-B env shape on the helper-ipc-diet binaries (exe/_ab9_helper_exe from arm-d.json)
+    "D": {"STRATA_PREFILL_HELPER": "1", "STRATA_PREFILL_HELPER_PIPE": "0"},
 }
 PROFILE_ENV = {"STRATA_RPC_PROFILE": "1", "STRATA_DBG_PROMPT_HELPER": "1"}
 DEFAULT_HELPER = {"slots": 4600, "fill_mib": 6796, "reserve_mib": 300}  # prod launcher line 84-85
@@ -29,15 +31,18 @@ DEFAULT_HELPER = {"slots": 4600, "fill_mib": 6796, "reserve_mib": 300}  # prod l
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--arm", required=True, choices=["A", "B", "C", "m1", "m2", "m3", "m4"])
+    ap.add_argument("--arm", required=True, choices=["A", "B", "C", "D", "m1", "m2", "m3", "m4"])
     ap.add_argument("--out", required=True, help="runtime config to write")
     ap.add_argument("--elog", required=True, help="engine log path for this arm's boot")
     ap.add_argument("--helper-args", required=True, help="file to write '<slots> <fill> <reserve>'")
     a = ap.parse_args()
 
     arm = a.arm
-    cfg = json.loads(PROD_CONFIG.read_text()) if arm in STAGE1_ENV \
-        else json.loads((ARMS_DIR / f"arm-{arm}.json").read_text())
+    if arm == "D":  # diet-binaries arm: prod config verbatim, exe/_ab9_helper_exe swapped (arm-d.json)
+        cfg = json.loads((ARMS_DIR / "arm-d.json").read_text())
+    else:
+        cfg = json.loads(PROD_CONFIG.read_text()) if arm in STAGE1_ENV \
+            else json.loads((ARMS_DIR / f"arm-{arm}.json").read_text())
     if "env" not in cfg:
         cfg["env"] = {}
     if arm in STAGE1_ENV:
@@ -56,6 +61,8 @@ def main() -> int:
     if note:
         helper.update({k: int(v) for k, v in note.items()})
     pathlib.Path(a.helper_args).write_text(f"{helper['slots']} {helper['fill_mib']} {helper['reserve_mib']}\n")
+    # per-arm helper BINARY (empty = the env's default): the diet arm swaps engine AND helper
+    pathlib.Path(a.helper_args + ".bin").write_text(cfg.get("_ab9_helper_exe", "") + "\n")
     print(f"ab9_mkconfig: arm={arm} cfg={a.out} elog={a.elog} helper={helper}")
     return 0
 
