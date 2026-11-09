@@ -55,6 +55,11 @@ window_open=0     # 1 only after stop-prod.sh has run: before that the window ne
                   # stopped and relaunched prod was a live-prod kill, not a restore)
 restore_prod(){   # every exit path lands here (trap EXIT); idempotent
   [[ $restore_done == 1 ]] && return 0
+  if [[ ${AB9_NO_RESTORE:-0} == 1 ]]; then
+    restore_done=1
+    log "AB9_NO_RESTORE=1: results are on disk; prod left DOWN on purpose (user-ordered window chain)"
+    return 0
+  fi
   if (( ! window_open )); then
     restore_done=1
     log "window never opened (dry-run / gate abort): prod left exactly as found, no stop, no relaunch"
