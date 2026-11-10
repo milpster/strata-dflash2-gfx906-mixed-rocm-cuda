@@ -432,3 +432,19 @@ REMAINING levers (all real-code or per-window knobs):
   one window to test; risk: claiming/KV/VRAM changes with the split boundary.
 - (c) peer blob prefetch/staging overlap: 5-8s @80k modeled; real code, medium risk.
 - Program otherwise closes at v0215 (+2.2%) with banked gates (fmt0, instrumentation, CHUNKS knob).
+
+## 15:10 SPLIT-40 WIN (window 14:56, layer_split 32->40 in arm-d.json, reverted after) - FIRST LEVER OVER THE BAR
+
+D + spans, split 40 (primary VIIs 40 layers, peer 3080 8 layers):
+- 8k med 7.079s (7.199/7.079/7.026) vs A-split32 8.36  => -15.3%
+- 80k med 41.42s (41.45/41.42/41.36) vs A-split32 48.89 => -15.3%
+- Parity EXACT (gate4 01db7a9d...). No fallbacks; gate6 clean. Warm 7.94 (normal).
+- gate3 D=120 @8k (40 layers x 3 legs) and 240 @80k (40 x 2 chunks: layer split drops chunk cap to 8192
+  (generate.cpp:4157), 14637 -> 8192+6445). The 2-chunk structure at split-40 is FASTER (cf. CHUNKS=2 at
+  split-32 was +20% slower - the rebalance changes the economics; measured beats modeled, again).
+- TG sub-legs noisy (23.1/28.2 vs 19.9/12.5): needs the full ladder for the no-TG-loss check.
+- arm-d.json auto-reverted to split32 post-window (backup kept: arm-d.json.split32-bak).
+
+PROMOTION CANDIDATE NOW: v0215 binaries + layer_split "40" (pure config; no binary change) [+ optional fmt0].
+NEXT: split curve sweep (44, 48=peerless) + full A/B/D adoption ladder at the best point - one down-session.
+Peer prefetch lane (user item 2) still valuable post-rebalance (peer 8 layers x 1.2s = 9.6s of 41.4s wall).
