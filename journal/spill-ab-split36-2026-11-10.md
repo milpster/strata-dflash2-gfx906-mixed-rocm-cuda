@@ -65,7 +65,43 @@ Same pinned binaries throughout: engine `00691ac8…24efa`, helper
 
 ## Spill-OFF baseline and verdict
 
-Pending: lane running against the restored spill-OFF boot (supervisor PID
-3287852, engine 3289144, split 36 verified, `STRATA_CACHE_SPILL=0` verified,
-same binary hashes). Verdict against the adoption bar (≥5% PP gain, no TG
-regression, byte-identical temperature-zero SHA) recorded after both lanes.
+Baseline lane (restored boot: supervisor 3287852, engine 3289144, split 36,
+`STRATA_CACHE_SPILL=0`, same hashes; fresh boot, zero prior traffic):
+
+| Leg | Wall s | Judge: read tokens / ms / tok/s |
+| --- | ---: | --- |
+| warm | 7.64 | 293 / 5473 / 53.5 |
+| 8000-1 | 7.13 | 1648 / 7007 / 235.2 |
+| 8000-2 | 7.12 | 1648 / 6961 / 236.7 |
+| 8000-3 | 8.18 | 1648 / 8058 / 204.5 (outlier) |
+| 80000-1 | 44.04 | 14642 / 43886 / 333.6 |
+| 80000-2 | 43.72 | 14642 / 43594 / 335.9 |
+| 80000-3 | 43.69 | 14642 / 43556 / 336.2 |
+| tg1024 | 26.91 / 28.77 | decode 513 tok / 12059 ms / 42.5; 514 / 12599 / 40.8 |
+
+### Verdict against the adoption bar: REJECTED
+
+- **PP ≥5% gain: FAIL.** Median 80k PP: spill-ON 307.4 tok/s vs spill-OFF
+  335.9 tok/s — spill-ON is **~8.5% slower**. 8k median: 231.7 vs 235.2
+  (~1.5% slower, near noise). Zero residency upside (56 pairs) cannot pay for
+  the prefill-path changes the gate flips.
+- **TG: no gain.** Spill-ON 40.7/40.8 tok/s vs spill-OFF 42.5/40.8 tok/s
+  (per-request judge lines; different completion lengths, see parity).
+- **Identical temp-0 SHA: FAIL.** warm `acc211e7…` vs `a317187e…`; tg1024
+  `a5311bd7…` vs `3b43a501…`. The six prefill-leg SHAs match only because the
+  8-token reasoning prefix is invariant — that is not parity evidence.
+  Consistent with the audit: tier rows take GPU kernels where spill-OFF takes
+  CPU-computed rows; even 56 pairs change logits and completions.
+- Conclusion: **spill stays OFF.** At split-36 the feature has no headroom to
+  use and measurably hurts long-context prefill.
+
+### Confounds recorded honestly
+
+- The spill-OFF tg1024 slice contains two interleaved ~1109-token requests
+  (1091/535 reused) from non-bench traffic on the shared server — likely
+  OpenCode background calls against the same prod. They inflate that leg's
+  walls; per-request decode judge lines stay valid. Controlled reruns should
+  use the window protocol's exclusive boot, or pause other clients.
+- spill-OFF 8000-3 read 8058 ms is an outlier vs 6961/7007 (median used).
+- Warm legs each contain a second judge pair (288 reused + 55 read): the
+  wrapper's post-save verification request, present in both arms equally.
