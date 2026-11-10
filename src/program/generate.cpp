@@ -9519,6 +9519,20 @@ int main(int argc, char** argv) {
                             for (int64_t l = 0; l < g.n_layers; ++l)
                                 for (int64_t e = 0; e < g.n_expert; ++e)
                                     if (helper_tier.holds(l, (int32_t) e)) held.emplace_back((int32_t) l, (int32_t) e);
+                            // STRATA_CACHE_SPILL: the in-process spill tier's pairs sit in the last stage's VRAM;
+                            // their host copies are droppable exactly like the helper's.  The tier opened ABOVE
+                            // (its fill read its blobs from the arena/files), so appending here keeps the
+                            // drop-before-registration order.  A dropped pair the tier re-admits later reads
+                            // through ArenaExpertSource::blob's staged pack-file path; the per-pair refill never
+                            // runs in a split config (its gate demands a single stage, no remote tier).
+                            int64_t relief_tier_pairs = 0;
+                            if (spill_tier) {
+                                const size_t before = held.size();
+                                for (int64_t l = 0; l < g.n_layers; ++l)
+                                    for (int64_t e = 0; e < g.n_expert; ++e)
+                                        if (remote_experts[0].holds(l, (int32_t) e)) held.emplace_back((int32_t) l, (int32_t) e);
+                                relief_tier_pairs = (int64_t) (held.size() - before);
+                            }
                             // Order matters: the drop runs FIRST, while the held pages are still plain
                             // (nothing registered over them), and the registration then covers everything
                             // that is still servable - including any pair the drop refused (V4-r2 lesson:
@@ -9526,6 +9540,10 @@ int main(int argc, char** argv) {
                             // the first cache fill of such a pair kills the request).
                             arena_src.set_unfilled(held);
                             arena_src.register_complement(held);
+                            if (relief_tier_pairs > 0)
+                                std::fprintf(stderr, "strata generate: --expert-helper-ram-relief: +%lld spill-tier pairs (%lld MiB) join the drop set\n",
+                                             (long long) relief_tier_pairs,
+                                             (long long) (remote_experts[0].gib() * 1024.0 + 0.5));
                         }
                     }
                 }
