@@ -604,7 +604,41 @@ chunk, not per prompt: the 80k legs show 32 layers × 320 ms = 10.2 s per
 
 Consequence for the levers: fusing gate+softmax+top-k is worth ≤0.9 ms/layer
 (≤0.2%) and fp16 logits can flip top-k ties — declined on the parity rule. The
-lever is the shipped M6 PIPE lane (`STRATA_PREFILL_HELPER_PIPE=1`): `wait_us` =
-9.1% of the layer cycle (med 116 ms of the 457 ms cycle at 16384) is the engine
-blocked reading the reply, and the PIPE lane moves send→gather onto the worker so
-the walk never blocks. Harness env, no code change.
+shipped M6 PIPE lane (`STRATA_PREFILL_HELPER_PIPE=1`) moves send→gather onto the
+worker so the walk never blocks, but its payoff is leg-size dependent: `wait_us`
+is ~36% of the *host* cycle on the 1648-token legs (where the host is the pacer)
+and only ~1.6% at ~14.6k tokens, where the host runs deep inside the GPU's window.
+Harness env, no code change.
+
+## The outside-layer gap: the peer half (`STRATA_ENGINE_SPANS` L5, 2026-11-10)
+
+The span lines only covered *claiming* layers, so they accounted for 47% of the
+8k-leg wall (3.7 s of 8.05 s) and 30% of the 80k wall (14.6 s of 48.0 s). The rest
+is not loose time: it is a layer class that never claims.
+
+- Model: 48 layers, **all MoE** — 12 full-attention (QSA) + 36 linear-attention
+  (GDN), `core::is_qsa_layer` (`geometry.hpp:75`).
+- The window runs a layer split: *"layer split: CUDA1 holds its weights, session
+  [32, 48) and the head"*. The primary's walk covers `stage_lb_..stage_le_` =
+  layers 0..31; **layers 32..47 and the head run in the peer pass — its own
+  `run_impl` on CUDA1** (its summary is the existing "strata prefill timing (peer
+  GPU, ms)" line, under `STRATA_PREFILL_TIMING`). Those 16 layers' experts live on
+  the peer, so `on_helper` is empty and they emitted no span line.
+- Gap = the peer half: 4.3 s / 16 = **269 ms per layer** at 1648 tokens;
+  33.4 s / 16 = **2088 ms per layer** at 14642 tokens. Against a 3080's floors
+  (fp16 ~15–20 TFLOP/s): its expert GEMMs are 155 GFLOP = 8–10 ms at 1648 tokens
+  and 1.4 TFLOP = 70–95 ms at 14642 — **20–27× over**, and the growth tracks the
+  touched-expert set (the blobs its staging path moves per layer), not flops. The
+  gap is structural (host-side expert staging on the peer half), not dense-layer
+  compute.
+
+L5 makes it measurable with the same gate: the span line is emitted for **every**
+walked layer with `gpu=`, `claim=0|1`, `attn=qsa|gdn`, and `post_us` (a
+non-claiming layer's whole remainder: its expert compute, the combine, the
+write-back); `rpcprofile: chunk` splits each chunk's wall into intake
+(embeddings/PLE/stream plan), walk and tail; `rpcprofile: pass` is the whole run.
+`engine_breakdown.py` prints per-class tables and, with `--wall MS` per leg, the
+gap-attribution table. Expected next-window table: claiming layers as before, plus
+`gpu=1 claim=0` lines at ~270 ms/layer (1648 tok) and ~2100 ms/layer (14.6k tok),
+their `post_us` carrying most of it, and `unattributed (wall − pass_us)` down to
+the serve/sample residue.

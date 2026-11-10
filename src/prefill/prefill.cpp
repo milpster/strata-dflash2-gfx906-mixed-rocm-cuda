@@ -3247,6 +3247,16 @@ struct PfSpanMarks {
     Clock::time_point l0, router, gate, ids, barrier, sel, claim, sent, fin0, fin1, applied, end;
     bool claimed = false;   // this layer ran the helper block: the line pairs 1:1 with its claim line
 };
+
+// L5 (STRATA_ENGINE_SPANS=1): one chunk's wall, split at the boundaries the chunk loop already has:
+//   intake - the chunk's start (pf_w0) -> the walk's first layer: the embeddings, the PLE rows, the
+//          expert-stream plan and the staging setup
+//   walk   - the layer loop (all layers, claiming or not)
+//   tail   - the issuer join, the PLE land, the peer folds, the hand-off of the next stage
+// chunk_us is the chunk's whole wall; intake + walk + tail + the prints in between = chunk_us.
+struct PfChunkSpans {
+    Clock::time_point w0, first, walk_end, end;
+};
 // multi-GPU: the peer's own timeline (STRATA_PREFILL_TIMING): marks on the peer stream, folded with the primary's
 enum PePhase { kPeIdle, kPeMoeIn, kPeMoeGemm, kPeMoeOut, kPeCount };
 const char* const kPeNames[kPeCount] = {"idle", "moe in", "moe gemm", "moe out"};
@@ -3414,6 +3424,15 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
     const bool forced_single = force_single_, forced_planned = force_planned_;
     Impl& m = *impl_;
     const core::OnDevice on_device(m.device);
+    // L5 (STRATA_ENGINE_SPANS=1): the engine-side spans' gate, read once per run.  Off: no clock is
+    // read and no line is written.  It covers EVERY walked layer - the claim=0 lines name the layers
+    // that never claim (the peer-served half of a layer split), each tagged with its attention class
+    // - plus the per-chunk intake/walk/tail and the whole run, so a window attributes essentially all
+    // of the prompt-processing wall.
+    static const bool es_on = std::getenv("STRATA_ENGINE_SPANS") != nullptr;
+    const auto es_run0 = es_on ? Clock::now() : Clock::time_point{};
+    int es_gpu = -1;
+    if (es_on) cudaGetDevice(&es_gpu);
     const core::ModelGeometry& g = *m.g;
     core::SessionState& ss = *m.ss;
     const auto t_start = Clock::now();
@@ -3629,6 +3648,9 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         const double pf_eh0 = stats_.ms_experts_host, pf_ple0 = stats_.ms_ple;
         const double pf_su0 = host_setup_ms, pf_sy0 = host_sync_ms, pf_ck0 = host_chunk_ms;
         const auto pf_w0 = Clock::now();
+        // L5 (STRATA_ENGINE_SPANS=1): this chunk's wall, split at the boundaries the chunk loop has.
+        PfChunkSpans ck;
+        if (es_on) ck.w0 = pf_w0;
         // ---- embeddings, broadcast to the four streams - or, in a later stage of a layer split, the rows the
         // previous stage handed on
         if (hand_in_ != nullptr && hand_ev_ != nullptr) {
@@ -4178,11 +4200,13 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         };
         for (int64_t l = LB; l < LE; ++l) {
             core::progress_beat();   // the serve watchdog: a prompt chunk of 8192 tokens is still moving
-            // L4 (STRATA_ENGINE_SPANS=1): this layer's engine-side critical-path spans, folded into a
-            // sibling line of the claim line at the layer's end.  Off = no clock read, no line.
-            static const bool es_on = std::getenv("STRATA_ENGINE_SPANS") != nullptr;
+            // L4/L5 (STRATA_ENGINE_SPANS=1): this layer's engine-side spans, emitted at the layer's end
+            // as a sibling of the claim line.  L5 emits them for EVERY walked layer: the claim=0 lines
+            // are the layers that never claim (the peer-served half of a layer split).  Off = no clock
+            // read, no line.
             PfSpanMarks es;
             if (es_on) { es.l0 = Clock::now(); es.router = es.gate = es.ids = es.barrier = es.sel = es.claim = es.sent = es.fin0 = es.fin1 = es.applied = es.l0; }
+            if (es_on && l == LB) ck.first = es.l0;   // L5: the chunk's walk starts at its first layer
             if (l > LB) pf_step("reading the prompt (batched, step sync): the experts and the rest of layer", l - 1);
             core::progress_at("reading the prompt (batched): layer", l, p0);   // #251: a stall names layer and chunk
             const core::LayerView v(*m.wt, l);
@@ -6751,27 +6775,37 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
             // L4 (STRATA_ENGINE_SPANS=1): one line per layer that claimed, pairing 1:1 with that
             // layer's 'rpcprofile: claim' line.  The segments do not overlap and sum to layer_us;
             // helper_us is the overlay the layer actually feels: send complete -> block staged.
-            if (es_on && es.claimed) {
+            if (es_on) {   // L5: EVERY walked layer - the claim=0 lines are the layers that never claim
                 es.end = Clock::now();
                 const auto seg = [](Clock::time_point a, Clock::time_point b) {
                     return (long long) std::chrono::duration_cast<std::chrono::microseconds>(b - a).count();
                 };
+                const Clock::time_point r_end = es.claimed ? es.claim : es.sel;   // the router span's end
                 const long long layer_us = seg(es.l0, es.end), attn_us = seg(es.l0, es.router),
-                                  router_us = seg(es.router, es.claim), claim_us = seg(es.claim, es.sent),
-                                  expert_us = seg(es.sent, es.fin0), wait_us = seg(es.fin0, es.fin1),
-                                  apply_us = seg(es.fin1, es.applied);
+                                  router_us = seg(es.router, r_end),
+                                  claim_us = es.claimed ? seg(es.claim, es.sent) : 0,
+                                  expert_us = es.claimed ? seg(es.sent, es.fin0) : 0,
+                                  wait_us = es.claimed ? seg(es.fin0, es.fin1) : 0,
+                                  apply_us = es.claimed ? seg(es.fin1, es.applied) : 0,
+                                  // L5: a non-claiming layer's whole post-plan remainder (its expert
+                                  // compute, the combine, this half's write-back) has no name of its
+                                  // own today, so it gets one: the layers 32..47 of a layer split are
+                                  // exactly these lines, and the window's gap is their sum
+                                  post_us = es.claimed ? 0 : seg(es.sel, es.end);
                 std::fprintf(stderr, "rpcprofile: span layer=%lld pipe=%d layer_us=%lld attn_us=%lld "
                                      "router_us=%lld claim_us=%lld expert_us=%lld wait_us=%lld apply_us=%lld "
                                      "helper_us=%lld rest_us=%lld gate_us=%lld ids_us=%lld barrier_us=%lld "
-                                     "group_us=%lld sel_us=%lld\n",
+                                     "group_us=%lld sel_us=%lld gpu=%d claim=%d attn=%s post_us=%lld\n",
                              (long long) l, hp_pipe ? 1 : 0, layer_us, attn_us, router_us, claim_us,
-                             expert_us, wait_us, apply_us, seg(es.sent, es.applied),
-                             layer_us - attn_us - router_us - claim_us - expert_us - wait_us - apply_us,
+                             expert_us, wait_us, apply_us, es.claimed ? seg(es.sent, es.applied) : 0,
+                             layer_us - attn_us - router_us - post_us - claim_us - expert_us - wait_us - apply_us,
                              // the router span's own decomposition: these five sum to router_us
                              seg(es.router, es.gate), seg(es.gate, es.ids), seg(es.ids, es.barrier),
-                             seg(es.barrier, es.sel), seg(es.sel, es.claim));
+                             seg(es.barrier, es.sel), seg(es.sel, r_end),
+                             es_gpu, es.claimed ? 1 : 0, core::is_qsa_layer(g, l) ? "qsa" : "gdn", post_us);
             }
         }
+        if (es_on) ck.walk_end = Clock::now();   // L5: the layer loop's end (its lines are emitted above)
         if (!ple_land()) return false;   // a stage that ends before layer 1: the rows land anyway, the next gather starts
         if (issuer.joinable()) {
             issuer.join();
@@ -6798,6 +6832,19 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                          (long long) stats_.chunks, (long long) T, ms_since(pf_w0),
                          stats_.ms_experts_host - pf_eh0, stats_.ms_ple - pf_ple0,
                          host_setup_ms - pf_su0, host_sync_ms - pf_sy0, host_chunk_ms - pf_ck0);
+        if (es_on) {   // L5: this chunk's wall split at the boundaries the chunk loop has: intake
+                       // (embeddings, the PLE rows, the stream plan), the layer walk, the tail (the
+                       // issuer join, the PLE land, the hand-off).  chunk_us = ms_since(pf_w0).
+            ck.end = Clock::now();
+            const auto ckseg = [](Clock::time_point a, Clock::time_point b) {
+                return (long long) std::chrono::duration_cast<std::chrono::microseconds>(b - a).count();
+            };
+            std::fprintf(stderr, "rpcprofile: chunk gpu=%d chunk=%lld tokens=%lld intake_us=%lld "
+                                 "walk_us=%lld tail_us=%lld chunk_us=%lld\n",
+                         es_gpu, (long long) stats_.chunks, (long long) T,
+                         ckseg(ck.w0, ck.first), ckseg(ck.first, ck.walk_end),
+                         ckseg(ck.walk_end, ck.end), ckseg(ck.w0, ck.end));
+        }
         if (next_ != nullptr) {
             // The current hand-off slot was used two chunks ago.
             float* h = m.hand[hand_buf_];
@@ -7047,6 +7094,12 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
             line += h;
         }
         std::fprintf(stderr, "strata prefill: GDN_HASH %s\n", line.c_str());
+    }
+    if (es_on) {   // L5: the whole run's wall: everything the chunk lines do not cover is the run's own
+                   // setup (the warms, the plans, the PLE capture, the peer tier's start)
+        std::fprintf(stderr, "rpcprofile: pass gpu=%d tokens=%lld layers=%lld chunks=%lld pass_us=%lld\n",
+                     es_gpu, (long long) n, (long long) (LE - LB), (long long) stats_.chunks,
+                     (long long) std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - es_run0).count());
     }
     return true;
 }

@@ -1654,3 +1654,47 @@ build).  Marks at `:4718` (after `route`), `:4960` (after the ids download),
 `:5013` (after the barrier), `:5089` (plan build start).  Reader:
 `bench/ab-v0210/rpcprof/engine_breakdown.py` prints the decomposition and a
 per-chunk-group median table (the token-count scaling).
+
+## 2026-11-10 — The outside-layer gap is the peer half: L5 spans for EVERY walked layer
+
+The 02:57 window confirmed the router prediction (barrier = 99.1% of `router_us`),
+and exposed that the claimed-layer spans cover only 47% of the 8k leg wall (3.7 s
+of 8.05 s) and 30% of the 80k wall (14.6 s of 48.0 s).  The gap's shape:
+
+- The model is 48 layers, all MoE: 12 full-attention (QSA) + 36 linear-attention
+  (GDN) (`core::is_qsa_layer`, `geometry.hpp:75`; `session.hpp:7` counts 12 QSA
+  states and 36 GDN states).
+- The window runs a layer split - the engine says so at startup: "layer split:
+  CUDA1 holds its weights, session [32, 48) and the head".  The primary's walk
+  covers `LB..LE` = `stage_lb_..stage_le_` (`prefill.cpp:3420`) = layers 0..31;
+  the peer pass runs layers 32..47 + the head on CUDA1 in its OWN `run_impl`
+  (its summary line is the existing "strata prefill timing (peer GPU, ms)",
+  `:6990`, under STRATA_PREFILL_TIMING).
+- The span lines were emitted only for CLAIMING layers, so the 16 peer layers -
+  which never claim, their experts live on the peer - printed nothing.  The gap is
+  them: 4.3 s / 16 = 269 ms per layer at 1648 tokens, 33.4 s / 16 = 2088 ms per
+  layer at 14642 tokens.
+- Against the floors on a 3080 (fp16 ~15-20 TFLOP/s): the peer's own expert GEMMs
+  are 155 GFLOP (13.2k pairs) = 8-10 ms at 1648 tokens and 1.4 TFLOP (117k pairs)
+  = 70-95 ms at 14642.  Measured 269 / 2088 ms = 20-27x over, and the scaling
+  tracks the touched-expert set (the blobs the peer's own streaming/staging path
+  moves per layer), not flops.  So the gap is structural, in the peer half's
+  host-side expert staging, not in dense-layer compute.
+
+L5 instrumentation (same STRATA_ENGINE_SPANS gate, default OFF, measure-only):
+- the gate moved to `run_impl` scope (`prefill.cpp:3432`, with `es_gpu`/`es_run0`);
+- the span line is emitted for EVERY walked layer (`:6795`), appending `gpu=%d
+  claim=%d attn=qsa|gdn post_us=%lld` (the existing field order is untouched, so
+  readers stay tolerant).  On `claim=0` lines `router_us` runs from the router mark
+  to the claim-plan start and `post_us` is the layer's whole remainder (its expert
+  compute, the combine, the write-back) - that is the gap, measured per layer and
+  split by attention class and device;
+- `PfChunkSpans` (`:3257`) + the chunk line (`:6842`) `rpcprofile: chunk gpu chunk
+  tokens intake_us walk_us tail_us chunk_us`: intake = embeddings/PLE rows/stream
+  plan (pf_w0 -> the walk's first layer), walk = the layer loop, tail = the issuer
+  join / the PLE land / the hand-off;
+- the run line (`:7100`) `rpcprofile: pass gpu tokens layers chunks pass_us`:
+  everything the chunk lines do not cover is the run's own setup.
+Reader: `engine_breakdown.py` prints per-class tables (claiming / NON-claiming with
+`post_us`, split by `attn=qsa|gdn` and `gpu`), the chunk-wall table, and a
+gap-attribution table when `--wall MS` is given per leg.
