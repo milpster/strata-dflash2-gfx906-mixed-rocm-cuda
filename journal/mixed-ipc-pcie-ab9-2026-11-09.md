@@ -414,3 +414,21 @@ the ratio->chunk-count mapping is opaque (1.1 -> 29 chunks, not 2) and unbounded
 code (explicit chunk count / clamp). Idea remains theoretically sound (2 chunks of ~7.3k projected 22-27s @80k)
 but needs implementation work, not a knob. Banked: L6 tail/run spans + this negative curve point.
 Prod flapping (4 exits 12:40-13:02) continues in parallel - user informed.
+
+## 15:00 CHUNKS=2 VERDICT (window 14:47, STRATA_PIPELINE_CHUNKS=2, commit 818b42883) - lever (a) DEAD
+
+Split engaged exactly as designed: D=192 claim lines = 2x96 (2 chunks x 32 layers x 3 legs), warm leg refused
+below floor, parity byte-exact. Result: 8k 11.48-11.53 (+37% vs A 8.36), 80k 58.7-59.2 (+20% vs A 48.9).
+Partial overlap DID occur (80k unoverlapped-serial would be ~79s; measured 58.7) but per-chunk fixed costs
+swamp it: claims x2, expert-blob PCIe staging repeated per chunk (peer's 5.3GB/layer dominates), hand-off
+tails x2, PLE/KV per chunk. Same direction as the 29-chunk catastrophe (+230%), milder.
+
+CLOSURE: chunk-pipeline is DEAD at every granularity on this rig (2: +20%, 29: +230%, ratio-knob: unsafe).
+Single-chunk serial stages is the correct shape. Commit 818b42883 kept (gated, default-off, useful for
+future rig changes; unit-pinned).
+
+REMAINING levers (all real-code or per-window knobs):
+- (b) --split 40 rebalance: move 8 layers peer->primary; modeled -5s @80k (peer 1.2s/layer vs primary 0.55);
+  one window to test; risk: claiming/KV/VRAM changes with the split boundary.
+- (c) peer blob prefetch/staging overlap: 5-8s @80k modeled; real code, medium risk.
+- Program otherwise closes at v0215 (+2.2%) with banked gates (fmt0, instrumentation, CHUNKS knob).
