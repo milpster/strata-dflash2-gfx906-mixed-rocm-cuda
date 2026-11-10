@@ -210,6 +210,18 @@ public:
         const ExpertHelperClient* c = prompt_chan();
         return c != nullptr ? c->prompt_buffer_bytes() : 0;
     }
+    /// The image of the LAST frame built on the tier's channel: its byte size (what the wire
+    /// carried, so the engine's wire arithmetic is right for every format) and its format - 0 the
+    /// engine's q8_1 blocks, 1 the fp32 rows, 2 the Q8_K blocks.  0 / -1 with no channel (an
+    /// in-process tier) or before the tier's first frame.
+    int64_t prompt_last_image_bytes() const {
+        const ExpertHelperClient* c = prompt_chan();
+        return c != nullptr ? c->prompt_last_image_bytes() : 0;
+    }
+    int prompt_last_image_format() const {
+        const ExpertHelperClient* c = prompt_chan();
+        return c != nullptr ? c->prompt_last_image_format() : -1;
+    }
     /// The prompt tier's CLAIM BATCH: the engine's STRATA_CLAIM_BATCH (1 = today's wire exactly, one
     /// kBeginP per claim) and the peer's kFeaturePromptBatch bit, read from the tier's channel so the
     /// claim loop's gate and the transport agree.  0 for an in-process tier (no channel, no batch).

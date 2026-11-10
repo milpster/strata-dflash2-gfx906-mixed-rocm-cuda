@@ -1541,3 +1541,52 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
   (`fa733f62d`), rebuilt green. Final: socket test 326 checks (21 new), PASS;
   CUDA guard PASS + ctest -R helper 5/5; HIP guard PASS + 1/1
   (`build-mixed-gpu/q8-image-final-build.log`).
+
+## 2026-11-10 — Engine-side per-layer spans: where the ~256 ms MoE layer actually goes
+
+- Q1 answered: the engine's claim line is `src/prefill/prefill.cpp:6501`
+  (sync lane only, gated on STRATA_RPC_PROFILE; :6462 before this commit),
+  fields `layer rows sel d2h_us begin_us reply_us img_kb reply_kb fallback`
+  (+ `img_fmt` now); the M6 PIPE lane never emits it (the worker owns the tail).
+  The span line is emitted at `:6746`.  The claim lines ARE in
+  ab9-20261110-005056-D-engine.log (256 of them, begin_us sum 2.370 s) - the awk
+  that found 0 was reading a pattern, not the file;
+  `awk '/begin_us=/{split($0,a," ");for(i=1;i<=NF;i++) if(a[i]~/^begin_us=/) s+=substr(a[i],10)} END{print s}'`
+  prints 2.37 s.
+- L4 spans (`STRATA_ENGINE_SPANS=1`, default OFF, no clock read and no line when
+  off): non-overlapping wall segments per MoE layer of the batched walk, marked
+  at boundaries the walk already has, emitted at the layer's end as a SIBLING of
+  the claim line: `rpcprofile: span layer=N pipe=P layer_us attn_us router_us
+  claim_us expert_us wait_us apply_us helper_us rest_us`.  attn = layer start ->
+  the router mark; router = router -> the helper block's entry (top-k + the
+  residency/selection scan); claim = block entry -> the frame on the wire (the
+  quantize sits in here when STRATA_HELPER_Q8_IMAGE is on); expert = send -> the
+  reply read begins (the primary's own expert work, where a helper answer is
+  free); wait = finish_prompt (or the PIPE outcome wait) = the TRUE helper
+  exposure; apply = reply -> the block staged and its H2D queued; rest = the
+  remainder; helper = send -> staged (overlay, the round trip the layer feels).
+- Also fixed a reporting defect the fmt0 window exposed: the claim line's img_kb
+  reported the FP32 image size regardless of what the wire carried.  It now
+  reports `prompt_last_image_bytes()` (the bytes the frame built) and appends
+  `img_fmt=0|1|2`.  Measure-only: a store of two members per frame build.
+- Reader: `bench/ab-v0210/rpcprof/engine_breakdown.py` (main tree, uncommitted -
+  operator commits).  Works on the existing logs today (claim-line summary) and
+  prints the span table + helper-wait share with span lines present.
+  ab9_collect.py is untouched: its regexes are prefix-anchored search/finditer
+  and ignore appended fields and the new sibling line.
+- Evidence from the fmt0 window's helper log (read with claim_breakdown.py, CPU
+  only): quant 0% (was 44.9%), lock 5.856 -> 3.376 s, ksync now 70% of lock, pack
+  20%, scan 5%, upload 3%.  Helper reply_us sum 12.2 s = the socket write
+  blocking on the engine (the engine is busy quantizing + computing) - the write
+  is outside lock_us, so it does not stall the GEMM, but with a second channel
+  it is the thing to watch.
+- CPU-only verification: build_l3.sh both trees, guards, ctest -R helper.  No new
+  unit test: the span emission is inside the GPU-only layer walk (no CPU-only
+  render of it exists); the compile plus the socket suite are the check, and the
+  reader was dry-run on a synthetic span log and on the two real engine logs.
+- Build note (transparency): the first run FAILED - the claim line reached the
+  new accessors through `m.hp`, which is `RemoteExperts`, not the client; added
+  the forwarding accessors (`include/strata/core/remote_experts.hpp`,
+  `prompt_chan()`-based, 0/-1 with no channel).  Failed log
+  `build-mixed-gpu/engine-spans-build.log`; the green run is the rerun on the
+  amended commit.

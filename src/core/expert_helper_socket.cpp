@@ -710,6 +710,8 @@ int ExpertHelperClient::build_beginp_payload(int32_t layer, const ExpertHelperPr
     req.n_q8 = (int32_t) n_img;
     req.image_format = q8k_img ? 2 : (f32_img ? 1 : 0);
     std::memcpy(payload.data(), &req, sizeof(req));
+    last_img_bytes_ = n_img;   // the engine's profile line reports the bytes the wire carries
+    last_img_fmt_ = req.image_format;
     for (int64_t i = 0; i < rows; ++i) {
         std::memcpy(payload.data() + sizeof(req) + (size_t) i * 8, &wire_token[(size_t) i], 4);
         std::memcpy(payload.data() + sizeof(req) + (size_t) i * 8 + 4, &wire_expert[(size_t) i], 4);

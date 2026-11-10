@@ -3208,6 +3208,32 @@ struct PfTimer {
         for (cudaEvent_t e : ev) cudaEventDestroy(e);
     }
 };
+
+// L4 (STRATA_ENGINE_SPANS=1): the ENGINE's own critical path for one MoE layer of the batched walk,
+// in wall microseconds, marked at the boundaries the walk already has.  The segments do not overlap
+// and sum to layer_us (rest_us is what the named phases do not cover); helper_us is an overlay, the
+// round trip exactly as this layer experiences it:
+//   attn   - layer start -> the router mark: the norm + attention block (gdn, the qsa projections,
+//            indexer, select, attention) with their host syncs
+//   router - the router mark -> the helper block's entry: the router gemm, the top-k routing, the
+//            shared expert, and the residency/selection scan that decides who owns every pair
+//   claim  - the helper block's entry -> the send complete: the pair positions, the activation D2H
+//            and its sync, the frame build (the quantize when STRATA_HELPER_Q8_IMAGE is on) and the
+//            socket write.  In PIPE mode this is the publish only - the worker owns the send
+//   expert - send complete -> the reply read begins: the primary's OWN expert work (local, peer and
+//            the CPU pool) and the combine - the window in which a helper answer arrives for free
+//   wait   - the reply read: finish_prompt (queue + helper compute + transfer + validate), or the
+//            worker's outcome wait in PIPE mode.  The TRUE helper exposure on the critical path
+//   apply  - reply read end -> the claimed block is staged and its H2D is enqueued (the CPU
+//            fallback's re-quantize and pool jobs land here too); in PIPE mode the worker already
+//            staged it, so this is the event chain
+//   helper - send complete -> block staged: the round trip as the layer sees it
+// Off: no clock is read and no line is written.  Marks a path never reaches stay where the last
+// mark was (a failed send leaves wait at zero), so the arithmetic never runs backwards.
+struct PfSpanMarks {
+    Clock::time_point l0, router, claim, sent, fin0, fin1, applied, end;
+    bool claimed = false;   // this layer ran the helper block: the line pairs 1:1 with its claim line
+};
 // multi-GPU: the peer's own timeline (STRATA_PREFILL_TIMING): marks on the peer stream, folded with the primary's
 enum PePhase { kPeIdle, kPeMoeIn, kPeMoeGemm, kPeMoeOut, kPeCount };
 const char* const kPeNames[kPeCount] = {"idle", "moe in", "moe gemm", "moe out"};
@@ -4139,6 +4165,11 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         };
         for (int64_t l = LB; l < LE; ++l) {
             core::progress_beat();   // the serve watchdog: a prompt chunk of 8192 tokens is still moving
+            // L4 (STRATA_ENGINE_SPANS=1): this layer's engine-side critical-path spans, folded into a
+            // sibling line of the claim line at the layer's end.  Off = no clock read, no line.
+            static const bool es_on = std::getenv("STRATA_ENGINE_SPANS") != nullptr;
+            PfSpanMarks es;
+            if (es_on) { es.l0 = Clock::now(); es.router = es.claim = es.sent = es.fin0 = es.fin1 = es.applied = es.l0; }
             if (l > LB) pf_step("reading the prompt (batched, step sync): the experts and the rest of layer", l - 1);
             core::progress_at("reading the prompt (batched): layer", l, p0);   // #251: a stall names layer and chunk
             const core::LayerView v(*m.wt, l);
@@ -4681,6 +4712,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                           *wsd = need(v, "ffn_down_shexp.weight", err);
                     if (!wr || !wgi || !wsg || !wsu || !wsd) return false;
                     pt.mark(kPfRouter, cs);
+                    if (es_on) es.router = Clock::now();   // L4: the attention span ends where the router begins
                     if (!bf16_proj(m.gemm, wr, m.mixed_bf, m.logits, T, v.name("ffn_gate_inp.weight"), err, 0, m.mixed_bf_lo)) return false;
                     route(m.logits, m.ids, m.w, T, m.g->n_expert, m.cs);
                     // RESEARCH HOOK (141-research, opt-in, never on by default): STRATA_DBG_FEAT=<file> dumps, per MoE layer and chunk,
@@ -5254,6 +5286,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         }
                         // ================= M2 (STRATA_PREFILL_HELPER): the send =================
                         if (!on_helper.empty()) {
+                            if (es_on) { es.claim = Clock::now(); es.claimed = true; }   // L4
                             // the block row of each pair (expert-contiguous inside the block, whatever the plan's order)
                             hp_pos.resize((size_t) rows_helper);
                             std::vector<int32_t> within((size_t) m.g->n_expert, 0);
@@ -5371,6 +5404,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                         m.hp_lane.claims = hp_claims;
                                     }
                                     m.hp_lane_cv_work.notify_one();
+                                    if (es_on) es.sent = Clock::now();   // L4: PIPE publishes; the worker owns send->apply
                                 } else {
                                     // L3 (STRATA_RPC_PROFILE=1): d2h = the image download wait (incl. the m.cs backlog the hp_ev gate rode)
                                     static const bool hp_prof = std::getenv("STRATA_RPC_PROFILE") != nullptr;
@@ -5385,6 +5419,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                     hp_begin_us = hp_prof ? (int64_t) std::chrono::duration_cast<std::chrono::microseconds>(
                                         std::chrono::steady_clock::now() - hp_t1).count() : 0;
                                     hp_sent = rc_b == core::expert_helper::kOk;
+                                    if (es_on) es.sent = Clock::now();   // L4: the frame is on the wire
                                     if (!hp_sent)   // the tier latched itself: the claimed rows recompute at the combine
                                         std::fprintf(stderr, "strata: prefill helper: send failed (%s); the claimed rows fall back to the CPU\n",
                                                      core::expert_helper::status_name(rc_b));
@@ -6443,8 +6478,10 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         int32_t hp_got = 0;
                         bool ok_rows = false;
                         if (hp_pipe) {   // M6: the worker already ran the tail; read its outcome, chain m.cs on E2
+                            if (es_on) es.fin0 = Clock::now();   // L4: the walk blocks on the worker's outcome
                             std::unique_lock<std::mutex> lk(m.hp_lane_mtx);
                             m.hp_lane_cv_done.wait(lk, [&m] { return m.hp_lane.done; });
+                            if (es_on) es.fin1 = Clock::now();   // L4: the reply is in hand (worker ran send->gather)
                             hp_sent = m.hp_lane.sent;
                             ok_rows = m.hp_lane.ok_rows;
                             m.hp_lane.done = false;   // the slot is idle for the next publish
@@ -6454,20 +6491,25 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             static const bool hp_prof2 = std::getenv("STRATA_RPC_PROFILE") != nullptr;
                             const auto hp_t2 = hp_prof2 ? std::chrono::steady_clock::now()
                                                         : std::chrono::steady_clock::time_point{};
+                            if (es_on) es.fin0 = Clock::now();   // L4: the engine waits on the helper from here
                             const int rc_f = m.hp->finish_prompt(m.hp_rows, N, hp_claims, hp_to, hp_got);
+                            if (es_on) es.fin1 = Clock::now();   // L4: ... to the reply validated and scattered
                             ok_rows = rc_f == core::expert_helper::kOk && hp_got == (int32_t) rows_helper;
                             if (!ok_rows)
                                 std::fprintf(stderr, "strata: prefill helper: the rows did not come back whole; the claimed rows fall back to the CPU\n");
                             if (hp_prof2)   // L3: one line per claim, sync path only (PIPE stays on the worker)
                                 std::fprintf(stderr, "rpcprofile: claim layer=%lld rows=%lld sel=%lld d2h_us=%lld begin_us=%lld "
-                                                     "reply_us=%lld img_kb=%lld reply_kb=%lld fallback=%d\n",
+                                                     "reply_us=%lld img_kb=%lld reply_kb=%lld fallback=%d img_fmt=%d\n",
                                              (long long) l, (long long) rows_helper,
                                              (long long) hp_plan.n_sel_tok(), (long long) hp_d2h_us,
                                              (long long) hp_begin_us,
                                              (long long) std::chrono::duration_cast<std::chrono::microseconds>(
                                                  std::chrono::steady_clock::now() - hp_t2).count(),
-                                             (long long) (hp_plan.n_sel_tok() * N * 4 / 1024),
-                                             (long long) (rows_helper * N * 4 / 1024), ok_rows ? 0 : 1);
+                                             // the image the frame CARRIED (the q8_1 wire is 3.56x
+                                             // smaller than the fp32 rows it replaces): the client knows
+                                             (long long) (m.hp->prompt_last_image_bytes() / 1024),
+                                             (long long) (rows_helper * N * 4 / 1024), ok_rows ? 0 : 1,
+                                             m.hp->prompt_last_image_format());
                         }
                         if (ok_rows && hp_pipe) {   // M6: the worker gathered and enqueued the block H2D on hp_cs
                             cudaStreamWaitEvent(m.cs, m.hp_ev2, 0);
@@ -6568,6 +6610,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         if (use_mmq && !fused_l && lay.native && lay.fmt[(size_t) l].tail_off)
                             cudaMemcpyAsync(m.row_sd + r0h, m.hp_ones, (size_t) rows_helper * sizeof(float),
                                             cudaMemcpyHostToDevice, m.cs);
+                        if (es_on) es.applied = Clock::now();   // L4: the claimed block is staged and its H2D is queued
                         if (static const bool dbg_hp = std::getenv("STRATA_DBG_PROMPT_HELPER") != nullptr; dbg_hp)
                             std::fprintf(stderr, "prefill helper: layer %lld, %lld rows (%s)\n", (long long) l,
                                          (long long) rows_helper, ok_rows ? "helper" : "cpu fallback");
@@ -6687,6 +6730,25 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     strata::kernels::df2_tap_rows(m.R + (size_t) tap_t0 * D, tap_dev_ + (size_t) tap_slot[(size_t) l] * N, (int64_t) tap_local_.size() * N, N,
                                                   (int) HC, (int) tap_rows, m.cs);
 #endif
+            }
+            // L4 (STRATA_ENGINE_SPANS=1): one line per layer that claimed, pairing 1:1 with that
+            // layer's 'rpcprofile: claim' line.  The segments do not overlap and sum to layer_us;
+            // helper_us is the overlay the layer actually feels: send complete -> block staged.
+            if (es_on && es.claimed) {
+                es.end = Clock::now();
+                const auto seg = [](Clock::time_point a, Clock::time_point b) {
+                    return (long long) std::chrono::duration_cast<std::chrono::microseconds>(b - a).count();
+                };
+                const long long layer_us = seg(es.l0, es.end), attn_us = seg(es.l0, es.router),
+                                  router_us = seg(es.router, es.claim), claim_us = seg(es.claim, es.sent),
+                                  expert_us = seg(es.sent, es.fin0), wait_us = seg(es.fin0, es.fin1),
+                                  apply_us = seg(es.fin1, es.applied);
+                std::fprintf(stderr, "rpcprofile: span layer=%lld pipe=%d layer_us=%lld attn_us=%lld "
+                                     "router_us=%lld claim_us=%lld expert_us=%lld wait_us=%lld apply_us=%lld "
+                                     "helper_us=%lld rest_us=%lld\n",
+                             (long long) l, hp_pipe ? 1 : 0, layer_us, attn_us, router_us, claim_us,
+                             expert_us, wait_us, apply_us, seg(es.sent, es.applied),
+                             layer_us - attn_us - router_us - claim_us - expert_us - wait_us - apply_us);
             }
         }
         if (!ple_land()) return false;   // a stage that ends before layer 1: the rows land anyway, the next gather starts

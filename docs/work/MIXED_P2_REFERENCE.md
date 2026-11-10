@@ -544,3 +544,36 @@ the difference pinned to `n_sel*(H*4 − (H/32)*36)`. Evidence
 `build-mixed-gpu/q8-image-final-build.log` (both trees, CPU-only: CUDA guard
 PASS + `ctest -R helper` 5/5, HIP guard PASS + 1/1, socket test 326 checks):
 this tree ran no GPU program.
+
+## The engine-side per-layer spans: `STRATA_ENGINE_SPANS` (default OFF, 2026-11-10)
+
+The fmt0 window moved the quantize off the helper's lock (`quant` 44.9% → 0% of
+`lock_us`, lock 5.856 → 3.376 s) and the 8k wall moved only 0.8%: the engine
+paces the layer cycle. The engine's own claim line (`src/prefill/prefill.cpp`,
+the sync lane, `STRATA_RPC_PROFILE`) reports only `d2h_us`/`begin_us`/`reply_us`
+around the helper — it says nothing about the rest of the layer.
+
+`STRATA_ENGINE_SPANS=1` adds one line per MoE layer that claimed, at the layer's
+end, as a sibling of the claim line (same log, additive; the default path reads
+no clock and writes nothing):
+
+`rpcprofile: span layer=N pipe=P layer_us=A attn_us=B router_us=C claim_us=D
+expert_us=E wait_us=F apply_us=G helper_us=H rest_us=I`
+
+The segments do not overlap and sum to `layer_us` (the engine's wall time for the
+layer); `helper_us` is an overlay. `attn` = layer start → the router mark (the
+norm + attention block with its host syncs); `router` = the router gemm, top-k,
+the shared expert and the residency/selection scan; `claim` = the helper block's
+entry → the frame on the wire (the quantize lives in here under
+`STRATA_HELPER_Q8_IMAGE`); `expert` = send → the reply read begins (the
+primary's own experts, where a helper answer arrives free); `wait` = the reply
+read — the TRUE helper exposure on the critical path; `apply` = reply → the
+claimed block staged and its H2D queued; `rest` = the remainder; `helper` = send
+→ staged, the round trip as the layer feels it. `pipe=1` names the M6 worker
+lane. Reader: `bench/ab-v0210/rpcprof/engine_breakdown.py`.
+
+The same window exposed a reporting defect that is fixed here: the claim line's
+`img_kb` reported the fp32 image size whatever the wire carried. It is now
+`prompt_last_image_bytes()` — the bytes the frame built — and the line appends
+`img_fmt=0|1|2`, so the wire arithmetic is right for the q8_1 and Q8_K images
+too. Measure-only: two members stored per frame build.

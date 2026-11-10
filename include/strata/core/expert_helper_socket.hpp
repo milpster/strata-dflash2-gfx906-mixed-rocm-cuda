@@ -133,6 +133,12 @@ public:
     bool prompt_rows_supported() const { return prompt_rows_; }
     bool prompt_f32_supported() const { return prompt_f32_; }   // M4c (b): the peer quantizes fp32 itself
     bool q8k_supported() const { return q8k_; }   // the peer takes Q8_K activation images (kFeatureQ8K)
+    /// The image of the LAST frame build_beginp_payload built (the claim line reports it): its byte
+    /// size and its format - 0 the engine's q8_1 blocks, 1 the fp32 rows, 2 the Q8_K blocks.  The
+    /// byte size is what the wire carried, so the engine's wire arithmetic is right for every
+    /// format, not only for fp32.  Zero/negative before the first prompt-tier frame.
+    int64_t prompt_last_image_bytes() const { return last_img_bytes_; }
+    int prompt_last_image_format() const { return last_img_fmt_; }
     /// True when the peer ADVERTISED the claim batch (kFeaturePromptBatch: it serves kBeginPB/kRowsPB).
     /// A peer without the bit never sees the frame type: begin_prompt keeps the kBeginP path.
     bool prompt_batch_supported() const { return prompt_batch_; }
@@ -325,6 +331,8 @@ private:
     bool q8k_ = false;                              // the peer advertised kFeatureQ8K (the Q8_K wire)
     bool prompt_batch_ = false;                     // the peer advertised kFeaturePromptBatch
     int64_t claim_batch_ = 1;                       // STRATA_CLAIM_BATCH, clamped: 1 = today's wire
+    int64_t last_img_bytes_ = 0;                    // the image bytes of the last frame built (the wire's)
+    int last_img_fmt_ = -1;                         // and its format: 0 q8_1, 1 fp32, 2 Q8_K
     /// One queued prompt-tier claim (the batch's part): the full kBeginP payload bytes the client
     /// built, the engine's claims for it, the begin's own write deadline (the one-part flush sends
     /// these bytes as a plain kBeginP and keeps that deadline), and - once a multi-part batch's
