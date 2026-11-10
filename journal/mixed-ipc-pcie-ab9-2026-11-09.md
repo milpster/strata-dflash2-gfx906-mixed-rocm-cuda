@@ -359,3 +359,22 @@ THE NEW DOMINANT MYSTERY: leg summaries prove 100% of wall is prompt processing 
 Candidates: hybrid arch's non-claimed layer passes (GDN/full-attn structure), peer-served layers,
 KV/eval pipeline work. Next lane: instrument/explain the gap (file:line); it is now the biggest lever
 candidate in the stack (2x bigger than everything measured inside layers combined @80k).
+
+## 12:35 GAP DECODED (window 12:20, L5 spans bbdd1c1c6) - 48-layer model split across BOTH VIIs; peer walk was the gap
+
+Full attribution (384 span lines = 8 chunks x 48 layers; walk covers 100% of chunk time; intake/tail ~0):
+- gpu0 (primary): 32 layers/chunk - the claiming MoE set (old spans saw only these)
+- gpu1 (peer): 16 layers/chunk - nested run_impl, NEVER claims, invisible to all prior spans
+- Layer dependency chain serializes the two walks: chunk wall ~= gpu0_walk + gpu1_walk + handoff/staging
+- @80k (14637 tok): gpu0 17.7s + gpu1 19.3s + ~12s overhead = 49s leg wall. PEER'S 16 LAYERS COST MORE
+  THAN PRIMARY'S 32 - they are the full-attention layers (attn on gpu0 layers: 0.2-5.8ms only).
+- @8k (1643 tok): gpu0 4.1s + gpu1 2.55s + overhead ~1.3s = 8.0s prompt time.
+- Instrumentation cost: +2-4% walls (384 lines + pass/chunk prints) - relative attribution unaffected.
+
+LEVER CANDIDATES (ranked by measured size @80k):
+1. Peer attention kernel efficiency: 19.3s/49s wall (39%) - 16 full-attn layers at 14.6k ctx on gfx906
+2. Inter-GPU serial handoff/staging: ~12s/49s (24%) - nature unknown (transfers? syncs? fold?)
+3. Primary walk (everything measured before): 17.7s/49s (36%)
+Next: fixer (has the file:line map - went silent post-commit, revived) interprets + proposes.
+NOTE: fixer session went silent 03:49 after committing instrumentation without report/build; parent built it.
+Overnight prod flapped once more (gen-2 helper exit 03:08) - box flakiness pattern, user domain.
