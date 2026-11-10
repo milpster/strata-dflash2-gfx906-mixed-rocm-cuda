@@ -1726,3 +1726,27 @@ L6 makes the rest measurable, same gate, measure-only:
   the joins, the drain.  wall - run_us = the tokenization, the head, the serve/sample.
 Reader: `engine_breakdown.py` prints per-(gpu,chunk) walls, per-stage `run_setup = pass_us - its last
 chunk`, and the gap table rows for `pass_us` and `run_us` with `outside the run` as the residue.
+
+## 2026-11-10 — STRATA_PIPELINE_CHUNKS: an explicit, bounded chunk count for the split's pipeline
+
+Why --prefill-pipe cannot express this (the 13:38/13:45 sweep): `Prefill::pipeline_chunk`
+(`prefill.cpp:2884`) takes the value as **whole tokens**, not a ratio - `ratio_tokens(v) =
+llround(min(v, 2^20))` (`:2879`), so `pipe=1.1` means **b = 1 token** per chunk in its cost
+`cost(c) = k*b + n + S1*(b + min(c, n))` (`:2905-2908`).  With b=1 the per-chunk cost is nothing, the
+model maximizes the chunk count, and its bounds are `c >= 512` and `k <= min(64, (n+511)/512)`
+(`:2916-2919`) - hence 512-token chunks: 4 chunks at 1643 tokens, 29 at 14637 (measured: +65% and
+3.3x slower).  `pipe=1` is a different rule (STRATA_PREFILL_EQUAL: even today's chunk count, only when
+today's last chunk streams everything), so a 1-chunk prompt stays 1 chunk.
+
+`STRATA_PIPELINE_CHUNKS=N` (opt-in, default unset = today byte-for-byte) says it directly: the prompt
+reads in exactly N equal chunks on the 256-token grid, the remainder in the last.  The math is the
+header-only `strata::prefill::pipeline_chunks::chunk` (`include/strata/prefill/pipeline_chunks.hpp`):
+1 chunk = the buffers' chunk (today's read), cap = the buffers' size, and the bounds are the pipe
+path's own floors - a chunk of at least 512 tokens, at most 64 chunks - applied to the LAST chunk too
+(equal chunks ceil to the grid, so the remainder shrinks: 3 chunks at 1643 tokens = 768+768+107 is
+refused, not run slow).  Unusable N prints once and reads in today's chunks (fail loud, not slow).
+Only the first stage decides and only a split pipelines (`Prefill::plan_chunk`, `prefill.cpp:2924`).
+
+For the rig's legs (cap 16384): 14637 tokens / 2 -> 7424 + 7213; 1643 / 2 -> 1024 + 619; 14637 / 4 ->
+3840+3840+3840+3117; 14637 / 8 is refused (2048 leaves 301).  Parity is untouched (the chunked path is
+byte-exact at every chunk count, the 13:45 window's gate3).  Test: `tests/prefill/pipeline_chunks_test.cpp`.

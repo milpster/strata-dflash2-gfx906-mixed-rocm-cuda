@@ -646,3 +646,17 @@ gap-attribution table. Expected next-window table: claiming layers as before, pl
 `gpu=1 claim=0` lines at ~270 ms/layer (1648 tok) and ~2100 ms/layer (14.6k tok),
 their `post_us` carrying most of it, and `unattributed (wall − pass_us)` down to
 the serve/sample residue.
+
+## `STRATA_PIPELINE_CHUNKS` — the pipeline knob, stated exactly (2026-11-10)
+
+`--prefill-pipe` cannot express "read this prompt in 2 chunks": its value is **whole tokens** in the
+cost model (`ratio_tokens` = `llround(min(v, 2^20))`, `prefill.cpp:2879`), so `1.1` reads as b = 1
+token per chunk and the model then maximizes the chunk count at its own bounds (≥512 tokens, ≤64
+chunks) — 512-token chunks, 29 of them at 14,637 tokens, 3.3x slower. `STRATA_PIPELINE_CHUNKS=N`
+states the intent instead: exactly N equal chunks (256-token grid, remainder last), the remainder
+never below 512 tokens, N ≤ 64, N=1 = today's single-chunk read, unset = today's plan byte-for-byte.
+Unusable N says so on stderr once and falls back to today's chunks. First stage only, split only.
+Math: `include/strata/prefill/pipeline_chunks.hpp` (+ `tests/prefill/pipeline_chunks_test.cpp`);
+plan site `Prefill::plan_chunk` (`prefill.cpp:2924`). At cap 16384: 14637/2 = 7424+7213 (stages
+overlap → the 22–27 s projection), 1643/2 = 1024+619, 14637/8 refused. Chunking is parity-safe
+(byte-exact at every chunk count in the 13:45 gate3).

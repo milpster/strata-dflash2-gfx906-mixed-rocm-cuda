@@ -14,6 +14,7 @@
 #endif
 #include "strata/prefill/warm_policy.hpp"
 #include "strata/prefill/share_rules.hpp"
+#include "strata/prefill/pipeline_chunks.hpp"
 #include "strata/core/arch_defaults.hpp"
 #include <atomic>
 #if defined(__cpp_lib_atomic_wait)
@@ -2875,14 +2876,27 @@ void Prefill::set_pipe(double value) { g_pipe = value; }
 void Prefill::set_pipe_request(double value) { g_pipe_req = value; }
 double Prefill::pipe_setting() { return pipe_value(); }
 namespace {
+// STRATA_PIPELINE_CHUNKS (opt-in): read the prompt in EXACTLY N chunks, engaging the layer split's
+// stage pipeline directly (include/strata/prefill/pipeline_chunks.hpp).  Unset: today's plan.
+int64_t pipeline_chunks_want() {
+    static const int64_t v = [] {
+        const char* s = std::getenv("STRATA_PIPELINE_CHUNKS");
+        if (s == nullptr || s[0] == '\0') return (int64_t) 0;   // unset: today's plan, byte-for-byte
+        char* end = nullptr;
+        const long long x = std::strtoll(s, &end, 10);
+        return end == s || x < 1 ? (int64_t) -1 : (int64_t) x;   // -1: unusable, said once and ignored
+    }();
+    return v;
+}
+}  // namespace
+namespace {
 // b/a in whole tokens: 0 for none (or NaN), at most 2^20 (llround of an infinity is undefined - `pipe=inf` parses)
 int64_t ratio_tokens(double ratio) { return ratio > 0.0 ? (int64_t) std::llround(std::min(ratio, 1048576.0)) : 0; }
 }  // namespace
 int64_t Prefill::pipe_key(double value) { return !(value > 0.0) ? -1 : value <= 1.0 ? 0 : ratio_tokens(value); }
 // In whole tokens (r rounded): integer sums and a 97/100 test, so a near-tie cannot fall one way in one build and the
 // other way in another (the same chunks as the double version for every whole r: an exact 97% is not better).
-int64_t Prefill::pipeline_chunk(int64_t n, int64_t cap, int stages, double ratio) {
-    if (stages < 2 || n <= 0 || cap <= 0) return cap;
+int64_t Prefill::pipeline_chunk(int64_t n, int64_t cap, int stages, double ratio) {    if (stages < 2 || n <= 0 || cap <= 0) return cap;
     const int64_t r = ratio_tokens(ratio), S1 = stages - 1;
     if (r == 0) {
         // `--prefill-pipe 1`: STRATA_PREFILL_EQUAL's rule (#693, generate.cpp equal_chunk) - today's chunk count, evened
@@ -2917,9 +2931,26 @@ int Prefill::stage_count() const {
     return stages;
 }
 int64_t Prefill::plan_chunk(int64_t n) const {
-    const double pipe = pipe_value();
     const int stages = stage_count();
-    if (pipe <= 0.0 || hand_in_ != nullptr || stages < 2) return 0;
+    if (hand_in_ != nullptr || stages < 2) return 0;   // only the first stage chooses, and only a split pipelines
+    const int64_t want = pipeline_chunks_want();
+    if (want != 0) {
+        const int64_t c = strata::prefill::pipeline_chunks::chunk(n, impl_->T, want);
+        if (c > 0) return c;
+        static bool said = false;   // fail loud, not slow: say it once, read in today's chunks
+        if (!said) {
+            said = true;
+            std::fprintf(stderr, "strata prefill: STRATA_PIPELINE_CHUNKS=%lld is unusable for a %lld-token prompt: "
+                                 "%lld equal chunks leave the last one under the %lld-token floor (at most %lld "
+                                 "chunks here, at most %lld tokens each); reading in today's chunks\n",
+                         (long long) want, (long long) n, (long long) want,
+                         (long long) strata::prefill::pipeline_chunks::kFloor,
+                         (long long) strata::prefill::pipeline_chunks::kMaxChunks, (long long) impl_->T);
+        }
+        return 0;
+    }
+    const double pipe = pipe_value();
+    if (pipe <= 0.0) return 0;
     return pipeline_chunk(n, impl_->T, stages, pipe > 1.0 ? pipe : 0.0);
 }
 void Prefill::force_chunk(int64_t chunk, bool single, bool planned) {

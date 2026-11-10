@@ -497,6 +497,12 @@ if(STRATA_BUILD_TESTS)
   target_include_directories(share_rules_test PRIVATE include)
   add_test(NAME share_rules_test COMMAND share_rules_test)
 
+  # STRATA_PIPELINE_CHUNKS: the explicit chunk count's math (equal chunks, the remainder last, the floor):
+  # header-only, no GPU
+  add_executable(pipeline_chunks_test tests/prefill/pipeline_chunks_test.cpp)
+  target_include_directories(pipeline_chunks_test PRIVATE include)
+  add_test(NAME pipeline_chunks_test COMMAND pipeline_chunks_test)
+
   # STRATA_PREFILL_ROUTED_STREAM: the prompt stream's issuer walk and route gate, on a simulated link and consumer
   # (header-only, no GPU)
   add_executable(routed_stream_test tests/prefill/routed_stream_test.cpp)
