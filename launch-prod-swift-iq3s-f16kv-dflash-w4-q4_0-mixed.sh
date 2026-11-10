@@ -1,19 +1,40 @@
 #!/usr/bin/env bash
 # Foreground mixed HIP/CUDA supervisor. Detach with setsid nohup when needed.
 # Uses the tested window helper and the opt-in prompt tier.
-# TUNED config (ab2-r1 PASS verdict 2026-10-31, validated on the swift15/iq3xxs combo;
-# this iq3_s variant carries the same mechanism, not yet window-validated for its own pack):
-# rpcw candidate engine+helper, helper second channel (--socket2), prompt tier on
-# (STRATA_PREFILL_HELPER=1 via the config env), occupancy pinned (--fill-mib 6400;
-# currently inert: the 4000-slot cap binds first at 6.07 GiB).
+# swift-iq3_s variant of the swift15 TUNED config. 2026-11-10 transfer: brought up to the
+# current champion standard — v0216 pinned engine+helper, layer_split 34 (split sweep winner:
+# longtg TG 41.2/43.2 vs 33.8/35.9 at 36), helper reserve 256 / fill-mib 7200, spill OFF,
+# conversation disk cache tier. Same mechanism as launch-prod-swift15-f16kv-dflash-w4-q4_0-mixed.sh;
+# only pack/model/sockets/names differ.
 set -euo pipefail
 ROOT=${STRATA_PROD_TREE:-/mnt/srcds/Strata}
-WORK="$ROOT/v0210"
+WORK="$ROOT/v0215"
+# Keep the serving wrapper stable; pin the latest built engine/helper separately.
+BIN="$ROOT/v0216/build-mixed-gpu"
 PY="$ROOT/.venv/bin/python"
 CONFIG="$ROOT/prod-config-swift-iq3s-f16kv-dflash-w4-q4_0-mixed.json"
 SOCKET="$ROOT/run/prod-swift-iq3s-f16kv-mixed.sock"
 SOCKET2="$ROOT/run/prod-swift-iq3s-f16kv-mixed2.sock"
-HELPER="$WORK/build-mixed-gpu/rpcw-cuda/strata-expert-helper-patient"
+HELPER="$BIN/rpcw-cuda/strata-expert-helper-patient"
+# KSM is OPT-IN here (SPEC-stage2 lever 4): measured general_profit -109.9 MB on this pair
+# (2026-11-08 17:22 baseline; -636 MB by 2026-11-09 11:01, pages_sharing 141 -> 0, ksmd ~0.1-0.2 %
+# CPU) - the merge costs more than it saves, so the default is OFF and STRATA_KSM=1 opts in
+# explicitly at the next natural pair start. The other five launchers keep the old default.
+if [[ ${STRATA_KSM:-0} == 1 && ${STRATA_KSM_BOOTSTRAPPED:-0} != 1 ]]; then
+  export STRATA_KSM_BOOTSTRAPPED=1
+  exec "$PY" -c '
+import ctypes
+import os
+import sys
+libc = ctypes.CDLL(None, use_errno=True)
+libc.prctl.argtypes = [ctypes.c_int] + [ctypes.c_ulong] * 4
+if libc.prctl(67, 1, 0, 0, 0) != 0:  # PR_SET_MEMORY_MERGE
+    error = ctypes.get_errno()
+    raise OSError(error, os.strerror(error))
+print("KSM enabled for model launcher and children", flush=True)
+os.execv(sys.argv[1], sys.argv[1:])
+' "$BASH" "$0" "$@"
+fi
 case "${1:-}" in
   --pair-child)
     [[ -n ${STRATA_PAIR_RECORD:-} ]] || { echo 'REFUSING unowned pair child.' >&2; exit 2; } ;;
@@ -30,7 +51,7 @@ command -v ss >/dev/null
 [[ -z $(ss -H -ltn 'sport = :8009') ]] || { echo 'REFUSING: port 8009 occupied.' >&2; exit 1; }
 [[ ! -e "$SOCKET" && ! -L "$SOCKET" ]] || { echo "REFUSING: existing socket $SOCKET" >&2; exit 1; }
 [[ ! -e "$SOCKET2" && ! -L "$SOCKET2" ]] || { echo "REFUSING: existing socket $SOCKET2" >&2; exit 1; }
-for file in "$PY" "$HELPER" "$WORK/build-mixed-gpu/rpcw-hip/strata"; do
+for file in "$PY" "$HELPER" "$BIN/rpcw-hip/strata"; do
   [[ -x "$file" ]] || { echo "Missing executable: $file" >&2; exit 2; }
 done
 [[ -f "$WORK/serve/server.py" && -f ${STRATA_DFLASH2_DIR:-/mnt/srcds/dflash2}/artifacts/inco-dflash2-q4_0.gguf ]]
@@ -41,7 +62,7 @@ done < <(compgen -e)
 mkdir -p "$ROOT/run" "$ROOT/logs"
 LOG="$ROOT/logs/prod-swift-iq3s-f16kv-dflash-w4-q4_0-mixed-$(date +%Y%m%d-%H%M%S)-$$.log"
 HLOG="${LOG%.log}-helper.log"
-helper_pid='' server_pid=''
+helper_pid= server_pid=
 cleanup() {
   trap - EXIT INT TERM
   for pid in "$server_pid" "$helper_pid"; do
@@ -62,7 +83,7 @@ env -i "${helper_env[@]}" "$HELPER" \
   --pack ${STRATA_AI_DIR:-/mnt/srcds/ai}/iq3s \
   --experts ../Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S.gguf \
   --device 0 --slots 4600 --reserve-mib 300 --timeout 63115200000 \
-  --begin-timeout 1800000 --socket "$SOCKET" --fill-mib 6796 --socket2 "$SOCKET2" \
+  --begin-timeout 63115200000 --socket "$SOCKET" --fill-mib 7200 --socket2 "$SOCKET2" \
   >>"$HLOG" 2>&1 < /dev/null &
 helper_pid=$!
 if [[ -n ${STRATA_PAIR_RECORD:-} ]]; then
