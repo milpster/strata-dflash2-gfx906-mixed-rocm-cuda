@@ -13,11 +13,13 @@
 set -euo pipefail
 ROOT=${STRATA_PROD_TREE:-/mnt/srcds/Strata}
 WORK="$ROOT/v0215"
+# Keep the serving wrapper stable; pin the latest built engine/helper separately.
+BIN="$ROOT/v0216/build-mixed-gpu"
 PY="$ROOT/.venv/bin/python"
 CONFIG="$ROOT/prod-config-swift15-f16kv-dflash-w4-q4_0-mixed.json"
 SOCKET="$ROOT/run/prod-swift15-f16kv-mixed.sock"
 SOCKET2="$ROOT/run/prod-swift15-f16kv-mixed2.sock"
-HELPER="$WORK/build-mixed-gpu/rpcw-cuda/strata-expert-helper-patient"
+HELPER="$BIN/rpcw-cuda/strata-expert-helper-patient"
 # KSM is OPT-IN here (SPEC-stage2 lever 4): measured general_profit -109.9 MB on this pair
 # (2026-11-08 17:22 baseline; -636 MB by 2026-11-09 11:01, pages_sharing 141 -> 0, ksmd ~0.1-0.2 %
 # CPU) - the merge costs more than it saves, so the default is OFF and STRATA_KSM=1 opts in
@@ -53,7 +55,7 @@ command -v ss >/dev/null
 [[ -z $(ss -H -ltn 'sport = :8009') ]] || { echo 'REFUSING: port 8009 occupied.' >&2; exit 1; }
 [[ ! -e "$SOCKET" && ! -L "$SOCKET" ]] || { echo "REFUSING: existing socket $SOCKET" >&2; exit 1; }
 [[ ! -e "$SOCKET2" && ! -L "$SOCKET2" ]] || { echo "REFUSING: existing socket $SOCKET2" >&2; exit 1; }
-for file in "$PY" "$HELPER" "$WORK/build-mixed-gpu/rpcw-hip/strata"; do
+for file in "$PY" "$HELPER" "$BIN/rpcw-hip/strata"; do
   [[ -x "$file" ]] || { echo "Missing executable: $file" >&2; exit 2; }
 done
 [[ -f "$WORK/serve/server.py" && -f ${STRATA_DFLASH2_DIR:-/mnt/srcds/dflash2}/artifacts/inco-dflash2-q4_0.gguf ]]
