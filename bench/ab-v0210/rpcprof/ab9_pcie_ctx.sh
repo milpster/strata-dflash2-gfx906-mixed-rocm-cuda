@@ -341,6 +341,16 @@ arm_legs(){   # $1=arm; stage1 legs with sidecars
   $PY "$D/ab9_driver.py" --arm "$arm" --leg tg1024 --kind tg --ctx 2048 --max-tokens 1024 \
       --out "$OUT" --elog "$ELOG" --hlog "$HLOG" || { stop_sidecar; echo "leg tg failed"; return 9; }
   stop_sidecar
+  if [[ ${AB9_LONGCTX:-0} == 1 ]]; then   # conclusive profile: long-context PP + TG (real-session shapes)
+    sidecar "$arm" longpp
+    $PY "$D/ab9_driver.py" --arm "$arm" --leg longpp --kind prefill --ctx 160000 --max-tokens 8 \
+        --out "$OUT" --elog "$ELOG" --hlog "$HLOG" || { stop_sidecar; echo "leg longpp failed"; return 9; }
+    stop_sidecar
+    sidecar "$arm" longtg
+    $PY "$D/ab9_driver.py" --arm "$arm" --leg longtg --kind tg --ctx 160000 --max-tokens 384 \
+        --out "$OUT" --elog "$ELOG" --hlog "$HLOG" || { stop_sidecar; echo "leg longtg failed"; return 9; }
+    stop_sidecar
+  fi
 }
 sidecar(){   # per-leg sampling: nvidia dmon + rocm vram csv (read-only queries, no GPU work)
   a=$1; l=$2

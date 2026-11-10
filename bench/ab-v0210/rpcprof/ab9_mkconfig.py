@@ -56,10 +56,12 @@ def main() -> int:
     pathlib.Path(a.out).parent.mkdir(parents=True, exist_ok=True)
     pathlib.Path(a.out).write_text(json.dumps(cfg, indent=1, sort_keys=True) + "\n")
 
-    helper = {"fill_mib": DEFAULT_HELPER["fill_mib"], "reserve_mib": DEFAULT_HELPER["reserve_mib"],
+    import os
+    helper = {"fill_mib": int(os.environ.get("AB9_HELPER_FILL_MIB", DEFAULT_HELPER["fill_mib"])),
+              "reserve_mib": int(os.environ.get("AB9_HELPER_RESERVE_MIB", DEFAULT_HELPER["reserve_mib"])),
               # the helper's --slots must equal THIS arm's ask (the ud socket-name class of defect:
               # a per-arm slot change in the config must reach the helper command line too)
-              "slots": int(cfg.get("expert_helper_slots", DEFAULT_HELPER["slots"]))}
+              "slots": int(os.environ.get("AB9_HELPER_SLOTS", cfg.get("expert_helper_slots", DEFAULT_HELPER["slots"])))}
     note = cfg.get("_ab9_helper")
     if note:
         helper.update({k: int(v) for k, v in note.items()})
