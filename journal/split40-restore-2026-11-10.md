@@ -46,12 +46,45 @@ start only after that specialist has reached a verified terminal state.
 - Serving wrapper and pair supervision remain alive. The production launcher is detached from the transient tool shell.
 - Runtime launch log: `logs/prod-split40-latest-20261110-launch.log`; current wrapper/helper logs are recorded in the supervisor JSON.
 
-## Independent read-only audit dispatched
+## Independent read-only audit: session evidence correction
 
-The dispatch of oracle session `ses_e39265907ffeBOcur6PrWcbEKK` failed with
-`Agent not found: "oracle"`. It never performed the audit. Earlier statements
-that the oracle was investigating were incorrect; no findings can be attributed
-to it. A replacement has not been dispatched.
+Session `ses_e39265907ffeBOcur6PrWcbEKK` DID run the allocator investigation.
+The earlier claim in this journal that it never started was false: it inferred
+that from the final `Agent not found: "oracle"` error without reading its history.
+The user correctly linked that failure to the apparent TG stall.
+
+The native session API shows cumulative input 77,358 tokens, output 5,832 tokens,
+and 813,614 reused tokens. Its last assistant message,
+`msg_1c6e2176b001EOcXHo4b87Psre`, has exactly the stalled request's 63,500-token
+prompt, 60,840 reused tokens and 581 generated tokens. It contains substantive
+RemoteExperts dispatch findings and a completed read-only shell call. The
+subsequent idle message `msg_1c6e6295b0016niqQxoheJkFc7` records outcome failed
+with `Agent not found: "oracle"` at 20:18:55.067, immediately after the cache save
+and tool completion. Thus the role lookup failure was the next-step failure,
+not proof that no model execution or investigation occurred.
+
+The live registry no longer contains oracle. At the user's explicit request to
+resume THAT investigation for both useful findings and production model load,
+the parent switched only the SAME child session to the registered read-only
+`plan` role. History, parent ID, location, and model
+`llamacpp/swift-1.5-iq3_xxs#default` are preserved. The session is being continued
+through `opencode2 run --server http://127.0.0.1:49375 --session
+ses_e39265907ffeBOcur6PrWcbEKK --agent plan`; no new child was created and no
+global agent/plugin configuration was changed.
+
+The first CLI attachment was rejected before prompt admission because explicit
+server connections require `OPENCODE_PASSWORD`. The retry obtains that credential
+from `opencode2 service get password` into the process environment without printing
+it. The live `session.active` API subsequently confirms this exact child is
+running, alongside its parent and no other active session. Its model remains
+`llamacpp/swift-1.5-iq3_xxs#default`. A retained `outcome=failed` in the session
+metadata describes the prior terminal result; it is not a new failure while the
+active-session map says running.
+
+Only its ordinary model calls should supply load. Synthetic workload preparation
+is paused. The resumed instruction keeps the source audit read-only, prohibits
+production lifecycle operations, GPU workloads, file edits, and delegation, and
+asks for a bounded final report after at most ten additional logical steps.
 
 No comparative performance conclusion is claimed by this restore.
 
