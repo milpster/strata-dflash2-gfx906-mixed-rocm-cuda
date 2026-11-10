@@ -110,8 +110,30 @@ layers — its bigger blobs shift the CUDA0/CUDA1 room tradeoff.
 iq3_s-36 matches 80k PP, wins small-prompt PP, and gives back ~13-19% TG.
 Unmeasured: IQ3_S quality advantage and cross-model answer quality.
 
-State after the sweep: config back at split-34 (the re-run boot); promotion
-decision pending — if iq3_s-36 is promoted, set layer_split 36 and restart.
+## Split-38 probe (does higher help iq3_s further?)
+
+| | split-36 | split-38 |
+| --- | ---: | ---: |
+| resident pairs | 7811 | 7676 |
+| PP 8k tok/s (median) | 235.3 | 239.4 |
+| PP 80k tok/s (clean legs) | 318.3 | **326.0/326.3** (+212.4 stall leg, 68 s) |
+| longtg fresh PP / wall | 352.7 / 114.9 s | **374.3 / 90.0 s** |
+| tg1024 decode | **38.1 / 38.8** | 33.8 / 34.2 |
+| longtg decode | **33.5 / 34.7** | 32.8 / 32.7 |
+
+Answer: PP keeps inching up (80k +2.4%, 8k +1.7% over 36 — gains flattening:
++9.4% at 34→36 vs +2.4% at 36→38) while TG drops ~10% at small context.
+Same PP/TG tradeoff iq3xxs showed at 36→38. Split-40 not probed: gains are
+flattening, residency keeps falling, and split-40 is exactly where the
+allocator pair-cap bug strands later-stage VRAM (fix still pending) — a
+boot there belongs after the allocator fix, if ever needed.
+
+**iq3_s ranking: 36 best balanced (PP≈38 within ~2%, TG 10-15% better than
+38); 38 only if small-context PP outranks TG.**
+
+State after this probe: iq3s serving at split-38 (this boot); promotion
+decision pending.
+
 
 
 
