@@ -398,3 +398,19 @@ slot pressure. (b) --split 40 rebalance: 4-5s. (c) peer blob prefetch overlap: 5
 (d) L6 measure-only (done). (e) peer attn kernel: dead (0.06%).
 PROMOTION CANDIDATE: (a) validates -> stack with fmt0; needs ONE window (A/B default vs knob).
 Prod flapped 12:41+13:02 (launcher auto-recovered; user informed - box domain).
+
+## 14:00 PIPE SWEEP ABORTED - lever (a) NEGATIVE as reachable via the knob (window 13:45, PIPE=1.1)
+
+A (default, L6 5ad473af8): 8k med 8.36 / 80k med 48.9; gpu0 tail_us named: 455ms/chunk @80k (hand-off D2H+waits+submit).
+B (PIPE=1, 13:38): NO-OP - semantics trap: "1" evens an existing chunk count; a 1-chunk prompt stays 1 chunk
+   (14637 tok still single chunk; 8k 8.31/80k 48.17, parity exact).
+B2 (PIPE=1.1, 13:45): CATASTROPHE - ~500-token chunks: 8k 1643tok -> 4 chunks/leg, 80k 14637 -> ~29 chunks/leg
+   (gate3 FAIL: D=384 vs B=96 @8k, D=2784 vs 96 @80k). Walls: 8k 13.7s (+65%!), 80k 161.3s (3.3x!).
+   Per-chunk fixed costs (claims x chunks, expert re-staging, hand-offs) dominate. Sweep points 1.3/1.6 skipped.
+   Parity STILL exact (01db7a9d...) - correctness unaffected, perf destroyed.
+
+VERDICT on lever (a): the chunk-pipeline IDEA is not safely reachable via --prefill-pipe's ratio on this rig:
+the ratio->chunk-count mapping is opaque (1.1 -> 29 chunks, not 2) and unbounded - no safe prod value without
+code (explicit chunk count / clamp). Idea remains theoretically sound (2 chunks of ~7.3k projected 22-27s @80k)
+but needs implementation work, not a knob. Banked: L6 tail/run spans + this negative curve point.
+Prod flapping (4 exits 12:40-13:02) continues in parallel - user informed.

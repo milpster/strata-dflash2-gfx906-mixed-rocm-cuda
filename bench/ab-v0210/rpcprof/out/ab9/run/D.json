@@ -101,7 +101,7 @@
   "/home/srcds/rocm-gfx906-xnack/lib",
   "/opt/rocm-6.1.0/lib"
  ],
- "log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/logs/ab9-20261110-122047-D-engine.log",
+ "log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/logs/ab9-20261110-134534-D-engine.log",
  "model_name": "swift-1.5-iq3_xxs-f16kv",
  "port": 8009,
  "reasoning_budget_tokens": 55000,
