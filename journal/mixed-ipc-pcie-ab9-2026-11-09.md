@@ -474,3 +474,12 @@ PROMOTED 15:2x: prod-config layer_split 32->44 (pure config; v0215 binaries unch
 Rollback: layer_split back to "32" (backup: bench/ab-v0210/rpcprof/prod-config.split32-bak.json).
 Anatomy @44: primary VIIs 44 layers, peer 3080 4 layers (~4.8s of 37.5s @80k) + helper.
 Next: peer prefetch lane against the new anatomy (user item 2).
+
+## 2026-11-10 evening — STRATA_CACHE_SPILL: built, parity-exact, DEAD on this topology; harness ghost-cache lesson
+
+- Lever: fill the idle stage card (CUDA1 @split-44: ~2.8 GiB) with the pairs no cache holds, in-process RemoteExperts tier (helper-ipc-diet 21a5d8396, gate STRATA_CACHE_SPILL default-off). Root cause it targeted: split-44 shrank the VII expert cache 5045->3695 experts (per-stage cache rule, generate.cpp:9028/9061-9115 - a stage's cache fills only from its own layers' pairs), decode hit 92-94%->82-86%, long-ctx TG -10%.
+- Window #1 (18:38): parity sha EXACT (01db7a9d) but walls garbage - the window engine shares prod's conversation-cache dir and restored the user's parked 185,927-token session mid-window (66 s prefill) + re-parked 190,832 tokens (83 s), all inside measured legs.
+- Window #2 (19:11, ghost-free via arm-d args conversation-cache-dir -> scratch): 8k 7.26 vs 6.31 (+15%), 80k clean repeats 45.4-45.5 vs 37.5 (+21%), TG 27-30 t/s vs 51-73 (-50%). Parity exact. Verdict: DEAD - the engine's own line names it: "cross-GPU tap collection serial on CUDA1"; the VIIs sit at x4/x1 so the tier serves slower than the 3080 helper (x8, IPC-diet path) it displaced. Using the idle VRAM costs more than it saves. Gate stays off; commit stays as documentation.
+- Harness fixes banked: arm-d.json conversation-cache-dir -> out/ab9-conv-scratch (edit+revert, backup arm-d.json.convdir-bak); stale socket cleanup before windows; restore-poller "FAILED" is a false negative when a subsequent window's stop-prod supersedes the boot (health can be ok while loaded:true not yet).
+- Protocol lesson (the promotion post-mortem): every TG gate was ctx-2048 - blind to working-set-dependent cache regressions. Standing bar from now on: a long-ctx TG leg (~20k ctx, several hundred tokens, hit-rate line captured) in every adoption window.
+- Open decision table: 32 (TG good, memory full, PP baseline) vs 44 (live; PP -22/23%, cache 3695, TG -10%+) vs 40 (measuring now: cache size + TG unknown). Split-32 re-bench queued right after 40 per user.
