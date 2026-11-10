@@ -131,8 +131,16 @@ boot there belongs after the allocator fix, if ever needed.
 **iq3_s ranking: 36 best balanced (PP≈38 within ~2%, TG 10-15% better than
 38); 38 only if small-context PP outranks TG.**
 
-State after this probe: iq3s serving at split-38 (this boot); promotion
-decision pending.
+## Promotion (operator decision, 2026-11-10 late)
+
+- **iq3_s promoted as the serving model, split 36** (helper reserve 256 /
+  fill-mib 7200 as measured). Promotion boot verified: 7811 resident, layers
+  0-35/36-47, helper 3705 slots.
+- **swift15 (iq3xxs) config updated to its fastest measured split: 38**
+  (240.7/347.3 tok/s lane), with the exact helper settings that lane used:
+  launcher fill-mib back to 6796, engine helper-reserve override removed
+  (512 default via hello). Not booted; ready for the next swift15 use.
+
 
 
 
