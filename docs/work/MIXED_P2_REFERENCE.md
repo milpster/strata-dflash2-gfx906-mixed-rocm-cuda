@@ -577,3 +577,34 @@ The same window exposed a reporting defect that is fixed here: the claim line's
 `prompt_last_image_bytes()` — the bytes the frame built — and the line appends
 `img_fmt=0|1|2`, so the wire arithmetic is right for the q8_1 and Q8_K images
 too. Measure-only: two members stored per frame build.
+
+## What the router span actually is (`STRATA_ENGINE_SPANS`, sub-spans, 2026-11-10)
+
+The window put `router_us` at 64.6% of the layer cycle (med 52.6 ms / 256 claimed
+layers). It is not the router's math: the span runs from the `kPfRouter` mark to
+the helper block's entry, and its last act is the layer's one big GPU barrier
+(`cudaStreamSynchronize(m.cs)`, the code's #579: "a stall here is the GPU (this
+layer's attention and router, or the previous layer's work), not the host").
+
+The span line therefore appends five sub-spans that sum to `router_us`:
+`gate_us` (the gate GEMM + route kernel enqueues), `ids_us` (the shared-expert
+enqueues when inline + the routed ids' D2H), `barrier_us` (the `#579` sync — the
+GPU queue drain), `group_us` (post-barrier CPU grouping, CPU-share probes, the
+deferred shared enqueue), `sel_us` (the claim plan build).
+
+Traffic/flops at gfx906 (fp16/bf16 MFMA peak 6.46 TFLOP/s, HBM2 ~1 TB/s): the
+gate GEMM is 23.6 MFLOP/token → 386 GFLOP at T=16384 (63–70 ms, compute-bound);
+the logits (T×4600×4 B) cost ≤3 passes = 0.9 ms at 16384. Measured router
+medians 19/44/320 ms at T=512/8192/16384: at 8192 the span is the gate's own
+drain; at 16384 the ~250 ms excess is the previous layer's queued MoE-expert
+GEMMs (131k pairs × ~11.8 MFLOP = 1.55 TFLOP) draining at the barrier; at 512
+the 19 ms is the fixed floor (the 4600-expert scans, launches, `pt.fold`). Per
+chunk, not per prompt: the 80k legs show 32 layers × 320 ms = 10.2 s per
+16384-token chunk (70–74% of `layer_us`).
+
+Consequence for the levers: fusing gate+softmax+top-k is worth ≤0.9 ms/layer
+(≤0.2%) and fp16 logits can flip top-k ties — declined on the parity rule. The
+lever is the shipped M6 PIPE lane (`STRATA_PREFILL_HELPER_PIPE=1`): `wait_us` =
+9.1% of the layer cycle (med 116 ms of the 457 ms cycle at 16384) is the engine
+blocked reading the reply, and the PIPE lane moves send→gather onto the worker so
+the walk never blocks. Harness env, no code change.

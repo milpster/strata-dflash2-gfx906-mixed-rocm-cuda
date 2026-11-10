@@ -3228,10 +3228,23 @@ struct PfTimer {
 //            fallback's re-quantize and pool jobs land here too); in PIPE mode the worker already
 //            staged it, so this is the event chain
 //   helper - send complete -> block staged: the round trip as the layer sees it
+// The router span is a GPU drain point, not the router's math: it ends at the helper block's
+// entry and contains the layer's one big barrier.  So it gets its own sub-spans, in source order,
+// summing to router_us:
+//   gate    - the gate GEMM and the route kernel's ENQUEUES (the gate reads the bf16 hidden image
+//             and writes T x n_expert fp32 logits, the kernel softmaxes and takes the top-k)
+//   ids     - the enqueues between route and the routed-ids download: the shared expert when it
+//             runs inline (not deferred), and the ids' own D2H
+//   barrier - the compute-stream sync at :5012 (#579): this layer's attention, gate and shared
+//             work plus the previous layer's queued tails drain HERE, on the host's clock
+//   group   - after the barrier: the CPU grouping of T x k pairs, the CPU-share probes and the
+//             shared expert's enqueue when it is deferred
+//   sel     - the claim plan: the per-expert token lists, the holds/stable screen, the pair
+//             positions - everything up to the helper block's entry
 // Off: no clock is read and no line is written.  Marks a path never reaches stay where the last
 // mark was (a failed send leaves wait at zero), so the arithmetic never runs backwards.
 struct PfSpanMarks {
-    Clock::time_point l0, router, claim, sent, fin0, fin1, applied, end;
+    Clock::time_point l0, router, gate, ids, barrier, sel, claim, sent, fin0, fin1, applied, end;
     bool claimed = false;   // this layer ran the helper block: the line pairs 1:1 with its claim line
 };
 // multi-GPU: the peer's own timeline (STRATA_PREFILL_TIMING): marks on the peer stream, folded with the primary's
@@ -4169,7 +4182,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
             // sibling line of the claim line at the layer's end.  Off = no clock read, no line.
             static const bool es_on = std::getenv("STRATA_ENGINE_SPANS") != nullptr;
             PfSpanMarks es;
-            if (es_on) { es.l0 = Clock::now(); es.router = es.claim = es.sent = es.fin0 = es.fin1 = es.applied = es.l0; }
+            if (es_on) { es.l0 = Clock::now(); es.router = es.gate = es.ids = es.barrier = es.sel = es.claim = es.sent = es.fin0 = es.fin1 = es.applied = es.l0; }
             if (l > LB) pf_step("reading the prompt (batched, step sync): the experts and the rest of layer", l - 1);
             core::progress_at("reading the prompt (batched): layer", l, p0);   // #251: a stall names layer and chunk
             const core::LayerView v(*m.wt, l);
@@ -4715,6 +4728,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     if (es_on) es.router = Clock::now();   // L4: the attention span ends where the router begins
                     if (!bf16_proj(m.gemm, wr, m.mixed_bf, m.logits, T, v.name("ffn_gate_inp.weight"), err, 0, m.mixed_bf_lo)) return false;
                     route(m.logits, m.ids, m.w, T, m.g->n_expert, m.cs);
+                    if (es_on) es.gate = Clock::now();   // L4: gate GEMM + route kernel enqueued
                     // RESEARCH HOOK (141-research, opt-in, never on by default): STRATA_DBG_FEAT=<file> dumps, per MoE layer and chunk,
                     // the routed ids + weights (and for the layers in STRATA_DBG_FEAT_LAYERS the router-input hidden state, bf16);
                     // STRATA_DBG_ROUTE_OVERRIDE=<file> replaces the routing of the layers listed in that file with the file's ids + weights.
@@ -4957,6 +4971,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             err = "prefill: the routed ids' download failed";   // #1996
                             return false;
                         }
+                        if (es_on) es.ids = Clock::now();   // L4: shared-expert enqueues (inline) + the routed ids in hand
                         bool cpu_maybe = pool_hold.held && !stream_all && m.src != nullptr && !m.cpu_dead &&
                                          lay.native && !m.pp && !lay.fmt.empty();
                         // The share's two pinned buffers are small (~50 MB) but are had mid-request, when the host may have
@@ -5010,6 +5025,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         core::progress_at("reading the prompt (batched): waiting for the GPU (attention, router) at layer",
                                           l, p0);
                         cudaStreamSynchronize(m.cs);
+                        if (es_on) es.barrier = Clock::now();   // L4: the drain point (#579): attention, gate, shared and the previous layer's tails land here
                         core::progress_at("reading the prompt (batched): layer", l, p0);
                         if (on_routes) on_routes(l, ids_h, T * K);   // 149-prefetch: the RAM policy's prompt seed
                         if (cpu_maybe) {   // the rows buffer, once, at its largest (an expert takes at most MAXT tokens' rows)
@@ -5084,6 +5100,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         // never claim: serve_prompt refuses exactly those, and unrotated `mixed` is what the helper
                         // must see.  The claim runs BEFORE the CPU share, so the helper takes precedence over host
                         // streaming - that is the capacity point of the tier.
+                        if (es_on) es.sel = Clock::now();   // L4: the claim plan build starts (grouping and the deferred shared are behind it)
                         on_helper.clear();
                         rows_helper = 0;
                         hp_plan.clear();
@@ -6745,10 +6762,14 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                   apply_us = seg(es.fin1, es.applied);
                 std::fprintf(stderr, "rpcprofile: span layer=%lld pipe=%d layer_us=%lld attn_us=%lld "
                                      "router_us=%lld claim_us=%lld expert_us=%lld wait_us=%lld apply_us=%lld "
-                                     "helper_us=%lld rest_us=%lld\n",
+                                     "helper_us=%lld rest_us=%lld gate_us=%lld ids_us=%lld barrier_us=%lld "
+                                     "group_us=%lld sel_us=%lld\n",
                              (long long) l, hp_pipe ? 1 : 0, layer_us, attn_us, router_us, claim_us,
                              expert_us, wait_us, apply_us, seg(es.sent, es.applied),
-                             layer_us - attn_us - router_us - claim_us - expert_us - wait_us - apply_us);
+                             layer_us - attn_us - router_us - claim_us - expert_us - wait_us - apply_us,
+                             // the router span's own decomposition: these five sum to router_us
+                             seg(es.router, es.gate), seg(es.gate, es.ids), seg(es.ids, es.barrier),
+                             seg(es.barrier, es.sel), seg(es.sel, es.claim));
             }
         }
         if (!ple_land()) return false;   // a stage that ends before layer 1: the rows land anyway, the next gather starts

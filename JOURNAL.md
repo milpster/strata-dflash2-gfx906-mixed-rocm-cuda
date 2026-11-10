@@ -1590,3 +1590,67 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
   `prompt_chan()`-based, 0/-1 with no channel).  Failed log
   `build-mixed-gpu/engine-spans-build.log`; the green run is the rerun on the
   amended commit.
+
+## 2026-11-10 — The router span is a GPU drain point, not the router's math
+
+The window (ab9-20261110-015332-D) put `router_us` at 64.6% of the layer cycle
+(med 52.6 ms over 256 claimed MoE layers).  The span is `prefill.cpp:4715 ->
+:5289`; what lives inside it, in source order:
+
+- `:4716` the gate GEMM enqueue (`bf16_proj`: bf16 hidden image x
+  `ffn_gate_inp` 4600x2560 -> fp32 logits, T rows); `:4717` the `route` kernel
+  enqueue (softmax/sigmoid + top-k on the GPU, writes ids/weights);
+- `:4721-4775` the DBG block - a full stream sync + D2H, only under
+  STRATA_DBG_FEAT / STRATA_DBG_ROUTE_OVERRIDE (off in these windows);
+- `:4779-4792` the shared expert's enqueues (gate/up + swiglu + down + the bf16
+  scalar gate) when not deferred; deferred at `:5071`;
+- `:4948-4959` the host grouping's start: the routed ids' D2H (mapped `copy_i32`
+  / `up_ring.d2h_sync`);
+- `:4979-5010` the CPU-share probe bookkeeping (pinned buffers grow once,
+  `:4993` - no per-layer alloc);
+- `:5012` `cudaStreamSynchronize(m.cs)` - the code's own #579 says it: "a stall
+  here is the GPU (this layer's attention and router, or the previous layer's
+  work), not the host";
+- `:5013-5079` post-barrier: the routes callback, the rows buffer, the deferred
+  shared enqueue, the T x k counting loop; `pt.fold()` at `:5033`
+  (cudaEventElapsedTime over ~25 marks, ~100 us);
+- `:5088-5288` the claim plan: per-expert token lists over T x k, the
+  holds/stable screen over 4600 experts, `hp_pos`, the `off[]` build, the
+  CPU-share selection (`nth_element`/`sort`), the peer fold.
+
+Arithmetic at the window's chunk sizes (gfx906: fp16/bf16 MFMA peak 6.46
+TFLOP/s, fp32 1.69, HBM2 ~1 TB/s; logits = T x 4600 x 4 B):
+- gate GEMM = 23.6 MFLOP/token: 12 GFLOP @512 (2 ms at peak), 193 @8192
+  (31-35 ms), 386 @16384 (63-70 ms, compute-bound at K=2560 N=4600);
+- logits traffic: 9.4/151/302 MB per pass; write + softmax/top-k re-reads
+  (<= 3 passes) = 0.03/0.45/0.9 ms - the memory floor is negligible;
+- measured router medians 19.1/44/320 ms @512/8192/16384.  So: @8192 the span is
+  the gate GEMM's own drain; @16384 the excess over ~72 ms (about 250 ms) is the
+  PREVIOUS layer's queued MoE-expert GEMMs draining through the `:5012` barrier
+  (T x k = 131k pairs x ~11.8 MFLOP = 1.55 TFLOP ~ 240 ms at peak, more with the
+  IQ3 dequant); @512 the 19 ms is the fixed floor (the 4600-expert scans, the
+  launches, the barrier latency, pt.fold).  The router's math is never the
+  pacer; the barrier is.
+- 80k legs: per CHUNK (T=16384): 32 layers x 320 ms = 10.2 s of router span per
+  chunk, and the log says exactly that (chunks sum 12.5-12.6 s, 70-74% of
+  layer_us).  The superlinear 44 -> 320 ms for a 2x chunk is the barrier
+  absorbing the previous layer's linear-in-T expert work.
+
+Phase 2 verdict: fusing gate+softmax+top-k saves <= 0.9 ms/layer (<= 0.2% of the
+cycle) - not the lever; fp16 logits halves 0.3 ms of traffic and can flip top-k
+ties - declined on the parity rule.  The lever is the M6 PIPE lane
+(STRATA_PREFILL_HELPER_PIPE=1, harness env, shipped and tested): `wait_us` = 9.1%
+of the layer cycle (6.174 s / 68 s, med 116 ms of the 457 ms cycle at 16384) is
+the engine blocked reading the reply; on the PIPE lane the worker owns send ->
+gather and the walk never blocks.
+
+Implemented (instrumentation only, same STRATA_ENGINE_SPANS gate, default OFF):
+the router span's own decomposition, five sub-spans summing to router_us,
+appended to the span line: `gate_us` (the gate GEMM + route kernel ENQUEUES),
+`ids_us` (the shared-expert enqueues when inline + the routed ids' D2H),
+`barrier_us` (the `:5012` sync - the GPU queue drain), `group_us` (post-barrier
+CPU grouping + probes + the deferred shared enqueue), `sel_us` (the claim plan
+build).  Marks at `:4718` (after `route`), `:4960` (after the ids download),
+`:5013` (after the barrier), `:5089` (plan build start).  Reader:
+`bench/ab-v0210/rpcprof/engine_breakdown.py` prints the decomposition and a
+per-chunk-group median table (the token-count scaling).
