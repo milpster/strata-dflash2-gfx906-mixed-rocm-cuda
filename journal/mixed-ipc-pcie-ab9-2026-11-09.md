@@ -378,3 +378,23 @@ LEVER CANDIDATES (ranked by measured size @80k):
 Next: fixer (has the file:line map - went silent post-commit, revived) interprets + proposes.
 NOTE: fixer session went silent 03:49 after committing instrumentation without report/build; parent built it.
 Overnight prod flapped once more (gen-2 helper exit 03:08) - box flakiness pattern, user domain.
+
+## 13:45 PEER DECODED + LEVER PROPOSAL (fixer gen-16 report, L6 commit 5ad473af8 building)
+
+CORRECTIONS to 12:35 entry:
+- ALL 48 layers are MoE. QSA/full-attn = every 4th (3,7..47): primary 24GDN+8QSA, peer 12GDN+4QSA (same 1:3).
+- "Peer" = stage on the 3080 (CUDA tree), layers 32-47 - NOT a second VII. Concurrent hand-off (worker/async),
+  but single-chunk legs (both 1643 and 14637 tok) are dependency-serial -> wall = stageA + stageB + tails.
+- Peer attn = 0.06% of its 19.3s. Its cost is barrier 96-99% = EXPERT-BLOB PCIe STAGING: 8GiB card holds
+  ~half the resident experts of the 16GiB primary -> ~2,200 x 2.4MB blobs/layer = 5.3GB/layer over PCIe,
+  60-600x over compute floor. Structural, PCIe-bound, peer 2.2x primary per layer.
+
+80k wall 48.0s = gpu0 18.2 + gpu1 21.5 (2.17 tail) + ~8.3 residual (L6 run-span names the remaining ~5s).
+8k wall 8.0s = 6.5-6.6 walks + 1.4-1.5 overhead.
+
+LEVERS (fixer-ranked): (a) chunk-pipeline the stages via EXISTING knob --prefill-pipe/pipeline_chunk
+(prefill.cpp:3509): 80k 49->22-27s projected, similar relative at 8k; ZERO CODE, parity-safe path, risk=PLE/
+slot pressure. (b) --split 40 rebalance: 4-5s. (c) peer blob prefetch overlap: 5-8s, real code, medium risk.
+(d) L6 measure-only (done). (e) peer attn kernel: dead (0.06%).
+PROMOTION CANDIDATE: (a) validates -> stack with fmt0; needs ONE window (A/B default vs knob).
+Prod flapped 12:41+13:02 (launcher auto-recovered; user informed - box domain).

@@ -43,6 +43,7 @@ META = re.compile(r"gpu=(\d+) claim=(\d+) attn=(\w+) post_us=(\d+)")
 CHUNK = re.compile(r"rpcprofile: chunk gpu=(\d+) chunk=(\d+) tokens=(\d+) intake_us=(\d+) "
                    r"walk_us=(\d+) tail_us=(\d+) chunk_us=(\d+)")
 PASS = re.compile(r"rpcprofile: pass gpu=(\d+) tokens=(\d+) layers=(\d+) chunks=(\d+) pass_us=(\d+)")
+RUN = re.compile(r"rpcprofile: run gpu=(\d+) tokens=(\d+) layers=(\d+) run_us=(\d+)")
 # the span tuple is [layer_us, attn, router, claim, expert, wait, apply, helper, rest] - the seven
 # non-overlapping segments plus the helper overlay, in the line's own order
 SPAN_TUPLE = ["layer", "attn", "router", "claim", "expert", "wait", "apply", "helper", "rest"]
@@ -67,7 +68,7 @@ def main():
                     help="leg wall in ms (repeat per leg) for the gap attribution")
     a = ap.parse_args()
 
-    claims, spans, layers, metas, chunks, passes = [], [], [], [], [], []
+    claims, spans, layers, metas, chunks, passes, runs = [], [], [], [], [], [], []
     s_ly = s_walk = s_int = s_tail = s_ck = 0   # sums the gap table needs, whatever lines exist
     for path in a.logs:
         with open(path, errors="replace") as f:
@@ -94,6 +95,10 @@ def main():
                 ps = PASS.search(line)
                 if ps:
                     passes.append([int(v) for v in ps.groups()])
+                    continue
+                rn = RUN.search(line)
+                if rn:
+                    runs.append([int(v) for v in rn.groups()])
 
     print(f"claim lines={len(claims)}  span lines={len(spans)}  chunk lines={len(chunks)}  pass lines={len(passes)}")
     if not claims and not spans and not chunks and not passes:
@@ -156,8 +161,8 @@ def main():
               f"med={st.median(layer_all)/1e3:.1f}ms")
 
     if chunks:
-        print("--- chunk walls (intake = embeddings/PLE/stream plan; walk = the layer loop; "
-              "tail = issuer join/PLE land/hand-off) ---")
+        print("--- chunk walls (intake = embeddings/PLE/stream plan; walk = the layer loop; tail = the "
+              "issuer join/PLE land + the hand-off's rows D2H and the next stage's submit) ---")
         for c in chunks:
             gpu, k, tok, i, w, t, wall = c
             print(f"gpu{gpu} chunk{k} tokens={tok:6d}: chunk_us={wall/1e6:6.3f}s "
@@ -177,25 +182,39 @@ def main():
         # (prefill.cpp:6899), so the OUTER pass_us covers the nested ones - the largest is the whole
         # prompt processing; summing the pass lines would count the peer's wall twice.
         s_outer = max(p[4] for p in passes)
-        by_gpu = {}
-        for c in chunks:
-            by_gpu[c[0]] = by_gpu.get(c[0], 0) + c[6]
+        # the run line (Prefill::run) is the chain's whole prompt-processing wall: both stages, the
+        # hand-off joins, the drain - the tokenization / head / sample are outside it
+        s_chain = max(r[3] for r in runs) if runs else s_outer
+        # a stage's chunk lines, keyed by (gpu, chunk number): a pass line names its last chunk
+        ck_by = {(c[0], c[1]): c[6] for c in chunks}
         for p in passes:
-            own = by_gpu.get(p[0], 0)
+            # the two stages run CONCURRENTLY (the next stage's run_impl goes to the hand-off worker
+            # thread, prefill.cpp:6896-6907); per chunk the successor depends on the producer's rows,
+            # so a single-chunk leg is serial: its wall = stage0 + stage1
+            own = ck_by.get((p[0], p[3]), 0)
             print(f"pass gpu{p[0]}: tokens={p[1]:6d} layers={p[2]:3d} chunks={p[3]} "
-                  f"pass_us={p[4]/1e6:6.3f}s own_chunks={own/1e6:6.3f}s setup/nested={(p[4]-own)/1e6:6.3f}s"
-                  f"{'  (outer: nests the next stages)' if p[4] == s_outer else ''}")
+                  f"pass_us={p[4]/1e6:6.3f}s its_last_chunk={own/1e6:6.3f}s "
+                  f"run_setup={ (p[4]-own)/1e6:6.3f}s")
         if a.wall:
             wall = sum(a.wall) * 1e3
             print(f"--- gap attribution vs the leg walls ({wall/1e6:.2f}s total) ---")
             for name, us in (("claimed+unclaimed layer_us", s_ly), ("chunk walk", s_walk),
                              ("chunk intake", s_int), ("chunk tail", s_tail),
                              ("chunk_us (all chunks, both stages)", s_ck),
-                             ("pass_us (outer run, nests the stages)", s_outer)):
+                             ("pass_us (outer stage's run_impl)", s_outer),
+                             ("run_us (chain wall: Prefill::run)", s_chain)):
                 print(f"{name:34s}: {us/1e6:6.3f}s = {100*us/wall:5.1f}% of wall")
-            un = wall - s_outer
-            print(f"{'unattributed (wall - outer pass)':34s}: {un/1e6:6.3f}s = {100*un/wall:5.1f}% of wall "
-                  f"(the serve/sample/head residue: chunk walls start at pf_w0, pass starts at run_impl)")
+            un = wall - s_chain
+            print(f"{'outside the run (tokenize/head/serve)':34s}: {un/1e6:6.3f}s = {100*un/wall:5.1f}% of wall")
+
+    if runs:
+        for r in runs:
+            print(f"run gpu{r[0]}: tokens={r[1]:6d} layers={r[2]:3d} run_us={r[3]/1e6:6.3f}s")
+        if a.wall and not passes:
+            wall = sum(a.wall) * 1e3
+            s = max(r[3] for r in runs)
+            print(f"run_us (chain wall) = {s/1e6:.3f}s = {100*s/wall:.1f}% of wall; "
+                  f"outside the run (tokenize/head/serve) = {(wall-s)/1e6:.3f}s")
 
     if not spans and not chunks:
         print("(no span/chunk lines: rerun the window with STRATA_ENGINE_SPANS=1)")
