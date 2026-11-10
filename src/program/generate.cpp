@@ -5056,7 +5056,10 @@ int main(int argc, char** argv) {
     // and a new context then fails with cudaErrorMemoryAllocation (CUDA2: "cudaSetDevice(2) failed: out of memory").
     const char* early_env = std::getenv("STRATA_EARLY_REMOTE_CONTEXTS");
     const bool early_remote = early_env && early_env[0] == '1';
-    for (int r = 0; r < 3; ++r) if (o.expert_cache_remote[(size_t) r] > 0 && (r == 0 || early_remote)) {
+    // The spill tier (r == 0 with spill_tier) sits on the LAST stage's device, whose context that
+    // stage creates anyway; a second early context on it would only spend the driver's budget.
+    for (int r = 0; r < 3; ++r) if (o.expert_cache_remote[(size_t) r] > 0 && (r == 0 || early_remote) &&
+                                    !(r == 0 && spill_tier)) {
         // Keep CUDA1's proven startup order: initialise its context before
         // allocating GPU0 weights or mapping the large host expert arena.
         double free_gib = 0;
@@ -5921,7 +5924,7 @@ int main(int argc, char** argv) {
         std::vector<std::pair<int32_t, int32_t>> prof;
         int64_t pslots = 0;
         std::string perr;
-        const bool remote = o.expert_cache_remote[0] > 0 || o.expert_cache_remote[1] > 0 || o.expert_cache_remote[2] > 0;
+        const bool remote = (o.expert_cache_remote[0] > 0 && !spill_tier) || o.expert_cache_remote[1] > 0 || o.expert_cache_remote[2] > 0;
         if (remote || o.expert_profile.empty() ||
             !strata::core::read_expert_profile(o.expert_profile, g.n_layers, g.n_expert, prof, pslots, perr)) {
             std::fprintf(stderr, "strata generate: --split-skip-if-fits: %s; the split stays\n",
@@ -5951,6 +5954,14 @@ int main(int argc, char** argv) {
                 split_devs.clear();
                 split_at.clear();
                 o.layer_split.clear();
+                // The spill tier is placed with the split; a skipped split leaves no later stage, so
+                // retract it - one GPU holds everything, there is nothing to spill onto.
+                if (spill_tier) {
+                    o.expert_cache_remote[0] = 0;
+                    o.expert_cache_remote_auto[0] = false;
+                    spill_tier = false;
+                    std::fprintf(stderr, "strata generate: STRATA_CACHE_SPILL: the spill tier is retracted, the skipped split leaves no later stage\n");
+                }
             } else {
                 std::fprintf(stderr, "strata generate: --split-skip-if-fits: CUDA0 (%s) would hold only %.2f of the "
                                      "profile's %.2f GiB (%.2f GiB free, %.2f GiB for the session, drafter and "
@@ -9361,6 +9372,13 @@ int main(int argc, char** argv) {
             by_device[0] = std::move(ranked);
         }
         std::vector<uint8_t> claimed((size_t) g.n_layers * (size_t) g.n_expert, 0);
+        // The spill tier sits on the last stage's card, so its guard respects that stage's reserve
+        // policy (--vram-reserve-later-mib, falling back to --vram-reserve-mib, plus the window
+        // margin, the same rule the stage's own room computation uses at ~5354); named tiers keep
+        // the 512 MiB floor.
+        const int64_t spill_guard_b = strata::core::cache_spill::guard_bytes(
+            (o.vram_reserve_later_mib >= 0 ? o.vram_reserve_later_mib : o.vram_reserve_mib) +
+            strata::program::stage_reserve::kWindowMib);
         for (auto& st : stages)   // a layer split: what a stage's cache holds is no helper's
             for (const auto& pr : st->profile)
                 if (st->cache.slot_of(pr.first, pr.second) >= 0)
@@ -9369,7 +9387,8 @@ int main(int argc, char** argv) {
             if (remote_opt) remote_opt->attach(remote_experts[(size_t) r]);
             if (!remote_experts[(size_t) r].open(remote_dev[r], o.expert_cache_remote[(size_t) r],
                      g.n_layers, g.n_expert, by_device[(size_t) r], xcache, *srcp, claimed, err,
-                     o.expert_cache_remote_auto[(size_t) r])) {
+                     o.expert_cache_remote_auto[(size_t) r],
+                     (r == 0 && spill_tier) ? spill_guard_b : strata::core::cache_spill::kTierGuardB)) {
                 std::fprintf(stderr, "strata generate: %s\n", err.c_str());
                 return 1;
             }

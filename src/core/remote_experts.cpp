@@ -208,7 +208,8 @@ void RemoteExperts::close() {
 bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
                          const std::vector<std::pair<int32_t, int32_t>>& ranked,
                          const ExpertCache& primary, ExpertSource& source,
-                         std::vector<uint8_t>& claimed, std::string& err, bool auto_size) {
+                         std::vector<uint8_t>& claimed, std::string& err, bool auto_size,
+                         int64_t guard_b) {
     close();
     int count = 0;
     if (!check(cudaGetDeviceCount(&count), "cudaGetDeviceCount", err, device)) return false;
@@ -234,7 +235,7 @@ bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
         const size_t index = (size_t) pair.first * (size_t) experts + (size_t) pair.second;
         if (primary.slot_of(pair.first, pair.second) < 0 && !claimed[index] && !picked[index]) {
             const uint64_t bytes = lay.native ? (lay.blob_bytes(pair.first) + 255) / 256 * 256 : lay.max_blob;
-            if (auto_size && needed + bytes + (512ull << 20) > free_bytes) break;
+            if (auto_size && needed + bytes + (uint64_t) guard_b > free_bytes) break;
             selected.push_back(pair);
             needed += bytes;
             picked[index] = 1;
@@ -242,7 +243,7 @@ bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
         }
     }
     if (selected.empty()) {
-        err = "CUDA" + std::to_string(device) + (auto_size ? " experts: no unclaimed expert fits with 512 MiB free"
+        err = "CUDA" + std::to_string(device) + (auto_size ? " experts: no unclaimed expert fits with " + std::to_string(guard_b >> 20) + " MiB free"
                                                           : " experts: no unclaimed experts remain");
         close(); return false;
     }
@@ -252,8 +253,10 @@ bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
         for (const auto& pair : selected) sizes.push_back((int64_t) lay.blob_bytes(pair.first));
     }
     // Leave room for the CUDA context, staging and later driver allocations, especially under WDDM.
-    if (needed + (512ull << 20) > free_bytes) {
-        err = "CUDA" + std::to_string(device) + " experts: slots leave less than 512 MiB free; reduce --expert-cache-device" + std::to_string(device);
+    // `guard_b` is the single-source rule from include/strata/core/cache_spill.hpp (512 MiB floor;
+    // the STRATA_CACHE_SPILL tier raises it to the later stage's --vram-reserve-later-mib policy).
+    if (needed + (uint64_t) guard_b > free_bytes) {
+        err = "CUDA" + std::to_string(device) + " experts: slots leave less than " + std::to_string(guard_b >> 20) + " MiB free; reduce --expert-cache-device" + std::to_string(device);
         close(); return false;
     }
     const bool cache_ok = lay.native ? cache_.open_sized(sizes, layers, experts, err)

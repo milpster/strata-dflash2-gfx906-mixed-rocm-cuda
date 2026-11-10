@@ -2,6 +2,7 @@
 
 #include "strata/core/expert_cache.hpp"
 #include "strata/core/expert_source.hpp"
+#include "strata/core/cache_spill.hpp"   // kTierGuardB: the single-source tier guard default
 #include "strata/core/expert_helper_socket.hpp"   // M2: ExpertHelperPromptPlan + the prompt-tier statuses (CPU-only header)
 
 #include <cuda_runtime.h>
@@ -43,7 +44,8 @@ public:
     bool open(int device, int slots, int64_t layers, int64_t experts,
               const std::vector<std::pair<int32_t, int32_t>>& ranked,
               const ExpertCache& primary, ExpertSource& source,
-              std::vector<uint8_t>& claimed, std::string& err, bool auto_size = false);
+              std::vector<uint8_t>& claimed, std::string& err, bool auto_size = false,
+              int64_t guard_b = strata::core::cache_spill::kTierGuardB);
 
     /// R2 (opt-in, the CUDA-only `strata-expert-helper`): the PROXY opener.  NO device call of any
     /// kind happens in this object - the helper owns all NVIDIA memory out of process, and a HIP

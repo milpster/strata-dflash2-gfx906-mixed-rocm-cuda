@@ -36,13 +36,21 @@ inline bool enabled(const char* env) { return env != nullptr && env[0] != '0'; }
 inline int pick_device(const std::vector<int>& stage_devs) { return stage_devs.empty() ? -1 : stage_devs.back(); }
 
 /// The tier's own guard, stated here so the number the engine promises and the number `RemoteExperts::open`
-/// spends are the same rule: a tier fills ranked pairs while `needed + bytes + kTierGuardB <= free`
-/// (src/core/remote_experts.cpp:235, the 512 MiB that covers the context, the staging and the driver's
+/// spends are the same rule: a tier fills ranked pairs while `needed + bytes + guard <= free`
+/// (src/core/remote_experts.cpp, the 512 MiB that covers the context, the staging and the driver's
 /// later allocations on that card).  `slots` counts the pairs of `ranked` that fit at `blob` each.
-inline int64_t slots_within(int64_t free_b, int64_t blob, int64_t ranked_pairs) {
-    constexpr int64_t kTierGuardB = 512ll << 20;
-    if (blob <= 0 || free_b <= kTierGuardB || ranked_pairs <= 0) return 0;
-    const int64_t room = (free_b - kTierGuardB) / blob;
+inline constexpr int64_t kTierGuardB = 512ll << 20;
+
+/// A tier's guard when the card it spills onto is governed by a reserve policy (`--vram-reserve-mib`,
+/// `--vram-reserve-later-mib`): never below the 512 MiB floor, and never into the margin the policy
+/// keeps free for the card's own stage (the windows, the graphs, the driver's later allocations).
+inline int64_t guard_bytes(int64_t policy_mib) {
+    return policy_mib > (kTierGuardB >> 20) ? policy_mib << 20 : kTierGuardB;
+}
+
+inline int64_t slots_within(int64_t free_b, int64_t blob, int64_t ranked_pairs, int64_t guard_b = kTierGuardB) {
+    if (blob <= 0 || free_b <= guard_b || ranked_pairs <= 0) return 0;
+    const int64_t room = (free_b - guard_b) / blob;
     return room < ranked_pairs ? room : ranked_pairs;
 }
 
