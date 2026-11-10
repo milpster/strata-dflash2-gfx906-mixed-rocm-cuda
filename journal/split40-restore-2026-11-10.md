@@ -36,6 +36,22 @@ actual physical GPU mapping from source. A read-only specialist may run only
 after production serves successfully. GPU builds/tests are parent-owned and
 start only after that specialist has reached a verified terminal state.
 
-Startup validation is pending: confirm the supervisor, engine/helper executable
-identities and hashes, effective split, disk-tier configuration, and a completed
-bounded chat request. No comparative performance conclusion is claimed here.
+## Startup verified at 20:03–20:04 +01:00
+
+- Supervisor PID 1374568 is attached to engine PID 1375327 and helper PID 1374628.
+- `/proc/1375327/exe` and `/proc/1374628/exe` resolve to the v0216 release copies; both live-file SHA-256 hashes match the recorded build hashes above.
+- The engine command line contains `--layer-split 40`, `--kv fp16`, and the original production disk-cache directory/budget/idle-save flags.
+- `/health` reports `status: ok` and `loaded: true`.
+- A bounded temperature-zero request completed at 20:03:33; response saved in `run/split40-latest-smoke.json`. It generated four reasoning tokens and hit its output limit, establishing serving readiness, not answer quality or comparative speed.
+- Serving wrapper and pair supervision remain alive. The production launcher is detached from the transient tool shell.
+- Runtime launch log: `logs/prod-split40-latest-20261110-launch.log`; current wrapper/helper logs are recorded in the supervisor JSON.
+
+## Independent read-only audit dispatched
+
+Oracle session `ses_e39265907ffeBOcur6PrWcbEKK` owns the static allocator/reserve/dispatch review.
+It may read source and logs only: no file edits, compilation, test requests,
+benchmarks, or production lifecycle operations. The parent owns verifying its
+cited artifacts and any subsequent GPU experiment. No benchmark runs concurrently
+with this audit, and production must remain up for its model calls.
+
+No comparative performance conclusion is claimed by this restore.
