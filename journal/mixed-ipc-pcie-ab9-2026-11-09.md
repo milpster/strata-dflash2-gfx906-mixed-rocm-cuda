@@ -448,3 +448,11 @@ D + spans, split 40 (primary VIIs 40 layers, peer 3080 8 layers):
 PROMOTION CANDIDATE NOW: v0215 binaries + layer_split "40" (pure config; no binary change) [+ optional fmt0].
 NEXT: split curve sweep (44, 48=peerless) + full A/B/D adoption ladder at the best point - one down-session.
 Peer prefetch lane (user item 2) still valuable post-rebalance (peer 8 layers x 1.2s = 9.6s of 41.4s wall).
+
+## 15:15 SPLIT-44 (window 15:03) - curve still descending
+
+D + spans, split 44 (primary 44 layers, peer 4): 8k med 6.260s (6.275/6.211/6.260) = -25.1% vs split32;
+80k med 37.37s = -23.5% vs split32. Parity exact. Warm 8.09 normal. gate3 D=132/264 (44x3, 44x2 chunks)
+expected artifact. TG legs 15.2/16.3 - best all day (no TG loss signal; possibly improved).
+Curve: 32 -> 8.36/48.89; 40 -> 7.08/41.42; 44 -> 6.26/37.37. D@48 (peerless) window next; then B-control
+at winner + restore-on-winner if bar clears.

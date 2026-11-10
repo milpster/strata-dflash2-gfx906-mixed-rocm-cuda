@@ -4,18 +4,18 @@
  "kind": "prefill",
  "ctx": 80000,
  "max_tokens": 8,
- "ts": 1794319178.737,
+ "ts": 1794319596.949,
  "walls": [
-  41.42
+  37.268
  ],
- "wall_s": 41.42,
+ "wall_s": 37.269,
  "content_from": "reasoning",
  "prompt_bytes": 80000,
  "sha256": "01db7a9d154bb188430b234246589661629c627462db9ec632e33137f49bb45e",
- "elog": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/logs/ab9-20261110-145641-D-engine.log",
- "elog_start": 132025,
- "elog_end": 171859,
- "hlog": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/logs/ab9-20261110-145641-D-helper.log",
- "hlog_start": 181890,
- "hlog_end": 208002
+ "elog": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/logs/ab9-20261110-150353-D-engine.log",
+ "elog_start": 136569,
+ "elog_end": 177880,
+ "hlog": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/logs/ab9-20261110-150353-D-helper.log",
+ "hlog_start": 220184,
+ "hlog_end": 248915
 }
