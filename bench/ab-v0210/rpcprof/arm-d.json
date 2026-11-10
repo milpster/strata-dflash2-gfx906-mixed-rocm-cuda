@@ -92,7 +92,7 @@
   1
  ],
  "host": "127.0.0.1",
- "layer_split": "32",
+ "layer_split": "44",
  "lib_dirs": [
   "/home/srcds/rocm-gfx906-xnack/lib",
   "/opt/rocm-6.1.0/lib"
