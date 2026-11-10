@@ -456,3 +456,21 @@ D + spans, split 44 (primary 44 layers, peer 4): 8k med 6.260s (6.275/6.211/6.26
 expected artifact. TG legs 15.2/16.3 - best all day (no TG loss signal; possibly improved).
 Curve: 32 -> 8.36/48.89; 40 -> 7.08/41.42; 44 -> 6.26/37.37. D@48 (peerless) window next; then B-control
 at winner + restore-on-winner if bar clears.
+
+## 15:25 SPLIT-46 + B@44 CONTROL + PROMOTION - layer_split 44 ADOPTED
+
+D@46 (window 15:08): 8k med 6.280 (wash vs 44) but 80k 44.14 (+18% REGRESSION): at 46 the split search
+collapsed the chunk budget -> 46x8 chunks/leg @80k (gate3 D=1104) -> per-chunk cost explosion (same failure
+family as CHUNKS=2). D@48 invalid (split must be <=47; peerless is a different config, untested).
+Curve final: 32 -> 8.36/48.89 | 40 -> 7.08/41.42 | 44 -> 6.26/37.37 | 46 -> 6.28/44.14. PEAK = 44.
+
+B@44 CONTROL (window 15:14, PROD BINARIES v0215 engine + v0214 helper-patient, prod config @44):
+8k med 6.310 (6.387/6.310/6.295) / 80k med 37.48 (37.475/37.299/37.589) == D@44 within noise.
+vs prod-today (B@32 canonical 8k 8.126 / 80k 48.82): -22.4% @8k / -23.2% @80k.
+TG: 19.99/13.94 (sum 33.9) vs B@32 canonical 19.3/20.5 (sum 39.8) -> TG IMPROVED ~15%. No loss.
+Parity exact (01db7a9d...). Adoption bars: >=5% PP (4-5x over), no TG loss (improved), parity (exact).
+
+PROMOTED 15:2x: prod-config layer_split 32->44 (pure config; v0215 binaries unchanged; fmt0 stays OFF).
+Rollback: layer_split back to "32" (backup: bench/ab-v0210/rpcprof/prod-config.split32-bak.json).
+Anatomy @44: primary VIIs 44 layers, peer 3080 4 layers (~4.8s of 37.5s @80k) + helper.
+Next: peer prefetch lane against the new anatomy (user item 2).
