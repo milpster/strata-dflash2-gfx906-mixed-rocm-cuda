@@ -69,12 +69,50 @@ misses route to the helper/CPU paths and dominate long prompts and decode.
 the gap. The shared expert-profile ranking was derived from 1.5-model traffic
 and may also mis-rank 1.0-model routing (untested hypothesis).
 
-## Verdict (promotion decision deferred to operator)
+## Split sweep for iq3_s (32 / 34 / 36), all v0216, spill OFF, helper 256/7200
 
-iq3_s fails the throughput bar on every long metric: PP 80k −29..−54%,
-PP 160k −68%, TG −20..−45%. Only ≤8k requests are at parity (per-request).
-Potential quality upside of IQ3_S over IQ3_XXS was not measured in this lane.
-Per directive the iq3_s pair remains serving until the operator decides.
+The first split-34 lane ran cold (first iq3s boot since Nov 6): warm leg 32.8 s,
+80k 70-100 s. Subsequent boots share a warm page cache, so 34 was re-run warm
+for a fair three-way. Stalls = the known erratic disk/userptr class (legs
+marked below).
+
+| | split-32 | split-34 (warm) | split-36 |
+| --- | ---: | ---: | ---: |
+| resident pairs | 7893 | 7858 | 7811 |
+| helper slots | 3721 | 3712 | 3705 |
+| PP 8k tok/s (median) | 197.3 | 215.9 | **235.3** |
+| PP 8k walls s | 7.49-7.87 | 7.01-7.21 | **6.38-6.52** |
+| PP 80k tok/s (clean legs) | 287.0/288.6 (+141.9 stall) | 295.0/297.1 (+114.0 stall) | **318.3/318.6/310.0** |
+| PP 80k walls s | 51.2-51.5 (+103 stall) | 49.8-50.0 (+128 stall) | **46.4-48.6** |
+| tg1024 decode | 33.8 / 40.9 | 39.0 / 34.1 | **38.1 / 38.8** |
+| longtg walls s (fresh/cached) | 114.0 / 52.2 | 86.4 / 54.0 | **114.9 / 13.7** |
+| longtg fresh PP tok/s | 282.2 | 391.0 | 352.7 |
+| longtg decode (fresh/cached) | 36.3 / 17.6 | 36.3 / 19.8 | **33.5 / 34.7** |
+| stall legs in lane | 2 | 2 | **0** |
+
+(34's longtg cached decode 19.8 and 32's 17.6 are stall-contaminated: the
+5-token cached prefill took 38.2 s / 32.6 s respectively, vs 213 ms on 36.)
+
+**iq3_s best split = 36**: fastest or tied on every clean metric, the only
+stall-free lane. Unlike iq3xxs (TG peak at 34), iq3_s favors more primary
+layers — its bigger blobs shift the CUDA0/CUDA1 room tradeoff.
+
+## iq3_s-36 vs iq3xxs-34 (the promotion decision, operator's call)
+
+| | iq3xxs-34 (champion) | iq3_s-36 |
+| --- | ---: | ---: |
+| PP 8k wall s | 7.54-8.22 | **6.38-6.52** |
+| PP 80k tok/s / walls | 318.7 / 46.7-47.0 s | 318.3 / 46.4-48.6 s (tie) |
+| tg1024 decode | **44.3 / 46.1** | 38.1 / 38.8 |
+| longtg decode | **41.2 / 43.2** | 33.5 / 34.7 |
+| resident pairs | 9415 | 7811 |
+
+iq3_s-36 matches 80k PP, wins small-prompt PP, and gives back ~13-19% TG.
+Unmeasured: IQ3_S quality advantage and cross-model answer quality.
+
+State after the sweep: config back at split-34 (the re-run boot); promotion
+decision pending — if iq3_s-36 is promoted, set layer_split 36 and restart.
+
 
 
 ## Comparison targets (iq3xxs split-34, spill OFF, baseline helper)
