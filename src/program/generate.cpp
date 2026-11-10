@@ -2151,6 +2151,17 @@ void stall_report(std::FILE* f, uint64_t layers_during) {
             std::this_thread::sleep_for(std::chrono::seconds(2));
             std::fprintf(f, "  2 s later:\n");
         }
+        // #5718 follow-up: the streams a host may be blocked on (the prompt path's), asked without blocking - before the
+        // release below, so "finished" here means the GPU was done and the waiting host was not woken
+        strata::core::stream_watch().report(f, [](void* s, int dev, std::string& why) {
+            const strata::core::OnDevice on(dev);
+            const cudaError_t e = cudaStreamQuery((cudaStream_t) s);
+            if (e == cudaSuccess) return strata::core::StreamState::finished;
+            if (e == cudaErrorNotReady) return strata::core::StreamState::working;
+            why = cudaGetErrorString(e);
+            (void) cudaGetLastError();
+            return strata::core::StreamState::failed;
+        });
         if (auto fn = strata::core::diag_pool_fn().load()) fn(f);
         if (auto fn = strata::core::diag_verify_fn().load()) fn(f);
         if (auto fn = strata::core::diag_pipeline_fn().load()) fn(f);
@@ -22642,7 +22653,6 @@ int main(int argc, char** argv) {
                     std::printf("ERR %s\n", err.c_str());
                     return 1;
                 }
-=======
                 if (from_sfx) { ++sfx_windows; sfx_drafts += T - 1; sfx_ok += a; }
                 if (chain_n > 0) { ++chain_windows; chain_drafts += chain_n; chain_ok += std::max(0, a - (T_mtp - 1)); }
                 if (!from_sfx && !first_window)
@@ -23534,6 +23544,7 @@ int main(int argc, char** argv) {
                                  (long long) read_n, read_rate,
                                  pressure_context(pc, sizeof pc, (uint64_t) arena_src.unfilled_pairs()));
                 }
+            }
             {   // AMD on Linux: the time the driver kept the GPU paused inside this request, when it is worth a line
                 const std::string pause_line = strata::core::gpu_pause_request_line(g_req_gpu_pause_ms.load(), gpu_pause_now());
                 if (!pause_line.empty()) std::fprintf(stderr, "%s\n", pause_line.c_str());

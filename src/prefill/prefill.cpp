@@ -28,6 +28,7 @@
 #include "strata/core/pinned_ring.hpp"
 #include "strata/core/progress.hpp"
 #include "strata/core/on_device.hpp"
+#include "strata/core/stream_watch.hpp"
 #include "strata/platform/aux_cpus.hpp"
 
 #include "strata/core/layout.hpp"
@@ -3501,6 +3502,8 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
     const bool forced_single = force_single_, forced_planned = force_planned_;
     Impl& m = *impl_;
     const core::OnDevice on_device(m.device);
+    // the stall report asks this stream (the one the waits below block on) whether its work is done (#5718 follow-up)
+    const core::WatchedStream watched("the prompt path's compute stream", (void*) m.cs, m.device);
     // L5 (STRATA_ENGINE_SPANS=1): the engine-side spans' gate, read once per run.  Off: no clock is
     // read and no line is written.  It covers EVERY walked layer - the claim=0 lines name the layers
     // that never claim (the peer-served half of a layer split), each tagged with its attention class
