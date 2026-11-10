@@ -341,3 +341,21 @@ VERDICT: engine paces via the ROUTER (~2/3 of layer time). Levers ranked by ceil
 2. engine expert work 18.2% - kernel efficiency
 3. helper wait 9.1% - bounded, mostly hidden already
 Next: router lane (read code, explain 52.6ms, propose+implement env-gated fix; parity-gated).
+
+## 03:10 SUBSPAN VERDICT (window 02:57, commit 9cebffd80) - router span = barrier drain; the REAL gap is outside the layers
+
+Prediction CONFIRMED: barrier 99.1% of router span (gate 0.1%, ids 0.1%, group 0.1%, sel 0.5%).
+Router span is a GPU-queue drain (prev-layer expert GEMMs + gate GEMM + shared + attn all materialize there).
+Router's own math: nil. Lever formally shifts OFF the router.
+
+Per-chunk medians (layer cycle):
+- 8k legs (1648 tok): layer 115ms = barrier 47-50 + wait 36-38 + claim 15 + expert 6-8 + attn 0.2
+- 80k legs (14642 tok): layer 457ms = barrier 324-327 + expert 114 + attn 5 + wait 8 + claim 3.5
+- warm 512: layer 46ms (49.5 tok/s cold caches)
+
+THE NEW DOMINANT MYSTERY: leg summaries prove 100% of wall is prompt processing (8k: 1648 tok in 8.05s
++ 6 gen in 0.13s; 80k: 14642 tok in 48.0s + 6 gen in 0.15s). Claimed-layer spans cover only 47% (8k) /
+30% (80k). 4.3s @8k and 33.4s @80k of prompt processing are OUTSIDE the claimed-MoE-layer spans.
+Candidates: hybrid arch's non-claimed layer passes (GDN/full-attn structure), peer-served layers,
+KV/eval pipeline work. Next lane: instrument/explain the gap (file:line); it is now the biggest lever
+candidate in the stack (2x bigger than everything measured inside layers combined @80k).
