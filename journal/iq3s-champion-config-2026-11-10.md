@@ -41,11 +41,41 @@ Boot ~13 min (larger pack fill). Layer split 0-33 / 34-47 confirmed.
 iq3_s's larger blobs buy precision but cost ~17% resident pairs and ~16%
 helper slots at identical byte budgets.
 
-## Lane + longtg
+## Lane + longtg results (out/ab9-iq3s-split34-20261110)
 
-Running into `bench/ab-v0210/rpcprof/out/ab9-iq3s-split34-20261110/`
-(warm / 8000×3 / 80000×3 / tg1024 / longtg 160k×384). Judge lines and verdict
-appended below when complete.
+Tokenizer caveat: swift-iq3_s tokenizes the same prompt bytes to ~9% fewer
+tokens (8000 B -> 1497 tok vs 1648; 160000 B -> 28912 vs 29063; warm 512 B ->
+142 vs 293), so per-token tok/s under-reports iq3_s; per-request walls compare
+identical bytes.
+
+| leg (same bytes) | iq3xxs s34 wall | iq3_s s34 wall | delta |
+| --- | ---: | ---: | ---: |
+| 8000 ×3 | 7.54/7.54/8.22 s | 7.32/7.20/7.03 s | ~5% faster |
+| 80000 ×3 | 47.02/46.87/46.71 s | 70.21/99.82/66.11 s | +42..113% slower |
+| tg1024 | 13.83/10.41 s | 64.64/18.61 s | prefill blowup |
+| longtg fresh | 77.04 s | 219.35 s | +184% slower |
+| longtg cached rerun | 10.95 s | 23.20 s | +112% slower |
+
+Tok/s: PP 8k 208.8/212.8/216.7; PP 80k 209.3/146.9/222.4 (erratic);
+longtg fresh PP 139.2 vs 436.2; cached-run prefill 5 tok in 4566 ms (1.1
+tok/s) vs 204 ms on iq3xxs — misses dominate even the 5-token continuation.
+Decode: tg1024 23.6/35.9 (vs 44.3/46.1); longtg 37.0/36.8 (vs 41.2/43.2);
+warm first request 22.7 tok/s (cold page cache, 32.8 s wall).
+
+Attribution: iq3_s blobs ~1.86 MiB/slot (vs ~1.55) → resident pairs 9415 →
+7858 and helper slots 4426 → 3712 at the same byte budgets; elevated expert
+misses route to the helper/CPU paths and dominate long prompts and decode.
+80k repeats stayed slow (98.8 s worst), so a warmed page cache does not close
+the gap. The shared expert-profile ranking was derived from 1.5-model traffic
+and may also mis-rank 1.0-model routing (untested hypothesis).
+
+## Verdict (promotion decision deferred to operator)
+
+iq3_s fails the throughput bar on every long metric: PP 80k −29..−54%,
+PP 160k −68%, TG −20..−45%. Only ≤8k requests are at parity (per-request).
+Potential quality upside of IQ3_S over IQ3_XXS was not measured in this lane.
+Per directive the iq3_s pair remains serving until the operator decides.
+
 
 ## Comparison targets (iq3xxs split-34, spill OFF, baseline helper)
 
