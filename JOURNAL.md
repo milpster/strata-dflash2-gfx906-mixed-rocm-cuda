@@ -1665,11 +1665,16 @@ of 8.05 s) and 30% of the 80k wall (14.6 s of 48.0 s).  The gap's shape:
   (GDN) (`core::is_qsa_layer`, `geometry.hpp:75`; `session.hpp:7` counts 12 QSA
   states and 36 GDN states).
 - The window runs a layer split - the engine says so at startup: "layer split:
-  CUDA1 holds its weights, session [32, 48) and the head".  The primary's walk
-  covers `LB..LE` = `stage_lb_..stage_le_` (`prefill.cpp:3420`) = layers 0..31;
-  the peer pass runs layers 32..47 + the head on CUDA1 in its OWN `run_impl`
-  (its summary line is the existing "strata prefill timing (peer GPU, ms)",
-  `:6990`, under STRATA_PREFILL_TIMING).
+  CUDA1 holds its weights, session [32, 48) and the head" (`generate.cpp:7079`).
+  The stages are separate `Prefill` instances, each with its own window
+  (`set_stage`, `generate.cpp:11785`; the next stage is also this stage's
+  stream-only peer, `set_stage_helper`, `prefill.cpp:2503`).  The primary's walk
+  covers `LB..LE` = `stage_lb_..stage_le_` (`prefill.cpp:3439`) = layers 0..31;
+  the peer's `run_impl` (layers 32..47 + the head, on CUDA1) is invoked NESTED per
+  chunk from the primary's chunk loop, after the hand-off (`next_->run_impl`,
+  `prefill.cpp:6899`) - so the primary's chunk wall excludes the peer's run and
+  its pass wall includes it.  Its summary is the existing "strata prefill timing
+  (peer GPU, ms)" line, under STRATA_PREFILL_TIMING.
 - The span lines were emitted only for CLAIMING layers, so the 16 peer layers -
   which never claim, their experts live on the peer - printed nothing.  The gap is
   them: 4.3 s / 16 = 269 ms per layer at 1648 tokens, 33.4 s / 16 = 2088 ms per

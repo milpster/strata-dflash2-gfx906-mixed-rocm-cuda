@@ -619,10 +619,14 @@ is not loose time: it is a layer class that never claims.
 - Model: 48 layers, **all MoE** — 12 full-attention (QSA) + 36 linear-attention
   (GDN), `core::is_qsa_layer` (`geometry.hpp:75`).
 - The window runs a layer split: *"layer split: CUDA1 holds its weights, session
-  [32, 48) and the head"*. The primary's walk covers `stage_lb_..stage_le_` =
-  layers 0..31; **layers 32..47 and the head run in the peer pass — its own
-  `run_impl` on CUDA1** (its summary is the existing "strata prefill timing (peer
-  GPU, ms)" line, under `STRATA_PREFILL_TIMING`). Those 16 layers' experts live on
+  [32, 48) and the head"*. The stages are separate `Prefill` instances with their
+  own windows (`set_stage`); the primary walks `stage_lb_..stage_le_` = layers
+  0..31, and **layers 32..47 and the head run in the peer stage's own `run_impl`
+  on CUDA1**, invoked nested per chunk from the primary's chunk loop after the
+  hand-off (`next_->run_impl`, `prefill.cpp:6899`; the peer stage is also the
+  primary's stream-only helper, `set_stage_helper`). The primary's chunk wall
+  therefore excludes the peer's run, its pass wall includes it — the span/chunk/
+  pass lines carry `gpu=` to keep them apart. Those 16 layers' experts live on
   the peer, so `on_helper` is empty and they emitted no span line.
 - Gap = the peer half: 4.3 s / 16 = **269 ms per layer** at 1648 tokens;
   33.4 s / 16 = **2088 ms per layer** at 14642 tokens. Against a 3080's floors
