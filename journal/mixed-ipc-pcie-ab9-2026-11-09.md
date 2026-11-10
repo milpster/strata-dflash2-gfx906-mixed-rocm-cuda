@@ -322,3 +322,22 @@ adoption bar unmet). Prod stays v0215 default bytes.
 NEXT: engine is the pacer (~190ms of ~256ms layer cycle). ksync now 70% of a mostly-hidden lock - GEMM
 speedups may partially hide too; validate with wall A/B before investing. Real direction: engine-side profile
 (80k attention ride-along), or close the program at v0215 (+2.2%).
+
+## 02:05 ENGINE-SPAN DECOMPOSITION (window 01:53, STRATA_ENGINE_SPANS=1, commits 40bea75eb+e80f34932) - ROUTER is the lever
+
+Parity exact (prefill shas unchanged; spans zero-cost: 8k med 8.129 vs 8.126 baseline). 256 claimed MoE layers:
+| span | %layer | med/layer |
+|---|---|---|
+| router | 64.6% | 52.6ms | <- gate/top-k path on the VIIs
+| expert (engine own) | 18.2% | 9.2ms |
+| wait (true helper block) | 9.1% | 17.1ms |
+| attn | 4.0% | 277us | (chunked prefill: attention nearly free @8k)
+| claim/apply/rest | ~4% | ~0 |
+helper round-trip overlay 28% of cycle (mostly hidden behind engine expert work - M4c(b) confirmed).
+Reader: engine_breakdown.py (committed with this). img_fmt reporting fixed (fp32-size bug).
+
+VERDICT: engine paces via the ROUTER (~2/3 of layer time). Levers ranked by ceiling:
+1. router path (gate GEMM/softmax/top-k on VIIs) - med 52.6ms/layer, biggest prize
+2. engine expert work 18.2% - kernel efficiency
+3. helper wait 9.1% - bounded, mostly hidden already
+Next: router lane (read code, explain 52.6ms, propose+implement env-gated fix; parity-gated).
