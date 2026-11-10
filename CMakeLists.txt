@@ -503,6 +503,12 @@ if(STRATA_BUILD_TESTS)
   target_include_directories(pipeline_chunks_test PRIVATE include)
   add_test(NAME pipeline_chunks_test COMMAND pipeline_chunks_test)
 
+  # STRATA_CACHE_SPILL: the gate's parse, the stage card it spills onto, and the slots that card can take
+  # (header-only, no GPU)
+  add_executable(cache_spill_test tests/core/cache_spill_test.cpp)
+  target_include_directories(cache_spill_test PRIVATE include)
+  add_test(NAME cache_spill_test COMMAND cache_spill_test)
+
   # STRATA_PREFILL_ROUTED_STREAM: the prompt stream's issuer walk and route gate, on a simulated link and consumer
   # (header-only, no GPU)
   add_executable(routed_stream_test tests/prefill/routed_stream_test.cpp)

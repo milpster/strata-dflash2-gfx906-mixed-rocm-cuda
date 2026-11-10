@@ -42,6 +42,7 @@
 #include "strata/core/session_save_reclaim.hpp"
 #include "strata/core/conversation_memory.hpp"
 #include "strata/core/auto_cache.hpp"
+#include "strata/core/cache_spill.hpp"
 #include "strata/core/ple_residency.hpp"
 #include "strata/core/defaults_026.hpp"
 #include "strata/core/coupled_draft.hpp"
@@ -1337,6 +1338,10 @@ void usage() {
                  "  --expert-cache-device1 N|auto  fill CUDA1 with N experts or as many as fit\n"
                  "  --expert-cache-device2 N|auto  fill CUDA2 with more experts\n"
                  "  --expert-cache-device3 N|auto  fill CUDA3 with more experts\n"
+                 "                       STRATA_CACHE_SPILL=1 (env, opt-in) does it for a layer split with no\n"
+                 "                       flag: the pairs no cache holds fill the LAST stage's card, whose own\n"
+                 "                       cache cannot spend its whole free VRAM (docs/MIXED_GPU_HELPER.md).\n"
+                 "                       Unset: every start is byte-for-byte as before.\n"
                  "  --remote-expert-opt   enable remote-expert decode optimizations (serve mode)\n"
                  "  --expert-cache-remote-placement stripe|layer  distribute expert ranks or whole\n"
                  "                       layers across CUDA1..3 (default: stripe)\n"
@@ -4392,6 +4397,13 @@ int main(int argc, char** argv) {
         }
     }
     bool multi_gpu = !split_devs.empty() && !split_same;   // cleared by --split-skip-if-fits before any stage loads
+    // STRATA_CACHE_SPILL=1 (opt-in, unset = every start byte for byte): the split's expert cache spills onto
+    // the stage card with the headroom as an in-process remote tier (include/strata/core/cache_spill.hpp).
+    // `spill_tier` is set where the split places it, below, and is what lets the out-of-process helper accept
+    // an in-process tier beside it (the refusals at 4501 and the helper's scope keep naming every other use
+    // of --expert-cache-device1..3).
+    static const bool cache_spill = strata::core::cache_spill::enabled(std::getenv("STRATA_CACHE_SPILL"));
+    bool spill_tier = false;
     // STRATA_PRIMARY_DEVICE: a later stage's list (`--split-device` values must be > 0) still assumes the
     // primary is device 0 - refuse the combination rather than mis-place a stage.  The peer tier takes the
     // primary into account (peer_experts.cpp).
@@ -4493,7 +4505,23 @@ int main(int argc, char** argv) {
         if (cudaGetDeviceCount(&n_vis) != cudaSuccess || n_vis < 1) n_vis = 1;
         cudaGetLastError();
         int next_free = 1;
+        // STRATA_CACHE_SPILL=1 (opt-in, default unset = today's start byte for byte): the split's expert
+        // cache spills onto the stage card with the headroom, as an in-process remote tier (see
+        // include/strata/core/cache_spill.hpp for why a stage's own cache cannot use it).  The tier is
+        // tier 0 with the auto byte rule, on the LAST stage's device: the card holding fewest layers.
+        // A `--expert-cache-device1..3` the caller gave keeps its own placement and the refusal below.
+        const int spill_dev = cache_spill ? strata::core::cache_spill::pick_device(split_devs) : -1;
+        spill_tier = spill_dev >= 0 && o.expert_cache_remote[0] <= 0 && spill_dev != primary_device;
+        if (spill_tier) {
+            o.expert_cache_remote[0] = std::numeric_limits<int>::max();
+            o.expert_cache_remote_auto[0] = true;
+            remote_dev[0] = spill_dev;
+            std::fprintf(stderr, "strata generate: STRATA_CACHE_SPILL: CUDA%d runs the split's last stage (of %zu), "
+                                 "so its own cache cannot spend its whole free VRAM: the pairs no cache holds spill "
+                                 "onto it (tier 0, as many as fit)\n", spill_dev, split_devs.size() + 1);
+        }
         for (int r = 0; r < 3; ++r) {
+            if (r == 0 && spill_tier) continue;   // the spill placed its device above
             if (o.expert_cache_remote[(size_t) r] <= 0) continue;
             while (next_free < n_vis &&
                    std::find(split_devs.begin(), split_devs.end(), next_free) != split_devs.end()) ++next_free;
@@ -4926,7 +4954,13 @@ int main(int argc, char** argv) {
         else if (o.batch > 0) helper_scope_bad = "--batch is excluded (one channel, one outstanding request)";
         else if (o.pipeline_windows >= 2) helper_scope_bad = "--pipeline-windows>=2 is excluded (two decode stages, one channel)";
         else if (o.peer_device >= 1) helper_scope_bad = "--peer-device is excluded (the helper is the tier on the other card)";
-        else if (o.expert_cache_remote[0] > 0 || o.expert_cache_remote[1] > 0 || o.expert_cache_remote[2] > 0)
+        // STRATA_CACHE_SPILL's spill tier is the one in-process tier the helper accepts beside it: the two
+        // fill disjoint pair sets (the engine's `howned` bitmap below lists the spill tier's pairs, so the
+        // helper fills nothing the spill holds), and with the decode windows serial there is one begin/finish
+        // pair per layer, so neither tier's channel is ever two requests deep.  Any tier the caller named by
+        // hand stays excluded, as before.
+        else if (o.expert_cache_remote[1] > 0 || o.expert_cache_remote[2] > 0 ||
+                 (o.expert_cache_remote[0] > 0 && !spill_tier))
             helper_scope_bad = "--expert-cache-device1..3 is excluded (the in-process tiers own that device's VRAM)";
         else if (o.remote_expert_opt) helper_scope_bad = "--remote-expert-opt is excluded (it optimizes the in-process tiers)";
         else if (o.expert_helper_slots < 0 || o.expert_helper_reserve_mib < 0 || o.expert_helper_timeout_ms < 1)
@@ -9382,6 +9416,14 @@ int main(int argc, char** argv) {
             for (const auto& pr : st->profile)
                 if (st->cache.slot_of(pr.first, pr.second) >= 0)
                     howned[(size_t) pr.first * (size_t) g.n_expert + (size_t) pr.second] = 1;
+        // STRATA_CACHE_SPILL: an in-process tier opened above is a cache of the same kind, so its pairs are
+        // owned too - the helper fills nothing a tier holds, exactly as it fills nothing a stage holds.  With
+        // no in-process tier these loops touch nothing, and the candidate set is today's, byte for byte.
+        for (int r = 0; r < 3; ++r)
+            for (int64_t l = 0; l < g.n_layers; ++l)
+                for (int64_t e = 0; e < g.n_expert; ++e)
+                    if (remote_experts[(size_t) r].holds(l, (int32_t) e))
+                        howned[(size_t) (l * g.n_expert + e)] = 1;
         std::vector<uint8_t> hhad((size_t) g.n_layers, 0);
         std::vector<int64_t> hblob((size_t) g.n_layers, 0);
         for (int64_t l = 0; l < g.n_layers; ++l) {

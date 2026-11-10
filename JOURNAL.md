@@ -1750,3 +1750,47 @@ Only the first stage decides and only a split pipelines (`Prefill::plan_chunk`, 
 For the rig's legs (cap 16384): 14637 tokens / 2 -> 7424 + 7213; 1643 / 2 -> 1024 + 619; 14637 / 4 ->
 3840+3840+3840+3117; 14637 / 8 is refused (2048 leaves 301).  Parity is untouched (the chunked path is
 byte-exact at every chunk count, the 13:45 window's gate3).  Test: `tests/prefill/pipeline_chunks_test.cpp`.
+
+## 2026-11-10 (evening) — STRATA_CACHE_SPILL: the split's cache takes the idle VII's headroom
+
+**Why (measured today, split-44 promoted):** the VII-side expert cache fell from 5045 experts / 7.56 GiB
+(split-32 boots) to 3695 experts / 5.94 GiB (split-44 boots); decode cache hit 92-94% → 82-86%, ~26% of
+routed experts pay a PCIe hop per token, TG ~10% down at long context.  The boot lines say the shape
+exactly: CUDA0 fills to "404 MiB of VRAM free with the model loaded" while CUDA1 sits at 13.2/16.0 GiB
+with ~2.8 GiB that nothing claims.
+
+**The allocator's rule, read out (why card1 idles):** a layer split gives every stage its own cache on
+its own GPU, sized from `stage_room(st.dev)` — that card's free VRAM after its own fixed costs
+(`generate.cpp:9028`), and filled only from **that stage's own layers'** profile pairs
+(`generate.cpp:9061-9069` sizing, `:9102-9115` fill).  Nothing ever looks at the sum of the cards'
+headroom.  At split 44 stage0 owns 44 layers (its cache is bound by CUDA0's room: 3695 slots) and
+stage1 owns 4 layers (2048 pairs, filled long before CUDA1 runs out).  So CUDA1's cache is capped by
+its layer count, not its VRAM, and the leftover ~2.8 GiB is unreachable by design.  The single-GPU auto
+cache is the same one-card rule (`device_free_bytes()` at `:8359`, `core::auto_cache_slots` at `:8439`).
+
+**The lever (implemented, gate `STRATA_CACHE_SPILL=1`, default unset = byte-identical):** fill the
+idle card with the pairs **no cache holds** as an in-process remote tier — the machinery the engine
+already ships (`RemoteExperts::open`, `src/core/remote_experts.cpp:208`: a cache on that device, rows
+computed there with the same kernels the primary's hit path uses, returned through the pinned host
+rows; measured on AMD in docs/SECOND_GPU.md, RX 6800 + RX 6600).  Tiers are disjoint by construction
+(`open()` skips pairs a stage claimed; the helper's `howned` bitmap now lists the tier's pairs too,
+so the 3080 helper fills nothing the spill holds), so which card serves a routed expert is decided by
+where its blob lives — the claim order per layer is untouched, a blob is the same bytes wherever it
+lies, and only the latency differs.  That is the whole parity argument: device-local hit vs peer-card
+row is a timing difference, never a numeric one.
+
+Placements, all gate-ON-only: `generate.cpp` — the split places tier 0 (auto byte rule, INT_MAX slots,
+`auto_size`) on the LAST stage's device, the card with the headroom, where the old rule refused a
+tier on a GPU running a stage; the helper's scope accepts the spill tier and keeps refusing every
+tier named by hand; `expert_source.cpp:5331` re-arms **every** proxy at the layer-0 seam (the old
+index-0 test was sound only while the refusals made the proxy the only registrable tier — the
+generate.cpp TRAP note at the `drive.d.remote` append said exactly this).  Costs, all measured by the
+code's own rules: `--vram-elastic`/`--kv-grow` are already off for a split; `--pipeline-windows` is
+off by default for a 2-stage split anyway (needs 3 stages); the INFO monitor's `expert_slots` now
+counts the tier (disjoint, so it adds).
+
+Numbers to expect (the rig's own boot figures, in `tests/core/cache_spill_test.cpp`): CUDA1's idle
+2.8 GiB minus the tier's 512 MiB guard at the rig's 1 724 416 B slot = **1432 slots**, so
+3695 + 1432 = **5127 slots ≈ 8.2 GiB** — at or above split-32's 5045.  Validation window should show
+`CUDA1: ~1400 additional experts, ~2.3 GiB` at boot, `expert_slots` ~5100, decode hit back toward
+92%, TG recovery at long context, PP unchanged.

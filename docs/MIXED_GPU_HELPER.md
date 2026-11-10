@@ -325,6 +325,37 @@ Swift 1.5 IQ3_XXS native expert pack. Parent records:
 | scope refused | `strata generate: --expert-helper-socket: <the rule it broke>` (the engine refuses the OPTION combination at start, before any model load) |
 | per-call counters | the DONE line ends ` helper=reqs=N rows=N bytes=N timeouts=N fallbacks=N` — the numbers are that engine call's deltas, not lifetime totals |
 
+## The split's cache spill (`STRATA_CACHE_SPILL=1`, opt-in)
+
+A layer split gives every stage its own cache on its own GPU, sized from that card's free VRAM and
+filled only from **that stage's own layers'** pairs (`src/program/generate.cpp:9061-9069` sizing,
+`:9102-9115` fill).  Nothing looks at the sum of the cards' headroom, so the card holding the fewest
+layers leaves its VRAM unclaimed: at `--layer-split 44` on two Radeon VIIs the first stage fills CUDA0
+to 404 MiB free (3695 slots, 5.94 GiB) while CUDA1, owning 4 layers, sits with ~2.8 GiB nothing uses.
+
+With the gate on, the engine registers **tier 0 as an in-process remote tier on the last stage's
+device** (`cache_spill.hpp`, and the split's device assignment in generate.cpp) filled, with the card's
+own auto byte rule (free VRAM less the tier's 512 MiB), from the pairs no cache holds.  The rows of
+those pairs are then computed on that card by the same kernels the primary's hit path uses and return
+through the pinned host rows - the shipped in-process tier's contract, measured on AMD in
+SECOND_GPU.md.  Tiers are disjoint by construction: `RemoteExperts::open` skips pairs a stage claimed,
+and the helper's `howned` bitmap lists the spill tier's pairs too, so the out-of-process helper fills
+nothing the spill holds.  A pair lives in exactly one place, so a layer's claim order is unchanged;
+what differs is where the bytes are and how the row comes back (device-local hit vs a row over PCIe),
+which is a latency difference, not a numeric one.
+
+Expected on this rig: ~1432 slots on CUDA1 (2.8 GiB minus 512 MiB at the rig's 1 724 416 B slot), so
+3695 + ~1432 = ~5127 slots ≈ 8.2 GiB - at or above what split-32 had.  The gate also accepts the
+helper beside an in-process tier (the scope refusal keeps naming every tier the caller names by hand),
+and the per-request re-arm seam in `src/core/expert_source.cpp` re-arms every proxy, not only index 0.
+
+**Costs, stated plainly:** the tier's fill reads ~2.3 GiB of blobs into CUDA1 at startup (a few
+seconds of boot); `--vram-elastic` and `--kv-grow` are off with tiers (they are off for a split
+anyway); `--pipeline-windows` is excluded with tiers (it is off by default for a 2-stage split);
+concurrency stays what it is today - the helper's scope excludes `--batch` and pipeline windows, so
+one window is in flight and the tier's per-window state needs no lock.  Unset, every start is
+byte-for-byte as before: the gate is read at one place, and nothing else runs.
+
 ## Limits and known gaps
 
 ### Optional whole-pair recovery (local Linux launchers)

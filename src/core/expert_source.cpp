@@ -5328,7 +5328,13 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
             // because no path makes the tier healthy again mid-request (healthy_ = true exists at open_socket
             // alone, every failure closes the channel); add a reconnect and a mid-request call would become
             // a mid-request re-arm.  No behavior change with the gate.
-            if (d.remote[r]->is_proxy() && r == 0 && d.layers == 0) d.remote[r]->note_request_start();
+            //
+            // STRATA_CACHE_SPILL: the re-arm reads EVERY proxy, not only index 0.  The index test was sound
+            // while the scope refusals made the proxy the only tier that can register (generate.cpp's
+            // --expert-helper-socket scope); the spill registers an in-process tier at index 0 and the proxy
+            // lands at index 1, where a tier that never re-arms stays disabled for the whole run after one
+            // mid-request failure.  With one tier the two tests are the same test.
+            if (d.remote[r]->is_proxy() && d.layers == 0) d.remote[r]->note_request_start();
             if (!d.remote[r]->finish(out, remote_error)) {
                 // R2 (opt-in CUDA helper): a proxy finish that FAILED left the rows it claimed
                 // unwritten.  Recompute EXACTLY those (token,expert) rows on the CPU through the
