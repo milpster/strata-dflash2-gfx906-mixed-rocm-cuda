@@ -3651,6 +3651,21 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         // L5 (STRATA_ENGINE_SPANS=1): this chunk's wall, split at the boundaries the chunk loop has.
         PfChunkSpans ck;
         if (es_on) ck.w0 = pf_w0;
+        const auto ckseg = [](Clock::time_point a, Clock::time_point b) {
+            return (long long) std::chrono::duration_cast<std::chrono::microseconds>(b - a).count();
+        };
+        // L5: emit this chunk's wall.  A stage WITH a successor calls it at the `continue` below, so its
+        // tail_us covers the hand-off (the rows' D2H and the event waits) and the submit of the next
+        // stage's run; the LAST stage calls it at the end of the chunk body (its tail is its own tail).
+        const auto emit_chunk = [&] {
+            if (!es_on) return;
+            ck.end = Clock::now();
+            std::fprintf(stderr, "rpcprofile: chunk gpu=%d chunk=%lld tokens=%lld intake_us=%lld "
+                                 "walk_us=%lld tail_us=%lld chunk_us=%lld\n",
+                         es_gpu, (long long) stats_.chunks, (long long) T,
+                         ckseg(ck.w0, ck.first), ckseg(ck.first, ck.walk_end),
+                         ckseg(ck.walk_end, ck.end), ckseg(ck.w0, ck.end));
+        };
         // ---- embeddings, broadcast to the four streams - or, in a later stage of a layer split, the rows the
         // previous stage handed on
         if (hand_in_ != nullptr && hand_ev_ != nullptr) {
@@ -6832,19 +6847,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                          (long long) stats_.chunks, (long long) T, ms_since(pf_w0),
                          stats_.ms_experts_host - pf_eh0, stats_.ms_ple - pf_ple0,
                          host_setup_ms - pf_su0, host_sync_ms - pf_sy0, host_chunk_ms - pf_ck0);
-        if (es_on) {   // L5: this chunk's wall split at the boundaries the chunk loop has: intake
-                       // (embeddings, the PLE rows, the stream plan), the layer walk, the tail (the
-                       // issuer join, the PLE land, the hand-off).  chunk_us = ms_since(pf_w0).
-            ck.end = Clock::now();
-            const auto ckseg = [](Clock::time_point a, Clock::time_point b) {
-                return (long long) std::chrono::duration_cast<std::chrono::microseconds>(b - a).count();
-            };
-            std::fprintf(stderr, "rpcprofile: chunk gpu=%d chunk=%lld tokens=%lld intake_us=%lld "
-                                 "walk_us=%lld tail_us=%lld chunk_us=%lld\n",
-                         es_gpu, (long long) stats_.chunks, (long long) T,
-                         ckseg(ck.w0, ck.first), ckseg(ck.first, ck.walk_end),
-                         ckseg(ck.walk_end, ck.end), ckseg(ck.w0, ck.end));
-        }
+        if (next_ == nullptr) emit_chunk();   // L5: the last stage's chunk ends here (its own tail)
         if (next_ != nullptr) {
             // The current hand-off slot was used two chunks ago.
             float* h = m.hand[hand_buf_];
@@ -6906,6 +6909,9 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 return next_->run_impl(tokens + c0, T, p0, next_err_);
             });
             hand_buf_ ^= 1;
+            emit_chunk();   // L5: the tail_us here covers the hand-off (the rows' D2H, the event waits)
+                            // and the submit of the next stage's run; the next stage's own run is NOT
+                            // in this wall (it runs on the hand-off worker thread)
             continue;   // the last stage reports the chunk (on_chunk)
         }
         if (const char* dump = std::getenv("STRATA_PREFILL_DUMP_R")) {   // debug: the final residuals, every 64th
@@ -8533,6 +8539,19 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
 #else
     constexpr bool lm_hip = false;
 #endif
+    // L5 (STRATA_ENGINE_SPANS=1): the WHOLE prompt-processing wall of this chain, from entry to the
+    // drained last stage - what the chunk and pass lines do not cover (the joins, the drain, the
+    // layer-major path) is wall - run_us, measured.  Off: no clock read, no line.
+    static const bool es_on = std::getenv("STRATA_ENGINE_SPANS") != nullptr;
+    const auto es_w0 = es_on ? Clock::now() : Clock::time_point{};
+    const auto es_run_line = [&] {
+        if (!es_on) return;
+        int gpu = -1;
+        cudaGetDevice(&gpu);
+        std::fprintf(stderr, "rpcprofile: run gpu=%d tokens=%lld layers=%lld run_us=%lld\n",
+                     gpu, (long long) n, (long long) (stage_le_ - stage_lb_),
+                     (long long) std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - es_w0).count());
+    };
     // layer-major prefill: STRATA_PREFILL_LAYER_MAJOR=1 / 0 win; unset, it is off everywhere (sm120_series.hpp prefill_layer_major_default: a layer split
     // reads 32K prompts 37-55% sooner chunk-major, owner's yes 2026-11-02; the single-card small-cache rule sets the variable itself)
     if (hand_in_ == nullptr && impl_ &&
@@ -8558,6 +8577,7 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
             }
             for (Prefill* p = this; p != nullptr; p = p->next_) p->lm_mid_ = false;
             lm_release_chain();
+            es_run_line();
             return ok;
         }
         static std::string said;   // once per reason (a short prompt is the common one; not worth a line when nobody asked for the walk)
@@ -8570,6 +8590,7 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
 
     std::string drain_err;
     const bool drain_ok = drain_pipeline(drain_err);
+    es_run_line();   // L5: the chain's whole prompt-processing wall (both stages, the joins)
 
     if (!body_ok) return false;
     if (!drain_ok) {

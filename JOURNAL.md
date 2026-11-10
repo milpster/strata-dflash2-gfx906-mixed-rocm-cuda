@@ -1703,3 +1703,26 @@ L5 instrumentation (same STRATA_ENGINE_SPANS gate, default OFF, measure-only):
 Reader: `engine_breakdown.py` prints per-class tables (claiming / NON-claiming with
 `post_us`, split by `attn=qsa|gdn` and `gpu`), the chunk-wall table, and a
 gap-attribution table when `--wall MS` is given per leg.
+
+
+## 2026-11-10 — L6: the chunk tail at the hand-off, and the chain's run wall (`STRATA_ENGINE_SPANS`)
+
+The 12:20 window (ab9-20261110-122047) closed the gap: 48 span lines/chunk, gpu0 32 claiming layers,
+gpu1 16 non-claiming (layers 32..47 = 12 GDN + 4 QSA - `is_qsa_layer` is `layer % 4 == 3`, so the peer
+half is NOT the full-attention half; the QSA/GDN ratio is 1:3 on both halves).  The peer's per-layer
+layer_us at 14,637 tokens = 1.00-1.66 s of which **barrier_us = 96-99%** (the router drain,
+`prefill.cpp:5027`); its `attn_us` is 0.15-4.3 ms (0.06% of the peer's 19.3 s).  So the peer's cost is
+the GPU queue drain (expert GEMM + the blob stream enqueued on `m.cs`), not attention; on the 3080
+(~40 TFLOP/s fp16 tensor) the 7,321 pairs/layer are ~2 ms of GEMM - the drain is PCIe-staging-bound.
+The two stages run CONCURRENTLY (the successor's `run_impl` goes to the hand-off worker thread,
+`:6896-6907`), so gpu1's pass_us (21.5 s) exceeding gpu0's (17.5 s) is pipeline, not nesting.
+
+L6 makes the rest measurable, same gate, measure-only:
+- the chunk line moves to the chunk's real end: a stage WITH a successor emits it just before the
+  `continue` (`:6911`), so `tail_us` now covers the hand-off (the rows' D2H, the event waits) and the
+  submit of the next stage's run; the last stage emits at the chunk body's end (`:6846`).
+- `rpcprofile: run gpu tokens layers run_us` in `Prefill::run` (`:8527`, emitted after the drain at
+  both the chunk-major and layer-major exits): the CHAIN's whole prompt-processing wall - both stages,
+  the joins, the drain.  wall - run_us = the tokenization, the head, the serve/sample.
+Reader: `engine_breakdown.py` prints per-(gpu,chunk) walls, per-stage `run_setup = pass_us - its last
+chunk`, and the gap table rows for `pass_us` and `run_us` with `outside the run` as the residue.
