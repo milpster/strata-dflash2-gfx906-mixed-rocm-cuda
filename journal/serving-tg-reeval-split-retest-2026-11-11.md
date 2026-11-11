@@ -136,6 +136,48 @@ are comparable; yesterday's split-34 longtg advantage does not reproduce today.
   bound/asynchronize checkpoint park buffers; don't block the read path on park;
   cap or evict accumulated conversation state under RAM pressure.
 
+## Killer144k completions (first-leg-fresh protocol)
+
+Pattern found: big fresh reads complete when they are the FIRST request on a fresh
+boot (empty conversation RAM tier: R1/R2 killer250k this morning) and stall/abort at
+32,768-token checkpoints when run after other legs have filled the RAM tier
+(S34/S38 attempts). Re-run with the fix:
+
+| Arm | Config | Read | Decode @144k | #2065 |
+| --- | --- | ---: | ---: | ---: |
+| prod38 (live prod, :8009) | v0219, split-38, 256/256, 7400/5000/300 | 142,281 @ 619.8 tok/s | **34.6 tok/s** (523 gen) | **0** |
+
+Zero #2065 at this margin (404 MiB) vs the morning M3a config's warnings at every
+request start. Decode curve now flat ~33–35 tok/s from 29k through 250k residency.
+S34 (split-34) killer144k under the same protocol: see the final matrix below.
+
+## Final 144k matrix (ctx 786801 guaranteed-fresh variant, twin samples via kind tg)
+
+| 144k killer leg | fresh read | fresh decode | restore decode |
+| --- | ---: | ---: | ---: |
+| split-38 (live prod) | 619.8 tok/s | 34.6 (523 gen) | — |
+| split-36 (S36) | 633.9 tok/s | 33.3 (283 gen) | 36.4 (508 gen) |
+| split-34 (S34) | cache-rescued* | — | **39.4 (512 gen)**, 39.9 (162) |
+
+*S36 and S34 legs share the 142,276-token filler prefix (only the arm tag differs),
+so S34 restored instead of reading fresh — an accidental but clean restore-path
+comparison, and restore is what continuation-heavy serving actually exercises.
+
+- Fresh-path TG: no split separation (33.3–34.6).
+- Restore-path TG: split-34 39.4 vs split-36 36.4 on matched samples (~512 gen each);
+  yesterday's 41.2/43.2 was also restore-path — 39.4 is the closest same-day
+  reproduction, so the "split-34 longtg advantage" was real but path-specific.
+- PP cost of 34: ~10% slower reads (312 vs 347 at 80k) ≈ once-per-conversation;
+  TG applies to every generated token.
+
+## Champion (operator decision 13:10): split-34 for prod
+
+Rationale: serving is continuation-heavy (restore-path dominant); 34's ~3 tok/s
+restore edge compounds over every message vs a one-time read penalty. Config:
+v0219, layer_split 34, 256/256 reserves, helper 7400/5000/300 (unchanged).
+Expected boot accounting: CUDA0 layers 0-33 (4971 cache slots), CUDA1 34-47
+(4444), 404 MiB free, helper ~4484 slots.
+
 ## Prod outcome (12:20)
 
 - Booted: v0219, split-38, **256/256 reserves**, helper fill 7400 / slots 5000 /
