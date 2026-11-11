@@ -10,7 +10,7 @@ set -euo pipefail
 ROOT=${STRATA_PROD_TREE:-/mnt/srcds/Strata}
 WORK="$ROOT/v0215"
 # Keep the serving wrapper stable; pin the latest built engine/helper separately.
-BIN="$ROOT/v0216/build-mixed-gpu"
+BIN="$ROOT/v0220/build-mixed-gpu"
 PY="$ROOT/.venv/bin/python"
 CONFIG="$ROOT/prod-config-swift-iq3s-f16kv-dflash-w4-q4_0-mixed.json"
 SOCKET="$ROOT/run/prod-swift-iq3s-f16kv-mixed.sock"
@@ -82,7 +82,7 @@ done
 env -i "${helper_env[@]}" "$HELPER" \
   --pack ${STRATA_AI_DIR:-/mnt/srcds/ai}/iq3s \
   --experts ../Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S.gguf \
-  --device 0 --slots 5000 --reserve-mib 0 --timeout 63115200000 \
+  --device 0 --slots 5000 --reserve-mib 300 --timeout 63115200000 \
   --begin-timeout 63115200000 --socket "$SOCKET" --fill-mib 7400 --socket2 "$SOCKET2" \
   >>"$HLOG" 2>&1 < /dev/null &
 helper_pid=$!

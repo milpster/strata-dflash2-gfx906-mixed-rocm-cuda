@@ -408,3 +408,21 @@ is confirmed for the TG priority on v0220.
 Recommendation: s36 for the serving tuple (operator's TG priority), with the
 read-abort defect filed for the fixer; s38 the fallback if big-context
 robustness outranks TG. Decision + promotion pending operator.
+
+## iq3_s split decision + tuple finalized (21:0x, operator: "34 it is")
+
+Operator picked **split 34** — optimizing big-context fresh reads (best 80k
+160.8 tps, best killer read 609.3 tps, best killer decode 33.6/34.3) over the
+longtg fresh wall (its 190.5 s reflects its ~160 tps fresh-read rate at 29k;
+decode itself 35.3/32.9 was mid-panel). Files updated, promotion-ready
+(NOT booted — serving switch is a separate call):
+
+- `prod-config-swift-iq3s-…json`: layer_split 36 → **34**, exe v0219 → **v0220**
+- `launch-prod-swift-iq3s-…sh`: BIN v0219 → **v0220**, helper reserve-mib 0 →
+  **300** (the launcher still carried the cliff setting; 7400/5000/300 is the
+  validated class)
+
+iq3_s tuple: **split-34, v0220, helper 7400/5000/300, engine 256/256**.
+Carry-forward risk: s34 showed the read-abort defect (0-gen after full read,
+re-read recovers) once in the panel — fixer follow-up queued; also 80k-class
+early-boot read slowness on v0220/iq3_s (56–161 tps vs 287–326 on v0216).
