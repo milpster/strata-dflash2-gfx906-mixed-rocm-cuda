@@ -268,6 +268,14 @@ public:
     /// blob of (layers[i], experts[i]).  A source that reads a drive may merge neighbouring blobs into one request.
     /// Default: copy_blob one by one.
     virtual bool copy_blobs(const int32_t* layers, const int32_t* experts, uint8_t* const* dst, size_t n);
+    /// W1 lever (--expert-helper-ram-relief-packs): the prefill's batched swap-in counters - pairs
+    /// read, batches issued, bytes, and file-read ms, cumulative over the process.  Nonzero only on
+    /// a source that reads the pack files unbuffered (the arena's relief drops); 0 elsewhere.  The
+    /// prompt path prints them as its "adapt swap-in" line at the request's end.
+    virtual int64_t swap_in_pairs() const { return 0; }
+    virtual int64_t swap_in_batches() const { return 0; }
+    virtual int64_t swap_in_bytes() const { return 0; }
+    virtual int64_t swap_in_ms() const { return 0; }
     /// The `n` experts of `layer` the CPU is about to ask `blob` for, all at once: a source that reads a file may
     /// fetch them in parallel.  The bytes `blob` then returns are the same.  Default: nothing.
     virtual void prefetch(int64_t layer, const int64_t* experts, int64_t n) { (void) layer; (void) experts; (void) n; }
@@ -1007,7 +1015,12 @@ public:
     bool transient(int64_t layer, int64_t expert) const override;
     double cached_share(int64_t samples) const override;
     bool copy_blob(int64_t layer, int64_t expert, uint8_t* dst) override;
-    /// pp-opt, unbuffered: the file-tier blobs of the run in one read_direct batch (neighbours merged into one request)
+    /// W1 lever: the prefill's batched swap-in counters (see ExpertSource).  Metered in copy_blobs
+    /// when the swap-in meter is armed (arm_swap_reads); read by the prompt path's request-end line.
+    int64_t swap_in_pairs() const override { return swap_pairs_.load(std::memory_order_relaxed); }
+    int64_t swap_in_batches() const override { return swap_batches_.load(std::memory_order_relaxed); }
+    int64_t swap_in_bytes() const override { return swap_bytes_.load(std::memory_order_relaxed); }
+    int64_t swap_in_ms() const override { return swap_ms_.load(std::memory_order_relaxed); }
     bool copy_blobs(const int32_t* layers, const int32_t* experts, uint8_t* const* dst, size_t n) override;
     /// CS-T: advances the assembled blobs' age (see staged_blob).
     void begin_layer(int64_t layer, const int32_t* ids, int64_t k) override;
@@ -1160,6 +1173,10 @@ private:
     std::vector<std::string> paths_;          ///< the mapped files, as maps_
     std::vector<void*> pdirect_;              ///< open_prompt_direct: O_DIRECT fds for copy_blobs only
     std::vector<void*> direct_;               ///< #286: per file, an unbuffered handle (Windows) or O_DIRECT fd (Linux)
+    /// W1 lever: the prefill's batched swap-in meter.  armed by arm_swap_reads (the relief's packs
+    /// lever); copy_blobs' unbuffered read_direct window counts a batch into these when armed.
+    std::atomic<int64_t> swap_pairs_{0}, swap_batches_{0}, swap_bytes_{0}, swap_ms_{0};
+    bool swap_meter_ = false;
     std::vector<int> role_file_;              ///< 3 x n_layers: index into maps_ / direct_
     /// blobs assembled in the stage buffers (`blob` hands those out): the GGUF in place, or any unbuffered source
     bool staged() const { return !role_ptr_.empty() || !direct_.empty() || io_pf_; }
@@ -1372,6 +1389,15 @@ public:
     const uint8_t* blob_stable(int64_t layer, int64_t expert) override;
     bool transient(int64_t layer, int64_t expert) const override;
     bool copy_blob(int64_t layer, int64_t expert, uint8_t* dst) override;
+    /// W1 lever: the prompt stager's batched copy.  A dropped pair has no arena bytes (its copy was
+    /// given back), so a batch of dropped pairs is read from the pack files in ONE unbuffered window
+    /// (FileExpertSource::copy_blobs -> read_direct) - the prefill's batched swap-in - while resident
+    /// pairs copy from the arena as usual.  Without a relief drop this is the base per-pair copy.
+    bool copy_blobs(const int32_t* layers, const int32_t* experts, uint8_t* const* dst, size_t n) override;
+    int64_t swap_in_pairs() const override { return file_ ? file_->swap_in_pairs() : 0; }
+    int64_t swap_in_batches() const override { return file_ ? file_->swap_in_batches() : 0; }
+    int64_t swap_in_bytes() const override { return file_ ? file_->swap_in_bytes() : 0; }
+    int64_t swap_in_ms() const override { return file_ ? file_->swap_in_ms() : 0; }
     void note_async_read(const uint8_t* blob, void* stream) override;
     void begin_layer(int64_t layer, const int32_t* ids, int64_t k) override;
     void prefetch(int64_t layer, const int64_t* experts, int64_t n) override;

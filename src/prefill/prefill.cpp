@@ -683,9 +683,12 @@ struct PromptStageMemo {
                                        return v != nullptr && std::atoi(v) != 0; }();
     std::unordered_map<int64_t, std::unique_ptr<Slot>> slots;   // key = layer * n_expert + expert
     size_t used = 0;
+    /// W1 lever: the relief forces the memo ON (the dropped pairs must be read once, not every chunk).
+    /// run_impl sets it from the prefill's relief flag; the env STRATA_PROMPT_STAGE_MEMO stays the opt-in.
+    bool force = false;
     /// The pair's staged bytes (nullptr: no hit - off, unseen, or its copy has not run)
     const uint8_t* find(int64_t l, int64_t e, int64_t n_expert) const {
-        if (!on) return nullptr;
+        if (!(on || force)) return nullptr;
         const auto it = slots.find(l * n_expert + e);
         if (it == slots.end()) return nullptr;
         const Slot* s = it->second.get();
@@ -694,7 +697,7 @@ struct PromptStageMemo {
     }
     /// The slot to stage a pair into (nullptr: the cap is reached, the pair keeps today's per-chunk read)
     Slot* reserve(int64_t l, int64_t e, int64_t n_expert, size_t bytes) {
-        if (!on) return nullptr;
+        if (!(on || force)) return nullptr;
         const int64_t key = l * n_expert + e;
         const auto it = slots.find(key);
         if (it != slots.end()) return it->second.get();   // its job was skipped by the routing: fill it again
@@ -3634,7 +3637,16 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
 #endif
     // STRATA_PROMPT_STAGE_MEMO=1 (opt-in): this request's memo for the experts the chunk loop re-reads from the
     // pack files (see PromptStageMemo). Off by default: the loops below build every job exactly as before.
+    // W1 lever: the relief forces it ON - a dropped pair read every chunk (~52 ms each, hundreds of
+    // chunks) is read once into the memo; the chunks after it copy from the staged bytes.
     PromptStageMemo stage_memo;
+    stage_memo.force = m.hp_ram_relief;
+    // W1 lever: snapshot the source's cumulative swap-in counters so the request-end line reports only
+    // THIS request's prefill swap-ins (the source is shared across the split's stage threads).
+    const int64_t si_n0 = m.src ? m.src->swap_in_pairs() : 0;
+    const int64_t si_b0 = m.src ? m.src->swap_in_batches() : 0;
+    const int64_t si_y0 = m.src ? m.src->swap_in_bytes() : 0;
+    const int64_t si_t0 = m.src ? m.src->swap_in_ms() : 0;
     for (int64_t c0 = 0; c0 < n; c0 += C) {
         if (should_stop && should_stop()) { err = "cancelled"; return false; }
         // the first stage: end the run before this chunk (every chunk before it is handed on; the caller's drain
@@ -7137,6 +7149,22 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         std::fprintf(stderr, "rpcprofile: pass gpu=%d tokens=%lld layers=%lld chunks=%lld pass_us=%lld\n",
                      es_gpu, (long long) n, (long long) (LE - LB), (long long) stats_.chunks,
                      (long long) std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - es_run0).count());
+    }
+    // W1 lever: this request's prefill batched swap-ins (dropped pairs read from the pack files in
+    // unbuffered windows), the number the validation window greps.  Same format as the decode tier's
+    // line; printed only when this request's prefill issued swap-ins (relief drops that missed the
+    // VRAM tier).  The source's counters are cumulative and shared across the split's stage threads,
+    // so this reports the request's delta.
+    if (m.src) {
+        const int64_t dn = m.src->swap_in_pairs() - si_n0;
+        if (dn > 0) {
+            const int64_t db = m.src->swap_in_batches() - si_b0;
+            const int64_t dy = m.src->swap_in_bytes() - si_y0;
+            const int64_t dt = m.src->swap_in_ms() - si_t0;
+            std::fprintf(stderr, "strata serve: adapt swap-in: %lld swaps, %lld batches, %.0f MiB, %lld ms file read (%.2f ms/slot)\n",
+                         (long long) dn, (long long) db, (double) dy / 1048576.0, (long long) dt,
+                         (double) dt / (double) dn);
+        }
     }
     return true;
 }

@@ -2562,8 +2562,10 @@ bool FileExpertSource::open_prompt_direct(std::string& why) {
 // fds and this is a no-op.  open_prompt_direct names the reason when O_DIRECT cannot be opened,
 // so the caller refuses at startup rather than silently running buffered.
 bool FileExpertSource::arm_swap_reads(std::string& why) {
-    if (swap_reads_ready()) return true;
-    return open_prompt_direct(why);
+    if (swap_reads_ready()) { swap_meter_ = true; return true; }   // a full unbuffered tier: meter it too
+    if (!open_prompt_direct(why)) return false;
+    swap_meter_ = true;   // the prefill's batched swap-ins are now metered in copy_blobs
+    return true;
 }
 
 bool FileExpertSource::set_unbuffered(uint64_t ram_bytes, std::string& why) {
@@ -3483,6 +3485,16 @@ bool FileExpertSource::copy_blobs(const int32_t* layers, const int32_t* experts,
     file_us_.fetch_add((uint64_t) std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count(),
                        std::memory_order_relaxed);
     file_read_bytes_.fetch_add(bytes, std::memory_order_relaxed);
+    // W1 lever: the prefill's batched swap-in meter (armed by arm_swap_reads).  Every unbuffered
+    // read_direct window counts as one swap-in batch of its pairs; the prompt path prints these as
+    // its "adapt swap-in" line.  Off (no relief packs): swap_meter_ false, nothing is counted.
+    if (swap_meter_) {
+        const int64_t ms = (int64_t) std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        swap_pairs_.fetch_add((int64_t) fills.size(), std::memory_order_relaxed);
+        swap_batches_.fetch_add(1, std::memory_order_relaxed);
+        swap_bytes_.fetch_add((int64_t) bytes, std::memory_order_relaxed);
+        swap_ms_.fetch_add(ms, std::memory_order_relaxed);
+    }
     return true;
 }
 
@@ -6933,6 +6945,33 @@ bool ArenaExpertSource::copy_blob(int64_t layer, int64_t expert, uint8_t* dst) {
         }
     }
     return ExpertSource::copy_blob(layer, expert, dst);
+}
+
+// W1 lever: the prompt stager's batched copy of a dropped-pair batch.  The stager builds every dropped
+// pair as a `from` job (transient is true for a dropped pair), so a batch reaching here is served as
+// ONE unbuffered read_direct window through the file source (the prefill's batched swap-in) - not the
+// base per-pair copy_blob, which reads each dropped pair through the mapped view (a page fault per
+// access, page-at-a-time: the prefill collapse the packs lever was disqualified for).  Resident pairs
+// in the same batch copy from the arena as usual.  The drop set is published at boot and never
+// rewritten while serving, so unfilled_at is a stable lock-free bitmap read; only the file batch takes
+// file_mu_ (the same discipline copy_blob's dropped path uses).
+bool ArenaExpertSource::copy_blobs(const int32_t* layers, const int32_t* experts, uint8_t* const* dst, size_t n) {
+    if (n <= 0) return true;
+    if (unfilled_.load(std::memory_order_relaxed) <= 0) return ExpertSource::copy_blobs(layers, experts, dst, n);
+    std::vector<int32_t> dl, de;
+    std::vector<uint8_t*> dd;
+    for (size_t i = 0; i < n; ++i) {
+        if (unfilled_at(layers[i], experts[i])) {
+            dl.push_back(layers[i]); de.push_back(experts[i]); dd.push_back(dst[i]);
+        } else if (!ExpertSource::copy_blob(layers[i], experts[i], dst[i])) {
+            return false;   // a resident pair's copy from the arena failed
+        }
+    }
+    if (dl.empty()) return true;
+    std::lock_guard<std::mutex> lk(file_mu_);
+    FileExpertSource* f = file_source();
+    if (f == nullptr) return false;
+    return f->copy_blobs(dl.data(), de.data(), dd.data(), dd.size());   // unbuffered, metered
 }
 
 void ArenaExpertSource::note_async_read(const uint8_t* blob, void* stream) {
