@@ -333,3 +333,39 @@ checkpoint-stall fix; tg1024 walls (short-request serving) also favor v0220.
 **FINAL: fastest serving tuple for iq3xxs = split-34, 256/256, v0220,
 helper 7400/5000/300 — exactly the running prod config. No promotion reboot
 needed; prod verified healthy after the rerun window (18:13:00).**
+
+## iq3xxs max-occupancy sweep (18:26–19:16) — 7400/300 IS the ceiling
+
+Question (operator): max GPU occupancy on every GPU. Protocol per arm: **250k
+infill (ctx 1365950) then tg1024 ×2 under the loaded tier**, same boot — v0220,
+split-34, helper slots cap 5000. 3080 = 8192 MiB (7400/300 uses 7656 = 93.4%).
+Scripts `run-iq3xxs-occ.sh` + `run-occ150.sh`, artifacts
+`out/iq3xxs-occ-20261111/`.
+
+| arm | helper res | engine res | VII free | 250k infill | tg1024 under load | verdict |
+| --- | --- | --- | --- | --- | --- | --- |
+| A-ref 7400/300 | 300 | 256/256 | **450** | ✅ 378.7 s | ✅ dec 39.6–43.2, reqs 5,405 | healthy reference |
+| B 7400/0 | 0 | 256/256 | 150 | ❌ 503 | ❌ 503/reset | **wall** |
+| C 7600/0 | 0 | 256/256 | 150 | ❌ | ❌ | same wall; fill irrelevant |
+| D 7600/0 | 0 | 128/128 | 150 | ❌ | ❌ | engine reserves don't move VII free |
+| E 7600/0 | 0 | 64/64 | 150 | **stalled** (16,384 freeze class) | — | killed per operator; no data needed |
+| F 7400/**150** | 150 | 256/256 | **404** | ⚠️ 740.6 s (2× slower — prefix-cache confound suspected) | ~ dec 33.2–42.3; reqs 8,068 (+50%) | viable but no gain |
+
+Findings:
+- **Helper reserve coupling is a cliff at 0, not a slope**: reserve 300 → VII
+  450 free; 150 → 404 (healthy, like 300); 0 → 150 and every big request fails
+  (first-use graph capture has no room). Engine reserve changes (256→128) do
+  not move VII free at all. Mechanism hypothesis: at reserve 0 the helper's
+  staging lands engine-side (~300 MiB of VII), documented for the fixer if
+  pursued.
+- **Reserve 150 buys nothing**: no slot-count gain visible in traffic (helper
+  reqs +50% — worse, not better), infill wall 2× (confounded by disk-tier
+  prefix state — F booted after E's partial read), decode band no better.
+- Fill above 7400 was untestable at reserve 0 (dead before fill mattered); at
+  reserve 300 the 3080 sits at 93.4% with 536 MiB card-free — no room for a
+  meaningful step.
+- E's stall at 64/64 + reserve 0: the freeze class returned under VII-150
+  conditions even on v0220 — noted as a diagnostic datum, not a serving case.
+
+**Occupancy verdict: 7400/5000/300 + 256/256 = max viable; the champion config
+is already at the ceiling. No config change.** Prod returned 19:15:51 (v0220).
