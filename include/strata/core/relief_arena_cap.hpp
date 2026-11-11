@@ -27,7 +27,10 @@ struct ReliefArenaCapPlan {
     uint64_t dropped_bytes = 0;      ///< the bytes of THIS plan (what the caller already dropped is not counted)
     uint64_t resident_after = 0;     ///< the arena's host copies that stay, after the whole drop set
     int64_t kept_pairs = 0;          ///< the pairs inside that resident bytes
+    int64_t decode_pairs = 0;        ///< the pairs the decode budget protected (never dropped)
+    uint64_t decode_bytes = 0;       ///< their bytes, inside resident_after
     bool capped = false;             ///< false = nothing to do (the cap already fits, or nothing is droppable)
+    bool short_of_cap = false;       ///< true = everything droppable was dropped and the cap was still not reached
 };
 
 /// Plans the tail drop.
@@ -45,16 +48,30 @@ struct ReliefArenaCapPlan {
 /// pairs - so the cap is conservative against the hot set: the budget protects MORE arena bytes than its
 /// own MiB figure.
 ///
+/// `decode_hot_bytes` is the SECOND keep budget - a FLOOR on the arena's copies the DECODE path pays for,
+/// in effect when the cap is tightened below what decode needs.  Decode's working set is everything outside
+/// the tiers (the adaptive tier's swap-in candidates, the CPU pool's experts): on iq3_s that is 24,576 -
+/// 7,858 cache-resident - 4,615 helper-mirrored = 12,103 pairs, of which a cap 20000 / hot 15000 leaves
+/// 9,083 file-served - and that is the measured decode tax (longtg 35.3 -> 21.0, tg1024 37.8 -> 28.1,
+/// 8k PP ~200-230 -> ~128).  Note the cap alone keeps the hottest of them: a coldest-first drop keeps
+/// HOTTEST-first, so at a cap that fits above the hot set this budget protects the same pairs the cap was
+/// going to keep and changes nothing.  It bites when `hot_bytes + decode_hot_bytes > cap_bytes`: the cap's
+/// own keep is shorter than the decode band, so the floor extends residency to the hot set plus the
+/// `decode_hot_bytes` prefix (resident_after lands there, above the cap, reported `short_of_cap`) instead
+/// of letting the cap eat into the pairs decode pays for.  0 = today's uniform cap.
+///
 /// The walk is coldest first - the pairs the profile never ranked, in layer order, then the profile read
 /// backwards - and stops the moment the resident copy fits the cap, so the hottest pairs are the last to go.
-/// Cap 0 takes everything droppable (the hot set stays).  A cap at or above what is resident drops nothing.
+/// Cap 0 takes everything droppable (the hot set and the decode budget stay).  A cap at or above what is
+/// resident drops nothing.  When the two budgets together leave less than the cap's shortfall, the plan drops
+/// every droppable pair, says so (`short_of_cap`) and reports where it landed.
 template <typename PairBytes>
 ReliefArenaCapPlan relief_arena_cap_plan(int64_t n_layers, int64_t n_expert, uint64_t arena_total_bytes,
                                          uint64_t cap_bytes,
                                          const std::vector<std::pair<int32_t, int32_t>>& profile,
                                          const std::vector<uint8_t>& hot,
                                          const std::vector<uint8_t>& dropped,
-                                         PairBytes pair_bytes) {
+                                         PairBytes pair_bytes, uint64_t decode_hot_bytes = 0) {
     ReliefArenaCapPlan plan;
     const size_t cells = n_layers < 0 || n_expert <= 0 ? 0 : (size_t) n_layers * (size_t) n_expert;
     std::vector<uint8_t> taken = hot;
@@ -77,6 +94,24 @@ ReliefArenaCapPlan relief_arena_cap_plan(int64_t n_layers, int64_t n_expert, uin
         return plan;
     }
     plan.capped = true;
+    // The decode budget claims its pairs FIRST, from the profile's hot end: these are the arena's copies
+    // decode pays for - the adaptive tier's swap-in candidates and the CPU pool's experts, i.e. the pairs
+    // just outside the caches and the helper's mirror.  They are claimed before the drop walk, so the cap's
+    // bytes come off what is left: the prefill-cold tail.  A contiguous hot prefix - the first pair that
+    // would overflow the budget stops it.
+    uint64_t decode_budget = 0;
+    for (const auto& pr : profile) {
+        if (decode_budget >= decode_hot_bytes) break;
+        if (!in_range(pr)) continue;
+        const size_t key = (size_t) pr.first * (size_t) n_expert + (size_t) pr.second;
+        if (taken[key]) continue;   // the hot set and the caller's drops are decided already
+        const uint64_t b = pair_bytes(pr.first);
+        if (decode_budget + b > decode_hot_bytes) break;
+        taken[key] = 1;
+        decode_budget += b;
+        ++plan.decode_pairs;
+        plan.decode_bytes += b;
+    }
     auto drop_pair = [&](const std::pair<int32_t, int32_t>& pr) {
         if (!in_range(pr)) return;
         const size_t key = (size_t) pr.first * (size_t) n_expert + (size_t) pr.second;
@@ -101,6 +136,7 @@ ReliefArenaCapPlan relief_arena_cap_plan(int64_t n_layers, int64_t n_expert, uin
         drop_pair(profile[i]);
     plan.resident_after = resident;
     plan.kept_pairs -= (int64_t) plan.drop.size();
+    plan.short_of_cap = resident > cap_bytes;   // the budgets left less than the cap's shortfall
     return plan;
 }
 

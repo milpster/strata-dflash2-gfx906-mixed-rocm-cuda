@@ -808,6 +808,16 @@ struct Options {
     /// hot budget's pairs are never dropped.  Needs --expert-helper-ram-relief and the packs lever live
     /// (the tail is served from the pack files).  0 (default): no cap, the arena keeps every expert.
     int64_t expert_helper_relief_arena_cap_mib = 0;
+    /// W1 lever: the arena cap's SECOND keep budget - a FLOOR on the arena copies the DECODE path pays for
+    /// (MiB).  Decode's working set is everything outside the tiers: the adaptive tier's swap-in candidates
+    /// and the CPU pool's experts (iq3_s: 24576 - 7858 cache-resident - 4615 helper-mirrored = 12103 pairs,
+    /// 9083 of them file-served at cap 20000 / hot 15000 - the measured tax: longtg 35.3 -> 21.0, tg1024
+    /// 37.8 -> 28.1, 8k PP ~200-230 -> ~128).  A coldest-first drop keeps HOTTEST-first, so at a cap that
+    /// fits above the hot set this budget protects pairs the cap keeps anyway - it bites when the cap is
+    /// tightened below hot + decode: the plan then keeps the hot set plus this prefix, lands above the cap
+    /// and says so.  Use it as the floor when lowering the cap for RSS; use the cap itself to buy decode
+    /// residency (it spends on the hottest pairs first).  Needs the cap.  0 (default): the uniform cap.
+    int64_t expert_helper_relief_arena_cap_decode_mib = 0;
     bool remote_expert_opt = false; ///< optional optimization of the existing remote-expert decode path
     std::string expert_cache_remote_placement = "stripe"; ///< stripe experts or assign complete layers to CUDA1..3
     bool expert_cache_cpu_order = false;
@@ -1446,6 +1456,12 @@ void usage() {
                  "                       ranked tail from its cold end - join the drop until the copy fits N.\n"
                  "                       The --expert-helper-relief-hot-mib set is never dropped.  0 (default):\n"
                  "                       no cap, the arena keeps every expert exactly as before.\n"
+                 "  --expert-helper-relief-arena-cap-decode-mib N  opt-in, needs --expert-helper-relief-arena-cap-mib:\n"
+                 "                       a floor on the arena copies the DECODE path pays for: the plan keeps the\n"
+                 "                       hot set plus this prefix even when the cap is tightened below hot+N, landing\n"
+                 "                       above the cap (reported) instead of eating into decode's band.  A coldest-\n"
+                 "                       first cap keeps hottest-first, so above that point it buys nothing the cap\n"
+                 "                       does not buy: raise the CAP to give decode's ~12k pairs RAM.  0 = uniform.\n"
                  "  --expert-cache-per-layer  R4.2g: give each layer its OWN slots instead of letting the first\n"
                  "                       position take all of them.  The default policy fills in arrival order\n"
                  "                       from one shared counter, so 256 slots went to ~26 layers of position 0\n"
@@ -3939,6 +3955,16 @@ int main(int argc, char** argv) {
             }
             o.expert_helper_relief_arena_cap_mib = cn;
         }
+        else if (a == "--expert-helper-relief-arena-cap-decode-mib") {
+            const std::string v = next("--expert-helper-relief-arena-cap-decode-mib");
+            int64_t dn = 0;
+            const auto dr = std::from_chars(v.data(), v.data() + v.size(), dn);
+            if (dr.ec != std::errc{} || dr.ptr != v.data() + v.size() || dn < 0) {
+                std::fprintf(stderr, "--expert-helper-relief-arena-cap-decode-mib needs a nonnegative integer\n");
+                return 2;
+            }
+            o.expert_helper_relief_arena_cap_decode_mib = dn;
+        }
         else if (a == "--vram-reserve-mib") { o.vram_reserve_mib = std::atoi(next("--vram-reserve-mib")); o.vram_reserve_given = true; }
         else if (a == "--vram-reserve-later-mib")
             o.vram_reserve_later_mib = std::atoi(next("--vram-reserve-later-mib"));
@@ -5163,6 +5189,12 @@ int main(int argc, char** argv) {
     if (o.expert_helper_relief_arena_cap_mib > 0 && !o.expert_helper_ram_relief) {
         std::fprintf(stderr, "strata generate: --expert-helper-relief-arena-cap-mib: --expert-helper-ram-relief is required "
                              "(the cap drops the arena's coldest host copies; with no relief nothing is file-served to read them back from)\n");
+        return 2;
+    }
+    // W1 lever: the decode budget is a rule INSIDE the cap - with no cap there is nothing to protect from.
+    if (o.expert_helper_relief_arena_cap_decode_mib > 0 && o.expert_helper_relief_arena_cap_mib == 0) {
+        std::fprintf(stderr, "strata generate: --expert-helper-relief-arena-cap-decode-mib: --expert-helper-relief-arena-cap-mib is required "
+                             "(it decides which pairs the cap may not drop; with no cap every pair stays resident)\n");
         return 2;
     }
     // STRATA_MMQ_DIRECT: the room each sized expert slot keeps after its blob (0 unless it is on: the slot costs and
@@ -9819,18 +9851,26 @@ int main(int argc, char** argv) {
                                         dropped[(size_t) pr.first * g.n_expert + pr.second] = 1;
                                 const auto cap = strata::core::relief_arena_cap_plan(
                                     g.n_layers, g.n_expert, slay.total, (uint64_t) o.expert_helper_relief_arena_cap_mib << 20,
-                                    profile, hot, dropped, [&](int64_t l) { return (uint64_t) slay.blob_bytes(l); });
+                                    profile, hot, dropped, [&](int64_t l) { return (uint64_t) slay.blob_bytes(l); },
+                                    (uint64_t) o.expert_helper_relief_arena_cap_decode_mib << 20);
                                 for (const auto& pr : cap.drop) held.emplace_back(pr.first, pr.second);
                                 relief_cap_pairs = (int64_t) cap.drop.size();
                                 relief_cap_bytes = (int64_t) cap.dropped_bytes;
                                 relief_cap_resident = cap.resident_after;
                                 std::fprintf(stderr, "strata generate: --expert-helper-ram-relief: arena cap: %lld tail pairs (%lld MiB) join the drop, "
-                                                     "the arena keeps %lld pairs (%lld MiB) host-copied of %lld (%lld MiB) (cap %lld MiB)\n",
+                                                     "the arena keeps %lld pairs (%lld MiB) host-copied of %lld (%lld MiB) (cap %lld MiB, decode-protected %lld pairs (%lld MiB))\n",
                                              (long long) relief_cap_pairs, (long long) (relief_cap_bytes >> 20),
                                              (long long) cap.kept_pairs, (long long) (relief_cap_resident >> 20),
                                              (long long) g.n_layers * (long long) g.n_expert,
                                              (long long) (slay.total >> 20),
-                                             (long long) o.expert_helper_relief_arena_cap_mib);
+                                             (long long) o.expert_helper_relief_arena_cap_mib,
+                                             (long long) cap.decode_pairs, (long long) (cap.decode_bytes >> 20));
+                                if (cap.short_of_cap)
+                                    std::fprintf(stderr, "strata generate: --expert-helper-ram-relief: arena cap: the cap was NOT reached: the hot budget "
+                                                         "(%lld MiB) and the decode budget (%lld MiB) protect everything droppable; the arena lands at %lld MiB (cap %lld MiB)\n",
+                                                 (long long) (relief_hot_bytes >> 20), (long long) (cap.decode_bytes >> 20),
+                                                 (long long) (relief_cap_resident >> 20),
+                                                 (long long) o.expert_helper_relief_arena_cap_mib);
                             }
                             // Order matters: the drop runs FIRST, while the held pages are still plain
                             // (nothing registered over them), and the registration then covers everything

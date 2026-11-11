@@ -186,6 +186,115 @@ int main() {
         check(p.kept_pairs == (int64_t) (24576 - 4615 - p.drop.size()), "the kept pairs are the arena's hot prefix");
     }
 
+    // 10. The decode budget OFF is byte-identical to the uniform cap: same plan, pair for pair.
+    {
+        Fixture f = make(1024, 24576);
+        for (size_t i = 0; i < 4615; ++i) f.dropped[i] = 1;
+        const auto uniform = relief_arena_cap_plan(LAYERS, EXPERTS, f.total(), 20000 * MIB, f.profile, f.hot,
+                                                   f.dropped, bytes_of(f));
+        const auto off = relief_arena_cap_plan(LAYERS, EXPERTS, f.total(), 20000 * MIB, f.profile, f.hot,
+                                               f.dropped, bytes_of(f), 0);
+        check(uniform.drop == off.drop, "decode budget 0: the same drop list as the uniform cap");
+        check(uniform.dropped_bytes == off.dropped_bytes && uniform.resident_after == off.resident_after,
+              "decode budget 0: the same bytes and the same resident total");
+        check(off.decode_pairs == 0 && off.decode_bytes == 0, "decode budget 0 protects nothing");
+    }
+
+    // 11. The budget protects the HOTTEST claimable pairs: the cap's bytes come off the tail, the protected
+    //     prefix stays, and the plan lands exactly on the cap when the pool is big enough.
+    {
+        Fixture f = make(1024, 24576);
+        const auto p = relief_arena_cap_plan(LAYERS, EXPERTS, f.total(), 12000 * MIB, f.profile, f.hot, f.dropped,
+                                             bytes_of(f), 2000 * MIB);
+        check(p.decode_pairs == 2000 && p.decode_bytes == 2000 * MIB, "the budget protects 2000 pairs (2000 MiB)");
+        check(p.resident_after == 12000 * MIB, "the cap is reached exactly: 24576 - 12576 dropped = 12000 MiB");
+        check(p.drop.size() == 12576, "the drop is the cap's shortfall, not more");
+        check(!p.short_of_cap, "the pool (22576 pairs) covers the shortfall (12576)");
+        bool prefix = true;
+        std::vector<uint8_t> prot((size_t) LAYERS * (size_t) EXPERTS, 0);
+        for (size_t i = 0; i < 2000; ++i) prot[(size_t) f.profile[i].first * (size_t) EXPERTS + f.profile[i].second] = 1;
+        for (const auto& pr : p.drop)
+            if (prot[(size_t) pr.first * (size_t) EXPERTS + (size_t) pr.second]) prefix = false;
+        check(prefix, "no protected pair is ever dropped");
+        check(p.drop.back() == f.profile[12000], "the last pair the cap takes is the first rank past the kept prefix");
+        check(p.kept_pairs == 12000, "kept_pairs counts the protected prefix inside the cap");
+    }
+
+    // 12. The budget skips what is already decided: the hot set and the relief's drops are not protected
+    //     twice, so the protected prefix starts at the first pair neither covers - decode's universe, the
+    //     pairs just outside the caches and the helper's mirror.
+    {
+        Fixture f = make(1024, 24576);
+        for (size_t i = 0; i < 100; ++i) f.hot[i] = 1;          // the hottest 100 pairs: the hot budget
+        for (size_t i = 100; i < 200; ++i) f.dropped[i] = 1;    // the helper mirrors the next 100
+        const auto p = relief_arena_cap_plan(LAYERS, EXPERTS, f.total(), 12000 * MIB, f.profile, f.hot, f.dropped,
+                                             bytes_of(f), 1000 * MIB);
+        check(p.decode_pairs == 1000 && p.decode_bytes == 1000 * MIB, "the budget protects 1000 pairs, after the hot set and the drops");
+        std::vector<uint8_t> drop_seen((size_t) LAYERS * (size_t) EXPERTS, 0);
+        for (const auto& pr : p.drop) drop_seen[(size_t) pr.first * (size_t) EXPERTS + (size_t) pr.second] = 1;
+        const auto claimable_hottest = f.profile[200];   // 0..99 hot, 100..199 dropped: the first claimable is 200
+        const auto protected_last = f.profile[1199];
+        check(drop_seen[(size_t) claimable_hottest.first * (size_t) EXPERTS + claimable_hottest.second] == 0,
+              "the protected prefix starts at the claimable hottest pair");
+        check(drop_seen[(size_t) protected_last.first * (size_t) EXPERTS + protected_last.second] == 0,
+              "the protected prefix ends at profile[1199] (1000 pairs)");
+        check(drop_seen[(size_t) f.profile[12100].first * (size_t) EXPERTS + f.profile[12100].second] == 1,
+              "the cap's own keep ends right after the protected prefix and the tail drops from there");
+        check(p.drop.size() == 12476 && p.resident_after == 12000 * MIB,
+              "the drop is the shortfall after both budgets (24576 - 100 given back - 12476 dropped = 12000 MiB)");
+        check(!p.short_of_cap, "the pool covers the shortfall");
+    }
+
+    // 13. A contiguous prefix: the first pair that would overflow the budget stops it (no gaps, no overspend).
+    {
+        Fixture f = make(700, 24576);   // 700 KiB a pair
+        const uint64_t budget = 1000 * MIB;
+        const auto p = relief_arena_cap_plan(LAYERS, EXPERTS, f.total(), 12000 * MIB, f.profile, f.hot, f.dropped,
+                                             bytes_of(f), budget);
+        check(p.decode_bytes <= budget, "the protected bytes never exceed the budget");
+        check(p.decode_bytes + 700 * 1024 > budget, "the next pair would overflow, so the prefix stops there");
+        check(p.decode_pairs == budget / (700 * 1024), "the prefix is exactly the pairs that fit");
+    }
+
+    // 14. The budgets together leave less than the cap's shortfall: the plan drops every droppable pair and
+    //     says it landed short (never a silent failure, never a hot pair dropped).
+    {
+        Fixture f = make(1024, 24576);
+        const auto p = relief_arena_cap_plan(LAYERS, EXPERTS, f.total(), 0, f.profile, f.hot, f.dropped,
+                                             bytes_of(f), 24000 * MIB);
+        check(p.short_of_cap, "cap 0 with a 24000 MiB decode budget reports it landed short");
+        check(p.decode_pairs == 24000, "the budget protects 24000 pairs");
+        check(p.drop.size() == 576 && p.dropped_bytes == 576 * MIB, "everything droppable (576 pairs) drops");
+        check(p.resident_after == 24000 * MIB, "the arena lands at the protected 24000 MiB");
+        check(p.kept_pairs == 24000, "kept_pairs is the protected set");
+    }
+
+    // 15. The measured IQ3_S shape with the split: 1.905 MiB a pair (46.84 GiB), the hot budget's 7500 pairs
+    //     (the 15000 MiB stride budget), the helper's 4615 pairs already dropped, cap 20000 MiB, decode budget
+    //     6000 MiB.  The plan must spend the cap on the prefill-cold tail only and report where it lands.
+    {
+        const uint64_t pair_b = 1992192;   // 24576 x 1992192 = 46.875 GiB, the arena's measured copy
+        Fixture f = make(1945, 24576);
+        f.pair_bytes = pair_b;
+        for (size_t i = 0; i < 7500; ++i) f.hot[i] = 1;              // the hot budget's pairs (tier backing)
+        for (size_t i = 7500; i < 7500 + 4615; ++i) f.dropped[i] = 1;   // the helper's mirror
+        const auto p = relief_arena_cap_plan(LAYERS, EXPERTS, f.total(), 20000 * MIB, f.profile, f.hot, f.dropped,
+                                             [&](int64_t) { return pair_b; }, 6000 * MIB);
+        check(p.decode_pairs == (6000 * MIB) / pair_b, "the decode budget protects ~3150 pairs (6000 MiB)");
+        const uint64_t resident_before = f.total() - 4615ull * pair_b;
+        check(p.dropped_bytes == resident_before - p.resident_after, "the plan's bytes are exactly what left the arena");
+        check(p.resident_after <= 20300ull * MIB && p.resident_after >= 20000ull * MIB,
+              "the cap 20000 with a 6000 MiB decode budget lands ~20.0-20.3 GiB resident: the memory of the measured point, with decode served from RAM");
+        check(p.kept_pairs == 7500 + p.decode_pairs, "what stays is the hot set plus the decode prefix");
+        std::vector<uint8_t> prot((size_t) LAYERS * (size_t) EXPERTS, 0);
+        for (size_t i = 7500 + 4615; i < 7500 + 4615 + (size_t) p.decode_pairs; ++i)
+            prot[(size_t) f.profile[i].first * (size_t) EXPERTS + (size_t) f.profile[i].second] = 1;
+        bool tails_only = true;
+        for (const auto& pr : p.drop)
+            if (prot[(size_t) pr.first * (size_t) EXPERTS + (size_t) pr.second]) tails_only = false;
+        check(tails_only, "the drop is the prefill-cold tail: no decode-protected pair drops");
+    }
+
     if (failures) {
         std::printf("expert_helper_arena_cap_test: %d FAILURES\n", failures);
         return 1;
