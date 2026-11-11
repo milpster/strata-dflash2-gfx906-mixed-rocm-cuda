@@ -463,3 +463,26 @@ engine level. Working hypothesis (fixer to verify): pressure → swap-ins on
 cold paths → defect-2 early-boot read slowness and rerun mini-stalls;
 possibly contributes to the read-abort. Fixer round scope = analyze AND
 fix/bound the pressure, plus the read-abort fix itself.
+
+## Rollback to iq3xxs (21:38–21:41, operator: "get us back iq3xxs")
+
+Operator called iq3_s "degrading to uselessness" under the pressure — rolled
+prod back mid-fixer-round (fixer clean-cancelled first; its :8009 teardown
+would have crashed it). First switch attempt died host-side before the
+launcher spawn (~5 min dark), re-launched 21:37, **health-ok 21:41:08** —
+identity verified: v0220, split-34, helper 4,597/5,000 (7.14 GiB),
+404 MiB VII free. Serving warmup HTTP 200 (5.3 s first-use).
+
+**Pressure delta quantified by the switch itself:** identical machinery and
+helper mirror, but iq3xxs engine RSS **37.3 GiB** (16.5 GiB available) vs
+iq3_s **55.1 GiB** (8.6 GiB available) — the iq3_s pack class alone costs
+~18 GiB of engine footprint. iq3_s stays parked until the diet round lands.
+
+## Diet round relaunched (21:45, operator: "more of that")
+
+Fixer revived on stable iq3xxs prod with the diet lane as PRIMARY:
+(1) why iq3_s holds +18 GiB at same split/slots — bound the RAM tier vs pack
+class; (2) conversation-cache residency bounds; (3) mmap/page-cache
+double-holding + engine↔helper fill overlap. Read-abort + early-boot 80k
+slowness remain in scope (pressure-chain hypothesis first). iq3_s re-promotion
+waits on this round's validation.
