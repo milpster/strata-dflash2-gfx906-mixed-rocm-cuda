@@ -178,6 +178,29 @@ v0219, layer_split 34, 256/256 reserves, helper 7400/5000/300 (unchanged).
 Expected boot accounting: CUDA0 layers 0-33 (4971 cache slots), CUDA1 34-47
 (4444), 404 MiB free, helper ~4484 slots.
 
+## Fix5 validation (14:26–14:45 window) — arm 1 PASSED
+
+Fixer commits on `helper-ipc-diet`: `69f37322d` (checkpoint saves gated by physical
+RAM: evict-oldest or skip; a request can no longer stall/abort on a checkpoint
+boundary) and `0359cedf6` (batched O_DIRECT pack swap-ins + `--expert-helper-ram-relief-packs`
+guard rework). Builds green (engine `f9b6cccb…`, helper `946e0aba…`).
+
+| Leg on the accumulated boot (v0219 same-sequence = death at 32,768 ×2) | fix5 |
+| --- | --- |
+| killer144kL after longtg+tg1024 accumulation | **COMPLETED**: fresh read 661.2 tok/s, 379 gen @ 36.8; rerun 259 @ 37.8; #2065 delta 0 |
+| killer250k fresh on the SAME boot (ultimate shape) | **COMPLETED**: 131,072 restored + 115,874 read @ 300.9 tok/s, 515 gen @ 44.5 |
+
+- longtg decode band on fix5: 39.6–43.0 (v0219 same-day: 33–36) — suggestive
+  improvement, not yet repeated.
+- Checkpoint-gate lines (`evicted`/`skipped`): none printed — the gate never had to
+  bite (tier not full under this accumulation). A/B validity rests on the identical
+  leg sequence that killed v0219 twice earlier the same day.
+- Window script note: driver died on a `grep \| tail` pipefail trap after arm1b —
+  arm 2 (packs lever) not yet run; trap fixed (`\|\| true`). Prod was re-booted
+  immediately and verified (split-34, 404 MiB, 4583 slots).
+
+Pending: arm 2 packs-lever window; then the v0220 pin + prod promotion decision.
+
 ## Prod outcome (12:20)
 
 - Booted: v0219, split-38, **256/256 reserves**, helper fill 7400 / slots 5000 /
