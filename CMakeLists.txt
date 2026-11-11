@@ -960,6 +960,16 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_link_libraries(vmm_test PRIVATE strata_engine)
     add_test(NAME vmm_test COMMAND vmm_test)
     set_tests_properties(vmm_test PROPERTIES TIMEOUT 60)
+    # The helper relief's arena cap plan (include/strata/core/relief_arena_cap.hpp), the arithmetic behind
+    # --expert-helper-relief-arena-cap-mib: the hot set's protection, the coldest-first order, the caller's
+    # drop accounted once.  CPU-only BY CONSTRUCTION - header-only plan, the test links NO library at all, and
+    # the sizes it checks are the measured prod ones (46.84 GiB iq3_s / 39.97 GiB iq3xxs over 24576 pairs).
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/expert_helper_arena_cap_test.cpp")
+      add_executable(expert_helper_arena_cap_test tests/core/expert_helper_arena_cap_test.cpp)
+      target_include_directories(expert_helper_arena_cap_test PRIVATE include)
+      add_test(NAME expert_helper_arena_cap_test COMMAND expert_helper_arena_cap_test)
+      set_tests_properties(expert_helper_arena_cap_test PROPERTIES TIMEOUT 60)
+    endif()
     # M1 (capacity, parent correction 2): the helper proxy's RESIDENCY lifecycle - registered fill,
     # mid-request disable (residency KEPT, the gate must still consult), per-request re-arm, channel
     # death (residency RELEASED, the gate must recover).  Proxy mode makes no device call (the
