@@ -210,3 +210,46 @@ Pending: arm 2 packs-lever window; then the v0220 pin + prod promotion decision.
   reused), so the next operator message is a fresh 247k read: acceptable on a fresh
   boot (empty RAM tier) per the morning precedent; session checkpoints rebuild.
 - Conversation cache: 7×1.1 GB leg artifacts left in place (inert, evictable).
+
+## Arm-2 packs lever + v0220 window and promotion (14:30–16:00)
+
+**Arm-2 base (fix5, no flag) — clean, no regressions:**
+PP 305 @ 80k; longtg 37–40; tg1024 41.9/41.1; killer 35.6/35.5; #2065 = 2.
+But the packs lever REFUSED: "the arena has no unbuffered pack file to swap in
+from" — zero swap-in lines. Root cause: the gate checked `direct_` (the RAM-room
+heuristic's fds, intentionally unarmed on a healthy boot) instead of the lever's
+own fds.
+
+**Fix `c604afde6` (helper-ipc-diet):** `arm_prompt_direct` arms additive O_DIRECT
+fds (`pdirect_`) without unbuffering the tier — `staged()`/`blob()` untouched, so
+the decode path is unchanged; `swap_files_ready` accepts `pdirect_`; genuine
+O_DIRECT failure prints errno verbatim (no silent buffered fallback). Builds
+green: engine `d24d25b41…`, cuda engine `8d820cf17…`, helper `1a2074bcc…`.
+Chain: `ae71a6577` → `69f37322d` (stall fix) → `0359cedf6` (swap-ins) →
+`c604afde6` (lever arms).
+
+**Lever window (15:49, combined window approved; operator ended it early):**
+- Lever ENGAGED mechanically: no refusal; drop set = arena 22.38 GiB (13671
+  pairs) + stage caches 16,186 MiB (9415 pairs) ≈ **38 GiB given back**.
+- **Performance-disqualified**: 80k PP 171.3 s ≈ 86 tok/s (vs 305 / 48 s on
+  every v0219/fix5 boot). GPUs 0%/0% while disk churned; VRAM 231 MiB at request
+  start; helper nearly idle (65 reqs / 327 rows vs ~2500 healthy).
+- **Zero `adapt swap-in` lines** — the batched swap-in path never fired. Prefill
+  expert misses were served by the mmap page-fault path (unbatched, page
+  granularity): the swap-in trigger does not cover the prefill borrow path.
+- longtg was mid-flight at termination; killer144kL-under-lever skipped (moot —
+  already disqualified at 80k). Artifacts: `out/v0220-lever-20261111/`.
+- Fix directions for a future round: (a) selective cold-only drop (keep the hot
+  working set), (b) route prefill borrow-path misses through the batched
+  swap-in, (c) per-adapt-round byte pacing. Not urgent: fresh boots hold 15+ GiB
+  free since the stall fix; the lever's value is long-uptime headroom.
+
+**v0220 promotion (15:58):**
+- Pinned `/mnt/srcds/Strata/v0220/build-mixed-gpu/` (SHAs verified against the
+  fixer's build report), config `exe` + launcher `BIN` → v0220; packs flag NOT in
+  the prod config (lever inert).
+- Prod up 15:58:38, verified: split 34–47 / 4444 expert slots; helper 4583
+  mirrored; 404 MiB free; plain relief 4583 pairs / 7.10 GiB; "the adaptive tier
+  is on: the split's caches keep their host copies".
+- v0220 = `c604afde6` build: stall fix (checkpoint saves gated by physical RAM)
+  + swap-in machinery + lever arming, flag-off in prod.
