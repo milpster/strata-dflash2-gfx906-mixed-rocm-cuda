@@ -486,3 +486,55 @@ class; (2) conversation-cache residency bounds; (3) mmap/page-cache
 double-holding + engine↔helper fill overlap. Read-abort + early-boot 80k
 slowness remain in scope (pressure-chain hypothesis first). iq3_s re-promotion
 waits on this round's validation.
+
+## Diet round results (22:0x, fixer `4294d8545`+`ed88a6499`+`fe6c29cd2`, pushed)
+
+**Root causes found (both confirmed against engine's own boot lines):**
+- **The 18 GiB = the expert arena's host copies, bounded by nothing.** The
+  arena copies EVERY pack expert into RAM sized by pack bytes: iq3_s
+  `loaded 46.84 GiB` vs iq3xxs `39.97 GiB` at identical ranked pairs/split/
+  slots. Existing relief only bounds what GPU tiers serve (iq3_s 38.29 GiB
+  registered complement unbounded). GGUF mapping delta (83.7 vs 75.9 GiB) +
+  pressure chain completes the reconciliation to 55.1 vs 37.3 RSS.
+- **Read-abort is NOT a truncated read.** 16384+125740=142124 = the window
+  position; the "5 short" = the `--dflash-block 5` tail read through verify
+  windows. The abort = non-finite logits (#879) in that tail window;
+  recovery (#3465) forces the NEXT request to re-read all 142k (293 s).
+  Plausible trigger: 398 MiB VRAM free → driver pages GPU memory into a box
+  with 8.6 GiB available / 7.4 GiB swapped. Explains split-36/34 hits,
+  never iq3xxs.
+- Early-boot 80k slowness = same pressure signature (reads through swap with
+  38.3 GiB arena locked).
+
+**Fixes (all opt-in, default off, named log lines):**
+- `--expert-helper-relief-arena-cap-mib N` (needs relief + packs lever +
+  layer split; refuses single-GPU named): coldest-first byte-exact cap on
+  arena host copies, drops join before `set_unfilled()`/DMA registration.
+  New `expert_helper_arena_cap_test` in both trees (cuda 6/6, hip 2/2).
+- `--prompt-window-retry`: on #879 in a prompt verify window, re-read the
+  ≤64-token tail batched IN-REQUEST keeping cached state (one retry; falls
+  back to today's abort unchanged if the tail also fails).
+- Context diagnostics: `non-finite logits (#879) context:` and
+  `slow read context:` (below 200 tok/s) — read-only sampling, no device
+  calls on the read path.
+
+**Builds:** canonical `build_l3.sh` ALL GREEN, guards PASS, ctests green.
+SHAs (worktree `build-mixed-gpu/`): hip `eb61acc0…`, cuda `a750a8f0…`,
+helper `8ad751ee…`.
+
+**Validation window recipe (fixer's arithmetic, runtime unverified):**
+- iq3_s: `--expert-helper-ram-relief --expert-helper-ram-relief-packs
+  --expert-helper-relief-hot-mib 15000 --expert-helper-relief-arena-cap-mib
+  20000 --prompt-window-retry` → expect RSS 55.1→~28 GiB, available ≥25 GiB,
+  swap <2 GiB, `arena cap:` boot line (~9700 tail pairs/~18.5 GiB join the
+  drop), killer retry lines instead of `0 generated in 0 ms`, 80k legs
+  ≥250 tok/s.
+- iq3xxs live: same minus cap 22000 → RSS 37.3→~19-24 GiB, available ~30.
+- **Open risk the fixer can't predict: decode/PP cost of the cap** — dropped
+  arena pairs become swap-in/file-served reads (round-2 lever cost ~15%
+  decode fresh / ~28% fresh-PP; cap 20000 keeps ~7300 pairs resident so the
+  cost should be smaller, but the window MUST measure longtg/tg1024/killer
+  decode, not just memory).
+
+Window needs prod down (trials share the 3080); awaiting operator go +
+window choice.
