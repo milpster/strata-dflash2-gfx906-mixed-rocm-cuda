@@ -1,0 +1,21 @@
+{
+ "arm": "I2A",
+ "leg": "warm",
+ "kind": "warm",
+ "ctx": 512,
+ "max_tokens": 64,
+ "ts": 1794368636.595,
+ "walls": [
+  6.9
+ ],
+ "wall_s": 6.901,
+ "content_from": "content",
+ "prompt_bytes": 512,
+ "sha256": "e140336f43b8b96152cdf8a33246125184342ce7cfa628f69634538635628e4c",
+ "elog": "/mnt/srcds/Strata/logs/engine-swift15-f16kv-dflash-w4-q4_0-mixed.log",
+ "elog_start": 4059231,
+ "elog_end": 4059231,
+ "hlog": "/mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261110-233052-2718458-helper.log",
+ "hlog_start": 1698,
+ "hlog_end": 1698
+}

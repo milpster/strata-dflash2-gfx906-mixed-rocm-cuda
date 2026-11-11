@@ -1,0 +1,22 @@
+{
+ "arm": "M4A",
+ "leg": "tg1024",
+ "kind": "tg",
+ "ctx": 2048,
+ "max_tokens": 1024,
+ "ts": 1794366229.162,
+ "walls": [
+  12.757,
+  10.319
+ ],
+ "wall_s": 23.076,
+ "content_from": "content",
+ "prompt_bytes": 2048,
+ "sha256": "4cdebbd436def296db20c282375151f9615b9cb4173696593368c3c4a3961d24",
+ "elog": "/mnt/srcds/Strata/logs/engine-swift15-f16kv-dflash-w4-q4_0-mixed.log",
+ "elog_start": 4031974,
+ "elog_end": 4033149,
+ "hlog": "/mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261110-233052-2718458-helper.log",
+ "hlog_start": 1698,
+ "hlog_end": 1698
+}

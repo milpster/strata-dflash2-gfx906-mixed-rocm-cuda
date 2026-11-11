@@ -1,0 +1,21 @@
+{
+ "arm": "M3A",
+ "leg": "8000-3",
+ "kind": "prefill",
+ "ctx": 8000,
+ "max_tokens": 8,
+ "ts": 1794364971.347,
+ "walls": [
+  6.932
+ ],
+ "wall_s": 6.932,
+ "content_from": "reasoning",
+ "prompt_bytes": 8000,
+ "sha256": "01db7a9d154bb188430b234246589661629c627462db9ec632e33137f49bb45e",
+ "elog": "/mnt/srcds/Strata/logs/engine-swift15-f16kv-dflash-w4-q4_0-mixed.log",
+ "elog_start": 4004594,
+ "elog_end": 4005066,
+ "hlog": "/mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261110-233052-2718458-helper.log",
+ "hlog_start": 1698,
+ "hlog_end": 1698
+}
