@@ -287,3 +287,49 @@ arena drop too (the remaining socket traffic), then re-measure.
 
 Window artifacts: `out/lever2-20261111/` (gitignored). Prod returned to v0220
 17:06:35, verified (404 MiB, split-34, health ok).
+
+## iq3xxs fastest-tuple sweep (17:21–18:03, + rerun)
+
+Question: fastest (binary × helper class) for iq3xxs at fixed split-34 / 256-256.
+One protocol, one day: warm, 8k×3, 80k, longtg+tg1024, killer144k per arm; helper
+classes = prod (7400/5000/300, engine reserve-mib 0) vs trial (6796/4600/512).
+Arms: `run-iq3xxs-sweep.sh`, artifacts `out/iq3xxs-sweep-20261111/`.
+
+| arm (h7400) | 8k wall | 80k wall | longtg wall | longtg decode | tg1024 walls | tg1024 dec | killer144k | #2065 |
+| --- | ---: | ---: | ---: | --- | ---: | --- | ---: | ---: |
+| **b16 (v0216)** | 7.53-7.68 | 47.23 | **89.98** | 40.8/33.7 + 41.5/37.5 | 14.55+10.88 | 43.9/44.1 | 280.1 (read 537.7, dec 41.4/39.4) | 2 |
+| b19 (v0219) | 7.56-7.65 | 47.09 | 93.06 | 40.4/36.8 + 44.4/36.5 | 13.99+10.12 | 42.3/46.2 | **267.3** (read 537.4, dec 41.7/41.0) | 2 |
+| b20 (v0220) | 7.55-7.63 | 46.98 | 90.54 | 39.8/42.2 + 41.2/46.4 | **13.25+8.90** | 41.4/43.9 | 350.2 (read 486.3, dec 34.5/**44.7**; rerun prefill anomaly 37 s) | 2 |
+
+- **Binary dimension ≈ wash**: longtg walls within ~3%; PP identical; tg1024
+  walls favor v0220, killer totals favor b16/b19, decode bands overlap.
+- **Stage-3 killer250k on b16-h7400 (fresh boot): COMPLETED** — 246,946 read in
+  369.3 s (**668.7 tok/s**, fastest 250k read measured), 785 gen @ 33.0, rerun
+  560 @ 36.3. Caveat: fresh boot — v0216 has NOT faced the accumulated-RAM
+  sequence that killed v0219 twice at this leg (only v0220 passed it, arm-1).
+- Stage 2 (b16-h6796): longtg completed at **98.51 s** (~8.5 s slower than the
+  7400 class) then the service threw HTTP 503 + connection reset during tg1024
+  and killer144k — operator confirmed a **GPU hiccup** in that window; rerun
+  queued (`run-rerun-b16h6796.sh`). Even pre-hiccup, 6796-class longtg is
+  slower than 7400-class on v0216.
+- Prod returned to v0220 18:02:59 (b20-h7400 numbers above = the current prod
+  tuple, first full measurement of it).
+
+## Rerun b16-h6796 (18:03–18:13, post-GPU-hiccup) + final verdict
+
+Rerun (`run-rerun-b16h6796.sh`) completed clean: longtg 96.92 s (40.9/37.1 +
+37.5/37.1), tg1024 walls 18.53+11.39, decode 37.8/39.6, killer144k 275.0 s
+(read 535.2, dec 38.7/35.9), #2065 = 2. Confirms the hiccup-contaminated
+stage-2 was real data for longtg: **the 6796 class is genuinely slower**, not a
+hiccup artifact (same-binary 7400 vs 6796: longtg 89.98 vs 96.92, tg1024
+25.43 vs 29.92 with decode 43.9/44.1 vs 37.8/39.6; killer total a wash).
+
+**Helper class winner: 7400/5000/300 (prod class).** Binary dimension: wash
+within ~3% day-noise, no consistent per-metric winner. Stability breaks the tie:
+only v0220 has passed killer250k under the accumulated-RAM sequence (the class
+that killed v0219 twice); v0216's 250k pass was fresh-boot and it lacks the
+checkpoint-stall fix; tg1024 walls (short-request serving) also favor v0220.
+
+**FINAL: fastest serving tuple for iq3xxs = split-34, 256/256, v0220,
+helper 7400/5000/300 — exactly the running prod config. No promotion reboot
+needed; prod verified healthy after the rerun window (18:13:00).**
