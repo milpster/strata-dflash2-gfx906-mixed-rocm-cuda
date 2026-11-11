@@ -9533,6 +9533,37 @@ int main(int argc, char** argv) {
                                         if (remote_experts[0].holds(l, (int32_t) e)) held.emplace_back((int32_t) l, (int32_t) e);
                                 relief_tier_pairs = (int64_t) (held.size() - before);
                             }
+                            // Lever 1 (the split's stage caches): at steady state a stage's pairs live in that
+                            // stage's VRAM - decode computes them there (the R4/token-graph hit path), the prompt
+                            // path borrows the slots, cross-card misses go GPU-to-GPU - so their host copies are
+                            // cold.  The primary's cache (CUDA0) and every later stage's cache join the drop set,
+                            // the same pair set `howned` above names.  The adaptive tier is the machinery that
+                            // rewrites a stage slot at runtime (`fill_slot` + `replace`); `admit` never evicts.
+                            // So the stage pairs join only with the adaptive tier OFF (the serve configs:
+                            // --adapt-swaps 0, and STRATA_EXPERT_NIBBLE forces it off and seals the caches at
+                            // ~9241: nothing writes a slot from then on).  With the adaptive tier ON the caches
+                            // keep their host copies: a dropped-then-evicted pair would stay CORRECT through the
+                            // staged pack-file read path (ArenaExpertSource::blob), just slow on a hot refill.
+                            int64_t relief_stage_pairs = 0, relief_stage_bytes = 0;
+                            const bool adaptive_tier = o.adapt_every > 0 && o.adapt_swaps > 0;   // aa.adaptive (~10934)
+                            if (!stages.empty() && !adaptive_tier) {
+                                const auto& slay = strata::kernels::cpu::expert_layout();
+                                const int64_t spair = native_pack ? 0 : (int64_t) slay.max_blob;   // the host copy's stride
+                                for (int64_t l = 0; l < g.n_layers; ++l)
+                                    for (int64_t e = 0; e < g.n_expert; ++e)
+                                        if (xcache.slot_of(l, e) >= 0) {
+                                            held.emplace_back((int32_t) l, (int32_t) e);
+                                            ++relief_stage_pairs;
+                                            relief_stage_bytes += native_pack ? strata::core::ExpertCache::slot_stride((int64_t) nib::slot_bytes(l), slot_guard) : spair;
+                                        }
+                                for (const auto& st : stages)
+                                    for (const auto& pr : st->profile)
+                                        if (st->cache.slot_of(pr.first, pr.second) >= 0) {
+                                            held.emplace_back(pr.first, pr.second);
+                                            ++relief_stage_pairs;
+                                            relief_stage_bytes += native_pack ? strata::core::ExpertCache::slot_stride((int64_t) nib::slot_bytes(pr.first), slot_guard) : spair;
+                                        }
+                            }
                             // Order matters: the drop runs FIRST, while the held pages are still plain
                             // (nothing registered over them), and the registration then covers everything
                             // that is still servable - including any pair the drop refused (V4-r2 lesson:
@@ -9544,6 +9575,17 @@ int main(int argc, char** argv) {
                                 std::fprintf(stderr, "strata generate: --expert-helper-ram-relief: +%lld spill-tier pairs (%lld MiB) join the drop set\n",
                                              (long long) relief_tier_pairs,
                                              (long long) (remote_experts[0].gib() * 1024.0 + 0.5));
+                            if (relief_stage_pairs > 0)
+                                std::fprintf(stderr, "strata generate: --expert-helper-ram-relief: +%lld stage-cache pairs (%lld MiB) join the drop set\n",
+                                             (long long) relief_stage_pairs,
+                                             (long long) (relief_stage_bytes >> 20));
+                            if (!stages.empty() && adaptive_tier)
+                                std::fprintf(stderr, "strata generate: --expert-helper-ram-relief: the adaptive tier is on: the split's caches keep their host copies\n");
+                            std::fprintf(stderr, "strata generate: --expert-helper-ram-relief: ram-relief: %lld pairs total (%lld MiB) dropped\n",
+                                         (long long) held.size(),
+                                         (long long) ((int64_t) (helper_tier.gib() * 1024.0 + 0.5) +
+                                                       (spill_tier ? (int64_t) (remote_experts[0].gib() * 1024.0 + 0.5) : 0) +
+                                                       (relief_stage_bytes >> 20)));
                         }
                     }
                 }
