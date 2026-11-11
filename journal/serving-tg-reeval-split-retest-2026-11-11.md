@@ -538,3 +538,49 @@ helper `8ad751ee…`.
 
 Window needs prod down (trials share the 3080); awaiting operator go +
 window choice.
+
+## Diet windows: "2 then 1" (23:15–23:58)
+
+**Phase 2 — iq3xxs live diet (23:15–23:41, PASS, still serving):** v0221 pin
+(hip `eb61acc0…`, cuda `a750a8f0…`, helper `8ad751ee…`), config/launcher →
+v0221 + `--expert-helper-ram-relief-packs --expert-helper-relief-hot-mib
+15000 --expert-helper-relief-arena-cap-mib 22000 --prompt-window-retry`
+(commit `3411c5967`). Boot lines match the fixer's arithmetic: cap 22000 →
+1,686 tail pairs join, arena keeps 13,849 (21,998 MiB); 10,727 pairs /
+18,926 MiB dropped; hot 15,000 MiB resident. Memory: RSS 37.3→**34.2**,
+available 16.5→**19.5**, free 5.5→11, swap 7.4→5.0. Decode: first request
+27.1 (cold pass — graphs + cold file-served pairs), second **37.1 tok/s**
+healthy band. No regression measured.
+
+**Phase 1 — iq3_s diet validation (23:43–23:55, `run-iq3s-diet.sh`):**
+split-34, v0221, cap 20000, hot 15000, packs, retry. Diet engaged: cap keeps
+10,520 pairs (19,998 MiB); 14,056/14,056 helper pairs dropped — 26,507 MiB
+total (vs 8.55 GiB pre-diet). Panel vs pre-diet s34:
+
+| metric | pre-diet s34 | diet s34 |
+| --- | ---: | ---: |
+| boot RSS / avail | 55.1 / 8.6 | **31.9 / 24.4** |
+| post-panel RSS / avail | 55.1 / 8.6 | 52.0 / 13.0 (swap flat) |
+| 80k read | 56.4 tps | **243.6 tps** (4.3×) |
+| longtg fresh read | ~160 | **276.2 tps** |
+| killer144k total | 520.8 | **314.4 s** (best ever, any arm) |
+| killer fresh read | 609.3 | 462.1 tps |
+| `0 generated in 0 ms` | 1 | **0** |
+| longtg decode | 35.3/32.9 | 21.0/23.5 ⚠️ |
+| tg1024 decode | 37.8/34.8 | 28.1/32.3 ⚠️ |
+| killer decode | 33.6/34.3 | 28.7/28.9 ⚠️ |
+| 8k PP | 197–222 tps | ~128 tps ⚠️ |
+
+**Abort root cause CONFIRMED = memory pressure, not the read path**: with
+the diet's pressure gone, the exact conditions that aborted (16384-reuse +
+tail read) completed clean — no zero-gen, and not even a tail-retry line
+(the #879 trigger never fired). The retry flag rides as belt-and-suspenders.
+
+**The diet trade on iq3_s**: reads/robustness massively better (killer 314 s
+is the best of ANY arm ANY day), decode taxed 15–40% and small-PP ~50% by
+swap-in servicing of dropped pairs. Post-panel RSS rebounds to 52 as file
+pages return, but the available floor 13 GiB (vs 8.6) with flat swap held.
+
+Prod returned to iq3xxs v0221 diet 23:58:04 (one designed pair restart on
+the way up), verified healthy. iq3_s diet tuple = servable opt-in big-context
+config; decode cost makes it the wrong default while iq3xxs diet is free.
