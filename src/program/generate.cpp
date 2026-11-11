@@ -14836,6 +14836,45 @@ int main(int argc, char** argv) {
         // runs there, on the Prefill that ran the chunk, instead of the drafter's own per-8-row pass.  The drafts' K/V
         // come from Q8_1 x Q8_0 MMQ rather than mmvq: drafts may differ, the target's tokens never.
         static const bool split_mtp_batch = strata::program::draft_kv::split_env_on(std::getenv("STRATA_SPLIT_MTP_BATCH"));
+        // The checkpoint's host copies get their own physical-RAM gate.  The park's admission gate
+        // never sees a checkpoint, and a multi-hundred-MiB copy under a full RAM tier faults its
+        // pages through direct reclaim: measured 2026-11-11, a fresh 142k read on a box with ~6 GiB
+        // free froze at the SECOND 16384 boundary (32,768) with ~38 GiB parked in the tier, and the
+        // watchdog killed the engine.  The rule is the park's (conversation_memory_admit: MemAvailable
+        // with the cgroup/limit terms, the --conversation-cache-min-free-mib floor).  On the serial
+        // path it first evicts the oldest parked conversations until the copy fits; on a stage thread
+        // (a split's part saves) it only samples and refuses - the cache is single-thread-owned.
+        // A refused checkpoint is SKIPPED: the request goes on from the last resume point, it never
+        // stalls, and the copy below is never the allocation that freezes the read.
+        auto ckpt_state_bytes = [&](const strata::core::SessionState& s, int64_t ids_n) -> uint64_t {
+            strata::core::ConversationStateSizes z;
+            std::string zerr;
+            if (!strata::core::conversation_session_sizes(g, s, z, zerr)) return 0;
+            return (uint64_t) (z.gdn + z.ple + z.tail + z.dead + z.block_pos) + (uint64_t) ids_n * 4ull;
+        };
+        const uint64_t ck_floor = (uint64_t) o.conversation_cache_min_free_mib * 1024ull * 1024ull;
+        auto ckpt_ram_room = [&](uint64_t bytes, bool may_evict, int64_t at) -> bool {
+            if (bytes == 0 || !conversations.enabled()) return true;   // the cache is off: checkpoints live in their own vectors, the tier is not the pressure
+            auto mem = strata::core::sample_host_memory();
+            auto fits = [&] {
+                return strata::core::conversation_memory_admit(
+                    mem ? std::optional<uint64_t>(mem->available) : std::nullopt, bytes, ck_floor);
+            };
+            size_t evicted = 0;
+            while (!fits() && may_evict && conversations.size() > 0 && evicted < conversations.slots() &&
+                   conversations.evict_oldest()) {
+                ++evicted;
+                mem = strata::core::sample_host_memory();
+            }
+            if (evicted > 0)
+                std::fprintf(stderr, "strata serve: checkpoint at %lld: evicted %zu parked conversation%s for its %.0f MiB host copy\n",
+                             (long long) at, evicted, evicted == 1 ? "" : "s", (double) bytes / 1048576.0);
+            if (!fits())
+                std::fprintf(stderr, "strata serve: checkpoint at %lld skipped: physical RAM (the copy needs %.0f MiB beside the %lld MiB floor, %s)\n",
+                             (long long) at, (double) bytes / 1048576.0, (long long) o.conversation_cache_min_free_mib,
+                             ram_note(mem).c_str());
+            return fits();
+        };
         sp.on_chunk = [&](const float* R_rows, int64_t T, int64_t p0, std::string& e) -> bool {
             // KVA: a chunk the late layers did not compute has no real final rows: its draft cells are neither built
             // nor read (the floor rises before the cells are built, so they are skipped)
@@ -14894,19 +14933,27 @@ int main(int argc, char** argv) {
                 !sp.layer_major_mid();
             if (periodic_checkpoint || tail_checkpoint) {
                 bool saved = false;
-                if (multi_gpu) {   // the stages' parts, saved when each of them read this chunk
-                    std::vector<ConvCheckpoint> parts;
-                    {
-                        std::lock_guard<std::mutex> lk(part_mu);
-                        auto it = part_at.find(done);
-                        if (it != part_at.end()) parts = std::move(it->second);
-                        part_at.erase(part_at.begin(), part_at.upper_bound(done));
+                // The RAM gate first (see ckpt_ram_room above): refused => this checkpoint is
+                // skipped and the read continues, instead of the copy freezing the request at the
+                // 16384 boundary while the kernel reclaims.
+                uint64_t ck_bytes = ckpt_state_bytes(ss, done);
+                for (const auto& st : stages) ck_bytes += ckpt_state_bytes(st->ss, done);
+                if (!ckpt_ram_room(ck_bytes, true, done)) saved = true;
+                if (!saved) {
+                    if (multi_gpu) {   // the stages' parts, saved when each of them read this chunk
+                        std::vector<ConvCheckpoint> parts;
+                        {
+                            std::lock_guard<std::mutex> lk(part_mu);
+                            auto it = part_at.find(done);
+                            if (it != part_at.end()) parts = std::move(it->second);
+                            part_at.erase(part_at.begin(), part_at.upper_bound(done));
+                        }
+                        bool complete = parts.size() == stages.size() + 1;
+                        for (const ConvCheckpoint& k : parts) complete = complete && !k.gdn.empty();
+                        saved = !complete || checkpoint_at(done, &parts);   // an incomplete set: no checkpoint here
+                    } else {
+                        saved = checkpoint_at(done, nullptr, tail_checkpoint && !periodic_checkpoint);
                     }
-                    bool complete = parts.size() == stages.size() + 1;
-                    for (const ConvCheckpoint& k : parts) complete = complete && !k.gdn.empty();
-                    saved = !complete || checkpoint_at(done, &parts);   // an incomplete set: no checkpoint here
-                } else {
-                    saved = checkpoint_at(done, nullptr, tail_checkpoint && !periodic_checkpoint);
                 }
                 if (!saved) {
                     // #3350: only a GPU that is unwell ends the request; a copy that ran out of memory skips this checkpoint
@@ -14931,6 +14978,15 @@ int main(int argc, char** argv) {
                 stage_sp.on_stage_chunk = [&, i](int64_t done, std::string& e) -> bool {
                     if (o.prompt_cache <= 0 || o.prompt_cache_every <= 0 || done < part_next[i]) return true;
                     part_next[i] = done + o.prompt_cache_every;
+                    // The RAM gate for this part's copy (check-only: the conversation cache belongs
+                    // to the serial path, a stage thread never evicts).  A refused part leaves the
+                    // set at `done` incomplete and the combine above skips the checkpoint - the read
+                    // goes on from the last resume point instead of freezing in the copy.
+                    if (!ckpt_ram_room(ckpt_state_bytes(stage_ss, done), false, done)) {
+                        std::lock_guard<std::mutex> lk(part_mu);
+                        part_at[done].resize(stages.size() + 1);
+                        return true;
+                    }
                     ConvCheckpoint part;   // this stage's state at `done` (its stream is synchronized)
                     part.ids.assign(cur.begin(), cur.begin() + done);
                     if (!checkpoint_save(part, stage_ss, g)) {
