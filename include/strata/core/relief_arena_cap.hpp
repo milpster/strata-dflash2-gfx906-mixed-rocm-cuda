@@ -39,7 +39,11 @@ struct ReliefArenaCapPlan {
 ///                       collapse the cold-only stage drop was written to avoid (b749c246c).
 ///   `dropped`:          1 per pair the caller already gave back (the helper's rows, the spill tier's, the
 ///                       stage caches' cold set).  Their bytes leave the resident total; they are not dropped twice.
-/// `pair_bytes(layer)` is the arena's stride for that layer, the same function the relief's byte reports use.
+/// `pair_bytes(layer)` is what the arena copies for one pair of that layer (the caller passes
+/// expert_layout().blob_bytes(layer), the same measure as `arena_total_bytes`, so the plan's bytes add up
+/// exactly).  The caller's hot budget is priced in the cache slot's stride - a larger number for the same
+/// pairs - so the cap is conservative against the hot set: the budget protects MORE arena bytes than its
+/// own MiB figure.
 ///
 /// The walk is coldest first - the pairs the profile never ranked, in layer order, then the profile read
 /// backwards - and stops the moment the resident copy fits the cap, so the hottest pairs are the last to go.
