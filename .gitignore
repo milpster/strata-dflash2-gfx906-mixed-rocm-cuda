@@ -127,3 +127,6 @@ results.sysinfo.txt
 # disk conversation cache (live tier on this box, 7.6 GiB of runtime data)
 /data/conversation-cache/
 v0*/
+bench/ab-v0210/rpcprof/out/ab9-conv-scratch/
+*.sess
+*.dring
