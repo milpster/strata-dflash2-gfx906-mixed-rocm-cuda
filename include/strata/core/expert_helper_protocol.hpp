@@ -19,6 +19,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <string>
 #include <sys/types.h>
 #include <type_traits>
@@ -84,6 +85,7 @@ inline constexpr uint32_t kFeaturePromptF32 = 2u;        // HelloAck.features bi
 inline constexpr uint32_t kFeatureDraft = 4u;            // HelloAck.features bit 2 (M7: the drafter lane)
 inline constexpr uint32_t kFeatureDraftBf16 = 8u;        // HelloAck.features bit 3 (L8: bf16 draft taps)
 inline constexpr uint32_t kFeatureQ8K = 16u;             // bit 4: Q8_K activation images (kBeginQ8K, image_format 2)
+inline constexpr uint32_t kFeaturePromptBatch = 32u;     // bit 5: K prompt-tier claims in ONE exchange (kBeginPB/kRowsPB)
 
 // Frame types.  Exactly one request is outstanding: the engine sends hello, fill, and a begin; each
 // expect a reply of the named type with the same request id.  A frame with an unexpected type, version,
@@ -127,6 +129,16 @@ enum FrameType : uint32_t {
     // contract.  The SAME extension rule as the frames above: a peer that never advertised the bit
     // never sees the frame type - a mixed build gets the typed refusal, never a misparse.
     kBeginQ8K = 17,       // engine -> helper: the window's activations as Q8_K blocks (reply stays kRows)
+    // The prompt tier's CLAIM BATCH (default OFF - the engine's STRATA_CLAIM_BATCH, and only to a
+    // peer that advertised kFeaturePromptBatch): K consecutive prompt-tier claims in ONE exchange,
+    // served by the helper under ONE device-lock acquisition.  The SAME extension rule as the frames
+    // above: a new frame type, never sent to a peer that did not advertise the bit, so a mixed build
+    // answers with this transport's own typed refusal and batch=1 keeps kBeginP's bytes exactly.
+    // Every part is transport-only: same rows requested, same rows returned, same order of
+    // application - a part's request and reply are byte-for-byte a standalone kBeginP / kRowsP
+    // payload, concatenated in the engine's claim order.
+    kBeginPB = 18,        // engine -> helper: n_parts prompt-tier sub-requests in one frame
+    kRowsPB = 19,         // helper -> engine: n_parts kRowsP replies in one frame
 };
 
 // Frame limits the reader enforces before allocating anything.
@@ -262,6 +274,42 @@ struct RowsPResp {
 // contract: rows for a pair the engine did not claim are refused there, every claim it made must be
 // answered, and all floats must be finite.
 
+// ---- The prompt tier's CLAIM BATCH (default OFF): kBeginPB / kRowsP payloads. ----
+//
+// The exchange is transport-only: the engine groups K consecutive prompt-tier claims (the frames it
+// sends one-per-layer today) into ONE frame, and the helper serves them under ONE lock acquisition.
+// Nothing about the claim changes: part i's request is EXACTLY a standalone kBeginP payload
+// (BeginPReq + pairs + primary bitmap + image, its own caps checked per part), part i's reply is
+// EXACTLY a standalone kRowsP payload (RowsPResp + rows), and the parts travel in the engine's
+// claim order - the order the engine applies them.  kMaxFramePayload (128 MiB) is the frame's own
+// cap on both directions, so the batch's caps below keep a batch inside ONE frame each way: the
+// request's parts sum, and the reply's rows sum (rows * (4 + n_embd*4)).
+inline constexpr int64_t kMaxClaimBatch = 16;    // parts in one kBeginPB (1 is never sent: kBeginP is that frame)
+inline constexpr size_t kMaxBatchPayload = kMaxFramePayload / 2;   // 64 MiB per direction, so a batch never
+                                                                    // crowds the 128 MiB frame cap
+
+struct BeginPBReq {
+    int32_t n_parts = 0;      // 1..kMaxClaimBatch
+    int32_t flags = 0;        // reserved, 0 today: the shape an extended batch will negotiate in
+    int64_t reserved0 = 0;    // must stay 0
+};
+
+// The kBeginPB body, in this exact order after sizeof(BeginPBReq):
+//   part 0: sizeof(BeginPReq) + its pairs + its primary bitmap + its image  (a full kBeginP payload)
+//   part 1: .. and so on, n_parts times, in the engine's claim order.
+// The frame's total is exact: every part is length-checked as kBeginP is, and the sum is checked
+// against the frame's own len before a part is parsed.
+
+struct RowsPBResp {
+    int32_t n_parts = 0;      // the parts the helper answered == the request's n_parts
+    int32_t reserved0 = 0;
+};
+
+// The kRowsPB body: n_parts times, in the request's part order, each one EXACTLY a kRowsP payload:
+// sizeof(RowsPResp) + n_rows * (4 + n_embd*4).  A part whose rows the helper did not compute is
+// absent INSIDE its own part (the per-part contract), and the engine validates each part against
+// that part's own claims - a missing row is the same-layer CPU fallback, never a silent zero.
+
 // ---- M7 (the drafter lane; docs/work/MIXED_BACKEND_RPC_PLAN.md sect12): the draft frames. ----
 //
 // The displaced drafter is Dflash2Drafter's contract over the wire: the engine owns the target's
@@ -348,6 +396,11 @@ static_assert(sizeof(BeginPReq) == 24 && offsetof(BeginPReq, n_q8) == 16 &&
               offsetof(BeginPReq, image_format) == 20,
               "BeginPReq's layout is pinned on the wire (pairs start at sizeof)");
 static_assert(sizeof(RowsPResp) == 8, "RowsPResp's layout is pinned on the wire");
+static_assert(sizeof(BeginPBReq) == 16 && offsetof(BeginPBReq, flags) == 4 &&
+              offsetof(BeginPBReq, reserved0) == 8,
+              "BeginPBReq's layout is pinned on the wire (part 0 starts at sizeof; the int32/int64 "
+              "mix pads, so the offset is asserted)");
+static_assert(sizeof(RowsPBResp) == 8, "RowsPBResp's layout is pinned on the wire (part 0 starts at sizeof)");
 static_assert(sizeof(DraftCtxReq) == 24 && offsetof(DraftCtxReq, reset) == 12 &&
               offsetof(DraftCtxReq, pos0) == 16,
               "DraftCtxReq's layout is pinned on the wire (pos0 sits on the 8-byte boundary "
@@ -390,11 +443,48 @@ const char* status_name(int status);
 // The AF_UNIX channel with deadline-bound I/O.  A deadline is an ABSOLUTE CLOCK_MONOTONIC millisecond
 // stamp; deadline_ms < 0 means "as late as a poll can mean" (the caller's own bound), 0 means "now".
 // The descriptor is ALWAYS non-blocking for this channel's I/O (adopt does it, connect keeps it,
-// accept sets it): every write is one poll and one writev, and a full socket buffer answers EAGAIN,
-// which re-polls against the same deadline.  A blocking descriptor cannot promise that - a 1.5 MB
-// write to a peer that is busy computing blocks INSIDE the kernel (sock_alloc_send_pskb), where no
-// deadline exists - so the socket never runs blocking.  Writes use MSG_NOSIGNAL; the process keeps
-// its SIGPIPE default untouched.
+// accept sets it): a write polls once per burst, sends until the buffer answers EAGAIN, and re-polls
+// against the same deadline (helper-ipc-diet; MSG_NOSIGNAL rides every sendmsg).  A blocking
+// descriptor cannot promise that - a 1.5 MB write to a peer that is busy computing blocks INSIDE the
+// kernel (sock_alloc_send_pskb), where no deadline exists - so the socket never runs blocking.
+// Writes use MSG_NOSIGNAL; the process keeps its SIGPIPE default untouched.
+/// helper-ipc-diet (2026-11): the grow-only RECEIVE buffer of read_frame.  A 24 MB rows reply was
+/// `payload.assign(len, 0)`-filled per frame: an allocation plus a full zeroing the read overwrote
+/// entirely (page faults on fresh pages dominate).  The caller OWNS one RxBuffer - the engine's
+/// client keeps ONE per connection, a helper channel keeps one per accepted socket, a test keeps
+/// one per scope - so repeated frames of similar size reuse the same pages: no per-frame alloc, no
+/// zero-fill.  read_frame fills it and hands back a contiguous PayloadView of exactly head.len
+/// bytes, valid until the next read_frame on the same socket; a caller that must KEEP a payload
+/// copies it out (the transport never mutates rx_ outside read_frame).
+struct RxBuffer {
+    uint8_t* p = nullptr;
+    size_t cap = 0;
+    RxBuffer() = default;
+    ~RxBuffer() { std::free(p); }
+    RxBuffer(const RxBuffer&) = delete;
+    RxBuffer& operator=(const RxBuffer&) = delete;
+};
+
+/// The payload view read_frame returns: a contiguous byte window into the caller's RxBuffer.
+/// Deliberately NOT std::span - the CUDA sidecar's host code compiles this header at C++17
+/// (CUDA_STANDARD 17), and the view's whole API (data/size/empty/subscript/range-for) is what
+/// every call site already used on the old std::vector out-parameter.
+struct PayloadView {
+    const uint8_t* p = nullptr;
+    size_t n = 0;
+    PayloadView() = default;
+    PayloadView(const uint8_t* p_, size_t n_) : p(p_), n(n_) {}
+    /// The retention case: a call site that copies a payload out to a vector passes the copy back
+    /// (wire_prompt_ok's cap-shape twin, begin_prompt_drained's captured frame).
+    PayloadView(const std::vector<uint8_t>& v) : p(v.data()), n(v.size()) {}
+    const uint8_t* data() const { return p; }
+    size_t size() const { return n; }
+    bool empty() const { return n == 0; }
+    const uint8_t& operator[](size_t i) const { return p[i]; }
+    const uint8_t* begin() const { return p; }
+    const uint8_t* end() const { return p + n; }
+};
+
 class Socket {
 public:
     Socket() = default;
@@ -423,7 +513,10 @@ public:
     /// channel closed after one window - r11..r16).
     int write_reply(uint32_t type, uint32_t req_id, uint32_t echo_seq, const uint8_t* payload, size_t n,
                     int64_t deadline_ms);
-    int read_frame(Header& head, std::vector<uint8_t>& payload, int64_t deadline_ms) const;
+    /// Read the next frame.  The payload lands in the caller's grow-only `rx` (see RxBuffer) and
+    /// `payload` views exactly head.len of it, valid until the next read_frame on THIS socket.
+    /// A non-ok return leaves `payload` empty - never a stale view.
+    int read_frame(Header& head, RxBuffer& rx, PayloadView& payload, int64_t deadline_ms) const;
     /// SO_PEERCRED on the accepted/connected stream: the peer must run as the SAME uid.  0 = ok.
     static int peer_uid(int fd);
     static int peer_ok(int fd, uid_t expect);
@@ -437,6 +530,11 @@ private:
     std::string bound_path_;
     uint32_t seq_out_ = 0;
 };
+
+// helper-ipc-diet: print the channel's ACHIEVED SO_SNDBUF/SO_RCVBUF once per hello (the 8 MiB ask
+// at socket creation is clamped by net.core.rmem_max/wmem_max; this reports the pair the channel
+// actually runs with).  Observability only - the hello log lines are stderr, not the wire.
+void log_socket_buffers(int fd, const char* side);
 
 // Header codec (host order <-> wire bytes; little-endian on the wire).
 void encode_header(const Header& h, uint8_t* out);

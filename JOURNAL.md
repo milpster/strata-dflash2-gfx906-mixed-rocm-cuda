@@ -1401,3 +1401,396 @@ ldd check (no `.so.3`), then A/B vs frozen arm A per /home/user/.opencode/plan/s
   untouched by any merge); the only v0.2.11 serve/frontend.py change is upstream #5040
   (streamed </tool_call> tag no longer ends the value early) - the Jinja rendering contract
   is unchanged.
+
+## 2026-11-09 — Prompt-tier claim batch on the wire (kBeginPB/kRowsPB), default OFF
+
+- `helper-ipc-diet` 1ea98dae3: K consecutive prompt-tier claims in ONE socket
+  exchange, served by the CUDA helper under ONE device-lock acquisition.
+  `STRATA_CLAIM_BATCH` (read per client, clamped 1..16) AND the helper's
+  `kFeaturePromptBatch` (HelloAck bit 5); default 1 = today's kBeginP/kRowsP
+  bytes and code path exactly (the ack's `features` field already existed).
+- Wire: `kBeginPB`=18 is `BeginPBReq{n_parts,flags,reserved0}` + K parts
+  concatenated in claim order, each part byte-for-byte a full kBeginP payload;
+  `kRowsPB`=19 is `RowsPBResp{n_parts,reserved0}` + K parts, each byte-for-byte a
+  full kRowsP payload.  Caps (16 parts, 64 MiB per direction) refuse BEFORE any
+  write; the helper length-checks every slice before device work; each part is
+  validated against ITS OWN claims by the existing whole-or-nothing validator.
+- Refusals: part beyond the queue cap = kErrGeometry (silent wire); a caller
+  whose claims differ from the queued front part = kErrSeq checked BEFORE the
+  flush, so no reply is burned and no row lands out of order; a new claim after
+  the batch's reply is answered = kErrBusy.
+- Engine-side finding (the reason K>1 is gated, not a win yet): a layer's reply
+  is consumed INSIDE that layer's walk (gather into single-slot m.Dm/hp_stage,
+  same-layer fallback on single-slot ext_x_), so a per-layer begin/finish walk
+  flushes a ONE-part batch.  The transport and the single-lock serving are in
+  place; giving the prefill walk the depth to run K begins ahead of the first
+  finish is follow-up and needs a GPU window.
+- Evidence (CPU-only, prod untouched): expert_helper_socket_test PASS, 288
+  checks (new section 20a-20d); build_l3.sh both trees green - CUDA guard PASS
+  (helper fatbin sm_86) + ctest -R helper 5/5 (socket 7.03 s), HIP guard PASS
+  (gfx906 HIP: libamdhip64 + .hip_fatbin + STRATA_HIP_GFX906) + ctest -R helper
+  1/1 (that tree's frozen conf has STRATA_BUILD_TESTS=OFF).  Log
+  `build-mixed-gpu/claim-batch-build.log`.  Goldens, launcher and /mnt/srcds/Strata
+  untouched; wire documented in docs/work/MIXED_P2_REFERENCE.md.
+
+## 2026-11-09 — Claim batch after the GPU windows: one-part flush = batch=1; the lever is structural
+
+- Operator ran the two GPU windows on prod (arms of ab9-20261109-215940/220431-D):
+  STRATA_CLAIM_BATCH=1 parity exact (greedy sha 01db7a9d… every leg) and perf
+  identical to the pre-batching build; STRATA_CLAIM_BATCH=8 parity exact on real
+  hardware (kBeginPB/kRowsPB proven end-to-end) but 8k prefill ~6% SLOWER
+  (8.60 vs 8.11 s) - all 256 exchanges flushed as parts=1, so K>1 bought only
+  wrapper cost.
+- VERIFIED CLAIM STRUCTURE (code + the D helper logs): exactly ONE prompt claim
+  per MoE layer - the layer's whole pair list in one dense plan (begin
+  prefill.cpp:5377 / M6 lane :5317, finish :6450, single-slot hp_rows/hp_claims/
+  hp_stage).  256 'serve tier=p' lines = 32 layers x 8 walks, layers strictly
+  ascending per walk, 490-1245 rows per line = the layer's full row set; the
+  batch=8 arm logged parts=1 on 256/256 lines.  Layer l+1's routing reads layer
+  l's MoE output, so cross-layer begin-ahead is not definable, and within a
+  layer there is exactly one claim.  => TASK B (within-layer coalescing) has
+  nothing to coalesce: the lever is dead in this pipeline, not unimplemented.
+  Engine-side change: the claim-site comment now records the structure and the
+  evidence; no pipeline change (a forced split of one layer's rows would add
+  bytes and lock round-trips, not remove them).
+- TASK A (the perf fix): a queue of exactly ONE part flushes as a plain
+  kBeginP/kRowsP exchange (write_beginp shared with begin_prompt; the part
+  carries its begin deadline; the reply goes through the single-claim read and
+  validator; the claims-order refusal runs before the flush).  begin_outstanding_/
+  req_id_/seq_/prompt_requests_/prompt_rows_returned_ bookkeeping identical.
+  K>=2 keeps multi-part batching for callers whose shape supplies it.
+- Test: socket section 20e pins the one-part flush's frame TYPE and its byte
+  equality with a batch=1 frame captured in the same run, twice (the walk's next
+  claim flushes alone too), and that the channel stays open.
+  expert_helper_socket_test PASS, 305 checks.
+
+## 2026-11-09 — Serve-path sub-spans: where the 44 ms per prompt claim actually goes
+
+- Instrumentation ONLY (no behavior change), CUDA helper `serve_prompt_core` /
+  `serve_prompt` / `serve_prompt_batch`: steady_clock sub-spans, gated on the
+  existing STRATA_RPC_PROFILE (the span sink is a nullptr when profiling is off,
+  so the default path reads no clock and writes no extra text).
+- Spans named for the phases the code actually has: `parse_us` (BeginPReq header,
+  geometry caps, layer/format gates), `lookup_us` (pair loop: primary bitmap +
+  cache.slot_of + per-expert cap, AND the grouped entry map), `quant_us` (the
+  fp32->q8_1 twin, image_format 1 only), `upload_us` (the three async enqueues:
+  q8 H2D, GroupMetaP H2D, scratch clear), `launch_us` (grouped kernel enqueue +
+  cudaGetLastError), `ksync_us` (cudaStreamSynchronize - THE GEMM span: it drains
+  the queued uploads, the clear and the kernels), `scan_us` (H14 all_finite over
+  the mapped-host rows), `pack_us` (reply serialize = the rows' PCIe read out of
+  the mapped cudaHostAlloc d_out_p).  Their sum is lock_us; reply_us stays the
+  socket-write span.
+- The serve line grows ADDITIVELY after the unchanged prefix (and after the
+  batch's `parts=N`): single-claim and batch lines both append
+  `parse_us= lookup_us= quant_us= upload_us= launch_us= ksync_us= scan_us=
+  pack_us=`; the batch line reports the WHOLE batch's spans (slice pass folded
+  into parse_us, every part summed).  Each line is written in ONE fprintf so two
+  --socket2 serve threads cannot interleave it (the reason the first draft,
+  which split the line across writes, was replaced).
+- Readers: ab9_collect.py matches the line PREFIX (search/finditer) and ignores
+  what follows - confirmed unaffected, unchanged.  claim_breakdown.py extended
+  (tolerantly): a SPAN regex collects the 8 fields per prompt claim when present,
+  prints sum/median/share-of-lock per span plus the spans-sum vs lock gap, and
+  behaves exactly as before for logs without them.  Verified on tonight's
+  220431-D log (256 claims, no spans -> identical output) and on a synthetic
+  mixed log (5 of 6 claims with spans -> share table, ksync 95%).  The two bench
+  scripts are left UNCOMMITTED in /mnt/srcds/Strata for the operator to commit.
+- CPU-only verification: build_l3.sh both trees green, guards PASS (helper fatbin
+  sm_86 + -patient alias refreshed; gfx906 HIP), ctest -R helper 5/5 and 1/1.
+  The GPU window that reads these fields is the operator's to run.
+
+## 2026-11-10 — Format 0: the engine quantizes the prompt image, the helper's lock stops paying for it
+
+- WHY format 1 today (the answer, with evidence): the chooser is
+  `src/core/expert_helper_socket.cpp` `build_beginp_payload`:
+  `f32_img = prompt_f32_ && !q8k_img`, and the CUDA helper's hello ack advertises
+  `kFeaturePromptF32` unconditionally (`tools/mixed_gpu/sidecar/helper_main.cpp`),
+  so an f32-capable peer always wins the choice. M4c (b) made that deliberately:
+  its own comment says the quantize "leaves THIS critical path; the helper
+  quantizes in its own process, overlapped with the primary's compute". Format 0
+  was never unwired (the else branch is `quantize_q8_1_cpu` per row) - only
+  shadowed by the peer's fp32 bit.
+- The span profile killed that premise: the helper quantizes INSIDE its device
+  lock, so nothing overlaps it. 256 claims, `ab9-20261109-235338-D-helper.log`:
+  quant 2.630 s = 44.9% of lock (med 6036 us/claim), ksync 39.1%, pack 11.1%.
+- Implementation is a GATE, not a new path: `STRATA_HELPER_Q8_IMAGE` (read per
+  call, default OFF = today's bytes) makes the engine send image_format 0 - the
+  tier's original wire, uploaded verbatim by the helper, quant span ~0, no
+  helper change. Q8_K keeps precedence; a peer without the fp32 bit was already
+  format 0 (env inert); env unset = byte-identical default.
+- Parity verdict: NO shift. `quantize_q8_1_cpu` (src/core/expert_helper_socket.cpp
+  :126) and the helper's `quantize_q8_1_twin` (helper_main.cpp :120) are the
+  same statements - a mechanical diff of the two bodies differs only by the
+  engine's 3 comment lines. Same constants/clamps/amax+sum order/fp16 scales/
+  std::roundf/36-byte block layout, so the grouped kernel gets the exact bytes it
+  makes for itself. No re-baseline needed.
+- Size math (real numbers, same window): image 1469 MiB fp32 -> 413 MiB q8_1
+  over 256 claims = 3.56x, ~1056 MiB and ~0.25 s of wire at the measured
+  4.42 GB/s. Per row 10240 B -> 2880 B. The quantize cost is MOVED (helper lock
+  -> engine begin path), not deleted; the lock gain is the point (it is the M7
+  serialization point, measurable in queue_us).
+- Tests: socket section (21) pins the format-0 round trip (frame type stays
+  kBeginP; image_format 0, n_q8 = n_sel*(H/32)*36, image = quantize_q8_1_cpu of
+  the tier's rows byte-exact, kRowsP reply applied in one exchange in claim
+  order), the env's inertness (no fp32 bit -> format 0; Q8_K keeps precedence),
+  and the frame byte totals with the delta pinned to n_sel*(H*4-(H/32)*36).
+- CPU-only: build_l3.sh both trees, guards, ctest -R helper. No GPU program run.
+- Build note (transparency): the first run FAILED - my gate edit dropped the
+  existing `q8k_img` declaration (compile error at expert_helper_socket.cpp:691,
+  log `build-mixed-gpu/q8-image-build.log`). Restored verbatim, amended
+  (`fa733f62d`), rebuilt green. Final: socket test 326 checks (21 new), PASS;
+  CUDA guard PASS + ctest -R helper 5/5; HIP guard PASS + 1/1
+  (`build-mixed-gpu/q8-image-final-build.log`).
+
+## 2026-11-10 — Engine-side per-layer spans: where the ~256 ms MoE layer actually goes
+
+- Q1 answered: the engine's claim line is `src/prefill/prefill.cpp:6501`
+  (sync lane only, gated on STRATA_RPC_PROFILE; :6462 before this commit),
+  fields `layer rows sel d2h_us begin_us reply_us img_kb reply_kb fallback`
+  (+ `img_fmt` now); the M6 PIPE lane never emits it (the worker owns the tail).
+  The span line is emitted at `:6746`.  The claim lines ARE in
+  ab9-20261110-005056-D-engine.log (256 of them, begin_us sum 2.370 s) - the awk
+  that found 0 was reading a pattern, not the file;
+  `awk '/begin_us=/{split($0,a," ");for(i=1;i<=NF;i++) if(a[i]~/^begin_us=/) s+=substr(a[i],10)} END{print s}'`
+  prints 2.37 s.
+- L4 spans (`STRATA_ENGINE_SPANS=1`, default OFF, no clock read and no line when
+  off): non-overlapping wall segments per MoE layer of the batched walk, marked
+  at boundaries the walk already has, emitted at the layer's end as a SIBLING of
+  the claim line: `rpcprofile: span layer=N pipe=P layer_us attn_us router_us
+  claim_us expert_us wait_us apply_us helper_us rest_us`.  attn = layer start ->
+  the router mark; router = router -> the helper block's entry (top-k + the
+  residency/selection scan); claim = block entry -> the frame on the wire (the
+  quantize sits in here when STRATA_HELPER_Q8_IMAGE is on); expert = send -> the
+  reply read begins (the primary's own expert work, where a helper answer is
+  free); wait = finish_prompt (or the PIPE outcome wait) = the TRUE helper
+  exposure; apply = reply -> the block staged and its H2D queued; rest = the
+  remainder; helper = send -> staged (overlay, the round trip the layer feels).
+- Also fixed a reporting defect the fmt0 window exposed: the claim line's img_kb
+  reported the FP32 image size regardless of what the wire carried.  It now
+  reports `prompt_last_image_bytes()` (the bytes the frame built) and appends
+  `img_fmt=0|1|2`.  Measure-only: a store of two members per frame build.
+- Reader: `bench/ab-v0210/rpcprof/engine_breakdown.py` (main tree, uncommitted -
+  operator commits).  Works on the existing logs today (claim-line summary) and
+  prints the span table + helper-wait share with span lines present.
+  ab9_collect.py is untouched: its regexes are prefix-anchored search/finditer
+  and ignore appended fields and the new sibling line.
+- Evidence from the fmt0 window's helper log (read with claim_breakdown.py, CPU
+  only): quant 0% (was 44.9%), lock 5.856 -> 3.376 s, ksync now 70% of lock, pack
+  20%, scan 5%, upload 3%.  Helper reply_us sum 12.2 s = the socket write
+  blocking on the engine (the engine is busy quantizing + computing) - the write
+  is outside lock_us, so it does not stall the GEMM, but with a second channel
+  it is the thing to watch.
+- CPU-only verification: build_l3.sh both trees, guards, ctest -R helper.  No new
+  unit test: the span emission is inside the GPU-only layer walk (no CPU-only
+  render of it exists); the compile plus the socket suite are the check, and the
+  reader was dry-run on a synthetic span log and on the two real engine logs.
+- Build note (transparency): the first run FAILED - the claim line reached the
+  new accessors through `m.hp`, which is `RemoteExperts`, not the client; added
+  the forwarding accessors (`include/strata/core/remote_experts.hpp`,
+  `prompt_chan()`-based, 0/-1 with no channel).  Failed log
+  `build-mixed-gpu/engine-spans-build.log`; the green run is the rerun on the
+  amended commit.
+
+## 2026-11-10 — The router span is a GPU drain point, not the router's math
+
+The window (ab9-20261110-015332-D) put `router_us` at 64.6% of the layer cycle
+(med 52.6 ms over 256 claimed MoE layers).  The span is `prefill.cpp:4715 ->
+:5289`; what lives inside it, in source order:
+
+- `:4716` the gate GEMM enqueue (`bf16_proj`: bf16 hidden image x
+  `ffn_gate_inp` 4600x2560 -> fp32 logits, T rows); `:4717` the `route` kernel
+  enqueue (softmax/sigmoid + top-k on the GPU, writes ids/weights);
+- `:4721-4775` the DBG block - a full stream sync + D2H, only under
+  STRATA_DBG_FEAT / STRATA_DBG_ROUTE_OVERRIDE (off in these windows);
+- `:4779-4792` the shared expert's enqueues (gate/up + swiglu + down + the bf16
+  scalar gate) when not deferred; deferred at `:5071`;
+- `:4948-4959` the host grouping's start: the routed ids' D2H (mapped `copy_i32`
+  / `up_ring.d2h_sync`);
+- `:4979-5010` the CPU-share probe bookkeeping (pinned buffers grow once,
+  `:4993` - no per-layer alloc);
+- `:5012` `cudaStreamSynchronize(m.cs)` - the code's own #579 says it: "a stall
+  here is the GPU (this layer's attention and router, or the previous layer's
+  work), not the host";
+- `:5013-5079` post-barrier: the routes callback, the rows buffer, the deferred
+  shared enqueue, the T x k counting loop; `pt.fold()` at `:5033`
+  (cudaEventElapsedTime over ~25 marks, ~100 us);
+- `:5088-5288` the claim plan: per-expert token lists over T x k, the
+  holds/stable screen over 4600 experts, `hp_pos`, the `off[]` build, the
+  CPU-share selection (`nth_element`/`sort`), the peer fold.
+
+Arithmetic at the window's chunk sizes (gfx906: fp16/bf16 MFMA peak 6.46
+TFLOP/s, fp32 1.69, HBM2 ~1 TB/s; logits = T x 4600 x 4 B):
+- gate GEMM = 23.6 MFLOP/token: 12 GFLOP @512 (2 ms at peak), 193 @8192
+  (31-35 ms), 386 @16384 (63-70 ms, compute-bound at K=2560 N=4600);
+- logits traffic: 9.4/151/302 MB per pass; write + softmax/top-k re-reads
+  (<= 3 passes) = 0.03/0.45/0.9 ms - the memory floor is negligible;
+- measured router medians 19.1/44/320 ms @512/8192/16384.  So: @8192 the span is
+  the gate GEMM's own drain; @16384 the excess over ~72 ms (about 250 ms) is the
+  PREVIOUS layer's queued MoE-expert GEMMs draining through the `:5012` barrier
+  (T x k = 131k pairs x ~11.8 MFLOP = 1.55 TFLOP ~ 240 ms at peak, more with the
+  IQ3 dequant); @512 the 19 ms is the fixed floor (the 4600-expert scans, the
+  launches, the barrier latency, pt.fold).  The router's math is never the
+  pacer; the barrier is.
+- 80k legs: per CHUNK (T=16384): 32 layers x 320 ms = 10.2 s of router span per
+  chunk, and the log says exactly that (chunks sum 12.5-12.6 s, 70-74% of
+  layer_us).  The superlinear 44 -> 320 ms for a 2x chunk is the barrier
+  absorbing the previous layer's linear-in-T expert work.
+
+Phase 2 verdict: fusing gate+softmax+top-k saves <= 0.9 ms/layer (<= 0.2% of the
+cycle) - not the lever; fp16 logits halves 0.3 ms of traffic and can flip top-k
+ties - declined on the parity rule.  The lever is the M6 PIPE lane
+(STRATA_PREFILL_HELPER_PIPE=1, harness env, shipped and tested): `wait_us` = 9.1%
+of the layer cycle (6.174 s / 68 s, med 116 ms of the 457 ms cycle at 16384) is
+the engine blocked reading the reply; on the PIPE lane the worker owns send ->
+gather and the walk never blocks.
+
+Implemented (instrumentation only, same STRATA_ENGINE_SPANS gate, default OFF):
+the router span's own decomposition, five sub-spans summing to router_us,
+appended to the span line: `gate_us` (the gate GEMM + route kernel ENQUEUES),
+`ids_us` (the shared-expert enqueues when inline + the routed ids' D2H),
+`barrier_us` (the `:5012` sync - the GPU queue drain), `group_us` (post-barrier
+CPU grouping + probes + the deferred shared enqueue), `sel_us` (the claim plan
+build).  Marks at `:4718` (after `route`), `:4960` (after the ids download),
+`:5013` (after the barrier), `:5089` (plan build start).  Reader:
+`bench/ab-v0210/rpcprof/engine_breakdown.py` prints the decomposition and a
+per-chunk-group median table (the token-count scaling).
+
+## 2026-11-10 — The outside-layer gap is the peer half: L5 spans for EVERY walked layer
+
+The 02:57 window confirmed the router prediction (barrier = 99.1% of `router_us`),
+and exposed that the claimed-layer spans cover only 47% of the 8k leg wall (3.7 s
+of 8.05 s) and 30% of the 80k wall (14.6 s of 48.0 s).  The gap's shape:
+
+- The model is 48 layers, all MoE: 12 full-attention (QSA) + 36 linear-attention
+  (GDN) (`core::is_qsa_layer`, `geometry.hpp:75`; `session.hpp:7` counts 12 QSA
+  states and 36 GDN states).
+- The window runs a layer split - the engine says so at startup: "layer split:
+  CUDA1 holds its weights, session [32, 48) and the head" (`generate.cpp:7079`).
+  The stages are separate `Prefill` instances, each with its own window
+  (`set_stage`, `generate.cpp:11785`; the next stage is also this stage's
+  stream-only peer, `set_stage_helper`, `prefill.cpp:2503`).  The primary's walk
+  covers `LB..LE` = `stage_lb_..stage_le_` (`prefill.cpp:3439`) = layers 0..31;
+  the peer's `run_impl` (layers 32..47 + the head, on CUDA1) is invoked NESTED per
+  chunk from the primary's chunk loop, after the hand-off (`next_->run_impl`,
+  `prefill.cpp:6899`) - so the primary's chunk wall excludes the peer's run and
+  its pass wall includes it.  Its summary is the existing "strata prefill timing
+  (peer GPU, ms)" line, under STRATA_PREFILL_TIMING.
+- The span lines were emitted only for CLAIMING layers, so the 16 peer layers -
+  which never claim, their experts live on the peer - printed nothing.  The gap is
+  them: 4.3 s / 16 = 269 ms per layer at 1648 tokens, 33.4 s / 16 = 2088 ms per
+  layer at 14642 tokens.
+- Against the floors on a 3080 (fp16 ~15-20 TFLOP/s): the peer's own expert GEMMs
+  are 155 GFLOP (13.2k pairs) = 8-10 ms at 1648 tokens and 1.4 TFLOP (117k pairs)
+  = 70-95 ms at 14642.  Measured 269 / 2088 ms = 20-27x over, and the scaling
+  tracks the touched-expert set (the blobs the peer's own streaming/staging path
+  moves per layer), not flops.  So the gap is structural, in the peer half's
+  host-side expert staging, not in dense-layer compute.
+
+L5 instrumentation (same STRATA_ENGINE_SPANS gate, default OFF, measure-only):
+- the gate moved to `run_impl` scope (`prefill.cpp:3432`, with `es_gpu`/`es_run0`);
+- the span line is emitted for EVERY walked layer (`:6795`), appending `gpu=%d
+  claim=%d attn=qsa|gdn post_us=%lld` (the existing field order is untouched, so
+  readers stay tolerant).  On `claim=0` lines `router_us` runs from the router mark
+  to the claim-plan start and `post_us` is the layer's whole remainder (its expert
+  compute, the combine, the write-back) - that is the gap, measured per layer and
+  split by attention class and device;
+- `PfChunkSpans` (`:3257`) + the chunk line (`:6842`) `rpcprofile: chunk gpu chunk
+  tokens intake_us walk_us tail_us chunk_us`: intake = embeddings/PLE rows/stream
+  plan (pf_w0 -> the walk's first layer), walk = the layer loop, tail = the issuer
+  join / the PLE land / the hand-off;
+- the run line (`:7100`) `rpcprofile: pass gpu tokens layers chunks pass_us`:
+  everything the chunk lines do not cover is the run's own setup.
+Reader: `engine_breakdown.py` prints per-class tables (claiming / NON-claiming with
+`post_us`, split by `attn=qsa|gdn` and `gpu`), the chunk-wall table, and a
+gap-attribution table when `--wall MS` is given per leg.
+
+
+## 2026-11-10 — L6: the chunk tail at the hand-off, and the chain's run wall (`STRATA_ENGINE_SPANS`)
+
+The 12:20 window (ab9-20261110-122047) closed the gap: 48 span lines/chunk, gpu0 32 claiming layers,
+gpu1 16 non-claiming (layers 32..47 = 12 GDN + 4 QSA - `is_qsa_layer` is `layer % 4 == 3`, so the peer
+half is NOT the full-attention half; the QSA/GDN ratio is 1:3 on both halves).  The peer's per-layer
+layer_us at 14,637 tokens = 1.00-1.66 s of which **barrier_us = 96-99%** (the router drain,
+`prefill.cpp:5027`); its `attn_us` is 0.15-4.3 ms (0.06% of the peer's 19.3 s).  So the peer's cost is
+the GPU queue drain (expert GEMM + the blob stream enqueued on `m.cs`), not attention; on the 3080
+(~40 TFLOP/s fp16 tensor) the 7,321 pairs/layer are ~2 ms of GEMM - the drain is PCIe-staging-bound.
+The two stages run CONCURRENTLY (the successor's `run_impl` goes to the hand-off worker thread,
+`:6896-6907`), so gpu1's pass_us (21.5 s) exceeding gpu0's (17.5 s) is pipeline, not nesting.
+
+L6 makes the rest measurable, same gate, measure-only:
+- the chunk line moves to the chunk's real end: a stage WITH a successor emits it just before the
+  `continue` (`:6911`), so `tail_us` now covers the hand-off (the rows' D2H, the event waits) and the
+  submit of the next stage's run; the last stage emits at the chunk body's end (`:6846`).
+- `rpcprofile: run gpu tokens layers run_us` in `Prefill::run` (`:8527`, emitted after the drain at
+  both the chunk-major and layer-major exits): the CHAIN's whole prompt-processing wall - both stages,
+  the joins, the drain.  wall - run_us = the tokenization, the head, the serve/sample.
+Reader: `engine_breakdown.py` prints per-(gpu,chunk) walls, per-stage `run_setup = pass_us - its last
+chunk`, and the gap table rows for `pass_us` and `run_us` with `outside the run` as the residue.
+
+## 2026-11-10 — STRATA_PIPELINE_CHUNKS: an explicit, bounded chunk count for the split's pipeline
+
+Why --prefill-pipe cannot express this (the 13:38/13:45 sweep): `Prefill::pipeline_chunk`
+(`prefill.cpp:2884`) takes the value as **whole tokens**, not a ratio - `ratio_tokens(v) =
+llround(min(v, 2^20))` (`:2879`), so `pipe=1.1` means **b = 1 token** per chunk in its cost
+`cost(c) = k*b + n + S1*(b + min(c, n))` (`:2905-2908`).  With b=1 the per-chunk cost is nothing, the
+model maximizes the chunk count, and its bounds are `c >= 512` and `k <= min(64, (n+511)/512)`
+(`:2916-2919`) - hence 512-token chunks: 4 chunks at 1643 tokens, 29 at 14637 (measured: +65% and
+3.3x slower).  `pipe=1` is a different rule (STRATA_PREFILL_EQUAL: even today's chunk count, only when
+today's last chunk streams everything), so a 1-chunk prompt stays 1 chunk.
+
+`STRATA_PIPELINE_CHUNKS=N` (opt-in, default unset = today byte-for-byte) says it directly: the prompt
+reads in exactly N equal chunks on the 256-token grid, the remainder in the last.  The math is the
+header-only `strata::prefill::pipeline_chunks::chunk` (`include/strata/prefill/pipeline_chunks.hpp`):
+1 chunk = the buffers' chunk (today's read), cap = the buffers' size, and the bounds are the pipe
+path's own floors - a chunk of at least 512 tokens, at most 64 chunks - applied to the LAST chunk too
+(equal chunks ceil to the grid, so the remainder shrinks: 3 chunks at 1643 tokens = 768+768+107 is
+refused, not run slow).  Unusable N prints once and reads in today's chunks (fail loud, not slow).
+Only the first stage decides and only a split pipelines (`Prefill::plan_chunk`, `prefill.cpp:2924`).
+
+For the rig's legs (cap 16384): 14637 tokens / 2 -> 7424 + 7213; 1643 / 2 -> 1024 + 619; 14637 / 4 ->
+3840+3840+3840+3117; 14637 / 8 is refused (2048 leaves 301).  Parity is untouched (the chunked path is
+byte-exact at every chunk count, the 13:45 window's gate3).  Test: `tests/prefill/pipeline_chunks_test.cpp`.
+
+## 2026-11-10 (evening) — STRATA_CACHE_SPILL: the split's cache takes the idle VII's headroom
+
+**Why (measured today, split-44 promoted):** the VII-side expert cache fell from 5045 experts / 7.56 GiB
+(split-32 boots) to 3695 experts / 5.94 GiB (split-44 boots); decode cache hit 92-94% → 82-86%, ~26% of
+routed experts pay a PCIe hop per token, TG ~10% down at long context.  The boot lines say the shape
+exactly: CUDA0 fills to "404 MiB of VRAM free with the model loaded" while CUDA1 sits at 13.2/16.0 GiB
+with ~2.8 GiB that nothing claims.
+
+**The allocator's rule, read out (why card1 idles):** a layer split gives every stage its own cache on
+its own GPU, sized from `stage_room(st.dev)` — that card's free VRAM after its own fixed costs
+(`generate.cpp:9028`), and filled only from **that stage's own layers'** profile pairs
+(`generate.cpp:9061-9069` sizing, `:9102-9115` fill).  Nothing ever looks at the sum of the cards'
+headroom.  At split 44 stage0 owns 44 layers (its cache is bound by CUDA0's room: 3695 slots) and
+stage1 owns 4 layers (2048 pairs, filled long before CUDA1 runs out).  So CUDA1's cache is capped by
+its layer count, not its VRAM, and the leftover ~2.8 GiB is unreachable by design.  The single-GPU auto
+cache is the same one-card rule (`device_free_bytes()` at `:8359`, `core::auto_cache_slots` at `:8439`).
+
+**The lever (implemented, gate `STRATA_CACHE_SPILL=1`, default unset = byte-identical):** fill the
+idle card with the pairs **no cache holds** as an in-process remote tier — the machinery the engine
+already ships (`RemoteExperts::open`, `src/core/remote_experts.cpp:208`: a cache on that device, rows
+computed there with the same kernels the primary's hit path uses, returned through the pinned host
+rows; measured on AMD in docs/SECOND_GPU.md, RX 6800 + RX 6600).  Tiers are disjoint by construction
+(`open()` skips pairs a stage claimed; the helper's `howned` bitmap now lists the tier's pairs too,
+so the 3080 helper fills nothing the spill holds), so which card serves a routed expert is decided by
+where its blob lives — the claim order per layer is untouched, a blob is the same bytes wherever it
+lies, and only the latency differs.  That is the whole parity argument: device-local hit vs peer-card
+row is a timing difference, never a numeric one.
+
+Placements, all gate-ON-only: `generate.cpp` — the split places tier 0 (auto byte rule, INT_MAX slots,
+`auto_size`) on the LAST stage's device, the card with the headroom, where the old rule refused a
+tier on a GPU running a stage; the helper's scope accepts the spill tier and keeps refusing every
+tier named by hand; `expert_source.cpp:5331` re-arms **every** proxy at the layer-0 seam (the old
+index-0 test was sound only while the refusals made the proxy the only registrable tier — the
+generate.cpp TRAP note at the `drive.d.remote` append said exactly this).  Costs, all measured by the
+code's own rules: `--vram-elastic`/`--kv-grow` are already off for a split; `--pipeline-windows` is
+off by default for a 2-stage split anyway (needs 3 stages); the INFO monitor's `expert_slots` now
+counts the tier (disjoint, so it adds).
+
+Numbers to expect (the rig's own boot figures, in `tests/core/cache_spill_test.cpp`): CUDA1's idle
+2.8 GiB minus the tier's 512 MiB guard at the rig's 1 724 416 B slot = **1432 slots**, so
+3695 + 1432 = **5127 slots ≈ 8.2 GiB** — at or above split-32's 5045.  Validation window should show
+`CUDA1: ~1400 additional experts, ~2.3 GiB` at boot, `expert_slots` ~5100, decode hit back toward
+92%, TG recovery at long context, PP unchanged.

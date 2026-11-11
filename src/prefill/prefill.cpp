@@ -14,6 +14,7 @@
 #endif
 #include "strata/prefill/warm_policy.hpp"
 #include "strata/prefill/share_rules.hpp"
+#include "strata/prefill/pipeline_chunks.hpp"
 #include "strata/core/arch_defaults.hpp"
 #include <atomic>
 #if defined(__cpp_lib_atomic_wait)
@@ -2875,14 +2876,27 @@ void Prefill::set_pipe(double value) { g_pipe = value; }
 void Prefill::set_pipe_request(double value) { g_pipe_req = value; }
 double Prefill::pipe_setting() { return pipe_value(); }
 namespace {
+// STRATA_PIPELINE_CHUNKS (opt-in): read the prompt in EXACTLY N chunks, engaging the layer split's
+// stage pipeline directly (include/strata/prefill/pipeline_chunks.hpp).  Unset: today's plan.
+int64_t pipeline_chunks_want() {
+    static const int64_t v = [] {
+        const char* s = std::getenv("STRATA_PIPELINE_CHUNKS");
+        if (s == nullptr || s[0] == '\0') return (int64_t) 0;   // unset: today's plan, byte-for-byte
+        char* end = nullptr;
+        const long long x = std::strtoll(s, &end, 10);
+        return end == s || x < 1 ? (int64_t) -1 : (int64_t) x;   // -1: unusable, said once and ignored
+    }();
+    return v;
+}
+}  // namespace
+namespace {
 // b/a in whole tokens: 0 for none (or NaN), at most 2^20 (llround of an infinity is undefined - `pipe=inf` parses)
 int64_t ratio_tokens(double ratio) { return ratio > 0.0 ? (int64_t) std::llround(std::min(ratio, 1048576.0)) : 0; }
 }  // namespace
 int64_t Prefill::pipe_key(double value) { return !(value > 0.0) ? -1 : value <= 1.0 ? 0 : ratio_tokens(value); }
 // In whole tokens (r rounded): integer sums and a 97/100 test, so a near-tie cannot fall one way in one build and the
 // other way in another (the same chunks as the double version for every whole r: an exact 97% is not better).
-int64_t Prefill::pipeline_chunk(int64_t n, int64_t cap, int stages, double ratio) {
-    if (stages < 2 || n <= 0 || cap <= 0) return cap;
+int64_t Prefill::pipeline_chunk(int64_t n, int64_t cap, int stages, double ratio) {    if (stages < 2 || n <= 0 || cap <= 0) return cap;
     const int64_t r = ratio_tokens(ratio), S1 = stages - 1;
     if (r == 0) {
         // `--prefill-pipe 1`: STRATA_PREFILL_EQUAL's rule (#693, generate.cpp equal_chunk) - today's chunk count, evened
@@ -2917,9 +2931,26 @@ int Prefill::stage_count() const {
     return stages;
 }
 int64_t Prefill::plan_chunk(int64_t n) const {
-    const double pipe = pipe_value();
     const int stages = stage_count();
-    if (pipe <= 0.0 || hand_in_ != nullptr || stages < 2) return 0;
+    if (hand_in_ != nullptr || stages < 2) return 0;   // only the first stage chooses, and only a split pipelines
+    const int64_t want = pipeline_chunks_want();
+    if (want != 0) {
+        const int64_t c = strata::prefill::pipeline_chunks::chunk(n, impl_->T, want);
+        if (c > 0) return c;
+        static bool said = false;   // fail loud, not slow: say it once, read in today's chunks
+        if (!said) {
+            said = true;
+            std::fprintf(stderr, "strata prefill: STRATA_PIPELINE_CHUNKS=%lld is unusable for a %lld-token prompt: "
+                                 "%lld equal chunks leave the last one under the %lld-token floor (at most %lld "
+                                 "chunks here, at most %lld tokens each); reading in today's chunks\n",
+                         (long long) want, (long long) n, (long long) want,
+                         (long long) strata::prefill::pipeline_chunks::kFloor,
+                         (long long) strata::prefill::pipeline_chunks::kMaxChunks, (long long) impl_->T);
+        }
+        return 0;
+    }
+    const double pipe = pipe_value();
+    if (pipe <= 0.0) return 0;
     return pipeline_chunk(n, impl_->T, stages, pipe > 1.0 ? pipe : 0.0);
 }
 void Prefill::force_chunk(int64_t chunk, bool single, bool planned) {
@@ -3208,6 +3239,55 @@ struct PfTimer {
         for (cudaEvent_t e : ev) cudaEventDestroy(e);
     }
 };
+
+// L4 (STRATA_ENGINE_SPANS=1): the ENGINE's own critical path for one MoE layer of the batched walk,
+// in wall microseconds, marked at the boundaries the walk already has.  The segments do not overlap
+// and sum to layer_us (rest_us is what the named phases do not cover); helper_us is an overlay, the
+// round trip exactly as this layer experiences it:
+//   attn   - layer start -> the router mark: the norm + attention block (gdn, the qsa projections,
+//            indexer, select, attention) with their host syncs
+//   router - the router mark -> the helper block's entry: the router gemm, the top-k routing, the
+//            shared expert, and the residency/selection scan that decides who owns every pair
+//   claim  - the helper block's entry -> the send complete: the pair positions, the activation D2H
+//            and its sync, the frame build (the quantize when STRATA_HELPER_Q8_IMAGE is on) and the
+//            socket write.  In PIPE mode this is the publish only - the worker owns the send
+//   expert - send complete -> the reply read begins: the primary's OWN expert work (local, peer and
+//            the CPU pool) and the combine - the window in which a helper answer arrives for free
+//   wait   - the reply read: finish_prompt (queue + helper compute + transfer + validate), or the
+//            worker's outcome wait in PIPE mode.  The TRUE helper exposure on the critical path
+//   apply  - reply read end -> the claimed block is staged and its H2D is enqueued (the CPU
+//            fallback's re-quantize and pool jobs land here too); in PIPE mode the worker already
+//            staged it, so this is the event chain
+//   helper - send complete -> block staged: the round trip as the layer sees it
+// The router span is a GPU drain point, not the router's math: it ends at the helper block's
+// entry and contains the layer's one big barrier.  So it gets its own sub-spans, in source order,
+// summing to router_us:
+//   gate    - the gate GEMM and the route kernel's ENQUEUES (the gate reads the bf16 hidden image
+//             and writes T x n_expert fp32 logits, the kernel softmaxes and takes the top-k)
+//   ids     - the enqueues between route and the routed-ids download: the shared expert when it
+//             runs inline (not deferred), and the ids' own D2H
+//   barrier - the compute-stream sync at :5012 (#579): this layer's attention, gate and shared
+//             work plus the previous layer's queued tails drain HERE, on the host's clock
+//   group   - after the barrier: the CPU grouping of T x k pairs, the CPU-share probes and the
+//             shared expert's enqueue when it is deferred
+//   sel     - the claim plan: the per-expert token lists, the holds/stable screen, the pair
+//             positions - everything up to the helper block's entry
+// Off: no clock is read and no line is written.  Marks a path never reaches stay where the last
+// mark was (a failed send leaves wait at zero), so the arithmetic never runs backwards.
+struct PfSpanMarks {
+    Clock::time_point l0, router, gate, ids, barrier, sel, claim, sent, fin0, fin1, applied, end;
+    bool claimed = false;   // this layer ran the helper block: the line pairs 1:1 with its claim line
+};
+
+// L5 (STRATA_ENGINE_SPANS=1): one chunk's wall, split at the boundaries the chunk loop already has:
+//   intake - the chunk's start (pf_w0) -> the walk's first layer: the embeddings, the PLE rows, the
+//          expert-stream plan and the staging setup
+//   walk   - the layer loop (all layers, claiming or not)
+//   tail   - the issuer join, the PLE land, the peer folds, the hand-off of the next stage
+// chunk_us is the chunk's whole wall; intake + walk + tail + the prints in between = chunk_us.
+struct PfChunkSpans {
+    Clock::time_point w0, first, walk_end, end;
+};
 // multi-GPU: the peer's own timeline (STRATA_PREFILL_TIMING): marks on the peer stream, folded with the primary's
 enum PePhase { kPeIdle, kPeMoeIn, kPeMoeGemm, kPeMoeOut, kPeCount };
 const char* const kPeNames[kPeCount] = {"idle", "moe in", "moe gemm", "moe out"};
@@ -3375,6 +3455,15 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
     const bool forced_single = force_single_, forced_planned = force_planned_;
     Impl& m = *impl_;
     const core::OnDevice on_device(m.device);
+    // L5 (STRATA_ENGINE_SPANS=1): the engine-side spans' gate, read once per run.  Off: no clock is
+    // read and no line is written.  It covers EVERY walked layer - the claim=0 lines name the layers
+    // that never claim (the peer-served half of a layer split), each tagged with its attention class
+    // - plus the per-chunk intake/walk/tail and the whole run, so a window attributes essentially all
+    // of the prompt-processing wall.
+    static const bool es_on = std::getenv("STRATA_ENGINE_SPANS") != nullptr;
+    const auto es_run0 = es_on ? Clock::now() : Clock::time_point{};
+    int es_gpu = -1;
+    if (es_on) cudaGetDevice(&es_gpu);
     const core::ModelGeometry& g = *m.g;
     core::SessionState& ss = *m.ss;
     const auto t_start = Clock::now();
@@ -3590,6 +3679,24 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         const double pf_eh0 = stats_.ms_experts_host, pf_ple0 = stats_.ms_ple;
         const double pf_su0 = host_setup_ms, pf_sy0 = host_sync_ms, pf_ck0 = host_chunk_ms;
         const auto pf_w0 = Clock::now();
+        // L5 (STRATA_ENGINE_SPANS=1): this chunk's wall, split at the boundaries the chunk loop has.
+        PfChunkSpans ck;
+        if (es_on) ck.w0 = pf_w0;
+        const auto ckseg = [](Clock::time_point a, Clock::time_point b) {
+            return (long long) std::chrono::duration_cast<std::chrono::microseconds>(b - a).count();
+        };
+        // L5: emit this chunk's wall.  A stage WITH a successor calls it at the `continue` below, so its
+        // tail_us covers the hand-off (the rows' D2H and the event waits) and the submit of the next
+        // stage's run; the LAST stage calls it at the end of the chunk body (its tail is its own tail).
+        const auto emit_chunk = [&] {
+            if (!es_on) return;
+            ck.end = Clock::now();
+            std::fprintf(stderr, "rpcprofile: chunk gpu=%d chunk=%lld tokens=%lld intake_us=%lld "
+                                 "walk_us=%lld tail_us=%lld chunk_us=%lld\n",
+                         es_gpu, (long long) stats_.chunks, (long long) T,
+                         ckseg(ck.w0, ck.first), ckseg(ck.first, ck.walk_end),
+                         ckseg(ck.walk_end, ck.end), ckseg(ck.w0, ck.end));
+        };
         // ---- embeddings, broadcast to the four streams - or, in a later stage of a layer split, the rows the
         // previous stage handed on
         if (hand_in_ != nullptr && hand_ev_ != nullptr) {
@@ -4139,6 +4246,13 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         };
         for (int64_t l = LB; l < LE; ++l) {
             core::progress_beat();   // the serve watchdog: a prompt chunk of 8192 tokens is still moving
+            // L4/L5 (STRATA_ENGINE_SPANS=1): this layer's engine-side spans, emitted at the layer's end
+            // as a sibling of the claim line.  L5 emits them for EVERY walked layer: the claim=0 lines
+            // are the layers that never claim (the peer-served half of a layer split).  Off = no clock
+            // read, no line.
+            PfSpanMarks es;
+            if (es_on) { es.l0 = Clock::now(); es.router = es.gate = es.ids = es.barrier = es.sel = es.claim = es.sent = es.fin0 = es.fin1 = es.applied = es.l0; }
+            if (es_on && l == LB) ck.first = es.l0;   // L5: the chunk's walk starts at its first layer
             if (l > LB) pf_step("reading the prompt (batched, step sync): the experts and the rest of layer", l - 1);
             core::progress_at("reading the prompt (batched): layer", l, p0);   // #251: a stall names layer and chunk
             const core::LayerView v(*m.wt, l);
@@ -4681,8 +4795,10 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                           *wsd = need(v, "ffn_down_shexp.weight", err);
                     if (!wr || !wgi || !wsg || !wsu || !wsd) return false;
                     pt.mark(kPfRouter, cs);
+                    if (es_on) es.router = Clock::now();   // L4: the attention span ends where the router begins
                     if (!bf16_proj(m.gemm, wr, m.mixed_bf, m.logits, T, v.name("ffn_gate_inp.weight"), err, 0, m.mixed_bf_lo)) return false;
                     route(m.logits, m.ids, m.w, T, m.g->n_expert, m.cs);
+                    if (es_on) es.gate = Clock::now();   // L4: gate GEMM + route kernel enqueued
                     // RESEARCH HOOK (141-research, opt-in, never on by default): STRATA_DBG_FEAT=<file> dumps, per MoE layer and chunk,
                     // the routed ids + weights (and for the layers in STRATA_DBG_FEAT_LAYERS the router-input hidden state, bf16);
                     // STRATA_DBG_ROUTE_OVERRIDE=<file> replaces the routing of the layers listed in that file with the file's ids + weights.
@@ -4925,6 +5041,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             err = "prefill: the routed ids' download failed";   // #1996
                             return false;
                         }
+                        if (es_on) es.ids = Clock::now();   // L4: shared-expert enqueues (inline) + the routed ids in hand
                         bool cpu_maybe = pool_hold.held && !stream_all && m.src != nullptr && !m.cpu_dead &&
                                          lay.native && !m.pp && !lay.fmt.empty();
                         // The share's two pinned buffers are small (~50 MB) but are had mid-request, when the host may have
@@ -4978,6 +5095,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         core::progress_at("reading the prompt (batched): waiting for the GPU (attention, router) at layer",
                                           l, p0);
                         cudaStreamSynchronize(m.cs);
+                        if (es_on) es.barrier = Clock::now();   // L4: the drain point (#579): attention, gate, shared and the previous layer's tails land here
                         core::progress_at("reading the prompt (batched): layer", l, p0);
                         if (on_routes) on_routes(l, ids_h, T * K);   // 149-prefetch: the RAM policy's prompt seed
                         if (cpu_maybe) {   // the rows buffer, once, at its largest (an expert takes at most MAXT tokens' rows)
@@ -5052,6 +5170,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         // never claim: serve_prompt refuses exactly those, and unrotated `mixed` is what the helper
                         // must see.  The claim runs BEFORE the CPU share, so the helper takes precedence over host
                         // streaming - that is the capacity point of the tier.
+                        if (es_on) es.sel = Clock::now();   // L4: the claim plan build starts (grouping and the deferred shared are behind it)
                         on_helper.clear();
                         rows_helper = 0;
                         hp_plan.clear();
@@ -5060,6 +5179,33 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                           cpu_pool_ != nullptr && lay.native &&
                                           !lay.fmt[(size_t) l].had_gu && !lay.fmt[(size_t) l].had_d;
                         if (hp_l) {
+                            // The claim batch gate (STRATA_CLAIM_BATCH, default 1 = today's one
+                            // kBeginP per layer).  The transport coalesces K begin_prompt calls issued
+                            // before the first finish_prompt into ONE kBeginPB, served by the helper
+                            // under one device-lock acquisition.
+                            //
+                            // VERIFIED STRUCTURE (2026-11-09, the ab9-D windows): this walk issues
+                            // EXACTLY ONE prompt claim per MoE layer - the whole layer's pair list
+                            // goes in a single dense plan (one begin at :5377 / on the M6 lane at
+                            // :5317, one finish at :6450).  The helper logs agree: 256 'serve tier=p'
+                            // lines = 32 layers x 8 walks, layers strictly ascending inside a walk,
+                            // every line one claim of 490-1245 rows (the layer's full row set).
+                            // Layer l+1's routing reads layer l's MoE output, so a begin for l+1
+                            // cannot precede l's reply: cross-layer coalescing is not available to
+                            // this pipeline, and there is nothing to coalesce WITHIN a layer.
+                            // So K>1 is inert here by structure, not by omission; the client's
+                            // one-part flush (expert_helper_socket.cpp) keeps it free - it sends the
+                            // queued part as a plain kBeginP, which is the batch=1 wire.  Printed
+                            // once per run so the A/B log says which wire ran.
+                            static const int64_t hp_batch = m.hp->prompt_claim_batch();
+                            static const bool hp_batch_noted = [hp_batch] {
+                                if (hp_batch != 1)
+                                    std::fprintf(stderr, "strata: prefill helper: claim batch %lld armed "
+                                                         "(kBeginPB; 1 = today's kBeginP per claim)\n",
+                                                 (long long) hp_batch);
+                                return true;
+                            }();
+                            (void) hp_batch_noted;
                             std::vector<int32_t> toks((size_t) (T * K));   // per-expert token lists, EXPERT order
                             {
                                 std::vector<int32_t> hp_cur((size_t) m.g->n_expert);
@@ -5227,6 +5373,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         }
                         // ================= M2 (STRATA_PREFILL_HELPER): the send =================
                         if (!on_helper.empty()) {
+                            if (es_on) { es.claim = Clock::now(); es.claimed = true; }   // L4
                             // the block row of each pair (expert-contiguous inside the block, whatever the plan's order)
                             hp_pos.resize((size_t) rows_helper);
                             std::vector<int32_t> within((size_t) m.g->n_expert, 0);
@@ -5344,6 +5491,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                         m.hp_lane.claims = hp_claims;
                                     }
                                     m.hp_lane_cv_work.notify_one();
+                                    if (es_on) es.sent = Clock::now();   // L4: PIPE publishes; the worker owns send->apply
                                 } else {
                                     // L3 (STRATA_RPC_PROFILE=1): d2h = the image download wait (incl. the m.cs backlog the hp_ev gate rode)
                                     static const bool hp_prof = std::getenv("STRATA_RPC_PROFILE") != nullptr;
@@ -5358,6 +5506,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                     hp_begin_us = hp_prof ? (int64_t) std::chrono::duration_cast<std::chrono::microseconds>(
                                         std::chrono::steady_clock::now() - hp_t1).count() : 0;
                                     hp_sent = rc_b == core::expert_helper::kOk;
+                                    if (es_on) es.sent = Clock::now();   // L4: the frame is on the wire
                                     if (!hp_sent)   // the tier latched itself: the claimed rows recompute at the combine
                                         std::fprintf(stderr, "strata: prefill helper: send failed (%s); the claimed rows fall back to the CPU\n",
                                                      core::expert_helper::status_name(rc_b));
@@ -6416,8 +6565,10 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         int32_t hp_got = 0;
                         bool ok_rows = false;
                         if (hp_pipe) {   // M6: the worker already ran the tail; read its outcome, chain m.cs on E2
+                            if (es_on) es.fin0 = Clock::now();   // L4: the walk blocks on the worker's outcome
                             std::unique_lock<std::mutex> lk(m.hp_lane_mtx);
                             m.hp_lane_cv_done.wait(lk, [&m] { return m.hp_lane.done; });
+                            if (es_on) es.fin1 = Clock::now();   // L4: the reply is in hand (worker ran send->gather)
                             hp_sent = m.hp_lane.sent;
                             ok_rows = m.hp_lane.ok_rows;
                             m.hp_lane.done = false;   // the slot is idle for the next publish
@@ -6427,20 +6578,25 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             static const bool hp_prof2 = std::getenv("STRATA_RPC_PROFILE") != nullptr;
                             const auto hp_t2 = hp_prof2 ? std::chrono::steady_clock::now()
                                                         : std::chrono::steady_clock::time_point{};
+                            if (es_on) es.fin0 = Clock::now();   // L4: the engine waits on the helper from here
                             const int rc_f = m.hp->finish_prompt(m.hp_rows, N, hp_claims, hp_to, hp_got);
+                            if (es_on) es.fin1 = Clock::now();   // L4: ... to the reply validated and scattered
                             ok_rows = rc_f == core::expert_helper::kOk && hp_got == (int32_t) rows_helper;
                             if (!ok_rows)
                                 std::fprintf(stderr, "strata: prefill helper: the rows did not come back whole; the claimed rows fall back to the CPU\n");
                             if (hp_prof2)   // L3: one line per claim, sync path only (PIPE stays on the worker)
                                 std::fprintf(stderr, "rpcprofile: claim layer=%lld rows=%lld sel=%lld d2h_us=%lld begin_us=%lld "
-                                                     "reply_us=%lld img_kb=%lld reply_kb=%lld fallback=%d\n",
+                                                     "reply_us=%lld img_kb=%lld reply_kb=%lld fallback=%d img_fmt=%d\n",
                                              (long long) l, (long long) rows_helper,
                                              (long long) hp_plan.n_sel_tok(), (long long) hp_d2h_us,
                                              (long long) hp_begin_us,
                                              (long long) std::chrono::duration_cast<std::chrono::microseconds>(
                                                  std::chrono::steady_clock::now() - hp_t2).count(),
-                                             (long long) (hp_plan.n_sel_tok() * N * 4 / 1024),
-                                             (long long) (rows_helper * N * 4 / 1024), ok_rows ? 0 : 1);
+                                             // the image the frame CARRIED (the q8_1 wire is 3.56x
+                                             // smaller than the fp32 rows it replaces): the client knows
+                                             (long long) (m.hp->prompt_last_image_bytes() / 1024),
+                                             (long long) (rows_helper * N * 4 / 1024), ok_rows ? 0 : 1,
+                                             m.hp->prompt_last_image_format());
                         }
                         if (ok_rows && hp_pipe) {   // M6: the worker gathered and enqueued the block H2D on hp_cs
                             cudaStreamWaitEvent(m.cs, m.hp_ev2, 0);
@@ -6541,6 +6697,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         if (use_mmq && !fused_l && lay.native && lay.fmt[(size_t) l].tail_off)
                             cudaMemcpyAsync(m.row_sd + r0h, m.hp_ones, (size_t) rows_helper * sizeof(float),
                                             cudaMemcpyHostToDevice, m.cs);
+                        if (es_on) es.applied = Clock::now();   // L4: the claimed block is staged and its H2D is queued
                         if (static const bool dbg_hp = std::getenv("STRATA_DBG_PROMPT_HELPER") != nullptr; dbg_hp)
                             std::fprintf(stderr, "prefill helper: layer %lld, %lld rows (%s)\n", (long long) l,
                                          (long long) rows_helper, ok_rows ? "helper" : "cpu fallback");
@@ -6661,7 +6818,40 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                                   (int) HC, (int) tap_rows, m.cs);
 #endif
             }
+            // L4 (STRATA_ENGINE_SPANS=1): one line per layer that claimed, pairing 1:1 with that
+            // layer's 'rpcprofile: claim' line.  The segments do not overlap and sum to layer_us;
+            // helper_us is the overlay the layer actually feels: send complete -> block staged.
+            if (es_on) {   // L5: EVERY walked layer - the claim=0 lines are the layers that never claim
+                es.end = Clock::now();
+                const auto seg = [](Clock::time_point a, Clock::time_point b) {
+                    return (long long) std::chrono::duration_cast<std::chrono::microseconds>(b - a).count();
+                };
+                const Clock::time_point r_end = es.claimed ? es.claim : es.sel;   // the router span's end
+                const long long layer_us = seg(es.l0, es.end), attn_us = seg(es.l0, es.router),
+                                  router_us = seg(es.router, r_end),
+                                  claim_us = es.claimed ? seg(es.claim, es.sent) : 0,
+                                  expert_us = es.claimed ? seg(es.sent, es.fin0) : 0,
+                                  wait_us = es.claimed ? seg(es.fin0, es.fin1) : 0,
+                                  apply_us = es.claimed ? seg(es.fin1, es.applied) : 0,
+                                  // L5: a non-claiming layer's whole post-plan remainder (its expert
+                                  // compute, the combine, this half's write-back) has no name of its
+                                  // own today, so it gets one: the layers 32..47 of a layer split are
+                                  // exactly these lines, and the window's gap is their sum
+                                  post_us = es.claimed ? 0 : seg(es.sel, es.end);
+                std::fprintf(stderr, "rpcprofile: span layer=%lld pipe=%d layer_us=%lld attn_us=%lld "
+                                     "router_us=%lld claim_us=%lld expert_us=%lld wait_us=%lld apply_us=%lld "
+                                     "helper_us=%lld rest_us=%lld gate_us=%lld ids_us=%lld barrier_us=%lld "
+                                     "group_us=%lld sel_us=%lld gpu=%d claim=%d attn=%s post_us=%lld\n",
+                             (long long) l, hp_pipe ? 1 : 0, layer_us, attn_us, router_us, claim_us,
+                             expert_us, wait_us, apply_us, es.claimed ? seg(es.sent, es.applied) : 0,
+                             layer_us - attn_us - router_us - post_us - claim_us - expert_us - wait_us - apply_us,
+                             // the router span's own decomposition: these five sum to router_us
+                             seg(es.router, es.gate), seg(es.gate, es.ids), seg(es.ids, es.barrier),
+                             seg(es.barrier, es.sel), seg(es.sel, r_end),
+                             es_gpu, es.claimed ? 1 : 0, core::is_qsa_layer(g, l) ? "qsa" : "gdn", post_us);
+            }
         }
+        if (es_on) ck.walk_end = Clock::now();   // L5: the layer loop's end (its lines are emitted above)
         if (!ple_land()) return false;   // a stage that ends before layer 1: the rows land anyway, the next gather starts
         if (issuer.joinable()) {
             issuer.join();
@@ -6688,6 +6878,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                          (long long) stats_.chunks, (long long) T, ms_since(pf_w0),
                          stats_.ms_experts_host - pf_eh0, stats_.ms_ple - pf_ple0,
                          host_setup_ms - pf_su0, host_sync_ms - pf_sy0, host_chunk_ms - pf_ck0);
+        if (next_ == nullptr) emit_chunk();   // L5: the last stage's chunk ends here (its own tail)
         if (next_ != nullptr) {
             // The current hand-off slot was used two chunks ago.
             float* h = m.hand[hand_buf_];
@@ -6749,6 +6940,9 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 return next_->run_impl(tokens + c0, T, p0, next_err_);
             });
             hand_buf_ ^= 1;
+            emit_chunk();   // L5: the tail_us here covers the hand-off (the rows' D2H, the event waits)
+                            // and the submit of the next stage's run; the next stage's own run is NOT
+                            // in this wall (it runs on the hand-off worker thread)
             continue;   // the last stage reports the chunk (on_chunk)
         }
         if (const char* dump = std::getenv("STRATA_PREFILL_DUMP_R")) {   // debug: the final residuals, every 64th
@@ -6937,6 +7131,12 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
             line += h;
         }
         std::fprintf(stderr, "strata prefill: GDN_HASH %s\n", line.c_str());
+    }
+    if (es_on) {   // L5: the whole run's wall: everything the chunk lines do not cover is the run's own
+                   // setup (the warms, the plans, the PLE capture, the peer tier's start)
+        std::fprintf(stderr, "rpcprofile: pass gpu=%d tokens=%lld layers=%lld chunks=%lld pass_us=%lld\n",
+                     es_gpu, (long long) n, (long long) (LE - LB), (long long) stats_.chunks,
+                     (long long) std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - es_run0).count());
     }
     return true;
 }
@@ -8370,6 +8570,19 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
 #else
     constexpr bool lm_hip = false;
 #endif
+    // L5 (STRATA_ENGINE_SPANS=1): the WHOLE prompt-processing wall of this chain, from entry to the
+    // drained last stage - what the chunk and pass lines do not cover (the joins, the drain, the
+    // layer-major path) is wall - run_us, measured.  Off: no clock read, no line.
+    static const bool es_on = std::getenv("STRATA_ENGINE_SPANS") != nullptr;
+    const auto es_w0 = es_on ? Clock::now() : Clock::time_point{};
+    const auto es_run_line = [&] {
+        if (!es_on) return;
+        int gpu = -1;
+        cudaGetDevice(&gpu);
+        std::fprintf(stderr, "rpcprofile: run gpu=%d tokens=%lld layers=%lld run_us=%lld\n",
+                     gpu, (long long) n, (long long) (stage_le_ - stage_lb_),
+                     (long long) std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - es_w0).count());
+    };
     // layer-major prefill: STRATA_PREFILL_LAYER_MAJOR=1 / 0 win; unset, it is off everywhere (sm120_series.hpp prefill_layer_major_default: a layer split
     // reads 32K prompts 37-55% sooner chunk-major, owner's yes 2026-11-02; the single-card small-cache rule sets the variable itself)
     if (hand_in_ == nullptr && impl_ &&
@@ -8395,6 +8608,7 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
             }
             for (Prefill* p = this; p != nullptr; p = p->next_) p->lm_mid_ = false;
             lm_release_chain();
+            es_run_line();
             return ok;
         }
         static std::string said;   // once per reason (a short prompt is the common one; not worth a line when nobody asked for the walk)
@@ -8407,6 +8621,7 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
 
     std::string drain_err;
     const bool drain_ok = drain_pipeline(drain_err);
+    es_run_line();   // L5: the chain's whole prompt-processing wall (both stages, the joins)
 
     if (!body_ok) return false;
     if (!drain_ok) {

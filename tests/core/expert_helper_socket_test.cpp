@@ -164,8 +164,9 @@ int handshake(ExpertHelperClient& c, uint32_t extra_feats = 0) {
         Socket s;
         s.adopt(fd);
         Header head;
-        std::vector<uint8_t> body;
-        if (s.read_frame(head, body, deadline_after(5000)) != kOk || head.type != kHello ||
+        RxBuffer rx;
+        PayloadView body;
+        if (s.read_frame(head, rx, body, deadline_after(5000)) != kOk || head.type != kHello ||
             body.size() < sizeof(HelloReq)) { wire = 1; return; }
         HelloReq req;
         std::memcpy(&req, body.data(), sizeof(req));
@@ -182,7 +183,7 @@ int handshake(ExpertHelperClient& c, uint32_t extra_feats = 0) {
         ack.free_mib = 4096;
         ack.features = extra_feats;   // (19): a peer advertising e.g. the Q8_K wire
         if (s.write_frame(kHelloAck, head.req_id, (const uint8_t*) &ack, sizeof(ack), deadline_after(5000)) != kOk) { wire = 3; return; }
-        if (s.read_frame(head, body, deadline_after(5000)) != kOk || head.type != kFill ||
+        if (s.read_frame(head, rx, body, deadline_after(5000)) != kOk || head.type != kFill ||
             body.size() < sizeof(FillReq)) { wire = 4; return; }
         FillReq f;
         std::memcpy(&f, body.data(), sizeof(f));
@@ -230,8 +231,9 @@ bool send_begin(ExpertHelperClient& c) {
     Socket srv;
     srv.adopt(g_server_fd);
     Header head;
-    std::vector<uint8_t> body;
-    const int rrc = srv.read_frame(head, body, deadline_after(2000));
+    RxBuffer rx;
+    PayloadView body;
+    const int rrc = srv.read_frame(head, rx, body, deadline_after(2000));
     srv.release();
     if (rrc != kOk || head.type != kBegin) return false;
     if (body.size() < sizeof(BeginReq)) return false;
@@ -384,8 +386,9 @@ int handshake_v3(ExpertHelperClient& c, bool features, uint32_t extra_feats = 0)
         Socket s;
         s.adopt(fd);
         Header head;
-        std::vector<uint8_t> body;
-        if (s.read_frame(head, body, deadline_after(5000)) != kOk || head.type != kHello ||
+        RxBuffer rx;
+        PayloadView body;
+        if (s.read_frame(head, rx, body, deadline_after(5000)) != kOk || head.type != kHello ||
             body.size() < sizeof(HelloReq)) { wire = 1; return; }
         HelloAck ack;
         ack.max_tok = (int32_t) kMaxTok;
@@ -413,7 +416,7 @@ int handshake_v3(ExpertHelperClient& c, bool features, uint32_t extra_feats = 0)
 /// field, the byte total, the pair list as the image's (token row, expert), the layer's PRIMARY
 /// residency bits, and the image byte-for-byte - q8 against quantize_q8_1_cpu of the tier's own rows,
 /// fp32 (M4c (b)) against those rows verbatim.
-bool prompt_body_ok(const std::vector<uint8_t>& body, const ExpertHelperPromptPlan& plan,
+bool prompt_body_ok(PayloadView body, const ExpertHelperPromptPlan& plan,
                     const int32_t* primary, int rows, bool f32) {
     if (body.size() < sizeof(BeginPReq)) return false;
     BeginPReq req;
@@ -465,8 +468,9 @@ bool wire_prompt_ok(const ExpertHelperPromptPlan& plan, const int32_t* primary, 
     Socket srv;
     srv.adopt(g_server_fd);
     Header head;
-    std::vector<uint8_t> body;
-    const int rc = srv.read_frame(head, body, deadline_after(2000));
+    RxBuffer rx;
+    PayloadView body;
+    const int rc = srv.read_frame(head, rx, body, deadline_after(2000));
     srv.release();
     if (rc != kOk || head.type != kBeginP) return false;
     return prompt_body_ok(body, plan, primary, rows, f32);
@@ -524,11 +528,12 @@ int begin_prompt_drained(ExpertHelperClient& c, const ExpertHelperPromptPlan& pl
         Socket s;
         s.adopt(fd);
         Header head;
-        std::vector<uint8_t> body;
-        const int rc = s.read_frame(head, body, deadline_after(20000));
+        RxBuffer rx;
+        PayloadView body;
+        const int rc = s.read_frame(head, rx, body, deadline_after(20000));
         if (rc == kOk && head.type == kBeginP) {
             g_req_head = head;
-            g_req_body = std::move(body);
+            g_req_body.assign(body.begin(), body.end());
             g_req_rc = kOk;
         } else {
             g_req_rc = rc;
@@ -633,8 +638,9 @@ SigOutcome run_sigterm_child(int mode) {
         s.adopt(fds[0]);
         const auto t0 = std::chrono::steady_clock::now();
         Header head;
-        std::vector<uint8_t> body;
-        const int rc = s.read_frame(head, body,
+        RxBuffer rx;
+        PayloadView body;
+        const int rc = s.read_frame(head, rx, body,
                                     deadline_after(mode == kSigControlNoWake ? kSigControlDeadlineMs
                                                                            : kSigBeginTimeoutMs));
         const long long ms = (long long) std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -731,8 +737,9 @@ int run_relisten_child() {
             for (;;) {
                 if (g_child_stop.load()) break;                     // the loop-top latch check
                 Header head;
-                std::vector<uint8_t> body;
-                const int rc = s.read_frame(head, body, deadline_after(5000));
+                RxBuffer rx;
+                PayloadView body;
+                const int rc = s.read_frame(head, rx, body, deadline_after(5000));
                 if (rc == kErrTimeout) {
                     if (g_child_stop.load()) break;                 // the wake byte, not an idle engine
                     break;                                          // the engine idled: the helper exits
@@ -779,8 +786,9 @@ bool send_begin_q8k(ExpertHelperClient& c) {
     Socket srv;
     srv.adopt(g_server_fd);
     Header head;
-    std::vector<uint8_t> body;
-    const int rrc = srv.read_frame(head, body, deadline_after(2000));
+    RxBuffer rx;
+    PayloadView body;
+    const int rrc = srv.read_frame(head, rx, body, deadline_after(2000));
     srv.release();
     if (rrc != kOk || head.type != kBeginQ8K) return false;
     if (body.size() < sizeof(BeginReq)) return false;
@@ -807,8 +815,9 @@ bool wire_prompt_q8k_ok(const ExpertHelperPromptPlan& plan, const int32_t* prima
     Socket srv;
     srv.adopt(g_server_fd);
     Header head;
-    std::vector<uint8_t> body;
-    const int rc = srv.read_frame(head, body, deadline_after(2000));
+    RxBuffer rx;
+    PayloadView body;
+    const int rc = srv.read_frame(head, rx, body, deadline_after(2000));
     srv.release();
     if (rc != kOk || head.type != kBeginP || body.size() < sizeof(BeginPReq)) return false;
     BeginPReq req;
@@ -1238,8 +1247,9 @@ int main(int argc, char** argv) {
         cli.adopt(fds[0]);                     // the reader owns fds[0] for the whole exchange
         const auto t0 = std::chrono::steady_clock::now();
         Header head;
-        std::vector<uint8_t> body;
-        const int rc = cli.read_frame(head, body, deadline_after(5000));
+        RxBuffer rx;
+        PayloadView body;
+        const int rc = cli.read_frame(head, rx, body, deadline_after(5000));
         const long long ms = (long long) std::chrono::duration_cast<std::chrono::milliseconds>(
                                  std::chrono::steady_clock::now() - t0).count();
         writer.join();                         // nothing can still be in flight when the reader closes
@@ -1271,8 +1281,9 @@ int main(int argc, char** argv) {
             Socket s;
             s.adopt(fd);
             Header head;
-            std::vector<uint8_t> body;
-            if (s.read_frame(head, body, deadline_after(5000)) != kOk || head.type != kHello ||
+            RxBuffer rx;
+            PayloadView body;
+            if (s.read_frame(head, rx, body, deadline_after(5000)) != kOk || head.type != kHello ||
                 body.size() < sizeof(HelloReq)) { seen = kErrProtocol; return; }
             HelloReq req;
             std::memcpy(&req, body.data(), sizeof(req));
@@ -1494,8 +1505,9 @@ int main(int argc, char** argv) {
             Socket srv;
             srv.adopt(g_server_fd);
             Header head;
-            std::vector<uint8_t> body;
-            check_status(srv.read_frame(head, body, deadline_after(2000)), kOk, "the fake peer reads the kBeginP frame");
+            RxBuffer rx;
+            PayloadView body;
+            check_status(srv.read_frame(head, rx, body, deadline_after(2000)), kOk, "the fake peer reads the kBeginP frame");
             check(head.type == kBeginP, "the frame type on the wire is kBeginP");
             // An R2 helper's own answer for a frame type it does not know (helper_main.cpp: typed
             // kErrProtocol, then the channel closes).
@@ -1942,8 +1954,9 @@ int main(int argc, char** argv) {
             Socket srv;
             srv.adopt(g_server_fd);
             Header head;
-            std::vector<uint8_t> body;
-            check_status(srv.read_frame(head, body, deadline_after(300)), kErrTimeout,
+            RxBuffer rx;
+            PayloadView body;
+            check_status(srv.read_frame(head, rx, body, deadline_after(300)), kErrTimeout,
                          "and the wire stayed silent (the frame never reaches an unadvertising peer)");
             srv.release();
         }
@@ -2002,6 +2015,386 @@ int main(int argc, char** argv) {
                   "without the peer's bit the image stays f32 (format 1), never a misparse");
             ::unsetenv("STRATA_EXPERT_HELPER_Q8K");
         }
+    }
+
+    // ================= (20) THE PROMPT CLAIM BATCH (kBeginPB / kRowsPB, STRATA_CLAIM_BATCH) =========
+    // The batch is transport-only, so the pins are: batch=1 keeps kBeginP's bytes exactly (the peer's
+    // bit changes nothing), K>1 puts ONE frame with K byte-exact kBeginP parts on the wire, ONE reply
+    // answers them, and the parts apply in claim order - a part applied out of order is refused.
+    // CPU mocks only: the fake helper is this test's socketpair peer.
+    {
+        // (20a) STRATA_CLAIM_BATCH=1 with the bit advertised: today's frame, today's exchange.
+        ::setenv("STRATA_CLAIM_BATCH", "1", 1);
+        ExpertHelperClient c;
+        check_status(handshake_v3(c, true, kFeaturePromptBatch), kOk,
+                     "v3 handshake advertising kFeaturePromptBatch");
+        check(c.prompt_batch_supported(), "the client records the batch bit");
+        check(c.claim_batch() == 1, "STRATA_CLAIM_BATCH=1 is today's wire (the default, unset included)");
+        ExpertHelperPromptPlan plan;
+        for (int i = 0; i < 6; ++i) { plan.pair_token.push_back(i); plan.pair_expert.push_back(7 + i); }
+        for (int i = 0; i < 6; ++i) plan.tokens.push_back(i);
+        fill_prompt_buffer(c, 6);
+        std::vector<int32_t> primary((size_t) kLayers * kExperts, -1);
+        check_status(c.begin_prompt(kLayer, plan, primary.data(), 4000), kOk,
+                     "batch=1: the claim is SENT, not queued");
+        check(wire_prompt_ok(plan, primary.data(), 6),
+              "batch=1 puts a kBeginP on the wire and the frame is today's exact bytes");
+        std::vector<float> out((size_t) 6 * kH, -1.0f);
+        int32_t rows = -1;
+        check_status(write_prompt_reply_thread({0, 2}, row_val, 4000, c, out.data(), {0, 2}, rows), kOk,
+                     "batch=1 reads a kRowsP reply - the exchange is unchanged");
+        check(rows == 2 && out[(size_t) 2 * kH] == (float) row_val(2, 0), "the rows land at their pair indices");
+        ::unsetenv("STRATA_CLAIM_BATCH");
+    }
+    {
+        // (20b) K = 3: three claims queue (wire silent), ONE kBeginPB carries three byte-exact
+        // kBeginP parts, ONE kRowsPB answers them, and the three finish_prompt calls apply the parts
+        // in claim order.  This is the shape the engine pays for: 3 exchanges -> 1.
+        ::setenv("STRATA_CLAIM_BATCH", "3", 1);
+        ExpertHelperClient c;
+        check_status(handshake_v3(c, true, kFeaturePromptBatch), kOk,
+                     "v3 handshake advertising the batch bit for the K=3 round trip");
+        check(c.claim_batch() == 3, "the env reaches the client");
+        const int rows_of[3] = {6, 5, 7};
+        ExpertHelperPromptPlan plans[3];
+        std::vector<int32_t> claims[3];
+        for (int p = 0; p < 3; ++p) {
+            for (int i = 0; i < rows_of[p]; ++i) {
+                plans[p].pair_token.push_back(i);
+                plans[p].pair_expert.push_back(7 + 20 * p + i);   // disjoint experts per part
+            }
+            for (int i = 0; i < rows_of[p]; ++i) plans[p].tokens.push_back(i);
+            for (int i = 0; i < rows_of[p]; ++i) claims[p].push_back(i);
+        }
+        fill_prompt_buffer(c, 7);   // the tier's rows the three parts quantize at their begin times
+        std::vector<int32_t> primary((size_t) kLayers * kExperts, -1);
+        for (int p = 0; p < 3; ++p)
+            check_status(c.begin_prompt(kLayer, plans[p], primary.data(), 4000), kOk,
+                         "the batch's claims are accepted and queued (nothing written yet)");
+        check(nothing_on_wire(200), "K claims sit on the queue: the wire stayed silent (no kBeginP per claim)");
+
+        std::atomic<int> srv_rc{kErrInternal};
+        std::atomic<bool> srv_parts_ok{false};
+        std::atomic<int> srv_parts{0};
+        std::thread srv([&] {
+            Socket s;
+            s.adopt(g_server_fd);
+            Header head;
+            RxBuffer rx;
+            PayloadView body;
+            if (s.read_frame(head, rx, body, deadline_after(20000)) != kOk || head.type != kBeginPB) {
+                srv_rc = kErrProtocol; s.release(); return;
+            }
+            if (body.size() < sizeof(BeginPBReq)) { srv_rc = kErrShort; s.release(); return; }
+            BeginPBReq pb;
+            std::memcpy(&pb, body.data(), sizeof(pb));
+            srv_parts = pb.n_parts;
+            if (pb.n_parts != 3 || pb.flags != 0 || pb.reserved0 != 0) { srv_rc = kErrGeometry; s.release(); return; }
+            size_t off = sizeof(pb);
+            bool ok = true;
+            for (int p = 0; p < 3; ++p) {
+                if (off + sizeof(BeginPReq) > body.size()) { ok = false; break; }
+                BeginPReq pr;
+                std::memcpy(&pr, body.data() + off, sizeof(pr));
+                const int64_t n_sel = pr.n_sel_tok;
+                const size_t res = (size_t) ((n_sel * kExperts + 7) / 8);
+                const size_t len = sizeof(pr) + (size_t) pr.n_pairs * 8 + res + (size_t) n_sel * (kH / 32) * 36;
+                if (off + len > body.size()) { ok = false; break; }
+                ok = ok && prompt_body_ok(PayloadView(body.data() + off, len), plans[p], primary.data(),
+                                          rows_of[p], false);
+                off += len;
+            }
+            srv_parts_ok = ok && off == body.size();   // the parts' byte total is the frame's, exactly
+            if (!srv_parts_ok) { srv_rc = kErrShort; s.release(); return; }
+            std::vector<uint8_t> rep;
+            RowsPBResp rh;
+            rh.n_parts = 3;
+            rep.resize(sizeof(rh));
+            std::memcpy(rep.data(), &rh, sizeof(rh));
+            for (int p = 0; p < 3; ++p) {   // part p's answer: its own claims, in part order
+                const std::vector<uint8_t> part = rowsp_payload(claims[p], row_val);
+                rep.insert(rep.end(), part.begin(), part.end());
+            }
+            srv_rc = s.write_reply(kRowsPB, head.req_id, head.seq, rep.data(), rep.size(), deadline_after(20000));
+            s.release();
+        });
+        std::vector<float> out0((size_t) 6 * kH, -1.0f), out1((size_t) 5 * kH, -1.0f), out2((size_t) 7 * kH, -1.0f);
+        int32_t r0 = -1, r1 = -1, r2 = -1;
+        const int rc0 = c.finish_prompt(out0.data(), kH, claims[0], 8000, r0);   // flushes + reads the ONE reply
+        const int rc1 = c.finish_prompt(out1.data(), kH, claims[1], 8000, r1);
+        const int rc2 = c.finish_prompt(out2.data(), kH, claims[2], 8000, r2);
+        srv.join();
+        check_status(srv_rc.load(), kOk, "the fake helper read one kBeginPB and answered with one kRowsPB");
+        check(srv_parts.load() == 3, "the frame declared 3 parts");
+        check(srv_parts_ok.load(), "every part is byte-for-byte a standalone kBeginP payload (pairs, bitmap, image)");
+        check_status(rc0, kOk, "the batch's first part is applied by the first finish_prompt");
+        check_status(rc1, kOk, "the second part by the second");
+        check_status(rc2, kOk, "the third by the third (no socket I/O on those calls)");
+        check(r0 == 6 && r1 == 5 && r2 == 7, "each part reports its own rows");
+        bool placed = true;
+        for (int i = 0; i < 6; ++i)
+            for (int64_t col = 0; col < kH; col += 251)
+                if (out0[(size_t) i * kH + col] != (float) row_val(i, col)) placed = false;
+        for (int i = 0; i < 5; ++i)
+            for (int64_t col = 0; col < kH; col += 251)
+                if (out1[(size_t) i * kH + col] != (float) row_val(i, col)) placed = false;
+        for (int i = 0; i < 7; ++i)
+            for (int64_t col = 0; col < kH; col += 251)
+                if (out2[(size_t) i * kH + col] != (float) row_val(i, col)) placed = false;
+        check(placed, "every part's rows land at ITS OWN pair indices - the batch applied in claim order");
+        check(c.stat_prompt_requests() == 1 && c.stat_prompt_rows() == 18,
+              "the counters show ONE exchange for 18 rows (batch=1 would show 3 and 18)");
+        ::unsetenv("STRATA_CLAIM_BATCH");
+    }
+    {
+        // (20c) the batch's caps and the order rule.  The queue is HARD: a part beyond
+        // kMaxClaimBatch refuses with NOTHING written.  And a caller that asks for a part out of
+        // order is refused by name: the batch's order IS the claim order, so a reordering cannot
+        // reach the engine's rows.
+        ::setenv("STRATA_CLAIM_BATCH", "2", 1);
+        ExpertHelperClient c;
+        check_status(handshake_v3(c, true, kFeaturePromptBatch), kOk, "handshake for the batch's cap case");
+        ExpertHelperPromptPlan plan;
+        for (int i = 0; i < 4; ++i) { plan.pair_token.push_back(i); plan.pair_expert.push_back(7 + i); }
+        for (int i = 0; i < 4; ++i) plan.tokens.push_back(i);
+        fill_prompt_buffer(c, 4);
+        std::vector<int32_t> primary((size_t) kLayers * kExperts, -1);
+        check_status(c.begin_prompt(kLayer, plan, primary.data(), 2000), kOk, "part 1 queued");
+        check_status(c.begin_prompt(kLayer, plan, primary.data(), 2000), kOk, "part 2 queued");
+        check_status(c.begin_prompt(kLayer, plan, primary.data(), 2000), kErrGeometry,
+                     "part 3 of a K=2 batch is refused (the queue's part cap is hard)");
+        check(nothing_on_wire(200), "and the wire stayed silent: the refusal wrote nothing");
+        // The batch's order rule is checked BEFORE the flush: a caller asking for the SECOND part
+        // first is refused by name, the batch is never written, so no reply is burned and no row
+        // can land out of order.  The fake peer reads EOF, which proves the refusal is local.
+        std::atomic<int> srv_rc{kErrInternal};
+        std::thread srv([&] {
+            Socket s;
+            s.adopt(g_server_fd);
+            Header head;
+            RxBuffer rx;
+            PayloadView body;
+            srv_rc = s.read_frame(head, rx, body, deadline_after(8000));
+            s.release();
+        });
+        std::vector<float> out((size_t) 4 * kH, -1.0f);
+        int32_t rows = -1;
+        const int rc_seq = c.finish_prompt(out.data(), kH, {3, 2, 1, 0}, 8000, rows);   // not the queued set
+        srv.join();
+        check_status(srv_rc.load(), kErrUnhealthy, "the refused batch never reached the wire: the peer read EOF");
+        check_status(rc_seq, kErrSeq, "a caller whose claims do not match the queued part is refused by name");
+        check(rows == 0, "no row is applied out of order");
+        check(!c.open(), "and the channel closed - the caller's same-layer fallback owns the rows");
+        ::unsetenv("STRATA_CLAIM_BATCH");
+    }
+    {
+        // (20d) a peer that never advertised the bit: the env is inert, every claim keeps kBeginP.
+        ::setenv("STRATA_CLAIM_BATCH", "8", 1);
+        ExpertHelperClient c;
+        check_status(handshake_v3(c, true), kOk, "v3 handshake WITHOUT the batch bit (the mixed build)");
+        check(!c.prompt_batch_supported(), "no bit: the batch is off regardless of the env");
+        ExpertHelperPromptPlan plan;
+        for (int i = 0; i < 3; ++i) { plan.pair_token.push_back(i); plan.pair_expert.push_back(7 + i); }
+        for (int i = 0; i < 3; ++i) plan.tokens.push_back(i);
+        fill_prompt_buffer(c, 3);
+        check_status(c.begin_prompt(kLayer, plan, nullptr, 2000), kOk, "the claim is sent, not queued");
+        check(wire_prompt_ok(plan, nullptr, 3),
+              "the frame on the wire is kBeginP - the new frame type never reaches an unadvertising peer");
+        ::unsetenv("STRATA_CLAIM_BATCH");
+    }
+    {
+        // (20e) ONE part queued IS one claim: the flush sends today's kBeginP and reads today's
+        // kRowsP - no BeginPBReq, no RowsPBResp, no per-part split.  The prefill walk consumes a
+        // layer's reply INSIDE that layer, so at K>1 every flush of that walk is a one-part batch
+        // (measured 2026-11-09: 256 of the 256 'serve tier=p' lines of the 8k window carried
+        // parts=1), which is why the GPU run lost ~6% of the 8k prefill to the wrapper.  The pin
+        // here is byte equality with the batch=1 frame, so an inert K>1 costs exactly batch=1.
+        ::setenv("STRATA_CLAIM_BATCH", "1", 1);
+        ExpertHelperClient c1;
+        check_status(handshake_v3(c1, true, kFeaturePromptBatch), kOk, "batch=1 control handshake for 20e");
+        ExpertHelperPromptPlan plan;
+        for (int i = 0; i < 4; ++i) { plan.pair_token.push_back(i); plan.pair_expert.push_back(7 + i); }
+        for (int i = 0; i < 4; ++i) plan.tokens.push_back(i);
+        fill_prompt_buffer(c1, 4);
+        std::vector<int32_t> primary((size_t) kLayers * kExperts, -1);
+        check_status(begin_prompt_drained(c1, plan, primary.data(), 2000), kOk, "batch=1 sends its claim");
+        check(g_req_rc.load() == kOk && g_req_head.type == kBeginP, "the control frame is a kBeginP");
+        const std::vector<uint8_t> control_bytes = g_req_body;   // today's bytes, compared against below
+        c1.close();
+        ::unsetenv("STRATA_CLAIM_BATCH");
+
+        ::setenv("STRATA_CLAIM_BATCH", "8", 1);
+        ExpertHelperClient c;
+        check_status(handshake_v3(c, true, kFeaturePromptBatch), kOk, "handshake for the one-part flush");
+        check(c.claim_batch() == 8, "the env reaches the client");
+        fill_prompt_buffer(c, 4);
+        const std::vector<int32_t> claims4 = {0, 1, 2, 3};
+        std::vector<float> out((size_t) 4 * kH, -1.0f);
+        int32_t rows = -1;
+        std::atomic<int> peer_rc{kErrInternal};
+        int client_rc = kErrInternal;
+        uint32_t frame_type = 0;
+        std::vector<uint8_t> frame_body;
+        // The peer reads the ONE frame the flush sends (pinning its type and bytes), answers a plain
+        // kRowsP, and the client applies it - concurrently, as two processes do.
+        auto flush = [&]() {
+            peer_rc = kErrInternal;
+            client_rc = kErrInternal;
+            frame_type = 0;
+            frame_body.clear();
+            std::thread srv([&] {
+                Socket s;
+                s.adopt(g_server_fd);
+                Header head;
+                RxBuffer rx;
+                PayloadView pv;
+                const int rc = s.read_frame(head, rx, pv, deadline_after(20000));
+                if (rc != kOk) { peer_rc = rc; s.release(); return; }
+                frame_type = head.type;
+                frame_body.assign(pv.begin(), pv.end());
+                const auto payload = rowsp_payload(claims4, row_val);
+                peer_rc = s.write_reply(kRowsP, head.req_id, head.seq, payload.data(), payload.size(),
+                                        deadline_after(20000));
+                s.release();
+            });
+            client_rc = c.finish_prompt(out.data(), kH, claims4, 8000, rows);
+            srv.join();
+        };
+        check_status(c.begin_prompt(kLayer, plan, primary.data(), 2000), kOk, "the claim is queued");
+        check(nothing_on_wire(200), "the queued claim wrote nothing");
+        flush();
+        check_status(peer_rc.load(), kOk, "the peer read the flush and answered a plain kRowsP");
+        check_status(client_rc, kOk, "the client applied the flush's rows in ONE exchange");
+        check(frame_type == kBeginP, "a ONE-part flush sends kBeginP - no kBeginPB wrapper");
+        check(frame_body == control_bytes, "and its frame equals batch=1's frame, byte for byte");
+        check(rows == 4, "the four rows landed");
+        // The walk's NEXT claim flushes alone too: at K=8 nothing accumulates on the queue.
+        std::fill(out.begin(), out.end(), -1.0f);
+        check_status(c.begin_prompt(kLayer, plan, primary.data(), 2000), kOk, "the next claim is queued");
+        flush();
+        check(frame_type == kBeginP && peer_rc.load() == kOk,
+              "the next flush is a kBeginP as well (a one-part flush never wraps)");
+        check_status(client_rc, kOk, "and its rows apply the same way");
+        check(frame_body == control_bytes, "the second flush's frame equals batch=1's too");
+        check(c.open(), "the channel stays open - a one-part flush is an ordinary exchange");
+        ::unsetenv("STRATA_CLAIM_BATCH");
+    }
+
+    // ============ (21) THE ENGINE-SIDE q8_1 IMAGE (STRATA_HELPER_Q8_IMAGE, default OFF) ==========
+    // image_format 0 is this tier's ORIGINAL wire: the engine quantizes with quantize_q8_1_cpu and
+    // the helper uploads the blocks VERBATIM (no quantize on its device-lock path).  M4c (b) moved
+    // the quantize to the helper for an fp32-capable peer; the 2026-11-09 span profile priced that
+    // quantize at 45% of the helper's lock (6.0 ms/claim median), so the env lets the engine take it
+    // back.  Parity rests on byte-identity, not on "close": the helper's quantize_q8_1_twin is this
+    // quantizer's body verbatim, so the grouped kernel receives the same bytes either way.  The pins
+    // are the wire shape (format 0, the q8_1 size, the exact bytes), the whole exchange, the size
+    // math, and the env's inertness where it must be inert.
+    {
+        std::vector<int32_t> primary((size_t) kLayers * kExperts, -1);
+        const std::vector<int32_t> claims4 = {0, 1, 2, 3};
+        ::setenv("STRATA_HELPER_Q8_IMAGE", "1", 1);
+        ExpertHelperClient c;
+        check_status(handshake_v3(c, true, kFeaturePromptF32), kOk,
+                     "(21) handshake advertising the fp32 bit: the env must win over it");
+        ExpertHelperPromptPlan plan;
+        for (int i = 0; i < 4; ++i) { plan.pair_token.push_back(i); plan.pair_expert.push_back(7 + i); }
+        for (int i = 0; i < 4; ++i) plan.tokens.push_back(i);
+        fill_prompt_buffer(c, 4);
+        std::vector<float> out((size_t) 4 * kH, -1.0f);
+        int32_t rows = -1;
+        std::atomic<int> peer_rc{kErrInternal};
+        std::atomic<bool> wire_ok{false};
+        std::atomic<uint32_t> peer_type{0};
+        check_status(c.begin_prompt(kLayer, plan, primary.data(), 8000), kOk, "(21) the claim is sent");
+        std::thread srv([&] {
+            Socket s;
+            s.adopt(g_server_fd);
+            Header head;
+            RxBuffer rx;
+            PayloadView body;
+            const int rc = s.read_frame(head, rx, body, deadline_after(20000));
+            if (rc != kOk) { peer_rc = rc; s.release(); return; }
+            peer_type = head.type;
+            wire_ok = prompt_body_ok(body, plan, primary.data(), 4, /*f32=*/false);
+            const auto payload = rowsp_payload(claims4, row_val);
+            peer_rc = s.write_reply(kRowsP, head.req_id, head.seq, payload.data(), payload.size(),
+                                    deadline_after(20000));
+            s.release();
+        });
+        const int client_rc = c.finish_prompt(out.data(), kH, claims4, 8000, rows);
+        srv.join();
+        check(peer_type.load() == kBeginP, "(21) the env does not change the frame type");
+        check(wire_ok.load(), "(21) the frame is image_format 0 with n_q8 = n_sel*(H/32)*36 and the image "
+                              "is quantize_q8_1_cpu of the tier's own rows, byte for byte");
+        check_status(peer_rc.load(), kOk, "(21) the peer read the frame and answered a plain kRowsP");
+        check_status(client_rc, kOk, "(21) the reply applies in ONE exchange");
+        check(rows == 4, "(21) four rows landed");
+        bool placed = true;
+        for (int i = 0; i < 4 && placed; ++i)
+            for (int64_t col = 0; col < kH; ++col)
+                if (out[(size_t) i * kH + (size_t) col] != (float) row_val(i, col)) { placed = false; break; }
+        check(placed, "(21) the rows land in the caller's claim order, exactly as an f32 reply's do");
+        ::unsetenv("STRATA_HELPER_Q8_IMAGE");
+    }
+    {
+        // (21b) where the env must be INERT: a peer that never advertised the fp32 bit was already on
+        // format 0 (nothing changes), and the Q8_K wire keeps precedence over it (never format 0 on
+        // a Q8_K layer).  The env OFF keeps today's f32 bytes; (19d) pins that default.
+        std::vector<int32_t> primary((size_t) kLayers * kExperts, -1);
+        ::setenv("STRATA_HELPER_Q8_IMAGE", "1", 1);
+        ExpertHelperClient c;
+        check_status(handshake_v3(c, true), kOk, "(21b) handshake WITHOUT the fp32 bit");
+        ExpertHelperPromptPlan plan;
+        for (int i = 0; i < 3; ++i) { plan.pair_token.push_back(i); plan.pair_expert.push_back(7 + i); }
+        for (int i = 0; i < 3; ++i) plan.tokens.push_back(i);
+        fill_prompt_buffer(c, 3);
+        check_status(c.begin_prompt(kLayer, plan, primary.data(), 2000), kOk, "(21b) the claim is sent");
+        check(wire_prompt_ok(plan, primary.data(), 3),
+              "(21b) a peer without the bit was already on format 0: the env changes nothing there");
+
+        ExpertHelperClient c2;
+        check_status(handshake_v3(c2, true, kFeaturePromptF32 | kFeatureQ8K), kOk,
+                     "(21b) handshake advertising fp32 AND the Q8_K bit");
+        ExpertHelperPromptPlan plan2;
+        for (int i = 0; i < 4; ++i) { plan2.pair_token.push_back(i); plan2.pair_expert.push_back(7); }
+        for (int i = 0; i < 4; ++i) plan2.tokens.push_back(i);
+        fill_prompt_buffer(c2, 4);
+        ::setenv("STRATA_EXPERT_HELPER_Q8K", "1", 1);
+        check_status(c2.begin_prompt(kLayer, plan2, primary.data(), 4000), kOk, "(21b) the claim is sent");
+        check(wire_prompt_q8k_ok(plan2, primary.data()),
+              "(21b) the Q8_K wire keeps precedence: format 2, never the q8_1 env's format 0");
+        ::unsetenv("STRATA_EXPERT_HELPER_Q8K");
+        ::unsetenv("STRATA_HELPER_Q8_IMAGE");
+    }
+    {
+        // (21c) the request-size math the GPU window will see, pinned on the frame's byte total:
+        // q8_1 costs (H/32)*36 = 2880 B per selected row against fp32's H*4 = 10240 B (3.56x), so
+        // the whole frame shrinks by n_sel*(H*4 - (H/32)*36).  The caps are untouched.
+        std::vector<int32_t> primary((size_t) kLayers * kExperts, -1);
+        ExpertHelperPromptPlan plan;
+        for (int i = 0; i < 4; ++i) { plan.pair_token.push_back(i); plan.pair_expert.push_back(7 + i); }
+        for (int i = 0; i < 4; ++i) plan.tokens.push_back(i);
+        ::setenv("STRATA_HELPER_Q8_IMAGE", "1", 1);
+        ExpertHelperClient c;
+        check_status(handshake_v3(c, true, kFeaturePromptF32), kOk, "(21c) handshake, env on");
+        fill_prompt_buffer(c, 4);
+        check_status(begin_prompt_drained(c, plan, primary.data(), 2000), kOk, "(21c) the q8_1 frame is sent");
+        const size_t res_bytes = (size_t) ((4 * kExperts + 7) / 8);
+        const size_t want_q8 = sizeof(BeginPReq) + 4 * 8 + res_bytes + (size_t) (4 * (kH / 32) * 36);
+        check(g_req_body.size() == want_q8, "(21c) the format-0 frame's byte total is header + pairs + "
+                                            "bitmap + n_sel*(H/32)*36");
+        c.close();
+        ::unsetenv("STRATA_HELPER_Q8_IMAGE");
+        ExpertHelperClient c2;
+        check_status(handshake_v3(c2, true, kFeaturePromptF32), kOk, "(21c) handshake, env off");
+        fill_prompt_buffer(c2, 4);
+        check_status(begin_prompt_drained(c2, plan, primary.data(), 2000), kOk, "(21c) the f32 frame is sent");
+        const size_t want_f32 = sizeof(BeginPReq) + 4 * 8 + res_bytes + (size_t) (4 * kH * (int64_t) sizeof(float));
+        check(g_req_body.size() == want_f32, "(21c) the default frame's byte total is header + pairs + "
+                                             "bitmap + n_sel*H*4");
+        check(g_req_body.size() - want_q8 == (size_t) (4 * (kH * 4 - (kH / 32) * 36)),
+              "(21c) the env shrinks the request by exactly n_sel*(H*4 - (H/32)*36) = 3.56x on the image");
+        c2.close();
     }
 
     std::printf("expert_helper_socket_test: %s\n", failures == 0 ? "PASS" : "FAIL");

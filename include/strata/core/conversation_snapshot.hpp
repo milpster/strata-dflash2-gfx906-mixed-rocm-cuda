@@ -56,6 +56,39 @@ bool conversation_session_read_limits(SessionReadLimits& limits, const SessionSt
                                       const QsaState& draft, uint64_t max_tokens, uint64_t max_checkpoints,
                                       std::string& error);
 
+// ==================== streaming format v2 (conversation_stream_state.hpp) ====================
+// The runtime's geometry key: the 18 integers a session file binds its state to.  Same values v1 stores in
+// SavedConversation::geometry; v2 puts them in the layout identity.
+std::array<int64_t, 18> conversation_geometry_key(const ModelGeometry& g);
+// The byte counts of one session's live running state, by region part (gdn, ple, tails, dead, block_pos), as the
+// region layout defines them: the same bytes conversation_checkpoint_save moves, never a copy of them.
+bool conversation_state_part_sizes(const ModelGeometry& g, const SessionState& session,
+                                   std::array<uint64_t, 5>& sizes, std::string& error);
+// One running-state part as a region source: reads its bytes straight out of the session's device buffers into the
+// writer's staging buffer.  Caller synchronizes the device first, keeps the session idle while the file is written,
+// and keeps this thread on the state's device (the same contract as conversation_kv_source).
+bool conversation_state_source(SessionRegionSource& out, const SessionState& session, const ModelGeometry& g,
+                               int64_t part, std::string& error);
+// The restore side of the same region: write [offset, offset+n) of one running-state part into the session's device
+// buffers.  The sizes are checked against this session's carve, so a foreign file is refused region by region
+// before a byte lands.  finish() runs the state's own refresh (the indexer's moving spare row, the PLE pair) and
+// synchronizes: the bytes alone are not a restored state.  `tokens` is the conversation the state describes.
+// `queued` leaves the copy on the thread's private stream: the caller must synchronize the device before this
+// region's finish runs its own copies and launches, and keep the source bytes alive until that sync.
+bool conversation_state_stream_write(SessionState& session, const ModelGeometry& g, int64_t part, uint64_t offset,
+                                     const void* bytes, size_t n, std::string& error, bool queued = false);
+bool conversation_state_stream_finish(SessionState& session, const ModelGeometry& g, const std::vector<int32_t>& ids,
+                                      std::string& error);
+// One K/V layer's part written straight into its authoritative pool (the same pools conversation_kv_restore
+// writes); the sizes are checked against the layer's layout at `upto`.  finish() runs the residency refresh, as a
+// restore does.  Caller keeps the device current for the layer's device.  `queued` is the same contract as
+// conversation_state_stream_write's: a device sync before this layer's finish, the source alive until it.
+bool conversation_kv_stream_write(const QsaState& state, const ModelGeometry& g, int64_t upto, bool include_index,
+                                  size_t part, uint64_t offset, const void* bytes, size_t n, std::string& error,
+                                  bool queued = false);
+bool conversation_kv_stream_finish(const QsaState& state, const ModelGeometry& g, int64_t upto, bool include_index,
+                                   std::string& error);
+
 struct ConversationStateSizes {
     size_t gdn = 0, ple = 0, tail = 0, dead = 0, block_pos = 0;
 };

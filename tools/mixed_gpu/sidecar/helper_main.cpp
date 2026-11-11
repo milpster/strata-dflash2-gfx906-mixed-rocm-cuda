@@ -31,6 +31,7 @@
 // read.  WITH --socket2 ABSENT: one socket, one accept, one thread, the loop exactly as it was.
 #include "strata/core/expert_helper_protocol.hpp"
 #include "strata/core/expert_cache.hpp"
+#include "strata/core/finite_rows.hpp"   // helper-ipc-diet: the AVX2 twin of the row finiteness scan
 // M7 (the drafter lane, docs/work/MIXED_BACKEND_RPC_PLAN.md sect12/12a): the serve-runtime drafter
 // (include/strata/core/dflash.hpp's DFlashDrafter: add_context_f32 / propose), the target's native
 // head + pinned embedding it binds, and the metadata-only weight table the bind reads.
@@ -352,7 +353,7 @@ bool cuda_check(cudaError_t e, const char* what, std::string& err) {
 }
 
 // ---- kFill: fill the cache within the card's budget, in the engine's rank order ----
-int serve_fill(Helper& hp, const std::vector<uint8_t>& body, uint32_t req_id, uint32_t seq, int64_t reserve_mib,
+int serve_fill(Helper& hp, PayloadView body, uint32_t req_id, uint32_t seq, int64_t reserve_mib,
                const std::vector<uint8_t>& claimed, int64_t max_slots, std::string& err, Socket& out) {
     // The fill mutates the shared cache (and the card's free memory the budget reads), so it is
     // serialized against every served frame: the two-channel engine sends kFill on ONE channel only,
@@ -564,7 +565,7 @@ int serve_fill(Helper& hp, const std::vector<uint8_t>& body, uint32_t req_id, ui
 // ---- kBegin / kBeginQ8K: one grouped launch over the claimed entries; kRows answers with the
 // original indices.  image_q8k: the frame's activation image is ggml's Q8_K blocks (the CPU
 // reference's own gate/up image) and the launch is native_expert_grouped_q8k. ----
-int serve_begin(Helper& hp, const std::vector<uint8_t>& body, uint32_t req_id, uint32_t seq, std::string& err,
+int serve_begin(Helper& hp, PayloadView body, uint32_t req_id, uint32_t seq, std::string& err,
                 Socket& out, bool image_q8k) {
     // ONE served frame holds the device lock (see Helper::gpu_mtx): the window tier's staging
     // (h_meta/d_meta/d_q8/d_out/scratch) and the prompt tier's are shared device state, and with
@@ -734,24 +735,70 @@ static inline cudaStream_t prompt_stream(const Helper& hp) {
     return hp.streams_split ? hp.stream_p : hp.stream;
 }
 
-int serve_prompt(Helper& hp, const std::vector<uint8_t>& body, uint32_t req_id, uint32_t seq, std::string& err,
-                 Socket& out) {
-    // The prompt tier's OWN staging (h_meta_p/d_meta_p/d_q8_p/d_out_p/scratch_p) and the grouped
-    // kernel it launches are shared device state: with --socket2 this frame and a window frame can
-    // arrive at the same moment, on different channels.  Same lock as serve_begin, never across a
-    // channel's idle read.
-    // L3 (STRATA_RPC_PROFILE=1): queue_us = the head-of-line wait for the shared device lock (the
-    // M7 gate's single-socket failure mechanism, now measurable per frame); the lock spans parse ->
-    // (optional fp32->q8 twin quantize) -> upload -> kernel -> sync -> gather.  Default off.
-    static const bool prof = std::getenv("STRATA_RPC_PROFILE") != nullptr;
-    const auto p_entry = prof ? std::chrono::steady_clock::now()
-                              : std::chrono::steady_clock::time_point{};
-    std::unique_lock<std::mutex> gpu_lk(hp.gpu_mtx, std::defer_lock);
-    std::optional<std::shared_lock<std::shared_mutex>> gpu_lk_on;
-    if (hp.streams_split) gpu_lk_on.emplace(hp.gpu_gate);   // L2: a served frame is a reader
-    else gpu_lk.lock();
-    const int64_t p_queue_us = prof ? std::chrono::duration_cast<std::chrono::microseconds>(
-                                          std::chrono::steady_clock::now() - p_entry).count() : 0;
+// ---- L3 sub-spans of ONE prompt-tier claim's serve body (STRATA_RPC_PROFILE only) ----
+// The names follow the code's own phases in serve_prompt_core, nothing is invented:
+//   parse  - the BeginPReq header, the geometry caps and the layer/format gates;
+//   lookup - the pair loop (the primary bitmap, cache.slot_of, the per-expert cap) and the grouped
+//            entry map (start/dst/tok/compact_claim);
+//   quant  - the fp32 -> q8_1 twin quantize (image_format 1 only; ~0 for formats 0 and 2);
+//   upload - the three async enqueues: the q8 image H2D, the GroupMetaP H2D, the scratch clear;
+//   launch - the grouped kernel launch enqueue (native_expert_grouped / _q8k) + cudaGetLastError;
+//   ksync  - cudaStreamSynchronize: the device compute to completion (it drains the queued uploads,
+//            the clear and the kernels - that is the GEMM time);
+//   scan   - the H14 finite-row scan of the mapped-host output rows;
+//   pack   - the reply serialize, i.e. the rows' PCIe read out of the mapped cudaHostAlloc d_out_p.
+// Their SUM is lock_us (the existing lock span); reply_us stays the socket write span.
+// `sp` is nullptr when profiling is OFF, so no clock is read on the default path.
+struct ServeSpans {
+    int64_t parse_us = 0, lookup_us = 0, quant_us = 0, upload_us = 0;
+    int64_t launch_us = 0, ksync_us = 0, scan_us = 0, pack_us = 0;
+};
+
+inline int64_t span_us(const std::chrono::steady_clock::time_point& from) {
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - from).count();
+}
+
+inline std::chrono::steady_clock::time_point span_mark(const ServeSpans* sp) {
+    return sp != nullptr ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+}
+
+// The appended L3 fields of one serve line: the span decomposition of lock_us, formatted ONLY when
+// profiling.  The existing prefix stays byte-identical and these fields are appended after it, so the
+// ab9 collectors (which match the prefix and ignore what follows) keep parsing.  The caller formats
+// them INTO its line and writes the line ONCE: with --socket2 two serve threads write profile lines to
+// the same stderr, and a line split across writes could interleave.
+inline void format_serve_spans(const ServeSpans& sp, char* buf, size_t n) {
+    std::snprintf(buf, n, " parse_us=%lld lookup_us=%lld quant_us=%lld upload_us=%lld launch_us=%lld "
+                          "ksync_us=%lld scan_us=%lld pack_us=%lld",
+                  (long long) sp.parse_us, (long long) sp.lookup_us, (long long) sp.quant_us,
+                  (long long) sp.upload_us, (long long) sp.launch_us, (long long) sp.ksync_us,
+                  (long long) sp.scan_us, (long long) sp.pack_us);
+}
+
+// The batch's line reports ONE set of spans for the WHOLE batch, so the per-part spans sum here.
+inline ServeSpans& operator+=(ServeSpans& a, const ServeSpans& b) {
+    a.parse_us += b.parse_us;
+    a.lookup_us += b.lookup_us;
+    a.quant_us += b.quant_us;
+    a.upload_us += b.upload_us;
+    a.launch_us += b.launch_us;
+    a.ksync_us += b.ksync_us;
+    a.scan_us += b.scan_us;
+    a.pack_us += b.pack_us;
+    return a;
+}
+
+// The per-part BODY of a prompt-tier request: every cap kBeginP enforces, the claims, the grouped
+// launch, the H14 finite scan, and the reply BYTES - the exact kRowsP payload (RowsPResp + rows in
+// claim order with the original pair indices).  It takes no lock and writes no socket: serve_prompt
+// locks and writes it, and serve_prompt_batch serves K parts under ONE lock acquisition and writes
+// them as K parts of one kRowsPB.  One code path per claim, so a batched part is byte-for-byte the
+// request and reply a standalone kBeginP/kRowsP pair carries.
+static int serve_prompt_core(Helper& hp, PayloadView body, std::vector<uint8_t>& reply,
+                             int32_t& n_rows_out, int32_t& layer_out, std::string& err,
+                             ServeSpans* sp = nullptr) {
+    const auto t_parse = span_mark(sp);   // L3: spans are only marked when sp is non-null (prof ON)
     if (body.size() < sizeof(BeginPReq)) return kErrShort;
     BeginPReq req;
     std::memcpy(&req, body.data(), sizeof(req));
@@ -782,6 +829,8 @@ int serve_prompt(Helper& hp, const std::vector<uint8_t>& body, uint32_t req_id, 
         if (!strata::kernels::native_expert_q8k_supported(fmt.gu_type, fmt.n_embd))
             return kErrGeometry;   // this layer's gate/up weight type has no Q8_K kernel
     }
+    if (sp != nullptr) sp->parse_us = span_us(t_parse);
+    const auto t_lookup = span_mark(sp);
 
     // The claims: the pairs whose expert the helper holds and the primary does not own.  A pair whose
     // expert is primary-resident or not resident HERE is ABSENT from the reply - the engine's
@@ -814,9 +863,11 @@ int serve_prompt(Helper& hp, const std::vector<uint8_t>& body, uint32_t req_id, 
     if (claim_of.empty()) {   // nothing resident: an empty reply, the local path serves every row
         RowsPResp rep;
         rep.n_rows = 0;
-        std::vector<uint8_t> payload(sizeof(rep), 0);
-        std::memcpy(payload.data(), &rep, sizeof(rep));
-        return out.write_reply(kRowsP, req_id, seq, payload.data(), payload.size(), deadline_after(reply_deadline_ms(1000)));
+        reply.assign(sizeof(rep), 0);
+        std::memcpy(reply.data(), &rep, sizeof(rep));
+        n_rows_out = 0;
+        layer_out = layer;
+        return kOk;
     }
     const int32_t groups = (int32_t) grp_expert.size();
     for (int32_t g = 0; g < groups; ++g) {
@@ -830,6 +881,8 @@ int serve_prompt(Helper& hp, const std::vector<uint8_t>& body, uint32_t req_id, 
     }
     start.push_back((int32_t) dst.size());
     if (dst.size() != claim_of.size()) return kErrInternal;   // the entry map covers every claim, once
+    if (sp != nullptr) sp->lookup_us = span_us(t_lookup);   // the pair resolution AND the entry map
+    const auto t_quant = span_mark(sp);
 
     // The activations: image_format 0 arrives exactly as the engine quantized them (quantize_q8_1_cpu,
     // the same quantizer the decode contract pins) - upload verbatim, no requantization.  image_format
@@ -849,6 +902,8 @@ int serve_prompt(Helper& hp, const std::vector<uint8_t>& body, uint32_t req_id, 
                                hp.h_q8_p_scratch.data() + (size_t) r * (size_t) (H / 32) * 36);
         img = hp.h_q8_p_scratch.data();
     }
+    if (sp != nullptr) sp->quant_us = span_us(t_quant);   // 0 work for image_format 0/2 (uploaded verbatim)
+    const auto t_upload = span_mark(sp);
     if (!cuda_check(cudaMemcpyAsync(hp.d_q8_p, img, up_bytes, cudaMemcpyHostToDevice, prompt_stream(hp)),
                     "prompt q8 upload", err)) return kErrInternal;
     std::memcpy(hp.h_meta_p->ptr, grp_ptr.data(), grp_ptr.size() * sizeof(grp_ptr[0]));
@@ -859,12 +914,30 @@ int serve_prompt(Helper& hp, const std::vector<uint8_t>& body, uint32_t req_id, 
     if (!cuda_check(cudaMemcpyAsync(hp.d_meta_p, hp.h_meta_p, sizeof(GroupMetaP), cudaMemcpyHostToDevice, prompt_stream(hp)),
                     "prompt meta upload", err)) return kErrInternal;
     const auto L = strata::kernels::native_expert_layout(fmt.gu_type, fmt.d_type, fmt.n_embd, fmt.n_ff);
-    // H14, mirrored: clear the output rows and the scratch first - a stale value from a window, from
-    // the warmup, or cudaMalloc junk carrying NaN fp16 patterns must never reach a reply row.
-    if (!cuda_check(cudaMemsetAsync(hp.d_out_p, 0, (size_t) dst.size() * (size_t) H * 4, prompt_stream(hp)),
-                    "prompt output clear", err)) return kErrInternal;
-    if (!cuda_check(cudaMemsetAsync(hp.d_scratch_p, 0, (size_t) hp.prompt_scratch_bytes, prompt_stream(hp)),
+    // H14's output clear is GONE here (helper-ipc-diet, 2026-11), and the scratch clear is narrowed
+    // to the bytes this claim's kernels can dirty - a 24 MB pinned-memory PCIe memset per claim was
+    // the single biggest GPU-side cost in the ab9 window.  The coverage facts, from the kernels:
+    //  - out: native_down_kernel's grid covers EVERY column r < n_embd and, for every group g <
+    //    n_groups, every entry e in [grp_start[g], grp_start[g+1]) writes out[ent_dst[e]*n_embd + r]
+    //    (iq_kernels.cu:2207-2228).  ent_dst is the 0..dst.size()-1 sequence built above (:822-831),
+    //    grp_start covers every entry, and the q8k path launches the same down kernel - so the
+    //    memset's exact range [0, dst.size()*H*4) is fully overwritten in this stream BEFORE the
+    //    cudaStreamSynchronize below, and the finite scan and the reply read ONLY that range.  A
+    //    stale window/warmup/cudaMalloc value cannot reach a reply row: the clear guards nothing.
+    //  - scratch: the gu/SwiGLU/down chain derives gate/up/h/hq from cap_entries = dst.size()
+    //    (native_expert_scratch_bytes' own formula; the q8k kernel states the same layout) and
+    //    writes every byte of that prefix before reading it.  The memset follows the claim's cap
+    //    (max of the two layout formulas, the same max that sizes the buffer at :1477-1479) so it
+    //    covers every byte the kernels touch this claim and leaves the never-read tail alone.
+    //    The output rows keep NO clear: verified fully overwritten above - correctness over
+    //    cleverness was applied to the scratch, where the write-before-read proof is layout-wide.
+    const size_t scratch_dirty = (size_t) std::max(
+        strata::kernels::native_expert_scratch_bytes((int64_t) dst.size(), L.n_ff),
+        strata::kernels::moe_hit_grouped_scratch_bytes((int64_t) dst.size(), H, FF));
+    if (!cuda_check(cudaMemsetAsync(hp.d_scratch_p, 0, scratch_dirty, prompt_stream(hp)),
                     "prompt scratch clear", err)) return kErrInternal;
+    if (sp != nullptr) sp->upload_us = span_us(t_upload);   // the THREE async enqueues, not their drain
+    const auto t_launch = span_mark(sp);
     if (img_q8k)
         strata::kernels::native_expert_grouped_q8k(L, hp.d_meta_p->ptr, hp.d_meta_p->start, &hp.d_meta_p->count,
                                                    hp.d_meta_p->dst, hp.d_meta_p->tok, groups, (int64_t) dst.size(),
@@ -875,13 +948,19 @@ int serve_prompt(Helper& hp, const std::vector<uint8_t>& body, uint32_t req_id, 
                                                (const uint8_t*) hp.d_q8_p, hp.d_scratch_p, hp.d_out_p, prompt_stream(hp));
     if (!cuda_check(cudaGetLastError(), img_q8k ? "native_expert_grouped_q8k prompt launch"
                                                 : "native_expert_grouped prompt launch", err)) return kErrInternal;
+    if (sp != nullptr) sp->launch_us = span_us(t_launch);   // the kernel enqueue + cudaGetLastError
+    const auto t_ksync = span_mark(sp);
     if (!cuda_check(cudaStreamSynchronize(prompt_stream(hp)), "prompt row sync", err)) return kErrInternal;
+    if (sp != nullptr) sp->ksync_us = span_us(t_ksync);   // THE GEMM SPAN: queued uploads, clear, kernels
+    const auto t_scan = span_mark(sp);
 
     // H14's finite-row scan, mirrored: prove the rows before the engine refuses them.
     for (int32_t i = 0; i < (int32_t) compact_claim.size(); ++i) {
         const float* row = hp.d_out_p + (size_t) i * H;
-        bool bad = false;
-        for (int64_t c = 0; c < H; ++c) if (!std::isfinite(row[c])) { bad = true; break; }
+        // helper-ipc-diet: all_finite is the scalar rule's bit-exact twin (subnormals pass, only
+        // NaN/inf flag), AVX2-width where the CPU has it; the first bad row is the same row the
+        // scalar loop stopped on, so the log line and the refusal trigger byte-for-byte unchanged.
+        const bool bad = !all_finite(row, (size_t) H);
         if (bad) {
             std::fprintf(stderr, "expert-helper: prompt row %d of %d (pair %d, expert %d) is non-finite "
                                  "(first floats %g %g %g %g)\n", i, (int32_t) compact_claim.size(),
@@ -890,31 +969,161 @@ int serve_prompt(Helper& hp, const std::vector<uint8_t>& body, uint32_t req_id, 
         }
     }
 
+    if (sp != nullptr) sp->scan_us = span_us(t_scan);   // the H14 all_finite pass over the mapped rows
+
     // The rows in claim order, with the ORIGINAL pair indices (the engine validates every index
     // against its own claims and refuses a row it did not claim).
+    const auto t_pack = span_mark(sp);
     const int32_t n_rows = (int32_t) compact_claim.size();
     const size_t row_bytes = 4 + (size_t) H * 4;
     RowsPResp rep;
     rep.n_rows = n_rows;
-    std::vector<uint8_t> payload(sizeof(rep) + (size_t) n_rows * row_bytes, 0);
-    std::memcpy(payload.data(), &rep, sizeof(rep));
+    reply.assign(sizeof(rep) + (size_t) n_rows * row_bytes, 0);
+    std::memcpy(reply.data(), &rep, sizeof(rep));
     for (int32_t i = 0; i < n_rows; ++i) {
-        std::memcpy(payload.data() + sizeof(rep) + (size_t) i * row_bytes, &compact_claim[i], 4);
-        std::memcpy(payload.data() + sizeof(rep) + (size_t) i * row_bytes + 4,
+        std::memcpy(reply.data() + sizeof(rep) + (size_t) i * row_bytes, &compact_claim[i], 4);
+        std::memcpy(reply.data() + sizeof(rep) + (size_t) i * row_bytes + 4,
                     hp.d_out_p + (size_t) i * H, (size_t) H * 4);
     }
+    if (sp != nullptr) sp->pack_us = span_us(t_pack);   // reply serialize + the rows' PCIe read from d_out_p
+    n_rows_out = n_rows;
+    layer_out = layer;
+    return kOk;
+}
+
+int serve_prompt(Helper& hp, PayloadView body, uint32_t req_id, uint32_t seq, std::string& err,
+                 Socket& out) {
+    // The prompt tier's OWN staging (h_meta_p/d_meta_p/d_q8_p/d_out_p/scratch_p) and the grouped
+    // kernel it launches are shared device state: with --socket2 this frame and a window frame can
+    // arrive at the same moment, on different channels.  Same lock as serve_begin, never across a
+    // channel's idle read - and the SAME lock the batch below takes ONCE for its K parts.
+    // L3 (STRATA_RPC_PROFILE=1): queue_us = the head-of-line wait for the shared device lock (the
+    // M7 gate's single-socket failure mechanism, now measurable per frame); the lock spans parse ->
+    // (optional fp32->q8 twin quantize) -> upload -> kernel -> sync -> gather.  Default off.
+    static const bool prof = std::getenv("STRATA_RPC_PROFILE") != nullptr;
+    const auto p_entry = prof ? std::chrono::steady_clock::now()
+                              : std::chrono::steady_clock::time_point{};
+    std::unique_lock<std::mutex> gpu_lk(hp.gpu_mtx, std::defer_lock);
+    std::optional<std::shared_lock<std::shared_mutex>> gpu_lk_on;
+    if (hp.streams_split) gpu_lk_on.emplace(hp.gpu_gate);   // L2: a served frame is a reader
+    else gpu_lk.lock();
+    const int64_t p_queue_us = prof ? std::chrono::duration_cast<std::chrono::microseconds>(
+                                          std::chrono::steady_clock::now() - p_entry).count() : 0;
+    std::vector<uint8_t> payload;
+    int32_t n_rows = 0, layer = 0;
+    ServeSpans spans;   // L3: the core gets a span sink ONLY when profiling; off = no clocks read
+    const int rc = serve_prompt_core(hp, body, payload, n_rows, layer, err, prof ? &spans : nullptr);
+    if (rc != kOk) return rc;
     const auto p_ready = prof ? std::chrono::steady_clock::now()
                               : std::chrono::steady_clock::time_point{};
     const int rc_w = out.write_reply(kRowsP, req_id, seq, payload.data(), payload.size(), deadline_after(reply_deadline_ms(10000)));
-    if (prof)   // L3: one line per served prompt frame; refusals/empty replies stay untimed
+    if (prof) {   // L3: one line per served prompt frame; refusals/empty replies stay untimed
+        char spans_txt[320];
+        format_serve_spans(spans, spans_txt, sizeof(spans_txt));   // appended, same write as the line
         std::fprintf(stderr, "rpcprofile: serve tier=p layer=%d rows=%d queue_us=%lld lock_us=%lld "
-                             "reply_us=%lld rows_kb=%lld\n", (int) layer, n_rows,
+                             "reply_us=%lld rows_kb=%lld%s\n", (int) layer, n_rows,
                      (long long) p_queue_us,
                      (long long) (std::chrono::duration_cast<std::chrono::microseconds>(
                                       p_ready - p_entry).count() - p_queue_us),
                      (long long) std::chrono::duration_cast<std::chrono::microseconds>(
                                       std::chrono::steady_clock::now() - p_ready).count(),
-                     (long long) ((payload.size() - sizeof(rep)) / 1024));
+                     (long long) ((payload.size() - sizeof(RowsPResp)) / 1024), spans_txt);
+    }
+    return rc_w;
+}
+
+// ---- The CLAIM BATCH (kBeginPB / kRowsPB, default OFF - the engine's STRATA_CLAIM_BATCH): K
+// consecutive prompt-tier claims in ONE exchange, served by the helper under ONE lock acquisition.
+//
+// Transport-only by construction: the frame's parts are sliced by kBeginP's own byte contract
+// (BeginPReq + pairs + the layer's primary bitmap + the image, length-checked per part against the
+// frame's exact total), each part runs the SAME serve_prompt_core a standalone kBeginP runs - same
+// claims, same caps, same launch, same reply layout - and the parts are answered in the request's
+// part order.  Nothing reorders rows: the engine validates each part against ITS OWN claims, so a
+// row belonging to another part is kErrBadId there and the caller's same-layer fallback owns the set.
+//
+// The lock is the frame's point: K claims pay the device lock and the queue handshake ONCE
+// (measured on the 8k-token window: 96 prompt claims, a per-claim fixed floor of ~5.8 ms).
+int serve_prompt_batch(Helper& hp, PayloadView body, uint32_t req_id, uint32_t seq, std::string& err,
+                       Socket& out) {
+    static const bool prof = std::getenv("STRATA_RPC_PROFILE") != nullptr;
+    const auto p_entry = prof ? std::chrono::steady_clock::now()
+                              : std::chrono::steady_clock::time_point{};
+    std::unique_lock<std::mutex> gpu_lk(hp.gpu_mtx, std::defer_lock);
+    std::optional<std::shared_lock<std::shared_mutex>> gpu_lk_on;
+    if (hp.streams_split) gpu_lk_on.emplace(hp.gpu_gate);   // L2: a served frame is a reader
+    else gpu_lk.lock();
+    const int64_t p_queue_us = prof ? std::chrono::duration_cast<std::chrono::microseconds>(
+                                          std::chrono::steady_clock::now() - p_entry).count() : 0;
+    ServeSpans spans;   // L3: the batch's ONE span set - the slice pass plus every part's spans
+    const ServeSpans* sp = prof ? &spans : nullptr;
+    const auto t_slice = span_mark(sp);
+    if (body.size() < sizeof(BeginPBReq)) return kErrShort;
+    BeginPBReq req;
+    std::memcpy(&req, body.data(), sizeof(req));
+    if (req.n_parts < 1 || req.n_parts > (int32_t) kMaxClaimBatch || req.flags != 0 ||
+        req.reserved0 != 0) return kErrGeometry;
+    // Slice the parts and length-check EVERY part before any device work: the frame's byte total is
+    // exact, so a truncated or padded part is refused as kErrShort with nothing computed.
+    std::vector<PayloadView> parts;
+    size_t off = sizeof(req);
+    for (int32_t i = 0; i < req.n_parts; ++i) {
+        if (off + sizeof(BeginPReq) > body.size()) return kErrShort;
+        BeginPReq part;
+        std::memcpy(&part, body.data() + off, sizeof(part));
+        if (part.n_sel_tok < 1 || part.n_sel_tok > (int32_t) kPromptTok || part.n_pairs < 1 ||
+            part.n_pairs > (int32_t) kPromptRows) return kErrGeometry;
+        const int64_t img = part.image_format == 1 ? (int64_t) part.n_sel_tok * H * (int64_t) sizeof(float)
+                          : part.image_format == 2 ? (int64_t) part.n_sel_tok * (H / 256) * 292
+                                                   : (int64_t) part.n_sel_tok * (H / 32) * 36;
+        const size_t res_bytes = (size_t) (((int64_t) part.n_sel_tok * hp.n_expert + 7) / 8);
+        const size_t len = sizeof(part) + (size_t) part.n_pairs * 8 + res_bytes + (size_t) img;
+        if (img <= 0 || off + len > body.size()) return kErrShort;
+        parts.push_back(PayloadView(body.data() + off, len));
+        off += len;
+    }
+    if (off != body.size()) return kErrShort;   // the parts' byte total is the frame's, exactly
+    if (sp != nullptr) spans.parse_us += span_us(t_slice);   // the batch's header check + slice pass
+    // ONE reply for the batch: RowsPBResp + the parts' kRowsP payloads, in the request's part order.
+    std::vector<uint8_t> reply;
+    int64_t rows_total = 0;
+    int32_t layer0 = 0;
+    for (size_t i = 0; i < parts.size(); ++i) {
+        std::vector<uint8_t> part_reply;
+        int32_t n_rows = 0, layer = 0;
+        ServeSpans part_spans;   // L3: summed into the batch's spans; nullptr when profiling is off
+        const int rc = serve_prompt_core(hp, parts[i], part_reply, n_rows, layer, err,
+                                         sp != nullptr ? &part_spans : nullptr);
+        if (rc != kOk) return rc;
+        if (sp != nullptr) spans += part_spans;
+        if (i == 0) layer0 = layer;
+        rows_total += n_rows;
+        reply.insert(reply.end(), part_reply.begin(), part_reply.end());
+    }
+    RowsPBResp rep;
+    rep.n_parts = (int32_t) parts.size();
+    std::vector<uint8_t> payload(sizeof(rep) + reply.size(), 0);
+    std::memcpy(payload.data(), &rep, sizeof(rep));
+    std::memcpy(payload.data() + sizeof(rep), reply.data(), reply.size());
+    const auto p_ready = prof ? std::chrono::steady_clock::now()
+                              : std::chrono::steady_clock::time_point{};
+    const int rc_w = out.write_reply(kRowsPB, req_id, seq, payload.data(), payload.size(),
+                                     deadline_after(reply_deadline_ms(10000)));
+    if (prof) {
+        // L3: the line's PREFIX is the single-claim line's exactly, so the existing parsers keep
+        // reading it; `parts` is the appended field naming the batch this line covers, and the
+        // sub-spans are the WHOLE batch's (slice pass + every part), summed - one write per line.
+        char spans_txt[320];
+        format_serve_spans(spans, spans_txt, sizeof(spans_txt));
+        std::fprintf(stderr, "rpcprofile: serve tier=p layer=%d rows=%lld queue_us=%lld lock_us=%lld "
+                             "reply_us=%lld rows_kb=%lld parts=%d%s\n", (int) layer0, (long long) rows_total,
+                      (long long) p_queue_us,
+                      (long long) (std::chrono::duration_cast<std::chrono::microseconds>(
+                                       p_ready - p_entry).count() - p_queue_us),
+                      (long long) std::chrono::duration_cast<std::chrono::microseconds>(
+                                       std::chrono::steady_clock::now() - p_ready).count(),
+                      (long long) ((payload.size() - sizeof(rep)) / 1024), (int) parts.size(), spans_txt);
+    }
     return rc_w;
 }
 
@@ -948,7 +1157,7 @@ void stage_draft_rows(Helper& hp, const uint8_t* wire, int64_t rows, bool bf16) 
         }
 }
 
-int serve_draft_ctx(Helper& hp, const std::vector<uint8_t>& body, uint32_t req_id, uint32_t seq, bool bf16_taps,
+int serve_draft_ctx(Helper& hp, PayloadView body, uint32_t req_id, uint32_t seq, bool bf16_taps,
                     std::string& err, Socket& out) {
     // The drafter's ring, its tap staging (h_taps) and its forward are shared device state too: a
     // draft frame on channel A and a prompt frame on channel B can reach the device together.
@@ -981,7 +1190,7 @@ int serve_draft_ctx(Helper& hp, const std::vector<uint8_t>& body, uint32_t req_i
     return out.write_reply(kDraftAck, req_id, seq, nullptr, 0, deadline_after(reply_deadline_ms(10000)));
 }
 
-int serve_draft_round(Helper& hp, const std::vector<uint8_t>& body, uint32_t req_id, uint32_t seq,
+int serve_draft_round(Helper& hp, PayloadView body, uint32_t req_id, uint32_t seq,
                       bool bf16_taps, std::string& err, Socket& out) {
     std::optional<std::lock_guard<std::mutex>> gpu_lk_off;
     std::optional<std::shared_lock<std::shared_mutex>> gpu_lk_on;
@@ -1173,16 +1382,18 @@ accept_peer:
                  secondary ? "second-channel engine" : "engine", Socket::peer_uid(fd));
 
     int rc_loop = 0;
+    RxBuffer rx;   // helper-ipc-diet: ONE grow-only receive buffer per channel - the per-claim 24 MB
+                   // reply frame reuses its pages; the span views below are valid while consumed
     for (;;) {
         if (g_stop.load()) {   // a signal recorded during the last window: honor it before the next read
             std::fprintf(stderr, "expert-helper: SIGTERM/SIGINT received; exiting cleanly\n");
             break;
         }
         Header head;
-        std::vector<uint8_t> body;
+        PayloadView body;
         // NO lock is held across this read: an idle channel must never block the other channel's
         // work (that is the split's whole point, and the shared device lock is taken per frame only).
-        int rc = out.read_frame(head, body, deadline_after(o.begin_timeout_ms));
+        int rc = out.read_frame(head, rx, body, deadline_after(o.begin_timeout_ms));
         if (rc == kErrTimeout) {
             if (g_stop.load()) {   // R5 P1: the wake byte, not an idle engine (t0-incumbent-repro1)
                 std::fprintf(stderr, "expert-helper: SIGTERM/SIGINT during the begin-wait; exiting cleanly\n");
@@ -1217,7 +1428,7 @@ accept_peer:
                     // helper serves, bounded by kMaxSelTok / kMaxRowsPerLayer).  Appended field: an R2
                     // client reads its 24-byte prefix and ignores this; a new client that sees the bit
                     // may use the tier, one that does not (an R2 helper) never sends kBeginP.
-                    ack.features = kFeaturePromptRows | kFeaturePromptF32 | kFeatureQ8K;
+                    ack.features = kFeaturePromptRows | kFeaturePromptF32 | kFeatureQ8K | kFeaturePromptBatch;
                     //   M4c (b): fp32 images accepted.  The Q8_K wire (kBeginQ8K / image_format 2 -
                     //   the CPU reference's own gate/up image through native_expert_grouped_q8k) is
                     //   advertised because this build compiled it; the ENGINE still opts in with
@@ -1246,6 +1457,7 @@ accept_peer:
                     g_reserve = req.reserve_mib;
                     g_slots = req.slots;
                     hello_seen = true;   // from here on the connection is the engine's, one-shot again
+                    log_socket_buffers(out.fd(), "helper");   // helper-ipc-diet: the achieved buffer pair
                 }
             }
             if (rc != kOk) { rc_loop = rc; break; }
@@ -1305,6 +1517,26 @@ accept_peer:
             }
             ++prompt_requests_served;
             if (o.once) { std::fprintf(stderr, "expert-helper: --once: one prompt row request served, exiting\n"); break; }
+            continue;
+        }
+        if (head.type == kBeginPB) {
+            // The claim batch (default OFF - the engine's STRATA_CLAIM_BATCH with our
+            // kFeaturePromptBatch): K prompt-tier claims in ONE frame, served under ONE device-lock
+            // acquisition.  A peer that never saw the bit never sends it, and an engine that predates
+            // it keeps kBeginP byte for byte.  The same gate and the same typed-refusal path as
+            // kBeginP above.
+            if (!filled) { rc = kErrRequest; }
+            else rc = serve_prompt_batch(hp, body, head.req_id, head.seq, err, out);
+            if (rc != kOk) {
+                ErrResp e;
+                e.status = rc;
+                std::strncpy(e.text, err.c_str(), sizeof(e.text) - 1);
+                out.write_reply(kError, head.req_id, head.seq, (const uint8_t*) &e, sizeof(e), deadline_after(5000));
+                rc_loop = rc;
+                break;
+            }
+            ++prompt_requests_served;
+            if (o.once) { std::fprintf(stderr, "expert-helper: --once: one prompt batch frame served, exiting\n"); break; }
             continue;
         }
         if (head.type == kDraftCtx || head.type == kDraftReq ||

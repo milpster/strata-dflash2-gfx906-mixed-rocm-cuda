@@ -8,6 +8,7 @@
 #pragma once
 
 #include "strata/core/conversation_cache.hpp"
+#include "strata/core/dflash_ring.hpp"
 
 #include <array>
 #include <cstddef>
@@ -149,6 +150,10 @@ struct SessionWriteOptions {
     SessionProgress progress;
     // "flush" (the file's flush, `bytes` = the file) and "publish" (rename and folder flush), before each starts
     SessionPhase phase;
+    // the transfer mode, reported at the first block that reaches the OS (and again if it changes mid-write: a
+    // filesystem that took O_DIRECT at open and refuses the transfer drops to buffered).  True = strict direct I/O.
+    // Optional: a caller that needs to know which path its bytes took (the disk tier checks its `direct` promise).
+    std::function<void(bool direct)> mode;
     // tests: return an errno value to make a step fail ("write", "file_flush", "rename", "dir_flush"), 0 to go on
     std::function<int(const char* step)> fault;
 };
@@ -239,5 +244,215 @@ bool session_file_read(const std::string& path, const SessionFileIdentity& id, S
 // be tested anywhere).  Windows: backslashes and a trailing backslash, as GetDiskFreeSpaceExW requires for a UNC
 // folder (\\server\share\dir\) and gives a drive root (C:\); empty for a bare file name (the current folder).
 std::string session_free_space_dir(const std::string& path, bool windows_rules);
+
+// ============================ format v2 ============================
+// A split-aware, region-streamed session file: its own magic and version, so v1's bytes and the v1 read/write
+// behavior above stay exactly as they are, and each reader refuses the other's file.  A v2 file is a bounded
+// manifest that NAMES every bulk region, the region bytes concatenated in the manifest's order, and a trailer
+// carrying the per-region checksums (the committed marker: end marker plus the manifest, payload and region-table
+// checksums).  Nothing here materializes a region's bytes as a host image: a write streams them from the source
+// that owns them, a read streams them into the sink the caller owns.
+//
+// Layout:  header(64) | manifest | regions | region table | trailer(32)
+// Header:  magic[8] version:u32 header_size:u32 model:u64 config:u64 payload:u64 manifest_bytes:u64 reserved:u64
+//          header_hash:u64 (session_hash64 of bytes 0..55, seed 0).  The reserved field must be zero: a v2 reader
+//          refuses a header it cannot fully interpret.
+// Manifest: sections, each  tag:u32 body_len:u64 body;  required tags in this order LAYT DRFT TOKN IMAG CPST RDSK,
+//          then the terminator tag 0.  An unknown tag, a missing required tag, a repeated tag, a section whose
+//          fields do not fill its declared length, or leftover bytes are refusals: v2 has no optional sections.
+// Region table:  count:u64 then count x checksum:u64, positional to the manifest's region directory; region
+//          checksums are session_hash64 of the region's bytes (seed 0), so one damaged region is found by name.
+// Trailer:  payload_hash:u64 manifest_hash:u64 region_table_hash:u64 end_marker[8].
+
+// What a v2 region's bytes are.  A kind the reader does not define is a refusal, never a skipped region.
+enum class SessionRegionKind : int32_t {
+    none = 0,
+    live_state = 1,        // a stage's live running state: parts 0..4 = gdn, ple, tails, dead, block_pos
+    kv = 2,                // one layer of one stage: parts 0..4 = k, v, k_scale, v_scale, pooled
+    checkpoint_state = 3,  // a checkpoint's running state for one stage (parts 0..4 as live_state)
+    mtp = 4,               // one stage's optional MTP layer K/V (parts 0..4)
+    dflash = 5,            // the DFlash physical ring cells (part 0 only, stage 0, index 0)
+    dflash_pair = 6,       // a checkpoint's PAIRED ring image at its own boundary (part 0, stage 0,
+                           // index = the checkpoint ordinal); the manifest's checkpoint meta carries
+                           // the exact counters captured with it
+};
+const char* session_region_kind_name(int32_t kind);   // "live_state", ... ; "unknown" for a kind v2 does not define
+// the part count of the state and K/V regions (gdn/ple/tails/dead/block_pos, k/v/k_scale/v_scale/pooled)
+constexpr int64_t kSessionStateParts = 5, kSessionKvParts = 5;
+constexpr uint64_t kSessionMaxStages = 64;   // a v2 file's logical stage count, bounded before anything is read
+
+// One bulk region: what it is, where its bytes sit in the file's region block, how long they are, and their
+// checksum (the trailer's, filled by the write; a read compares against it and reports the verified values back
+// on each region).  Offsets are in canonical order (kind, stage, index, part) and tile the region block with no
+// gap and no overlap.
+struct SessionRegion {
+    int32_t kind = 0;      // SessionRegionKind
+    int64_t stage = 0;     // 0: the first logical stage, >0: a later one
+    int64_t index = 0;     // kv/mtp: the layer ordinal within its stage; checkpoint_state: the checkpoint ordinal; else 0
+    int64_t part = 0;      // 0..4 for the state and K/V regions; 0 for dflash
+    uint64_t offset = 0, bytes = 0, checksum = 0;
+    bool operator==(const SessionRegion&) const = default;
+};
+
+// One logical stage of the layout the bytes belong to: its layer carve and the KV format its cells were written
+// in.  A v2 file is bound to the whole ordered stage list, not only to the first stage's range.
+struct SessionStageLayout {
+    int64_t layer_lo = 0, layer_hi = 0, kv_format = 0;
+    bool operator==(const SessionStageLayout&) const = default;
+};
+struct SessionLayoutIdentity {
+    std::array<int64_t, 18> geometry{};
+    std::vector<SessionStageLayout> stages;   // stage order; the first stage is stages[0]
+    bool operator==(const SessionLayoutIdentity&) const = default;
+};
+
+// The drafter the bytes belong to: its type and the fingerprint of the loaded artifact (plain data: the engine
+// fills the real values; the file only compares them), the ring layout the saved cells are indexed by, and the
+// EXACT host counters the capture took.  committed_end < 0: no draft state in this file.  The counters are kept
+// as they are, never normalized to the token length or to each other (appended_through > committed_end is legal
+// existing state: rejected speculative rows are part of the ring's horizon).
+struct SessionDraftIdentity {
+    int64_t type = 0, ring_cells = 0, window = 0, capacity = 0, committed_end = -1, appended_through = -1;
+    uint64_t artifact = 0;
+    bool operator==(const SessionDraftIdentity&) const = default;
+};
+
+// A checkpoint as the manifest stores it: a prefix LENGTH into the file's single token vector (the ids are not
+// repeated per checkpoint), the images it covers (the shared image keys below that length), its LRU stamp, its
+// pin, how many later-stage parts its state is split into, and the --prefill-pipe plan a continuation reads with
+// (integers and the pipe value's exact bits, not a struct dump).
+struct SessionCheckpointMeta {
+    uint64_t prefix = 0;
+    uint64_t used = 0;
+    bool pinned = false;
+    int64_t stage_parts = 0;   // 0: one part (no split); else the number of LATER stages this checkpoint covers
+    ConversationCheckpoint::PromptPlan plan;
+    // The paired draft capture at this checkpoint's boundary: the ring image the file carries as
+    // a dflash_pair region of `ring_bytes` bytes (checksum `ring_checksum`), and the EXACT
+    // counters that capture took. ring_id 0: target-only (no pair, no region). A pair is legal
+    // only with ring_committed_end == prefix (captured AT this position), its ring layout equal
+    // to the file's draft, and appended_through >= committed_end inside the capacity - the
+    // counters are kept as captured, never normalized.
+    uint64_t ring_id = 0, ring_bytes = 0, ring_checksum = 0;
+    int64_t ring_cells = 0, ring_window = 0, ring_capacity = 0, ring_committed_end = -1,
+            ring_appended_through = -1;
+};
+
+// Everything a v2 file declares about a conversation, in bounded metadata: the identities it is bound to, the
+// token ids and image keys each stored ONCE, the checkpoint prefix references, and the region directory.
+struct SessionManifestV2 {
+    SessionLayoutIdentity layout;
+    SessionDraftIdentity draft;
+    bool cvec = true;
+    std::vector<int32_t> tokens;
+    std::vector<ConversationImageKey> images;
+    std::vector<SessionCheckpointMeta> checkpoints;
+    std::vector<SessionRegion> regions;
+};
+
+// A v2 region's bytes, read from whoever owns them (a device pool, a pinned host pool) straight into the file's
+// staging buffer: no host copy of the region, and the source is not the file's owner.  `read(offset, dst, n)`
+// fills [offset, offset+n) of the region; after a failed read `error()` (optional) says why.  The source must
+// stay unchanged until the file is published.
+struct SessionRegionSource {
+    int32_t kind = 0;
+    int64_t stage = 0, index = 0, part = 0;
+    uint64_t size = 0;   // the source's own extent; it must equal the manifest's declared length
+    std::function<bool(size_t offset, void* dst, size_t n)> read;
+    std::function<std::string()> error;
+};
+
+// Writes a v2 generation.  `manifest` declares the identities, the token/image directory, the checkpoints and the
+// region directory (its regions' offsets/checksums are filled by the write, so callers leave them zero); `sources`
+// supplies exactly one source per declared region, matched by kind/stage/index/part and by size.  The declared
+// region order is canonicalized (kind, stage, index, part) with its sources, so a caller's order is not part of
+// the format.  Refusals (inconsistent manifest, a source that does not match, an over-large state) happen before
+// any disk access; the publication machinery, progress, phases and free-space preflight are v1's.
+bool session_file_write_v2(const std::string& path, const SessionFileIdentity& id, const SessionManifestV2& manifest,
+                           const std::vector<SessionRegionSource>& sources, size_t& bytes, std::string& error,
+                           const SessionWriteOptions& options = {}, SessionStatus* status = nullptr);
+
+// Where the streamed regions go.  The read calls validate_region() for EVERY region in its validation pass,
+// before a single byte of any region is written; write() runs only in the transfer pass.  So a checksum failure
+// anywhere in the payload, a foreign identity, a region the destination cannot take, a truncated file and an
+// admission refusal all leave the sink with nothing written.  Blocks are at most 16 MiB, region by region, in the
+// manifest's order; finish() runs after every region has landed and the checksums matched.
+struct SessionRegionSink {
+    std::function<bool(const SessionRegion& region, std::string& why)> validate_region;
+    std::function<bool(const SessionRegion& region, uint64_t offset, const void* bytes, size_t n, std::string& why)> write;
+    std::function<bool(std::string& why)> finish;
+};
+
+// What the reader requires the file to have been written with.  A layout or draft identity mismatch is refused
+// before the sink sees a byte; a check a caller leaves off is the caller's own documented decision.
+struct SessionV2Requirement {
+    bool check_layout = true, check_draft = true;
+    SessionLayoutIdentity layout;
+    SessionDraftIdentity draft;
+};
+
+// Bounds of a v2 read.  Every count and extent is checked against the bytes left in the payload and against these
+// limits BEFORE anything is allocated; the manifest and the region directory are the only things a v2 read
+// allocates, so its peak memory does not grow with the conversation.
+struct SessionReadV2Limits {
+    uint64_t max_file_bytes = UINT64_MAX;
+    uint64_t max_manifest_bytes = 64u << 20;   // the manifest is metadata; it is never a payload
+    uint64_t max_tokens = UINT64_MAX, max_images = UINT64_MAX, max_checkpoints = UINT64_MAX;
+    uint64_t max_stages = kSessionMaxStages, max_regions = UINT64_MAX, max_region_bytes = UINT64_MAX;
+    // the RAM PREFLIGHT: asked once the header and identity match and before the manifest is read, with
+    // session_read_v2_peak_bytes; false refuses the file.  Not a reservation.
+    std::function<bool(uint64_t need_bytes, std::string& why)> admit;
+    SessionProgress progress;
+    // the transfer mode of the opened file, reported once its header has been read (and again mid-read if a
+    // filesystem refuses the aligned transfer and the reader drops to buffered).  Optional, as in the write.
+    std::function<void(bool direct)> mode;
+};
+// What the RAM preflight is asked for: the manifest, the region directory, the two 16 MiB transfer buffers of
+// the read-ahead walk (shared by both passes) and the small vectors.  Independent of the payload length.
+uint64_t session_read_v2_peak_bytes(uint64_t manifest_bytes, uint64_t regions);
+
+// The EXACT size a v2 generation of `manifest` publishes at, including the header, the manifest, the region bytes,
+// the region table and the trailer.  The disk tier's quota prices a complete write with this BEFORE opening a file
+// (block padding, the directory and the footer are in it), so the budget covers the file as it lands.  Refuses a
+// manifest `session_file_write_v2` would refuse, with the same reason.
+bool session_file_v2_size(const SessionManifestV2& manifest, uint64_t& bytes, std::string& why);
+
+// Reads a v2 generation's MANIFEST ONLY: the header, the identity, the bounded manifest and the region directory,
+// the committed marker, and the manifest's and region table's checksums.  The region bytes are never read, so the
+// payload checksums are NOT verified here - the restart inventory rebuilds its index with this, and a generation's
+// payload is verified by the two-pass read when it is restored.  The identity/layout checks and every bound of
+// SessionReadV2Limits apply as in the full read.
+bool session_file_manifest_v2(const std::string& path, const SessionFileIdentity& id, const SessionV2Requirement& want,
+                              SessionManifestV2& manifest, size_t& bytes, std::string& error,
+                              const SessionReadV2Limits& limits = {}, SessionStatus* status = nullptr);
+
+// The free space of the volume `dir` lives on (the disk tier's own bound, beside its quota).
+bool session_disk_free_space(const std::string& dir, uint64_t& out);
+
+// Reads a v2 generation through `sink`.  `manifest` receives what the file declares (identities, tokens, images,
+// checkpoints, region descriptors with their offsets and checksums) and is left untouched on failure.  Pass 1
+// streams the regions and verifies their checksums, calling validate_region and reporting progress; pass 2
+// streams them again from the same opened file into the sink.  With `sink == nullptr` only the validation pass
+// runs: the file is verified and nothing is written anywhere.  A read with a sink moves the file's region bytes
+// twice, so its progress counts both passes and ends at the file size plus the region bytes; a validation-only
+// read reports out of the file size.  The file is opened and validated as v1's read does (no symlink followed, one
+// name, regular file), and the same kinds of failure are reported.
+bool session_file_read_v2(const std::string& path, const SessionFileIdentity& id, const SessionV2Requirement& want,
+                          SessionManifestV2& manifest, size_t& bytes, std::string& error,
+                          const SessionReadV2Limits& limits = {}, SessionRegionSink* sink = nullptr,
+                          SessionStatus* status = nullptr);
+
+// A checkpoint's paired ring capture as the engine stores it at the checkpoint boundary: a
+// bounded sidecar in the disk tier's folder - header (magic STRDRIN2, the EXACT counters, the
+// captured token extent, the payload checksum) then the ring bytes in the same state/part order
+// the v2 dflash region uses.  It is the capture-time home of the pair (the published generation
+// packs the same bytes into its dflash_pair region); a rewind reads it back.  The read refuses a
+// missing/truncated/foreign file, counters that are not `want`'s, an extent that is not
+// `tokens`, and a checksum mismatch, leaving `out` untouched every time - a safe miss, never a
+// partial image.  The sidecar is the engine's own bounded file (ring-sized, capped at 64 MiB).
+bool session_ring_sidecar_write(const std::string& path, const DFlashSnapshotMeta& meta, int64_t tokens,
+                                const void* bytes, uint64_t n, std::string& error);
+bool session_ring_sidecar_read(const std::string& path, const DFlashSnapshotMeta& want, int64_t tokens,
+                               std::vector<uint8_t>& out, std::string& error);
 
 } // namespace strata::core

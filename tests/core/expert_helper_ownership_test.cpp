@@ -30,6 +30,7 @@
 #include <vector>
 
 #include <sys/socket.h>
+#include <sys/stat.h>   // helper-ipc-diet: mkdir("/tmp/agent") - the ownership sockets' parent
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -68,10 +69,11 @@ void fake_helper(const std::string& path, int fill_n, std::atomic<bool>& up) {
     Socket conn;
     conn.adopt(peer);
     up = true;
+    RxBuffer rx;
     for (;;) {
         Header head;
-        std::vector<uint8_t> body;
-        if (conn.read_frame(head, body, deadline_after(4000)) != kOk) break;
+        PayloadView body;
+        if (conn.read_frame(head, rx, body, deadline_after(4000)) != kOk) break;
         if (head.type == kHello) {
             HelloAck ack;
             ack.max_tok = (int32_t) kMaxTok;
@@ -273,13 +275,14 @@ void fake_channel(const std::string& path, std::atomic<bool>& up, std::atomic<bo
     Socket conn;
     conn.adopt(peer);
     up = true;
+    RxBuffer rx;
     for (;;) {
         Header head;
-        std::vector<uint8_t> body;
+        PayloadView body;
         // A SHORT read with the stop flag checked at every round: the test kills one channel by
         // setting `stop`, and the fake then closes THAT channel within one poll - deterministically,
         // with no frame served after the kill.  `up` drops with it, which is what the test waits on.
-        const int rrc = conn.read_frame(head, body, deadline_after(300));
+        const int rrc = conn.read_frame(head, rx, body, deadline_after(300));
         if (rrc == kErrTimeout) {
             if (stop) break;
             continue;
@@ -516,6 +519,10 @@ void run_window_channel_dies() {
 }  // namespace
 
 int main() {
+    // helper-ipc-diet: the sockets live under /tmp/agent, which a reboot's tmp wipe removes -
+    // the fake helper then cannot bind and all 38 checks cascade-fail on connect (seen
+    // 2026-11-09 after the box restarted; both baseline and diet trees failed identically).
+    ::mkdir("/tmp/agent", 0700);   // EEXIST is fine
     std::string why;
     check(socket_path_ok(test_path("probe").c_str(), why), "the test's socket paths satisfy the bind rules");
     run_registered_lifecycle();

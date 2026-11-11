@@ -114,8 +114,11 @@ public:
     int stage_count() const;
     /// --prefill-pipe on a layer split's first stage: the chunk an `n`-token segment is read in when it is read whole
     /// (pipeline_chunk over chunk(), the stage count and pipe_setting()), or 0 when the pipe is off here (one stage,
-    /// value 0, or a later stage) and the buffers' chunk applies.  The engine plans a segment once, on its whole
-    /// length, and reads every part of it with force_chunk, so its chunks do not depend on how it is cut into runs.
+    /// value 0, or a later stage) and the buffers' chunk applies.  STRATA_PIPELINE_CHUNKS=N (opt-in) overrides the
+    /// cost model: the segment reads in exactly N chunks (strata::prefill::pipeline_chunks::chunk, the remainder in
+    /// the last, 1 = today's read); an unusable N says so once and reads in today's chunks.  The engine plans a
+    /// segment once, on its whole length, and reads every part of it with force_chunk, so its chunks do not depend
+    /// on how it is cut into runs.
     int64_t plan_chunk(int64_t n) const;
     /// The next run on this (first) stage only: chunks of `chunk` tokens (at most chunk()) instead of a plan, from
     /// its first token; `single`: the segment is one chunk (the stage helper may bind); `planned`: the chunks came

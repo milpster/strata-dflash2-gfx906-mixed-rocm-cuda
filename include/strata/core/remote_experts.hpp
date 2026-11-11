@@ -2,6 +2,7 @@
 
 #include "strata/core/expert_cache.hpp"
 #include "strata/core/expert_source.hpp"
+#include "strata/core/cache_spill.hpp"   // kTierGuardB: the single-source tier guard default
 #include "strata/core/expert_helper_socket.hpp"   // M2: ExpertHelperPromptPlan + the prompt-tier statuses (CPU-only header)
 
 #include <cuda_runtime.h>
@@ -43,7 +44,8 @@ public:
     bool open(int device, int slots, int64_t layers, int64_t experts,
               const std::vector<std::pair<int32_t, int32_t>>& ranked,
               const ExpertCache& primary, ExpertSource& source,
-              std::vector<uint8_t>& claimed, std::string& err, bool auto_size = false);
+              std::vector<uint8_t>& claimed, std::string& err, bool auto_size = false,
+              int64_t guard_b = strata::core::cache_spill::kTierGuardB);
 
     /// R2 (opt-in, the CUDA-only `strata-expert-helper`): the PROXY opener.  NO device call of any
     /// kind happens in this object - the helper owns all NVIDIA memory out of process, and a HIP
@@ -209,6 +211,26 @@ public:
     size_t prompt_buffer_bytes() const {
         const ExpertHelperClient* c = prompt_chan();
         return c != nullptr ? c->prompt_buffer_bytes() : 0;
+    }
+    /// The image of the LAST frame built on the tier's channel: its byte size (what the wire
+    /// carried, so the engine's wire arithmetic is right for every format) and its format - 0 the
+    /// engine's q8_1 blocks, 1 the fp32 rows, 2 the Q8_K blocks.  0 / -1 with no channel (an
+    /// in-process tier) or before the tier's first frame.
+    int64_t prompt_last_image_bytes() const {
+        const ExpertHelperClient* c = prompt_chan();
+        return c != nullptr ? c->prompt_last_image_bytes() : 0;
+    }
+    int prompt_last_image_format() const {
+        const ExpertHelperClient* c = prompt_chan();
+        return c != nullptr ? c->prompt_last_image_format() : -1;
+    }
+    /// The prompt tier's CLAIM BATCH: the engine's STRATA_CLAIM_BATCH (1 = today's wire exactly, one
+    /// kBeginP per claim) and the peer's kFeaturePromptBatch bit, read from the tier's channel so the
+    /// claim loop's gate and the transport agree.  0 for an in-process tier (no channel, no batch).
+    int64_t prompt_claim_batch() const {
+        if (!proxy_) return 0;
+        const ExpertHelperClient* ch = prompt_chan();
+        return ch != nullptr && ch->prompt_batch_supported() ? ch->claim_batch() : 1;
     }
     /// Send one layer's selected-token rows.  A send failure latches the tier out for the rest of
     /// the request (the decode rule, proxy_begin) and returns the named status; the caller's

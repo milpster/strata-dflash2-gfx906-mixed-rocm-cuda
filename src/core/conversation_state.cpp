@@ -11,6 +11,7 @@
 #include <future>
 #include <limits>
 #include <mutex>
+#include <utility>
 
 namespace strata::core {
 namespace {
@@ -18,11 +19,18 @@ using conversation_detail::add;
 using conversation_detail::product;
 
 std::array<int64_t, 18> geometry_key(const ModelGeometry& g) {
+    return conversation_geometry_key(g);
+}
+} // namespace
+
+std::array<int64_t, 18> conversation_geometry_key(const ModelGeometry& g) {
     return {g.n_embd, g.n_layers, g.qsa_interval, g.ssm_state_size, g.ssm_k_heads,
             g.ssm_v_heads, g.ssm_d_conv, g.ssm_conv_channels, g.ssm_value_dim,
             g.n_head, g.n_head_kv, g.head_dim, g.idx_q_heads, g.idx_key_dim,
             g.hc, g.hc_lr, g.n_expert, g.n_ff};
 }
+
+namespace {
 
 bool fail(std::string& error, const char* message) {
     error = std::string("conversation snapshot: ") + message;
@@ -689,6 +697,118 @@ bool conversation_snapshot_validate(const SavedConversation& image, const Sessio
     for (size_t j = 0; j < layers; ++j)
         if (!conversation_kv_validate(image.kv[j], owned(ss, j), g, upto, true, error)) return false;
     return !draft || conversation_kv_validate(image.kv.back(), *draft, g, upto, false, error);
+}
+
+// ==================== streaming format v2: the live running state ====================
+namespace {
+// One running-state part as the pieces its region's bytes are made of, in order: the GDN state and the PLE history
+// are one buffer each, the indexer parts are one per owned QSA layer - the same order and the same bytes
+// conversation_checkpoint_save copies and conversation_checkpoint_restore writes back.
+bool state_pieces(const ModelGeometry& g, const SessionState& ss, int64_t part,
+                  std::vector<std::pair<void*, size_t>>& pieces, std::string& error) {
+    ConversationStateSizes z;
+    if (!conversation_session_sizes(g, ss, z, error)) return false;
+    const size_t layers = owned_qsa(ss);
+    if (ss.max_cells < 0) return fail(error, "invalid session cells");
+    if (z.gdn && !ss.gdn_state) return fail(error, "missing GDN state");
+    if (layers && !ss.qsa_states) return fail(error, "missing QSA states");
+    if (part == 0) {
+        pieces.emplace_back(ss.gdn_state, z.gdn);
+        return true;
+    }
+    if (part == 1) {
+        pieces.emplace_back(ss.ple_hist, ss.ple_hist ? z.ple : 0);
+        return true;
+    }
+    if (part < 2 || part > 4) return fail(error, "running-state part outside 0..4");
+    for (size_t j = 0; j < layers; ++j) {
+        const auto& st = owned(ss, j);
+        void* p = part == 2 ? (void*) st.idx_tail : part == 3 ? (void*) st.idx_dead : (void*) st.idx_block_pos;
+        if (!p) return fail(error, "missing indexer running-state buffer");
+        pieces.emplace_back(p, part == 2 ? z.tail : part == 3 ? z.dead : z.block_pos);
+    }
+    return true;
+}
+} // namespace
+
+bool conversation_state_part_sizes(const ModelGeometry& g, const SessionState& session,
+                                   std::array<uint64_t, 5>& sizes, std::string& error) {
+    sizes = {};
+    for (int64_t part = 0; part < 5; ++part) {
+        std::vector<std::pair<void*, size_t>> pieces;
+        if (!state_pieces(g, session, part, pieces, error)) return false;
+        for (const auto& p : pieces) sizes[part] += p.second;
+    }
+    return true;
+}
+
+bool conversation_state_source(SessionRegionSource& out, const SessionState& session, const ModelGeometry& g,
+                               int64_t part, std::string& error) {
+    std::vector<std::pair<void*, size_t>> pieces;
+    if (!state_pieces(g, session, part, pieces, error)) return false;
+    SessionRegionSource s;
+    s.kind = int32_t(SessionRegionKind::live_state);
+    s.stage = 0; s.index = 0; s.part = part;
+    for (const auto& p : pieces) s.size += p.second;
+    auto table = std::make_shared<std::vector<std::pair<void*, size_t>>>(std::move(pieces));
+    auto why = std::make_shared<std::string>();
+    s.read = [table, why](size_t offset, void* dst, size_t n) {
+        uint8_t* d = static_cast<uint8_t*>(dst);
+        uint64_t at = offset, left = n;
+        for (const auto& p : *table) {
+            if (at >= p.second) { at -= p.second; continue; }
+            const size_t take = size_t(std::min<uint64_t>(p.second - at, left));
+            // the same copy conversation_checkpoint_save makes: the private stream, complete on return
+            if (!copy(d, static_cast<const uint8_t*>(p.first) + at, take, *why)) return false;
+            d += take;
+            left -= take;
+            at = 0;
+            if (!left) return true;
+        }
+        *why = "the running-state part ends here";
+        return false;
+    };
+    s.error = [why] { return *why; };
+    out = std::move(s);
+    return true;
+}
+
+bool conversation_state_stream_write(SessionState& session, const ModelGeometry& g, int64_t part, uint64_t offset,
+                                     const void* bytes, size_t n, std::string& error, bool queued) {
+    std::vector<std::pair<void*, size_t>> pieces;
+    if (!state_pieces(g, session, part, pieces, error)) return false;
+    const uint8_t* src = static_cast<const uint8_t*>(bytes);
+    uint64_t at = offset, left = n;
+    for (const auto& p : pieces) {
+        if (at >= p.second) { at -= p.second; continue; }
+        const size_t take = size_t(std::min<uint64_t>(p.second - at, left));
+        if (!copy(static_cast<uint8_t*>(p.first) + at, src, take, error, queued)) return false;
+        src += take;
+        left -= take;
+        at = 0;
+        if (!left) return true;
+    }
+    return fail(error, "the running-state region reaches past this session's state");
+}
+
+bool conversation_state_stream_finish(SessionState& session, const ModelGeometry& g, const std::vector<int32_t>& ids,
+                                      std::string& error) {
+    ConversationStateSizes z;
+    if (!conversation_session_sizes(g, session, z, error)) return false;
+    // The indexer's moving spare row: conversation_checkpoint_restore writes the saved dead row into the pooled row
+    // the next token fills.  Those bytes are in idx_dead now, so they are copied from there - the same bytes, the
+    // same row, the same order as the restore.
+    if (!ids.empty()) {
+        const size_t row = ids.size() / strata::kernels::qsa_real_shapes().idx_block;
+        for (size_t j = 0; j < owned_qsa(session); ++j) {
+            const auto& st = owned(session, j);
+            if (!copy(st.idx_pooled + row * g.idx_key_dim, st.idx_dead, z.dead, error)) return false;
+        }
+    }
+    const int64_t tokens = (int64_t) ids.size();
+    session.ple_prev[0] = tokens >= 2 ? ids[(size_t) tokens - 2] : -1;
+    session.ple_prev[1] = tokens >= 1 ? ids[(size_t) tokens - 1] : -1;
+    return sync(error);
 }
 
 bool conversation_copy_stream_ready(int device) { return conversation_detail::copy_stream_ready(device); }

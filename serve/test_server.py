@@ -3083,6 +3083,40 @@ class LiveRate(unittest.TestCase):
         with urllib.request.urlopen(self.base + "/metrics", timeout=10) as r:
             return json.loads(r.read())
 
+    def test_disk_cache_lines_are_heartbeats_not_prompt_evaluation(self):
+        """Plan 7: the automatic disk tier's `DCACHE <phase> <done> <total> [<secs>]` progress is disk bytes.  It
+        keeps the request alive and is recorded for the card; it never enters the prompt statistics, and a
+        malformed one is ignored rather than ending a request that is going well."""
+        import io
+        import queue
+        from types import SimpleNamespace
+        engine = StrataEngine.__new__(StrataEngine)
+        engine.proc = SimpleNamespace(stdin=io.StringIO(), poll=lambda: None)
+        engine.lines = queue.Queue()
+        engine.can_stop = False
+        engine.max_context = 262144
+        for line in ("DCACHE write 16777216 1198691396", "DCACHE write 33554432 1198691396",
+                     "DCACHE done 33554432 33554432 12.4", "DCACHE bogus 1 2", "DCACHE write x 10",
+                     "DCACHE write 99 10", "PP 10000 12000 2000 1000.0", "DCACHE validate 1 1", "RESUME 8000",
+                     "DONE 1 12000 4000 10 stop 0 0 8000"):
+            engine.lines.put(line)
+        gen = engine.generate([1], 1, {}, threading.Event())
+        self.assertIsNone(next(gen))                                # the tier's progress is a keep-alive
+        self.assertEqual(engine.disk_io, {"phase": "write", "done": 16777216, "total": 1198691396, "ms": 0.0})
+        yields = list(gen)                                          # the rest of the lines, then DONE
+        self.assertEqual(set(yields), {None})                       # every one of them was a keep-alive
+        self.assertEqual(len(yields), 7)                            # the other 7 keep-alives (one was taken above)
+        self.assertEqual(engine.disk_io, {"phase": "validate", "done": 1, "total": 1, "ms": 0.0})  # the last line
+        self.assertEqual(engine.progress, (10000, 12000))          # the malformed lines changed nothing
+        self.svc.engine = engine
+        self.svc.status.update(busy=True, first_token=None, started=time.time() - 1.0)
+        self.assertEqual(self.metrics()["live"]["disk_io"], engine.disk_io)
+        self.assertEqual(request_timings(12000, 1, engine.last)["prompt_per_second"], 1000.0)
+        self.svc.status["busy"] = False
+        self.assertNotIn("disk_io", self.metrics()["live"])         # the request is over
+        t = request_timings(12000, 1, engine.last)
+        self.assertEqual((t["prompt_n"], t["prompt_per_second"]), (4000, 1000.0))   # no disk bytes in there
+
     def test_prefill_rate_excludes_cached_tokens(self):
         import io
         import queue

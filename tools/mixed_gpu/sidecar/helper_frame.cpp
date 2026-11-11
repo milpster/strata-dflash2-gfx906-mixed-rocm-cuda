@@ -9,6 +9,7 @@
 #include <atomic>
 #include <cerrno>
 #include <climits>
+#include <cstdio>
 #include <cstring>
 #include <ctime>
 #include <fcntl.h>
@@ -72,7 +73,29 @@ int poll_once(int fd, short events, int64_t deadline_ms) {
 uint32_t rd32(const uint8_t* p) { uint32_t v = 0; std::memcpy(&v, p, 4); return v; }
 void wr32(uint8_t* p, uint32_t v) { std::memcpy(p, &v, 4); }
 
+// helper-ipc-diet (2026-11, the ab9 measurement): AF_UNIX's default socket buffers (net.core
+// rmem/wmem_default, ~200 KB) fit a fraction of ONE 24 MB rows reply, so a kRowsP frame ping-pongs
+// thousands of EAGAIN/poll round-trips between the writer's full buffer and the reader's drain.
+// Ask for 8 MiB per side at socket creation on BOTH sides of the channel: the kernel clamps at
+// net.core.rmem_max/wmem_max and stores 2*opt, so the achieved pair is read back at hello
+// (log_socket_buffers) - which is what the channel runs with, and all that changes is the clamp.
+// A listen-side set is inherited by every accepted channel (Linux clones sk_sndbuf/sk_rcvbuf at
+// accept), so the helper's bound socket covers all its connections.
+void set_socket_buffers(int fd) {
+    const int want = 8 << 20;
+    ::setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &want, sizeof(want));
+    ::setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &want, sizeof(want));
+}
+
 }  // namespace
+
+void log_socket_buffers(int fd, const char* side) {
+    int snd = 0, rcv = 0;
+    socklen_t len = sizeof(int);
+    ::getsockopt(fd, SOL_SOCKET, SO_SNDBUF, &snd, &len);
+    ::getsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcv, &len);
+    std::fprintf(stderr, "expert-helper: %s socket buffers achieved snd=%d rcv=%d\n", side, snd, rcv);
+}
 
 int64_t deadline_after(int64_t ms) { return now_ms() + (ms > 0 ? ms : 0); }
 
@@ -197,6 +220,7 @@ int Socket::connect(const std::string& path, int64_t connect_timeout_ms, bool ch
     std::strncpy(addr.sun_path, path.c_str(), sizeof(addr.sun_path) - 1);
     int fd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (fd < 0) return kErrConnect;
+    set_socket_buffers(fd);   // the 8 MiB ask (see above): this side owns the request
     const long fl = ::fcntl(fd, F_GETFL, 0);
     if (fl < 0 || ::fcntl(fd, F_SETFL, fl | O_NONBLOCK) != 0) { ::close(fd); return kErrConnect; }
     int rc = ::connect(fd, (sockaddr*) &addr, sizeof(addr));
@@ -227,6 +251,7 @@ int Socket::listen_bind(const std::string& path) {
     std::strncpy(addr.sun_path, path.c_str(), sizeof(addr.sun_path) - 1);
     int fd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (fd < 0) return kErrConnect;
+    set_socket_buffers(fd);   // accepted channels inherit this buffer pair at accept (Linux clones it)
     const mode_t old = ::umask(0777);
     const int rc = ::bind(fd, (sockaddr*) &addr, sizeof(addr));
     ::umask(old);
@@ -295,17 +320,26 @@ int Socket::read_all(uint8_t* data, size_t n, int64_t deadline_ms) const {
     if (fd_ < 0) return kErrUnhealthy;
     size_t off = 0;
     while (off < n) {
+        // helper-ipc-diet: ONE poll per burst, then recv until the socket runs dry.  The pre-fix
+        // loop polled before EVERY recv; a 24 MB reply arriving as fast as the pipe allows cost
+        // ~6000 poll+recv syscall pairs the kernel never needed (the data was already there).
+        // The fd is nonblocking, so the drain ends on EAGAIN and the deadline stays the poll's:
+        // same absolute CLOCK_MONOTONIC bound, same kErrTimeout/kErrUnhealthy, same 2 s poll cap.
         const int pr = poll_once(fd_, POLLIN, deadline_ms);
         if (pr < 0) return kErrUnhealthy;
         if (pr == 0) return kErrTimeout;
-        const ssize_t r = ::recv(fd_, data + off, n - off, MSG_NOSIGNAL);
-        if (r == 0) return kErrUnhealthy;   // EOF: the peer is gone
-        if (r < 0) {
+        for (;;) {
+            const ssize_t r = ::recv(fd_, data + off, n - off, MSG_NOSIGNAL);
+            if (r > 0) {
+                off += (size_t) r;
+                if (off >= n) return kOk;
+                continue;
+            }
+            if (r == 0) return kErrUnhealthy;   // EOF: the peer is gone
             if (errno == EINTR) continue;
-            if (errno == EAGAIN || errno == EWOULDBLOCK) continue;   // spurious readiness: re-wait
+            if (errno == EAGAIN || errno == EWOULDBLOCK) break;   // drained: re-poll the same deadline
             return kErrUnhealthy;
         }
-        off += (size_t) r;
     }
     return kOk;
 }
@@ -335,46 +369,64 @@ int Socket::write_seq(uint32_t seq, uint32_t type, uint32_t req_id, const uint8_
     void* bases[2] = {head, (void*) payload};
     size_t off = 0;
     while (off < kHeaderBytes + n) {
+        // helper-ipc-diet: ONE poll per burst, then sendmsg until the socket buffer is full (see
+        // read_all's identical shape).  Same absolute deadline, same EAGAIN-then-re-poll rule,
+        // same MSG_NOSIGNAL (H15's sendmsg carries it for real); only the per-chunk poll is gone.
         const int pr = poll_once(fd_, POLLOUT, deadline_ms);
         if (pr < 0) return kErrUnhealthy;
         if (pr == 0) return kErrTimeout;
-        struct iovec v[2];
-        int cnt = 0;
-        size_t skip = off;
-        for (int i = 0; i < 2; ++i) {
-            if (skip >= lens[i]) { skip -= lens[i]; continue; }
-            v[cnt].iov_base = (char*) bases[i] + skip;
-            v[cnt].iov_len = lens[i] - skip;
-            ++cnt;
-            skip = 0;
-        }
-        // H15 (r25a): writev takes no flags, so the MSG_NOSIGNAL claim above was never true and a
-        // dead peer killed the writer with SIGPIPE (engine exit -13 mid-fault-injection). sendmsg
-        // carries the same iovec AND the flag; EPIPE now lands in the error path below ->
-        // kErrUnhealthy -> channel closed -> the engine's proven fallback.
-        struct msghdr mh = {};
-        mh.msg_iov = v;
-        mh.msg_iovlen = cnt;
-        const ssize_t w = ::sendmsg(fd_, &mh, MSG_NOSIGNAL);
-        if (w < 0) {
+        for (;;) {
+            struct iovec v[2];
+            int cnt = 0;
+            size_t skip = off;
+            for (int i = 0; i < 2; ++i) {
+                if (skip >= lens[i]) { skip -= lens[i]; continue; }
+                v[cnt].iov_base = (char*) bases[i] + skip;
+                v[cnt].iov_len = lens[i] - skip;
+                ++cnt;
+                skip = 0;
+            }
+            // H15 (r25a): writev takes no flags, so the MSG_NOSIGNAL claim above was never true and a
+            // dead peer killed the writer with SIGPIPE (engine exit -13 mid-fault-injection). sendmsg
+            // carries the same iovec AND the flag; EPIPE now lands in the error path below ->
+            // kErrUnhealthy -> channel closed -> the engine's proven fallback.
+            struct msghdr mh = {};
+            mh.msg_iov = v;
+            mh.msg_iovlen = cnt;
+            const ssize_t w = ::sendmsg(fd_, &mh, MSG_NOSIGNAL);
+            if (w > 0) {
+                off += (size_t) w;
+                if (off >= kHeaderBytes + n) return kOk;
+                continue;
+            }
+            if (w == 0) return kErrUnhealthy;   // the transport's existing rule: a zero write is a dead channel
             if (errno == EINTR) continue;
-            if (errno == EAGAIN || errno == EWOULDBLOCK) continue;   // buffer full: re-poll against the same deadline
-            return kErrUnhealthy;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) break;   // buffer full: re-poll against the same deadline
+            return kErrUnhealthy;   // EPIPE / ECONNRESET / anything: the channel is done
         }
-        if (w == 0) return kErrUnhealthy;
-        off += (size_t) w;
     }
     return kOk;
 }
 
-int Socket::read_frame(Header& head, std::vector<uint8_t>& payload, int64_t deadline_ms) const {
+int Socket::read_frame(Header& head, RxBuffer& rx, PayloadView& payload, int64_t deadline_ms) const {
     uint8_t raw[kHeaderBytes];
     int rc = read_all(raw, kHeaderBytes, deadline_ms);
-    if (rc != kOk) return rc;
+    if (rc != kOk) { payload = {}; return rc; }
     rc = decode_header(raw, head);
-    if (rc != kOk) return rc;
-    payload.assign(head.len, 0);
-    if (head.len && read_all(payload.data(), head.len, deadline_ms) != kOk) return kErrUnhealthy;
+    if (rc != kOk) { payload = {}; return rc; }
+    // helper-ipc-diet: grow-only, doubling from a 2 MiB floor - a 24 MB reply reaches its size in a
+    // few reallocs at startup and never touches the allocator again; the bytes the read overwrites
+    // are never zero-filled first (the pre-fix assign did exactly that, pages and all).
+    if (head.len > rx.cap) {
+        size_t want = rx.cap ? rx.cap * 2 : (size_t) 2u << 20;
+        while (want < (size_t) head.len) want *= 2;
+        uint8_t* grown = (uint8_t*) ::realloc(rx.p, want);
+        if (grown == nullptr) { payload = {}; return kErrInternal; }   // alloc failure: named, no throw
+        rx.p = grown;
+        rx.cap = want;
+    }
+    if (head.len && read_all(rx.p, head.len, deadline_ms) != kOk) { payload = {}; return kErrUnhealthy; }
+    payload = PayloadView{rx.p, (size_t) head.len};
     return kOk;
 }
 

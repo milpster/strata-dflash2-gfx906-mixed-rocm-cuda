@@ -231,6 +231,9 @@ endif()
 
 if(STRATA_BUILD_CONVERSATION_TESTS)
   enable_testing()
+  # conversation_file.cpp streams with a reader thread (RegionStream's read-ahead); link it where the platform
+  # needs an explicit one (older libcs keep std::thread in libpthread)
+  find_package(Threads QUIET)
   add_executable(conversation_cache_test src/core/conversation_cache_test.cpp)
   target_include_directories(conversation_cache_test PRIVATE include)
   add_test(NAME conversation_cache_test COMMAND conversation_cache_test)
@@ -242,10 +245,47 @@ if(STRATA_BUILD_CONVERSATION_TESTS)
   add_test(NAME conversation_memory_test COMMAND conversation_memory_test)
   add_executable(conversation_file_test src/core/conversation_file_test.cpp src/core/conversation_file.cpp)
   target_include_directories(conversation_file_test PRIVATE include)
+  if(Threads_FOUND)
+    target_link_libraries(conversation_file_test PRIVATE Threads::Threads)
+  endif()
   add_test(NAME conversation_file_test COMMAND conversation_file_test)
+  # format v2: split-aware streaming with its own fixtures, so the golden v1 test above stays byte-identical
+  add_executable(conversation_file_v2_test src/core/conversation_file_v2_test.cpp src/core/conversation_file.cpp)
+  target_include_directories(conversation_file_v2_test PRIVATE include)
+  if(Threads_FOUND)
+    target_link_libraries(conversation_file_v2_test PRIVATE Threads::Threads)
+  endif()
+  add_test(NAME conversation_file_v2_test COMMAND conversation_file_v2_test)
+  # the caller-side streaming layer of v2: the region list, the sources and the sink dispatcher
+  add_executable(conversation_stream_state_test src/core/conversation_stream_state_test.cpp
+               src/core/conversation_stream_state.cpp src/core/conversation_file.cpp)
+  target_include_directories(conversation_stream_state_test PRIVATE include)
+  if(Threads_FOUND)
+    target_link_libraries(conversation_stream_state_test PRIVATE Threads::Threads)
+  endif()
+  add_test(NAME conversation_stream_state_test COMMAND conversation_stream_state_test)
   add_executable(session_save_reclaim_test src/core/session_save_reclaim_test.cpp src/core/conversation_file.cpp)
   target_include_directories(session_save_reclaim_test PRIVATE include)
+  if(Threads_FOUND)
+    target_link_libraries(session_save_reclaim_test PRIVATE Threads::Threads)
+  endif()
   add_test(NAME session_save_reclaim_test COMMAND session_save_reclaim_test)
+  # The bounded SWA ring math (include/strata/core/dflash_ring.hpp): pure host arithmetic, no GPU headers,
+  # no link - the CPU proof of the mapping the runtime and the snapshots share (docs/DFLASH.md), and of
+  # the paired-capture rule the checkpoint-boundary lane freezes.
+  add_executable(dflash_ring_test tests/core/dflash_ring_test.cpp)
+  target_include_directories(dflash_ring_test PRIVATE include)
+  add_test(NAME dflash_ring_test COMMAND dflash_ring_test)
+  # The automatic disk tier's host policy (include/strata/core/conversation_disk_cache.hpp): the bounded index,
+  # the reserve-before-write quota with its protections, the publication order, the pair-sidecar reclaim and the
+  # restart inventory - on real files in a temporary folder, with injected IO faults.
+  add_executable(conversation_disk_cache_test tests/core/conversation_disk_cache_test.cpp
+               src/core/conversation_disk_cache.cpp src/core/conversation_file.cpp)
+  target_include_directories(conversation_disk_cache_test PRIVATE include)
+  if(Threads_FOUND)
+    target_link_libraries(conversation_disk_cache_test PRIVATE Threads::Threads)
+  endif()
+  add_test(NAME conversation_disk_cache_test COMMAND conversation_disk_cache_test)
 endif()
 
 if(STRATA_HIP_GFX906)
@@ -456,6 +496,18 @@ if(STRATA_BUILD_TESTS)
   add_executable(share_rules_test tests/prefill/share_rules_test.cpp)
   target_include_directories(share_rules_test PRIVATE include)
   add_test(NAME share_rules_test COMMAND share_rules_test)
+
+  # STRATA_PIPELINE_CHUNKS: the explicit chunk count's math (equal chunks, the remainder last, the floor):
+  # header-only, no GPU
+  add_executable(pipeline_chunks_test tests/prefill/pipeline_chunks_test.cpp)
+  target_include_directories(pipeline_chunks_test PRIVATE include)
+  add_test(NAME pipeline_chunks_test COMMAND pipeline_chunks_test)
+
+  # STRATA_CACHE_SPILL: the gate's parse, the stage card it spills onto, and the slots that card can take
+  # (header-only, no GPU)
+  add_executable(cache_spill_test tests/core/cache_spill_test.cpp)
+  target_include_directories(cache_spill_test PRIVATE include)
+  add_test(NAME cache_spill_test COMMAND cache_spill_test)
 
   # STRATA_PREFILL_ROUTED_STREAM: the prompt stream's issuer walk and route gate, on a simulated link and consumer
   # (header-only, no GPU)
@@ -779,6 +831,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     src/core/dflash.cpp src/core/dflash_runtime.cpp src/core/dflash_tap_collect.cpp
     src/core/conversation_snapshot.cpp src/core/conversation_state.cpp src/core/conversation_memory.cpp src/core/peer_experts.cpp
     src/core/arch_defaults.cpp src/core/nv_defaults.cpp src/core/vmm.cpp src/core/conversation_file.cpp
+    src/core/conversation_stream_state.cpp src/core/conversation_disk_cache.cpp
     # R2 (opt-in CUDA helper): the engine-side proxy client and the CPU recompute of the helper's
     # claimed rows.  Both are CPU-only sources - no device call, no CUDA kernel - and the frame
     # transport is the SAME file the CUDA helper compiles (tools/mixed_gpu/sidecar/helper_frame.cpp),
@@ -1104,6 +1157,13 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     # runtime; the CUDA runtime symbols arrive through ${_strata_gpu_runtime_target}.
     set_property(SOURCE tools/mixed_gpu/sidecar/helper_main.cpp PROPERTY LANGUAGE CUDA)
     set_property(SOURCE tools/mixed_gpu/sidecar/helper_main.cpp PROPERTY CUDA_STANDARD 17)
+    # helper-ipc-diet: -mavx2 for helper_main.cpp's HOST code (the prompt path's finite-row scan,
+    # include/strata/core/finite_rows.hpp).  The file is host-only; nvcc forwards the flag through
+    # -Xcompiler, x86 non-MSVC only - everywhere else the header's scalar loop compiles and runs.
+    if(STRATA_CPU_X86 AND NOT MSVC)
+      set_property(SOURCE tools/mixed_gpu/sidecar/helper_main.cpp APPEND PROPERTY
+                   COMPILE_OPTIONS $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-mavx2>)
+    endif()
     target_include_directories(strata-expert-helper PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
     target_link_libraries(strata-expert-helper PRIVATE
       strata_engine strata_kernels_cpu strata_warnings ${_strata_gpu_runtime_target})
@@ -2206,11 +2266,6 @@ if(STRATA_BUILD_TESTS)
   add_executable(dflash_policy_test src/spec/dflash_policy_test.cpp)
   target_link_libraries(dflash_policy_test PRIVATE strata_spec)
   add_test(NAME dflash_policy_test COMMAND dflash_policy_test)
-  # The bounded SWA ring math (src/core/dflash_ring.hpp): pure host arithmetic, no GPU headers,
-  # no link - the CPU proof of the mapping the runtime and the snapshots share (docs/DFLASH.md).
-  add_executable(dflash_ring_test tests/core/dflash_ring_test.cpp)
-  target_include_directories(dflash_ring_test PRIVATE include)
-  add_test(NAME dflash_ring_test COMMAND dflash_ring_test)
   # The draft proposal's failure classification (include/strata/core/dflash_refusal.hpp): pure host
   # predicate, classification and validate-then-copy handoff - the same functions the emitter calls
   # and both decode call sites consume.  No GPU headers, no link.  STRATA_DFLASH_SOURCE_ROOT lets the
@@ -2357,6 +2412,12 @@ else()
   set_source_files_properties(src/kernels/cpu/expert.cpp
                               PROPERTIES COMPILE_OPTIONS "-mavx512f;-mavx512bw;-mavx512vl;-mavx512dq;-mavx512vnni;-mavx512vbmi;-mf16c;-mfma")
   set_source_files_properties(src/kernels/cpu/q2_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c")
+  # helper-ipc-diet (2026-11): the expert-helper reply check's finite-row scan (include/strata/core/
+  # finite_rows.hpp) compiles its 8-lane AVX2 path only where the TU sees -mavx2; the run-time gate in
+  # the header (__builtin_cpu_supports) decides per CPU, so an AVX2-less machine keeps the scalar loop.
+  if(STRATA_CPU_X86)
+    set_source_files_properties(src/core/expert_helper_socket.cpp PROPERTIES COMPILE_OPTIONS "-mavx2")
+  endif()
 endif()
 # AVX-VNNI (Alder Lake, Sapphire Rapids and later): the AVX-2 expert kernels' vpdpwssd / vpdpbusd copies (q2_avx2.cpp,
 # iq_avx2.cpp; *_rows.inl), taken at run time where cpu_avxvnni_ok().  GCC and Clang compile only those functions with
