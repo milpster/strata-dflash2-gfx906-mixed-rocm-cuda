@@ -788,6 +788,11 @@ struct Options {
     /// which pairs those are, so the flag needs --expert-helper-socket.  Off: the arena keeps every
     /// expert, today's path.
     bool expert_helper_ram_relief = false;
+    /// W1 lever: with the relief ON and the adaptive tier ON, the split's stage caches join the
+    /// drop set too, because the adaptive tier's swap-ins of the dropped pairs are refilled from
+    /// the pack files in batches (the arena's unbuffered reads).  Default off; it needs the
+    /// relief, the socket it implies, and a pack file the arena can read unbuffered.
+    bool expert_helper_ram_relief_packs = false;
     bool remote_expert_opt = false; ///< optional optimization of the existing remote-expert decode path
     std::string expert_cache_remote_placement = "stripe"; ///< stripe experts or assign complete layers to CUDA1..3
     bool expert_cache_cpu_order = false;
@@ -2436,6 +2441,56 @@ ConvStateSizes conv_state_sizes(const strata::core::ModelGeometry& g, const stra
 }
 
 /// Copies the running state out (this session's carve only).  The caller has synchronized the device.
+namespace {
+/// W1 lever: the adaptive tier's swap-ins whose host copy --expert-helper-ram-relief dropped,
+/// read from the PACK FILES in ONE batch per adapt round through ExpertSource::swap_blobs_batch
+/// (the arena: read_direct's O_DIRECT + io_submit windows - sorted by file offset, merged where
+/// they touch, so the page cache the relief emptied stays empty; re-materializing the packed
+/// experts there would undo the RAM win).  The batch lands in this thread's PAGEABLE staging
+/// buffer, kept for the next round: #1237's rule - a pageable source is staged by the driver
+/// before the async copy call returns - so the buffer outlives the queued slot copies by
+/// construction, on every stream.  `at[swap]`: the staging offset, -1 when the stable blob
+/// answers, -2 when the pair cannot be read - that swap is DROPPED (the slot keeps its expert,
+/// never an evicted hole) and the round says so loudly; a request never dies for a file miss.
+struct SwapInFiles {
+    std::vector<uint8_t> buf;
+    std::vector<std::pair<int32_t, int32_t>> pairs;
+    std::vector<uint8_t*> dst;
+    std::vector<uint8_t> ok;
+    std::vector<int64_t> of_swap;
+    std::vector<int64_t> at;
+    int64_t n_pairs = 0, n_failed = 0, n_batch = 0, bytes_io = 0, ms_io = 0;
+};
+
+void swap_in_read(SwapInFiles& sw, strata::core::ExpertSource* srcp,
+                  const std::vector<std::pair<int32_t, int32_t>>& wants, const std::vector<int64_t>& blob_b,
+                  std::string& err) {
+    sw.at.assign(wants.size(), -1);
+    sw.pairs.clear(); sw.dst.clear(); sw.of_swap.clear();
+    sw.n_pairs = 0; sw.n_failed = 0; sw.n_batch = 0; sw.bytes_io = 0; sw.ms_io = 0;
+    for (size_t si = 0; si < wants.size(); ++si) {
+        if (srcp->blob_stable(wants[si].first, wants[si].second) != nullptr) continue;
+        sw.at[si] = sw.bytes_io;
+        sw.pairs.push_back(wants[si]);
+        sw.dst.push_back(nullptr);
+        sw.of_swap.push_back((int64_t) si);
+        sw.bytes_io += blob_b[si];
+    }
+    if (sw.pairs.empty()) return;
+    if ((int64_t) sw.buf.size() < sw.bytes_io) sw.buf.resize((size_t) sw.bytes_io);   // bad_alloc escapes as today's copy path does
+    for (size_t k = 0; k < sw.dst.size(); ++k) sw.dst[k] = sw.buf.data() + sw.at[(size_t) sw.of_swap[k]];
+    const auto t0 = std::chrono::steady_clock::now();
+    const bool all = srcp->swap_blobs_batch(sw.pairs, sw.dst, sw.ok, err);
+    sw.ms_io = (int64_t) std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    sw.n_pairs = (int64_t) sw.pairs.size();
+    sw.n_batch = 1;
+    if (!all) {
+        for (size_t k = 0; k < sw.ok.size(); ++k)
+            if (sw.ok[k] == 0) { sw.at[(size_t) sw.of_swap[k]] = -2; ++sw.n_failed; }
+    }
+}
+} // namespace
+
 bool checkpoint_save(ConvCheckpoint& c, const strata::core::SessionState& ss, const strata::core::ModelGeometry& g) {
     std::string error;
     if (strata::core::conversation_checkpoint_save(c, ss, g, error)) return true;
@@ -3784,6 +3839,7 @@ int main(int argc, char** argv) {
         else if (a == "--expert-helper-reserve-mib") o.expert_helper_reserve_mib = std::atoll(next("--expert-helper-reserve-mib"));
         else if (a == "--expert-helper-timeout-ms") o.expert_helper_timeout_ms = std::atoll(next("--expert-helper-timeout-ms"));
         else if (a == "--expert-helper-ram-relief") o.expert_helper_ram_relief = true;
+        else if (a == "--expert-helper-ram-relief-packs") o.expert_helper_ram_relief_packs = true;
         else if (a == "--vram-reserve-mib") { o.vram_reserve_mib = std::atoi(next("--vram-reserve-mib")); o.vram_reserve_given = true; }
         else if (a == "--vram-reserve-later-mib")
             o.vram_reserve_later_mib = std::atoi(next("--vram-reserve-later-mib"));
@@ -4984,6 +5040,14 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata generate: --expert-helper-ram-relief: the out-of-process expert helper is not "
                              "configured (--expert-helper-socket is required: the fill report is what names the pairs "
                              "the helper holds, and without it there is nothing to drop from the arena)\n");
+        return 2;
+    }
+    // W1 lever: the packs lever extends the relief's drop set to the split's stage caches with the
+    // adaptive tier ON, served by batched pack-file swap-ins.  It extends the relief; alone it means
+    // nothing, and a silent no-op is what 4983 above refuses for the relief itself - same discipline.
+    if (o.expert_helper_ram_relief_packs && !o.expert_helper_ram_relief) {
+        std::fprintf(stderr, "strata generate: --expert-helper-ram-relief-packs: --expert-helper-ram-relief is required "
+                             "(the packs lever extends the relief's drop set; with no relief nothing is packed to swap in from)\n");
         return 2;
     }
     // STRATA_MMQ_DIRECT: the room each sized expert slot keeps after its blob (0 unless it is on: the slot costs and
@@ -9546,7 +9610,18 @@ int main(int argc, char** argv) {
                             // staged pack-file read path (ArenaExpertSource::blob), just slow on a hot refill.
                             int64_t relief_stage_pairs = 0, relief_stage_bytes = 0;
                             const bool adaptive_tier = o.adapt_every > 0 && o.adapt_swaps > 0;   // aa.adaptive (~10934)
-                            if (!stages.empty() && !adaptive_tier) {
+                            // W1 lever: --expert-helper-ram-relief-packs lets the stage pairs join the drop set
+                            // EVEN with the adaptive tier ON - the tier's swap-ins of the dropped pairs refill
+                            // from the pack files in batches (the arena's unbuffered O_DIRECT reads, see
+                            // swap_in_read), so the hot refill is file-batched, not per-slot staged.  Without
+                            // the flag (default) the adaptive-off gate stands, byte for byte; with the flag and
+                            // no unbuffered pack file the gate stands too, and the line below says why.
+                            const bool relief_packs_live = o.expert_helper_ram_relief_packs && srcp == &arena_src &&
+                                                           arena_src.swap_files_ready();
+                            if (!stages.empty() && adaptive_tier && o.expert_helper_ram_relief_packs && !relief_packs_live)
+                                std::fprintf(stderr, "strata generate: --expert-helper-ram-relief-packs: the arena has no unbuffered "
+                                                     "pack file to swap in from: the split's caches keep their host copies\n");
+                            if (!stages.empty() && (!adaptive_tier || relief_packs_live)) {
                                 const auto& slay = strata::kernels::cpu::expert_layout();
                                 const int64_t spair = native_pack ? 0 : (int64_t) slay.max_blob;   // the host copy's stride
                                 for (int64_t l = 0; l < g.n_layers; ++l)
@@ -9579,7 +9654,7 @@ int main(int argc, char** argv) {
                                 std::fprintf(stderr, "strata generate: --expert-helper-ram-relief: +%lld stage-cache pairs (%lld MiB) join the drop set\n",
                                              (long long) relief_stage_pairs,
                                              (long long) (relief_stage_bytes >> 20));
-                            if (!stages.empty() && adaptive_tier)
+                            if (!stages.empty() && adaptive_tier && !relief_packs_live)
                                 std::fprintf(stderr, "strata generate: --expert-helper-ram-relief: the adaptive tier is on: the split's caches keep their host copies\n");
                             std::fprintf(stderr, "strata generate: --expert-helper-ram-relief: ram-relief: %lld pairs total (%lld MiB) dropped\n",
                                          (long long) held.size(),
@@ -15244,6 +15319,10 @@ int main(int argc, char** argv) {
             }
             return r;
         };
+        // W1 lever: the relief's pack-file swap-in counters (the adaptive tier's refills of the
+        // dropped pairs): cumulative, read by the serial path's per-request stats line.
+        std::atomic<int64_t> adapt_swapin_files{0}, adapt_swapin_batches{0}, adapt_swapin_bytes{0},
+            adapt_swapin_ms{0}, adapt_swapin_failed{0};
         auto apply_pending = [&](bool wait) {
             if (peer.valid()) peer.apply_pending(wait);
             if (pending.empty()) return;
@@ -15434,6 +15513,43 @@ int main(int argc, char** argv) {
             // for the GPU first (the pool computes them on the CPU from the rows every layer publishes, see
             // Verifier::set_always_publish); then every copy into their slots waits until all the work the stages'
             // streams hold now has completed: any window that may still read those slots was launched before this.
+            // W1 lever: the swap-ins whose host copy the relief dropped read from the pack files
+            // in ONE batch BEFORE the fence block, so a pair that cannot be read loses its swap
+            // (its slot keeps its expert and is never marked evicted) - the bytes go file -> this
+            // thread's pageable staging -> the slot, the page cache stays out (swap_in_read).
+            static thread_local SwapInFiles swap_in;
+            std::vector<std::pair<int32_t, int32_t>> swap_wants(swaps.size());
+            std::vector<int64_t> swap_blob(swaps.size());
+            {
+                const auto& slab = strata::kernels::cpu::expert_layout();
+                for (size_t si = 0; si < swaps.size(); ++si) {
+                    swap_wants[si] = {swaps[si].layer, swaps[si].in};
+                    swap_blob[si] = (int64_t) slab.blob_bytes(swaps[si].layer);
+                }
+            }
+            std::string swap_err;
+            swap_in_read(swap_in, srcp, swap_wants, swap_blob, swap_err);
+            if (swap_in.n_pairs > 0) {
+                adapt_swapin_files.fetch_add(swap_in.n_pairs - swap_in.n_failed, std::memory_order_relaxed);
+                adapt_swapin_batches.fetch_add(swap_in.n_batch, std::memory_order_relaxed);
+                adapt_swapin_bytes.fetch_add(swap_in.bytes_io, std::memory_order_relaxed);
+                adapt_swapin_ms.fetch_add(swap_in.ms_io, std::memory_order_relaxed);
+                adapt_swapin_failed.fetch_add(swap_in.n_failed, std::memory_order_relaxed);
+            }
+            if (swap_in.n_failed > 0) {
+                std::vector<Swap> keep;
+                std::vector<int64_t> keep_at;
+                for (size_t si = 0; si < swaps.size(); ++si) {
+                    if (swap_in.at[si] == -2) continue;
+                    keep.push_back(swaps[si]);
+                    keep_at.push_back(swap_in.at[si]);
+                }
+                std::fprintf(stderr, "strata serve: adaptive swap-in: %lld of %lld pack-file swap-ins could not be "
+                                     "read (%s); their swaps are dropped, their slots keep their experts\n",
+                             (long long) swap_in.n_failed, (long long) swap_in.n_pairs, swap_err.c_str());
+                swaps.swap(keep);
+                swap_in.at.swap(keep_at);
+            }
             std::vector<int32_t> fenced_slots;
             if (adapt_fence && !swaps.empty()) {
                 for (const Swap& s : swaps) {
@@ -15462,6 +15578,7 @@ int main(int argc, char** argv) {
                 const size_t in = (size_t) s.layer * g.n_expert + s.in, out = (size_t) s.layer * g.n_expert + s.out;
                 const int32_t slot = fenced_slots.empty() ? host_res[out] : fenced_slots[si];
                 const uint8_t* b = srcp->blob_stable(s.layer, s.in);
+                if (b == nullptr && swap_in.at[si] >= 0) b = swap_in.buf.data() + swap_in.at[si];   // the batch's staged bytes (W1 relief)
                 nib::guard_raw(s.layer, "the adaptive tier's copy in");
                 const int stn = multi_gpu ? stage_of(s.layer) : 0;   // the swap stays in the layer's own cache
                 GpuStage* gs = stn > 0 ? stages[(size_t) stn - 1].get() : nullptr;
@@ -22717,6 +22834,27 @@ int main(int argc, char** argv) {
                              100.0 * (double) req_hits / (double) req_look,
                              (long long) req_hits, (long long) req_look, off);
             }
+            // W1 lever: this request's pack-file swap-ins - the relief's refill rate, the number that
+            // shows the adaptive tier's dropped-pair refills are batched, not the naive ~52 ms/slot
+            // staged path.  Printed only when the counters moved (a request with no dropped-pair swap
+            // says nothing).  Greppable key: `adapt swap-in:`.  Deltas over the previous request.
+            {
+                static int64_t sw_n0 = 0, sw_b0 = 0, sw_y0 = 0, sw_t0 = 0, sw_f0 = 0;
+                const int64_t sw_n = adapt_swapin_files.load(std::memory_order_relaxed);
+                const int64_t sw_b = adapt_swapin_batches.load(std::memory_order_relaxed);
+                const int64_t sw_y = adapt_swapin_bytes.load(std::memory_order_relaxed);
+                const int64_t sw_t = adapt_swapin_ms.load(std::memory_order_relaxed);
+                const int64_t sw_f = adapt_swapin_failed.load(std::memory_order_relaxed);
+                const int64_t dn = sw_n - sw_n0, dt = sw_t - sw_t0;
+                if (dn > 0) {
+                    std::fprintf(stderr, "strata serve: adapt swap-in: %lld swaps, %lld batches, %.0f MiB, %lld ms file read (%.2f ms/slot)%s\n",
+                                 (long long) dn, (long long) (sw_b - sw_b0),
+                                 (double) (sw_y - sw_y0) / 1048576.0, (long long) dt,
+                                 (double) dt / (double) dn,
+                                 sw_f > sw_f0 ? " [pack-file reads failed: swaps dropped]" : "");
+                    sw_n0 = sw_n; sw_b0 = sw_b; sw_y0 = sw_y; sw_t0 = sw_t; sw_f0 = sw_f;
+                }
+            }
             if (drive.d.tail_experts > 0)   // STRATA_ROUTE_TAIL_SKIP, cumulative
                 std::fprintf(stderr, "strata serve: route tail skip: %lld missed experts skipped (%lld entries) since the "
                                      "start\n", (long long) drive.d.tail_experts, (long long) drive.d.tail_skipped);
@@ -23563,6 +23701,10 @@ int main(int argc, char** argv) {
         cudaEvent_t adapt_ev = nullptr;
         cudaEventCreateWithFlags(&adapt_ev, cudaEventDisableTiming);
         int64_t adapt_rounds = 0;   // counted here: `rounds` is declared below the adapt lambda
+        // W1 lever: the relief's pack-file swap-in counters for THIS serve section's adaptive tier
+        // (the batch serve loop is a sibling block; its atomics are separate from the serial one's).
+        std::atomic<int64_t> adapt_swapin_files{0}, adapt_swapin_batches{0}, adapt_swapin_bytes{0},
+            adapt_swapin_ms{0}, adapt_swapin_failed{0};
         auto apply_pending = [&](bool wait) {
             if (pending.empty()) return;
             // STRATA_TRACE_ADAPT=1: whether a round's copies had landed when the next window read the table
@@ -23650,13 +23792,51 @@ int main(int argc, char** argv) {
             }
             // STRATA_DMA_BATCH (F12): the round's copies as one cudaMemcpyBatchAsync; mode 0 is the loop of one copy each
             const int dma_mode = strata::core::dma_batch_mode();
+            // W1 lever: the same pack-file swap-in batch as the serial adapt() (swap_in_read):
+            // dropped host copies read in one unbuffered batch; a pair that cannot be read loses
+            // its swap (the slot keeps its expert, nothing is marked evicted) and says so loudly.
+            static thread_local SwapInFiles swap_in_b;
+            std::vector<std::pair<int32_t, int32_t>> swap_wants(swaps.size());
+            std::vector<int64_t> swap_blob(swaps.size());
+            {
+                const auto& slab = strata::kernels::cpu::expert_layout();
+                for (size_t si = 0; si < swaps.size(); ++si) {
+                    swap_wants[si] = {swaps[si].layer, swaps[si].in};
+                    swap_blob[si] = (int64_t) slab.blob_bytes(swaps[si].layer);
+                }
+            }
+            std::string swap_err;
+            swap_in_read(swap_in_b, srcp, swap_wants, swap_blob, swap_err);
+            if (swap_in_b.n_pairs > 0) {
+                adapt_swapin_files.fetch_add(swap_in_b.n_pairs - swap_in_b.n_failed, std::memory_order_relaxed);
+                adapt_swapin_batches.fetch_add(swap_in_b.n_batch, std::memory_order_relaxed);
+                adapt_swapin_bytes.fetch_add(swap_in_b.bytes_io, std::memory_order_relaxed);
+                adapt_swapin_ms.fetch_add(swap_in_b.ms_io, std::memory_order_relaxed);
+                adapt_swapin_failed.fetch_add(swap_in_b.n_failed, std::memory_order_relaxed);
+            }
+            if (swap_in_b.n_failed > 0) {
+                std::vector<Swap> keep;
+                std::vector<int64_t> keep_at;
+                for (size_t si = 0; si < swaps.size(); ++si) {
+                    if (swap_in_b.at[si] == -2) continue;
+                    keep.push_back(swaps[si]);
+                    keep_at.push_back(swap_in_b.at[si]);
+                }
+                std::fprintf(stderr, "strata generate: adaptive swap-in: %lld of %lld pack-file swap-ins could not be "
+                                     "read (%s); their swaps are dropped, their slots keep their experts\n",
+                             (long long) swap_in_b.n_failed, (long long) swap_in_b.n_pairs, swap_err.c_str());
+                swaps.swap(keep);
+                swap_in_b.at.swap(keep_at);
+            }
             std::vector<void*> cp_dst;
             std::vector<const void*> cp_src;
             std::vector<size_t> cp_bytes;
-            for (const Swap& s : swaps) {
+            for (size_t si = 0; si < swaps.size(); ++si) {
+                const Swap& s = swaps[si];
                 const size_t in = (size_t) s.layer * g.n_expert + s.in, out = (size_t) s.layer * g.n_expert + s.out;
                 const int32_t slot = host_res[out];
                 const uint8_t* b = srcp->blob_stable(s.layer, s.in);
+                if (b == nullptr && swap_in_b.at[si] >= 0) b = swap_in_b.buf.data() + swap_in_b.at[si];   // the batch's staged bytes (W1 relief)
                 nib::guard_raw(s.layer, "the adaptive refill's copy in");
                 const size_t blob_n = (size_t) strata::kernels::cpu::expert_layout().blob_bytes(s.layer);
                 // asynchronous: the copies run while the MTP drafts; the next window waits for them

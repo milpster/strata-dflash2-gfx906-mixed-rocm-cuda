@@ -1783,6 +1783,37 @@ bool FileExpertSource::open_gguf(std::string& err) {
     return true;
 }
 
+// W1 lever: a batch of blobs read straight from the pack files, for the adaptive tier's swap-ins
+// whose host copy the relief dropped.  read_direct's unbuffered windows (Linux: O_DIRECT fds with
+// every window queued in one io_submit batch, sorted by file offset and merged where they touch;
+// Windows: merged overlapped ReadFiles) keep the PAGE CACHE out - re-materializing the packed
+// experts there would undo what the relief gave back.  A batch that fails retries each blob
+// through copy_from_files (the mapped view / the staged path).  `ok[i]` answers per pair; the
+// function returns true only when every pair landed.
+bool FileExpertSource::read_blobs_batch(const std::vector<std::pair<int32_t, int32_t>>& pairs,
+                                        const std::vector<uint8_t*>& dst, std::vector<uint8_t>& ok,
+                                        std::string& err) {
+    if (pairs.size() != dst.size()) { err = "read_blobs_batch: the pair and destination lists differ"; return false; }
+    ok.assign(pairs.size(), 0);
+    if (pairs.empty()) return true;
+    std::vector<Fill> fills;
+    fills.reserve(pairs.size());
+    for (size_t i = 0; i < pairs.size(); ++i) fills.push_back(Fill{0, pairs[i].first, pairs[i].second, dst[i]});
+    if (read_direct(fills.data(), fills.size())) { ok.assign(pairs.size(), 1); return true; }
+    int64_t first_bad = -1;
+    for (size_t i = 0; i < pairs.size(); ++i) {
+        if (dst[i] == nullptr) { if (first_bad < 0) first_bad = (int64_t) i; continue; }
+        if (copy_from_files(pairs[i].first, pairs[i].second, dst[i])) ok[i] = 1;
+        else if (first_bad < 0) first_bad = (int64_t) i;
+    }
+    if (first_bad >= 0) {
+        err = "read_blobs_batch: layer " + std::to_string(pairs[(size_t) first_bad].first) + " expert " +
+              std::to_string(pairs[(size_t) first_bad].second) + " could not be read from the pack files";
+        return false;
+    }
+    return true;
+}
+
 bool FileExpertSource::copy_from_files(int64_t layer, int64_t expert, uint8_t* dst) const {
     if (dst == nullptr || layer < 0 || expert < 0 || layer >= n_layers_ || expert >= n_expert_) return false;
     if (!direct_.empty()) {   // #286: from the drive; a failed read falls back to the mapping below
@@ -6561,6 +6592,25 @@ const uint8_t* ArenaExpertSource::blob_at(int64_t layer, int64_t expert) const {
 //   - only the pages WHOLLY INSIDE a blob are given back.  MADV_DONTNEED on anonymous memory zeroes
 //     what it releases; a blob is not 2 MiB-aligned, so a range rounded out to the 2 MiB grid would
 //     zero the neighbours of a dropped pair, which stay in the arena and would read as zeros.
+// W1 lever: the adaptive tier's batched swap-in from the pack files, through the arena's file
+// source (the same file_mu_ discipline blob()'s dropped-pair path uses).  The arena's own pages
+// stay dropped: the bytes go file -> the caller's staging -> the slot, never back into the RAM
+// the relief gave back.
+bool ArenaExpertSource::swap_blobs_batch(const std::vector<std::pair<int32_t, int32_t>>& pairs,
+                                         const std::vector<uint8_t*>& dst, std::vector<uint8_t>& ok,
+                                         std::string& err) {
+    std::lock_guard<std::mutex> lk(file_mu_);
+    FileExpertSource* f = file_source();
+    if (f == nullptr) { err = "the expert arena has no pack file to read the swap-ins from"; return false; }
+    return f->read_blobs_batch(pairs, dst, ok, err);
+}
+
+bool ArenaExpertSource::swap_files_ready() {
+    std::lock_guard<std::mutex> lk(file_mu_);
+    FileExpertSource* f = file_source();
+    return f != nullptr && f->unbuffered();
+}
+
 void ArenaExpertSource::set_unfilled(std::vector<std::pair<int32_t, int32_t>> pairs) {
 #if defined(_WIN32)
     (void) pairs;   // madvise(MADV_DONTNEED): the POSIX arena

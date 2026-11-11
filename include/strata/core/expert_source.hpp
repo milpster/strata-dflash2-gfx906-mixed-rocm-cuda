@@ -199,6 +199,17 @@ public:
     /// A blob pointer that stays valid (not recycled) for as long as the source is open: for a copy that runs
     /// asynchronously long after the call (the adaptive tier's swap-ins).  Defaults to `blob`.
     virtual const uint8_t* blob_stable(int64_t layer, int64_t expert) { return blob(layer, expert); }
+    /// W1 lever (the relief's swap-ins): read a BATCH of blobs straight from the pack files into
+    /// `dst[i]`, one unbuffered read batch (sorted, merged windows - the page cache stays out, so
+    /// the host copies the relief gave back do not re-materialize).  `ok[i]` answers per pair;
+    /// true only when every pair was read.  Sources that cannot batch answer false with `err`;
+    /// the caller then falls back to per-pair `blob()`.
+    virtual bool swap_blobs_batch(const std::vector<std::pair<int32_t, int32_t>>& pairs,
+                                  const std::vector<uint8_t*>& dst, std::vector<uint8_t>& ok, std::string& err) {
+        (void) pairs; (void) dst; (void) ok;
+        err = "the expert source has no batched pack-file read";
+        return false;
+    }
     /// The pieces (up to 3) a blob consists of when the source can hand them out where they already are - the GGUF
     /// mapped in place keeps an expert's gate, up and down in three tensors - so the caller can copy each straight to
     /// its destination instead of `blob_stable` assembling a staging copy first.  0: not available for this
@@ -938,6 +949,12 @@ public:
     /// expert bytes outside it; switches either way (startup only, nothing reading).  Returns whether unbuffered.
     bool recheck_unbuffered(std::string& why);
     bool unbuffered() const { return !direct_.empty(); }
+    /// W1 lever: a BATCH of blobs read straight from the pack files into `dst[i]` - read_direct's
+    /// unbuffered windows (Linux: O_DIRECT + io_submit, sorted by file offset and merged where they
+    /// touch, so the page cache the relief emptied stays empty).  A failed window falls back to
+    /// copy_from_files per blob.  `ok[i]` answers per pair; true only when every pair was read.
+    bool read_blobs_batch(const std::vector<std::pair<int32_t, int32_t>>& pairs,
+                          const std::vector<uint8_t*>& dst, std::vector<uint8_t>& ok, std::string& err);
     /// MODEL-UPDATE round 2 (Linux, opt-in STRATA_PROMPT_DIRECT=1): with the file tier read through the file cache (the
     /// decode's choice: re-routed experts come back from it), the prompt path's batched stager reads (copy_blobs) go
     /// unbuffered instead - the same bytes, read in merged O_DIRECT requests.  False when not opened (and why).
@@ -1388,6 +1405,15 @@ public:
     /// held pairs sat inside the registration and nothing could be dropped).
     /// Never called without the flag: today's behaviour, byte for byte.
     void set_unfilled(std::vector<std::pair<int32_t, int32_t>> pairs);
+    /// W1 lever: the adaptive tier's swap-ins of dropped pairs, batched through the pack file
+    /// (FileExpertSource::read_blobs_batch under file_mu_).  The arena's own pages stay dropped:
+    /// the bytes go file -> the caller's staging buffer -> the slot, never back into RAM.
+    bool swap_blobs_batch(const std::vector<std::pair<int32_t, int32_t>>& pairs,
+                          const std::vector<uint8_t*>& dst, std::vector<uint8_t>& ok,
+                          std::string& err) override;
+    /// W1 lever: the packs lever's capability - the arena has pack files it can read unbuffered
+    /// (O_DIRECT), so a dropped pair's bytes can go file -> staging -> slot without touching RAM.
+    bool swap_files_ready();
     /// STRATA_WINDOW_POPULATE=1 (opt-in, the per-pair inverse of set_unfilled): a dropped pair a window read
     /// (`blob` took its pack-file path, note_dropped_read) is read back from the pack files into its arena
     /// address, its range registered (V4-r2's rule: a pair that is neither dropped nor registered has no
