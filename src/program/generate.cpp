@@ -9616,11 +9616,12 @@ int main(int argc, char** argv) {
                             // swap_in_read), so the hot refill is file-batched, not per-slot staged.  Without
                             // the flag (default) the adaptive-off gate stands, byte for byte; with the flag and
                             // no unbuffered pack file the gate stands too, and the line below says why.
+                            std::string packs_why;
                             const bool relief_packs_live = o.expert_helper_ram_relief_packs && srcp == &arena_src &&
-                                                           arena_src.swap_files_ready();
+                                                           arena_src.swap_files_ready(packs_why);
                             if (!stages.empty() && adaptive_tier && o.expert_helper_ram_relief_packs && !relief_packs_live)
-                                std::fprintf(stderr, "strata generate: --expert-helper-ram-relief-packs: the arena has no unbuffered "
-                                                     "pack file to swap in from: the split's caches keep their host copies\n");
+                                std::fprintf(stderr, "strata generate: --expert-helper-ram-relief-packs: %s: the split's caches keep "
+                                                     "their host copies\n", packs_why.c_str());
                             if (!stages.empty() && (!adaptive_tier || relief_packs_live)) {
                                 const auto& slay = strata::kernels::cpu::expert_layout();
                                 const int64_t spair = native_pack ? 0 : (int64_t) slay.max_blob;   // the host copy's stride

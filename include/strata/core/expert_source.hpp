@@ -959,6 +959,16 @@ public:
     /// decode's choice: re-routed experts come back from it), the prompt path's batched stager reads (copy_blobs) go
     /// unbuffered instead - the same bytes, read in merged O_DIRECT requests.  False when not opened (and why).
     bool open_prompt_direct(std::string& why);
+    /// W1 lever (--expert-helper-ram-relief-packs): arm the unbuffered fds the swap-in batch
+    /// (read_direct) needs WITHOUT flipping the file tier to full unbuffered mode - the normal
+    /// blob() reads keep the mapped view / the file cache.  open_prompt_direct's pdirect_ fds
+    /// are exactly this: read_direct takes them when the tier reads buffered (direct_ empty).
+    /// A no-op when direct fds are already present (a full unbuffered tier has direct_).
+    /// False with a named `why` when the platform/filesystem cannot open O_DIRECT.
+    bool arm_swap_reads(std::string& why);
+    /// The swap-in batch's capability: direct fds present (a full unbuffered tier's direct_,
+    /// or the prompt-direct pdirect_ armed by arm_swap_reads).
+    bool swap_reads_ready() const { return !direct_.empty() || !pdirect_.empty(); }
     /// pp-opt (Windows, experts.bin, unbuffered): close the mapped view once startup no longer needs it.  NTFS runs
     /// the unbuffered reads of a mapped file one at a time - on a PCIe 4 NVMe (WD SN580) 2 MiB reads at queue depth
     /// 32 measured 2.35 GB/s with experts.bin mapped and 3.57 GB/s without.  After this every file read goes through
@@ -1411,9 +1421,11 @@ public:
     bool swap_blobs_batch(const std::vector<std::pair<int32_t, int32_t>>& pairs,
                           const std::vector<uint8_t*>& dst, std::vector<uint8_t>& ok,
                           std::string& err) override;
-    /// W1 lever: the packs lever's capability - the arena has pack files it can read unbuffered
-    /// (O_DIRECT), so a dropped pair's bytes can go file -> staging -> slot without touching RAM.
-    bool swap_files_ready();
+    /// W1 lever: the packs lever's capability - arm and report the arena's unbuffered swap-in fds
+    /// (FileExpertSource::arm_swap_reads: pdirect_ without flipping the tier unbuffered).  True
+    /// when direct fds are ready for the swap-in batch; false with a named `why` (no pack file,
+    /// or the filesystem/platform cannot open O_DIRECT) so the caller prints the refusal.
+    bool swap_files_ready(std::string& why);
     /// STRATA_WINDOW_POPULATE=1 (opt-in, the per-pair inverse of set_unfilled): a dropped pair a window read
     /// (`blob` took its pack-file path, note_dropped_read) is read back from the pack files into its arena
     /// address, its range registered (V4-r2's rule: a pair that is neither dropped nor registered has no

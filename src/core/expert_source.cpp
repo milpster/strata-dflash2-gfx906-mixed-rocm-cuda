@@ -2553,6 +2553,19 @@ bool FileExpertSource::open_prompt_direct(std::string& why) {
 #endif
 }
 
+// W1 lever (--expert-helper-ram-relief-packs): arm the unbuffered fds the swap-in batch needs,
+// WITHOUT flipping the file tier to full unbuffered mode.  The tier's normal blob() reads stay on
+// the mapped view / the file cache (staged() does not look at pdirect_); only read_direct takes
+// these fds (direct_.empty() ? pdirect_ : direct_), and only the relief's swap-in batch calls it.
+// So arming them here does not disturb the buffered path the decode relies on.  When the tier is
+// already unbuffered (direct_ present, armed by the RAM-room heuristic), the swap-in reads have
+// fds and this is a no-op.  open_prompt_direct names the reason when O_DIRECT cannot be opened,
+// so the caller refuses at startup rather than silently running buffered.
+bool FileExpertSource::arm_swap_reads(std::string& why) {
+    if (swap_reads_ready()) return true;
+    return open_prompt_direct(why);
+}
+
 bool FileExpertSource::set_unbuffered(uint64_t ram_bytes, std::string& why) {
 #if defined(_WIN32) || defined(__linux__)
     if (base_ == nullptr || paths_.empty() || !direct_.empty()) {
@@ -6605,10 +6618,11 @@ bool ArenaExpertSource::swap_blobs_batch(const std::vector<std::pair<int32_t, in
     return f->read_blobs_batch(pairs, dst, ok, err);
 }
 
-bool ArenaExpertSource::swap_files_ready() {
+bool ArenaExpertSource::swap_files_ready(std::string& why) {
     std::lock_guard<std::mutex> lk(file_mu_);
     FileExpertSource* f = file_source();
-    return f != nullptr && f->unbuffered();
+    if (f == nullptr) { why = "the expert arena has no pack file to swap in from"; return false; }
+    return f->arm_swap_reads(why);
 }
 
 void ArenaExpertSource::set_unfilled(std::vector<std::pair<int32_t, int32_t>> pairs) {
