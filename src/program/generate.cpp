@@ -1063,6 +1063,14 @@ struct Options {
     /// result) goes through the verify windows, S tokens at a time, instead of the batched prompt path (0 = always
     /// the batched path)
     int64_t short_read = 64;
+    /// #879-tail (opt-in): a prompt read through the verify windows met non-finite logits, the request ended
+    /// with its last tokens unemitted and the whole cached state was dropped - on a 142k prompt that is a
+    /// 289 s read thrown away, and the #3465 retry reads the prompt from token 0 again.  The state at the
+    /// last committed window is exactly there (pp_exact between windows), so the tokens from it to the end
+    /// can be read through the batched path IN the same request: the reporter's prompts met non-finite
+    /// logits exactly in these windows and passed with --short-read 0.  Off: the abort ends the request,
+    /// exactly as before.
+    bool prompt_window_retry = false;
     bool prefill_head_alias = false;   // lend the native output head's VRAM to prompt buffers between request phases
     /// --pipeline-windows N (--serve, a layer split on exactly two GPUs; opt-in): 1 = a prompt's short reads through
     /// the verify windows run with the stages overlapped (stage 0 reads window K+1 while stage 1 reads window K);
@@ -1267,6 +1275,12 @@ void usage() {
                  "                       the conversation checkpoint (a trailing effort turn; default -1 = off)\n"
                  "  --short-read N       --serve: read at most N fresh text tokens through the decode windows instead\n"
                  "                       of the batched prompt path (default 64, 0 = off)\n"
+                 "  --prompt-window-retry  opt-in, --serve: when a prompt read through those windows meets\n"
+                 "                       non-finite logits (#879), re-read the tokens from the last committed\n"
+                 "                       window to the prompt's end through the batched path IN this request\n"
+                 "                       (the tail is at most --short-read tokens) and keep going.  Off: the\n"
+                 "                       request ends with 0 generated, the cached state is dropped and the\n"
+                 "                       next request reads the whole prompt from token 0 (#3465).\n"
                  "  --prefill-head-alias --serve: unload the native output head while each fresh prompt is read,\n"
                  "                       then release prompt buffers and reload it before decode\n"
                  "  --suffix-draft N     prompt lookup: draft from an earlier repeat of the last N+ tokens of context\n"
@@ -2460,6 +2474,38 @@ uint64_t fnv1a(const void* data, size_t n, uint64_t h = 1469598103934665603ull) 
     const uint8_t* p = (const uint8_t*) data;
     for (size_t i = 0; i < n; ++i) { h ^= p[i]; h *= 1099511628211ull; }
     return h;
+}
+
+/// What the machine looks like when a request hits a host-side fault path: #879's non-finite logits, or a
+/// prompt read far below the rate the same legs run at.  One greppable line, and the numbers the pressure
+/// chain is decided on: the host RAM left, the host SWAP already in use (a read served from swap is the
+/// 435 ms/token class, not the 400 ms/token class), the free VRAM the request began with (a card this full
+/// pages GPU memory into that RAM, #2065), and how many expert pairs the relief dropped (their refills are
+/// the file reads under pressure).  Says nothing it cannot read.
+const char* pressure_context(char* buf, size_t cap, uint64_t dropped_pairs) {
+    const auto hm = strata::core::sample_host_memory();
+    const double avail = hm && hm->available ? (double) hm->available / (1ull << 30) : 0.0;
+    double swap_used = 0.0, swap_total = 0.0;
+#if defined(__linux__)
+    std::ifstream mf("/proc/meminfo");
+    uint64_t st = 0, sf = 0;
+    std::string line;
+    while (std::getline(mf, line)) {
+        std::istringstream ls(line);
+        std::string key, unit;
+        uint64_t kb = 0;
+        if (!(ls >> key >> kb >> unit)) continue;
+        if (key == "SwapTotal:") st = kb * 1024;
+        else if (key == "SwapFree:") sf = kb * 1024;
+    }
+    swap_total = (double) st / (1ull << 30);
+    swap_used = st > sf ? (double) (st - sf) / (1ull << 30) : 0.0;
+#endif
+    const int64_t vf = g_req_vram_free_mib.load();
+    std::snprintf(buf, cap, "host available %.1f GiB, swap in use %.1f GiB of %.1f, %lld MiB of VRAM free at the "
+                            "request's start, %llu expert pairs file-served",
+                  avail, swap_used, swap_total, (long long) (vf >= 0 ? vf : 0), (unsigned long long) dropped_pairs);
+    return buf;
 }
 
 using ConvStateSizes = strata::core::ConversationStateSizes;
@@ -4008,6 +4054,7 @@ int main(int argc, char** argv) {
         else if (a == "--turn-token") o.turn_token = std::atoll(next("--turn-token"));
         else if (a == "--tail-role-token") o.tail_role_token = std::atoll(next("--tail-role-token"));
         else if (a == "--short-read") o.short_read = std::max(0LL, std::atoll(next("--short-read")));
+        else if (a == "--prompt-window-retry") o.prompt_window_retry = true;
         else if (a == "--prefill-head-alias") o.prefill_head_alias = true;
         else if (a == "--pipeline-windows") o.pipeline_windows = std::max(0, std::min(2, std::atoi(next("--pipeline-windows"))));
         else if (a == "--suffix-draft") { o.suffix_draft = std::max(0, std::atoi(next("--suffix-draft"))); o.suffix_draft_set = true; }
@@ -14826,12 +14873,18 @@ int main(int argc, char** argv) {
         // #879: this request met a window whose head logits were not all finite (nonfinite_hit): it ends with
         // DONE ... nonfinite, emitting none of that window's tokens
         bool nf_hit = false;
+        bool nf_tail_retried = false;   // --prompt-window-retry: this request already spent its tail retry
         auto nonfinite_hit = [&](const strata::core::Verifier& v, const char* what) -> bool {
             const int row = v.nonfinite_row();
             if (row < 0) return false;
             std::fprintf(stderr, "strata serve: non-finite logits (#879) in a %s window at position %lld (row %d): its "
                                  "tokens are not emitted, the request ends (DONE nonfinite) and the next request reads "
                                  "its prompt from token 0\n", what, (long long) v.nonfinite_pos(), row);
+            {   // the pressure chain this abort sits in: the same numbers the memory levers are judged on
+                char pc[256];
+                std::fprintf(stderr, "strata serve: non-finite logits (#879) context: %s\n",
+                             pressure_context(pc, sizeof pc, (uint64_t) arena_src.unfilled_pairs()));
+            }
             std::fflush(stderr);
             nf_hit = true;
             nan_flush = true;
@@ -20874,8 +20927,41 @@ int main(int argc, char** argv) {
                 const int64_t read_to = merge_at >= 0 ? merge_at : to;   // (merge_at > at: the part's windows before it)
                 const auto tsp = Clock::now();
                 pp_exact = false;   // a batched or pipelined part is in flight: a cancel may leave the state past pp_reached
-                const bool sp_ok = read_to <= at || (win ? read_windows(at, read_to, err) : read_part(at, to, err));
-
+                bool sp_ok = read_to <= at || (win ? read_windows(at, read_to, err) : read_part(at, to, err));
+                // --prompt-window-retry (#879-tail): the windows met non-finite logits.  The tokens of the
+                // failed window are NOT committed - between windows the session is exactly at pp_reached - so
+                // what is left of this part (at most --short-read tokens) is read through the batched path in
+                // THIS request, the same path #3465 forces on the next one, and the request continues.  The
+                // cached state stays: the failure is the window's read, not a state the earlier parts built
+                // (a batched read of the same tokens over the same state is what the reports show passing).
+                // One retry per request; a batched tail that meets non-finite logits too falls back to today's
+                // abort (the state is dropped and the next request reads the prompt from token 0).
+                if (!sp_ok && win && nf_hit && o.prompt_window_retry && !nf_tail_retried && merge_at < 0 &&
+                    pp_reached >= at && pp_reached < to) {
+                    nf_tail_retried = true;
+                    const int64_t from = pp_reached;
+                    std::fprintf(stderr, "strata serve: non-finite logits (#879) tail retry: %lld tokens from %lld read "
+                                         "batched in this request (the state is committed at %lld)\n",
+                                 (long long) (to - from), (long long) from, (long long) from);
+                    std::fflush(stderr);
+                    if (lend(to - from, err, plan_lend)) sp_ok = read_part(from, to, err);
+                    if (sp_ok) {
+                        nf_hit = false;          // the request continues: no flush, no forced batched read next
+                        nan_flush = false;
+                        nf_prompt_windows = false;
+                        std::fprintf(stderr, "strata serve: non-finite logits (#879) tail retry: the batched tail read "
+                                             "came through; the request continues from %lld with its cached state\n",
+                                     (long long) to);
+                    } else {
+                        nf_hit = true;
+                        nan_flush = true;
+                        nf_prompt_windows = true;
+                        std::fprintf(stderr, "strata serve: non-finite logits (#879) tail retry: the batched tail read met "
+                                             "non-finite logits too; the request ends and the next reads its prompt from token 0\n");
+                    }
+                    std::fflush(stderr);
+                }
+                if (sp_ok) pp_exact = true;
                 if (trace) {
                     const double ms = std::chrono::duration<double, std::milli>(Clock::now() - tsp).count();
                     (win ? req_times.windows_ms : req_times.read_ms) += ms;
@@ -22963,6 +23049,20 @@ int main(int argc, char** argv) {
             // Both are no-ops unless the env was set at drafter upload - the default path is identical.
             strata::core::df_timing_drain();
             strata::core::df_timing_dump();
+            // The early-boot read slowness (v0220/iq3_s: 14.5k-token legs at 56-161 tok/s where the same legs
+            // ran 287-326 on v0216, and 403-609 later in the same boot) is a pressure signature, not a code
+            // path: a read that slow, on a prompt big enough that no cache explains it, says which term it is
+            // - the host RAM left, the swap the reads are served from, the VRAM the request started with, and
+            // the pairs whose blobs are file-served.  Greppable key: `slow read context:`.
+            {
+                const double read_rate = prompt_ms > 0 ? 1000.0 * (double) read_n / (double) prompt_ms : 0.0;
+                if (read_n >= 4096 && read_rate > 0.0 && read_rate < 200.0) {
+                    char pc[256];
+                    std::fprintf(stderr, "strata serve: slow read context: %lld tokens at %.1f tok/s; %s\n",
+                                 (long long) read_n, read_rate,
+                                 pressure_context(pc, sizeof pc, (uint64_t) arena_src.unfilled_pairs()));
+                }
+            }
             if (serve_adapt_drain_ms >= 1.0)
                 std::fprintf(stderr, "strata serve: the request first waited %.0f ms for the adaptive tier's round in flight\n",
                              serve_adapt_drain_ms);
