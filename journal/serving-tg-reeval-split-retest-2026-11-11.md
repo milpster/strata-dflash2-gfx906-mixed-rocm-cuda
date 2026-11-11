@@ -426,3 +426,20 @@ iq3_s tuple: **split-34, v0220, helper 7400/5000/300, engine 256/256**.
 Carry-forward risk: s34 showed the read-abort defect (0-gen after full read,
 re-read recovers) once in the panel — fixer follow-up queued; also 80k-class
 early-boot read slowness on v0220/iq3_s (56–161 tps vs 287–326 on v0216).
+
+## Machine reboot + prod recovery (21:0x–21:24)
+
+Operator rebooted the box (~21:0x). Everything died: prod (iq3_s, up since
+20:47), the first fixer spawn (ConnectionRefused at 20:5x — spawned seconds
+after the promotion; lesson: agent spawns wait for prod verified-stable, not
+just health-ok), and the second fixer (died with the reboot, worktree clean at
+`b749c246c` — zero partial work).
+
+Recovery: re-ran `launch-prod-swift-iq3s-…sh` at 21:07 (cold cache), health
+ok/loaded at **21:24:12** — identity re-verified: v0220 engine, split-34
+(CUDA1 34–47, 3,918 slots), helper 3,847/5,000 mirrored, 398 MiB VII free.
+End-to-end serving verified with a warmup request: HTTP 200, judge
+`59 tok fresh read 42.5 tps, 11 gen @ 41.6–45.3 tps, 8/8 drafts`, no abort
+signature. (Note: this model answers in `reasoning_content`; `content` is
+null on short max_tokens — harness artifact, not a defect.) Fresh fixer
+spawned after verification.
