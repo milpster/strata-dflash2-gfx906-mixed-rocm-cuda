@@ -443,3 +443,23 @@ End-to-end serving verified with a warmup request: HTTP 200, judge
 signature. (Note: this model answers in `reasoning_content`; `content` is
 null on short max_tokens — harness artifact, not a defect.) Fresh fixer
 spawned after verification.
+
+## Agent-lane correction (21:35, operator: "you spawned two fixers")
+
+The second fixer session's post-reboot death notice proved unreliable — a
+third spawn overlapped it in the UI. Both prior sessions confirmed terminal
+(`error` / `stopped`) before this round's spawn; exactly ONE fixer active
+since. Lesson: after host-restart artifacts, confirm terminal state via
+task_status enumeration before spawning a replacement.
+
+## iq3_s memory pressure measured (21:38, operator-flagged)
+
+Live prod measurements (62 GiB box): **engine RSS 55.1 GiB** + helper 5.9 GiB
+→ available **8.6 GiB**, free 2.2 GiB, **7.4 GiB in swap**. iq3xxs fit
+comfortably; the iq3_s pack/blob class pushed the engine into pressure.
+Conversation cache parks/restores correctly (26k tokens parked in 32.7 s,
+17k restored in 435 ms; 1.4–1.9 GiB snapshots) but bounds nothing at the
+engine level. Working hypothesis (fixer to verify): pressure → swap-ins on
+cold paths → defect-2 early-boot read slowness and rerun mini-stalls;
+possibly contributes to the read-abort. Fixer round scope = analyze AND
+fix/bound the pressure, plus the read-abort fix itself.
