@@ -32,4 +32,8 @@ for seq in 1 2 3; do
 done
 "$PY" "$D/ab9_driver.py" --arm "$ARM" --leg tg1024 --kind tg --ctx 2048 --max-tokens 1024 --out "$OUT" \
   --elog "$ELOG" --hlog "$HLOG" --url "$URL"
+# Standing stability leg (2026-11-11 operator standard): every lane includes a near-max-context
+# infill (~250k tokens = 1365950 B at 5.4638 B/tok; max-context 262144 leaves headroom). 0 reused required.
+"$PY" "$D/ab9_driver.py" --arm "$ARM" --leg infill250k --kind prefill --ctx 1365950 --max-tokens 8 --out "$OUT" \
+  --elog "$ELOG" --hlog "$HLOG" --url "$URL"
 echo "lane: done arm=$ARM"

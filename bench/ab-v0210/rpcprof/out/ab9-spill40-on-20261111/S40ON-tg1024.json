@@ -1,0 +1,22 @@
+{
+ "arm": "S40ON",
+ "leg": "tg1024",
+ "kind": "tg",
+ "ctx": 2048,
+ "max_tokens": 1024,
+ "ts": 1794352059.468,
+ "walls": [
+  16.051,
+  19.24
+ ],
+ "wall_s": 35.291,
+ "content_from": "content",
+ "prompt_bytes": 2048,
+ "sha256": "e3777f6d617bca174e2685da7b3f17a8b4f937807ba4593ed38f0d21325d3ed4",
+ "elog": "/mnt/srcds/Strata/logs/engine-swift15-f16kv-dflash-w4-q4_0-mixed.log",
+ "elog_start": 3780306,
+ "elog_end": 3782133,
+ "hlog": "/mnt/srcds/Strata/logs/trial-spill40-20261111-000302-3619675-helper.log",
+ "hlog_start": 1448,
+ "hlog_end": 1448
+}

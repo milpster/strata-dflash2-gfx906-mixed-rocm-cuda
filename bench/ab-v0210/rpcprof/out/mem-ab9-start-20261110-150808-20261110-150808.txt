@@ -1,0 +1,105 @@
+mem-baseline label=ab9-start-20261110-150808 ts=2026-11-10 15:08:08
+host=7.3.3-x64v3-xanmod1 cwd=/mnt/srcds/Strata
+ab9-window-harness
+b7e3c630f bench(ab9): SPLIT-40 -15.3% @8k AND @80k, parity exact - first lever over the adoption bar
+
+== meminfo ==
+               total        used        free      shared  buff/cache   available
+Mem:           63644       10024       43831          29       13149       53619
+Swap:         196607        6647      189960
+MemTotal:       65172008 kB
+MemFree:        44883532 kB
+MemAvailable:   54906780 kB
+Buffers:           16932 kB
+Cached:         13145968 kB
+SwapTotal:      201326568 kB
+SwapFree:       194519548 kB
+Dirty:              5732 kB
+AnonPages:       3129236 kB
+Mapped:           529148 kB
+Shmem:             29960 kB
+Committed_AS:   25963288 kB
+ShmemHugePages:        0 kB
+ShmemPmdMapped:        0 kB
+NAME        TYPE SIZE USED PRIO
+/mnt/swap5  file  32G 2.2G    2
+/mnt/swap2  file  32G 2.2G    2
+/mnt/swap4  file  32G 2.1G    2
+/home/swap  file  32G   0B    1
+/home/swap3 file  32G   0B    1
+/home/swap4 file  32G   0B    1
+
+== ksm ==
+ksm.run=1
+ksm.pages_to_scan=100
+ksm.pages_sharing=0
+ksm.pages_shared=0
+ksm.general_profit=0
+ksm.max_page_sharing=256
+ksmd_cpu=0.0
+
+== processes (RSS/ANON/FILE/SWAP, GiB) ==
+
+== engine memory lines (newest engine log) ==
+log=/mnt/srcds/Strata/logs/engine-swift15-f16kv-dflash-w4-q4_0-mixed.log
+strata serve: CUDA1: 504 MiB of VRAM free with everything loaded - LOW: its window graphs are captured on first use and need room too, and a full card can stall a request; add --vram-reserve-later-mib
+strata: expert arena: the helper's residency is released; its 4324 dropped experts stay file-served until restart (--expert-helper-ram-relief)
+[strata] 2026-11-10 15:02:22 engine started: /mnt/srcds/Strata/v0215/build-mixed-gpu/rpcw-hip/strata --serve --gpu 0,1 --pack /mnt/srcds/ai/iq3xxs-15 --native /mnt/srcds/ai/Swift-1.5-Qwen3.8-Flash-Nex
+strata generate: profile /mnt/srcds/Strata/data/expert-profile.bin: 24576 ranked pairs, built for 24576 slots
+strata generate: expert arena read through the file cache (buffered (not Windows))
+strata generate: expert arena: reserve only (nothing registered, nothing locked yet); MAP_HUGETLB unavailable (needed 20464 2 MiB pages, vm.nr_hugepages=0); transparent huge pages are on for every map
+strata generate: expert cache auto: 8.06 GiB free, 256 MiB reserved (+0 MiB for the draft head, +256 MiB for what is allocated after the cache) -> 3483 slots
+strata generate: expert cache 5045 slots, 7.56 GiB of VRAM; policy is
+strata generate: pre-filled 5045 of 5045 slots from the profile in 2.6 s (3070 MB/s); slot 0 verified
+strata generate: layer split: CUDA1 runs layers 32-47, expert cache 4407 slots (8.25 GiB), 4407 of its 8192 profiled pairs; slot 0 verified
+strata generate: expert-helper: asking 4600 slots = 7522252800 B aligned of 15124 eligible (no byte cap: AUTO, bounded by --expert-helper-slots); the helper's own free-VRAM budget decides the fill and
+expert-helper: 4324 rows on /mnt/srcds/Strata/run/prod-swift15-f16kv-mixed.sock (mirrored 4324/4600 slots, 6.61 GiB, device free at hello 7470 MiB)
+strata generate: expert-helper proxy: 4324 experts on /mnt/srcds/Strata/run/prod-swift15-f16kv-mixed.sock, 6.61 GiB (fill report)
+strata generate: --expert-helper-ram-relief: 4324 of the helper's 4324 pairs dropped from the arena (6.60 GiB of pages given back; 0 are pinned memory and stay, 0 madvise refusals, 0 out of range); th
+strata generate: --expert-helper-ram-relief: registered what stayed behind the helper's 4324 pairs (4324 dropped, 3100 range(s), 33.37 GiB)
+strata serve: the prompt path borrows 4520 CUDA0 cache slots (6.77 GiB)
+strata serve:   CUDA1 prompt path borrows 3608 of its 4407 slots (6.77 GiB)
+strata serve: 404 MiB of VRAM free with everything loaded
+strata serve: CUDA1: 504 MiB of VRAM free with everything loaded - LOW: its window graphs are captured on first use and need room too, and a full card can stall a request; add --vram-reserve-later-mib
+strata: expert arena: the helper's residency is released; its 4324 dropped experts stay file-served until restart (--expert-helper-ram-relief)
+
+== gpu vram ==
+
+
+============================ ROCm System Management Interface ============================
+================================== Memory Usage (Bytes) ==================================
+GPU[0]		: VRAM Total Memory (B): 17163091968
+GPU[0]		: VRAM Total Used Memory (B): 11010048
+GPU[1]		: VRAM Total Memory (B): 17163091968
+GPU[1]		: VRAM Total Used Memory (B): 10960896
+GPU[2]		: VRAM Total Memory (B): 536870912
+GPU[2]		: VRAM Total Used Memory (B): 459399168
+==========================================================================================
+================================== End of ROCm SMI Log ===================================
+index, memory.used [MiB], memory.total [MiB], utilization.gpu [%]
+0, 112 MiB, 8192 MiB, 0 %
+3080 free MiB: 7731 MiB
+
+== fault + paging rate (vmstat 1 5) ==
+procs -----------memory---------- ---swap-- -----io---- -system-- -------cpu-------
+ r  b   swpd   free   buff  cache   si   so    bi    bo   in   cs us sy id wa st gu
+ 0  0 6807008 44856228  17024 13451520 2662 3054 32840 14530 31618   18 22  3 75  1  0  0
+ 0  0 6806928 44843544  17072 13453412   52    0   444   180 12404 25877  4  1 94  0  0  0
+ 0  0 6806912 44833884  17072 13453396   12    0    12     0 12151 27888  4  1 95  0  0  0
+ 1  0 6806876 44827284  17112 13453392  248    0   252  1444 15585 32014  4  2 94  0  0  0
+ 2  0 6806676 44802504  17120 13475616   72    0 22488    28 14986 31851  4  2 94  0  0  0
+pswpin 50238875
+pswpout 57640446
+pgmajfault 13106175
+
+== file cache pressure ==
+Cached:         13173596 kB
+SwapCached:       922940 kB
+Dirty:             13060 kB
+Writeback:             0 kB
+WritebackTmp:          0 kB
+vm.524288
+
+== prod liveness proof (read-only) ==
+engine_pids=
+health=

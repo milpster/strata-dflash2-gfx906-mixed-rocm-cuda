@@ -1,0 +1,21 @@
+{
+ "arm": "S40OFF",
+ "leg": "80000-1",
+ "kind": "prefill",
+ "ctx": 80000,
+ "max_tokens": 8,
+ "ts": 1794351499.229,
+ "walls": [
+  40.929
+ ],
+ "wall_s": 40.929,
+ "content_from": "reasoning",
+ "prompt_bytes": 80000,
+ "sha256": "01db7a9d154bb188430b234246589661629c627462db9ec632e33137f49bb45e",
+ "elog": "/mnt/srcds/Strata/logs/engine-swift15-f16kv-dflash-w4-q4_0-mixed.log",
+ "elog_start": 3746955,
+ "elog_end": 3747666,
+ "hlog": "/mnt/srcds/Strata/logs/trial-spill40-20261110-235613-3427937-helper.log",
+ "hlog_start": 1448,
+ "hlog_end": 1448
+}

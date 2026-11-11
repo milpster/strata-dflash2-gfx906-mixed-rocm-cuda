@@ -1,0 +1,105 @@
+mem-baseline label=ab9-start-20261110-025732 ts=2026-11-10 02:57:32
+host=7.3.3-x64v3-xanmod1 cwd=/mnt/srcds/Strata
+ab9-window-harness
+f53231b2f bench(ab9): engine-span decomposition - router 64.6% of layer time; helper wait 9.1%; attn 4%; router is the next lever
+
+== meminfo ==
+               total        used        free      shared  buff/cache   available
+Mem:           63644        7293       44876           7       14823       56351
+Swap:         196607        2995      193612
+MemTotal:       65172008 kB
+MemFree:        45953960 kB
+MemAvailable:   57703956 kB
+Buffers:           46536 kB
+Cached:         14811816 kB
+SwapTotal:      201326568 kB
+SwapFree:       198258940 kB
+Dirty:              1360 kB
+AnonPages:       1416516 kB
+Mapped:           268256 kB
+Shmem:              7808 kB
+Committed_AS:   14018548 kB
+ShmemHugePages:        0 kB
+ShmemPmdMapped:        0 kB
+NAME        TYPE SIZE    USED PRIO
+/mnt/swap5  file  32G 1007.3M    2
+/mnt/swap2  file  32G 1008.1M    2
+/mnt/swap4  file  32G  980.3M    2
+/home/swap  file  32G      0B    1
+/home/swap3 file  32G      0B    1
+/home/swap4 file  32G      0B    1
+
+== ksm ==
+ksm.run=1
+ksm.pages_to_scan=100
+ksm.pages_sharing=0
+ksm.pages_shared=0
+ksm.general_profit=0
+ksm.max_page_sharing=256
+ksmd_cpu=0.0
+
+== processes (RSS/ANON/FILE/SWAP, GiB) ==
+
+== engine memory lines (newest engine log) ==
+log=/mnt/srcds/Strata/logs/engine-swift15-f16kv-dflash-w4-q4_0-mixed.log
+strata generate: expert-helper proxy: 4341 experts on /mnt/srcds/Strata/run/prod-swift15-f16kv-mixed.sock, 6.64 GiB (fill report)
+strata generate: --expert-helper-ram-relief: 4341 of the helper's 4341 pairs dropped from the arena (6.62 GiB of pages given back; 0 are pinned memory and stay, 0 madvise refusals, 0 out of range); th
+strata generate: --expert-helper-ram-relief: registered what stayed behind the helper's 4341 pairs (4341 dropped, 3111 range(s), 33.34 GiB)
+strata serve: the prompt path borrows 4520 CUDA0 cache slots (6.77 GiB)
+strata serve:   CUDA1 prompt path borrows 3608 of its 4407 slots (6.77 GiB)
+strata serve: 404 MiB of VRAM free with everything loaded
+strata serve: CUDA1: 504 MiB of VRAM free with everything loaded - LOW: its window graphs are captured on first use and need room too, and a full card can stall a request; add --vram-reserve-later-mib
+strata serve: WARNING: only 404 MiB of VRAM free at the start of this request (below 512 MiB): when the card is this full the driver can page GPU memory to system RAM, decode falls to a few tok/s and 
+strata verify: capturing the 4-token window (284 MiB of VRAM free)
+strata verify: capturing the 4-token window (372 MiB of VRAM free)
+strata verify: capturing the 1-token window (246 MiB of VRAM free)
+strata verify: capturing the 1-token window (350 MiB of VRAM free)
+strata verify: capturing the 2-token window (231 MiB of VRAM free)
+strata verify: capturing the 2-token window (333 MiB of VRAM free)
+strata verify: capturing the 3-token window (231 MiB of VRAM free)
+strata verify: capturing the 3-token window (333 MiB of VRAM free)
+strata verify: capturing the 5-token window (231 MiB of VRAM free)
+strata verify: capturing the 5-token window (333 MiB of VRAM free)
+strata serve: WARNING: only 231 MiB of VRAM free at the start of this request (below 512 MiB): when the card is this full the driver can page GPU memory to system RAM, decode falls to a few tok/s and 
+strata: expert arena: the helper's residency is released; its 4341 dropped experts stay file-served until restart (--expert-helper-ram-relief)
+
+== gpu vram ==
+
+
+============================ ROCm System Management Interface ============================
+================================== Memory Usage (Bytes) ==================================
+GPU[0]		: VRAM Total Memory (B): 17163091968
+GPU[0]		: VRAM Total Used Memory (B): 10973184
+GPU[1]		: VRAM Total Memory (B): 17163091968
+GPU[1]		: VRAM Total Used Memory (B): 10948608
+GPU[2]		: VRAM Total Memory (B): 536870912
+GPU[2]		: VRAM Total Used Memory (B): 382562304
+==========================================================================================
+================================== End of ROCm SMI Log ===================================
+index, memory.used [MiB], memory.total [MiB], utilization.gpu [%]
+0, 45 MiB, 8192 MiB, 0 %
+3080 free MiB: 7798 MiB
+
+== fault + paging rate (vmstat 1 5) ==
+procs -----------memory---------- ---swap-- -----io---- -system-- -------cpu-------
+ r  b   swpd   free   buff  cache   si   so    bi    bo   in   cs us sy id wa st gu
+ 0  0 3067624 45969600  47032 15138880 1007 1250 41131 22187 24794   20 33  3 63  1  0  0
+ 1  0 3067624 45999224  47032 15139428    0    0    64     0 9898 18166  4  1 94  0  0  0
+ 8  0 3067620 45969356  47044 15139436    0    0     0   132 12692 29549  5  1 93  0  0  0
+ 2  0 3067620 45974324  47044 15139464    0    0    20     0 12226 28836  6  1 93  0  0  0
+ 1  0 3067620 45976880  47044 15139456    0    0     0     0 13337 30955  6  2 92  0  0  0
+pswpin 7964235
+pswpout 9888393
+pgmajfault 3283977
+
+== file cache pressure ==
+Cached:         14818976 kB
+SwapCached:       350128 kB
+Dirty:              1672 kB
+Writeback:             0 kB
+WritebackTmp:          0 kB
+vm.524288
+
+== prod liveness proof (read-only) ==
+engine_pids=
+health=

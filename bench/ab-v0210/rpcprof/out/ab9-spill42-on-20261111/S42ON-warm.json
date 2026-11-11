@@ -1,0 +1,21 @@
+{
+ "arm": "S42ON",
+ "leg": "warm",
+ "kind": "warm",
+ "ctx": 512,
+ "max_tokens": 64,
+ "ts": 1794352357.237,
+ "walls": [
+  7.5
+ ],
+ "wall_s": 7.5,
+ "content_from": "content",
+ "prompt_bytes": 512,
+ "sha256": "5432bf0c0b47a4dd4d05aac138a2c2c70e1721328d25d1bbb95768a4eb33bb26",
+ "elog": "/mnt/srcds/Strata/logs/engine-swift15-f16kv-dflash-w4-q4_0-mixed.log",
+ "elog_start": 3792772,
+ "elog_end": 3796205,
+ "hlog": "/mnt/srcds/Strata/logs/trial-spill40-20261111-001132-3856384-helper.log",
+ "hlog_start": 1447,
+ "hlog_end": 1447
+}
