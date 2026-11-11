@@ -253,3 +253,37 @@ Chain: `ae71a6577` → `69f37322d` (stall fix) → `0359cedf6` (swap-ins) →
   is on: the split's caches keep their host copies".
 - v0220 = `c604afde6` build: stall fix (checkpoint saves gated by physical RAM)
   + swap-in machinery + lever arming, flag-off in prod.
+
+## Packs lever round 2 — fixed and validated (16:55–17:07)
+
+Fixer round 2 on `helper-ipc-diet` (pushed to fork): `7638ca74b` (prefill/borrow
+misses batch through one O_DIRECT `read_direct` window; request-scoped stage memo;
+per-request prefill swap-in telemetry) and `b749c246c` (cold-only stage drop:
+`--expert-helper-relief-hot-mib`, default 7000; hot/cold split in boot report).
+mlock diff review: 0 new locks, no new buffers, both `pinned && !blob` guards
+intact; no-flag path byte-identical. Binaries: hip `5d0b625d…`, cuda `f1fed53a…`,
+helper `4519885…`.
+
+**Lever2 window (b749c246c, packs ON, hot budget 7000, :8019, ~11 min):**
+
+- Drop split: hot kept 4495 pairs (6999 MiB), cold dropped 4920 (9187 MiB);
+  arena still wholesale → ~31.6 GiB total freed.
+- **Swap-ins fire and run at the arena floor**: 0.74–1.15 ms/slot across all
+  rounds (naive path 52; arena floor 1.27) — 45–70× better than naive; pack
+  reads ~1.6 GiB/s effective.
+- 80k PP: **61.4 s** (broken round 1: 171.3; no-flag: 48) — recovered ~78% of
+  the gap. killer144kL **completed**: 125,896 fresh read @ 522.8 tok/s, 311 gen
+  @ 34.4; rerun @ 33.6. #2065 = 2.
+- Decode cost is real: longtg 32.4/39.4, tg1024 34.5/33.2 (no-flag arm-2:
+  41.9/41.1) ≈ 15–19% slower. Driver: tg1024 fresh pulled 1.06 GiB over the
+  helper socket (reqs=13097) — the wholesale ARENA drop (13671 pairs) pushes
+  decode misses to the helper; the stage split alone was clean.
+
+**Verdict:** mechanically complete (arming, batched swap-ins at floor, cold-only
+stage drop, no refusals, zero stalls, killer completes). Performance: acceptable
+as an opt-in RAM-relief mode (≈31.6 GiB freed for ~15% decode / ~28% fresh-PP),
+not a prod default. Next refinement if wanted: apply the hot/cold split to the
+arena drop too (the remaining socket traffic), then re-measure.
+
+Window artifacts: `out/lever2-20261111/` (gitignored). Prod returned to v0220
+17:06:35, verified (404 MiB, split-34, health ok).
