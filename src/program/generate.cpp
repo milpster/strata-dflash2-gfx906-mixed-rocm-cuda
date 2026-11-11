@@ -793,6 +793,11 @@ struct Options {
     /// the pack files in batches (the arena's unbuffered reads).  Default off; it needs the
     /// relief, the socket it implies, and a pack file the arena can read unbuffered.
     bool expert_helper_ram_relief_packs = false;
+    /// W1 lever: the hot backing set kept resident by the relief's stage drop (MiB).  The drop is
+    /// COLD-only: the hottest ranked pairs (this budget) keep their host copy as the VRAM tier's
+    /// backing store; everything past it - the ranked tail and the unranked - is dropped.  0 keeps
+    /// the whole cache-resident set hot (drops none of it).  Default targets the ~8-10 GiB capture.
+    int64_t expert_helper_relief_hot_mib = 7000;
     bool remote_expert_opt = false; ///< optional optimization of the existing remote-expert decode path
     std::string expert_cache_remote_placement = "stripe"; ///< stripe experts or assign complete layers to CUDA1..3
     bool expert_cache_cpu_order = false;
@@ -1399,6 +1404,15 @@ void usage() {
                  "                       arena if the helper's channel closes mid-run.  Needs\n"
                  "                       --expert-helper-socket (its fill report names the pairs).  Off:\n"
                  "                       the arena keeps every expert, exactly as before.\n"
+                 "  --expert-helper-ram-relief-packs  opt-in, needs --expert-helper-ram-relief: with the adaptive\n"
+                 "                       tier ON, the split's stage caches also join the drop set; a dropped pair\n"
+                 "                       the tier swaps back in, and a prefill miss of a dropped pair, are refilled\n"
+                 "                       from the pack files in batched O_DIRECT reads.  Needs an unbuffered pack\n"
+                 "                       file (refused at startup, named, if O_DIRECT is unavailable).\n"
+                 "  --expert-helper-relief-hot-mib N  the stage drop is COLD-only: keep the hottest N MiB of\n"
+                 "                       ranked cache-resident pairs host-copied as the VRAM tier's backing store,\n"
+                 "                       drop only the ranked tail and the unranked pairs.  Default 7000; 0 keeps\n"
+                 "                       the whole cache-resident set hot (drops none of it).\n"
                  "  --expert-cache-per-layer  R4.2g: give each layer its OWN slots instead of letting the first\n"
                  "                       position take all of them.  The default policy fills in arrival order\n"
                  "                       from one shared counter, so 256 slots went to ~26 layers of position 0\n"
@@ -3840,6 +3854,16 @@ int main(int argc, char** argv) {
         else if (a == "--expert-helper-timeout-ms") o.expert_helper_timeout_ms = std::atoll(next("--expert-helper-timeout-ms"));
         else if (a == "--expert-helper-ram-relief") o.expert_helper_ram_relief = true;
         else if (a == "--expert-helper-ram-relief-packs") o.expert_helper_ram_relief_packs = true;
+        else if (a == "--expert-helper-relief-hot-mib") {
+            const std::string v = next("--expert-helper-relief-hot-mib");
+            int64_t hn = 0;
+            const auto hr = std::from_chars(v.data(), v.data() + v.size(), hn);
+            if (hr.ec != std::errc{} || hr.ptr != v.data() + v.size() || hn < 0) {
+                std::fprintf(stderr, "--expert-helper-relief-hot-mib needs a nonnegative integer\n");
+                return 2;
+            }
+            o.expert_helper_relief_hot_mib = hn;
+        }
         else if (a == "--vram-reserve-mib") { o.vram_reserve_mib = std::atoi(next("--vram-reserve-mib")); o.vram_reserve_given = true; }
         else if (a == "--vram-reserve-later-mib")
             o.vram_reserve_later_mib = std::atoi(next("--vram-reserve-later-mib"));
@@ -5048,6 +5072,13 @@ int main(int argc, char** argv) {
     if (o.expert_helper_ram_relief_packs && !o.expert_helper_ram_relief) {
         std::fprintf(stderr, "strata generate: --expert-helper-ram-relief-packs: --expert-helper-ram-relief is required "
                              "(the packs lever extends the relief's drop set; with no relief nothing is packed to swap in from)\n");
+        return 2;
+    }
+    // W1 lever: the hot/keep split tunes the packs lever's stage drop; a custom budget without the
+    // packs flag tunes nothing - refuse rather than let it read as a silent no-op.
+    if (o.expert_helper_relief_hot_mib != 7000 && !o.expert_helper_ram_relief_packs) {
+        std::fprintf(stderr, "strata generate: --expert-helper-relief-hot-mib: --expert-helper-ram-relief-packs is required "
+                             "(the hot/keep split tunes the packs lever's stage drop; with no packs flag there is nothing to tune)\n");
         return 2;
     }
     // STRATA_MMQ_DIRECT: the room each sized expert slot keeps after its blob (0 unless it is on: the slot costs and
@@ -9625,20 +9656,50 @@ int main(int argc, char** argv) {
                             if (!stages.empty() && (!adaptive_tier || relief_packs_live)) {
                                 const auto& slay = strata::kernels::cpu::expert_layout();
                                 const int64_t spair = native_pack ? 0 : (int64_t) slay.max_blob;   // the host copy's stride
+                                auto pair_bytes = [&](int64_t l) {
+                                    return native_pack ? (int64_t) strata::core::ExpertCache::slot_stride((int64_t) nib::slot_bytes(l), slot_guard) : spair;
+                                };
+                                // W1 lever: the drop is COLD-only.  The profile ranks every pair hottest-first;
+                                // the hot prefix - up to the --expert-helper-relief-hot-mib budget - keeps its host
+                                // copy as the VRAM tier's backing store, so its refill on a VRAM eviction never
+                                // leaves RAM.  Everything past it (the ranked tail and the pairs the profile never
+                                // ranked) is cold and drops.  hot_mib 0 = keep the whole cache-resident set hot
+                                // (drop none of it); the relief's full drop still runs for the tier pairs above.
+                                const int64_t hot_mib = o.expert_helper_relief_hot_mib;
+                                const int64_t hot_budget = hot_mib << 20;
+                                std::vector<char> hot((size_t) g.n_layers * (size_t) g.n_expert, 0);
+                                int64_t hot_bytes = 0, relief_hot_pairs = 0, relief_hot_bytes = 0;
+                                auto mark_hot = [&](const std::vector<std::pair<int32_t, int32_t>>& ranked) {
+                                    for (const auto& pr : ranked) {
+                                        if (pr.first < 0 || pr.first >= g.n_layers || pr.second < 0 || pr.second >= g.n_expert) continue;
+                                        const size_t key = (size_t) pr.first * g.n_expert + pr.second;
+                                        if (hot[key]) continue;
+                                        const int64_t pb = pair_bytes(pr.first);
+                                        if (hot_bytes + pb > hot_budget) break;
+                                        hot[key] = 1; hot_bytes += pb; ++relief_hot_pairs; relief_hot_bytes += pb;
+                                    }
+                                };
+                                mark_hot(profile);
+                                for (const auto& st : stages) mark_hot(st->profile);
                                 for (int64_t l = 0; l < g.n_layers; ++l)
                                     for (int64_t e = 0; e < g.n_expert; ++e)
-                                        if (xcache.slot_of(l, e) >= 0) {
+                                        if (xcache.slot_of(l, e) >= 0 && !hot[(size_t) l * g.n_expert + e]) {
                                             held.emplace_back((int32_t) l, (int32_t) e);
                                             ++relief_stage_pairs;
-                                            relief_stage_bytes += native_pack ? strata::core::ExpertCache::slot_stride((int64_t) nib::slot_bytes(l), slot_guard) : spair;
+                                            relief_stage_bytes += pair_bytes(l);
                                         }
                                 for (const auto& st : stages)
                                     for (const auto& pr : st->profile)
-                                        if (st->cache.slot_of(pr.first, pr.second) >= 0) {
+                                        if (st->cache.slot_of(pr.first, pr.second) >= 0 &&
+                                            !hot[(size_t) pr.first * g.n_expert + pr.second]) {
                                             held.emplace_back(pr.first, pr.second);
                                             ++relief_stage_pairs;
-                                            relief_stage_bytes += native_pack ? strata::core::ExpertCache::slot_stride((int64_t) nib::slot_bytes(pr.first), slot_guard) : spair;
+                                            relief_stage_bytes += pair_bytes(pr.first);
                                         }
+                                std::fprintf(stderr, "strata generate: --expert-helper-ram-relief: stage drop split: hot kept %lld pairs (%lld MiB) resident, cold dropped %lld pairs (%lld MiB) (hot budget %lld MiB)\n",
+                                             (long long) relief_hot_pairs, (long long) (relief_hot_bytes >> 20),
+                                             (long long) relief_stage_pairs, (long long) (relief_stage_bytes >> 20),
+                                             (long long) hot_mib);
                             }
                             // Order matters: the drop runs FIRST, while the held pages are still plain
                             // (nothing registered over them), and the registration then covers everything
