@@ -7,7 +7,7 @@
 set -euo pipefail
 ROOT=${STRATA_PROD_TREE:-/mnt/srcds/Strata}
 WORK="$ROOT/v0215"
-BIN="$ROOT/v0217/build-mixed-gpu"
+BIN="${STRATA_BIN:-$ROOT/v0219/build-mixed-gpu}"
 PY="$ROOT/.venv/bin/python"
 CONFIG=${TRIAL_CONFIG:?TRIAL_CONFIG required}
 SOCKET="$ROOT/run/trial-spill40.sock"
@@ -15,6 +15,7 @@ SOCKET2="$ROOT/run/trial-spill40-2.sock"
 HELPER="$BIN/rpcw-cuda/strata-expert-helper-patient"
 FILL_MIB=${STRATA_FILL_MIB:-6796}
 HELPER_SLOTS=${STRATA_HELPER_SLOTS:-4600}
+PORT=${STRATA_PORT:-8009}
 case "${1:-}" in
   --pair-child)
     [[ -n ${STRATA_PAIR_RECORD:-} ]] || { echo 'REFUSING unowned pair child.' >&2; exit 2; } ;;
@@ -28,7 +29,7 @@ case "${1:-}" in
   *) echo 'Usage: launcher [--recover|--single-run]' >&2; exit 2 ;;
 esac
 command -v ss >/dev/null
-[[ -z $(ss -H -ltn 'sport = :8009') ]] || { echo 'REFUSING: port 8009 occupied.' >&2; exit 1; }
+[[ -z $(ss -H -ltn "sport = :${PORT:-8009}") ]] || { echo "REFUSING: port ${PORT:-8009} occupied." >&2; exit 1; }
 [[ ! -e "$SOCKET" && ! -L "$SOCKET" ]] || { echo "REFUSING: existing socket $SOCKET" >&2; exit 1; }
 [[ ! -e "$SOCKET2" && ! -L "$SOCKET2" ]] || { echo "REFUSING: existing socket $SOCKET2" >&2; exit 1; }
 for file in "$PY" "$HELPER" "$BIN/rpcw-hip/strata"; do
@@ -61,7 +62,7 @@ done
 env -i "${helper_env[@]}" "$HELPER" \
   --pack ${STRATA_AI_DIR:-/mnt/srcds/ai}/iq3xxs-15 \
   --experts ../Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf \
-  --device 0 --slots "$HELPER_SLOTS" --reserve-mib 300 --timeout 63115200000 \
+  --device 0 --slots "$HELPER_SLOTS" --reserve-mib "${STRATA_HELPER_RESERVE:-300}" --timeout 63115200000 \
   --begin-timeout 63115200000 --socket "$SOCKET" --fill-mib "$FILL_MIB" --socket2 "$SOCKET2" \
   >>"$HLOG" 2>&1 < /dev/null &
 helper_pid=$!
@@ -80,12 +81,12 @@ for ((i=0; i<60; i++)); do
   sleep 1
 done
 [[ -S "$SOCKET" && -S "$SOCKET2" ]] || { echo "Second channel socket missing: $SOCKET2" >&2; exit 1; }
-echo "Starting mixed backend on 127.0.0.1:8009; log: $LOG; helper: $HLOG"
+echo "Starting mixed backend on 127.0.0.1:${PORT:-8009}; log: $LOG; helper: $HLOG"
 cd "$WORK"
 env -u CUDA_VISIBLE_DEVICES -u STRATA_ARENA_MMAP -u GPU_PINNED_MIN_XFER_SIZE \
   -u HSA_USERPTR_FOR_PAGED_MEM -u LD_PRELOAD \
   LD_LIBRARY_PATH=${STRATA_ROCM_ROOT:-/home/user/rocm-gfx906-xnack}/lib:/opt/rocm-6.1.0/lib \
-  "$PY" "$WORK/serve/server.py" --engine strata --config "$CONFIG" --port 8009 \
+  "$PY" "$WORK/serve/server.py" --engine strata --config "$CONFIG" --port "${PORT:-8009}" \
   >>"$LOG" 2>&1 < /dev/null &
 server_pid=$!
 if [[ -n ${STRATA_PAIR_RECORD:-} ]]; then

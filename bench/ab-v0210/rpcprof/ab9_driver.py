@@ -60,7 +60,7 @@ def post(url: str, prompt: str, max_tokens: int, timeout: int) -> tuple[float, s
         "reasoning_effort": "low",
         "stream": False,
     }).encode()
-    req = urllib.request.Request(URL, data=body, headers={"Content-Type": "application/json"})
+    req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
     t0 = time.time()
     with urllib.request.urlopen(req, timeout=timeout) as r:
         resp = json.load(r)
