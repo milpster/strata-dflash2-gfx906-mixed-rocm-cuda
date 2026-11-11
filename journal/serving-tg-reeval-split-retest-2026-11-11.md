@@ -369,3 +369,42 @@ Findings:
 
 **Occupancy verdict: 7400/5000/300 + 256/256 = max viable; the champion config
 is already at the ceiling. No config change.** Prod returned 19:15:51 (v0220).
+
+## iq3_s whole panel × splits on v0220 (19:18–20:11)
+
+`run-iq3s-splits.sh`, arms s36/s34/s38, all v0220 + helper 7400/5000/300,
+panel = warm, 8k×3, 80k, longtg+tg1024, killer144k. Warm page cache made boots
+~90 s (the Nov-10 "13-min boot" was cold cache). Artifacts
+`out/iq3s-splits-20261111/`. Note: the iq3_s engines log to their own elog
+(`engine-swift-iq3s-…`), not the shared swift15 one.
+
+| (iq3_s, v0220) | s36 | s34 | s38 |
+| --- | ---: | ---: | ---: |
+| 8k walls (s) | **6.63–6.87** | 7.52–8.23 | 6.69–11.9 |
+| 80k wall (s) | 258 (cold-boot state) | 91.1 | 149.5 |
+| longtg wall (s) | **117.0** | 190.5 | 133.0 |
+| longtg decode | **37.5/34.0** | 35.3/32.9 | 28.6/33.1 |
+| tg1024 walls (s) | **46.1** | 45.6 | 54.8 |
+| tg1024 decode | 37.9/36.0/37.4 | 37.8/34.8 | 39.0/31.4/33.2 |
+| killer144k total (s) | 626.7 (abort+re-read) | 520.8 (abort+re-read) | **370.3 (clean)** |
+| killer fresh decode | 30.3 | 33.6 | 31.4 |
+| #2065 | 2 | 2 | 2 |
+
+**NEW DEFECT (v0220 + iq3_s, splits 36 and 34): killer144k fresh read completes
+("125,740 of 125,745 read"), then `0 generated in 0 ms` — generation produces
+nothing after the read; the engine re-reads the full prompt and generates
+fine.** Both s36 and s34 hit it (killer walls contain two full reads);
+s38 did not. Also s38's killer rerun showed a 16 s / 5-token prefill mini-stall
+(0.3 tok/s), same class as v0220-iq3xxs's 37 s anomaly. Fixer follow-up
+material; greppable as `0 generated in 0 ms`.
+
+Split reading: **s36 wins serving TG** (longtg wall + decode, tg1024, 8k);
+**s38 wins big-context robustness** (only abort-free killer, fastest total);
+**s34 loses on v0220** (longtg 190.5 — Nov-10's stall-contaminated numbers
+underestimated how far it trails). 80k numbers are boot-state-confounded
+(s36 ran first/cold) — not comparable across arms. Nov-10 v0216's "36 best"
+is confirmed for the TG priority on v0220.
+
+Recommendation: s36 for the serving tuple (operator's TG priority), with the
+read-abort defect filed for the fixer; s38 the fallback if big-context
+robustness outranks TG. Decision + promotion pending operator.
