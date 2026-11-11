@@ -19535,9 +19535,20 @@ int main(int argc, char** argv) {
                         continue;
                     }
                     const uint8_t* b = srcp->blob_stable(i / g.n_expert, i % g.n_expert);
+                    // W1: a pair whose host copy the relief dropped has NO stable blob (blob_stable is
+                    // null by rule).  Its lent slot refills from the staged pack-file copy, exactly the
+                    // path the decode fills take: note_async_read below keeps the stage buffer alive
+                    // under the queued copy, and fill_slot_queued copies on stream 0 - the same stream
+                    // the note's recycle event is recorded on.
+                    if (b == nullptr) b = srcp->blob(i / g.n_expert, i % g.n_expert);
                     const int64_t nb = (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(i / g.n_expert);
-                    if (b == nullptr || !(refill_blocking() ? p.cache->fill_slot_blocking(slot, b, e, nb)
-                                                            : p.cache->fill_slot_queued(slot, b, e, nb)))
+                    if (b == nullptr) {
+                        e = "refill: the source has no bytes for pair " + std::to_string(i / g.n_expert) + "/" +
+                            std::to_string(i % g.n_expert) + " (the pack-file read of the dropped blob failed)";
+                        return false;
+                    }
+                    if (!(refill_blocking() ? p.cache->fill_slot_blocking(slot, b, e, nb)
+                                            : p.cache->fill_slot_queued(slot, b, e, nb)))
                         return false;
                     if (!refill_blocking()) srcp->note_async_read(b, nullptr);   // #1237
                     if (!(deferred && !refill_blocking())) host_res[(size_t) i] = slot;
