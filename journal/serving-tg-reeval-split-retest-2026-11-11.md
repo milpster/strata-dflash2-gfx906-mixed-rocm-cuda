@@ -878,3 +878,39 @@ THIS envelope (game active, avail ~8, swap ~15, load ~16, 45k+ context)
 at decode visibly above the 25–30 band — with per-leg max-RAM/VRAM
 tracking proving it. Round 6's two gates (PP 648.8/TG 44.3 floor AND
 RSS ≤40 @130k) are the mechanism; this profile is the venue.
+
+## Round 6 landed — park path fixed forward, v0225 pinned (Nov 12 evening)
+
+Fresh fixer, clean run. Four commits on `helper-ipc-diet` after `2bd6f791a`
+(pushed to fork; **v0225 pinned**: hip `88460f5f…`, cuda `0ec4e794…`,
+helper `852ddd35…`, verified at pin):
+
+1. `36d3aa500` `drop_superseded` live-prefix rule — a conversation parks
+   ONCE; superseded copies dropped (defect 1: bytes 406 MB→2.48 GB
+   accumulation)
+2. `7789e0a9d` `DFlashDrafter::rewind_cold` — a legal horizon the ring
+   cannot serve mounts cold instead of re-reading (defect 2)
+3. `284baf8f2` over-ceiling park is disk-only (no host snapshot built);
+   RAM ceiling now 512 MiB default — a 120k conversation's ~5.3 GiB
+   snapshot never touches RAM (defect 1's structural half)
+4. `12bba2791` soak rewritten: per-leg VmHWM/avail/swap/tier-bytes
+   assertions, restore-vs-reread (`reused>0` cycles, zero re-reads)
+
+Builds ALL GREEN, guards PASS, helper ctests 6/6+2/2, conv_cache 4861
+checks. Fix-forward rationale (accepted): page release/ceiling wiring
+worked in round-5; the defects were pre-existing behaviors round-5
+exposed (sparse checkpoint chains vs deepest-match, ceiling == cache
+budget so it never bit, draft-miss full re-read). Nothing new runs on
+the token path — the over-ceiling path builds less, the cold mount
+reads less. Perf floor structurally preserved.
+
+**Honest conflict (fixer-flagged)**: avail at 130k ≈ 13 GiB with the
+expert tuple untouched; the 15 GiB soak floor needs the trim arm
+(`--expert-helper-relief-hot-mib 13000 --kv-resident-mib 3072`,
+~16 GiB avail @ ~37.7 GiB RSS) — tg on that arm must be measured before
+accepting it.
+
+Prod DOWN after pin (standing rule: up only before the next subagent).
+Window plan awaiting operator go: soak + tps panel vs S34 floor
+(PP 648.8 / TG 44.3) + game-coexistence context (game active now —
+avail floors read against the venue, mem-tracked per leg).
