@@ -1,5 +1,6 @@
 // src/core/expert_source.cpp - the adapter.  See the header for the three clauses of the contract.
 #include "strata/core/expert_source.hpp"
+#include "strata/core/relief_arena_cap.hpp"
 #include "strata/core/expert_nibble.hpp"
 #include "strata/core/foresight_swap.hpp"
 #include "strata/core/on_device.hpp"
@@ -6565,6 +6566,7 @@ const uint8_t* ArenaExpertSource::blob(int64_t layer, int64_t expert) {
     const int64_t idx = layer * n_expert_ + expert;
     if (idx < 0 || idx >= blobs_) return nullptr;
     reads_.fetch_add(1, std::memory_order_relaxed);
+    note_heat(layer, expert);   // helper-ipc-diet: a lookup on the decode walk - the re-rank's heat for this pair
     // W1a (TG fix): the drop publishes this bitmap at boot, before any request thread serves
     // (set_unfilled -> register_complement -> first request), and under relief nothing writes it
     // again while serving (refill_run is the documented no-op), so a RESIDENT pair - the
@@ -6624,6 +6626,10 @@ const uint8_t* ArenaExpertSource::blob_at(int64_t layer, int64_t expert) const {
 bool ArenaExpertSource::swap_blobs_batch(const std::vector<std::pair<int32_t, int32_t>>& pairs,
                                          const std::vector<uint8_t*>& dst, std::vector<uint8_t>& ok,
                                          std::string& err) {
+    // helper-ipc-diet: every batched swap-in of a dropped pair is a decode demand for it - the re-rank's
+    // promote signal.  Counted under the same lock the read takes; the counters are relaxed atomics.
+    if (!heat_.empty())
+        for (const auto& p : pairs) note_heat(p.first, p.second);
     std::lock_guard<std::mutex> lk(file_mu_);
     FileExpertSource* f = file_source();
     if (f == nullptr) { err = "the expert arena has no pack file to read the swap-ins from"; return false; }
@@ -6860,53 +6866,14 @@ int64_t ArenaExpertSource::refill_recorded_pairs() {
     todo.swap(dropped_reads_);
     dropped_reads_seen_.clear();   // the dedup map swaps empty with the vector: the next cycle records again
     if (todo.empty()) return 0;
-    PinnedArena* a = static_cast<PinnedArena*>(arena_);
-    const auto& lay = strata::kernels::cpu::expert_layout();
-    const uint64_t kPage = 4096;
     int64_t done = 0;
     uint64_t bytes = 0;
     for (const auto& [l, e] : todo) {
-        if (l < 0 || e < 0 || e >= n_expert_) continue;
-        const size_t idx = (size_t) (l * n_expert_ + e);
-        if (idx >= unfilled_flag_.size() || unfilled_flag_[idx] == 0) continue;   // already whole
-        const uint64_t off = arena_off(l, e);
-        const uint64_t end = off + lay.blob_bytes(l);
-        const uint64_t lo = off & ~(uint64_t) 4095;                              // outward, as register_after_fill
-        const uint64_t hi = std::min<uint64_t>((end + kPage - 1) & ~(uint64_t) 4095, arena_capacity_);
-        if (hi <= lo) continue;
-        std::vector<uint8_t> stage;
-        {   // the pack files first (file_mu_ held): a private staging copy, the arena stays untouched
-            std::lock_guard<std::mutex> lk(file_mu_);
-            FileExpertSource* f = file_source();
-            if (f == nullptr) break;   // every later read of a dropped pair fails by name, as it does now
-            stage.assign((size_t) lay.blob_bytes(l), 0);
-            if (!f->copy_blob(l, e, stage.data())) continue;   // stays dropped: blob() re-reads it on demand
+        uint64_t filled = 0;
+        if (refill_pair(l, e, filled)) {
+            ++done;
+            bytes += filled;
         }
-        void* dp = nullptr;
-        if (cudaHostRegister((uint8_t*) base_ + (size_t) lo, (size_t) (hi - lo),
-                             cudaHostRegisterPortable | cudaHostRegisterMapped) != cudaSuccess) {
-            (void) cudaGetLastError();   // the driver refused: the pair stays dropped, today's degrade
-            continue;
-        }
-        if (cudaHostGetDevicePointer(&dp, (uint8_t*) base_ + (size_t) lo, 0) != cudaSuccess || dp == nullptr) {
-            (void) cudaGetLastError();
-            continue;   // the pair stays dropped (the flag still refuses every DMA use of its address)
-        }
-        // insert the range into the sorted tables (the gate: the request's serial path is the only reader)
-        size_t pos = std::upper_bound(pin_start_.begin(), pin_start_.end(), lo) - pin_start_.begin();
-        pin_start_.insert(pin_start_.begin() + (long) pos, lo);
-        pin_end_.insert(pin_end_.begin() + (long) pos, hi);
-        pin_dev_.insert(pin_dev_.begin() + (long) pos, (const uint8_t*) dp);
-        a->pin_ranges.insert(a->pin_ranges.begin() + (long) pos, std::make_pair(lo, hi - lo));
-        a->registered_bytes += hi - lo;
-        std::memcpy((uint8_t*) base_ + (size_t) off, stage.data(), (size_t) lay.blob_bytes(l));
-        {   // clear the flag with the same lock blob()/pinned() re-check under (refill_run's rule)
-            std::lock_guard<std::mutex> lk(file_mu_);
-            unfilled_flag_[idx] = 0;
-        }
-        unfilled_.fetch_sub(1, std::memory_order_relaxed);
-        ++done;
-        bytes += lay.blob_bytes(l);
     }
     if (done > 0) {   // pcie_layer's answers follow the registered ranges
         for (size_t l = 0; l < layer_pcie_.size(); ++l)
@@ -6918,6 +6885,252 @@ int64_t ArenaExpertSource::refill_recorded_pairs() {
                       (double) bytes / 1048576.0, (long long) pin_start_.size());
     }
     return done;
+}
+
+// refill_recorded_pairs' per-pair mechanism, extracted for the cap's decode-heat re-rank (the promote side
+// of relief_arena_reorder_plan): read the bytes from the pack files into a private staging copy, register the
+// pair's whole-page range (V4-r2: a pair that is neither dropped nor registered has no DMA-legal address; the
+// outward page rounding follows register_after_fill's V4-r3 rule - the shared edge pages' kept bytes must be
+// DMA-able), take its device alias, insert the range into the sorted pin tables, write the bytes, clear the
+// flag.  A driver refusal leaves the pair dropped (today's file-served degrade).  Same single-reader rule as
+// refill_recorded_pairs: the caller mutates the pin tables where no other thread reads them.
+bool ArenaExpertSource::refill_pair(int32_t layer, int32_t expert, uint64_t& filled_bytes) {
+    filled_bytes = 0;
+    if (base_ == nullptr || !ram_relief_ || !ranges_ || arena_ == nullptr) return false;
+    if (layer < 0 || expert < 0 || expert >= n_expert_) return false;
+    const size_t idx = (size_t) (layer * n_expert_ + expert);
+    if (idx >= unfilled_flag_.size() || unfilled_flag_[idx] == 0) return false;   // already whole
+    PinnedArena* a = static_cast<PinnedArena*>(arena_);
+    const auto& lay = strata::kernels::cpu::expert_layout();
+    const uint64_t kPage = 4096;
+    const uint64_t off = arena_off(layer, expert);
+    const uint64_t end = off + lay.blob_bytes(layer);
+    const uint64_t lo = off & ~(uint64_t) 4095;                              // outward, as register_after_fill
+    const uint64_t hi = std::min<uint64_t>((end + kPage - 1) & ~(uint64_t) 4095, arena_capacity_);
+    if (hi <= lo) return false;
+    std::vector<uint8_t> stage;
+    {   // the pack files first (file_mu_ held): a private staging copy, the arena stays untouched
+        std::lock_guard<std::mutex> lk(file_mu_);
+        FileExpertSource* f = file_source();
+        if (f == nullptr) return false;   // every later read of a dropped pair fails by name, as it does now
+        stage.assign((size_t) lay.blob_bytes(layer), 0);
+        if (!f->copy_blob(layer, expert, stage.data())) return false;   // stays dropped: blob() re-reads it on demand
+    }
+    void* dp = nullptr;
+    if (cudaHostRegister((uint8_t*) base_ + (size_t) lo, (size_t) (hi - lo),
+                         cudaHostRegisterPortable | cudaHostRegisterMapped) != cudaSuccess) {
+        (void) cudaGetLastError();   // the driver refused: the pair stays dropped, today's degrade
+        return false;
+    }
+    if (cudaHostGetDevicePointer(&dp, (uint8_t*) base_ + (size_t) lo, 0) != cudaSuccess || dp == nullptr) {
+        (void) cudaGetLastError();
+        cudaHostUnregister((uint8_t*) base_ + (size_t) lo);   // the pair stays dropped (the flag refuses every DMA use)
+        (void) cudaGetLastError();
+        return false;
+    }
+    // insert the range into the sorted tables (the gate: the request's serial path is the only reader)
+    size_t pos = std::upper_bound(pin_start_.begin(), pin_start_.end(), lo) - pin_start_.begin();
+    pin_start_.insert(pin_start_.begin() + (long) pos, lo);
+    pin_end_.insert(pin_end_.begin() + (long) pos, hi);
+    pin_dev_.insert(pin_dev_.begin() + (long) pos, (const uint8_t*) dp);
+    a->pin_ranges.insert(a->pin_ranges.begin() + (long) pos, std::make_pair(lo, hi - lo));
+    a->registered_bytes += hi - lo;
+    std::memcpy((uint8_t*) base_ + (size_t) off, stage.data(), (size_t) lay.blob_bytes(layer));
+    {   // clear the flag with the same lock blob()/pinned() re-check under (refill_run's rule)
+        std::lock_guard<std::mutex> lk(file_mu_);
+        unfilled_flag_[idx] = 0;
+    }
+    unfilled_.fetch_sub(1, std::memory_order_relaxed);
+    unfilled_bytes_ = unfilled_bytes_ > lay.blob_bytes(layer) ? unfilled_bytes_ - lay.blob_bytes(layer) : 0;
+    filled_bytes = lay.blob_bytes(layer);
+    return true;
+}
+
+// helper-ipc-diet round 4: the re-rank's demote.  The per-pair inverse of refill_pair for a RESIDENT pair.
+// set_unfilled() drops pre-registration (the pages are plain); at runtime every resident pair sits inside a
+// registered range with a device alias, so the demote splits that range: unregister the whole range, give the
+// pair's WHOLLY-INTERIOR pages back (MADV_DONTNEED - set_unfilled's page rule: a rounded-out page would zero
+// a neighbour's kept bytes), re-register the span's remainders with fresh aliases, rebuild the pin tables, set
+// the flag.  Any step the driver or the kernel refuses restores the original span and the pair stays resident:
+// the re-rank never demotes a pair it cannot safely unpin.  Safe ONLY at reorder_arena_by_heat's boundary -
+// the request has stopped, no DMA reads the range's alias, and this thread is the sole reader of the tables.
+bool ArenaExpertSource::release_pair(int32_t layer, int32_t expert, uint64_t& freed_bytes) {
+    freed_bytes = 0;
+    if (base_ == nullptr || n_expert_ <= 0 || layer < 0 || expert >= n_expert_) return false;
+    const size_t idx = (size_t) (layer * n_expert_ + expert);
+    if (idx >= unfilled_flag_.size() || unfilled_flag_[idx] != 0) return false;   // already dropped
+    if (map_ != nullptr || shared_backing_) return false;   // the file-cache / shared-file arenas set_unfilled refuses
+    const auto& lay = strata::kernels::cpu::expert_layout();
+    const uint64_t off = arena_off(layer, expert);
+    const uint64_t lo = (off + 4095) & ~(uint64_t) 4095;
+    uint64_t hi = (off + lay.blob_bytes(layer)) & ~(uint64_t) 4095;
+    if (arena_capacity_ > 0 && hi > arena_capacity_) hi = arena_capacity_;
+    if (hi <= lo) return false;   // a blob inside one page: nothing page-granular to give back
+    PinnedArena* a = static_cast<PinnedArena*>(arena_);
+    const int64_t ri = ranges_ ? pin_range_of(off, lay.blob_bytes(layer)) : -1;
+    if (ri < 0) {   // plain pages the complement never registered (the prefix-rule arena): no alias over them, the madvise is set_unfilled's
+        if (madvise((uint8_t*) base_ + (size_t) lo, (size_t) (hi - lo), MADV_DONTNEED) != 0) return false;
+        {
+            std::lock_guard<std::mutex> lk(file_mu_);
+            unfilled_flag_[idx] = 1;   // set with the lock blob()/pinned() re-check under (refill_run's rule)
+        }
+        unfilled_.fetch_add(1, std::memory_order_relaxed);
+        unfilled_bytes_ += hi - lo;
+        freed_bytes = hi - lo;
+        return true;
+    }
+    const uint64_t rlo = pin_start_[(size_t) ri], rhi = pin_end_[(size_t) ri];
+    auto reg_span = [&](uint64_t s, uint64_t t) -> bool {   // register [s,t) and insert it into the sorted tables
+        if (t <= s) return true;   // an empty remainder: nothing to do
+        void* dp = nullptr;
+        if (cudaHostRegister((uint8_t*) base_ + (size_t) s, (size_t) (t - s),
+                             cudaHostRegisterPortable | cudaHostRegisterMapped) != cudaSuccess) {
+            (void) cudaGetLastError();
+            return false;
+        }
+        if (cudaHostGetDevicePointer(&dp, (uint8_t*) base_ + (size_t) s, 0) != cudaSuccess || dp == nullptr) {
+            (void) cudaGetLastError();
+            cudaHostUnregister((uint8_t*) base_ + (size_t) s);
+            (void) cudaGetLastError();
+            return false;
+        }
+        const size_t pos = std::upper_bound(pin_start_.begin(), pin_start_.end(), s) - pin_start_.begin();
+        pin_start_.insert(pin_start_.begin() + (long) pos, s);
+        pin_end_.insert(pin_end_.begin() + (long) pos, t);
+        pin_dev_.insert(pin_dev_.begin() + (long) pos, (const uint8_t*) dp);
+        a->pin_ranges.insert(a->pin_ranges.begin() + (long) pos, std::make_pair(s, t - s));
+        a->registered_bytes += t - s;
+        return true;
+    };
+    if (cudaHostUnregister((uint8_t*) base_ + (size_t) rlo) != cudaSuccess) {
+        (void) cudaGetLastError();
+        return false;   // the pair keeps its registration: resident and DMA-legal, untouched
+    }
+    pin_start_.erase(pin_start_.begin() + (long) ri);
+    pin_end_.erase(pin_end_.begin() + (long) ri);
+    pin_dev_.erase(pin_dev_.begin() + (long) ri);
+    a->pin_ranges.erase(a->pin_ranges.begin() + (long) ri);
+    a->registered_bytes -= rhi - rlo;
+    if (madvise((uint8_t*) base_ + (size_t) lo, (size_t) (hi - lo), MADV_DONTNEED) != 0) {
+        (void) reg_span(rlo, rhi);   // restore the whole span; the pair stays resident (the flag stays clear)
+        return false;
+    }
+    if (!reg_span(rlo, lo) || !reg_span(hi, rhi)) {
+        if (reg_span(rlo, rhi)) {   // the span is whole again: the pair stays resident, DMA-legal, and the demote stops
+            std::fprintf(stderr, "strata: expert arena: cap re-rank: the demote of layer %d expert %d stopped at the driver (the span is whole)\n",
+                         (int) layer, (int) expert);
+            return false;
+        }
+        // The driver refused both the remainders and the original span.  The pages are plain and the bytes are
+        // resident: blob() serves them, pinned() says false, so the fills take the staging path instead of the
+        // alias - correct, slower, named here.  The flag stays clear: the pair is NOT dropped.
+        std::fprintf(stderr, "strata: expert arena: cap re-rank: layer %d expert %d stays resident UNREGISTERED (the driver refused the span): its refills take the staging path\n",
+                     (int) layer, (int) expert);
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lk(file_mu_);
+        unfilled_flag_[idx] = 1;
+    }
+    unfilled_.fetch_add(1, std::memory_order_relaxed);
+    unfilled_bytes_ += hi - lo;
+    freed_bytes = hi - lo;
+    if ((size_t) layer < layer_pcie_.size()) {   // pcie_layer's answer for this layer follows the new ranges
+        uint8_t v = 0;
+        for (int64_t e = 0; e < n_expert_ && v == 0; ++e) v = pinned(layer, e) ? 1 : 0;
+        layer_pcie_[(size_t) layer] = v;
+    }
+    return true;
+}
+
+// helper-ipc-diet round 4: arm the decode-heat re-rank.  The cap's boot block hands over the arithmetic it
+// already computed for relief_arena_cap_plan: the hot set and the tier-served drops (untouchable), the profile
+// (the plan's tie-break), the cap ceiling and the decode floor.  The promotable set is the cap's OWN evictions
+// (dropped, not tier-served); the demotable set is the resident band outside hot and tier.  Nothing moves here
+// - it starts the counters and remembers the bounds; relief_arena_reorder_plan decides per boundary.
+void ArenaExpertSource::set_arena_reorder(std::vector<uint8_t> hot, std::vector<uint8_t> tier_served,
+                                          std::vector<std::pair<int32_t, int32_t>> profile,
+                                          uint64_t cap_bytes, uint64_t decode_floor_bytes) {
+    if (base_ == nullptr || n_expert_ <= 0 || blobs_ <= 0 || cap_bytes == 0) return;
+    const size_t cells = (size_t) blobs_;
+    hot.resize(cells, 0);
+    tier_served.resize(cells, 0);
+    heat_.clear();
+    heat_.resize(cells);   // value-initialized to zero: unarmed pairs cost one branch in blob()
+    reorder_hot_ = std::move(hot);
+    reorder_tier_ = std::move(tier_served);
+    reorder_profile_ = std::move(profile);
+    reorder_cap_bytes_ = cap_bytes;
+    reorder_floor_bytes_ = decode_floor_bytes;
+    reorder_armed_ = true;
+    int64_t promotable = 0, demotable = 0;
+    for (size_t i = 0; i < cells; ++i) {
+        if (reorder_hot_[i] || reorder_tier_[i]) continue;
+        const bool res = i < unfilled_flag_.size() && unfilled_flag_[i] == 0;
+        if (res) ++demotable;
+        else ++promotable;
+    }
+    std::fprintf(stderr, "strata: expert arena: cap re-rank armed: %lld promotable cap evictions, %lld demotable "
+                         "resident pairs (hot %lld, tier-served %lld untouchable; cap %llu MiB, decode floor %llu MiB); "
+                         "heat counts at request ends\n",
+                 (long long) promotable, (long long) demotable,
+                 (long long) std::count(reorder_hot_.begin(), reorder_hot_.end(), 1),
+                 (long long) std::count(reorder_tier_.begin(), reorder_tier_.end(), 1),
+                 (unsigned long long) (cap_bytes >> 20), (unsigned long long) (decode_floor_bytes >> 20));
+}
+
+// helper-ipc-diet round 4: one re-rank at the safe boundary.  Snapshot the heat window and the keep set, plan
+// relief_arena_reorder_plan over the droppable band, apply it (demote first - it frees the cap headroom and
+// the pages; promote second - the refill_recorded_pairs mechanism), then halve the counters so the window
+// ages.  At most 64 pairs per side a boundary: the refills are disk reads and the driver's register, and a
+// request's end is not the place for unbounded work.  The cap stays the ceiling and the floor the guarantee;
+// this decides only WHICH pairs fill the band.
+int64_t ArenaExpertSource::reorder_arena_by_heat() {
+    if (!reorder_armed_ || base_ == nullptr || arena_ == nullptr || n_expert_ <= 0 || blobs_ <= 0) return 0;
+    if (refill_running_.load(std::memory_order_relaxed)) return 0;   // the bulk refill owns the flags
+    const int64_t n_layers = blobs_ / n_expert_;
+    const size_t cells = (size_t) blobs_;
+    std::vector<int64_t> heat(cells);
+    std::vector<uint8_t> resident(cells, 0);
+    for (size_t i = 0; i < cells; ++i) {
+        heat[i] = heat_[i].load(std::memory_order_relaxed);
+        resident[i] = (i < unfilled_flag_.size() && unfilled_flag_[i] == 0) ? 1 : 0;
+    }
+    const auto plan = relief_arena_reorder_plan(
+        n_layers, n_expert_, reorder_cap_bytes_, reorder_floor_bytes_, reorder_profile_,
+        reorder_hot_, reorder_tier_, resident, heat,
+        [&](int64_t l) { return (uint64_t) strata::kernels::cpu::expert_layout().blob_bytes(l); });
+    for (size_t i = 0; i < cells; ++i) heat_[i].store(heat[i] / 2, std::memory_order_relaxed);   // the window ages
+    if (!plan.reordered) return 0;
+    constexpr int64_t kMaxPerSide = 64;
+    int64_t promoted = 0, demoted = 0;
+    uint64_t promoted_bytes = 0, demoted_bytes = 0;
+    for (size_t i = 0; i < plan.demote.size() && i < (size_t) kMaxPerSide; ++i) {
+        uint64_t freed = 0;
+        if (release_pair(plan.demote[i].first, plan.demote[i].second, freed)) {
+            ++demoted;
+            demoted_bytes += freed;
+        }
+    }
+    for (size_t i = 0; i < plan.promote.size() && i < (size_t) kMaxPerSide; ++i) {
+        uint64_t filled = 0;
+        if (refill_pair(plan.promote[i].first, plan.promote[i].second, filled)) {
+            ++promoted;
+            promoted_bytes += filled;
+        }
+    }
+    if (promoted == 0 && demoted == 0) return 0;
+    std::fprintf(stderr, "strata: expert arena: cap re-rank: promote %lld dropped pairs (%.2f MiB) / demote %lld cold "
+                         "resident pairs (%.2f MiB) (plan %lld swaps, %lld headroom demotes, residency %llu MiB of "
+                         "cap %llu MiB, floor %llu MiB%s)\n",
+                 (long long) promoted, (double) promoted_bytes / 1048576.0,
+                 (long long) demoted, (double) demoted_bytes / 1048576.0,
+                 (long long) plan.swaps, (long long) plan.headroom_demotes,
+                 (unsigned long long) (plan.resident_after >> 20),
+                 (unsigned long long) (reorder_cap_bytes_ >> 20),
+                 (unsigned long long) (reorder_floor_bytes_ >> 20),
+                 plan.floor_bound ? ", floor-bound" : "");
+    return promoted;
 }
 
 const uint8_t* ArenaExpertSource::blob_stable(int64_t layer, int64_t expert) {

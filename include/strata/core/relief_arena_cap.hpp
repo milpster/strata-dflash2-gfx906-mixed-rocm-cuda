@@ -13,6 +13,7 @@
 // what the hot budget protects, and gets back the tail to add.
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <cstddef>
 #include <utility>
@@ -137,6 +138,152 @@ ReliefArenaCapPlan relief_arena_cap_plan(int64_t n_layers, int64_t n_expert, uin
     plan.resident_after = resident;
     plan.kept_pairs -= (int64_t) plan.drop.size();
     plan.short_of_cap = resident > cap_bytes;   // the budgets left less than the cap's shortfall
+    return plan;
+}
+
+/// The runtime re-rank of the arena's keep set by DECODE heat.
+///
+/// WHY.  The cap above decides the keep set at BOOT from the profile - a PROMPT-trace ranking (tools/make_profile.py).
+/// Decode wants a different set: the pairs a decode walk touches and the dropped pairs a decode walk keeps pulling
+/// back from the pack files.  A cap that keeps the profile's hot pairs keeps the WRONG pairs for decode.  Measured on
+/// iq3_s s34 (v0222, cap 20000): residency 20k pays the pre-diet decode band ONLY where the kept pairs are the ones
+/// decode touches; at 29,999 residency (full pre-diet band) longtg hits 35.6/35.1 and tg1024 42.0, but at 19,998 the
+/// same model decodes 27.4/29.9 and ~30 - the gap is the pairs the cap kept that decode never uses, and the dropped
+/// pairs decode pays the swap-in for.  This re-rank spends the SAME cap bytes on the RIGHT pairs: promote the
+/// dropped pairs decode demands most, demote the resident pairs decode touches least, at a safe boundary.
+///
+/// COMPOSES with the cap + floor + hot + tier flags.  The floor stays a GUARANTEE and the hot set and the relief's
+/// tier drops NEVER move; the re-rank decides only WITHIN the droppable band (not hot, not tier-served):
+///   - `hot` and `tier_dropped` (the helper's rows, the spill tier's, the stage caches' - served by the helper/tier,
+///     promoting them buys nothing, per the decode-floor's rule above) are UNTUCHABLE: never promoted, never demoted.
+///   - The DECODE FLOOR is `decode_floor_bytes`: demotes never push the resident copy below `hot_bytes +
+///     decode_floor_bytes`, the same guarantee relief_arena_cap_plan makes; a re-rank bound by it reports `floor_bound`.
+///   - `cap_bytes` is the ceiling, EXCEPT where the floor's guarantee sits above it (the boot plan's
+///     short_of_cap landing: hot + floor > cap): the band's ceiling is then max(cap, hot + floor) - the
+///     residency the engine already runs at.  A swap that would push residency over the ceiling demotes to
+///     free headroom first; the floor guards every swap that REDUCES residency (a net-0 swap, the uniform-size
+///     prod case, holds the band where the boot plan landed it - the RIGHT pairs at the SAME price).
+///
+/// HEAT is the decode signal measured at runtime (ArenaExpertSource's per-pair counters): the resident pairs a decode
+/// walk touches, and the dropped pairs a decode walk swaps in from the pack files.  A pair with 0 heat demands nothing.
+/// `resident[i]` is the CURRENT keep set (1 = host-copied now); `!resident` pairs outside the untouchable set are the
+/// cap's evictions - the promotable set.  Ties break on the profile (colder pairs demote first, hotter pairs promote
+/// first), so the plan is deterministic with the boot cap's ordering.
+///
+/// Pure host arithmetic, no device, no allocation, no side effect - the caller owns set_unfilled() / register and the
+/// refills; this says which pairs to swap.  The swap loop promotes the hottest demanding pair against the coldest
+/// resident pair, and stops the moment no strict heat win is left (`heat[P] <= heat[D]`): the band re-ranks to
+/// decode's usage, the cap and the floor hold.
+struct ReliefArenaReorderPlan {
+    std::vector<std::pair<int32_t, int32_t>> promote;   ///< dropped pairs to bring resident, hottest decode first
+    std::vector<std::pair<int32_t, int32_t>> demote;    ///< resident pairs to give back, coldest decode first
+    uint64_t promoted_bytes = 0;
+    uint64_t demoted_bytes = 0;
+    uint64_t resident_after = 0;                        ///< residency after every swap (<= cap)
+    int64_t swaps = 0;                                  ///< net swaps (a promote paid by a demote)
+    int64_t headroom_demotes = 0;                       ///< demotes alone, to free cap headroom for a promote
+    bool reordered = false;                             ///< false = nothing moved (no heat, no strict win)
+    bool floor_bound = false;                           ///< demotes stopped on the decode floor's guarantee
+};
+
+template <typename PairBytes>
+ReliefArenaReorderPlan relief_arena_reorder_plan(int64_t n_layers, int64_t n_expert, uint64_t cap_bytes,
+                                                 uint64_t decode_floor_bytes,
+                                                 const std::vector<std::pair<int32_t, int32_t>>& profile,
+                                                 const std::vector<uint8_t>& hot,
+                                                 const std::vector<uint8_t>& tier_dropped,
+                                                 const std::vector<uint8_t>& resident,
+                                                 const std::vector<int64_t>& heat,
+                                                 PairBytes pair_bytes) {
+    ReliefArenaReorderPlan plan;
+    const size_t cells = n_layers < 0 || n_expert <= 0 ? 0 : (size_t) n_layers * (size_t) n_expert;
+    if (cells == 0) return plan;
+    auto pb = [&](size_t i) { return (uint64_t) pair_bytes((int64_t) (i / (size_t) n_expert)); };
+
+    // The profile's rank per pair: 0 = hottest, larger = colder, unranked = coldest (profile.size()).  The tie-break
+    // matches the boot cap: colder pairs are the first to demote, hotter the first to promote.
+    std::vector<uint64_t> rank(cells, profile.size());
+    for (size_t r = 0; r < profile.size(); ++r) {
+        const auto& pr = profile[r];
+        if (pr.first < 0 || pr.first >= n_layers || pr.second < 0 || pr.second >= n_expert) continue;
+        const size_t key = (size_t) pr.first * (size_t) n_expert + (size_t) pr.second;
+        if (rank[key] == profile.size()) rank[key] = r;   // the profile's first sighting of a pair is its rank
+    }
+
+    std::vector<uint8_t> untouchable(cells, 0);
+    int64_t hot_bytes = 0;
+    uint64_t resident_bytes = 0;
+    std::vector<size_t> promote_cand, demote_cand;
+    for (size_t i = 0; i < cells; ++i) {
+        const bool h = i < hot.size() && hot[i] != 0;
+        const bool t = i < tier_dropped.size() && tier_dropped[i] != 0;
+        untouchable[i] = (uint8_t) (h || t);
+        if (h) hot_bytes += (int64_t) pb(i);
+        const bool res = i < resident.size() && resident[i] != 0;
+        if (res) {
+            resident_bytes += pb(i);
+            if (!untouchable[i]) demote_cand.push_back(i);   // the resident band: demote candidates
+        } else if (!untouchable[i]) {
+            promote_cand.push_back(i);                       // the cap's evictions: promote candidates
+        }
+    }
+    plan.resident_after = resident_bytes;
+    const int64_t floor_min = hot_bytes + (int64_t) decode_floor_bytes;   // the decode floor's guarantee
+    // The band's CEILING is max(cap, floor): the cap flag is the ceiling, but when the floor's guarantee sits
+    // above the cap (the boot plan's short_of_cap landing: hot + floor > cap), the floor IS the residency the
+    // engine runs at - a re-rank at net 0 there costs nothing and must not be blocked by the cap line.
+    const int64_t ceiling = floor_min > (int64_t) cap_bytes ? floor_min : (int64_t) cap_bytes;
+
+    // Demote: coldest decode first, ties by profile-cold (larger rank first).  Promote: hottest decode first, ties by
+    // profile-hot (smaller rank first).  Both stable so equal-heat, equal-rank pairs keep layer order.
+    std::sort(demote_cand.begin(), demote_cand.end(), [&](size_t a, size_t b) {
+        const int64_t ha = a < heat.size() ? heat[a] : 0, hb = b < heat.size() ? heat[b] : 0;
+        if (ha != hb) return ha < hb;
+        return rank[a] > rank[b];
+    });
+    std::sort(promote_cand.begin(), promote_cand.end(), [&](size_t a, size_t b) {
+        const int64_t ha = a < heat.size() ? heat[a] : 0, hb = b < heat.size() ? heat[b] : 0;
+        if (ha != hb) return ha > hb;
+        return rank[a] < rank[b];
+    });
+
+    // The swap loop.  A promote is taken only for a STRICT heat win over the coldest resident pair.  A promote that
+    // would push residency over the cap is paid first by a headroom demote (which respects the floor).
+    size_t pi = 0, di = 0;
+    int64_t res = (int64_t) resident_bytes;
+    auto heat_of = [&](size_t i) { return i < heat.size() ? heat[i] : 0; };
+    while (pi < promote_cand.size() && di < demote_cand.size()) {
+        const size_t P = promote_cand[pi], D = demote_cand[di];
+        const int64_t ph = heat_of(P);
+        if (ph <= 0) break;                                     // nothing demands promotion
+        const int64_t dh = heat_of(D);
+        if (ph <= dh) break;                                    // no strict decode win left
+        const int64_t net = (int64_t) pb(P) - (int64_t) pb(D);
+        if (res + net > ceiling) {                              // promote needs headroom under the ceiling: demote the coldest first
+            if (res - (int64_t) pb(D) < floor_min) { plan.floor_bound = true; break; }
+            res -= (int64_t) pb(D);
+            plan.demote.emplace_back((int32_t) (D / (size_t) n_expert), (int32_t) (D % (size_t) n_expert));
+            plan.demoted_bytes += pb(D);
+            ++plan.headroom_demotes;
+            plan.reordered = true;
+            ++di;
+            continue;                                           // re-weigh P against the next coldest resident pair
+        }
+        // A net swap that keeps residency at or under the ceiling and above the floor.  The floor bites only
+        // when the swap REDUCES residency below it (net < 0): the prod uniform-size case swaps at net 0, which
+        // holds the band where the boot plan landed it - the right pairs at the same price, floor intact.
+        if (net < 0 && res + net < floor_min) { plan.floor_bound = true; break; }
+        res += net;
+        plan.promote.emplace_back((int32_t) (P / (size_t) n_expert), (int32_t) (P % (size_t) n_expert));
+        plan.promoted_bytes += pb(P);
+        plan.demote.emplace_back((int32_t) (D / (size_t) n_expert), (int32_t) (D % (size_t) n_expert));
+        plan.demoted_bytes += pb(D);
+        ++plan.swaps;
+        plan.reordered = true;
+        ++pi;
+        ++di;
+    }
+    plan.resident_after = (uint64_t) (res < 0 ? 0 : res);
     return plan;
 }
 

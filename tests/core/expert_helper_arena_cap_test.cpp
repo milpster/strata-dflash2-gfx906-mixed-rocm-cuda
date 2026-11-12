@@ -295,6 +295,165 @@ int main() {
         check(tails_only, "the drop is the prefill-cold tail: no decode-protected pair drops");
     }
 
+    // 16. The re-rank with NO heat: nothing demands promotion, nothing moves (a fresh boot re-rank is a no-op).
+    {
+        Fixture f = make(1024, 24576);
+        std::vector<uint8_t> tier((size_t) LAYERS * (size_t) EXPERTS, 0), resident((size_t) LAYERS * (size_t) EXPERTS, 0);
+        for (size_t i = 0; i < 4615; ++i) tier[i] = 1;                       // the helper's mirror: tier-served, dropped
+        for (size_t i = 4615; i < 15000; ++i) resident[i] = 1;              // the cap's keep
+        const std::vector<int64_t> heat((size_t) LAYERS * (size_t) EXPERTS, 0);
+        const auto p = relief_arena_reorder_plan(LAYERS, EXPERTS, 15000 * MIB, 0, f.profile, f.hot, tier,
+                                                 resident, heat, bytes_of(f));
+        check(!p.reordered && p.promote.empty() && p.demote.empty(), "no heat: the re-rank moves nothing");
+        check(p.resident_after == (15000 - 4615) * MIB, "no heat: the residency is the keep set's bytes");
+        check(p.swaps == 0 && !p.floor_bound, "no heat: no swaps, not floor-bound");
+    }
+
+    // 17. Equal heat is no STRICT win: a dropped pair as hot as the coldest resident pair does not displace it.
+    {
+        Fixture f = make(1024, 24576);
+        std::vector<uint8_t> tier((size_t) LAYERS * (size_t) EXPERTS, 0), resident((size_t) LAYERS * (size_t) EXPERTS, 0);
+        std::vector<int64_t> heat((size_t) LAYERS * (size_t) EXPERTS, 0);
+        for (size_t i = 0; i < 4615; ++i) tier[i] = 1;
+        for (size_t i = 4615; i < 15000; ++i) resident[i] = 1;
+        for (size_t i = 15000; i < 15010; ++i) heat[i] = 7;   // the cap's evictions demand 7
+        for (size_t i = 4615; i < 15000; ++i) heat[i] = 7;    // every resident pair demands 7 too
+        const auto p = relief_arena_reorder_plan(LAYERS, EXPERTS, 15000 * MIB, 0, f.profile, f.hot, tier,
+                                                 resident, heat, bytes_of(f));
+        check(!p.reordered && p.promote.empty(), "equal heat: no strict win, nothing promotes");
+    }
+
+    // 18. A strict win moves the band: the hottest demanding eviction promotes against the coldest demanding
+    //     resident pair, at net 0 (uniform sizes) - the RIGHT pairs at the SAME price.
+    {
+        Fixture f = make(1024, 24576);
+        std::vector<uint8_t> tier((size_t) LAYERS * (size_t) EXPERTS, 0), resident((size_t) LAYERS * (size_t) EXPERTS, 0);
+        std::vector<int64_t> heat((size_t) LAYERS * (size_t) EXPERTS, 0);
+        for (size_t i = 0; i < 4615; ++i) tier[i] = 1;
+        for (size_t i = 4615; i < 15000; ++i) resident[i] = 1;
+        heat[15000] = 50; heat[15001] = 40; heat[15002] = 30;   // the evictions decode demands most
+        heat[4615] = 1; heat[4616] = 0; heat[4617] = 0;         // the coldest resident pairs, decode touches least
+        const auto p = relief_arena_reorder_plan(LAYERS, EXPERTS, 15000 * MIB, 0, f.profile, f.hot, tier,
+                                                 resident, heat, bytes_of(f));
+        check(p.reordered && p.swaps == 3, "three strict wins: three net swaps");
+        check(p.promote.size() == 3 && p.demote.size() == 3, "each promote paid by a demote");
+        check(p.promote[0] == f.profile[15000] && p.promote[2] == f.profile[15002],
+              "the promote list is hottest decode first");
+        const size_t d0 = (size_t) p.demote[0].first * (size_t) EXPERTS + p.demote[0].second;
+        check(d0 >= 4615 && heat[d0] <= 1, "the demote starts at the coldest demanding resident pair");
+        check(p.resident_after == (15000 - 4615) * MIB, "uniform sizes: the net swap pins residency at the cap");
+        check(p.promoted_bytes == p.demoted_bytes, "the promoted and demoted bytes add up equal");
+    }
+
+    // 19. The untouchable sets never move: a hot pair is never demoted, a tier-served pair is never promoted,
+    //     however the heat ranks them.
+    {
+        Fixture f = make(1024, 24576);
+        std::vector<uint8_t> tier((size_t) LAYERS * (size_t) EXPERTS, 0), resident((size_t) LAYERS * (size_t) EXPERTS, 0);
+        std::vector<int64_t> heat((size_t) LAYERS * (size_t) EXPERTS, 0);
+        for (size_t i = 0; i < 1000; ++i) f.hot[i] = 1;
+        for (size_t i = 1000; i < 1000 + 4615; ++i) tier[i] = 1;
+        for (size_t i = 1000 + 4615; i < 15000; ++i) resident[i] = 1;
+        heat[500] = 5;                      // hot pairs look cold - the demote must skip them
+        heat[1000] = 9999;                  // a tier pair screams for promotion - it must not promote
+        heat[15000] = 300;
+        heat[4615 + 1000] = 0; heat[4615 + 1001] = 0;
+        const auto p = relief_arena_reorder_plan(LAYERS, EXPERTS, 15000 * MIB, 0, f.profile, f.hot, tier,
+                                                 resident, heat, bytes_of(f));
+        bool clean = true;
+        for (const auto& pr : p.promote)
+            if (tier[(size_t) pr.first * (size_t) EXPERTS + pr.second]) clean = false;
+        for (const auto& pr : p.demote) {
+            const size_t key = (size_t) pr.first * (size_t) EXPERTS + pr.second;
+            if (f.hot[key] || tier[key]) clean = false;
+        }
+        check(clean, "the re-rank promotes no tier pair and demotes no hot pair");
+        check(p.promote.size() == 1 && p.swaps == 1, "the screaming tier pair stays file-served; only the cap eviction promotes");
+    }
+
+    // 20. The decode floor is a GUARANTEE: every swap the plan applies keeps residency at hot + floor, and the
+    //     uniform-size band re-ranks fully (net 0 keeps the band exactly where the floor put it).
+    {
+        Fixture f = make(1024, 24576);
+        std::vector<uint8_t> tier((size_t) LAYERS * (size_t) EXPERTS, 0), resident((size_t) LAYERS * (size_t) EXPERTS, 0);
+        std::vector<int64_t> heat((size_t) LAYERS * (size_t) EXPERTS, 0);
+        for (size_t i = 0; i < 1000; ++i) { f.hot[i] = 1; resident[i] = 1; }        // hot: 1000 MiB, resident
+        for (size_t i = 1000; i < 1000 + 4615; ++i) tier[i] = 1;
+        for (size_t i = 1000 + 4615; i < 10000; ++i) resident[i] = 1;              // resident band: 4385 MiB
+        for (size_t i = 10000; i < 24576; ++i) heat[i] = 20;                       // every eviction demands
+        const auto p = relief_arena_reorder_plan(LAYERS, EXPERTS, 10000 * MIB, 4000 * MIB, f.profile, f.hot, tier,
+                                                 resident, heat, bytes_of(f));
+        check(!p.floor_bound, "net 0 at the floor's band: the re-rank is not floor-bound");
+        check(p.swaps == 4385, "the whole demanding band swaps against the keep");
+        check(p.resident_after == 5385 * MIB, "net 0: residency holds at hot + band (above hot + floor)");
+        check(p.resident_after >= 1000ull * MIB + 4000ull * MIB, "the floor's guarantee is intact");
+    }
+
+    // 21. The cap is the CEILING with unequal sizes: a promote bigger than the demotes it pays needs cap
+    //     headroom, so the plan takes coldest-first headroom demotes (counted, not counted as swaps).
+    {
+        Fixture f = make(1024, 24576);
+        const uint64_t big = 4 * MIB;   // layer 0's pairs are 4x the band's
+        std::vector<uint8_t> tier((size_t) LAYERS * (size_t) EXPERTS, 0), resident((size_t) LAYERS * (size_t) EXPERTS, 0);
+        std::vector<int64_t> heat((size_t) LAYERS * (size_t) EXPERTS, 0);
+        for (size_t i = 4615; i < 4615 + 4615; ++i) tier[i] = 1;          // the helper's mirror: tier-served (layers 9..17)
+        for (size_t i = 4615 + 4615; i < 4615 + 4615 + 5770; ++i) resident[i] = 1;   // the keep (1 MiB pairs)
+        heat[0] = 50;                                       // a layer-0 eviction (4 MiB) demands promotion
+        for (size_t i = 4615 + 4615; i < 15000; ++i) heat[i] = 1;   // every resident payer demands 1
+        const auto pb = [&](int64_t l) { return (uint64_t) (l == 0 ? big : 1 * MIB); };
+        const auto p = relief_arena_reorder_plan(LAYERS, EXPERTS, 5770 * MIB, 0, f.profile,
+                                                 f.hot, tier, resident, heat, pb);
+        check(p.reordered && p.swaps == 1, "one net swap paid for");
+        check(p.headroom_demotes == 3, "the 4 MiB promote cost three 1 MiB headroom demotes");
+        check(p.resident_after <= 5770ull * MIB, "residency stayed at or under the cap");
+        check(p.promoted_bytes == big && p.demoted_bytes == 4 * MIB, "the bytes add up: 4 MiB in, 4 MiB out");
+    }
+
+    // 22. The prod shape (iq3_s s34 at cap 20000 / floor 6000 / hot 15000): the boot plan lands the residency at
+    //     hot + the decode prefix (~20.2 GiB, short_of_cap), evicting everything colder.  The decode walk
+    //     touches a band the cap evicted.  The re-rank spends the SAME residency on that band: the evictions
+    //     decode demands promote, the keep's untouched cold end demotes, residency holds at the floor's band.
+    {
+        const uint64_t pair_b = 1992192;   // 24576 x 1992192 = 46.875 GiB, the arena's measured copy
+        Fixture f = make(1945, 24576);
+        f.pair_bytes = pair_b;
+        std::vector<uint8_t> tier((size_t) LAYERS * (size_t) EXPERTS, 0), resident((size_t) LAYERS * (size_t) EXPERTS, 0);
+        std::vector<int64_t> heat((size_t) LAYERS * (size_t) EXPERTS, 0);
+        const int64_t n_keep = (int64_t) (6000ull * MIB) / pair_b;   // 3158 pairs = the decode prefix (6000 MiB)
+        for (size_t i = 0; i < 7500; ++i) { f.hot[i] = 1; resident[i] = 1; }
+        for (size_t i = 7500; i < 7500 + 4615; ++i) tier[i] = 1;
+        for (size_t i = 7500 + 4615; i < 7500 + 4615 + n_keep; ++i) resident[i] = 1;   // the cap's keep (floor band)
+        for (size_t i = 7500 + 4615 + n_keep; i < 7500 + 4615 + n_keep + 1500; ++i) heat[i] = 40;   // decode's band, evicted
+        const uint64_t resident_b = (7500ull + (uint64_t) n_keep) * pair_b;            // the boot landing (hot + prefix)
+        const auto p = relief_arena_reorder_plan(LAYERS, EXPERTS, 20000ull * MIB, 6000 * MIB, f.profile,
+                                                 f.hot, tier, resident, heat, [&](int64_t) { return pair_b; });
+        check(p.swaps == 1500, "the whole demanding band promotes against the keep's untouched cold end");
+        check(p.resident_after == resident_b, "net 0: residency holds at the floor's band - the RIGHT pairs at the SAME price");
+        check(p.resident_after >= 7500ull * pair_b, "the hot set's bytes never demote");
+        check(p.promote.front() == f.profile[7500 + 4615 + n_keep], "the promote starts at the hottest demanding eviction");
+        check(p.demote.front() == f.profile[7500 + 4615 + n_keep - 1], "the demote starts at the keep's profile-coldest pair (zero heat)");
+    }
+
+    // 23. Ties break on the profile: equal heat promotes the hotter rank first and demotes the colder rank
+    //     first, so the re-rank is deterministic with the boot cap's ordering.
+    {
+        Fixture f = make(1024, 24576);
+        std::vector<uint8_t> tier((size_t) LAYERS * (size_t) EXPERTS, 0), resident((size_t) LAYERS * (size_t) EXPERTS, 0);
+        std::vector<int64_t> heat((size_t) LAYERS * (size_t) EXPERTS, 0);
+        for (size_t i = 0; i < 4615; ++i) tier[i] = 1;
+        for (size_t i = 4615; i < 15000; ++i) resident[i] = 1;
+        for (size_t i = 15000; i < 15010; ++i) heat[i] = 10;    // ten equal-heat evictions
+        for (size_t i = 4615; i < 4625; ++i) heat[i] = 0;       // the demote targets: zero heat
+        for (size_t i = 4625; i < 15000; ++i) heat[i] = 5;      // the band's rest demands 5
+        const auto p = relief_arena_reorder_plan(LAYERS, EXPERTS, 15000 * MIB, 0, f.profile, f.hot, tier,
+                                                 resident, heat, bytes_of(f));
+        check(p.swaps == 10, "ten equal-heat evictions, ten demotes");
+        check(p.promote[0] == f.profile[15000] && p.promote[9] == f.profile[15009],
+              "equal heat: the promote order is the profile's hot end");
+        check(p.demote[0] == f.profile[4624] && p.demote[9] == f.profile[4615],
+              "equal heat: the demote order is the profile's cold end");
+    }
+
     if (failures) {
         std::printf("expert_helper_arena_cap_test: %d FAILURES\n", failures);
         return 1;

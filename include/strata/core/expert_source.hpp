@@ -1469,12 +1469,66 @@ public:
     /// a pair once per request cycle: it swaps empty with dropped_reads_ in refill_recorded_pairs, where
     /// refill's own flag check stays the backstop.
     void note_dropped_read(int64_t layer, int64_t expert) {
+        note_heat(layer, expert);   // helper-ipc-diet: a dropped pair a window read demands - the re-rank's promote signal
         if (dropped_reads_.size() >= 8192) return;   // overflow loses records, as before
         const int64_t key = layer * n_expert_ + expert;
         if (dropped_reads_seen_.find(key) != dropped_reads_seen_.end()) return;
         dropped_reads_seen_.emplace(key, 0);
         dropped_reads_.emplace_back((int32_t) layer, (int32_t) expert);
     }
+
+    /// helper-ipc-diet round 4: the runtime re-rank of the arena's keep set by DECODE heat.
+    /// The boot cap (--expert-helper-relief-arena-cap-mib) decides the keep set from the PROMPT-trace
+    /// profile; decode wants the pairs ITS walk touches.  set_arena_reorder() arms the re-rank with the
+    /// cap's arithmetic inputs - the untouchable sets (the hot budget's pairs and the tier-served drops:
+    /// the helper's rows, the spill tier's, the stage caches'), the cap, the decode floor, the profile
+    /// (the plan's tie-break) - and starts the per-pair heat counters.  At a safe boundary (the request's
+    /// serial path, the sole reader of the pin tables - refill_recorded_pairs' gate),
+    /// reorder_arena_by_heat() plans relief_arena_reorder_plan over the CURRENT keep set and applies it:
+    /// refill the demanding dropped pairs in (the promote, refill_recorded_pairs' mechanism), release the
+    /// cold resident pairs out (the demote, the registered range split around them), then halve the
+    /// counters so heat ages.  The cap stays the ceiling and the floor the guarantee: the re-rank decides
+    /// only WHICH pairs fill the band, never how big the band is.
+    ///
+    /// HEAT (the near-free signal, no locks and no device calls on the walk): a relaxed per-pair counter
+    /// bumped on blob()'s resident path (a decode touch of a resident pair - the demote signal) and on
+    /// every request that serves a dropped pair from the pack files (swap_blobs_batch and blob's file
+    /// path via note_dropped_read - the promote signal).  One fetch_add per lookup, the same class of
+    /// cost as the reads_ counter it sits beside; empty counters (never armed) cost one branch.
+    void set_arena_reorder(std::vector<uint8_t> hot, std::vector<uint8_t> tier_served,
+                           std::vector<std::pair<int32_t, int32_t>> profile,
+                           uint64_t cap_bytes, uint64_t decode_floor_bytes);
+    /// Applies one re-rank at the safe boundary; returns the net swaps applied (0: nothing moved).
+    /// Call it ONLY where refill_recorded_pairs may run: the request has stopped, the serial request
+    /// path is the source's only reader of pin_start_/pin_end_/pin_dev_/layer_pcie_, no async tier, no
+    /// batch/pipeline windows, no peer/remote/swap caches, no refill in flight.  Under the cap a split is
+    /// required and the async tier never runs with one; the stages' swap-ins of dropped pairs go through
+    /// swap_blobs_batch (file_mu_, the pack files), never the arena's pin tables, so the boundary's
+    /// sole-reader rule holds with stages present.
+    int64_t reorder_arena_by_heat();
+    bool arena_reorder_armed() const { return reorder_armed_; }
+
+  private:
+    /// The heat counter of one pair: bumped on the decode walk.  No-op while unarmed.
+    void note_heat(int64_t layer, int64_t expert) {
+        if (heat_.empty() || layer < 0 || expert < 0 || expert >= n_expert_) return;
+        const size_t i = (size_t) (layer * n_expert_ + expert);
+        if (i < heat_.size()) heat_[i].fetch_add(1, std::memory_order_relaxed);
+    }
+    /// refill_recorded_pairs' per-pair mechanism, reused by the re-rank's promote: read the pair's bytes
+    /// from the pack files into a private staging copy, register its page range, take the device alias,
+    /// insert the range into the sorted pin tables, write the bytes, clear the flag.  A driver refusal
+    /// leaves the pair dropped (today's file-served degrade) and says false.  `filled_bytes` reports the
+    /// pair's bytes when it lands.
+    bool refill_pair(int32_t layer, int32_t expert, uint64_t& filled_bytes);
+    /// The re-rank's demote: the per-pair inverse of refill_pair for a RESIDENT pair - unregister its
+    /// registered range, give the pair's wholly-interior pages back (MADV_DONTNEED), re-register the
+    /// span's remainders, rebuild the pin tables, set the flag.  Any failure restores the original range
+    /// and the pair stays resident.  Safe only at reorder_arena_by_heat's boundary (no DMA in flight).
+    /// `freed_bytes` reports the pages given back.
+    bool release_pair(int32_t layer, int32_t expert, uint64_t& freed_bytes);
+
+  public:
     /// W1 (--expert-helper-ram-relief): build the arena without the whole-arena registration (and
     /// without the working-set lock), so the fill writes plain pages.  Call before open().
     void set_ram_relief(bool on) { ram_relief_ = on; }
@@ -1566,6 +1620,14 @@ private:
     // ---- W1 (--expert-helper-ram-relief): the pairs dropped out of the arena, and the pack files they
     // come back from.  Empty `unfilled_flag_` (never set) is today's source, byte for byte.
     std::vector<uint8_t> unfilled_flag_;      ///< (layers x experts): 1 = the pages are given back
+    /// helper-ipc-diet round 4: the decode-heat re-rank's state.  heat_ is the per-pair decode counter
+    /// (empty = unarmed: blob()/swap_blobs_batch pay one branch); the rest are set_arena_reorder's copy
+    /// of the cap's arithmetic inputs (untouchable sets, profile tie-break, cap ceiling, decode floor).
+    std::vector<std::atomic<int64_t>> heat_;
+    std::vector<uint8_t> reorder_hot_, reorder_tier_;
+    std::vector<std::pair<int32_t, int32_t>> reorder_profile_;
+    uint64_t reorder_cap_bytes_ = 0, reorder_floor_bytes_ = 0;
+    bool reorder_armed_ = false;
     std::vector<std::pair<int32_t, int32_t>> dropped_reads_;   ///< STRATA_WINDOW_POPULATE: dropped pairs a window read (see refill_recorded_pairs)
     std::unordered_map<int64_t, char> dropped_reads_seen_;     ///< note_dropped_read's dedup: pairs recorded this cycle, swapped empty with dropped_reads_ at refill_recorded_pairs
     bool ram_relief_ = false;                 ///< W1: open() builds the arena with nothing registered

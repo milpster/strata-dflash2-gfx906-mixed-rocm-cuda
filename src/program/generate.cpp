@@ -818,6 +818,14 @@ struct Options {
     /// and says so.  Use it as the floor when lowering the cap for RSS; use the cap itself to buy decode
     /// residency (it spends on the hottest pairs first).  Needs the cap.  0 (default): the uniform cap.
     int64_t expert_helper_relief_arena_cap_decode_mib = 0;
+    /// helper-ipc-diet round 4: re-rank the arena's keep set by DECODE heat at request ends.  The cap above
+    /// decides the keep set at boot from the PROMPT-trace profile; decode wants the pairs its own walk
+    /// touches (ArenaExpertSource's heat counters: blob() touches of resident pairs, pack-file swap-in
+    /// demand of dropped pairs).  The re-rank spends the SAME cap bytes on the RIGHT pairs: promote the
+    /// dropped pairs decode demands most, demote the resident pairs it touches least, at the same safe
+    /// boundary refill_recorded_pairs uses.  The cap stays the ceiling, the decode floor the guarantee, and
+    /// the hot set and the tier-served pairs never move.  Needs the cap.  Off (default): the boot keep set.
+    bool expert_helper_relief_arena_cap_rerank = false;
     bool remote_expert_opt = false; ///< optional optimization of the existing remote-expert decode path
     std::string expert_cache_remote_placement = "stripe"; ///< stripe experts or assign complete layers to CUDA1..3
     bool expert_cache_cpu_order = false;
@@ -1461,7 +1469,16 @@ void usage() {
                  "                       hot set plus this prefix even when the cap is tightened below hot+N, landing\n"
                  "                       above the cap (reported) instead of eating into decode's band.  A coldest-\n"
                  "                       first cap keeps hottest-first, so above that point it buys nothing the cap\n"
-                 "                       does not buy: raise the CAP to give decode's ~12k pairs RAM.  0 = uniform.\n"
+                  "                       does not buy: raise the CAP to give decode's ~12k pairs RAM.  0 = uniform.\n"
+                  "  --expert-helper-relief-arena-cap-rerank  opt-in, needs --expert-helper-relief-arena-cap-mib:\n"
+                  "                       re-rank the arena's keep set by DECODE heat at request ends.  The cap keeps\n"
+                  "                       the profile's hot pairs; decode wants the pairs ITS walk touches.  Heat =\n"
+                  "                       the per-pair counters on the decode path (arena touches of resident pairs,\n"
+                  "                       pack-file swap-in demand of dropped pairs); the re-rank promotes the dropped\n"
+                  "                       pairs decode demands most and demotes the resident pairs it touches least,\n"
+                  "                       at refill_recorded_pairs' safe boundary.  The cap stays the ceiling, the\n"
+                  "                       decode floor the guarantee; the hot set and the tier-served pairs never move.\n"
+                  "                       Off (default): the boot keep set, byte for byte as before.\n"
                  "  --expert-cache-per-layer  R4.2g: give each layer its OWN slots instead of letting the first\n"
                  "                       position take all of them.  The default policy fills in arrival order\n"
                  "                       from one shared counter, so 256 slots went to ~26 layers of position 0\n"
@@ -3965,6 +3982,9 @@ int main(int argc, char** argv) {
             }
             o.expert_helper_relief_arena_cap_decode_mib = dn;
         }
+        else if (a == "--expert-helper-relief-arena-cap-rerank") {
+            o.expert_helper_relief_arena_cap_rerank = true;
+        }
         else if (a == "--vram-reserve-mib") { o.vram_reserve_mib = std::atoi(next("--vram-reserve-mib")); o.vram_reserve_given = true; }
         else if (a == "--vram-reserve-later-mib")
             o.vram_reserve_later_mib = std::atoi(next("--vram-reserve-later-mib"));
@@ -5195,6 +5215,13 @@ int main(int argc, char** argv) {
     if (o.expert_helper_relief_arena_cap_decode_mib > 0 && o.expert_helper_relief_arena_cap_mib == 0) {
         std::fprintf(stderr, "strata generate: --expert-helper-relief-arena-cap-decode-mib: --expert-helper-relief-arena-cap-mib is required "
                              "(it decides which pairs the cap may not drop; with no cap every pair stays resident)\n");
+        return 2;
+    }
+    // helper-ipc-diet: the re-rank spends the cap's bytes on the pairs decode demands - with no cap every
+    // pair is resident and there is no keep set to re-rank.  Refuse, named, like the cap's other levers.
+    if (o.expert_helper_relief_arena_cap_rerank && o.expert_helper_relief_arena_cap_mib == 0) {
+        std::fprintf(stderr, "strata generate: --expert-helper-relief-arena-cap-rerank: --expert-helper-relief-arena-cap-mib is required "
+                             "(it decides which pairs the cap drops; with no cap every pair stays resident and there is nothing to re-rank)\n");
         return 2;
     }
     // STRATA_MMQ_DIRECT: the room each sized expert slot keeps after its blob (0 unless it is on: the slot costs and
@@ -9829,6 +9856,7 @@ int main(int argc, char** argv) {
                             // budget's pairs never drop.  Every pair this drops is read back from the pack files,
                             // so the packs lever's unbuffered fds are the gate.
                             int64_t relief_cap_pairs = 0, relief_cap_bytes = 0;
+                            std::vector<uint8_t> relief_cap_tier;   // helper-ipc-diet: the re-rank's untouchable tier set
                             uint64_t relief_cap_resident = 0;
                             if (o.expert_helper_relief_arena_cap_mib > 0 &&
                                 (!relief_packs_live || stages.empty())) {
@@ -9849,6 +9877,9 @@ int main(int argc, char** argv) {
                                 for (const auto& pr : held)
                                     if (pr.first >= 0 && pr.first < g.n_layers && pr.second >= 0 && pr.second < g.n_expert)
                                         dropped[(size_t) pr.first * g.n_expert + pr.second] = 1;
+                                relief_cap_tier = dropped;   // helper-ipc-diet: the tier-served drops (the helper's
+                                // rows, the spill tier's, the stage caches') are UNTUCHABLE by the re-rank: promoting
+                                // them buys nothing, per the decode floor's rule.  Captured before the cap tail joins.
                                 const auto cap = strata::core::relief_arena_cap_plan(
                                     g.n_layers, g.n_expert, slay.total, (uint64_t) o.expert_helper_relief_arena_cap_mib << 20,
                                     profile, hot, dropped, [&](int64_t l) { return (uint64_t) slay.blob_bytes(l); },
@@ -9879,6 +9910,15 @@ int main(int argc, char** argv) {
                             // the first cache fill of such a pair kills the request).
                             arena_src.set_unfilled(held);
                             arena_src.register_complement(held);
+                            // helper-ipc-diet round 4: arm the decode-heat re-rank (opt-in).  The cap's own evictions are
+                            // the promotable set, the resident band outside the hot budget and the tier-served drops is the
+                            // demotable one; the cap ceiling and the decode floor are the plan's bounds, the same numbers
+                            // relief_arena_cap_plan got at boot.  Nothing moves here: the counters start, and
+                            // reorder_arena_by_heat() decides at each request's end.
+                            if (o.expert_helper_relief_arena_cap_rerank && !relief_cap_tier.empty())
+                                arena_src.set_arena_reorder(hot, relief_cap_tier, profile,
+                                                          (uint64_t) o.expert_helper_relief_arena_cap_mib << 20,
+                                                          (uint64_t) o.expert_helper_relief_arena_cap_decode_mib << 20);
                             if (relief_tier_pairs > 0)
                                 std::fprintf(stderr, "strata generate: --expert-helper-ram-relief: +%lld spill-tier pairs (%lld MiB) join the drop set\n",
                                              (long long) relief_tier_pairs,
@@ -22664,6 +22704,19 @@ int main(int argc, char** argv) {
                 !peer.valid() && remote_opt == nullptr && fs_swap == nullptr && ajob == nullptr &&
                 refill_inflight == 0 && srcp == &arena_src)
                 (void) static_cast<strata::core::ArenaExpertSource*>(srcp)->refill_recorded_pairs();
+            // helper-ipc-diet round 4: the arena's keep set re-ranks by DECODE heat at the request's end - the same
+            // safe boundary refill_recorded_pairs uses: the request has stopped, the serial request path is the arena's
+            // only reader of pin_start_/pin_end_/pin_dev_/layer_pcie_, no async tier, no batch/pipeline windows, no
+            // peer/remote/swap caches, no refill in flight.  Unlike the window-populate gate it does NOT require
+            // stages.empty(): the arena cap runs ONLY with a layer split (its gate refuses a single-GPU arena), and in a
+            // split the arena's pin tables are read by this thread alone - stage k fills its own layers from its own
+            // source, and the arena pairs its swap-ins need go through swap_blobs_batch (file_mu_, the pack files),
+            // never the arena's registered ranges.  Before the DONE line, so a checkpoint never snapshots a
+            // half-re-ranked arena story.
+            if (o.expert_helper_relief_arena_cap_rerank && o.batch == 0 && admit_slot < 0 && !pipe &&
+                !peer.valid() && remote_opt == nullptr && fs_swap == nullptr && ajob == nullptr &&
+                refill_inflight == 0 && srcp == &arena_src)
+                (void) static_cast<strata::core::ArenaExpertSource*>(srcp)->reorder_arena_by_heat();
             if (!keep_sync()) { std::printf("ERR %s\n", err.c_str()); return 1; }
             const double decode_ms = std::chrono::duration<double, std::milli>(Clock::now() - d0).count();
             if (use_df2 && o.draft_auto && bandit_key != 0 && produced_n >= 48 && decode_ms > 0.0) {
