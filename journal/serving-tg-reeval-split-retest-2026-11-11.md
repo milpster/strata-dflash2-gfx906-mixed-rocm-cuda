@@ -1126,3 +1126,24 @@ Reading:
 - RULE for every future round: compile AND link AND test against /opt/rocm-6.1.0 only;
   set LD_LIBRARY_PATH=/opt/rocm-6.1.0/lib explicitly for any test/probe; never let a bare
   `rocm`/`rocm-6.4.4`/`rocm-7.x` path resolve.
+
+## Custom rocBLAS directive + launcher repair (operator, 2026-11-13 ~00:2x)
+
+- FACT: both launchers carried a stale default ROCm root (/home/user/rocm-gfx906-xnack -
+  dead on this box). Every boot incl. the S34 floor and all today's panels silently ran
+  on STOCK /opt/rocm-6.1.0 rocBLAS, whose gfx906 support ships broken (missing .dat
+  metadata, 54 Tensile kernels - see /home/srcds/rocblas-gfx906-bug-report.md).
+- The custom build is at /home/srcds/rocm-gfx906-xnack/lib (librocblas.so.4.1 eager,
+  kernels baked in) with canonical env in /home/srcds/rocm-gfx906-xnack.env
+  (HSA_OVERRIDE_GFX_VERSION=9.0.6, GPU_MAX_ALLOC_PERCENT=100, custom lib FIRST,
+  ROCBLAS_TENSILE_LIBPATH unset).
+- FIXED in both launchers (trial + prod): default root -> /home/srcds/rocm-gfx906-xnack,
+  HSA_OVERRIDE_GFX_VERSION=9.0.6 + GPU_MAX_ALLOC_PERCENT=100 added to the engine env.
+- RE-BASELINE NOTE: all numbers 2026-11-11..12 (floor 648.8/44.3, int8 panel, iq3_s panel,
+  fixer r7 arms) were measured WITHOUT the custom rocBLAS. They are internally consistent
+  (same env) but the champion must be re-measured with the custom rocBLAS before any
+  promotion; deltas could shift in either direction.
+- Fixer note: its killed 6.4.4 test runs also ran env -u HSA_OVERRIDE_GFX_VERSION (unset!)
+  - any rerun must source the canonical env instead. rocm61-toolchain.cmake
+  (/home/srcds/rocm61-toolchain.cmake) is the canonical pin toolchain; rocm644-toolchain
+  is NOT for pins.
