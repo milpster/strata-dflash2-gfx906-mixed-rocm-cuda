@@ -1105,3 +1105,12 @@ Reading:
 - Round-8 fixer's in-flight build predates the binary - first cached build is the NEXT one
   (v0227+). HIP offload single-invocation clang compiles should cache; check
   `ccache --show-stats` "uncacheable calls" after the first cached build to confirm.
+
+## Operator note to the active fixer (2026-11-12 ~23:5x) — read before GPU decisions
+
+- GAME OVER: GPUs are released. You MAY use the devices now (device tests, quick probes
+  on a throwaway port are unblocked). The no-server constraint is LIFTED; only :8009
+  stays untouchable, and no soaks.
+- ALWAYS SHOW LIVE PROGRESS: run long commands in foreground with streaming output
+  (no >/dev/null silencing, no detached builds) so the operator sees progress live
+  in the opencode terminal view. If something must stream to a file, tail -F it.
