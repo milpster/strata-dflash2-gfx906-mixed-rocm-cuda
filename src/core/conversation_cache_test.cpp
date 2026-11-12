@@ -387,6 +387,46 @@ int main() {
               "an oversized put drops nothing");
     }
     {
+        // the growing conversation with a SPARSE chain parks once, not once per turn: the RAM gate on checkpoint
+        // saves (69f37322d) skips a boundary under pressure, so an append-only park's chain no longer holds the
+        // copy a turn back's deepest checkpoint, and #342's rule keeps that copy.  Measured v0224: every park of
+        // the same conversation added a whole snapshot (406 MB at 4.8k, 2.48 GB cumulative at 19k, superseded 0,
+        // evictions 0).  The live-prefix rule drops it: the new image's K/V covers the same prefix, every reuse
+        // point the old copy offered is a checkpoint the new chain holds, and all the old copy had extra is the
+        // tail this park wrote.
+        auto cp = [](std::vector<int32_t> ids) { ConversationCheckpoint c; c.ids = std::move(ids); return c; };
+        ConversationCache cache(8 << 20, 8);
+        SavedConversation sparse = image({1, 2, 3, 4, 10, 11});          // no checkpoints at all (the gate skipped them)
+        check(cache.put(std::move(sparse)), "park a conversation whose chain is empty");
+        SavedConversation next = image({1, 2, 3, 4, 10, 11, 20, 21});
+        next.checkpoints = {cp({1, 2, 3, 4})};
+        check(cache.put(std::move(next)) && cache.superseded() == 1 && cache.size() == 1,
+              "the append-only park supersedes the chain-less copy of the same conversation");
+        SavedConversation with_cp = image({1, 2, 3, 4, 10, 11, 20, 21, 30});
+        with_cp.checkpoints = {cp({1, 2, 3, 4}), cp({1, 2, 3, 4, 10})};
+        check(cache.put(std::move(with_cp)) && cache.superseded() == 2 && cache.size() == 1,
+              "the next turn supersedes the previous snapshot too");
+        // an entry whose checkpoints reach past the shared prefix is a branch, not a turn back: kept
+        SavedConversation branch = image({1, 2, 3, 4, 55, 56});
+        branch.checkpoints = {cp({1, 2, 3, 4}), cp({1, 2, 3, 4, 55})};
+        check(cache.put(std::move(branch)) && cache.superseded() == 2 && cache.size() == 2,
+              "a sibling on the root is not a superseded copy");
+        SavedConversation sibling = image({1, 2, 3, 4, 70, 71, 72});
+        sibling.checkpoints = {cp({1, 2, 3, 4})};
+        check(cache.put(std::move(sibling)) && cache.superseded() == 2 && cache.size() == 3,
+              "the rewriting client's park keeps the branch: only LRU takes it");
+        // a pinned shared prefix is never dropped by the new rule (and here nothing else supersedes it)
+        SavedConversation pinned = image({1, 2, 3, 4});
+        pinned.checkpoints = {cp({1, 2})};
+        pinned.checkpoints[0].pinned = true;
+        check(cache.put(std::move(pinned)) && cache.superseded() == 3 && cache.size() == 3,
+              "the pinned prefix parks beside them (its live state equals the sibling's root checkpoint, as #342 says)");
+        SavedConversation after_pin = image({1, 2, 3, 4, 10, 11});
+        after_pin.checkpoints = {cp({1, 2, 3})};
+        check(cache.put(std::move(after_pin)) && cache.superseded() == 3 && cache.size() == 4,
+              "the pin's holder keeps its place: its checkpoint is off the new chain, so neither rule fires");
+    }
+    {
         // --conversation-cache-park-gain N: parked_prefix_tokens reports what a park now would supersede, so a
         // conversation that advanced fewer than N tokens since that copy keeps it instead of writing the whole
         // snapshot again for the next turn to drop.  It must name exactly the entries drop_superseded() would remove.

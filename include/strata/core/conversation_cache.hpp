@@ -492,6 +492,15 @@ public:
     // oldest-first eviction then pushed the parent conversation out after `slots` turns.  An entry without
     // checkpoints, or whose deepest checkpoint the outgoing chain does not hold (another conversation that only
     // shares the system prompt's root with it), is kept.  Returns how many were dropped.
+    //
+    // The chain rule alone misses the shape a growing conversation parks every turn: a client that re-sends the
+    // prompt with the last reply REWRITTEN (the next message replaces the reply's tokens, the OpenAI chat shape a
+    // single growing user message has) never shares its deepest checkpoint with the copy a turn back, so each park
+    // added a full snapshot and the tier grew by one whole image per turn (measured v0224: 406 MB -> 2.48 GB at
+    // 4.8k -> 19k tokens, evictions 0, superseded 0).  The second rule covers it: an entry whose WHOLE live state
+    // is a prefix of the outgoing live, with every one of its checkpoints held by the outgoing chain, offers no
+    // reuse the new image does not offer - the new snapshot's K/V covers the same prefix, and a prompt matching
+    // the old live's length matches the new one there too.  A pinned shared prefix is never dropped by this rule.
     size_t drop_superseded(const std::vector<int32_t>& ids, const std::vector<ConversationImageKey>& images,
                            const std::vector<ConversationCheckpoint>& checkpoints, bool cvec) {
         auto held = [&](const ConversationCheckpoint& c) {
@@ -506,8 +515,13 @@ public:
             const ConversationCheckpoint* deepest = nullptr;
             for (const auto& c : e.checkpoints)
                 if (!deepest || c.ids.size() > deepest->ids.size()) deepest = &c;
-            if (e.cvec == cvec && deepest && !deepest->ids.empty() && held(*deepest) &&
-                !(guarded_ != 0 && serials_[i] == guarded_)) {
+            const bool guarded = guarded_ != 0 && serials_[i] == guarded_;
+            const bool outgrew_live = e.cvec == cvec && !e.pinned() && !guarded &&
+                                      e.live.ids.size() < ids.size() &&
+                                      conversation_prefix(e.live, ids, images) == (int64_t) e.live.ids.size() &&
+                                      std::all_of(e.checkpoints.begin(), e.checkpoints.end(), held);
+            if (e.cvec == cvec && !guarded &&
+                ((deepest && !deepest->ids.empty() && held(*deepest)) || outgrew_live)) {
                 bytes_ -= e.bytes();
                 erase(i);
                 ++dropped;
