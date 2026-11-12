@@ -851,3 +851,30 @@ via state files FIRST, then launcher/engine/helper/wrapper sweep, then a
 `pkill/pgrep -f` patterns matching my own command line — the rule is now
 absolute: kill logic lives in on-disk scripts only, and stop/go calls are
 never mixed in one command.
+
+## Standing coarse goal — the game-coexistence profile iq3_s must serve in (17:45, Nov 12)
+
+Operator: "note the current system profile... considering the game is
+active and xxs is serving you on prod at the same time: this is where we
+want to see iq3_s perform ultimately." Measured live, mid-session:
+
+- **System**: 63.6 GiB total, avail **8.2** GiB, swap used **15.0** GiB,
+  load **15.8** on 16 logical cores (saturated: game + 7 pinned stage
+  cores + hostapp on CPU 0)
+- **Engine** (iq3xxs, S34 tuple, ~45k-token live conversation):
+  RSS 46.8 / HWM 48.4 GiB — the uncapped signature under a real session
+- **Helper**: RSS 1.9 (HWM 7.4; fill partially swapped), 3080 VRAM 7.2 GB
+- **VIIs**: 16.3 + 16.2 GB (full), iGPU 464 MB
+- **Game stack** (Conqueror's Blade + Proton + Steam): 4.8 GiB RSS
+- **Live decode on this very session** (the honest part): TG **25.2–29.8**
+  tok/s, PP deltas 100–191 tok/s — i.e. even yesterday's-fastest tuple,
+  at 45k context under game coexistence, serves in the SAME 25–30 band
+  the morning regression showed. The 44.3 repro number was an idle box
+  and a short fresh context; sustained coexistence serving is the real
+  bar, and nothing passes it yet.
+
+**The coarse goal, precisely:** iq3_s serving the operator's session in
+THIS envelope (game active, avail ~8, swap ~15, load ~16, 45k+ context)
+at decode visibly above the 25–30 band — with per-leg max-RAM/VRAM
+tracking proving it. Round 6's two gates (PP 648.8/TG 44.3 floor AND
+RSS ≤40 @130k) are the mechanism; this profile is the venue.
