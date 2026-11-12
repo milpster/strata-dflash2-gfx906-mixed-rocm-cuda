@@ -1249,3 +1249,47 @@ Measured on the idle VII, ROCm 6.1.0, iq_multi_parity --bench (fix7 binaries):
    that pin by index need a re-check).
 4. The conversation_copy_streams 16 MiB bound vs 6.1.0's ~150 MiB first-stream cost:
    re-baseline or gate on runtime version before the next restore-arm.
+
+## Round 8b — v0227 verification panel (2026-11-13 00:00–00:30, operator "go")
+
+**Env retraction (parent, supersedes the 2026-11-12 "everything ran poisoned" claim).**
+The engine child env was NEVER the session poison: server.py `child_env()` builds
+`dict(os.environ)` + config-`env` overrides + `lib_dirs` PREPENDED to LD_LIBRARY_PATH, and
+both trial configs have always carried `HSA_OVERRIDE_GFX_VERSION=9.0.6`,
+`CUDA_VISIBLE_DEVICES=0,1`, `HSA_ENABLE_SDMA=1`, `lib_dirs=[custom-rocBLAS, 6.1.0]`.
+My earlier "engine poisoned" reading was a pgrep self-match (pattern text matched my own
+wrapper shell). Definitive live proof this round (v0227 control boot): engine
+/proc/PID/environ shows 9.0.6 / 0,1 / SDMA=1, and /proc/PID/maps shows
+`/home/srcds/rocm-gfx906-xnack/lib/librocblas.so.4.1` — the engine links
+`libhipblas.so.2` (6.1.0) which loads the CUSTOM rocBLAS via the lib_dirs order.
+Conclusion: v0225/v0226/v0227 boots all ran the canonical stack; no env re-baseline owed.
+(The session-level HSA=9.0.0/CVD="" poison in ~/.profile is real but only ever hit
+non-config-driven invocations — the fixer's direct ctests; its `env -u` fix is correct.)
+
+**Panels (same night, same box, ab9-v0227-iq3s-20261112; iq3_s + int8 KV + spill40 fill).**
+- CONTROL `V27IQ3S_C` (v0227, knobs off): PP 546.8 (killer prefill 142,284 tok);
+  TG@142k killerL cold 41.1 / warm 24.1; TG@40k longtg 33.1 / 21.4; TG@1k 30.7 / 32.6;
+  RSS 52.8G, min avail 12.7G, swap-in-use 7.4G.
+- TREATMENT `V27IQ3S_RR` (v0227, STRATA_ARENA_RERANK_MAX=6000 + PHASE_TAG=1):
+  PP 544.4 (parity); TG@142k killerL cold 35.1 / warm 26.1; longtg 34.5 / 29.5;
+  TG@1k 28.4 / 32.9; RSS 52.7G, min avail 11.0G. Warmup leg 9.9s vs 2.1s (armed rerank's
+  first-boundary pass — the arming cost, visible once).
+
+**Verdicts.**
+1. Rerank-400 fix (565fffd3f) VERIFIED LIVE: engine survived armed rerank through both
+   killer legs — the exact traffic that produced `fill_slot_queued: invalid argument`
+   before. No degrade-to-file events observed either (fallback path never needed).
+2. Armed rerank + phase-tag is NOT a clean win (−26%/−45% on killer144k first-pass gens,
+   +38% on longtg warm, rest parity; swap volume unchanged at ~12k pairs/leg). Default
+   stays OFF for this workload shape; the knob remains available for decode-heavy shapes.
+3. Cold-142k TG 18.6 → 41.1 vs the v0226 panel is REAL in direction but CONFOUNDED
+   cross-day: per-leg swap-in volume is UNCHANGED (12,324 vs 12,135 pairs; ~24 GiB both)
+   — what changed is blocking impact — while box swap pressure halved (13.7G → 7.4G)
+   and v0227's arena pin-range arithmetic (a68338ac4) landed. A same-day v0226-vs-v0227
+   A/A on a rebooted box is the only clean way to split box-state vs binary credit.
+4. Goal frame: control TG@1k 30.7–32.6 and TG@40k 33.1 sit ABOVE the 25–30 band with
+   RSS 52.8G; the weak spots are 2nd-gen/warm legs (24.1, 21.4) — the mixed-heat
+   pattern the phase-tag knob targets but did not beat tonight.
+
+Engine stopped after measurement (stop-all). v0227 remains pin-candidate; promotion is
+the operator's call.
