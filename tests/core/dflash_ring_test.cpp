@@ -213,6 +213,21 @@ int main() {
         check(fresh2.context_retained(T, ROWS), "the restored pair retains the checkpoint's resume: no old-prefix reread");
         check(!fresh2.context_retained(T + 1, ROWS), "the pair refuses a resume past its captured confirmed end");
 
+        // The cold mount (the serve path's answer to a draft miss): no pair, so the drafter's horizon is
+        // SET to the resume point.  The counters are the guards' whole state, so the mount must be legal
+        // from the first round on: propose at T, appends from T, and the window reads that follow are
+        // all retained by the rule (nothing newer than T + rows has appended).
+        DFlashRingState cold = live;
+        cold.committed_end = cold.appended_through = T;
+        check(cold.context_retained(T, ROWS), "the cold horizon retains its own resume");
+        check(cold.propose_allowed(T, ROWS), "the first round at a cold mount proposes (its rows are stale, the verify decides)");
+        check(cold.append_allowed(T, ROWS), "the cold horizon admits the appends at the resume");
+        cold.note_append(T, ROWS);   // the window's rows commit as the request goes on
+        check(cold.propose_allowed(T + ROWS, ROWS) && cold.append_allowed(T + ROWS, ROWS),
+              "the refill proceeds as the request appends");
+        check(cold.context_retained(T - 1, ROWS),
+              "below the cold horizon the ring reads are the previous turn's: guards say retained, the verify decides");
+
         // The retention boundary follows the horizon exactly: the oldest resumable position at a
         // horizon H is H - ring + window - 1, one deeper is overwritten (a ring-wrap capture miss).
         DFlashRingState wrap;

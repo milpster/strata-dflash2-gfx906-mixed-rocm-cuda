@@ -919,6 +919,26 @@ bool DFlashDrafter::context_retained(int64_t pos, int rows) const {
     return ring_state_.context_retained(pos, rows);
 }
 
+bool DFlashDrafter::rewind_cold(int64_t pos, std::string& err) {
+    // A checkpoint rewind the ring cannot serve (its window rows were overwritten and the
+    // checkpoint has no pair): the mount is target-only, so the drafter only needs a legal
+    // horizon AT the resume point.  The counters ARE the guards (include/strata/core/dflash_ring
+    // .hpp): with committed_end = appended_through = pos, appends at [pos, pos+rows) are legal, the
+    // first propose at pos passes retention (the ring covers window + max_rows - 1 cells), and the
+    // window's rows below pos are the previous turn's - stale rows the verify rejects, so the answer
+    // stays exact and only acceptance dips until the appends refill the window.  No pool zeroing:
+    // every read that matters follows this sequence's own appends, as a prefill from 0 does.
+    if (st_.empty()) { err = "dflash: upload before a cold rewind"; return false; }
+    if (pos < 0 || ring_state_.capacity <= 0 || pos > ring_state_.capacity) {
+        err = "dflash: cold rewind to " + std::to_string(pos) + " is outside the drafter's capacity " +
+              std::to_string(ring_state_.capacity);
+        return false;
+    }
+    ring_state_.committed_end = pos;
+    ring_state_.appended_through = pos;
+    return true;
+}
+
 void DFlashDrafter::prepare_projection(const uint16_t* x, int ni, int rows, void* stream) {
     if (quant_types_.empty()) return;
     strata::kernels::bf16_to_f32_bulk(x, proj_float_, (int64_t) ni * rows, stream);
