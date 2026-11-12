@@ -683,3 +683,21 @@ has `--conversation-cache-mib 4096`, `--kv-resident 262144`,
 park + kv-resident sizing + LRU across conversations. Soak validation
 compressed to ~10–12 min (chunked KV growth + park hammering + LRU pass +
 assertions) per operator (72-turn replay too long).
+
+## Round 4 landed + v0223 window (Nov 12 ~15:xx)
+
+Fixer `7daa7c94e` + `179e45878` (pushed): the killed session's re-rank plan
+was sound and became the core; its composition bug fixed (floor-above-cap
+blocked every promote — ceiling now `max(cap, hot+floor)`, floor guards only
+net-reducing swaps). Runtime decode-heat counters (`blob()` resident touches,
+swap-in demand, window-file demand), re-rank at request-end boundaries
+(≤64/side, counters halve = aging), `--expert-helper-relief-arena-cap-rerank`
+(opt-in, needs cap), checks 16–23. v0223 pinned (hip `8e221728…`, cuda
+`02719871…`, helper `7cc4d602…`). Fixer's stated trade: longtg 32–33,
+tg1024 34–35, killer 32–33 at the 20k price; 8k PP stays ~120 (prefill path
+untouchable by design); long-read band unchanged.
+
+Window running (driver 3347244): arm1 `cap20k-rerank` (tuple + rerank),
+arm2 `cap20k-control` (tuple, no rerank — isolates the new code's effect).
+**Prod return at window end = diet-off iq3xxs** per operator directive
+(config armed at `9385ba0f6`).
