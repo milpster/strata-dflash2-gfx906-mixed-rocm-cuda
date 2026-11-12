@@ -1,29 +1,31 @@
 #!/usr/bin/env bash
-# stop-prod.sh - clean prod stop (pair supervisor FIRST, then launchers, engine, helper), socket cleanup, VRAM report.
-# On-disk on purpose: an inline kill must never share a command body with the patterns it
-# greps for (self-match killed an inline attempt once). pgrep scans command lines, not this file.
-set -u
-echo '=== stop-prod: pair supervisor (first - it would restart what we kill below) ==='
-pgrep -af 'pair_supervisor.py' | head -2
-pkill -TERM -f 'pair_supervisor.py' 2>/dev/null && echo 'supervisor TERMed (its clean stop reaps the whole pair)' || echo '(no supervisor matched)'
-sleep 5
-echo '=== stop-prod: launchers + wrapper ==='
-pgrep -af 'bash .*launch-prod-|/bin/bash -c rm -f .*launch-prod' | head -4
-pkill -TERM -f 'bash .*launch-prod-' 2>/dev/null && echo 'launchers TERMed' || echo '(no launcher matched)'
-sleep 4
-echo '=== stop-prod: engine + helper ==='
-pgrep -af '/v021[0-9]/build-mixed-gpu' | head -4
-pkill -TERM -f '/v021[0-9]/build-mixed-gpu' 2>/dev/null && echo 'engine/helper TERMed' || echo '(none matched)'
-for i in $(seq 1 15); do pgrep -f '/v021[0-9]/build-mixed-gpu' >/dev/null 2>&1 || break; sleep 2; done
-if pgrep -f '/v021[0-9]/build-mixed-gpu' >/dev/null 2>&1; then
-  echo 'still alive; SIGKILL'; pkill -KILL -f '/v021[0-9]/build-mixed-gpu' 2>/dev/null; sleep 3
+# stop-prod.sh — cleanly stop the prod mixed pair: supervisor first (state-file
+# PID, no pattern matching), then any orphaned launcher/engine/helper left over,
+# then sockets. Safe to run repeatedly; exits 0 with a one-line status.
+# Usage: ./stop-prod.sh
+set -uo pipefail
+cd "$(dirname "$0")"
+
+STATE=run/prod-swift15-f16kv-mixed-supervisor.json
+sup=$(jq -r '.supervisor_pid // empty' "$STATE" 2>/dev/null)
+if [ -n "${sup:-}" ] && kill -0 "$sup" 2>/dev/null; then
+  echo "stop-prod: TERM supervisor $sup"
+  kill -TERM "$sup" 2>/dev/null || true
+  timeout 90 tail --pid="$sup" -f /dev/null 2>/dev/null || true
 fi
-pgrep -af '/v021[0-9]/build-mixed-gpu' | head -2 || echo '(all prod processes stopped)'
-T=${STRATA_PROD_TREE:-/mnt/srcds/Strata}
-rm -f "$T"/run/prod-swift-iq3_s-mixed.sock "$T"/run/prod-swift-iq3_s-mixed2.sock
-rm -f "$T"/run/prod-mixed.sock "$T"/run/prod-mixed2.sock
-rm -f "$T"/run/prod-swift15-f16kv-mixed.sock "$T"/run/prod-swift15-f16kv-mixed2.sock
-rm -f "$T"/run/prod-ud-iq3xxs-mixed.sock "$T"/run/prod-ud-iq3xxs-mixed2.sock
-echo 'sockets cleaned (iq3_s, legacy, f16kv, ud)'
-echo "3080 VRAM: $(nvidia-smi --query-gpu=memory.used --format=csv,noheader 2>/dev/null | head -1)"
-echo 'stop-prod: done'
+
+# orphan sweep from inside this file: the patterns live here, not in any
+# caller's argv, so pgrep cannot match a self-containing shell command line
+mapfile -t pids < <(pgrep -f 'launch-prod-swift15|strata --serve|strata-expert-helper' 2>/dev/null || true)
+if [ ${#pids[@]} -gt 0 ]; then
+  echo "stop-prod: TERM orphans: ${pids[*]}"
+  kill -TERM "${pids[@]}" 2>/dev/null || true
+  sleep 5
+  mapfile -t still < <(pgrep -f 'launch-prod-swift15|strata --serve|strata-expert-helper' 2>/dev/null || true)
+  [ ${#still[@]} -gt 0 ] && { echo "stop-prod: KILL stragglers: ${still[*]}"; kill -KILL "${still[@]}" 2>/dev/null || true; sleep 2; }
+fi
+
+rm -f run/prod-swift15-f16kv-mixed.sock run/prod-swift15-f16kv-mixed2.sock
+left=$(pgrep -fc 'launch-prod-swift15|strata --serve|strata-expert-helper' 2>/dev/null || true)
+echo "stop-prod: done — ${left:-0} strata prod processes remain"
+[ "${left:-0}" -eq 0 ]

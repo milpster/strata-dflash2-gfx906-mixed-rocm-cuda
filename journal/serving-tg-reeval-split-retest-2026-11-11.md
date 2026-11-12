@@ -735,3 +735,35 @@ killer record: **305.7 s**.
 binary, zero arena-cap lines, plain relief, RSS 37.1 GiB / avail 16.3 /
 swap lingering 11.4 (stale pages, drains slowly). Decode should hold the
 35+ pressure-immune band again.
+
+## Gaming collision + diet re-arm (13:55–15:16, Nov 12)
+
+Operator started Conqueror's Blade (~13:55) → gen-3 pair died → gen-4 boot
+completed 15:03 but sat health-ok-NOT-serving (120s+ first token, avail 8.7,
+swap 15.0, RSS 42.7 climbing unbounded). **Not a code regression — same
+v0221 binary both days.** Three stacked causes:
+
+1. **First-ever diet-off boot at 13:31** — unbounded arena = RSS 42→52
+   trajectory vs the cap's 34. The "known fast 35+" reference was measured
+   on an idle box; the directive assumed one.
+2. **Game costs system RAM, not VRAM** (runs on the iGPU; iGPU framebuffer
+   is host memory, ~3–5 GiB with Proton+Steam). Yesterday's gaming ran
+   against the **capped diet (3411c5967: cap 22000, hot 15000, packs,
+   retry)** — 34 GiB + game fit. The cap's decode tax and its memory
+   ceiling are the same knob; removing it for speed removed gaming
+   coexistence.
+3. **Stale swap hangover**: the morning's 126k-conversation degradation
+   left 11→16 GiB in swap; prod restarts never clear swap (only reboots
+   do). Yesterday's boots started clean.
+
+Operator chose **A: re-arm the capped diet** (config restored verbatim from
+`3411c5967`, commit `c2978b7b5`). Verified 15:15:58: arena cap line present
+(`arena keeps 13857 pairs ≈ 21.9 GiB`), RSS 36.9 bounded, HTTP 200 in 9.5s.
+
+**Ops lesson (hit three times in a row):** `pkill -f`/`pgrep -f` from a
+self-containing command line matches the invoking shell whenever the boot
+step's launcher path (or any searched string) is genuinely in that command
+line — bracket tricks don't help when the text is really there. Fix:
+`stop-prod.sh` on disk (state-file supervisor PID first, orphan patterns
+live inside the file where no scanned cmdline contains them). Stop and boot
+must be separate invocations.
