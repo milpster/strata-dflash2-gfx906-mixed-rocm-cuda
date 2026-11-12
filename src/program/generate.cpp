@@ -1065,10 +1065,12 @@ struct Options {
     bool conversation_cache_evict_page_cache = false;
     /// --conversation-cache-ram-mib N (--serve, opt-in): the host-RAM ceiling of the conversation-cache side -
     /// the parked snapshots' bytes plus the retained K/V (--conversation-cache-mib's budget may sit above it).
-    /// Over the ceiling, the least recently active conversations the disk tier PUBLISHED are dropped from RAM:
-    /// they stay restorable from their generation, so nothing is lost.  A conversation the tier has not published
-    /// is never dropped, the guarded donor a restore is mounting is never dropped, and the ACTIVE conversation
-    /// is not in this cache at all.  0 = off.
+    /// A park whose snapshot is over the ceiling goes to the disk tier ONLY: no host copy of a conversation the
+    /// ceiling cannot hold is ever built (the round-5 soak built a GiB of snapshot pages per park just to drop
+    /// them again - 15 s to 69 s parks at 14k-28k tokens).  Over the ceiling, the least recently active
+    /// conversations the disk tier PUBLISHED are dropped from RAM: they stay restorable from their generation,
+    /// so nothing is lost.  A conversation the tier has not published is never dropped, the guarded donor a
+    /// restore is mounting is never dropped, and the ACTIVE conversation is not in this cache at all.  0 = off.
     int64_t conversation_cache_ram_mib = 0;
     /// --kv-resident-mib N (opt-in): size --kv-resident from a budget - the resident KV of every QSA layer costs
     /// at most this many MiB.  It only LOWERS the asked residency (never raises it) and floors at --kv-resident's
@@ -1290,10 +1292,12 @@ void usage() {
                  "                       capture/rewind (posix_fadvise DONTNEED).  Without it a GiB-scale generation\n"
                  "                       the tier streamed stays resident in the page cache beside its bytes in RAM\n"
                  "  --conversation-cache-ram-mib N  --serve (opt-in): host-RAM ceiling for the conversation-cache\n"
-                 "                       side (parked snapshots plus the retained K/V).  Over it, the least recently\n"
-                 "                       active conversations the disk tier PUBLISHED drop out of RAM (they stay\n"
-                 "                       restorable from their generation).  Unpublished conversations, the donor a\n"
-                 "                       restore is mounting, and the ACTIVE conversation are never dropped (0 = off)\n"
+                 "                       side (parked snapshots plus the retained K/V).  A park whose snapshot is\n"
+                 "                       over it goes to the disk tier ONLY (no host copy is built); over it the\n"
+                 "                       least recently active conversations the disk tier PUBLISHED drop out of\n"
+                 "                       RAM (they stay restorable from their generation).  Unpublished\n"
+                 "                       conversations, the donor a restore is mounting, and the ACTIVE\n"
+                 "                       conversation are never dropped (0 = off)\n"
                  "  --kv-resident-mib N  (opt-in): size --kv-resident from a budget - the resident KV of every QSA\n"
                  "                       layer costs at most N MiB.  It only LOWERS the asked residency (never\n"
                  "                       raises it) and keeps --kv-resident's minimum, so the rest streams from the\n"
@@ -13309,8 +13313,9 @@ int main(int argc, char** argv) {
         // the RAM ceiling with the disk tier's LRU drop, and the tier's page-cache release
         if (o.conversation_cache_ram_mib > 0)
             std::fprintf(stderr, "strata serve: conversation cache: RAM ceiling %lld MiB (parked snapshots plus the "
-                                 "retained K/V); over it the least recently active conversations the disk tier "
-                                 "published drop to disk (the active conversation is never dropped)\n",
+                                 "retained K/V); a snapshot over it parks to disk only, and over it the least "
+                                 "recently active conversations the disk tier published drop to disk (the active "
+                                 "conversation is never dropped)\n",
                          (long long) o.conversation_cache_ram_mib);
         if (o.conversation_cache_evict_page_cache)
             std::fprintf(stderr, "strata serve: conversation cache: file page-cache release ON (park writes, restore "
@@ -14923,6 +14928,21 @@ int main(int argc, char** argv) {
             // --conversation-cache-ram-mib: the disk park above published this conversation's generation, so the
             // older parked copies the tier already holds can leave RAM before this snapshot is admitted.
             apply_cache_ceiling();
+            // A snapshot LARGER than the ceiling is the disk tier's job, full stop: the park above streamed it,
+            // so the next restore of this conversation is a streaming read.  Building the host copy of a
+            // conversation the ceiling cannot hold is what the round-5 soak measured as a ratchet and a stall -
+            // 15 s, 28 s and 69 s parks at 14k-28k tokens on a box at 8 GiB available, each one faulting a GiB
+            // of snapshot pages in and handing the whole image back a moment later when the ceiling dropped it.
+            // Skipping it costs the RAM copy alone, which the ceiling was going to take away anyway.
+            const size_t cache_ceiling = (size_t) std::max<int64_t>(o.conversation_cache_ram_mib, 0) << 20;
+            if (cache_ceiling > 0 && disk_on() && estimate > cache_ceiling) {
+                std::fprintf(stderr, "strata serve: conversation cache: parked to disk only (%zu tokens, snapshot "
+                                     "%zu MiB over the %lld MiB RAM ceiling; the published generation serves the "
+                                     "next restore; parked=%zu bytes=%zu)\n",
+                             src.ids.size(), estimate >> 20, (long long) o.conversation_cache_ram_mib,
+                             conversations.size(), conversations.bytes());
+                return true;
+            }
             if (!conversations.make_room(estimate, held)) {
                 std::fprintf(stderr, "strata serve: conversation cache: skip parking (snapshot %zu MiB exceeds available budget)\n",
                              estimate >> 20);
@@ -19704,17 +19724,32 @@ int main(int argc, char** argv) {
                     }
                 }
                 static const bool reread = std::getenv("STRATA_CKPT_REREAD") != nullptr;
-                if (c != nullptr && !ring_ok) {
+                bool cold_ring = false;   // a rewind the ring cannot serve, mounted target-only (below)
+                std::string cold_err;
+                if (c != nullptr && !ring_ok && has_dflash && dflash.rewind_cold(resume, cold_err)) {
                     // A deep rewind on the bounded ring: the draft window this resume reads was
                     // overwritten, and its checkpoint has no pair that survives.  Never mount stale
-                    // draft history: rebuild like STRATA_CKPT_REREAD - zero the target session and
-                    // read the resume tokens again from 0 (the prompt path re-fuses the draft context
-                    // and resets the horizon logically).  The request recovers; the serving process
-                    // keeps running.
+                    // draft history - and never pay for the prompt again either.  Rebuilding the ring
+                    // by reading [0, resume) re-read the whole prompt in the round-5 soak: a 16384-token
+                    // rewind cost 35-80 s and put PP at 28-150 tok/s against a 470-660 baseline, and it
+                    // did so for a drafter whose proposals the target verifies anyway.  The target-side
+                    // mount below is exact; the drafter's horizon goes to the resume point (the counters
+                    // are its whole state), so its first rounds propose from the previous turn's rows,
+                    // the verify rejects them, and its appends refill the window.  Restore beats re-read.
+                    cold_ring = true;
+                    std::fprintf(stderr, "strata serve: the draft ring no longer retains a rewind to "
+                                         "%lld (draft miss: %s); mounting target-only with a cold drafter "
+                                         "(no drafts claimed for the first window, the refill costs "
+                                         "acceptance, not the read)\n",
+                                 (long long) resume, pair_why.c_str());
+                }
+                if (c != nullptr && !ring_ok && !cold_ring) {
+                    // The drafter refused the cold horizon (its own capacity bounds it): the safe answer
+                    // stays the full re-read, which rebuilds the draft context from zero.
                     std::fprintf(stderr, "strata serve: the draft ring no longer retains a rewind to "
                                          "%lld (draft miss: %s); reading the prompt again (%lld tokens) "
-                                         "instead of restoring\n",
-                                 (long long) resume, pair_why.c_str(), (long long) resume);
+                                         "instead of restoring (%s)\n",
+                                 (long long) resume, pair_why.c_str(), (long long) resume, cold_err.c_str());
                     strata::core::session_zero(ss, g, nullptr, main_cs);
                     cudaStreamSynchronize(main_stream);
                     for (auto& st : stages) {
