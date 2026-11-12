@@ -233,6 +233,24 @@
   "sha": "269d9ba529d7",
   "value": 267.29
  },
+ "killer144k-tg1024[31604a3fb6d0]:gen_tps": {
+  "arm": "cap20k-control",
+  "dir": "iq3s-sweep-v0222-20261112",
+  "sha": "31604a3fb6d0",
+  "value": 25.4
+ },
+ "killer144k-tg1024[31604a3fb6d0]:read_tps": {
+  "arm": "cap20k-control",
+  "dir": "iq3s-sweep-v0222-20261112",
+  "sha": "31604a3fb6d0",
+  "value": 395.7
+ },
+ "killer144k-tg1024[31604a3fb6d0]:wall_s": {
+  "arm": "cap20k-control",
+  "dir": "iq3s-sweep-v0222-20261112",
+  "sha": "31604a3fb6d0",
+  "value": 379.814
+ },
  "killer144k-tg1024[3e3ec341ba21]:gen_tps": {
   "arm": "s34",
   "dir": "iq3s-splits-20261111",
@@ -754,6 +772,24 @@
   "dir": "iq3xxs-sweep-20261111",
   "sha": "52af0835fa6b",
   "value": 98.514
+ },
+ "longtg[54403496f52c]:gen_tps": {
+  "arm": "cap20k-control",
+  "dir": "iq3s-sweep-v0222-20261112",
+  "sha": "54403496f52c",
+  "value": 32.5
+ },
+ "longtg[54403496f52c]:read_tps": {
+  "arm": "cap20k-control",
+  "dir": "iq3s-sweep-v0222-20261112",
+  "sha": "54403496f52c",
+  "value": 317.4
+ },
+ "longtg[54403496f52c]:wall_s": {
+  "arm": "cap20k-control",
+  "dir": "iq3s-sweep-v0222-20261112",
+  "sha": "54403496f52c",
+  "value": 154.59
  },
  "longtg[550da5f85fbc]:gen_tps": {
   "arm": "S1",
@@ -1708,6 +1744,24 @@
   "dir": "ab9-spill1-split36-20261110",
   "sha": "a5311bd76566",
   "value": 38.293
+ },
+ "tg1024[a53f2f4927d0]:gen_tps": {
+  "arm": "cap20k-control",
+  "dir": "iq3s-sweep-v0222-20261112",
+  "sha": "a53f2f4927d0",
+  "value": 31.9
+ },
+ "tg1024[a53f2f4927d0]:read_tps": {
+  "arm": "cap20k-control",
+  "dir": "iq3s-sweep-v0222-20261112",
+  "sha": "a53f2f4927d0",
+  "value": 86.1
+ },
+ "tg1024[a53f2f4927d0]:wall_s": {
+  "arm": "cap20k-control",
+  "dir": "iq3s-sweep-v0222-20261112",
+  "sha": "a53f2f4927d0",
+  "value": 82.866
  },
  "tg1024[a8fc1cbdb519]:gen_tps": {
   "arm": "s34",

@@ -701,3 +701,37 @@ Window running (driver 3347244): arm1 `cap20k-rerank` (tuple + rerank),
 arm2 `cap20k-control` (tuple, no rerank — isolates the new code's effect).
 **Prod return at window end = diet-off iq3xxs** per operator directive
 (config armed at `9385ba0f6`).
+
+## v0223 window results + records ledger (13:00–13:31, Nov 12)
+
+**Matched-conditions verdict: the re-rank works.** Same window, same boot
+state, v0223 both arms:
+
+| | cap20k-rerank | cap20k-control | delta |
+| --- | ---: | ---: | ---: |
+| killer144k | **305.7 s** (iq3_s-class record) | 379.8 | −19% |
+| longtg | **115.6 s** | 154.6 | −25% |
+| tg1024 | **69.1 s** | 82.9 | −17% |
+| decode median | **~27** | ~21 | +6 |
+| zero-gen / #2065 | 0 / 0 | 0 / 0 | — |
+| memory (boot/post-killer) | 31.9/22.2 → 53.0/11.4 | same | — |
+
+**Cross-window caveat, honestly stated:** this window inherited a degraded
+memory baseline — swap ~10.2 GiB at start (prod's pressured day) vs 7.3–7.4
+for the v0222 window. The control arm regressed vs v0222's identical-flag
+arm (longtg 154.6 vs 106.4; killer 379.8 vs 313.0), so absolute numbers and
+the fixer's longtg 32–33 target are NOT cleanly testable from this window
+(measured 25.7/27.6). A clean-baseline re-measure rides the round-5 window
+(reboot clears swap).
+
+**records.py ledger built** (`9b51589`): sha-guarded best-ever per leg across
+all windows, `--update` prints NEW RECORD/REGRESSION with 3% guard. First
+audit corrected the record: "killer 313 best ever" was iq3_s-class only —
+iq3xxs killers ran 256.5–280.1 s on their own prompt class (all-time read
+best 680.8 tps, prod38 Nov-11). Today's rerank arm set the iq3_s-class
+killer record: **305.7 s**.
+
+**Prod returned diet-off 13:31:55** (operator directive): verified — v0221
+binary, zero arena-cap lines, plain relief, RSS 37.1 GiB / avail 16.3 /
+swap lingering 11.4 (stale pages, drains slowly). Decode should hold the
+35+ pressure-immune band again.
