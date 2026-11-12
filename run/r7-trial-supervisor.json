@@ -1,0 +1,24 @@
+{
+  "supervisor_pid": 978978,
+  "launcher_pid": 978979,
+  "generation": 1,
+  "state": "stopped",
+  "timestamp": 1794515756.8767724,
+  "helper_pid": 978986,
+  "server_pid": 979232,
+  "engine_log": "/mnt/srcds/Strata/logs/r7-trial-20261112-212131-978979.log",
+  "helper_log": "/mnt/srcds/Strata/logs/r7-trial-20261112-212131-978979-helper.log",
+  "helper_start": "410748",
+  "server_start": "410852",
+  "engine_stderr_log": "/mnt/srcds/Strata/logs/engine-r7c.log",
+  "engine_pid": 979725,
+  "engine_start": "411040",
+  "attached_at": 1794514947.2064939,
+  "stage_affinity": {
+    "state": "applied",
+    "moved": 64,
+    "snapshot": "/mnt/srcds/Strata/run/r7-trial-supervisor-affinity-979725-411040.retry6.json",
+    "cpus": "3,5,7,9,11,13,15"
+  },
+  "reason": "launcher exited"
+}

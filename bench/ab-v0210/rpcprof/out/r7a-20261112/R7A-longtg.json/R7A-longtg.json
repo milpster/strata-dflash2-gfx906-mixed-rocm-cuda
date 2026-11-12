@@ -1,0 +1,33 @@
+{
+ "arm": "R7A",
+ "leg": "longtg",
+ "kind": "tg",
+ "ctx": 160000,
+ "max_tokens": 384,
+ "ts": 1794513906.46,
+ "walls": [
+  61.736,
+  11.055
+ ],
+ "wall_s": 72.792,
+ "content_from": "content",
+ "prompt_bytes": 160000,
+ "sha256": "8c7d3c5cdd735b5debcc503420f671c2a0841c42d10a01d7cdf91ee409274e68",
+ "elog": "/mnt/srcds/Strata/logs/engine-r7a.log",
+ "elog_start": 20787,
+ "elog_end": 25425,
+ "hlog": "/mnt/srcds/Strata/logs/r7-trial-20261112-205333-571314-helper.log",
+ "hlog_start": 1431,
+ "hlog_end": 1431,
+ "mem": {
+  "max_rss_mib": 49257,
+  "min_avail_mib": 11107,
+  "max_swap_used_mib": 8506,
+  "max_vram_mib": {
+   "card3": 16208,
+   "card4": 459,
+   "card2": 16286,
+   "nvidia0": 7118
+  }
+ }
+}

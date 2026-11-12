@@ -967,3 +967,90 @@ elog complete); elog_start/end are BYTE offsets not line numbers.
   periodic ckpt trigger, 6 ckpts/408 MB mid-killer, 11-09 helper-lock 1.57 s).
 - Parent backlog (next benchmark round): fp16 deconfound boot on same tuple to split
   int8-vs-tuple/v0225 if fixer attribution leaves it open.
+
+## Round 7 — attribution landed: the decode-window expert swap-in storm; int8 KV EXONERATED (Nov 12 night, fixer)
+
+Fresh fixer, clean run, idle box, trial :8021 (own sockets/state/logs; the parent's
+:8019 state untouched). One engine commit on `helper-ipc-diet` after `12bba2791`,
+pushed to fork: `82af2b4d7` (STRATA_ARENA_RERANK_MAX — the re-rank's per-boundary
+bound, default 64 = unchanged). **v0226 pin candidates (fix6 trees, ALL L3 GREEN,
+guards PASS, helper ctests cuda 6/6 + hip 2/2, incl. ownership + arena-cap)**:
+hip `56d2e1b7…`, cuda `33f83acb…`, helper (+`-patient`, identical) `6d4fd703…`,
+at `/mnt/srcds/Strata-wt-helper-ipc/build-mixed-gpu/rpcw-{hip,cuda}-fix6/`.
+
+### Attribution (3 panels, v0225 binaries, A/B same-day A/A)
+
+| leg (ctx) | A: v0225 tuple | B: +rerank@64+floor6000 | C: cap 24000 | v0225 panel (20:18) | v0219 fp16 uncapped |
+|---|---|---|---|---|---|
+| killer cold TG | 29.2 | 28.8 | 30.4 | 33.9 | 44.3 |
+| killer PP | 593 | 565 | **417 (swap thrash)** | 646 | 649 |
+| killer decode storm (pairs/MiB/ms file) | 5072/9643/6454 | 5062/9619/6482 | 3991/7615/4651 | 5059/9616/6143 | n/a (no cap) |
+| killer warm TG | 34.2 / 37.6 | 34.2 | 32.6 | 41.0–42.9 | — |
+| longtg TG | 33.3–36.9 | **400 → engine exit** | 32.7–40.6 | 35.0–42.9 | — |
+| tg1024 TG | 36.8 / 39.2 | (died before) | 34.5 / 40.7 | 44.8 (1k ctx) | — |
+
+Verdicts with numbers:
+- **CONVICTED: the capped arena's decode-window swap-in storm.** The killer's
+  decode carries 5072 pair swap-ins = 9.6 GiB of pack-file reads = 6.45 s inside an
+  18.6 s decode (542 tok); warm passes carry 3–116 swaps and decode 34–40.
+  Cap arithmetic closes it: 24576 pairs = hot 9542 (VII backing) + tier-served 9271
+  (helper mirror + spill + stages) + 1404 cap evictions + 7683 resident others;
+  decode's first window sweep pulls the decode universe the boot profile (a
+  PROMPT trace) never ranked. Every leg with a storm decodes 29–31; every leg
+  without decodes 34–40. Day shift is −8..−12% on everything today (PP 565–593 vs
+  646), so absolute TG bands shift; the storm/no-storm GAP is the signal.
+- **EXONERATED: int8 KV attention at long ctx.** v0224 fp16 on a near-tuple
+  (16:57 boot, slots 5000, ram-ceiling 4096): killer 27.6 cold / 34.0 WARM at
+  142k — worse than int8's 33.9/41.0–42.9. int8 halves per-token KV read traffic;
+  at 142k it is a +6–7 tok/s WIN, at 1k ctx parity. Keep `--kv int8`.
+- **EXONERATED: HIP sync checkpoints.** Periodic saves fire at 16k boundaries
+  INSIDE the read (PP parity proves the read absorbs them); the decode window
+  carries zero checkpoint saves; idle parks (3.0 s, 2690 MiB released) land
+  between requests. STRATA_CKPT_ASYNC stays CUDA-only with no TG cost to HIP.
+- **EXONERATED: helper lock.** timeouts=0 fallbacks=0 on every leg; helper bytes
+  (23–452 MB/leg) do not correlate with TG.
+
+### The levers measured
+
+- **rerank@64 (existing round-4 code, unarmed in the tuple): no TG delta**
+  (killer 28.8 vs 29.2) — and the plan itself only finds 14–33 strict-win swaps per
+  boundary at this tuple (read-phase swap-in heat drowns decode heat; the
+  strict-win rule stops early). The knob (82af2b4d7) raises the BOUND, not the
+  plan; inert alone.
+- **FATAL 400 on the rerank arm (BLOCKER before anyone arms these flags)**:
+  longtg leg after two killer legs → `400 invalid request: refilling a lent slot
+  failed: ExpertCache::fill_slot_queued: invalid argument` → the serve loop
+  returns 1 → supervisor respawns the pair. Sequence: re-rank (promote 33/demote
+  37) at killer-2's request end, then the next prompt's slot-lend refill memcpy
+  H2D fails invalid-argument. Hypothesis (unconfirmed, needs a debugger repro):
+  a stale device alias of a demoted pair's registered range reaching
+  fill_slot_queued as the copy source after release_pair's
+  unregister/madvise/re-register. Round-4's validation tuple did not run
+  --prompt-cache-spread + the disk tier + idle saves. Logs:
+  engine-r7b.log lines 104–108, r7-trial-20261112-210728-778337.log line 105.
+- **Cap dial CLOSED at 22000.** Cap 24000 (+1062 resident pairs, storm −21% to
+  3991/7615/4651) swaps the box: maxRSS 50.4 GiB, swap 10.5 GiB, killer PP
+  593→417 (−30%), warm TG no better. The int8 KV win is what MAKES 22000 fit
+  (fp16 same tuple booted at avail 13.0 vs int8 17.3); there is no headroom
+  above it.
+
+### What is left open (next round, in order)
+
+1. Fix the rerank/lent-slot 400 (the only path to spending the band on decode's
+   set), then re-measure rerank with a plan that ranks decode-phase swap-ins
+   above read-phase (phase-tagged heat) — the current heat mixes both.
+2. The cold-first-decode storm is otherwise structural at this box/pack/RAM
+   budget: VII VRAM packed, 3080 full (7144/8192), arena at the swap edge.
+   Options that remain: phase-tagged heat + fixed re-rank (1), or accept
+   cold-decode ≈ 29–31 with warm 34–40 and spend the next lever on iq3_s's
+   pack-path (the goal model) — its decode universe arithmetic differs and the
+   storm share must be re-measured there before porting any conclusion.
+3. Day-shift band: today's whole panel is −8..−12% vs the 20:18 panel (same
+   binaries, same tuple, idle box both times) — the tps panels should keep
+   same-day A/A arms (they did tonight: A vs B).
+
+Trial assets (reusable): `bench/ab-v0210/rpcprof/{launch-trial-r7.sh,r7-configs.py,
+trial-r7{a,b,c}.json,r7-legs.py}`, stop script `run/r7-stop.sh`, logs
+`logs/engine-r7{a,b,c}.log`, `logs/r7*-panel.out`, records under
+`bench/ab-v0210/rpcprof/out/r7{a,b,c}-20261112/`. Port 8021 cleaned; nothing
+touched :8009; no soaks run.

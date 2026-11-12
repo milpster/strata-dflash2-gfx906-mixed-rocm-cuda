@@ -1,0 +1,32 @@
+{
+ "arm": "R7A",
+ "leg": "killer144k-tg1024",
+ "kind": "prefill",
+ "ctx": 786800,
+ "max_tokens": 1024,
+ "ts": 1794513754.93,
+ "walls": [
+  261.531
+ ],
+ "wall_s": 261.533,
+ "content_from": "content",
+ "prompt_bytes": 786800,
+ "sha256": "4105b97d11c0f9b5d1752f1804e7282160c6e7c8f1830f5c8974a4ba4b2fc5b0",
+ "elog": "/mnt/srcds/Strata/logs/engine-r7a.log",
+ "elog_start": 14434,
+ "elog_end": 17419,
+ "hlog": "/mnt/srcds/Strata/logs/r7-trial-20261112-205333-571314-helper.log",
+ "hlog_start": 1431,
+ "hlog_end": 1431,
+ "mem": {
+  "max_rss_mib": 49079,
+  "min_avail_mib": 9283,
+  "max_swap_used_mib": 8659,
+  "max_vram_mib": {
+   "card3": 16208,
+   "card4": 482,
+   "card2": 16286,
+   "nvidia0": 7144
+  }
+ }
+}
