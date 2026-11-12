@@ -1094,3 +1094,14 @@ Reading:
   pairs vs 1404, cold TG 18.6), (3) IQ3_S flat decode tax analysis (-25..30% even @1k ctx),
   (4) round-6/7 semantics + defaults protected, (5) builds green + CPU-only tests, shas
   for the v0227 pin candidate, no boots.
+
+## Build cache wired (2026-11-12 ~23:4x)
+
+- ccache 4.14.3 built from source into ~/.local (no sudo/brew/conda on box), ~/.local/bin
+  already on PATH. max_size 20G (~/.config/ccache/ccache.conf), direct mode on, stats zeroed.
+- The trees already carry GGML_CCACHE=ON (ggml-lineage cmake) - detection was NOTFOUND only
+  for the missing binary. Any NEW build dir (or reconfigure of an existing one) now picks
+  ccache up automatically; no CMake edits needed.
+- Round-8 fixer's in-flight build predates the binary - first cached build is the NEXT one
+  (v0227+). HIP offload single-invocation clang compiles should cache; check
+  `ccache --show-stats` "uncacheable calls" after the first cached build to confirm.
