@@ -1,0 +1,2576 @@
+{
+ "8000-1[01db7a9d154b]:gen_tps": {
+  "arm": "M1A",
+  "dir": "ab9-matrix-m1a-adaptive-on-20261111",
+  "sha": "01db7a9d154b",
+  "value": 52.9
+ },
+ "8000-1[01db7a9d154b]:read_tps": {
+  "arm": "B",
+  "dir": "ab9",
+  "sha": "01db7a9d154b",
+  "value": 264.3
+ },
+ "8000-1[01db7a9d154b]:wall_s": {
+  "arm": "B",
+  "dir": "ab9",
+  "sha": "01db7a9d154b",
+  "value": 6.387
+ },
+ "8000-1[c2e533c4e2e3]:gen_tps": {
+  "arm": "M3A",
+  "dir": "ab9-matrix-m3a-res128-20261111",
+  "sha": "c2e533c4e2e3",
+  "value": 26.7
+ },
+ "8000-1[c2e533c4e2e3]:read_tps": {
+  "arm": "M3A",
+  "dir": "ab9-matrix-m3a-res128-20261111",
+  "sha": "c2e533c4e2e3",
+  "value": 241.8
+ },
+ "8000-1[c2e533c4e2e3]:wall_s": {
+  "arm": "M3A",
+  "dir": "ab9-matrix-m3a-res128-20261111",
+  "sha": "c2e533c4e2e3",
+  "value": 6.974
+ },
+ "8000-2[01db7a9d154b]:gen_tps": {
+  "arm": "S1",
+  "dir": "ab9-iq3s-split36-20261110",
+  "sha": "01db7a9d154b",
+  "value": 54.6
+ },
+ "8000-2[01db7a9d154b]:read_tps": {
+  "arm": "A",
+  "dir": "ab9-run5-20261109",
+  "sha": "01db7a9d154b",
+  "value": 322.3
+ },
+ "8000-2[01db7a9d154b]:wall_s": {
+  "arm": "B",
+  "dir": "ab9",
+  "sha": "01db7a9d154b",
+  "value": 6.31
+ },
+ "8000-2[c2e533c4e2e3]:gen_tps": {
+  "arm": "M1",
+  "dir": "ab9-matrix-m1-spilloff-20261111",
+  "sha": "c2e533c4e2e3",
+  "value": 34.5
+ },
+ "8000-2[c2e533c4e2e3]:read_tps": {
+  "arm": "M1",
+  "dir": "ab9-matrix-m1-spilloff-20261111",
+  "sha": "c2e533c4e2e3",
+  "value": 220.9
+ },
+ "8000-2[c2e533c4e2e3]:wall_s": {
+  "arm": "M1",
+  "dir": "ab9-matrix-m1-spilloff-20261111",
+  "sha": "c2e533c4e2e3",
+  "value": 7.581
+ },
+ "8000-3[01db7a9d154b]:gen_tps": {
+  "arm": "S1",
+  "dir": "ab9-iq3s-split38-20261110",
+  "sha": "01db7a9d154b",
+  "value": 52.9
+ },
+ "8000-3[01db7a9d154b]:read_tps": {
+  "arm": "B",
+  "dir": "ab9",
+  "sha": "01db7a9d154b",
+  "value": 267.9
+ },
+ "8000-3[01db7a9d154b]:wall_s": {
+  "arm": "B",
+  "dir": "ab9",
+  "sha": "01db7a9d154b",
+  "value": 6.296
+ },
+ "80000-1[01db7a9d154b]:gen_tps": {
+  "arm": "D",
+  "dir": "ab9",
+  "sha": "01db7a9d154b",
+  "value": 52.4
+ },
+ "80000-1[01db7a9d154b]:read_tps": {
+  "arm": "B",
+  "dir": "ab9",
+  "sha": "01db7a9d154b",
+  "value": 401.3
+ },
+ "80000-1[01db7a9d154b]:wall_s": {
+  "arm": "B",
+  "dir": "ab9",
+  "sha": "01db7a9d154b",
+  "value": 37.475
+ },
+ "80000-2[01db7a9d154b]:gen_tps": {
+  "arm": "S1",
+  "dir": "ab9-split38-h384-20261110",
+  "sha": "01db7a9d154b",
+  "value": 52.7
+ },
+ "80000-2[01db7a9d154b]:read_tps": {
+  "arm": "B",
+  "dir": "ab9",
+  "sha": "01db7a9d154b",
+  "value": 402.7
+ },
+ "80000-2[01db7a9d154b]:wall_s": {
+  "arm": "B",
+  "dir": "ab9",
+  "sha": "01db7a9d154b",
+  "value": 37.299
+ },
+ "80000-3[01db7a9d154b]:gen_tps": {
+  "arm": "D",
+  "dir": "ab9",
+  "sha": "01db7a9d154b",
+  "value": 52.0
+ },
+ "80000-3[01db7a9d154b]:read_tps": {
+  "arm": "B",
+  "dir": "ab9",
+  "sha": "01db7a9d154b",
+  "value": 400.1
+ },
+ "80000-3[01db7a9d154b]:wall_s": {
+  "arm": "B",
+  "dir": "ab9",
+  "sha": "01db7a9d154b",
+  "value": 37.589
+ },
+ "infill250k[01db7a9d154b]:gen_tps": {
+  "arm": "M4A",
+  "dir": "ab9-matrix-m4a-res64-20261111",
+  "sha": "01db7a9d154b",
+  "value": 32.2
+ },
+ "infill250k[01db7a9d154b]:read_tps": {
+  "arm": "A-ref-7400-300-256",
+  "dir": "iq3xxs-occ-20261111",
+  "sha": "01db7a9d154b",
+  "value": 666.7
+ },
+ "infill250k[01db7a9d154b]:wall_s": {
+  "arm": "A-ref-7400-300-256",
+  "dir": "iq3xxs-occ-20261111",
+  "sha": "01db7a9d154b",
+  "value": 378.704
+ },
+ "infill250k[f111ceb75720]:gen_tps": {
+  "arm": "M3A",
+  "dir": "ab9-matrix-m3a-res128-20261111",
+  "sha": "f111ceb75720",
+  "value": 19.3
+ },
+ "infill250k[f111ceb75720]:read_tps": {
+  "arm": "M3A",
+  "dir": "ab9-matrix-m3a-res128-20261111",
+  "sha": "f111ceb75720",
+  "value": 635.8
+ },
+ "infill250k[f111ceb75720]:wall_s": {
+  "arm": "M2A",
+  "dir": "ab9-matrix-m2a-spillon-20261111",
+  "sha": "f111ceb75720",
+  "value": 408.591
+ },
+ "killer144k-tg1024[00fcb5fee168]:gen_tps": {
+  "arm": "b16-h6796-r",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "00fcb5fee168",
+  "value": 38.7
+ },
+ "killer144k-tg1024[00fcb5fee168]:read_tps": {
+  "arm": "b16-h6796-r",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "00fcb5fee168",
+  "value": 535.2
+ },
+ "killer144k-tg1024[00fcb5fee168]:wall_s": {
+  "arm": "b16-h6796-r",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "00fcb5fee168",
+  "value": 275.034
+ },
+ "killer144k-tg1024[17cbacd3e9c9]:gen_tps": {
+  "arm": "b20-h7400",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "17cbacd3e9c9",
+  "value": 44.7
+ },
+ "killer144k-tg1024[17cbacd3e9c9]:read_tps": {
+  "arm": "b20-h7400",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "17cbacd3e9c9",
+  "value": 486.3
+ },
+ "killer144k-tg1024[17cbacd3e9c9]:wall_s": {
+  "arm": "b20-h7400",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "17cbacd3e9c9",
+  "value": 350.209
+ },
+ "killer144k-tg1024[269d9ba529d7]:gen_tps": {
+  "arm": "b19-h7400",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "269d9ba529d7",
+  "value": 41.7
+ },
+ "killer144k-tg1024[269d9ba529d7]:read_tps": {
+  "arm": "b19-h7400",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "269d9ba529d7",
+  "value": 537.4
+ },
+ "killer144k-tg1024[269d9ba529d7]:wall_s": {
+  "arm": "b19-h7400",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "269d9ba529d7",
+  "value": 267.29
+ },
+ "killer144k-tg1024[3e3ec341ba21]:gen_tps": {
+  "arm": "s34",
+  "dir": "iq3s-splits-20261111",
+  "sha": "3e3ec341ba21",
+  "value": 34.3
+ },
+ "killer144k-tg1024[3e3ec341ba21]:read_tps": {
+  "arm": "s34",
+  "dir": "iq3s-splits-20261111",
+  "sha": "3e3ec341ba21",
+  "value": 609.3
+ },
+ "killer144k-tg1024[3e3ec341ba21]:wall_s": {
+  "arm": "s34",
+  "dir": "iq3s-splits-20261111",
+  "sha": "3e3ec341ba21",
+  "value": 520.772
+ },
+ "killer144k-tg1024[4e0845267d4a]:gen_tps": {
+  "arm": "prod38",
+  "dir": "prod-killer144k-20261111",
+  "sha": "4e0845267d4a",
+  "value": 34.6
+ },
+ "killer144k-tg1024[4e0845267d4a]:read_tps": {
+  "arm": "prod38",
+  "dir": "prod-killer144k-20261111",
+  "sha": "4e0845267d4a",
+  "value": 680.8
+ },
+ "killer144k-tg1024[4e0845267d4a]:wall_s": {
+  "arm": "prod38",
+  "dir": "prod-killer144k-20261111",
+  "sha": "4e0845267d4a",
+  "value": 458.389
+ },
+ "killer144k-tg1024[505340c0199a]:gen_tps": {
+  "arm": "R4",
+  "dir": "ab9-reeval-r4-20261111",
+  "sha": "505340c0199a",
+  "value": 33.6
+ },
+ "killer144k-tg1024[505340c0199a]:read_tps": {
+  "arm": "R4",
+  "dir": "ab9-reeval-r4-20261111",
+  "sha": "505340c0199a",
+  "value": 523.3
+ },
+ "killer144k-tg1024[505340c0199a]:wall_s": {
+  "arm": "R4",
+  "dir": "ab9-reeval-r4-20261111",
+  "sha": "505340c0199a",
+  "value": 256.455
+ },
+ "killer144k-tg1024[66935b018ad8]:gen_tps": {
+  "arm": "s38",
+  "dir": "iq3s-splits-20261111",
+  "sha": "66935b018ad8",
+  "value": 33.3
+ },
+ "killer144k-tg1024[66935b018ad8]:read_tps": {
+  "arm": "s38",
+  "dir": "iq3s-splits-20261111",
+  "sha": "66935b018ad8",
+  "value": 402.9
+ },
+ "killer144k-tg1024[66935b018ad8]:wall_s": {
+  "arm": "s38",
+  "dir": "iq3s-splits-20261111",
+  "sha": "66935b018ad8",
+  "value": 370.254
+ },
+ "killer144k-tg1024[69cbc5a7fabb]:gen_tps": {
+  "arm": "cap30k-dec6k",
+  "dir": "iq3s-sweep-v0222-20261112",
+  "sha": "69cbc5a7fabb",
+  "value": 36.9
+ },
+ "killer144k-tg1024[69cbc5a7fabb]:read_tps": {
+  "arm": "cap30k-dec6k",
+  "dir": "iq3s-sweep-v0222-20261112",
+  "sha": "69cbc5a7fabb",
+  "value": 472.1
+ },
+ "killer144k-tg1024[69cbc5a7fabb]:wall_s": {
+  "arm": "cap30k-dec6k",
+  "dir": "iq3s-sweep-v0222-20261112",
+  "sha": "69cbc5a7fabb",
+  "value": 369.291
+ },
+ "killer144k-tg1024[78df4ac9c0a6]:gen_tps": {
+  "arm": "s36",
+  "dir": "iq3s-splits-20261111",
+  "sha": "78df4ac9c0a6",
+  "value": 31.1
+ },
+ "killer144k-tg1024[78df4ac9c0a6]:read_tps": {
+  "arm": "s36",
+  "dir": "iq3s-splits-20261111",
+  "sha": "78df4ac9c0a6",
+  "value": 485.0
+ },
+ "killer144k-tg1024[78df4ac9c0a6]:wall_s": {
+  "arm": "s36",
+  "dir": "iq3s-splits-20261111",
+  "sha": "78df4ac9c0a6",
+  "value": 626.658
+ },
+ "killer144k-tg1024[7cb2c67bef53]:gen_tps": {
+  "arm": "b16-h7400",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "7cb2c67bef53",
+  "value": 41.4
+ },
+ "killer144k-tg1024[7cb2c67bef53]:read_tps": {
+  "arm": "b16-h7400",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "7cb2c67bef53",
+  "value": 537.7
+ },
+ "killer144k-tg1024[7cb2c67bef53]:wall_s": {
+  "arm": "b16-h7400",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "7cb2c67bef53",
+  "value": 280.086
+ },
+ "killer144k-tg1024[9249c2b5dd04]:gen_tps": {
+  "arm": "S34",
+  "dir": "ab9-split-retest-s34-20261111",
+  "sha": "9249c2b5dd04",
+  "value": 43.1
+ },
+ "killer144k-tg1024[9249c2b5dd04]:read_tps": {
+  "arm": "S34",
+  "dir": "ab9-split-retest-s34-20261111",
+  "sha": "9249c2b5dd04",
+  "value": 660.9
+ },
+ "killer144k-tg1024[9249c2b5dd04]:wall_s": {
+  "arm": "S34",
+  "dir": "ab9-split-retest-s34-20261111",
+  "sha": "9249c2b5dd04",
+  "value": 464.897
+ },
+ "killer144k-tg1024[aa8459ad504a]:gen_tps": {
+  "arm": "cap20k-dec6k",
+  "dir": "iq3s-sweep-v0222-20261112",
+  "sha": "aa8459ad504a",
+  "value": 30.5
+ },
+ "killer144k-tg1024[aa8459ad504a]:read_tps": {
+  "arm": "cap20k-dec6k",
+  "dir": "iq3s-sweep-v0222-20261112",
+  "sha": "aa8459ad504a",
+  "value": 477.1
+ },
+ "killer144k-tg1024[aa8459ad504a]:wall_s": {
+  "arm": "cap20k-dec6k",
+  "dir": "iq3s-sweep-v0222-20261112",
+  "sha": "aa8459ad504a",
+  "value": 313.03
+ },
+ "killer144k-tg1024[b9b002f07531]:gen_tps": {
+  "arm": "diet-s34",
+  "dir": "iq3s-diet-20261111",
+  "sha": "b9b002f07531",
+  "value": 28.9
+ },
+ "killer144k-tg1024[b9b002f07531]:read_tps": {
+  "arm": "diet-s34",
+  "dir": "iq3s-diet-20261111",
+  "sha": "b9b002f07531",
+  "value": 462.1
+ },
+ "killer144k-tg1024[b9b002f07531]:wall_s": {
+  "arm": "diet-s34",
+  "dir": "iq3s-diet-20261111",
+  "sha": "b9b002f07531",
+  "value": 314.44
+ },
+ "killer144k-tg1024[fec72040950a]:gen_tps": {
+  "arm": "cap20k-rerank",
+  "dir": "iq3s-sweep-v0222-20261112",
+  "sha": "fec72040950a",
+  "value": 30.8
+ },
+ "killer144k-tg1024[fec72040950a]:read_tps": {
+  "arm": "cap20k-rerank",
+  "dir": "iq3s-sweep-v0222-20261112",
+  "sha": "fec72040950a",
+  "value": 463.6
+ },
+ "killer144k-tg1024[fec72040950a]:wall_s": {
+  "arm": "cap20k-rerank",
+  "dir": "iq3s-sweep-v0222-20261112",
+  "sha": "fec72040950a",
+  "value": 305.683
+ },
+ "killer144kL-tg1024[380c2ecfdcb5]:gen_tps": {
+  "arm": "L2",
+  "dir": "lever2-20261111",
+  "sha": "380c2ecfdcb5",
+  "value": 34.4
+ },
+ "killer144kL-tg1024[380c2ecfdcb5]:read_tps": {
+  "arm": "L2",
+  "dir": "lever2-20261111",
+  "sha": "380c2ecfdcb5",
+  "value": 522.8
+ },
+ "killer144kL-tg1024[380c2ecfdcb5]:wall_s": {
+  "arm": "L2",
+  "dir": "lever2-20261111",
+  "sha": "380c2ecfdcb5",
+  "value": 282.722
+ },
+ "killer144kL-tg1024[76a517a36e21]:gen_tps": {
+  "arm": "S34",
+  "dir": "ab9-split-retest-s34-20261111",
+  "sha": "76a517a36e21",
+  "value": 39.9
+ },
+ "killer144kL-tg1024[76a517a36e21]:read_tps": {
+  "arm": "S34",
+  "dir": "ab9-split-retest-s34-20261111",
+  "sha": "76a517a36e21",
+  "value": 653.0
+ },
+ "killer144kL-tg1024[76a517a36e21]:wall_s": {
+  "arm": "S34",
+  "dir": "ab9-split-retest-s34-20261111",
+  "sha": "76a517a36e21",
+  "value": 259.885
+ },
+ "killer144kL-tg1024[c609220c4742]:gen_tps": {
+  "arm": "A2",
+  "dir": "fix5-arm2-20261111",
+  "sha": "c609220c4742",
+  "value": 35.6
+ },
+ "killer144kL-tg1024[c609220c4742]:read_tps": {
+  "arm": "A2",
+  "dir": "fix5-arm2-20261111",
+  "sha": "c609220c4742",
+  "value": 537.0
+ },
+ "killer144kL-tg1024[c609220c4742]:wall_s": {
+  "arm": "A2",
+  "dir": "fix5-arm2-20261111",
+  "sha": "c609220c4742",
+  "value": 276.379
+ },
+ "killer144kL-tg1024[fa0a9a217f38]:gen_tps": {
+  "arm": "S36",
+  "dir": "ab9-split-retest-s36-20261111",
+  "sha": "fa0a9a217f38",
+  "value": 36.4
+ },
+ "killer144kL-tg1024[fa0a9a217f38]:read_tps": {
+  "arm": "S36",
+  "dir": "ab9-split-retest-s36-20261111",
+  "sha": "fa0a9a217f38",
+  "value": 633.9
+ },
+ "killer144kL-tg1024[fa0a9a217f38]:wall_s": {
+  "arm": "S36",
+  "dir": "ab9-split-retest-s36-20261111",
+  "sha": "fa0a9a217f38",
+  "value": 257.487
+ },
+ "killer144kL-tg1024[fe7aeb521d66]:gen_tps": {
+  "arm": "A1",
+  "dir": "fix5-arm1-20261111",
+  "sha": "fe7aeb521d66",
+  "value": 37.8
+ },
+ "killer144kL-tg1024[fe7aeb521d66]:read_tps": {
+  "arm": "A1",
+  "dir": "fix5-arm1-20261111",
+  "sha": "fe7aeb521d66",
+  "value": 661.2
+ },
+ "killer144kL-tg1024[fe7aeb521d66]:wall_s": {
+  "arm": "A1",
+  "dir": "fix5-arm1-20261111",
+  "sha": "fe7aeb521d66",
+  "value": 466.856
+ },
+ "killer250k-tg1024[032524b3acb0]:gen_tps": {
+  "arm": "s3",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "032524b3acb0",
+  "value": 36.3
+ },
+ "killer250k-tg1024[032524b3acb0]:read_tps": {
+  "arm": "s3",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "032524b3acb0",
+  "value": 668.7
+ },
+ "killer250k-tg1024[032524b3acb0]:wall_s": {
+  "arm": "s3",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "032524b3acb0",
+  "value": 426.26
+ },
+ "killer250k-tg1024[30ce6a2c764a]:gen_tps": {
+  "arm": "R2",
+  "dir": "ab9-reeval-r2-20261111",
+  "sha": "30ce6a2c764a",
+  "value": 33.6
+ },
+ "killer250k-tg1024[30ce6a2c764a]:read_tps": {
+  "arm": "R2",
+  "dir": "ab9-reeval-r2-20261111",
+  "sha": "30ce6a2c764a",
+  "value": 619.3
+ },
+ "killer250k-tg1024[30ce6a2c764a]:wall_s": {
+  "arm": "R2",
+  "dir": "ab9-reeval-r2-20261111",
+  "sha": "30ce6a2c764a",
+  "value": 425.23
+ },
+ "killer250k-tg1024[3e4f38f51723]:gen_tps": {
+  "arm": "A1",
+  "dir": "fix5-arm1-20261111",
+  "sha": "3e4f38f51723",
+  "value": 44.5
+ },
+ "killer250k-tg1024[3e4f38f51723]:read_tps": {
+  "arm": "A1",
+  "dir": "fix5-arm1-20261111",
+  "sha": "3e4f38f51723",
+  "value": 300.9
+ },
+ "killer250k-tg1024[3e4f38f51723]:wall_s": {
+  "arm": "A1",
+  "dir": "fix5-arm1-20261111",
+  "sha": "3e4f38f51723",
+  "value": 431.051
+ },
+ "killer250k-tg1024[8fe18151d477]:gen_tps": {
+  "arm": "R1",
+  "dir": "ab9-reeval-r1-20261111",
+  "sha": "8fe18151d477",
+  "value": 33.0
+ },
+ "killer250k-tg1024[8fe18151d477]:read_tps": {
+  "arm": "R1",
+  "dir": "ab9-reeval-r1-20261111",
+  "sha": "8fe18151d477",
+  "value": 617.0
+ },
+ "killer250k-tg1024[8fe18151d477]:wall_s": {
+  "arm": "R1",
+  "dir": "ab9-reeval-r1-20261111",
+  "sha": "8fe18151d477",
+  "value": 424.128
+ },
+ "longtg[02c698a13951]:gen_tps": {
+  "arm": "cap20k-dec6k",
+  "dir": "iq3s-sweep-v0222-20261112",
+  "sha": "02c698a13951",
+  "value": 29.9
+ },
+ "longtg[02c698a13951]:read_tps": {
+  "arm": "cap20k-dec6k",
+  "dir": "iq3s-sweep-v0222-20261112",
+  "sha": "02c698a13951",
+  "value": 377.2
+ },
+ "longtg[02c698a13951]:wall_s": {
+  "arm": "cap20k-dec6k",
+  "dir": "iq3s-sweep-v0222-20261112",
+  "sha": "02c698a13951",
+  "value": 106.441
+ },
+ "longtg[0ad7645f5907]:gen_tps": {
+  "arm": "A1",
+  "dir": "fix5-arm1-20261111",
+  "sha": "0ad7645f5907",
+  "value": 43.5
+ },
+ "longtg[0ad7645f5907]:read_tps": {
+  "arm": "A1",
+  "dir": "fix5-arm1-20261111",
+  "sha": "0ad7645f5907",
+  "value": 417.1
+ },
+ "longtg[0ad7645f5907]:wall_s": {
+  "arm": "A1",
+  "dir": "fix5-arm1-20261111",
+  "sha": "0ad7645f5907",
+  "value": 94.607
+ },
+ "longtg[0fba066abf4e]:gen_tps": {
+  "arm": "R4",
+  "dir": "ab9-reeval-r4-20261111",
+  "sha": "0fba066abf4e",
+  "value": 35.4
+ },
+ "longtg[0fba066abf4e]:read_tps": {
+  "arm": "R4",
+  "dir": "ab9-reeval-r4-20261111",
+  "sha": "0fba066abf4e",
+  "value": 448.4
+ },
+ "longtg[0fba066abf4e]:wall_s": {
+  "arm": "R4",
+  "dir": "ab9-reeval-r4-20261111",
+  "sha": "0fba066abf4e",
+  "value": 91.117
+ },
+ "longtg[19d268086e0f]:gen_tps": {
+  "arm": "cap20k-rerank",
+  "dir": "iq3s-sweep-v0222-20261112",
+  "sha": "19d268086e0f",
+  "value": 32.2
+ },
+ "longtg[19d268086e0f]:read_tps": {
+  "arm": "cap20k-rerank",
+  "dir": "iq3s-sweep-v0222-20261112",
+  "sha": "19d268086e0f",
+  "value": 373.0
+ },
+ "longtg[19d268086e0f]:wall_s": {
+  "arm": "cap20k-rerank",
+  "dir": "iq3s-sweep-v0222-20261112",
+  "sha": "19d268086e0f",
+  "value": 115.592
+ },
+ "longtg[1ae2bedb3e3b]:gen_tps": {
+  "arm": "diet-s34",
+  "dir": "iq3s-diet-20261111",
+  "sha": "1ae2bedb3e3b",
+  "value": 28.1
+ },
+ "longtg[1ae2bedb3e3b]:read_tps": {
+  "arm": "diet-s34",
+  "dir": "iq3s-diet-20261111",
+  "sha": "1ae2bedb3e3b",
+  "value": 276.2
+ },
+ "longtg[1ae2bedb3e3b]:wall_s": {
+  "arm": "diet-s34",
+  "dir": "iq3s-diet-20261111",
+  "sha": "1ae2bedb3e3b",
+  "value": 141.908
+ },
+ "longtg[334d11ca6d48]:gen_tps": {
+  "arm": "S38",
+  "dir": "ab9-split-retest-s38-20261111",
+  "sha": "334d11ca6d48",
+  "value": 35.4
+ },
+ "longtg[334d11ca6d48]:read_tps": {
+  "arm": "S38",
+  "dir": "ab9-split-retest-s38-20261111",
+  "sha": "334d11ca6d48",
+  "value": 444.5
+ },
+ "longtg[334d11ca6d48]:wall_s": {
+  "arm": "S38",
+  "dir": "ab9-split-retest-s38-20261111",
+  "sha": "334d11ca6d48",
+  "value": 96.104
+ },
+ "longtg[41e168cfdd1d]:gen_tps": {
+  "arm": "A2",
+  "dir": "fix5-arm2-20261111",
+  "sha": "41e168cfdd1d",
+  "value": 40.0
+ },
+ "longtg[41e168cfdd1d]:read_tps": {
+  "arm": "A2",
+  "dir": "fix5-arm2-20261111",
+  "sha": "41e168cfdd1d",
+  "value": 432.6
+ },
+ "longtg[41e168cfdd1d]:wall_s": {
+  "arm": "A2",
+  "dir": "fix5-arm2-20261111",
+  "sha": "41e168cfdd1d",
+  "value": 89.959
+ },
+ "longtg[509390824796]:gen_tps": {
+  "arm": "b20-h7400",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "509390824796",
+  "value": 46.4
+ },
+ "longtg[509390824796]:read_tps": {
+  "arm": "b20-h7400",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "509390824796",
+  "value": 433.0
+ },
+ "longtg[509390824796]:wall_s": {
+  "arm": "b20-h7400",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "509390824796",
+  "value": 90.537
+ },
+ "longtg[52af0835fa6b]:gen_tps": {
+  "arm": "b16-h6796",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "52af0835fa6b",
+  "value": 38.0
+ },
+ "longtg[52af0835fa6b]:read_tps": {
+  "arm": "b16-h6796",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "52af0835fa6b",
+  "value": 432.2
+ },
+ "longtg[52af0835fa6b]:wall_s": {
+  "arm": "b16-h6796",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "52af0835fa6b",
+  "value": 98.514
+ },
+ "longtg[550da5f85fbc]:gen_tps": {
+  "arm": "S1",
+  "dir": "ab9-spill0-split36-20261110",
+  "sha": "550da5f85fbc",
+  "value": 36.1
+ },
+ "longtg[550da5f85fbc]:read_tps": {
+  "arm": "S1",
+  "dir": "ab9-spill0-split36-20261110",
+  "sha": "550da5f85fbc",
+  "value": 444.8
+ },
+ "longtg[550da5f85fbc]:wall_s": {
+  "arm": "S1",
+  "dir": "ab9-spill0-split36-20261110",
+  "sha": "550da5f85fbc",
+  "value": 93.543
+ },
+ "longtg[56e4308e096d]:gen_tps": {
+  "arm": "b16-h7400",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "56e4308e096d",
+  "value": 41.5
+ },
+ "longtg[56e4308e096d]:read_tps": {
+  "arm": "b16-h7400",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "56e4308e096d",
+  "value": 432.2
+ },
+ "longtg[56e4308e096d]:wall_s": {
+  "arm": "b16-h7400",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "56e4308e096d",
+  "value": 89.98
+ },
+ "longtg[6b5d9aa58a49]:gen_tps": {
+  "arm": "S1",
+  "dir": "ab9-iq3s-split36-20261110",
+  "sha": "6b5d9aa58a49",
+  "value": 36.2
+ },
+ "longtg[6b5d9aa58a49]:read_tps": {
+  "arm": "S1",
+  "dir": "ab9-iq3s-split36-20261110",
+  "sha": "6b5d9aa58a49",
+  "value": 352.7
+ },
+ "longtg[6b5d9aa58a49]:wall_s": {
+  "arm": "S1",
+  "dir": "ab9-iq3s-split36-20261110",
+  "sha": "6b5d9aa58a49",
+  "value": 128.601
+ },
+ "longtg[6d6d8c977dc7]:gen_tps": {
+  "arm": "s38",
+  "dir": "iq3s-splits-20261111",
+  "sha": "6d6d8c977dc7",
+  "value": 33.1
+ },
+ "longtg[6d6d8c977dc7]:read_tps": {
+  "arm": "s38",
+  "dir": "iq3s-splits-20261111",
+  "sha": "6d6d8c977dc7",
+  "value": 302.5
+ },
+ "longtg[6d6d8c977dc7]:wall_s": {
+  "arm": "s38",
+  "dir": "iq3s-splits-20261111",
+  "sha": "6d6d8c977dc7",
+  "value": 132.954
+ },
+ "longtg[7e22e71cfd67]:gen_tps": {
+  "arm": "S1",
+  "dir": "ab9-iq3s-split34-20261110",
+  "sha": "7e22e71cfd67",
+  "value": 47.7
+ },
+ "longtg[7e22e71cfd67]:read_tps": {
+  "arm": "S1",
+  "dir": "ab9-iq3s-split34-20261110",
+  "sha": "7e22e71cfd67",
+  "value": 139.2
+ },
+ "longtg[7e22e71cfd67]:wall_s": {
+  "arm": "S1",
+  "dir": "ab9-iq3s-split34-20261110",
+  "sha": "7e22e71cfd67",
+  "value": 242.546
+ },
+ "longtg[834db34d01d5]:gen_tps": {
+  "arm": "b19-h7400",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "834db34d01d5",
+  "value": 44.4
+ },
+ "longtg[834db34d01d5]:read_tps": {
+  "arm": "b19-h7400",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "834db34d01d5",
+  "value": 431.5
+ },
+ "longtg[834db34d01d5]:wall_s": {
+  "arm": "b19-h7400",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "834db34d01d5",
+  "value": 93.063
+ },
+ "longtg[8779dde19b07]:gen_tps": {
+  "arm": "S34",
+  "dir": "ab9-split-retest-s34-20261111",
+  "sha": "8779dde19b07",
+  "value": 36.5
+ },
+ "longtg[8779dde19b07]:read_tps": {
+  "arm": "S34",
+  "dir": "ab9-split-retest-s34-20261111",
+  "sha": "8779dde19b07",
+  "value": 413.8
+ },
+ "longtg[8779dde19b07]:wall_s": {
+  "arm": "S34",
+  "dir": "ab9-split-retest-s34-20261111",
+  "sha": "8779dde19b07",
+  "value": 99.841
+ },
+ "longtg[9054d0397883]:gen_tps": {
+  "arm": "S1",
+  "dir": "ab9-split34-off-20261110",
+  "sha": "9054d0397883",
+  "value": 43.2
+ },
+ "longtg[9054d0397883]:read_tps": {
+  "arm": "S1",
+  "dir": "ab9-split34-off-20261110",
+  "sha": "9054d0397883",
+  "value": 436.2
+ },
+ "longtg[9054d0397883]:wall_s": {
+  "arm": "S1",
+  "dir": "ab9-split34-off-20261110",
+  "sha": "9054d0397883",
+  "value": 87.984
+ },
+ "longtg[97119fcf9357]:gen_tps": {
+  "arm": "s36",
+  "dir": "iq3s-splits-20261111",
+  "sha": "97119fcf9357",
+  "value": 38.8
+ },
+ "longtg[97119fcf9357]:read_tps": {
+  "arm": "s36",
+  "dir": "iq3s-splits-20261111",
+  "sha": "97119fcf9357",
+  "value": 324.3
+ },
+ "longtg[97119fcf9357]:wall_s": {
+  "arm": "s36",
+  "dir": "iq3s-splits-20261111",
+  "sha": "97119fcf9357",
+  "value": 117.046
+ },
+ "longtg[a50deb4f0f7d]:gen_tps": {
+  "arm": "S1",
+  "dir": "ab9-iq3s-split34-warm-20261110",
+  "sha": "a50deb4f0f7d",
+  "value": 38.2
+ },
+ "longtg[a50deb4f0f7d]:read_tps": {
+  "arm": "S1",
+  "dir": "ab9-iq3s-split34-warm-20261110",
+  "sha": "a50deb4f0f7d",
+  "value": 391.0
+ },
+ "longtg[a50deb4f0f7d]:wall_s": {
+  "arm": "S1",
+  "dir": "ab9-iq3s-split34-warm-20261110",
+  "sha": "a50deb4f0f7d",
+  "value": 140.389
+ },
+ "longtg[ac2a836530bb]:gen_tps": {
+  "arm": "s34",
+  "dir": "iq3s-splits-20261111",
+  "sha": "ac2a836530bb",
+  "value": 37.5
+ },
+ "longtg[ac2a836530bb]:read_tps": {
+  "arm": "s34",
+  "dir": "iq3s-splits-20261111",
+  "sha": "ac2a836530bb",
+  "value": 175.6
+ },
+ "longtg[ac2a836530bb]:wall_s": {
+  "arm": "s34",
+  "dir": "iq3s-splits-20261111",
+  "sha": "ac2a836530bb",
+  "value": 190.513
+ },
+ "longtg[af771a89075f]:gen_tps": {
+  "arm": "S1",
+  "dir": "ab9-iq3s-split32-20261110",
+  "sha": "af771a89075f",
+  "value": 39.1
+ },
+ "longtg[af771a89075f]:read_tps": {
+  "arm": "S1",
+  "dir": "ab9-iq3s-split32-20261110",
+  "sha": "af771a89075f",
+  "value": 282.2
+ },
+ "longtg[af771a89075f]:wall_s": {
+  "arm": "S1",
+  "dir": "ab9-iq3s-split32-20261110",
+  "sha": "af771a89075f",
+  "value": 166.206
+ },
+ "longtg[b509c3746e66]:gen_tps": {
+  "arm": "b16-h6796-r",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "b509c3746e66",
+  "value": 40.9
+ },
+ "longtg[b509c3746e66]:read_tps": {
+  "arm": "b16-h6796-r",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "b509c3746e66",
+  "value": 415.6
+ },
+ "longtg[b509c3746e66]:wall_s": {
+  "arm": "b16-h6796-r",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "b509c3746e66",
+  "value": 96.917
+ },
+ "longtg[c37ba9c14ff6]:gen_tps": {
+  "arm": "L2",
+  "dir": "lever2-20261111",
+  "sha": "c37ba9c14ff6",
+  "value": 39.4
+ },
+ "longtg[c37ba9c14ff6]:read_tps": {
+  "arm": "L2",
+  "dir": "lever2-20261111",
+  "sha": "c37ba9c14ff6",
+  "value": 385.3
+ },
+ "longtg[c37ba9c14ff6]:wall_s": {
+  "arm": "L2",
+  "dir": "lever2-20261111",
+  "sha": "c37ba9c14ff6",
+  "value": 101.769
+ },
+ "longtg[db3564096ba2]:gen_tps": {
+  "arm": "S1",
+  "dir": "ab9-iq3s-split38-20261110",
+  "sha": "db3564096ba2",
+  "value": 32.8
+ },
+ "longtg[db3564096ba2]:read_tps": {
+  "arm": "S1",
+  "dir": "ab9-iq3s-split38-20261110",
+  "sha": "db3564096ba2",
+  "value": 374.3
+ },
+ "longtg[db3564096ba2]:wall_s": {
+  "arm": "S1",
+  "dir": "ab9-iq3s-split38-20261110",
+  "sha": "db3564096ba2",
+  "value": 105.715
+ },
+ "longtg[ef4e870d6512]:gen_tps": {
+  "arm": "cap30k-dec6k",
+  "dir": "iq3s-sweep-v0222-20261112",
+  "sha": "ef4e870d6512",
+  "value": 40.3
+ },
+ "longtg[ef4e870d6512]:read_tps": {
+  "arm": "cap30k-dec6k",
+  "dir": "iq3s-sweep-v0222-20261112",
+  "sha": "ef4e870d6512",
+  "value": 344.3
+ },
+ "longtg[ef4e870d6512]:wall_s": {
+  "arm": "cap30k-dec6k",
+  "dir": "iq3s-sweep-v0222-20261112",
+  "sha": "ef4e870d6512",
+  "value": 119.42
+ },
+ "longtg[f7ee25e682e0]:gen_tps": {
+  "arm": "S1",
+  "dir": "ab9-split32-off-20261110",
+  "sha": "f7ee25e682e0",
+  "value": 40.6
+ },
+ "longtg[f7ee25e682e0]:read_tps": {
+  "arm": "S1",
+  "dir": "ab9-split32-off-20261110",
+  "sha": "f7ee25e682e0",
+  "value": 409.9
+ },
+ "longtg[f7ee25e682e0]:wall_s": {
+  "arm": "S1",
+  "dir": "ab9-split32-off-20261110",
+  "sha": "f7ee25e682e0",
+  "value": 101.49
+ },
+ "tg1024-1[64c21528372f]:gen_tps": {
+  "arm": "A-ref-7400-300-256",
+  "dir": "iq3xxs-occ-20261111",
+  "sha": "64c21528372f",
+  "value": 41.5
+ },
+ "tg1024-1[64c21528372f]:read_tps": {
+  "arm": "A-ref-7400-300-256",
+  "dir": "iq3xxs-occ-20261111",
+  "sha": "64c21528372f",
+  "value": 135.4
+ },
+ "tg1024-1[64c21528372f]:wall_s": {
+  "arm": "A-ref-7400-300-256",
+  "dir": "iq3xxs-occ-20261111",
+  "sha": "64c21528372f",
+  "value": 40.323
+ },
+ "tg1024-1[e9d0e75e0bd5]:gen_tps": {
+  "arm": "F-7400-150",
+  "dir": "iq3xxs-occ-20261111",
+  "sha": "e9d0e75e0bd5",
+  "value": 45.8
+ },
+ "tg1024-1[e9d0e75e0bd5]:read_tps": {
+  "arm": "F-7400-150",
+  "dir": "iq3xxs-occ-20261111",
+  "sha": "e9d0e75e0bd5",
+  "value": 146.0
+ },
+ "tg1024-1[e9d0e75e0bd5]:wall_s": {
+  "arm": "F-7400-150",
+  "dir": "iq3xxs-occ-20261111",
+  "sha": "e9d0e75e0bd5",
+  "value": 49.935
+ },
+ "tg1024-2[21f923d83a30]:gen_tps": {
+  "arm": "F-7400-150",
+  "dir": "iq3xxs-occ-20261111",
+  "sha": "21f923d83a30",
+  "value": 42.3
+ },
+ "tg1024-2[21f923d83a30]:read_tps": {
+  "arm": "F-7400-150",
+  "dir": "iq3xxs-occ-20261111",
+  "sha": "21f923d83a30",
+  "value": 138.7
+ },
+ "tg1024-2[21f923d83a30]:wall_s": {
+  "arm": "F-7400-150",
+  "dir": "iq3xxs-occ-20261111",
+  "sha": "21f923d83a30",
+  "value": 38.012
+ },
+ "tg1024-2[67de6976de36]:gen_tps": {
+  "arm": "A-ref-7400-300-256",
+  "dir": "iq3xxs-occ-20261111",
+  "sha": "67de6976de36",
+  "value": 43.2
+ },
+ "tg1024-2[67de6976de36]:read_tps": {
+  "arm": "A-ref-7400-300-256",
+  "dir": "iq3xxs-occ-20261111",
+  "sha": "67de6976de36",
+  "value": 134.7
+ },
+ "tg1024-2[67de6976de36]:wall_s": {
+  "arm": "A-ref-7400-300-256",
+  "dir": "iq3xxs-occ-20261111",
+  "sha": "67de6976de36",
+  "value": 45.794
+ },
+ "tg1024[0109c29e2c09]:gen_tps": {
+  "arm": "S42ON",
+  "dir": "ab9-spill42-on-20261111",
+  "sha": "0109c29e2c09",
+  "value": 39.1
+ },
+ "tg1024[0109c29e2c09]:read_tps": {
+  "arm": "S42ON",
+  "dir": "ab9-spill42-on-20261111",
+  "sha": "0109c29e2c09",
+  "value": 129.4
+ },
+ "tg1024[0109c29e2c09]:wall_s": {
+  "arm": "S42ON",
+  "dir": "ab9-spill42-on-20261111",
+  "sha": "0109c29e2c09",
+  "value": 45.583
+ },
+ "tg1024[035cb9a6ff1d]:gen_tps": {
+  "arm": "S1",
+  "dir": "ab9-split38-h384-20261110",
+  "sha": "035cb9a6ff1d",
+  "value": 39.3
+ },
+ "tg1024[035cb9a6ff1d]:read_tps": {
+  "arm": "S1",
+  "dir": "ab9-split38-h384-20261110",
+  "sha": "035cb9a6ff1d",
+  "value": 129.3
+ },
+ "tg1024[035cb9a6ff1d]:wall_s": {
+  "arm": "S1",
+  "dir": "ab9-split38-h384-20261110",
+  "sha": "035cb9a6ff1d",
+  "value": 27.048
+ },
+ "tg1024[065030f66673]:gen_tps": {
+  "arm": "S1",
+  "dir": "ab9-iq3s-split34-warm-20261110",
+  "sha": "065030f66673",
+  "value": 39.0
+ },
+ "tg1024[065030f66673]:read_tps": {
+  "arm": "S1",
+  "dir": "ab9-iq3s-split34-warm-20261110",
+  "sha": "065030f66673",
+  "value": 48.7
+ },
+ "tg1024[065030f66673]:wall_s": {
+  "arm": "S1",
+  "dir": "ab9-iq3s-split34-warm-20261110",
+  "sha": "065030f66673",
+  "value": 41.499
+ },
+ "tg1024[0d83b43de019]:gen_tps": {
+  "arm": "S1",
+  "dir": "ab9-iq3s-split34-20261110",
+  "sha": "0d83b43de019",
+  "value": 35.9
+ },
+ "tg1024[0d83b43de019]:read_tps": {
+  "arm": "S1",
+  "dir": "ab9-iq3s-split34-20261110",
+  "sha": "0d83b43de019",
+  "value": 34.1
+ },
+ "tg1024[0d83b43de019]:wall_s": {
+  "arm": "S1",
+  "dir": "ab9-iq3s-split34-20261110",
+  "sha": "0d83b43de019",
+  "value": 83.255
+ },
+ "tg1024[102c0c296832]:gen_tps": {
+  "arm": "cap20k-rerank",
+  "dir": "iq3s-sweep-v0222-20261112",
+  "sha": "102c0c296832",
+  "value": 31.4
+ },
+ "tg1024[102c0c296832]:read_tps": {
+  "arm": "cap20k-rerank",
+  "dir": "iq3s-sweep-v0222-20261112",
+  "sha": "102c0c296832",
+  "value": 83.5
+ },
+ "tg1024[102c0c296832]:wall_s": {
+  "arm": "cap20k-rerank",
+  "dir": "iq3s-sweep-v0222-20261112",
+  "sha": "102c0c296832",
+  "value": 69.071
+ },
+ "tg1024[10b1598f1bf5]:gen_tps": {
+  "arm": "M3A",
+  "dir": "ab9-qa-m3a-restart-20261111",
+  "sha": "10b1598f1bf5",
+  "value": 40.3
+ },
+ "tg1024[10b1598f1bf5]:read_tps": {
+  "arm": "M3A",
+  "dir": "ab9-qa-m3a-restart-20261111",
+  "sha": "10b1598f1bf5",
+  "value": 128.8
+ },
+ "tg1024[10b1598f1bf5]:wall_s": {
+  "arm": "M3A",
+  "dir": "ab9-qa-m3a-restart-20261111",
+  "sha": "10b1598f1bf5",
+  "value": 28.795
+ },
+ "tg1024[1bce822f1d35]:gen_tps": {
+  "arm": "S1",
+  "dir": "ab9-split34-off-20261110",
+  "sha": "1bce822f1d35",
+  "value": 46.1
+ },
+ "tg1024[1bce822f1d35]:read_tps": {
+  "arm": "S1",
+  "dir": "ab9-split34-off-20261110",
+  "sha": "1bce822f1d35",
+  "value": 126.5
+ },
+ "tg1024[1bce822f1d35]:wall_s": {
+  "arm": "S1",
+  "dir": "ab9-split34-off-20261110",
+  "sha": "1bce822f1d35",
+  "value": 24.242
+ },
+ "tg1024[1f779ab099cb]:gen_tps": {
+  "arm": "S1",
+  "dir": "ab9-split-retest-s34-20261111",
+  "sha": "1f779ab099cb",
+  "value": 39.8
+ },
+ "tg1024[1f779ab099cb]:read_tps": {
+  "arm": "S1",
+  "dir": "ab9-split-retest-s34-20261111",
+  "sha": "1f779ab099cb",
+  "value": 120.8
+ },
+ "tg1024[1f779ab099cb]:wall_s": {
+  "arm": "S1",
+  "dir": "ab9-split-retest-s34-20261111",
+  "sha": "1f779ab099cb",
+  "value": 33.535
+ },
+ "tg1024[2010adfdd1b5]:gen_tps": {
+  "arm": "S1",
+  "dir": "ab9-split38-off-20261110",
+  "sha": "2010adfdd1b5",
+  "value": 39.9
+ },
+ "tg1024[2010adfdd1b5]:read_tps": {
+  "arm": "S1",
+  "dir": "ab9-split38-off-20261110",
+  "sha": "2010adfdd1b5",
+  "value": 129.6
+ },
+ "tg1024[2010adfdd1b5]:wall_s": {
+  "arm": "S1",
+  "dir": "ab9-split38-off-20261110",
+  "sha": "2010adfdd1b5",
+  "value": 35.607
+ },
+ "tg1024[2242a3567397]:gen_tps": {
+  "arm": "A1",
+  "dir": "fix5-arm1-20261111",
+  "sha": "2242a3567397",
+  "value": 43.0
+ },
+ "tg1024[2242a3567397]:read_tps": {
+  "arm": "A1",
+  "dir": "fix5-arm1-20261111",
+  "sha": "2242a3567397",
+  "value": 112.0
+ },
+ "tg1024[2242a3567397]:wall_s": {
+  "arm": "A1",
+  "dir": "fix5-arm1-20261111",
+  "sha": "2242a3567397",
+  "value": 30.416
+ },
+ "tg1024[245966ff57fa]:gen_tps": {
+  "arm": "S1",
+  "dir": "ab9-split32-off-20261110",
+  "sha": "245966ff57fa",
+  "value": 45.7
+ },
+ "tg1024[245966ff57fa]:read_tps": {
+  "arm": "S1",
+  "dir": "ab9-split32-off-20261110",
+  "sha": "245966ff57fa",
+  "value": 117.3
+ },
+ "tg1024[245966ff57fa]:wall_s": {
+  "arm": "S1",
+  "dir": "ab9-split32-off-20261110",
+  "sha": "245966ff57fa",
+  "value": 38.146
+ },
+ "tg1024[2495b3225ae0]:gen_tps": {
+  "arm": "S1",
+  "dir": "ab9-iq3s-split38-20261110",
+  "sha": "2495b3225ae0",
+  "value": 34.2
+ },
+ "tg1024[2495b3225ae0]:read_tps": {
+  "arm": "S1",
+  "dir": "ab9-iq3s-split38-20261110",
+  "sha": "2495b3225ae0",
+  "value": 35.9
+ },
+ "tg1024[2495b3225ae0]:wall_s": {
+  "arm": "S1",
+  "dir": "ab9-iq3s-split38-20261110",
+  "sha": "2495b3225ae0",
+  "value": 44.645
+ },
+ "tg1024[269c57e3779c]:gen_tps": {
+  "arm": "diet-s34",
+  "dir": "iq3s-diet-20261111",
+  "sha": "269c57e3779c",
+  "value": 32.3
+ },
+ "tg1024[269c57e3779c]:read_tps": {
+  "arm": "diet-s34",
+  "dir": "iq3s-diet-20261111",
+  "sha": "269c57e3779c",
+  "value": 96.0
+ },
+ "tg1024[269c57e3779c]:wall_s": {
+  "arm": "diet-s34",
+  "dir": "iq3s-diet-20261111",
+  "sha": "269c57e3779c",
+  "value": 68.641
+ },
+ "tg1024[28b1a204d551]:gen_tps": {
+  "arm": "A2",
+  "dir": "fix5-arm2-20261111",
+  "sha": "28b1a204d551",
+  "value": 42.1
+ },
+ "tg1024[28b1a204d551]:read_tps": {
+  "arm": "A2",
+  "dir": "fix5-arm2-20261111",
+  "sha": "28b1a204d551",
+  "value": 130.0
+ },
+ "tg1024[28b1a204d551]:wall_s": {
+  "arm": "A2",
+  "dir": "fix5-arm2-20261111",
+  "sha": "28b1a204d551",
+  "value": 34.549
+ },
+ "tg1024[2fbf81185d92]:gen_tps": {
+  "arm": "M1",
+  "dir": "ab9-matrix-m1-spilloff-20261111",
+  "sha": "2fbf81185d92",
+  "value": 42.6
+ },
+ "tg1024[2fbf81185d92]:read_tps": {
+  "arm": "M1",
+  "dir": "ab9-matrix-m1-spilloff-20261111",
+  "sha": "2fbf81185d92",
+  "value": 109.7
+ },
+ "tg1024[2fbf81185d92]:wall_s": {
+  "arm": "M1",
+  "dir": "ab9-matrix-m1-spilloff-20261111",
+  "sha": "2fbf81185d92",
+  "value": 37.143
+ },
+ "tg1024[30ba48b23bc7]:gen_tps": {
+  "arm": "S1",
+  "dir": "ab9-iq3s-split36-20261110",
+  "sha": "30ba48b23bc7",
+  "value": 38.8
+ },
+ "tg1024[30ba48b23bc7]:read_tps": {
+  "arm": "S1",
+  "dir": "ab9-iq3s-split36-20261110",
+  "sha": "30ba48b23bc7",
+  "value": 38.5
+ },
+ "tg1024[30ba48b23bc7]:wall_s": {
+  "arm": "S1",
+  "dir": "ab9-iq3s-split36-20261110",
+  "sha": "30ba48b23bc7",
+  "value": 50.981
+ },
+ "tg1024[3793a4861a16]:gen_tps": {
+  "arm": "A",
+  "dir": "ab9",
+  "sha": "3793a4861a16",
+  "value": 47.2
+ },
+ "tg1024[3793a4861a16]:read_tps": {
+  "arm": "A",
+  "dir": "ab9-diet-AD-20261109",
+  "sha": "3793a4861a16",
+  "value": 113.9
+ },
+ "tg1024[3793a4861a16]:wall_s": {
+  "arm": "A",
+  "dir": "ab9",
+  "sha": "3793a4861a16",
+  "value": 49.809
+ },
+ "tg1024[3b43a501ba55]:gen_tps": {
+  "arm": "S1",
+  "dir": "ab9-spill0-split36-20261110",
+  "sha": "3b43a501ba55",
+  "value": 49.1
+ },
+ "tg1024[3b43a501ba55]:read_tps": {
+  "arm": "S1",
+  "dir": "ab9-spill0-split36-20261110",
+  "sha": "3b43a501ba55",
+  "value": 145.4
+ },
+ "tg1024[3b43a501ba55]:wall_s": {
+  "arm": "S1",
+  "dir": "ab9-spill0-split36-20261110",
+  "sha": "3b43a501ba55",
+  "value": 55.672
+ },
+ "tg1024[429179cd1594]:gen_tps": {
+  "arm": "b19-h7400",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "429179cd1594",
+  "value": 46.2
+ },
+ "tg1024[429179cd1594]:read_tps": {
+  "arm": "b19-h7400",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "429179cd1594",
+  "value": 140.5
+ },
+ "tg1024[429179cd1594]:wall_s": {
+  "arm": "b19-h7400",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "429179cd1594",
+  "value": 24.105
+ },
+ "tg1024[45f9fdd01922]:gen_tps": {
+  "arm": "E",
+  "dir": "ab9",
+  "sha": "45f9fdd01922",
+  "value": 42.6
+ },
+ "tg1024[45f9fdd01922]:read_tps": {
+  "arm": "E",
+  "dir": "ab9",
+  "sha": "45f9fdd01922",
+  "value": 115.0
+ },
+ "tg1024[45f9fdd01922]:wall_s": {
+  "arm": "E",
+  "dir": "ab9",
+  "sha": "45f9fdd01922",
+  "value": 45.927
+ },
+ "tg1024[4cdebbd436de]:gen_tps": {
+  "arm": "M4A",
+  "dir": "ab9-matrix-m4a-res64-20261111",
+  "sha": "4cdebbd436de",
+  "value": 39.0
+ },
+ "tg1024[4cdebbd436de]:read_tps": {
+  "arm": "M4A",
+  "dir": "ab9-matrix-m4a-res64-20261111",
+  "sha": "4cdebbd436de",
+  "value": 128.2
+ },
+ "tg1024[4cdebbd436de]:wall_s": {
+  "arm": "M4A",
+  "dir": "ab9-matrix-m4a-res64-20261111",
+  "sha": "4cdebbd436de",
+  "value": 23.076
+ },
+ "tg1024[4e342d79305f]:gen_tps": {
+  "arm": "D",
+  "dir": "ab9",
+  "sha": "4e342d79305f",
+  "value": 40.4
+ },
+ "tg1024[4e342d79305f]:read_tps": {
+  "arm": "D",
+  "dir": "ab9",
+  "sha": "4e342d79305f",
+  "value": 129.6
+ },
+ "tg1024[4e342d79305f]:wall_s": {
+  "arm": "D",
+  "dir": "ab9",
+  "sha": "4e342d79305f",
+  "value": 44.194
+ },
+ "tg1024[5020e1c64b45]:gen_tps": {
+  "arm": "D",
+  "dir": "ab9-diet-AD-20261109",
+  "sha": "5020e1c64b45",
+  "value": 41.3
+ },
+ "tg1024[5020e1c64b45]:read_tps": {
+  "arm": "D",
+  "dir": "ab9-diet-AD-20261109",
+  "sha": "5020e1c64b45",
+  "value": 118.9
+ },
+ "tg1024[5020e1c64b45]:wall_s": {
+  "arm": "D",
+  "dir": "ab9-diet-AD-20261109",
+  "sha": "5020e1c64b45",
+  "value": 47.859
+ },
+ "tg1024[57ace59a3248]:gen_tps": {
+  "arm": "S34",
+  "dir": "ab9-split-retest-s34-20261111",
+  "sha": "57ace59a3248",
+  "value": 39.8
+ },
+ "tg1024[57ace59a3248]:read_tps": {
+  "arm": "S34",
+  "dir": "ab9-split-retest-s34-20261111",
+  "sha": "57ace59a3248",
+  "value": 133.9
+ },
+ "tg1024[57ace59a3248]:wall_s": {
+  "arm": "S34",
+  "dir": "ab9-split-retest-s34-20261111",
+  "sha": "57ace59a3248",
+  "value": 23.622
+ },
+ "tg1024[5c1cef65d3ea]:gen_tps": {
+  "arm": "b20-h7400",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "5c1cef65d3ea",
+  "value": 43.9
+ },
+ "tg1024[5c1cef65d3ea]:read_tps": {
+  "arm": "b20-h7400",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "5c1cef65d3ea",
+  "value": 140.8
+ },
+ "tg1024[5c1cef65d3ea]:wall_s": {
+  "arm": "b20-h7400",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "5c1cef65d3ea",
+  "value": 22.156
+ },
+ "tg1024[60b7b219dd26]:wall_s": {
+  "arm": "I1A",
+  "dir": "ab9-iq3s-i1a-spilloff-20261111",
+  "sha": "60b7b219dd26",
+  "value": 51.047
+ },
+ "tg1024[66b360eb1f90]:gen_tps": {
+  "arm": "L2",
+  "dir": "lever2-20261111",
+  "sha": "66b360eb1f90",
+  "value": 34.5
+ },
+ "tg1024[66b360eb1f90]:read_tps": {
+  "arm": "L2",
+  "dir": "lever2-20261111",
+  "sha": "66b360eb1f90",
+  "value": 104.4
+ },
+ "tg1024[66b360eb1f90]:wall_s": {
+  "arm": "L2",
+  "dir": "lever2-20261111",
+  "sha": "66b360eb1f90",
+  "value": 49.628
+ },
+ "tg1024[6964886ca1d2]:wall_s": {
+  "arm": "I2A",
+  "dir": "ab9-iq3s-i2a-spillon-20261111",
+  "sha": "6964886ca1d2",
+  "value": 53.915
+ },
+ "tg1024[72514320c882]:gen_tps": {
+  "arm": "C",
+  "dir": "ab9-run5-20261109",
+  "sha": "72514320c882",
+  "value": 40.2
+ },
+ "tg1024[72514320c882]:read_tps": {
+  "arm": "C",
+  "dir": "ab9-run5-20261109",
+  "sha": "72514320c882",
+  "value": 112.0
+ },
+ "tg1024[72514320c882]:wall_s": {
+  "arm": "C",
+  "dir": "ab9-run5-20261109",
+  "sha": "72514320c882",
+  "value": 27.611
+ },
+ "tg1024[787902c5059f]:gen_tps": {
+  "arm": "s36",
+  "dir": "iq3s-splits-20261111",
+  "sha": "787902c5059f",
+  "value": 37.9
+ },
+ "tg1024[787902c5059f]:read_tps": {
+  "arm": "s36",
+  "dir": "iq3s-splits-20261111",
+  "sha": "787902c5059f",
+  "value": 119.6
+ },
+ "tg1024[787902c5059f]:wall_s": {
+  "arm": "s36",
+  "dir": "iq3s-splits-20261111",
+  "sha": "787902c5059f",
+  "value": 46.119
+ },
+ "tg1024[794602d1abd4]:wall_s": {
+  "arm": "I3A",
+  "dir": "ab9-iq3s-i3a-res128-20261111",
+  "sha": "794602d1abd4",
+  "value": 30.111
+ },
+ "tg1024[8c0f6ecae1c6]:gen_tps": {
+  "arm": "S40OFF",
+  "dir": "ab9-spill40-off-20261110",
+  "sha": "8c0f6ecae1c6",
+  "value": 37.5
+ },
+ "tg1024[8c0f6ecae1c6]:read_tps": {
+  "arm": "S40OFF",
+  "dir": "ab9-spill40-off-20261110",
+  "sha": "8c0f6ecae1c6",
+  "value": 127.0
+ },
+ "tg1024[8c0f6ecae1c6]:wall_s": {
+  "arm": "S40OFF",
+  "dir": "ab9-spill40-off-20261110",
+  "sha": "8c0f6ecae1c6",
+  "value": 28.833
+ },
+ "tg1024[8c2174be5058]:gen_tps": {
+  "arm": "A",
+  "dir": "ab9-run5-20261109",
+  "sha": "8c2174be5058",
+  "value": 44.9
+ },
+ "tg1024[8c2174be5058]:read_tps": {
+  "arm": "A",
+  "dir": "ab9-run5-20261109",
+  "sha": "8c2174be5058",
+  "value": 91.6
+ },
+ "tg1024[8c2174be5058]:wall_s": {
+  "arm": "A",
+  "dir": "ab9-run5-20261109",
+  "sha": "8c2174be5058",
+  "value": 44.186
+ },
+ "tg1024[a5311bd76566]:gen_tps": {
+  "arm": "S1",
+  "dir": "ab9-spill1-split36-20261110",
+  "sha": "a5311bd76566",
+  "value": 40.8
+ },
+ "tg1024[a5311bd76566]:read_tps": {
+  "arm": "S1",
+  "dir": "ab9-spill1-split36-20261110",
+  "sha": "a5311bd76566",
+  "value": 124.5
+ },
+ "tg1024[a5311bd76566]:wall_s": {
+  "arm": "S1",
+  "dir": "ab9-spill1-split36-20261110",
+  "sha": "a5311bd76566",
+  "value": 38.293
+ },
+ "tg1024[a8fc1cbdb519]:gen_tps": {
+  "arm": "s34",
+  "dir": "iq3s-splits-20261111",
+  "sha": "a8fc1cbdb519",
+  "value": 37.8
+ },
+ "tg1024[a8fc1cbdb519]:read_tps": {
+  "arm": "s34",
+  "dir": "iq3s-splits-20261111",
+  "sha": "a8fc1cbdb519",
+  "value": 112.6
+ },
+ "tg1024[a8fc1cbdb519]:wall_s": {
+  "arm": "s34",
+  "dir": "iq3s-splits-20261111",
+  "sha": "a8fc1cbdb519",
+  "value": 45.626
+ },
+ "tg1024[adbebdb4d699]:gen_tps": {
+  "arm": "cap20k-dec6k",
+  "dir": "iq3s-sweep-v0222-20261112",
+  "sha": "adbebdb4d699",
+  "value": 32.5
+ },
+ "tg1024[adbebdb4d699]:read_tps": {
+  "arm": "cap20k-dec6k",
+  "dir": "iq3s-sweep-v0222-20261112",
+  "sha": "adbebdb4d699",
+  "value": 66.1
+ },
+ "tg1024[adbebdb4d699]:wall_s": {
+  "arm": "cap20k-dec6k",
+  "dir": "iq3s-sweep-v0222-20261112",
+  "sha": "adbebdb4d699",
+  "value": 81.845
+ },
+ "tg1024[b1791ea4d3ae]:gen_tps": {
+  "arm": "s38",
+  "dir": "iq3s-splits-20261111",
+  "sha": "b1791ea4d3ae",
+  "value": 39.0
+ },
+ "tg1024[b1791ea4d3ae]:read_tps": {
+  "arm": "s38",
+  "dir": "iq3s-splits-20261111",
+  "sha": "b1791ea4d3ae",
+  "value": 128.2
+ },
+ "tg1024[b1791ea4d3ae]:wall_s": {
+  "arm": "s38",
+  "dir": "iq3s-splits-20261111",
+  "sha": "b1791ea4d3ae",
+  "value": 54.808
+ },
+ "tg1024[b786e9806692]:gen_tps": {
+  "arm": "S1",
+  "dir": "ab9-iq3s-split32-20261110",
+  "sha": "b786e9806692",
+  "value": 40.9
+ },
+ "tg1024[b786e9806692]:read_tps": {
+  "arm": "S1",
+  "dir": "ab9-iq3s-split32-20261110",
+  "sha": "b786e9806692",
+  "value": 76.2
+ },
+ "tg1024[b786e9806692]:wall_s": {
+  "arm": "S1",
+  "dir": "ab9-iq3s-split32-20261110",
+  "sha": "b786e9806692",
+  "value": 39.008
+ },
+ "tg1024[cca626caf94e]:gen_tps": {
+  "arm": "M2A",
+  "dir": "ab9-matrix-m2a-spillon-20261111",
+  "sha": "cca626caf94e",
+  "value": 40.0
+ },
+ "tg1024[cca626caf94e]:read_tps": {
+  "arm": "M2A",
+  "dir": "ab9-matrix-m2a-spillon-20261111",
+  "sha": "cca626caf94e",
+  "value": 127.4
+ },
+ "tg1024[cca626caf94e]:wall_s": {
+  "arm": "M2A",
+  "dir": "ab9-matrix-m2a-spillon-20261111",
+  "sha": "cca626caf94e",
+  "value": 28.831
+ },
+ "tg1024[d8948b5ea907]:gen_tps": {
+  "arm": "M1A",
+  "dir": "ab9-matrix-m1a-adaptive-on-20261111",
+  "sha": "d8948b5ea907",
+  "value": 44.3
+ },
+ "tg1024[d8948b5ea907]:read_tps": {
+  "arm": "M1A",
+  "dir": "ab9-matrix-m1a-adaptive-on-20261111",
+  "sha": "d8948b5ea907",
+  "value": 128.1
+ },
+ "tg1024[d8948b5ea907]:wall_s": {
+  "arm": "M1A",
+  "dir": "ab9-matrix-m1a-adaptive-on-20261111",
+  "sha": "d8948b5ea907",
+  "value": 24.813
+ },
+ "tg1024[da0d5166e72a]:gen_tps": {
+  "arm": "S38",
+  "dir": "ab9-split-retest-s38-20261111",
+  "sha": "da0d5166e72a",
+  "value": 38.1
+ },
+ "tg1024[da0d5166e72a]:read_tps": {
+  "arm": "S38",
+  "dir": "ab9-split-retest-s38-20261111",
+  "sha": "da0d5166e72a",
+  "value": 137.9
+ },
+ "tg1024[da0d5166e72a]:wall_s": {
+  "arm": "S38",
+  "dir": "ab9-split-retest-s38-20261111",
+  "sha": "da0d5166e72a",
+  "value": 46.498
+ },
+ "tg1024[db4d61d2ed85]:gen_tps": {
+  "arm": "b16-h6796-r",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "db4d61d2ed85",
+  "value": 39.6
+ },
+ "tg1024[db4d61d2ed85]:read_tps": {
+  "arm": "b16-h6796-r",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "db4d61d2ed85",
+  "value": 135.8
+ },
+ "tg1024[db4d61d2ed85]:wall_s": {
+  "arm": "b16-h6796-r",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "db4d61d2ed85",
+  "value": 29.917
+ },
+ "tg1024[ded796523853]:gen_tps": {
+  "arm": "R4",
+  "dir": "ab9-reeval-r4-20261111",
+  "sha": "ded796523853",
+  "value": 37.3
+ },
+ "tg1024[ded796523853]:read_tps": {
+  "arm": "R4",
+  "dir": "ab9-reeval-r4-20261111",
+  "sha": "ded796523853",
+  "value": 131.8
+ },
+ "tg1024[ded796523853]:wall_s": {
+  "arm": "R4",
+  "dir": "ab9-reeval-r4-20261111",
+  "sha": "ded796523853",
+  "value": 25.601
+ },
+ "tg1024[e23fedad196c]:gen_tps": {
+  "arm": "cap30k-dec6k",
+  "dir": "iq3s-sweep-v0222-20261112",
+  "sha": "e23fedad196c",
+  "value": 42.0
+ },
+ "tg1024[e23fedad196c]:read_tps": {
+  "arm": "cap30k-dec6k",
+  "dir": "iq3s-sweep-v0222-20261112",
+  "sha": "e23fedad196c",
+  "value": 89.5
+ },
+ "tg1024[e23fedad196c]:wall_s": {
+  "arm": "cap30k-dec6k",
+  "dir": "iq3s-sweep-v0222-20261112",
+  "sha": "e23fedad196c",
+  "value": 52.588
+ },
+ "tg1024[e3777f6d617b]:gen_tps": {
+  "arm": "S40ON",
+  "dir": "ab9-spill40-on-20261111",
+  "sha": "e3777f6d617b",
+  "value": 38.6
+ },
+ "tg1024[e3777f6d617b]:read_tps": {
+  "arm": "S40ON",
+  "dir": "ab9-spill40-on-20261111",
+  "sha": "e3777f6d617b",
+  "value": 129.6
+ },
+ "tg1024[e3777f6d617b]:wall_s": {
+  "arm": "S40ON",
+  "dir": "ab9-spill40-on-20261111",
+  "sha": "e3777f6d617b",
+  "value": 35.291
+ },
+ "tg1024[ea37fb22c2f0]:gen_tps": {
+  "arm": "B",
+  "dir": "ab9",
+  "sha": "ea37fb22c2f0",
+  "value": 30.7
+ },
+ "tg1024[ea37fb22c2f0]:read_tps": {
+  "arm": "B",
+  "dir": "ab9",
+  "sha": "ea37fb22c2f0",
+  "value": 136.1
+ },
+ "tg1024[ea37fb22c2f0]:wall_s": {
+  "arm": "B",
+  "dir": "ab9",
+  "sha": "ea37fb22c2f0",
+  "value": 33.923
+ },
+ "tg1024[f32abf2bcab9]:gen_tps": {
+  "arm": "B",
+  "dir": "ab9-run5-20261109",
+  "sha": "f32abf2bcab9",
+  "value": 41.4
+ },
+ "tg1024[f32abf2bcab9]:read_tps": {
+  "arm": "B",
+  "dir": "ab9-run5-20261109",
+  "sha": "f32abf2bcab9",
+  "value": 113.8
+ },
+ "tg1024[f32abf2bcab9]:wall_s": {
+  "arm": "B",
+  "dir": "ab9-run5-20261109",
+  "sha": "f32abf2bcab9",
+  "value": 44.517
+ },
+ "tg1024[f7d7a94cd1cc]:gen_tps": {
+  "arm": "M3A",
+  "dir": "ab9-matrix-m3a-res128-20261111",
+  "sha": "f7d7a94cd1cc",
+  "value": 42.0
+ },
+ "tg1024[f7d7a94cd1cc]:read_tps": {
+  "arm": "M3A",
+  "dir": "ab9-matrix-m3a-res128-20261111",
+  "sha": "f7d7a94cd1cc",
+  "value": 130.3
+ },
+ "tg1024[f7d7a94cd1cc]:wall_s": {
+  "arm": "M3A",
+  "dir": "ab9-matrix-m3a-res128-20261111",
+  "sha": "f7d7a94cd1cc",
+  "value": 26.566
+ },
+ "tg1024[fc0423433882]:gen_tps": {
+  "arm": "b16-h7400",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "fc0423433882",
+  "value": 44.1
+ },
+ "tg1024[fc0423433882]:read_tps": {
+  "arm": "b16-h7400",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "fc0423433882",
+  "value": 140.5
+ },
+ "tg1024[fc0423433882]:wall_s": {
+  "arm": "b16-h7400",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "fc0423433882",
+  "value": 25.425
+ },
+ "tg512[34476dbca172]:gen_tps": {
+  "arm": "m4",
+  "dir": "ab9-run5-20261109",
+  "sha": "34476dbca172",
+  "value": 40.3
+ },
+ "tg512[34476dbca172]:read_tps": {
+  "arm": "m4",
+  "dir": "ab9-run5-20261109",
+  "sha": "34476dbca172",
+  "value": 134.5
+ },
+ "tg512[34476dbca172]:wall_s": {
+  "arm": "m4",
+  "dir": "ab9-run5-20261109",
+  "sha": "34476dbca172",
+  "value": 30.695
+ },
+ "tg512[7e55ef71f8e9]:gen_tps": {
+  "arm": "m1",
+  "dir": "ab9-run5-20261109",
+  "sha": "7e55ef71f8e9",
+  "value": 42.3
+ },
+ "tg512[7e55ef71f8e9]:read_tps": {
+  "arm": "m1",
+  "dir": "ab9-run5-20261109",
+  "sha": "7e55ef71f8e9",
+  "value": 124.5
+ },
+ "tg512[7e55ef71f8e9]:wall_s": {
+  "arm": "m1",
+  "dir": "ab9-run5-20261109",
+  "sha": "7e55ef71f8e9",
+  "value": 33.272
+ },
+ "tg512[bb5ea7cd326b]:gen_tps": {
+  "arm": "m3",
+  "dir": "ab9-run5-20261109",
+  "sha": "bb5ea7cd326b",
+  "value": 43.2
+ },
+ "tg512[bb5ea7cd326b]:read_tps": {
+  "arm": "m3",
+  "dir": "ab9-run5-20261109",
+  "sha": "bb5ea7cd326b",
+  "value": 126.5
+ },
+ "tg512[bb5ea7cd326b]:wall_s": {
+  "arm": "m3",
+  "dir": "ab9-run5-20261109",
+  "sha": "bb5ea7cd326b",
+  "value": 33.076
+ },
+ "tg512[dd87bbceeb49]:gen_tps": {
+  "arm": "m2",
+  "dir": "ab9-run5-20261109",
+  "sha": "dd87bbceeb49",
+  "value": 42.1
+ },
+ "tg512[dd87bbceeb49]:read_tps": {
+  "arm": "m2",
+  "dir": "ab9-run5-20261109",
+  "sha": "dd87bbceeb49",
+  "value": 139.4
+ },
+ "tg512[dd87bbceeb49]:wall_s": {
+  "arm": "m2",
+  "dir": "ab9-run5-20261109",
+  "sha": "dd87bbceeb49",
+  "value": 29.584
+ },
+ "tgctl[0564d3655713]:gen_tps": {
+  "arm": "R2",
+  "dir": "ab9-reeval-r2-20261111",
+  "sha": "0564d3655713",
+  "value": 38.3
+ },
+ "tgctl[0564d3655713]:read_tps": {
+  "arm": "R2",
+  "dir": "ab9-reeval-r2-20261111",
+  "sha": "0564d3655713",
+  "value": 136.7
+ },
+ "tgctl[0564d3655713]:wall_s": {
+  "arm": "R2",
+  "dir": "ab9-reeval-r2-20261111",
+  "sha": "0564d3655713",
+  "value": 27.559
+ },
+ "tgctl[7b722f6a523f]:gen_tps": {
+  "arm": "R1",
+  "dir": "ab9-reeval-r1-20261111",
+  "sha": "7b722f6a523f",
+  "value": 39.3
+ },
+ "tgctl[7b722f6a523f]:read_tps": {
+  "arm": "R1",
+  "dir": "ab9-reeval-r1-20261111",
+  "sha": "7b722f6a523f",
+  "value": 135.6
+ },
+ "tgctl[7b722f6a523f]:wall_s": {
+  "arm": "R1",
+  "dir": "ab9-reeval-r1-20261111",
+  "sha": "7b722f6a523f",
+  "value": 22.696
+ },
+ "warm[08cf1843f6d9]:gen_tps": {
+  "arm": "M1",
+  "dir": "ab9-matrix-m1-spilloff-20261111",
+  "sha": "08cf1843f6d9",
+  "value": 38.1
+ },
+ "warm[08cf1843f6d9]:read_tps": {
+  "arm": "M1",
+  "dir": "ab9-matrix-m1-spilloff-20261111",
+  "sha": "08cf1843f6d9",
+  "value": 87.3
+ },
+ "warm[08cf1843f6d9]:wall_s": {
+  "arm": "M1",
+  "dir": "ab9-matrix-m1-spilloff-20261111",
+  "sha": "08cf1843f6d9",
+  "value": 4.717
+ },
+ "warm[18a2a3625892]:gen_tps": {
+  "arm": "b19-h7400",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "18a2a3625892",
+  "value": 35.8
+ },
+ "warm[18a2a3625892]:read_tps": {
+  "arm": "b19-h7400",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "18a2a3625892",
+  "value": 77.1
+ },
+ "warm[18a2a3625892]:wall_s": {
+  "arm": "b19-h7400",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "18a2a3625892",
+  "value": 7.125
+ },
+ "warm[211d07d3790d]:gen_tps": {
+  "arm": "S1",
+  "dir": "ab9-split34-off-20261110",
+  "sha": "211d07d3790d",
+  "value": 35.8
+ },
+ "warm[211d07d3790d]:read_tps": {
+  "arm": "S1",
+  "dir": "ab9-split34-off-20261110",
+  "sha": "211d07d3790d",
+  "value": 71.0
+ },
+ "warm[211d07d3790d]:wall_s": {
+  "arm": "S1",
+  "dir": "ab9-split34-off-20261110",
+  "sha": "211d07d3790d",
+  "value": 7.294
+ },
+ "warm[21cccfb14979]:gen_tps": {
+  "arm": "M3A",
+  "dir": "ab9-matrix-m3a-res128-20261111",
+  "sha": "21cccfb14979",
+  "value": 38.3
+ },
+ "warm[21cccfb14979]:read_tps": {
+  "arm": "M3A",
+  "dir": "ab9-matrix-m3a-res128-20261111",
+  "sha": "21cccfb14979",
+  "value": 71.7
+ },
+ "warm[21cccfb14979]:wall_s": {
+  "arm": "M3A",
+  "dir": "ab9-matrix-m3a-res128-20261111",
+  "sha": "21cccfb14979",
+  "value": 7.617
+ },
+ "warm[31e3de2459af]:gen_tps": {
+  "arm": "A",
+  "dir": "ab9-diet-AD-20261109",
+  "sha": "31e3de2459af",
+  "value": 34.7
+ },
+ "warm[31e3de2459af]:read_tps": {
+  "arm": "A",
+  "dir": "ab9-diet-AD-20261109",
+  "sha": "31e3de2459af",
+  "value": 69.8
+ },
+ "warm[31e3de2459af]:wall_s": {
+  "arm": "A",
+  "dir": "ab9-diet-AD-20261109",
+  "sha": "31e3de2459af",
+  "value": 9.653
+ },
+ "warm[3e574337bbca]:gen_tps": {
+  "arm": "S1",
+  "dir": "ab9-iq3s-split36-20261110",
+  "sha": "3e574337bbca",
+  "value": 30.4
+ },
+ "warm[3e574337bbca]:read_tps": {
+  "arm": "S1",
+  "dir": "ab9-iq3s-split36-20261110",
+  "sha": "3e574337bbca",
+  "value": 70.7
+ },
+ "warm[3e574337bbca]:wall_s": {
+  "arm": "S1",
+  "dir": "ab9-iq3s-split36-20261110",
+  "sha": "3e574337bbca",
+  "value": 6.93
+ },
+ "warm[42e5f02c7c04]:gen_tps": {
+  "arm": "b20-h7400",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "42e5f02c7c04",
+  "value": 33.0
+ },
+ "warm[42e5f02c7c04]:read_tps": {
+  "arm": "b20-h7400",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "42e5f02c7c04",
+  "value": 71.7
+ },
+ "warm[42e5f02c7c04]:wall_s": {
+  "arm": "b20-h7400",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "42e5f02c7c04",
+  "value": 7.932
+ },
+ "warm[49d1af8d0a73]:gen_tps": {
+  "arm": "S1",
+  "dir": "ab9-split38-h384-20261110",
+  "sha": "49d1af8d0a73",
+  "value": 41.6
+ },
+ "warm[49d1af8d0a73]:read_tps": {
+  "arm": "D",
+  "dir": "ab9-diet-AD-20261109",
+  "sha": "49d1af8d0a73",
+  "value": 76.3
+ },
+ "warm[49d1af8d0a73]:wall_s": {
+  "arm": "S1",
+  "dir": "ab9-split38-h384-20261110",
+  "sha": "49d1af8d0a73",
+  "value": 7.098
+ },
+ "warm[4ae2a7aa8b27]:gen_tps": {
+  "arm": "cap20k-rerank",
+  "dir": "iq3s-sweep-v0222-20261112",
+  "sha": "4ae2a7aa8b27",
+  "value": 24.5
+ },
+ "warm[4ae2a7aa8b27]:read_tps": {
+  "arm": "cap20k-rerank",
+  "dir": "iq3s-sweep-v0222-20261112",
+  "sha": "4ae2a7aa8b27",
+  "value": 57.8
+ },
+ "warm[4ae2a7aa8b27]:wall_s": {
+  "arm": "cap20k-rerank",
+  "dir": "iq3s-sweep-v0222-20261112",
+  "sha": "4ae2a7aa8b27",
+  "value": 10.903
+ },
+ "warm[5432bf0c0b47]:gen_tps": {
+  "arm": "S42ON",
+  "dir": "ab9-spill42-on-20261111",
+  "sha": "5432bf0c0b47",
+  "value": 34.1
+ },
+ "warm[5432bf0c0b47]:read_tps": {
+  "arm": "S42ON",
+  "dir": "ab9-spill42-on-20261111",
+  "sha": "5432bf0c0b47",
+  "value": 62.3
+ },
+ "warm[5432bf0c0b47]:wall_s": {
+  "arm": "S42ON",
+  "dir": "ab9-spill42-on-20261111",
+  "sha": "5432bf0c0b47",
+  "value": 7.5
+ },
+ "warm[5cd01273fc74]:gen_tps": {
+  "arm": "b16-h7400",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "5cd01273fc74",
+  "value": 39.2
+ },
+ "warm[5cd01273fc74]:read_tps": {
+  "arm": "b16-h7400",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "5cd01273fc74",
+  "value": 80.8
+ },
+ "warm[5cd01273fc74]:wall_s": {
+  "arm": "b16-h7400",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "5cd01273fc74",
+  "value": 7.199
+ },
+ "warm[631ca394d0ef]:gen_tps": {
+  "arm": "M1A",
+  "dir": "ab9-matrix-m1a-adaptive-on-20261111",
+  "sha": "631ca394d0ef",
+  "value": 37.6
+ },
+ "warm[631ca394d0ef]:read_tps": {
+  "arm": "M1A",
+  "dir": "ab9-matrix-m1a-adaptive-on-20261111",
+  "sha": "631ca394d0ef",
+  "value": 101.7
+ },
+ "warm[631ca394d0ef]:wall_s": {
+  "arm": "M1A",
+  "dir": "ab9-matrix-m1a-adaptive-on-20261111",
+  "sha": "631ca394d0ef",
+  "value": 5.041
+ },
+ "warm[665ad39d7696]:gen_tps": {
+  "arm": "D",
+  "dir": "ab9",
+  "sha": "665ad39d7696",
+  "value": 32.0
+ },
+ "warm[665ad39d7696]:read_tps": {
+  "arm": "D",
+  "dir": "ab9",
+  "sha": "665ad39d7696",
+  "value": 68.3
+ },
+ "warm[665ad39d7696]:wall_s": {
+  "arm": "D",
+  "dir": "ab9",
+  "sha": "665ad39d7696",
+  "value": 7.473
+ },
+ "warm[7773e1f19c31]:gen_tps": {
+  "arm": "S1",
+  "dir": "ab9-iq3s-split32-20261110",
+  "sha": "7773e1f19c31",
+  "value": 31.3
+ },
+ "warm[7773e1f19c31]:read_tps": {
+  "arm": "S1",
+  "dir": "ab9-iq3s-split32-20261110",
+  "sha": "7773e1f19c31",
+  "value": 70.0
+ },
+ "warm[7773e1f19c31]:wall_s": {
+  "arm": "S1",
+  "dir": "ab9-iq3s-split32-20261110",
+  "sha": "7773e1f19c31",
+  "value": 7.288
+ },
+ "warm[7e51f394f941]:gen_tps": {
+  "arm": "cap20k-dec6k",
+  "dir": "iq3s-sweep-v0222-20261112",
+  "sha": "7e51f394f941",
+  "value": 24.7
+ },
+ "warm[7e51f394f941]:read_tps": {
+  "arm": "cap20k-dec6k",
+  "dir": "iq3s-sweep-v0222-20261112",
+  "sha": "7e51f394f941",
+  "value": 44.9
+ },
+ "warm[7e51f394f941]:wall_s": {
+  "arm": "cap20k-dec6k",
+  "dir": "iq3s-sweep-v0222-20261112",
+  "sha": "7e51f394f941",
+  "value": 10.391
+ },
+ "warm[8e6e87b6ee46]:gen_tps": {
+  "arm": "E",
+  "dir": "ab9",
+  "sha": "8e6e87b6ee46",
+  "value": 29.1
+ },
+ "warm[8e6e87b6ee46]:read_tps": {
+  "arm": "E",
+  "dir": "ab9",
+  "sha": "8e6e87b6ee46",
+  "value": 76.7
+ },
+ "warm[8e6e87b6ee46]:wall_s": {
+  "arm": "E",
+  "dir": "ab9",
+  "sha": "8e6e87b6ee46",
+  "value": 9.357
+ },
+ "warm[9468c092df54]:gen_tps": {
+  "arm": "B",
+  "dir": "ab9-run5-20261109",
+  "sha": "9468c092df54",
+  "value": 33.7
+ },
+ "warm[9468c092df54]:read_tps": {
+  "arm": "B",
+  "dir": "ab9-run5-20261109",
+  "sha": "9468c092df54",
+  "value": 63.1
+ },
+ "warm[9468c092df54]:wall_s": {
+  "arm": "B",
+  "dir": "ab9-run5-20261109",
+  "sha": "9468c092df54",
+  "value": 8.428
+ },
+ "warm[a317187e7187]:gen_tps": {
+  "arm": "S1",
+  "dir": "ab9-spill0-split36-20261110",
+  "sha": "a317187e7187",
+  "value": 38.7
+ },
+ "warm[a317187e7187]:read_tps": {
+  "arm": "S1",
+  "dir": "ab9-spill0-split36-20261110",
+  "sha": "a317187e7187",
+  "value": 70.4
+ },
+ "warm[a317187e7187]:wall_s": {
+  "arm": "S1",
+  "dir": "ab9-spill0-split36-20261110",
+  "sha": "a317187e7187",
+  "value": 7.638
+ },
+ "warm[a33f2b7d5924]:gen_tps": {
+  "arm": "b16-h6796",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "a33f2b7d5924",
+  "value": 35.3
+ },
+ "warm[a33f2b7d5924]:read_tps": {
+  "arm": "b16-h6796",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "a33f2b7d5924",
+  "value": 78.7
+ },
+ "warm[a33f2b7d5924]:wall_s": {
+  "arm": "b16-h6796",
+  "dir": "iq3xxs-sweep-20261111",
+  "sha": "a33f2b7d5924",
+  "value": 7.142
+ },
+ "warm[a921d9b4cf9c]:gen_tps": {
+  "arm": "S40ON",
+  "dir": "ab9-spill40-on-20261111",
+  "sha": "a921d9b4cf9c",
+  "value": 34.1
+ },
+ "warm[a921d9b4cf9c]:read_tps": {
+  "arm": "S40ON",
+  "dir": "ab9-spill40-on-20261111",
+  "sha": "a921d9b4cf9c",
+  "value": 68.8
+ },
+ "warm[a921d9b4cf9c]:wall_s": {
+  "arm": "S40ON",
+  "dir": "ab9-spill40-on-20261111",
+  "sha": "a921d9b4cf9c",
+  "value": 7.269
+ },
+ "warm[acc211e7bf3a]:gen_tps": {
+  "arm": "S1",
+  "dir": "ab9-spill1-split36-20261110",
+  "sha": "acc211e7bf3a",
+  "value": 32.3
+ },
+ "warm[acc211e7bf3a]:read_tps": {
+  "arm": "S1",
+  "dir": "ab9-spill1-split36-20261110",
+  "sha": "acc211e7bf3a",
+  "value": 70.5
+ },
+ "warm[acc211e7bf3a]:wall_s": {
+  "arm": "S1",
+  "dir": "ab9-spill1-split36-20261110",
+  "sha": "acc211e7bf3a",
+  "value": 7.952
+ },
+ "warm[c35dc197e108]:gen_tps": {
+  "arm": "M2A",
+  "dir": "ab9-matrix-m2a-spillon-20261111",
+  "sha": "c35dc197e108",
+  "value": 37.9
+ },
+ "warm[c35dc197e108]:read_tps": {
+  "arm": "M2A",
+  "dir": "ab9-matrix-m2a-spillon-20261111",
+  "sha": "c35dc197e108",
+  "value": 69.7
+ },
+ "warm[c35dc197e108]:wall_s": {
+  "arm": "M2A",
+  "dir": "ab9-matrix-m2a-spillon-20261111",
+  "sha": "c35dc197e108",
+  "value": 7.617
+ },
+ "warm[d3d990d403ec]:gen_tps": {
+  "arm": "S1",
+  "dir": "ab9-split32-off-20261110",
+  "sha": "d3d990d403ec",
+  "value": 32.6
+ },
+ "warm[d3d990d403ec]:read_tps": {
+  "arm": "S1",
+  "dir": "ab9-split32-off-20261110",
+  "sha": "d3d990d403ec",
+  "value": 69.6
+ },
+ "warm[d3d990d403ec]:wall_s": {
+  "arm": "S1",
+  "dir": "ab9-split32-off-20261110",
+  "sha": "d3d990d403ec",
+  "value": 7.702
+ },
+ "warm[dfea6cc217ae]:gen_tps": {
+  "arm": "S40OFF",
+  "dir": "ab9-spill40-off-20261110",
+  "sha": "dfea6cc217ae",
+  "value": 33.7
+ },
+ "warm[dfea6cc217ae]:read_tps": {
+  "arm": "S40OFF",
+  "dir": "ab9-spill40-off-20261110",
+  "sha": "dfea6cc217ae",
+  "value": 72.7
+ },
+ "warm[dfea6cc217ae]:wall_s": {
+  "arm": "S40OFF",
+  "dir": "ab9-spill40-off-20261110",
+  "sha": "dfea6cc217ae",
+  "value": 7.234
+ },
+ "warm[e140336f43b8]:gen_tps": {
+  "arm": "cap30k-dec6k",
+  "dir": "iq3s-sweep-v0222-20261112",
+  "sha": "e140336f43b8",
+  "value": 32.3
+ },
+ "warm[e140336f43b8]:read_tps": {
+  "arm": "cap30k-dec6k",
+  "dir": "iq3s-sweep-v0222-20261112",
+  "sha": "e140336f43b8",
+  "value": 74.3
+ },
+ "warm[e140336f43b8]:wall_s": {
+  "arm": "I3A",
+  "dir": "ab9-iq3s-i3a-res128-20261111",
+  "sha": "e140336f43b8",
+  "value": 6.532
+ },
+ "warm[e489cdfef64c]:gen_tps": {
+  "arm": "prod",
+  "dir": "prod-256-warm-20261111",
+  "sha": "e489cdfef64c",
+  "value": 33.7
+ },
+ "warm[e489cdfef64c]:read_tps": {
+  "arm": "prod",
+  "dir": "prod-256-warm-20261111",
+  "sha": "e489cdfef64c",
+  "value": 73.0
+ },
+ "warm[e489cdfef64c]:wall_s": {
+  "arm": "prod",
+  "dir": "prod-256-warm-20261111",
+  "sha": "e489cdfef64c",
+  "value": 7.782
+ },
+ "warm[f31e4a9696f4]:gen_tps": {
+  "arm": "M4A",
+  "dir": "ab9-matrix-m4a-res64-20261111",
+  "sha": "f31e4a9696f4",
+  "value": 38.7
+ },
+ "warm[f31e4a9696f4]:read_tps": {
+  "arm": "M4A",
+  "dir": "ab9-matrix-m4a-res64-20261111",
+  "sha": "f31e4a9696f4",
+  "value": 71.4
+ },
+ "warm[f31e4a9696f4]:wall_s": {
+  "arm": "M4A",
+  "dir": "ab9-matrix-m4a-res64-20261111",
+  "sha": "f31e4a9696f4",
+  "value": 7.604
+ }
+}
