@@ -1147,3 +1147,105 @@ Reading:
   - any rerun must source the canonical env instead. rocm61-toolchain.cmake
   (/home/srcds/rocm61-toolchain.cmake) is the canonical pin toolchain; rocm644-toolchain
   is NOT for pins.
+
+## Round-8 fixer: 6.1.0-clean tests, phase-tag knob landed, IQ3_S tax re-attributed (2026-11-13 0x:xx)
+
+### Contamination audit (what 6.4.4 did and did not touch)
+
+- Every fix7 cmake cache (rpcw-cuda-fix7, rpcw-hip-fix7, and the older fix trees) pins
+  HIP_PATH=ROCM_PATH=/opt/rocm-6.1.0. Link audit: the binaries have NO dynamic ROCm
+  dependency at all (ROCm runtime statically linked; readelf NEEDED shows only libcudart/
+  cublas .so.13 from /usr/local/cuda-13.1 via RUNPATH, resolved independent of
+  LD_LIBRARY_PATH). The killed 6.4.4-env test runs therefore never loaded a 6.4.4 byte;
+  their verdicts are invalid by rule, not by effect. No rebuild needed; no artifact links
+  a wrong lib.
+- The bigger find: the aborted runs (and the first 6.1.0 rerun) also inherited a poisoned
+  session env - CUDA_VISIBLE_DEVICES set to the EMPTY STRING (CUDA: zero devices, cuInit
+  -> 100) and HSA_OVERRIDE_GFX_VERSION=9.0.0 (HIP: VII enumerates as gfx900, the gfx906
+  arch filter finds nothing -> "no ROCm-capable device"). All 130 first-run CUDA failures
+  were this, not code and not a driver wedge (NVML healthy, steamwebhelper's context
+  alive). Canonical env per launch-trial-r7.sh: `env -u CUDA_VISIBLE_DEVICES
+  -u HSA_OVERRIDE_GFX_VERSION` + LD_LIBRARY_PATH=/opt/rocm-6.1.0/lib.
+- Note for placement: the box now has TWO Radeon VIIs (rocm-smi device 0 and 1, both
+  0x66af) + the 3080 + the iGPU; second VII appeared with the GPU release.
+
+### Tests on /opt/rocm-6.1.0 (clean env; device tests live)
+
+- CUDA tree rpcw-cuda-fix7, 293 tests: 289 green. expert_cache_segmented_test,
+  prefill_fused_iq_test, prefill_fused_iq_test_nt256 fail only under -j8 GPU contention
+  and PASS serially. cuda_spill_guard fails with 4 pre-existing dflash2.cu.o violations
+  (gemm_rows_kernel<8,2,4>/<2,2,2>/<4,2,2>, rope_table_inv_kernel; identical in the
+  round-6 rpcw-cuda-diet tree, absent in rpcw-cuda base; round-8 diff touches no .cu).
+- HIP tree rpcw-hip-fix7, 82 tests: 79 green, 2 skips (ple_parity, pinned_alias_test).
+  split_lend_complement_test fails only under its ctest CUDA_VISIBLE_DEVICES=-1 property
+  (one real HIP call escapes the --wrap set in the HIP flavor); PASSES with devices
+  visible. conversation_copy_streams_test fails the #2409 16 MiB first-stream bound:
+  ROCm 6.1.0's first copy stream + event costs ~148-150 MiB on this box; identical
+  failure in rpcw-hip-diet and rpcw-hip-fix6 -> box/runtime-level, pre-existing, not the
+  branch's. Bound or runtime needs a revisit (conv_cache.hpp kRestoreFirstUseMib=64 is
+  4x this bound - check what the restore guard does on 6.1.0 before arming restore).
+- arena_pin_ranges_test green in both trees (the pin-range arithmetic CPU suite).
+
+### Landed on helper-ipc-diet (commits)
+
+- a68338ac4 arena pin-range arithmetic (gap/union helpers, CPU-tested)
+- 565fffd3f the 400 fix: promote registers the pin-range complement (no overlapping
+  cudaHostRegister) + STRATA_ARENA_RERANK_PHASE_TAG (see below)
+- 8ab7093c7 set_heat_phase public for generate.cpp's phase boundaries
+
+Knob STRATA_ARENA_RERANK_PHASE_TAG (default 0 = today's mixed heat; =1 plans the re-rank
+on decode-phase heat only): expert_source.hpp:1516-1648 (heat_phase_ atomic, decode_heat_
+bank, note_heat splits at phase), expert_source.cpp:7177-7190 (the env gate feeding the
+re-rank's plan), generate.cpp:21182/21437/22898 (phase 0 at the request boundary and the
+final refill/re-rank, phase 1 across the decode loop). Composes with STRATA_ARENA_RERANK_MAX
+(the per-boundary bound). Fail-safe: unset/0 keeps round-6/7 semantics bit-for-bit; all
+round-6/7 defaults untouched.
+
+### IQ3_S flat decode tax: dequant kernels EXONERATED, re-attributed to the tier/bytes side
+
+Measured on the idle VII, ROCm 6.1.0, iq_multi_parity --bench (fix7 binaries):
+
+- grouped expert GEMV (the decode path), new kernels: IQ3_S/Q2_0 vs IQ3_XXS/Q2_0
+  m=1: 147.9 vs 148.3 us, m=8: 497.9 vs 480.1 us -> +0.0..+3.7%, NOT 25-30%.
+- single-matrix iq_mmvq 8192x2560 nc=1: 46.7 vs 45.2 us (+3.3%).
+- STRATA_IQ_STAGE_TABLES=1 (staged codebook+sign-mask LDS path, iq_kernels.cu:3436): no
+  effect on gfx906 (m=8: 498.6 vs 497.9 unstaged; XXS same). Not a lever here.
+- Byte geometry: block_iq3_s 110 B/256 w (3.4375 bpw) vs block_iq3_xxs 98 B (3.0625)
+  -> +12.2% expert bytes per token; per-32w GEMV read 14 B vs 10 B (qh + scales + fatter
+  signs). Kernel time stays ~equal -> the grouped decode GEMV is not bandwidth- or
+  dequant-bound at these shapes on gfx906.
+- Therefore the v0226 panel's flat -25..-30% @1k ctx is NOT the S-quant dequant path.
+  Remaining suspects, in order: (1) the +12.2% pack bytes at the SAME arena cap evicting
+  5027 pairs vs iq3xxs's 1404 -> decode set partially served from host tiers even at 1k
+  ctx (the panel's own warm/cold gap 29.7->32.2 vs 38.8->44.8 fits tier refill), (2) the
+  panel's box state (7.3 GiB leftover swap from r7, panel peak 15.3 GiB; the iq3xxs
+  comparison ran fresh-post-reboot) flatly taxing every leg.
+- Fix candidate, low risk and ALREADY LANDED: arm STRATA_ARENA_RERANK_PHASE_TAG=1 (+ the
+  existing RERANK_MAX bound) so the arena/pin band converges on decode's set - this
+  attacks suspect (1) directly and helps iq3_s most (3.6x the evicted pairs). Medium-risk
+  alternative: an iq3_s-specific arena cap re-open (the 22000 close was measured on
+  iq3xxs-i8). Re-panel iq3_s on a rebooted, swap-drained box to strip suspect (2).
+
+### v0227 pin candidate (builds green on 6.1.0, both trees 100%, no-op rebuild)
+
+- /mnt/srcds/Strata/v0227/build-mixed-gpu/rpcw-cuda/{strata, strata-expert-helper,
+  strata-expert-helper-patient}, rpcw-hip/strata; helper pair bit-identical by design
+  (same convention as v0226).
+- sha256: strata(cuda) 950c8a3bb1cd63ce8b449119071bd9afdd1520a07118b8cec91a79ddb5c9a42c,
+  helper 8d37045c010641f9982ae054e9a9aeece84635f163eac03f99e0e341f4a16506 (patient same),
+  strata(hip) 9f8a3fb2e703e405f30749716383d73bf723eaa9557cb5b40beb799d7e1d2741.
+- Live smoke (throwaway, 6.1.0 env): rpcw-hip strata-device lists device 0 VII
+  gfx906:sramecc+:xnack- 60 CU driver 60140091; rpcw-cuda strata-device lists the 3080
+  cc 8.6 driver 13020. No engine boot this round; :8009 untouched.
+
+### Left for the parent (live verification)
+
+1. Boot v0227 on a throwaway port with the rerank armed (RERANK_MAX + PHASE_TAG) and
+   reproduce the old killer->longtg boundary once: the 400 fix is CPU-tested + wraps
+   audited, not yet live-verified. Watch fill_slot_queued through a promote of >few pairs.
+2. iq3_s A/A panel on a rebooted box, phase-tag on/off, to split the tier-vs-swap share
+   of the flat tax before any cap re-open.
+3. Decide whether the second VII joins placement (it shifts device ordinals; configs
+   that pin by index need a re-check).
+4. The conversation_copy_streams 16 MiB bound vs 6.1.0's ~150 MiB first-stream cost:
+   re-baseline or gate on runtime version before the next restore-arm.
