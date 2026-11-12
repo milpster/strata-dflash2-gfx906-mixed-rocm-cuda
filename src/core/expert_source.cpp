@@ -7083,12 +7083,21 @@ void ArenaExpertSource::set_arena_reorder(std::vector<uint8_t> hot, std::vector<
 // helper-ipc-diet round 4: one re-rank at the safe boundary.  Snapshot the heat window and the keep set, plan
 // relief_arena_reorder_plan over the droppable band, apply it (demote first - it frees the cap headroom and
 // the pages; promote second - the refill_recorded_pairs mechanism), then halve the counters so the window
-// ages.  At most 64 pairs per side a boundary: the refills are disk reads and the driver's register, and a
-// request's end is not the place for unbounded work.  The cap stays the ceiling and the floor the guarantee;
-// this decides only WHICH pairs fill the band.
+// ages.  At most kMaxPerSide pairs per side a boundary: the refills are disk reads and the driver's register,
+// and a request's end is not the place for unbounded work.  STRATA_ARENA_RERANK_MAX=N (N >= 1) raises the
+// bound: a fresh long-context read leaves decode's swap-in demand spread over thousands of pairs (the v0225
+// int8 panel's killer leg: 5072 pair swap-ins, 9.6 GiB of pack-file reads inside one decode), and at 64 a
+// boundary the band needs ~a hundred requests to converge on the set decode actually touches.  A deployment
+// that can spend a few seconds between requests converges in a handful.  Unset or 0: 64, exactly as before.
+// The cap stays the ceiling and the floor the guarantee; this decides only WHICH pairs fill the band.
 int64_t ArenaExpertSource::reorder_arena_by_heat() {
     if (!reorder_armed_ || base_ == nullptr || arena_ == nullptr || n_expert_ <= 0 || blobs_ <= 0) return 0;
     if (refill_running_.load(std::memory_order_relaxed)) return 0;   // the bulk refill owns the flags
+    static const int64_t max_per_side = [] {
+        const char* v = std::getenv("STRATA_ARENA_RERANK_MAX");
+        const long n = v != nullptr ? std::atol(v) : 0;
+        return n > 0 ? (int64_t) n : (int64_t) 64;
+    }();
     const int64_t n_layers = blobs_ / n_expert_;
     const size_t cells = (size_t) blobs_;
     std::vector<int64_t> heat(cells);
@@ -7103,17 +7112,16 @@ int64_t ArenaExpertSource::reorder_arena_by_heat() {
         [&](int64_t l) { return (uint64_t) strata::kernels::cpu::expert_layout().blob_bytes(l); });
     for (size_t i = 0; i < cells; ++i) heat_[i].store(heat[i] / 2, std::memory_order_relaxed);   // the window ages
     if (!plan.reordered) return 0;
-    constexpr int64_t kMaxPerSide = 64;
     int64_t promoted = 0, demoted = 0;
     uint64_t promoted_bytes = 0, demoted_bytes = 0;
-    for (size_t i = 0; i < plan.demote.size() && i < (size_t) kMaxPerSide; ++i) {
+    for (size_t i = 0; i < plan.demote.size() && i < (size_t) max_per_side; ++i) {
         uint64_t freed = 0;
         if (release_pair(plan.demote[i].first, plan.demote[i].second, freed)) {
             ++demoted;
             demoted_bytes += freed;
         }
     }
-    for (size_t i = 0; i < plan.promote.size() && i < (size_t) kMaxPerSide; ++i) {
+    for (size_t i = 0; i < plan.promote.size() && i < (size_t) max_per_side; ++i) {
         uint64_t filled = 0;
         if (refill_pair(plan.promote[i].first, plan.promote[i].second, filled)) {
             ++promoted;

@@ -1505,6 +1505,9 @@ public:
     /// required and the async tier never runs with one; the stages' swap-ins of dropped pairs go through
     /// swap_blobs_batch (file_mu_, the pack files), never the arena's pin tables, so the boundary's
     /// sole-reader rule holds with stages present.
+    /// STRATA_ARENA_RERANK_MAX=N raises the per-boundary bound (64 pairs a side by default): after a
+    /// fresh long-context read the plan's swaps cover thousands of pairs, and a deployment that can
+    /// spend a few seconds between requests converges on decode's set in a handful of boundaries.
     int64_t reorder_arena_by_heat();
     bool arena_reorder_armed() const { return reorder_armed_; }
 
