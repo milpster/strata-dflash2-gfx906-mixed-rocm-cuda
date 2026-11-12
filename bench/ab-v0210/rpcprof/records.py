@@ -68,6 +68,7 @@ def load_legs(dirs):
                 "dir": d.name, "arm": rec.get("arm", "?"), "leg": rec["leg"],
                 "walls": rec.get("walls", []), "wall_s": rec["wall_s"],
                 "sha": rec.get("sha256", "?")[:12], "judge": leg_metrics(rec),
+                "mem": rec.get("mem") or {},
             })
     return legs
 
@@ -88,19 +89,25 @@ def main():
     records = dict(old) if update else old
     verdicts = []
 
-    print(f"{'leg':<22}{'arm':<18}{'wall_s':>8}  {'rd_tps':>7}{'gen_tps':>8}  sha        dir")
+    print(f"{'leg':<22}{'arm':<18}{'wall_s':>8}  {'rd_tps':>7}{'gen_tps':>8}  {'maxRSS':>7}{'minAvail':>9}  sha        dir")
     for lg in sorted(legs, key=lambda x: (x["leg"], x["wall_s"])):
         rd = best_judge(lg["judge"], next(iter(lg["judge"]), ""), "read_tps") if lg["judge"] else None
         rd = max((best_judge(lg["judge"], k, "read_tps") or 0 for k in lg["judge"]), default=None)
         gen = max((best_judge(lg["judge"], k, "gen_tps") or 0 for k in lg["judge"]), default=None)
+        mem = lg["mem"]
+        rss = mem.get("max_rss_mib")
+        avl = mem.get("min_avail_mib")
         print(f"{lg['leg']:<22}{lg['arm']:<18}{lg['wall_s']:>8.1f}  "
               f"{(f'{rd:7.1f}' if rd else '      -')}{(f'{gen:8.1f}' if gen else '       -')}  "
+              f"{(f'{rss/1024:6.1f}G' if rss else '      -')}{(f'{avl/1024:7.1f}G' if avl else '        -')}  "
               f"{lg['sha']:<10} {lg['dir']}")
 
         if not update:
             continue
-        for field, agg, better in (("wall_s", "min", "lower"), ("read_tps", "max", "higher"), ("gen_tps", "max", "higher")):
-            val = {"wall_s": lg["wall_s"], "read_tps": rd, "gen_tps": gen}[field]
+        for field, agg, better in (("wall_s", "min", "lower"), ("read_tps", "max", "higher"), ("gen_tps", "max", "higher"),
+                                   ("max_rss_mib", "min", "lower"), ("min_avail_mib", "max", "higher")):
+            val = {"wall_s": lg["wall_s"], "read_tps": rd, "gen_tps": gen,
+                   "max_rss_mib": rss, "min_avail_mib": avl}[field]
             if val is None:
                 continue
             # records are sha-guarded classes: same leg name with a different

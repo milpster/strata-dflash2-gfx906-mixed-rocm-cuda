@@ -1,0 +1,32 @@
+{
+ "arm": "memtrack",
+ "leg": "warm2",
+ "kind": "warm",
+ "ctx": 512,
+ "max_tokens": 64,
+ "ts": 1794501390.477,
+ "walls": [
+  4.741
+ ],
+ "wall_s": 4.741,
+ "content_from": "content",
+ "prompt_bytes": 512,
+ "sha256": "665ad39d76965e7c255e797fb41b062f5cf22eaf2ca33ae7eaface3bac3443a5",
+ "elog": "logs/engine-swift15-f16kv-dflash-w4-q4_0-mixed.log",
+ "elog_start": 5525284,
+ "elog_end": 5526144,
+ "hlog": "logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261112-173158-3047915-helper.log",
+ "hlog_start": 1480,
+ "hlog_end": 1480,
+ "mem": {
+  "max_rss_mib": 40183,
+  "min_avail_mib": 13372,
+  "max_swap_used_mib": 9279,
+  "max_vram_mib": {
+   "card3": 16153,
+   "card4": 428,
+   "card2": 16252,
+   "nvidia0": 7144
+  }
+ }
+}
