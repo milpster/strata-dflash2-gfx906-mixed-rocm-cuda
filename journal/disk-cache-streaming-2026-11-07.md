@@ -108,6 +108,7 @@ Goal: bounded-RAM streaming conversation cache on disk; split-32 + DFlash suppor
   - **Bench A/B gate (2026-11-08, prod-down window 2, all arms same boot cycle — up 1d2h):** A = base `a6e465117` (worktree `/mnt/srcds/Strata-wt-base`, build-906b, ROCm 6.1.0 pins, STRATA_HIP_GFX906=ON, ldd clean, 169/169); B1 = branch head `4f283d5be` build-906r same flags (no cache flags, auto RAM tier); B2 = same + `--conversation-cache-mib 0 --conversation-cache-disk-mib 24576 --conversation-cache-disk-ram-mib 64 --conversation-cache-disk-idle-save` (dir `run/disk-cache-bench`); A2 = A repeat (drift control; boot-cost-pragmatic A,B1,B2,A2 wrap instead of strict interleave). Model: mixed pack iq3xxs-15 + Swift-1.5 helper (RTX 3080) + PLE Q8 + dflash2 q4_0, kv fp16, split-32, 2× gfx906. Driver `run/bench_serve_arm.py`: greedy thinking-ON parity probe FIRST on fresh boot (1500-tok prompt, 512 tok), one fresh 16k PP judge, 6×64 cached TG band, C/D/C2 restore series in every arm (A/B1 → RAM tier path, B2 → disk path; c1/c2 hashes must match across ALL arms). rocminfo snapshot `run/logs/rocminfo-20261108.txt`. Judge: PP from the fresh line, TG from the cached band, acceptance from the last draft line.
   - **Bench gate VERDICT (all four arms, same boot cycle):** token-level quality — greedy thinking-ON probe hash, restore c1 and c2 hashes IDENTICAL across A/B1/B2/A2 (`11f7e6d89be4` / `1c650a7f6259` / `da255215ba91`), including B2's c2 which continued after a disk park+restore → **the disk cache is token-exact**. Perf — PP fresh 16k: A 605.1, B1 603.1, B2 602.8, A2 603.6 tok/s (±0.4 %, no regression); TG cached band avg: 41.2 / 41.2 / 41.6 / 40.8 tok/s (within the ±0.3–0.5 drift band); drafts accepted 18 of 20 in every arm; RSS HWM 49350/49350/48852/49350 MiB (B2 ~0.5 GiB lower: RAM tier off). Arm walls: 685/683/838/687 s. Raw: `run/logs/bench-{A,B1,B2,A2}.json`. Record kept here (project journal) rather than le_retain — this session's memory bank is a different repo.
   - **PROMOTED to prod (2026-11-08 16:17):** v0211 layout = branch HEAD engine (build-906r) + frozen patient helper (copied) + `git archive HEAD` of serve/, strata_control/, tools/ (first attempt exported only serve/ → server crash-looped on `ModuleNotFoundError: strata_control`; lesson: export every package serve/ imports). Launcher `WORK=$ROOT/v0211`; config: engine exe → v0211, `--conversation-cache-mib 2048→0`, appended `--conversation-cache-dir /mnt/srcds/Strata/data/conversation-cache --conversation-cache-disk-mib 24576 --conversation-cache-disk-ram-mib 64 --conversation-cache-disk-idle-save` (min-tokens/park-gain kept, inert with the RAM tier off). Fact-check first: v0210 = commit 30f6936f3 (merge into build-mixed-v0210, fully contained in main, only a 4-line wording diff in server.py) → promotion is a pure upgrade, nothing dropped. README "Latest — 2026-11-08" section + bench driver committed `4bc9d4b81`, pushed `disk-cache-streaming→fork/main` (fast-forward a6e465117..4bc9d4b81; local main in the shared checkout left stale on purpose). **Prod verification:** v0211 engine up, `disk tier ON at /mnt/srcds/Strata/data/conversation-cache (direct I/O, budget 24576 MiB)`, /slots + traffic OK; live cycle A→B→A: idle-parks 817/806/932 ms, `restored 13675 tokens from disk in 8065.4 ms: complete target+draft hit`, re-park superseded=1, answers correct (OK/NO/YES), metrics card `parks 3, restores 1, refusals 0`. Rollback = launcher WORK→v0210 + config exe + cache-mib 2048.
+  - **Incident + fix (2026-11-08 ~21:40):** the promoted launcher ran as a session-tied background shell and died with that session (~50 min in, graceful SIGINT stop) — prod went down with it. Relaunched, then re-launched **detached** (`setsid --fork nohup launcher --recover >> logs/launcher-detached.log`): the supervisor is now its own session leader, independent of any agent session. Rule: prod's launcher is ALWAYS started detached, never as a session background shell. Post-incident verification: /health ok, traffic OK, disk tier ON, boot ~48 s (first generations raced the dying old instance — normal backoff restarts, not crash-loops).
 
 ## Lane 2b — paired target+draft resume capture (commit `5cd05e685`, `feat(engine): persist paired dflash resume state`)
 
@@ -169,3 +170,119 @@ Goal: bounded-RAM streaming conversation cache on disk; split-32 + DFlash suppor
   - The plan's quota rule ("quota refuses when nothing is evictable") is reachable only when the cache is EMPTY: any published generation is evictable, so the quota refusal precedence is index → count → quota → protected. The header documents this order; a test asserting a bare quota refusal needs an empty tier.
   - §6.2's tier lifecycle: flipping to buffered (or a refused direct I/O) mid-transfer cannot destroy the tier — a park in flight would lose its reservation. `disk_off_by_fs` stops the tier from using the filesystem and keeps published files.
   - The plan lists no host-side progress vocabulary for the transfer; the engine emits `DCACHE` lines and serve treats them as heartbeats. Disk bytes must NOT be added to prompt evaluation, and every DCACHE phase needs a monotonic per-phase allowance — otherwise a slow write ends the request (`test_disk_cache_lines_keep_a_save_alive`).
+
+## Lane 4 — publish-only idle-save + disk-tier park-gain (2026-11-08)
+
+- Trigger: prod (v0211, RAM tier off + disk idle-save) showed per-step disk KV churn — engine log 2026-11-08: 123 restores / 135 parks / ~136 requests (~91% of requests restore); one growing conversation (conv-134→141, 27K→74K ctx) restored its own just-published image at EVERY step: restore p50 28.1 s / p90 53.4 s (~0.73 ms/token, growing), park 2–3.5 s per turn, and `--conversation-cache-park-gain 4096` was inert for the disk tier (full-image rewrite even at +45 tokens).
+- Root cause (fixer-verified in code, base 4bc9d4b81):
+  1. Request-start lookup: `disk_wins = disk_tokens > parked.tokens` compared the disk generation only against the RAM cache's parked match. With `--conversation-cache-mib 0`, `conversations.best()` returns tokens=0, so the generation idle-published at the last turn boundary won on the SAME conversation's next request; the restore leg (keyed on `disk_start`, not the lookup outcome) re-streamed the identical image over the already-mounted session (`live_ok && starts_with` had set `resume = live.size()`), and `slot_source = -1` dropped the batch slot.
+  2. `DiskCache::parked_prefix_tokens` used EXACT token+image+cvec equality, so a growing conversation never matched its own published generation → the idle publish rewrote the whole image every turn.
+- Fix (worktree `Strata-wt-disk-cache`, branch `disk-cache-streaming`, prod UP throughout, no GPU runtime work):
+  - `5d6e3c4e4` "feat(engine): gate disk publishes by the park gain": `parked_prefix_tokens` = `retire_superseded`'s own prefix rule (published tokens are a PREFIX of the incoming, images below that length equal, same cvec); new `DiskCache::publish_worth(ids, images, cvec, gain)` = `gain<=0 || held==0 || ids.size() >= held+gain`; `tests/core/conversation_disk_cache_test.cpp` +49 (`test_park_gain`, 26 checks; suite 183→209 checks).
+  - `e155f3391` "fix(engine): idle publishes keep the conversation mounted": `disk_wins = disk_tokens > std::max(std::max(resume, slot_tokens), parked.tokens)`; `if (!disk_wins) disk_start.clear()` (a losing generation never guards/streams/drops slots); `disk_park` gated by `disk->publish_worth(...)` with reason `park-gain: advanced X of N tokens past the published H; the published file stays`; help text updated (idle-save is PUBLICATION ONLY: the conversation stays mounted, next request continues live; park-gain gates the disk tier). Zero new memory: the live session's cells were already allocated; switch-time park (`park_source`/`park_current` → `disk_park`) still owns invalidation and freeing, and `park_worth` gates on max(RAM, disk) so a switch within the gain keeps the published file.
+  - `docs/DETAILS.md`: both flag rows updated.
+  - Files: 5, +103/−9. generate.cpp +29/−3; hpp +13/−3; cpp +10/−1; test +49; docs +2/−2.
+- Gates (fixer run + parent re-verified): `ninja -C build-cache-cpu` clean; `ctest -R 'conversation|session_save_reclaim|dflash_ring'` → 9/9, 3.2 s (parent re-run 2026-11-08: identical); serve mocks `Ran 432 tests … OK`; CUDA compile-only 0 errors / 4 warnings identical to base; HIP gfx906 compile-only (build-906r, ROCm 6.1.0 pins) 0 errors / 145 warnings identical to base (positions diffed, none on added lines); `git diff --check 4bc9d4b81 HEAD` clean; `/health` 200 at start/mid/end.
+- Deviations accepted by parent:
+  1. The gain gate lives in `disk_park` (one place: idle publish AND switch-time disk park) rather than in `disk_idle_save`; the idle hook's existing `idle save skipped (%s)` carries the reason.
+  2. `parked_prefix_tokens` changed exact→prefix — with exact equality the gain gate could never fire for a growing conversation (the measured reason prod republished every turn). RAM's `ConversationCache::parked_prefix_tokens` untouched.
+  3. The lookup fix in `generate.cpp` has no unit test (CPU conversation build never compiles generate.cpp): compile-gated here, GPU-window verified below.
+  4. Manual SAVE (`session_file_write_v2` at the manual leg) untouched — not the tier.
+- Expected prod effect (to be proven in the GPU window): sequential same-conversation steps → 0 restores, publishes ≈ 1 per 4096-token advance; true switches/restarts unchanged (restore path intact, restart re-prefills only the unpublished tail).
+- GPU-window QA plan (user-approved window required, parent-run, arms: branch build-906r vs v0211 pre-fix, prod-faithful flags incl. `--conversation-cache-mib 0 … --conversation-cache-disk-idle-save --conversation-cache-park-gain 4096`):
+  - S1 churn: one conversation, 15 turns × ~300 new tokens → pre-fix arm must reproduce restore+prompt pairs; fixed arm: zero `restored … from disk`, `idle save skipped (park-gain: …)` at boundaries, per-turn wall = decode only.
+  - S2 gain cadence: +12k tokens → ≈ floor(advance/4096) ± 1 publishes.
+  - S3 switch invalidation: A→B→A → restores ≈ 2, token-exact parity vs the RAM-tier arm (c1/c2 hash equality).
+  - S4 restart insurance: SIGTERM at idle, resend → one restore at the last published generation, tail ≤ 4096 read.
+  - S5 deep rewind: truncate ~10k, continue → exactly one restore at the deepest published prefix.
+  - S6 batch slots (`--batch 2`, alternating): no same-depth restores; zero churn pairs.
+  - Overall: refusals ≈ 0, RSS unchanged, DCACHE lines only on real writes.
+- Status: STOPPED before any GPU runtime test per the hard gate. Awaiting the user's explicit confirmation to bring prod down.
+
+## Lane 4 GPU window + promotion to prod v0212 (2026-11-08, parent-run)
+
+- User-approved window; parent-only throughout. Prod stopped cleanly at an idle boundary (SIGTERM supervisor; :8009 closed; 75 s respawn watch clean). Mid-window incident: prod was relaunched at 21:42 from a closing shell (one-shot, no loop exists — verified: only supervisor/launcher/watchdog alive); its helper took the RTX 3080 and killed the first PRE arm (engine exit 2: "prompt tier's channel closed"). Resolved: stopped prod again, relaunched cleanly.
+- Candidate: build-906r full link with the lane-4 commits, sha256 42a4740d44717df2… (pre-fix v0211 engine 5e13ad512bfda830…). Arms: cfg-churn-pre (v0211 binary) / cfg-churn-fix (branch binary), prod-faithful flags incl. `--conversation-cache-mib 0 … --conversation-cache-disk-idle-save --conversation-cache-park-gain 4096`, own cache dirs + engine logs, port 8011, helper via run/helper.json.
+- S1/S2 drivers: run/churn_check.py (pre) + run/churn_check_fix.py (fix; phase A = identical 128k-token turn-0 for cross-arm parity, phase B = fresh 32k conversation). Note: big_message words tokenize ~8× the word count at digit suffixes — depth 16000 words ≈ 128k tokens (turn walls below are at 128–160k ctx).
+- **S1 PRE (churn reproduced):** 12 turns → 12 parks / 11 restores; restore 62–67 s at 147–156k ctx; turn walls 80–96 s. **S1/S2 FIX:** 0 restores across all phases; sequential turns 16–19 s at 34–44k ctx; publish cadence exactly gain-gated (2 re-publishes for 11.4k advance, `idle save skipped (park-gain: …)` on sub-gain turns, burst published once); phase-A turn-0 identical to PRE (228.1 s, 128174 toks, completion 2); RSS HWM 48.8 GiB (unchanged).
+- Regression matrix on the fixed binary: s3_abab @1500 = reference-identical (requests_reused=2, reused_tokens=24350, restores=2, refusals=0, draft_pair_hits=2, restore 8.6 s); s5_restart = 12175 reused after restart (8.1 s); s4_rewind = 24356 reused, pair restore at 12168. All green.
+- **Promoted to prod v0212** (staged: engine 42a4740d + frozen helper 2204741d + git archive HEAD of serve/strata_control/tools; config `exe` → v0212, launcher `WORK` → v0212). Boot to healthy: 54 s.
+- **Live verification (prod :8009):** A1 fresh 32k → idle publish 1.5 s; A2 same conversation → LIVE continuation, no restore, no churn; B1 switch → own publish; A3 back → exactly one legitimate restore (15.5 s, `complete target+draft hit`, then `32203 reused + 22 read in 16.1 s`); A3 idle → `park-gain: advanced 23 of 4096 … the published file stays`. Answers OK/YES/OK/DONE. Restart inventory adopted the churn-era generations (conv-240+ continues the sequence).
+- Rollback = launcher WORK→v0211 + config exe→v0211.
+- Committed e381c47b0 (test(tools) churn drivers + docs(readme) Latest section). Pushed 4bc9d4b81..e381c47b0 disk-cache-streaming -> fork/main (git@github.com:milpster/strata-dflash2-gfx906-mixed-rocm-cuda.git).
+- Known next bottleneck (unchanged by design): the pp reused-floor (~0.5 ms/reused-token; live continuation reused-window is checkpoint-bounded — A2 showed 16384 reused + 15818 read).
+
+## Lane 5 (proposed, closed as unnecessary) — turn-boundary checkpoint (2026-11-08 night)
+
+- Motivation: post-v0212 live step showed `32202 = 16384 reused + 15818 read in 89509 ms` — looked like a checkpoint-grid floor costing 40-90 s/step at big ctx.
+- Two fixer dispatches for the implementation died without output or tree changes (subagent endpoint drops; nothing lost).
+- Explorer verification (file:line in generate.cpp/conversation_cache.hpp/dflash_ring.hpp): `resume` = deepest exact-prefix match over live tip ∪ checkpoint chain (18321-18330); the live tip IS a candidate; spacing is `--prompt-cache-every` (default 16384, not `--prefill`); cap = `--prompt-cache` (6). The 16384 fallback fires only when the client's re-rendered reply diverges at token level from the streamed emission.
+- Live measurement on prod v0212 (exact-replay client, thinking off): R1 fresh 16174 read; R2 continuation `16175 reused + 22 read in 584 ms` — sub-second prompt phase. The 16K re-read was the test harness replaying `content` only (canonicalized); opencode's real traffic replays exact streamed text and reuses ~99.6% even pre-fix.
+- Conclusion: no lane. Sequential-step turnaround after lane 4 = pp <1 s + decode for exact-replay clients. Remaining known cost: switch-step disk restores at ~0.44-0.5 ms/token (~110 MB/s effective vs 830 MB/s the tier achieved in the s5 bench) — candidate next lane (single-pass/streamed restore). A turn-boundary checkpoint remains a robustness option for divergent-replay clients only.
+
+## Lane 6 GPU window (2026-11-09, prod down, parent-run)
+
+- Candidate `8c180d7e7` build-906r (sha f0526224…), arm cfg `run/cfg-l6-b.json` (prod flags, port 8013, fresh `run/disk-cache-l6b`).
+- **s3_abab@1500 FAILED**: both A2/B2 restores refused — `session file v2: payload checksum mismatch` (refusals=2, restores=0, reused=0). Parks fine (conv-1/conv-2, 609.5 MB each, 962/974 ms, same sizes as v0212 band).
+- **Old-reader discriminator (v0212 exe, same cache dir)**: restores BOTH files fine — `restored 12175 tokens … complete target+draft hit` in 9573/9615 ms, reused 24350, refusals 0 ⇒ files parked by the new binary are valid; the defect is in the NEW reader.
+- Failure signature is pass 1 of the sink read (read_v2_impl:2134, trailer `ph`): per-region digests ALL match the table, whole-payload digest does not. Pass 2 never runs. md seed path (`f.bytes(kHeader,…)`) is unchanged code shared with v0212.
+- Bisect running: `f38905632` (part 1 only, no read-ahead) → s3@1500 same cache dir. Outcome pending.
+- Bisect verdict: `f38905632` (part 1 only) **green** — restores=2, walls 6361/6569 ms (1.47× vs v0212's 9573/9615 — the third-stream kill delivers as predicted). `3ebf041e3` (parts 1+2) **fails identically** ⇒ read-ahead guilty.
+- Root cause (found by inspection, confirmed by instrumented probe): `second()` always returned `buf2_`, but `swap(cur, nxt)` alternates `cur` — every other pipelined step issued the read-ahead into the buffer `fn()` was hashing, and `swap(x,x)` no-ops left later steps hashing stale first blocks ⇒ whole-payload checksum mismatch (region digests survived because the host hash consistently won the race against O_DIRECT preads — the CPU suite's buffered timing always let the hash win, so 208 checks passed; on the engine's real region mix the payload digest caught it 100%).
+- Fix (parent, GPU window): `second(in_use)` returns the buffer fn() is NOT consuming — true ping-pong. Commit `3a8ca9e09` on 3ebf041e3, cherry-picked to branch as `39e534389`. Stride fixture grew a 3-block region. CPU 7/7 green; GPU s3@1500 green (restores=2, refusals=0).
+- Parts 1+2+fix walls @12K ctx: 6110/6539 ms (1.5×; the passes are disk-bound at ~100 MB/s, so the read-ahead adds little — the third-stream kill is the win; part 3 queued copies still pending measurement).
+- Arm B chain running: probe + c1/c2 witness, s3@4000, s3@12000, s4, s7, s5 on `39e534389` (binary eb5aaeef…).
+
+### Arm B verdict (branch `39e534389`, binary eb5aaeef…) — ALL GREEN
+- s3@1500: restores=2, refusals=0, reused 24350 — metrics identical to v0212 reference. Walls 6110–6662 ms (v0212: 9573–9615) ≈ **1.5×**.
+- s3@4000 (32K): restores=5, reused 100939; walls 10020–11227 ms (v0212 live ≈ 15.5 s) ≈ 1.45×.
+- s3@12000 (96K): restores=7, reused 293289; walls 28089–30352 ms (v0212 live ≈ 44.5 s @100K) ≈ 1.5×.
+- s4_rewind: 9 reused, 7 draft-pair hits, 0 refusals ✓. s5_restart: post-restart restore 12239, refusals 0 ✓.
+- s7_corrupt (FRESH cache dir required — see note): flipped byte → `refusals: ['checksum']`, sink untouched, safe full reread, answer YES ✓ — fail-closed holds with the manifest precheck + fixed read-ahead.
+- Parity witnesses for arm C: probe `6308140d6d00`, c1 `e7d0f93a80fd`, c2 `3396fb4c5ff5`.
+- Honest lane total: **~1.5×** restore walls (3 streams → 2; the disk sustains ~250 MB/s aggregate either way, so read-ahead/queued copies are marginal on this I/O-bound path — part 1 is the win).
+- Harness note: s7's victim pick `sorted(glob)[0]` is only valid on a FRESH cache dir; on a dirty dir it corrupts a stale file and the test is void (restore legitimately succeeds from a newer file). Also: the check harness leaves the engine up after some `--keep-up` runs — a following non-`--already-up` scenario then refuses ("port already bound"); stop 8013/8014 between chains.
+
+## Lane 6 close-out (2026-11-09 ~04:10)
+
+### Arm C verdict: RAM tier INERT with the disk tier on
+- `--conversation-cache-mib 4096` boots fine (RAM check passes on a quiet machine) but the RAM slot tier parks NOTHING (`parked: 0, bytes: 0`): with the disk tier enabled, displacement parks route to disk only. Switch restores still pay disk walls (10.0–11.2 s @32K). Probe/c1/c2 parity held; scenarios green. **Not promoted** — the 4 GiB would sit reserved doing nothing. Lane-7 candidate: dual-park (RAM hot copy + disk publish) needs engine work, own analysis→fix→window cycle.
+- Boot-time note: the RAM-tier reservation must fit beside the expert-arena staging check; under transient page-cache pressure from a just-killed engine the boot refuses ("expert arena needs 39.97 GiB, X available") — retry on a quiet machine.
+
+### Promotion v0213 (DONE, live)
+- Binary = branch `9c0646ec0` engine (README-only diff over tested `39e534389`); sha `eb5aaeef…`; staged at `/mnt/srcds/Strata/v0213/` (FULL tree rsynced from v0212 — serve/ + strata_control/ required by the launcher/server; first attempts died silently on missing serve modules).
+- Seam flipped: config `exe` → v0213, launcher `WORK` → v0213. Rolled via the launcher's own supervisor path (`setsid nohup ./launch-prod-…sh`, cwd=/mnt/srcds/Strata). Health OK; startup inventory clean on the real cache (3 generations, 8 sidecars, corrupt=0).
+- Greedy probe within-boot stable (`7603a2610962` ×2); cross-shape hash differs from arm boots (known atomics/spec behavior — arm-vs-arm c1/c2 token-exactness is the gate that matters, and it held).
+- **Rollback = flip the same two lines back to v0212.**
+- Standing check: any `payload checksum mismatch` refusal in the prod log after this point is a rollback trigger.
+- Pushed `e381c47b0..9c0646ec0` → fork/main.
+
+### Window ops notes (self)
+- pkill -f with patterns that appear in my own command line kills my own shell — kill by exact pid or use ps+grep first. This bit three times tonight.
+- The check harness leaves engines up after --keep-up scenarios; always free 8013/8014 between chains (and stale v0210 helpers on test-helper*.sock linger holding ~346 MiB RTX — kill by pid).
+- s7 needs a FRESH cache dir (sorted(glob)[0] victim pick) + explicit --cache-dir when the cfg dir name doesn't end in "disk-cache".
+- Supervisor generations share one state file; overlapping supervisors corrupt each other's STRATA_PAIR_RECORD temp dirs (record crashes, gens burn in 30 s backoff). One supervisor at a time, via the launcher's canonical no-arg path.
+
+## Lane 7: RAM dual-park (opened 2026-11-09 ~04:30)
+
+Explorer findings (verified citations):
+- **Why the RAM tier stayed empty (arm C)**: `park_worth` at generate.cpp:18621-18629 is ONE gate for both tiers — park_held = max(RAM parked_prefix_tokens, disk parked_prefix_tokens). With idle-save, disk reports ≈ live − last reply ⇒ gate false at every switch ⇒ `park_current` (the only main-session RAM-park caller → park_source:14197) never runs. park_slot needs --batch (DFlash forbids). ⇒ parked 0, bytes 0.
+- **Restore side is already correct**: 18488 disk wins only STRICTLY deeper than max(resume, slot, parked); equal-depth ⇒ RAM restore (18795-18873), disk untouched; when RAM wins its disk generation stays as insurance.
+- **Fix**: split the gate — RAM worth from RAM held alone (drop the disk term at 18624-18626); disk keeps publish_worth inside disk_park. ~5 lines. Restore rule unchanged.
+- Fit: ~50 KB/token measured (42,950 tok → 2.03 GiB) ⇒ a 4 GiB tier holds ≲80K-token conversations; 96K+ stay disk-only (make_room refuses cleanly). KSM merges parked sibling-subagent images (anonymous 16 MiB segments) — genuine win.
+- Edge to watch in the window: idle-save can publish DEEPER than the switch-time RAM snapshot after the conversation continues and idles ⇒ disk strictly deeper ⇒ the disk wall returns for that later restore. Acceptable for the switch-heavy pattern; note in verdict.
+- Fixer dispatched (fix-4): gate split + preserves (publish-only idle-save, mutation gates, guarded donors, park_drops hand-off, bounded RAM). CPU-gated; GPU window after.
+
+### Lane 7 GPU window + promotion v0214 (DONE, live 2026-11-09 ~05:4x)
+- Binary `e31d8d522` (build-906r sha a2e1d56bf4b1), dual-tier cfg (mib 4096 + disk 24576 + idle-save + park-gain 4096), FRESH dir, port 8013.
+- **RAM parks happen**: parked 1→3 entries, bytes 1.07→3.70 GB across s3@1500→s3@4000. Disk publishes continue (generations=4, corrupt=0); the disk card's "refusals" counter counts benign park-gain publish-skips (file already at depth), NOT read refusals — zero checksum events.
+- **RAM restores**: `restored 12175 tokens (live) in 320–506 ms`, `restored 32175 tokens (live) in ~636 ms` — vs 6.5 s / 10–11 s disk. **10–17× switch-restore improvement** on top of lane 6's 1.5×.
+- s5_restart: post-restart disk restore 6550.9 ms (insurance intact ✓). s7: A2 answered YES via the RAM copy — the corrupt DISK file was bypassed entirely (RAM authoritative at equal depth, by design; the disk fail-closed path was validated in lane 6 on the identical read code).
+- **Parity: probe `6308140d6d00`, c1 `e7d0f93a80fd`, c2 `3396fb4c5ff5` — all identical to arm-B references. Token-exact.**
+- Promoted: v0214 staged (rsync v0213 + new engine), config exe→v0214 AND `--conversation-cache-mib 0→4096`, launcher WORK→v0214, booted via canonical launcher path. Health OK; metrics card: conversation_cache_mib 4096, slots 4, min_free 2560. **Rollback = revert those two config lines + WORK to v0213.**
+- Edge (known, accepted): a conversation that continues and idles well past its switch-time RAM snapshot lets idle-save publish strictly deeper → a later restore pays the disk wall once. Fine for the switch-heavy pattern.
+- Pushed `9c0646ec0..2d5019016` → fork/main.
+
+### Standing checks on prod (v0214)
+- Any `payload checksum mismatch` in the engine log → rollback trigger.
+- RAM pressure: tier evictions/`conversation_memory_admit` refusals under real load — watch `free -g` with the tier full (~53 GiB used expected worst case; 2560 MiB floor + swap guard).

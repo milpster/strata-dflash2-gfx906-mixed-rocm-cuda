@@ -653,3 +653,14 @@ relief+packs · hot 15000 · cap 20000 · cap-decode 6000 · retry.** Files
 updated (config exe v0222 + flags; launcher BIN v0222), promotion-ready,
 NOT booted — iq3xxs v0221 diet remains the default prod (decode 37 free).
 cap30k documented as the decode-max variant with the pressure caveat.
+
+## Nov 12 midday: prod pair-restart + round-4 respawn (11:0x)
+
+Prod iq3xxs v0221 diet restarted on its own (pair generation 2; trigger not
+surfaced in the rotated launcher log — supervisor recovered both peers
+unattended). First round-4 fixer spawn died to the restart window
+(ConnectionRefused, zero work lost); respawned after health + serving
+warmup (HTTP 200). Lesson reaffirmed: prod pair-restarts are also teardown
+windows for agent spawns — verify serving, not just health, before spawning.
+v0221-vs-v0222 on prod: behavior-identical at current flags (floor defaults
+0); pin bump folds into the next natural window.
