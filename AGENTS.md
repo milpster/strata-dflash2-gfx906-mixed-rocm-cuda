@@ -118,3 +118,72 @@ follow it whether a person or an agent writes the text. The short version:
   `HSA_OVERRIDE_GFX_VERSION=9.0.6` (see `launch-prod-*.sh`, prod config `lib_dirs`).
 - `/home/user/rocm-gfx906-xnack` in old journals does not exist here; the real tree is
   `/home/srcds/rocm-gfx906-xnack`.
+
+## SERVING LANE RULES — agent operations on this box (operator-set, learned 2026-11-06..12)
+
+The mixed-GPU serving lane (2× Radeon VII engine + RTX 3080 expert helper, prod on
+`:8009`, trials on `:8019`) runs by these rules. They override convenience.
+
+### Agents and prod
+- **Exactly one subagent at a time.** Never spawn a second while one lives; if two are
+  somehow alive, stop one.
+- **Subagent model calls ride prod `:8009`.** The parent session (remote model) is the
+  only one that stops and starts prod, and only between subagent turns.
+- **Never take `:8009` down while a subagent is mid-turn** (it dies with
+  ConnectionRefused). Spawn subagents only when prod is *verified serving* — health-ok
+  is not enough; probe with a real completion first.
+- **The agent promotes nothing.** Prod config/binary changes land as armed files and
+  measurements + reports; the operator decides every promotion and every prod-down
+  window. Ask, never assume.
+- **Prod comes back up only right before a subagent is needed** (or when the operator
+  asks). After a measurement window, leave it down.
+- A subagent `ConnectionRefused` notice does **not** mean the session is dead — verify
+  with task_status; the host retries failed runs. Kill a session only on a confirmed
+  connect-loop with zero work progress.
+
+### Fixer lane constraints
+- Code + builds + guards only. **No boots, no GPU work, nothing touching `:8009` or its
+  processes.** Validation windows are the parent's job.
+- Engine commits go on the `helper-ipc-diet` branch in the worktree
+  (`/mnt/srcds/Strata-wt-helper-ipc`); the parent pushes to `fork`, never the fixer.
+- Commit incrementally so infra churn cannot eat finished work.
+
+### Windows and teardown (hard-won)
+- **Kill logic lives in on-disk scripts only** (`stop-prod.sh`, `stop-all.sh`). Never
+  `pkill -f`/`pgrep -f` from an inline command: the pattern is in the command's own
+  cmdline and it kills itself (four incidents on 2026-11-12).
+- **Stop and boot are separate invocations.** A boot command's text contains the
+  launcher path; any concurrent pattern-kill matches it.
+- **Supervisors respawn their pair forever.** Always TERM them via their state files
+  (`run/prod-swift15-f16kv-mixed-supervisor.json`, `run/trial-spill40-supervisor.json`)
+  before sweeping processes; `stop-all.sh` does this and verifies 20 s of quiet.
+- **Verify a trial's identity from its boot lines before firing legs** (engine path,
+  expected flag lines). A surviving launcher from an interrupted boot will happily
+  serve the wrong tuple on your port.
+- Trial configs must point sockets at `run/trial-spill40.sock`/-2 and port 8019;
+  prod boots only through its launcher. Engine elogs contain null bytes — always
+  `tr -d '\0'` when reading them.
+
+### Measurement discipline
+- **Comparable legs only**: same driver protocol, same-day windows; the sha-guarded
+  ledger (`bench/ab-v21.../rpcprof/records.py`, `records.json`) arbitrates. Killer
+  legs embed run-unique prompts and hash the *reply* — their shas never cross-match;
+  tps is the comparable metric, walls are not.
+- **Every leg tracks memory** (operator directive 2026-11-12): `ab9_driver.py` records
+  per-leg `max_rss_mib` (VmHWM via clear_refs reset), `min_avail_mib`,
+  `max_swap_used_mib`, per-card `max_vram_mib`. A speed claim is never reported
+  apart from its memory cost.
+- Boot-state confounds (swap residue, page cache, game running) are named in every
+  report; the game-coexistence profile (journal 2026-11-12, `3f6c23ba`) is the venue
+  serving claims are ultimately judged in.
+- Long-running work runs backgrounded with live progress visible in opencode's
+  terminal view (memory sampler + engine-log streamer patterns exist in the
+  2026-11-12 window scripts).
+
+### Box specifics worth remembering
+- Core pinning `--stage-cpus 3,5,7,9,11,13,15` (stage threads off CPU 0; the hostapp
+  keeps CPU 0), re-applied by the pair supervisor every generation. Do not deviate.
+- Pins live in `/mnt/srcds/Strata/v0NNNN/build-mixed-gpu/{rpcw-hip,rpcw-cuda}` with
+  sha256s recorded at pin time; verify before use.
+- The 3080 hosts only the helper (fill + reserve ≈ its whole VRAM); the game runs on
+  the iGPU and costs ~3–5 GiB of *system* RAM, not VRAM.
