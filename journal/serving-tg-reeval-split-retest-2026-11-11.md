@@ -584,3 +584,21 @@ pages return, but the available floor 13 GiB (vs 8.6) with flat swap held.
 Prod returned to iq3xxs v0221 diet 23:58:04 (one designed pair restart on
 the way up), verified healthy. iq3_s diet tuple = servable opt-in big-context
 config; decode cost makes it the wrong default while iq3xxs diet is free.
+
+## Overnight soak + morning probes (Nov 12, ~07:1x)
+
+iq3xxs v0221 diet idle all night (0 requests). Morning probes: warm decode
+**37.1 tok/s** (identical to last night — stable, no diet cost), RSS 34.2
+flat, avail 17–20, swap draining 7.4→6.3, all health greps zero. Caveat
+noted: this boot has served only a handful of requests — no full panel on
+iq3xxs-diet yet.
+
+## Round 3 + sweep ordered (operator: "both, 2 first")
+
+Decode-improvement plan: (2) round-3 arena hot/cold split first, then (1)
+cap/hot knob sweep on the round-3 binary (phase-1 tuple re-run + buy-back
+arm) — sweeping the final code, not pre-round-3. Fixer resumed (same
+session, exact-topic continuation) with phase-1 numbers to beat at same
+relief: longtg ≥28, tg1024 ≥32, killer ≥31, 8k PP ≥170. Serena MCP
+availability in the project fixed (operator) — fixer informed (queued note).
+Pipeline: round 3 → pin v0222 → sweep window → journal/push.
