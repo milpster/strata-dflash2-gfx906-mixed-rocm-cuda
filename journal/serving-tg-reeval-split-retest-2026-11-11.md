@@ -1114,3 +1114,15 @@ Reading:
 - ALWAYS SHOW LIVE PROGRESS: run long commands in foreground with streaming output
   (no >/dev/null silencing, no detached builds) so the operator sees progress live
   in the opencode terminal view. If something must stream to a file, tail -F it.
+
+## OPERATOR DIRECTIVE (2026-11-13 ~00:1x): ROCm 6.4.4 FORBIDDEN in builds/tests
+
+- The active fixer was caught running fix7 tests with LD_LIBRARY_PATH=/opt/rocm-6.4.4/lib
+  (/opt/rocm-6.1.0 is the ONLY sanctioned toolchain+runtime - every pin v0219..v0226 and the
+  prod launcher's LD_LIBRARY_PATH use 6.1.0; /opt/rocm itself is a 7.15.0 install - also not
+  sanctioned). Mixed-runtime test verdicts are INVALID: any pass/fail from a 6.4.4 runtime
+  does not transfer to the pin environment.
+- Parent killed the 6.4.4-env test processes mid-run (operator order).
+- RULE for every future round: compile AND link AND test against /opt/rocm-6.1.0 only;
+  set LD_LIBRARY_PATH=/opt/rocm-6.1.0/lib explicitly for any test/probe; never let a bare
+  `rocm`/`rocm-6.4.4`/`rocm-7.x` path resolve.
