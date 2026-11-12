@@ -1083,3 +1083,14 @@ Reading:
 3. Goal check (TG 25-30 band @ coexistence, ~45k ctx): warm 29k TG 37.8 clears the band;
    cold 27.0 sits IN it; cold 142k 18.6 far below. Memory envelope holds (avail 12-15.7
    even on the swapped box).
+
+## Round 8 fixer launched (2026-11-12 ~22:2x) — storm shrink + S-quant tax
+
+- OPERATOR GAMING: no server/engine/GPU work this round (hard constraint in the brief);
+  parent stopped the 8019 trial first (avail 54.3 GiB). No engine boots without asking
+  the operator first (standing until further notice).
+- Brief: (1) fix the rerank/lent-slot fatal 400 (stale device alias), (2) phase-tagged
+  decode heat behind a default-off knob (storm shrink; worth most on iq3_s: 5027 evicted
+  pairs vs 1404, cold TG 18.6), (3) IQ3_S flat decode tax analysis (-25..30% even @1k ctx),
+  (4) round-6/7 semantics + defaults protected, (5) builds green + CPU-only tests, shas
+  for the v0227 pin candidate, no boots.
