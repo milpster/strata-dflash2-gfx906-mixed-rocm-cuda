@@ -1,0 +1,32 @@
+{
+ "arm": "V26IQ3S",
+ "leg": "killer144k-tg1024",
+ "kind": "prefill",
+ "ctx": 786800,
+ "max_tokens": 1024,
+ "ts": 1794517917.664,
+ "walls": [
+  391.866
+ ],
+ "wall_s": 391.869,
+ "content_from": "content",
+ "prompt_bytes": 786800,
+ "sha256": "27f50659172e70927897156b664c787b13722ce1b205cc0f97301b4585429322",
+ "elog": "/mnt/srcds/Strata/logs/engine-v0226-iq3s.log",
+ "elog_start": 14593,
+ "elog_end": 19034,
+ "hlog": "/mnt/srcds/Strata/logs/trial-spill40-20261112-220242-1571759-helper.log",
+ "hlog_start": 1443,
+ "hlog_end": 1443,
+ "mem": {
+  "max_rss_mib": 45231,
+  "min_avail_mib": 11957,
+  "max_swap_used_mib": 15337,
+  "max_vram_mib": {
+   "card3": 16220,
+   "card4": 416,
+   "card2": 16292,
+   "nvidia0": 7144
+  }
+ }
+}

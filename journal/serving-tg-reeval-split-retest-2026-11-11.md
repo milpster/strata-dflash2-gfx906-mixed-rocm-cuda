@@ -1054,3 +1054,32 @@ trial-r7{a,b,c}.json,r7-legs.py}`, stop script `run/r7-stop.sh`, logs
 `logs/engine-r7{a,b,c}.log`, `logs/r7*-panel.out`, records under
 `bench/ab-v0210/rpcprof/out/r7{a,b,c}-20261112/`. Port 8021 cleaned; nothing
 touched :8009; no soaks run.
+
+## iq3_s + int8 KV panel (2026-11-12 22:05-22:15, arm V26IQ3S, v0226 pin, trial 8019)
+
+Quant stack: IQ3_S experts/native + PLE q8 + KV int8 (full residency 262144/262144) + dflash q4_0.
+Launcher plumbing fixed en route: engine pack/native/native-dense-gguf live in the config ARGS
+(the .pack json field is cosmetic), helper --pack/--experts now env-overridable
+(STRATA_PACK/STRATA_EXPERTS). Boot: arena cap keeps 11579 pairs (~21.5 GiB); 5027 pairs
+(10 GiB) cap-evicted vs iq3xxs's 1404 - bigger S pairs -> bigger storm surface.
+Box caveat: swap carried ~7.3 GiB leftover from r7 thrash (reset needs interactive sudo);
+panel swap peaked 15.3 GiB at the killer. iq3xxs panel ran fresh-post-reboot (swap ~3).
+
+Results (vs iq3xxs-i8 V25I8 20:18 panel, same tuple/cache flags):
+- killer PP: 439.5 vs 645.8 (-32%)
+- killer TG cold: 18.6 (!) vs 33.9; warm-ish pass 30.0 vs 35.0
+- killerL TG: 30.2/27.5 vs 36.1/41.0
+- longtg (29k) TG: 37.8/27.0 vs 42.9/35.0
+- tg1024 (1k) TG: 29.7/32.2 vs 38.8/44.8  <- ~-30% even at 1k ctx: NOT the storm;
+  this is the S-quant decode path itself (compute/dequant/expert bytes)
+- Draft acceptance 62-87% (healthy). Helper 0 timeouts/fallbacks.
+- Mem killer leg: maxRSS 45.2 GiB, min_avail 12.0, swap 15.3; other legs RSS ~50, avail 15.4-15.7.
+
+Reading:
+1. iq3_s cold-142k TG 18.6 = storm amplified (5x the cap-evicted pairs of iq3xxs) + possibly
+   swap pressure - round-8 decode-phase heat work helps iq3_s MOST.
+2. iq3_s pays a flat ~-25..-30% decode tax even where no storm exists (1k ctx) - separate,
+   kernel/quant-path lead for round 8+ (IQ3_S dequant/expert-bandwidth vs IQ3_XXS).
+3. Goal check (TG 25-30 band @ coexistence, ~45k ctx): warm 29k TG 37.8 clears the band;
+   cold 27.0 sits IN it; cold 142k 18.6 far below. Memory envelope holds (avail 12-15.7
+   even on the swapped box).
