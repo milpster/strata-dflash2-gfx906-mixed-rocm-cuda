@@ -767,3 +767,39 @@ line — bracket tricks don't help when the text is really there. Fix:
 `stop-prod.sh` on disk (state-file supervisor PID first, orphan patterns
 live inside the file where no scanned cmdline contains them). Stop and boot
 must be separate invocations.
+
+## Round 5 landed — conversation-cache bounds (15:20–16:10, Nov 12)
+
+Fresh fixer session (the first connect-looped on infra churn — 3×
+ConnectionRefused with zero progress while prod verifiably served; killed,
+respawned with WIP carry-over, ran clean end-to-end). Four commits on
+`helper-ipc-diet` after `179e45878`, pushed to fork; **v0224 pinned**
+(hip `02ec299c…`, cuda `579aaadc…`, helper `56b35827…` — verified at pin).
+
+1. `fc7d072a5` core: `posix_fadvise(DONTNEED)` page release on park writes/
+   restore reads/ring sidecars (`pages_released` reported from the kernel);
+   LRU `at()/drop()` (park+evict, active/pinned/guarded-donor refused);
+   `qsa_kv_bytes_per_cell` geometry (24576 B/resident cell → 4.2 GiB at
+   `--kv-resident-mib 4096`, 174 762 cells)
+2. `9b98fce1b` serve: `--conversation-cache-evict-page-cache`,
+   `--conversation-cache-ram-mib` (LRU ceiling at park-admission/commit/
+   restore/idle-publish), `--kv-resident-mib` (only lowers asked residency,
+   4096-cell floor); `--prompt-window-retry` extended to the merged
+   first-window class (the #879 tail abort)
+3. `cb424d6b4` tools: `conv_cache_diet_boot.sh` + `conv_cache_diet_soak.py`
+   (grow 120k, park hammering, LRU pass; asserts avail ≥15, RSS ≤40,
+   tg ≥34, zero-gen 0, parked page-cache ≤0.6 GiB, 0 slow-reads)
+4. `2bd6f791a` docs: targets + boot/judge lines + arithmetic
+
+Builds ALL GREEN (L3 fix5), guards PASS, helper ctests 6/6+2/2,
+conversation-cache tests 4854+219 checks. Targets: RSS ≤40 GiB at 130k ctx
+(34.2 baseline + ~4 host KV), avail floor 15, decode back to 35 band.
+
+Fixer's live observation mid-run: **prod capped-diet RSS already 47 GiB /
+avail 10.1** with the operator's session active — the conversation side
+growing exactly as diagnosed; round 5 is the missing half.
+
+**Validation window PENDING operator scheduling**: soak (8019 trial) +
+clean-baseline re-rank re-measure want prod down AND a reboot first
+(clears the 16.5 GiB stale swap) — reboot ends the game session, so the
+window waits for game end.
