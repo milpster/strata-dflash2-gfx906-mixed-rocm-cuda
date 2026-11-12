@@ -206,6 +206,14 @@ public:
     /// perf-review D-4: `fill_slot_blocking`'s copy on the same (legacy) stream, but queued: many slots are refilled
     /// with one `sync_queued` at the end instead of a wait per slot. Same ordering against earlier work, same bytes.
     bool fill_slot_queued(int32_t slot, const uint8_t* host_blob, std::string& err, int64_t bytes = 0);
+    /// helper-ipc-diet round 8: `fill_slot_queued` that refuses to be fatal.  A queued copy whose source
+    /// pointer the runtime rejects (the round-7 rerank-arm fatal: 'invalid argument' on a lent-slot refill
+    /// after the re-rank's unregister/re-register churn - an enqueue-time refusal, the context stays
+    /// healthy) is retried ONCE through `fill_slot_blocking`, whose HIP path copies through the boot-time
+    /// pinned staging buffer and never consults the churned alias state.  The fallback is named on stderr
+    /// so a live panel can count it; STRATA_REFILL_FALLBACK=0 restores the hard failure (debug only).
+    /// On the happy path this is exactly fill_slot_queued.
+    bool fill_slot_queued_staged(int32_t slot, const uint8_t* host_blob, std::string& err, int64_t bytes = 0);
     /// `fill_slot_queued` for a blob that is not in one piece: each `parts[i].n` bytes at `parts[i].p` go to byte `parts[i].at`
     /// of the slot (the pieces tile the blob).  Same queue, same `sync_queued`.
     bool fill_slot_queued_parts(int32_t slot, const BlobPart* parts, int n, std::string& err);

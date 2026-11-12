@@ -20,6 +20,7 @@
 #include "strata/kernels/cpu/kq_avx1.hpp"
 #include "strata/kernels/cpu/kq_avx2.hpp"
 #include "strata/kernels/cpu/pool.hpp"
+#include "strata/core/arena_pin_ranges.hpp"
 
 #include <cuda_runtime.h>
 #ifndef _WIN32
@@ -6917,24 +6918,93 @@ bool ArenaExpertSource::refill_pair(int32_t layer, int32_t expert, uint64_t& fil
         if (!f->copy_blob(layer, expert, stage.data())) return false;   // stays dropped: blob() re-reads it on demand
     }
     void* dp = nullptr;
-    if (cudaHostRegister((uint8_t*) base_ + (size_t) lo, (size_t) (hi - lo),
+    // helper-ipc-diet round 8: register the EXACT COMPLEMENT of what the tables cover, then coalesce
+    // the touched neighborhood into ONE region (arena_pin_ranges.hpp).  The old whole-span register
+    // overlapped the re-registered remainders a demote leaves at a dropped pair's edges (the boot
+    // complement covers every kept blob's edge pages, and blobs pack contiguously, so nearly every
+    // promote's span overlapped): the runtime either refused - the promote silently failed, the
+    // re-rank converged slower than its plan said - or accepted overlapping regions whose later
+    // unregisters churned the alias state the direct copy path consults, the class behind the
+    // round-7 rerank-arm fatal ('refilling a lent slot failed: fill_slot_queued: invalid argument'
+    // after re-rank demotes).  With the complement rule the runtime never sees an overlapping
+    // register from the re-rank, and the union keeps pin_range_of's one-region guarantee for the
+    // promoted pair AND the neighbours it swallowed: no blob straddles a registration boundary.
+    const auto gaps = pin_gaps(lo, hi, pin_start_, pin_end_);
+    size_t first = 0, last = (size_t) -1;
+    const auto u = pin_union(lo, hi, pin_start_, pin_end_, first, last);
+    if (gaps.empty() && last < first) return false;   // covered and nothing to coalesce: not our shape
+    // the rollback of the pieces the unregister loop takes: each goes back exactly as it was, with a
+    // fresh alias (the old one died with its unregister).  A piece the driver now refuses has its
+    // table entries dropped (they must never claim an unregistered span): its pairs stay RESIDENT on
+    // plain pages, their refills take the staging path - correct, slower, named.
+    auto restore_pieces = [&](size_t from, size_t to) {   // re-register the pieces [from, to)
+        for (size_t i = to; i-- > from;) {                // back to front: erases keep later indices
+            if (cudaHostRegister((uint8_t*) base_ + (size_t) pin_start_[i],
+                                 (size_t) (pin_end_[i] - pin_start_[i]),
+                                 cudaHostRegisterPortable | cudaHostRegisterMapped) != cudaSuccess) {
+                (void) cudaGetLastError();
+                std::fprintf(stderr, "strata: expert arena: cap re-rank: re-registering [%llu, %llu) failed "
+                                     "after the promote stopped: that span's refills take the staging path\n",
+                             (unsigned long long) pin_start_[i], (unsigned long long) pin_end_[i]);
+                pin_start_.erase(pin_start_.begin() + (long) i);
+                pin_end_.erase(pin_end_.begin() + (long) i);
+                pin_dev_.erase(pin_dev_.begin() + (long) i);
+                a->pin_ranges.erase(a->pin_ranges.begin() + (long) i);
+                continue;
+            }
+            void* rdp = nullptr;
+            if (cudaHostGetDevicePointer(&rdp, (uint8_t*) base_ + (size_t) pin_start_[i], 0) == cudaSuccess &&
+                rdp != nullptr) pin_dev_[i] = (const uint8_t*) rdp;
+            (void) cudaGetLastError();
+            a->registered_bytes += pin_end_[i] - pin_start_[i];
+        }
+    };
+    size_t taken = 0;   // pieces [first, first + taken) left the runtime (an exclusive end)
+    if (last >= first) {   // unregister the entries the span overlaps; they re-enter as the union
+        for (size_t i = first; i <= last; ++i) {
+            if (cudaHostUnregister((uint8_t*) base_ + (size_t) pin_start_[i]) != cudaSuccess) {
+                // our own registration refused the unregister: put back the ones already taken and
+                // stop - the tables never diverge from the runtime
+                (void) cudaGetLastError();
+                break;
+            }
+            a->registered_bytes -= pin_end_[i] - pin_start_[i];
+            ++taken;
+        }
+        if (taken <= (size_t) (last - first)) {   // the loop stopped early: the promote stops clean
+            restore_pieces(first, first + taken);
+            return false;   // the pair stays dropped: today's file-served degrade
+        }
+    }
+    const size_t pieces_end = last != (size_t) -1 ? last + 1 : first;   // [first, pieces_end): the coalesced set
+    if (cudaHostRegister((uint8_t*) base_ + (size_t) u.first, (size_t) (u.second - u.first),
                          cudaHostRegisterPortable | cudaHostRegisterMapped) != cudaSuccess) {
-        (void) cudaGetLastError();   // the driver refused: the pair stays dropped, today's degrade
+        (void) cudaGetLastError();   // the driver refused the union: the pair stays dropped, today's
+        restore_pieces(first, pieces_end);   // degrade; the pieces go back as they were
         return false;
     }
-    if (cudaHostGetDevicePointer(&dp, (uint8_t*) base_ + (size_t) lo, 0) != cudaSuccess || dp == nullptr) {
+    if (cudaHostGetDevicePointer(&dp, (uint8_t*) base_ + (size_t) u.first, 0) != cudaSuccess || dp == nullptr) {
         (void) cudaGetLastError();
-        cudaHostUnregister((uint8_t*) base_ + (size_t) lo);   // the pair stays dropped (the flag refuses every DMA use)
+        cudaHostUnregister((uint8_t*) base_ + (size_t) u.first);   // the pair stays dropped (the flag refuses every DMA use)
         (void) cudaGetLastError();
+        restore_pieces(first, pieces_end);   // the union is gone: the pieces go back
         return false;
     }
-    // insert the range into the sorted tables (the gate: the request's serial path is the only reader)
-    size_t pos = std::upper_bound(pin_start_.begin(), pin_start_.end(), lo) - pin_start_.begin();
-    pin_start_.insert(pin_start_.begin() + (long) pos, lo);
-    pin_end_.insert(pin_end_.begin() + (long) pos, hi);
+    // replace the unregistered entries with the one union entry (the sorted position of `first`)
+    if (last >= first) {
+        pin_start_.erase(pin_start_.begin() + (long) first, pin_start_.begin() + (long) (last + 1));
+        pin_end_.erase(pin_end_.begin() + (long) first, pin_end_.begin() + (long) (last + 1));
+        pin_dev_.erase(pin_dev_.begin() + (long) first, pin_dev_.begin() + (long) (last + 1));
+        a->pin_ranges.erase(a->pin_ranges.begin() + (long) first, a->pin_ranges.begin() + (long) (last + 1));
+    }
+    const size_t pos = last >= first ? first
+                                     : (size_t) (std::upper_bound(pin_start_.begin(), pin_start_.end(), u.first) -
+                                                 pin_start_.begin());
+    pin_start_.insert(pin_start_.begin() + (long) pos, u.first);
+    pin_end_.insert(pin_end_.begin() + (long) pos, u.second);
     pin_dev_.insert(pin_dev_.begin() + (long) pos, (const uint8_t*) dp);
-    a->pin_ranges.insert(a->pin_ranges.begin() + (long) pos, std::make_pair(lo, hi - lo));
-    a->registered_bytes += hi - lo;
+    a->pin_ranges.insert(a->pin_ranges.begin() + (long) pos, std::make_pair(u.first, u.second - u.first));
+    a->registered_bytes += u.second - u.first;
     std::memcpy((uint8_t*) base_ + (size_t) off, stage.data(), (size_t) lay.blob_bytes(layer));
     {   // clear the flag with the same lock blob()/pinned() re-check under (refill_run's rule)
         std::lock_guard<std::mutex> lk(file_mu_);
@@ -6942,6 +7012,11 @@ bool ArenaExpertSource::refill_pair(int32_t layer, int32_t expert, uint64_t& fil
     }
     unfilled_.fetch_sub(1, std::memory_order_relaxed);
     unfilled_bytes_ = unfilled_bytes_ > lay.blob_bytes(layer) ? unfilled_bytes_ - lay.blob_bytes(layer) : 0;
+    if ((size_t) layer < layer_pcie_.size()) {   // pcie_layer's answer for this layer follows the new ranges
+        uint8_t v = 0;
+        for (int64_t e = 0; e < n_expert_ && v == 0; ++e) v = pinned(layer, e) ? 1 : 0;
+        layer_pcie_[(size_t) layer] = v;
+    }
     filled_bytes = lay.blob_bytes(layer);
     return true;
 }
@@ -7058,6 +7133,7 @@ void ArenaExpertSource::set_arena_reorder(std::vector<uint8_t> hot, std::vector<
     // std::vector<std::atomic> resize() needs relocatable elements (atomics are not); constructing the
     // sized vector and move-assigning it value-initializes the counters with no element moves.
     heat_ = std::vector<std::atomic<int64_t>>(cells);   // zeroed: unarmed pairs cost one branch in blob()
+    decode_heat_ = std::vector<std::atomic<int64_t>>(cells);   // round 8: the decode-phase bank
     reorder_hot_ = std::move(hot);
     reorder_tier_ = std::move(tier_served);
     reorder_profile_ = std::move(profile);
@@ -7098,19 +7174,33 @@ int64_t ArenaExpertSource::reorder_arena_by_heat() {
         const long n = v != nullptr ? std::atol(v) : 0;
         return n > 0 ? (int64_t) n : (int64_t) 64;
     }();
+    // STRATA_ARENA_RERANK_PHASE_TAG=1 (round 8, default 0: today's mixed heat): plan on the DECODE
+    // bank.  The round-7 panels found the read-phase swap-in heat (a long prompt's window sweeps,
+    // thousands of pairs) drowning the decode window's demand in the mixed counter - the plan only
+    // found 14-33 strict-win swaps a boundary while decode's first window carried 5072.  On the
+    // decode bank the promote side is decode's own demand and the demote side falls to resident
+    // pairs decode never touches: the storm's set converges in a handful of boundaries.
+    static const bool phase_tag = [] {
+        const char* v = std::getenv("STRATA_ARENA_RERANK_PHASE_TAG");
+        return v != nullptr && std::atoi(v) != 0;
+    }();
     const int64_t n_layers = blobs_ / n_expert_;
     const size_t cells = (size_t) blobs_;
     std::vector<int64_t> heat(cells);
     std::vector<uint8_t> resident(cells, 0);
     for (size_t i = 0; i < cells; ++i) {
-        heat[i] = heat_[i].load(std::memory_order_relaxed);
+        heat[i] = (phase_tag && i < decode_heat_.size() ? decode_heat_[i] : heat_[i]).load(std::memory_order_relaxed);
         resident[i] = (i < unfilled_flag_.size() && unfilled_flag_[i] == 0) ? 1 : 0;
     }
     const auto plan = relief_arena_reorder_plan(
         n_layers, n_expert_, reorder_cap_bytes_, reorder_floor_bytes_, reorder_profile_,
         reorder_hot_, reorder_tier_, resident, heat,
         [&](int64_t l) { return (uint64_t) strata::kernels::cpu::expert_layout().blob_bytes(l); });
-    for (size_t i = 0; i < cells; ++i) heat_[i].store(heat[i] / 2, std::memory_order_relaxed);   // the window ages
+    for (size_t i = 0; i < cells; ++i) {   // the window ages: both banks halve together
+        heat_[i].store(heat_[i].load(std::memory_order_relaxed) / 2, std::memory_order_relaxed);
+        if (i < decode_heat_.size())
+            decode_heat_[i].store(decode_heat_[i].load(std::memory_order_relaxed) / 2, std::memory_order_relaxed);
+    }
     if (!plan.reordered) return 0;
     int64_t promoted = 0, demoted = 0;
     uint64_t promoted_bytes = 0, demoted_bytes = 0;

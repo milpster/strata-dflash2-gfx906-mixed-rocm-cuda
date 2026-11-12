@@ -1513,11 +1513,26 @@ public:
 
   private:
     /// The heat counter of one pair: bumped on the decode walk.  No-op while unarmed.
+    /// helper-ipc-diet round 8 - PHASE TAG: `heat_phase_` (set_heat_phase) splits the counters into
+    /// the read's demand and the decode's.  The re-rank's round-7 finding: the plan's heat mixed
+    /// both phases and the read's swap-in demand (the boot profile's universe, thousands of pairs a
+    /// long prompt reads) drowned the decode window's, so the strict-win rule stopped early and the
+    /// band never converged on decode's set.  STRATA_ARENA_RERANK_PHASE_TAG=1 (default 0: today's
+    /// mixed heat) makes reorder_arena_by_heat plan on the decode bank alone: a pair earns
+    /// promotion only by DECODE demand, and a resident pair decode never touches is demote-first -
+    /// decode-window demand outranks read-phase heat by construction.
     void note_heat(int64_t layer, int64_t expert) {
         if (heat_.empty() || layer < 0 || expert < 0 || expert >= n_expert_) return;
         const size_t i = (size_t) (layer * n_expert_ + expert);
-        if (i < heat_.size()) heat_[i].fetch_add(1, std::memory_order_relaxed);
+        if (i >= heat_.size()) return;
+        heat_[i].fetch_add(1, std::memory_order_relaxed);
+        if (heat_phase_.load(std::memory_order_relaxed) != 0 && i < decode_heat_.size())
+            decode_heat_[i].fetch_add(1, std::memory_order_relaxed);
     }
+    /// The serving phase note_heat banks into (0: the request is reading its prompt or parked at a
+    /// boundary, 1: the decode loop runs).  The request thread sets it at the phase boundaries; the
+    /// tier's swap-in threads read it relaxed at note time.
+    void set_heat_phase(int phase) { heat_phase_.store(phase, std::memory_order_relaxed); }
     /// refill_recorded_pairs' per-pair mechanism, reused by the re-rank's promote: read the pair's bytes
     /// from the pack files into a private staging copy, register its page range, take the device alias,
     /// insert the range into the sorted pin tables, write the bytes, clear the flag.  A driver refusal
@@ -1627,6 +1642,10 @@ private:
     /// (empty = unarmed: blob()/swap_blobs_batch pay one branch); the rest are set_arena_reorder's copy
     /// of the cap's arithmetic inputs (untouchable sets, profile tie-break, cap ceiling, decode floor).
     std::vector<std::atomic<int64_t>> heat_;
+    /// helper-ipc-diet round 8: the DECODE-phase bank (set_heat_phase phases note_heat; the re-rank's
+    /// STRATA_ARENA_RERANK_PHASE_TAG=1 plans on it instead of the mixed heat_ total).
+    std::vector<std::atomic<int64_t>> decode_heat_;
+    std::atomic<int> heat_phase_{0};            ///< 0: the read/boundary phase, 1: the decode loop
     std::vector<uint8_t> reorder_hot_, reorder_tier_;
     std::vector<std::pair<int32_t, int32_t>> reorder_profile_;
     uint64_t reorder_cap_bytes_ = 0, reorder_floor_bytes_ = 0;

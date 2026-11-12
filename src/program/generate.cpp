@@ -16985,7 +16985,7 @@ int main(int argc, char** argv) {
                     }
                     if (pick < 0) continue;
                     const uint8_t* b = srcp->blob_stable(layer, pick % g.n_expert);
-                    if (b == nullptr || !xcache.fill_slot_queued(slot, b, ferr,
+                    if (b == nullptr || !xcache.fill_slot_queued_staged(slot, b, ferr,
                             (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(layer))) {
                         e = "VRAM: refilling the cache failed: " + ferr;
                         return false;
@@ -20167,6 +20167,15 @@ int main(int argc, char** argv) {
                         continue;
                     }
                     const uint8_t* b = srcp->blob_stable(i / g.n_expert, i % g.n_expert);
+                    // helper-ipc-diet round 8: a RESIDENT arena pair whose blob is not inside ONE registered
+                    // range (pin_range_of's rule - a re-rank demote's split remainders, or a promote the
+                    // driver refused) must not take the queued direct copy: the runtime rejects a source
+                    // that crosses a registration boundary with 'invalid argument' (V4-r3, round 7).  The
+                    // blocking path stages it; file-served pairs (b null below) and every other source keep
+                    // the queued copy exactly as before.
+                    const bool arena_span = b != nullptr && srcp == &arena_src &&
+                                            !srcp->pinned(i / g.n_expert, i % g.n_expert);
+                    if (arena_span) b = nullptr;   // fall to the file bytes below and block on the copy
                     // W1: a pair whose host copy the relief dropped has NO stable blob (blob_stable is
                     // null by rule).  Its lent slot refills from the staged pack-file copy, exactly the
                     // path the decode fills take: note_async_read below keeps the stage buffer alive
@@ -20179,10 +20188,10 @@ int main(int argc, char** argv) {
                             std::to_string(i % g.n_expert) + " (the pack-file read of the dropped blob failed)";
                         return false;
                     }
-                    if (!(refill_blocking() ? p.cache->fill_slot_blocking(slot, b, e, nb)
-                                            : p.cache->fill_slot_queued(slot, b, e, nb)))
+                    if (!(refill_blocking() || arena_span ? p.cache->fill_slot_blocking(slot, b, e, nb)
+                                            : p.cache->fill_slot_queued_staged(slot, b, e, nb)))
                         return false;
-                    if (!refill_blocking()) srcp->note_async_read(b, nullptr);   // #1237
+                    if (!(refill_blocking() || arena_span)) srcp->note_async_read(b, nullptr);   // #1237
                     if (!(deferred && !refill_blocking())) host_res[(size_t) i] = slot;
                 }
                 return true;
@@ -21167,6 +21176,10 @@ int main(int argc, char** argv) {
             };
             int refill_deferred_n = 0;      // final refills taken in the deferred form (0: the plain refill ran)
             int64_t refill_inflight_last = 0;   // the last deferred issue's slot count (for the trace)
+            // helper-ipc-diet round 8 (STRATA_ARENA_RERANK_PHASE_TAG): the request's phase for the arena's
+            // heat banks - read while the prompt's parts/windows are read, decode for the window loop
+            // below, read again at the boundary (the final refill, the checkpoints and the re-rank itself).
+            arena_src.set_heat_phase(0);
             for (const int64_t to : cuts) {
                 if (to <= at) continue;
                 err.clear();
@@ -21421,6 +21434,7 @@ int main(int argc, char** argv) {
             size_t pen_gen0 = strata::kernels::penalty_window_from(consumed.size(), pen_prompt);
             if (req_pen_from >= 0 && !pen_prompt) pen_gen0 = std::min<size_t>(pen_gen0, (size_t) req_pen_from);   // a continued request: its reply began earlier
             const char* finish = "length";
+            arena_src.set_heat_phase(1);   // round 8: the decode loop's swap-ins and lookups bank as decode demand
             const Clock::time_point d0 = Clock::now();
             // STRATA_DECODE_TIMING=1: where a request's decode time goes (one line per request)
             static const bool dec_timing = std::getenv("STRATA_DECODE_TIMING") != nullptr;
@@ -22881,6 +22895,7 @@ int main(int argc, char** argv) {
                 std::printf("ERR refilling a lent slot failed: %s\n", err.c_str());
                 return 1;
             }
+            arena_src.set_heat_phase(0);   // round 8: the boundary is read-phase again (the final refill, the checkpoints, the re-rank)
             // STRATA_WINDOW_POPULATE=1 (opt-in): the dropped pairs a window read (recorded in ArenaExpertSource::
             // blob's file path) come back from the pack files through their arena addresses: read, registered,
             // flag cleared - the per-pair inverse of set_unfilled, so the next refill takes the fast arena
@@ -23780,7 +23795,7 @@ int main(int argc, char** argv) {
                 const uint8_t* b = srcp->blob_stable(i / g.n_expert, i % g.n_expert);
                 const int64_t nb = (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(i / g.n_expert);
                 if (b == nullptr || !(refill_blocking() ? xcache.fill_slot_blocking(slot, b, err, nb)
-                                                        : xcache.fill_slot_queued(slot, b, err, nb))) {
+                                                        : xcache.fill_slot_queued_staged(slot, b, err, nb))) {
                     std::fprintf(stderr, "strata generate: refilling a lent slot failed: %s\n", err.c_str());
                     return 1;
                 }
