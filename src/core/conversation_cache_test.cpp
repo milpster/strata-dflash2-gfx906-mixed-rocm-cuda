@@ -745,5 +745,49 @@ int main() {
         check(cache.drop_superseded(slot_ids, {}, slot_chain, true) == 1 && cache.size() == 0,
               "the slot's chain supersedes the richer copy");
     }
+    {
+        // --conversation-cache-ram-mib: the ceiling walks the cache with at() (LRU order) and frees one entry by
+        // index with drop().  It runs only once the disk tier published the conversation, so the pinned shared
+        // prefix survives exactly as in evict_oldest.
+        auto cp = [](std::vector<int32_t> ids, bool pinned = false) {
+            ConversationCheckpoint c; c.ids = std::move(ids); c.pinned = pinned; return c;
+        };
+        const size_t one = image({7, 8, 9}).bytes();
+        ConversationCache cache(1 << 20, 4);
+        check(cache.at(0) == nullptr && !cache.drop(0), "an empty cache: at() null, drop() false");
+        SavedConversation doc = image({1, 2, 3, 4, 30});
+        doc.checkpoints = {cp({1, 2, 3}, true)};
+        const size_t doc_bytes = doc.bytes();
+        check(cache.put(std::move(doc)) && cache.put(image({7, 8, 9})) && cache.put(image({4, 5, 6})),
+              "pinned document and two ordinary conversations parked");
+        check(cache.at(0)->live.ids == std::vector<int32_t>({1, 2, 3, 4, 30}) && cache.at(0)->pinned() &&
+              cache.at(2)->live.ids == std::vector<int32_t>({4, 5, 6}) && cache.at(3) == nullptr,
+              "at() reports the entries in LRU order and null past the end");
+        check(cache.bytes() == doc_bytes + one * 2, "byte accounting for the three parks");
+        check(!cache.drop(3) && cache.size() == 3 && cache.evictions() == 0, "drop() out of range changes nothing");
+        check(cache.drop(2) && cache.size() == 2 && cache.bytes() == doc_bytes + one && cache.evictions() == 1,
+              "drop() frees one entry's bytes and counts it as an eviction");
+        check(cache.at(2) == nullptr && cache.best(std::vector<int64_t>{4, 5, 6, 7}, {}, true).tokens == 0,
+              "the dropped conversation is gone from the cache");
+        check(!cache.drop(0) && cache.size() == 2 && cache.evictions() == 1,
+              "drop() refuses the pinned shared prefix, as evict_oldest does");
+    }
+    {
+        // the ceiling's drop() refuses the guarded donor (an entry mid-borrow) and takes it once unguarded
+        auto cp = [](std::vector<int32_t> ids) { ConversationCheckpoint c; c.ids = std::move(ids); return c; };
+        SavedConversation donor = image({1, 2, 10, 11, 12});
+        donor.checkpoints = {cp({1, 2}), cp({1, 2, 10, 11})};
+        ConversationCache cache(1 << 20, 4);
+        check(cache.put(std::move(donor)) && cache.put(image({7, 7, 7})), "the donor and one ordinary conversation parked");
+        const auto m = cache.best(std::vector<int64_t>{1, 2, 40}, {}, true);
+        check(cache.borrows(m), "a sibling borrows the donor");
+        cache.guard(m.serial);
+        check(!cache.drop(cache.index_of(m.serial)) && cache.find(m.serial) != nullptr && cache.evictions() == 0,
+              "drop() refuses the guarded donor");
+        cache.unguard();
+        check(cache.drop(cache.index_of(m.serial)) && cache.find(m.serial) == nullptr &&
+              cache.bytes() == image({7, 7, 7}).bytes() && cache.evictions() == 1,
+              "unguarded, the donor's bytes go back to the host");
+    }
     std::printf("conversation_cache_test: %d checks passed\n", checks);
 }

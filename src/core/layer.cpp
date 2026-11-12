@@ -797,6 +797,16 @@ int64_t qsa_kv_resident_min() {
 }
 uint64_t qsa_kv_host_bytes() { return g_kv_host_bytes; }
 
+// One resident KV cell across every QSA layer: the pool bytes of one page (the layer's page-table bytes
+// included) over the page size, times the number of QSA layers.  This is what --kv-resident-mib divides.
+uint64_t qsa_kv_bytes_per_cell(const ModelGeometry& g) {
+    const QsaShapes s = qsa_shapes(g);
+    if (s.page_size <= 0 || g.n_qsa_layers() <= 0) return 0;
+    const bool q4 = qsa_kv_q4(), hyb = qsa_kv_hybrid(), i8 = qsa_kv_int8() && !q4;
+    const uint64_t per_page = kv_pool_bytes(s, 1, hyb, i8, q4);
+    return (per_page * (uint64_t) g.n_qsa_layers() + (uint64_t) s.page_size - 1) / (uint64_t) s.page_size;
+}
+
 uint64_t qsa_state_bytes(const ModelGeometry& g, int64_t max_cells, bool with_rope, int64_t ring_cells) {
     return qsa_state_bytes(g, max_cells, with_rope, ring_cells, QsaStateInitOptions{});
 }

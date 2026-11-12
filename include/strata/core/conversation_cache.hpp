@@ -359,6 +359,22 @@ public:
         erase(index);
         return out;
     }
+    // The entry at `index` (nullptr: out of range).  entries_ is least recently active first, so a caller
+    // walking it from 0 walks the LRU order the disk tier's eviction uses.
+    const SavedConversation* at(size_t index) const {
+        return index < entries_.size() ? &entries_[index] : nullptr;
+    }
+    // Free one entry's RAM by index: the ceiling path's park+evict to disk (its bytes go back to the kernel,
+    // the caller has confirmed the disk tier published the conversation, so restoring it later costs a read and
+    // nothing is lost).  A pinned shared prefix and the guarded (borrowed) donor never go, as in evict_oldest.
+    bool drop(size_t index) {
+        if (index >= entries_.size() || entries_[index].pinned() ||
+            (guarded_ != 0 && serials_[index] == guarded_)) return false;
+        bytes_ -= entries_[index].bytes();
+        erase(index);
+        ++evictions_;
+        return true;
+    }
 
     // A checkpoint inside a parked conversation that a NEW conversation starts with - a sibling subagent sharing the
     // system prompt and tool list, a compacted history - is borrowed: restored from the entry, which stays parked.

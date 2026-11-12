@@ -104,6 +104,9 @@ struct DiskCacheStats {
     uint64_t refusals = 0, incompatible = 0, corrupt = 0, draft_pair_hits = 0, draft_rebuilds = 0,
              ring_retention_misses = 0;
     uint64_t reused_tokens = 0, evaluated_tokens = 0;
+    // --conversation-cache-evict-page-cache: the tier's own page-cache releases (posix_fadvise DONTNEED after a
+    // park write, a restore read, a sidecar capture/rewind).  The bytes are the file sizes it released.
+    uint64_t pages_released = 0, pages_released_bytes = 0;
     uint64_t last_serial = 0;
     DiskRefusal last_refusal = DiskRefusal::none;
 };

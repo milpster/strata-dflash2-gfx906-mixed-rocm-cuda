@@ -322,6 +322,10 @@ int64_t qsa_kv_resident();
 int64_t qsa_kv_resident_min();
 /// Pinned host bytes the streamed states hold (their host copies).
 uint64_t qsa_kv_host_bytes();
+/// The bytes ONE KV cell costs across every QSA layer at this geometry and KV format (the pool's per-page bytes
+/// over the page size, the page-table bytes included).  --kv-resident-mib sizes the resident cells with this.
+/// 0 when the geometry has no streamed-able QSA layers.
+uint64_t qsa_kv_bytes_per_cell(const ModelGeometry& g);
 /// Plan v0.3 P7: store K/V as INT8 with FP16 scales per 64 values (half the VRAM of FP16). Set before sizing and
 /// initializing the session; default off until gate G-C accepts it.
 void qsa_set_kv_int8(bool enabled);

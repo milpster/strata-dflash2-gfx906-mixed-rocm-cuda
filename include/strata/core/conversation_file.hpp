@@ -125,6 +125,11 @@ struct SessionStatus {
     bool published = false;
     // write (POSIX): this filesystem cannot flush a folder (fsync EINVAL); the save succeeded without that flush
     bool dir_flush_unsupported = false;
+    // the caller asked for the file's cached pages to be released (SessionWriteOptions / SessionReadV2Limits
+    // `evict_page_cache`) and posix_fadvise(DONTNEED) succeeded on its descriptor: the file's bytes are NOT
+    // resident in the page cache any more.  False when the option was off or the kernel refused the advice
+    // (a file with pages still under writeback keeps them: the release runs after the flush for that reason).
+    bool pages_released = false;
 };
 
 // Progress of a file transfer: (bytes done, bytes in the file).  A write reports once when its temporary file is
@@ -154,6 +159,12 @@ struct SessionWriteOptions {
     // filesystem that took O_DIRECT at open and refuses the transfer drops to buffered).  True = strict direct I/O.
     // Optional: a caller that needs to know which path its bytes took (the disk tier checks its `direct` promise).
     std::function<void(bool direct)> mode;
+    // Release the written file's cached pages once its bytes are flushed (POSIX: posix_fadvise(DONTNEED) on the
+    // temporary file's descriptor, before the rename).  A park stream of a GiB-scale generation leaves every page
+    // it wrote resident, and that residency is charged against the host's available RAM beside the parked image
+    // itself.  The advice runs after the file flush, so the pages are clean and the kernel drops them; it never
+    // touches the file's bytes.  `status->pages_released` reports whether the release ran.
+    bool evict_page_cache = false;
     // tests: return an errno value to make a step fail ("write", "file_flush", "rename", "dir_flush"), 0 to go on
     std::function<int(const char* step)> fault;
 };
@@ -406,6 +417,12 @@ struct SessionReadV2Limits {
     // the transfer mode of the opened file, reported once its header has been read (and again mid-read if a
     // filesystem refuses the aligned transfer and the reader drops to buffered).  Optional, as in the write.
     std::function<void(bool direct)> mode;
+    // Release the file's cached pages once the read is complete (POSIX: posix_fadvise(DONTNEED) on the read
+    // descriptor).  A restore streams the whole generation once; its pages stay resident afterwards and are
+    // charged against the host's available RAM until the kernel reclaims them.  Only a read that will not read
+    // the file again soon wants this: the next restore of the same generation pays the device read again.
+    // `status->pages_released` reports whether the release ran.
+    bool evict_page_cache = false;
 };
 // What the RAM preflight is asked for: the manifest, the region directory, the two 16 MiB transfer buffers of
 // the read-ahead walk (shared by both passes) and the small vectors.  Independent of the payload length.
@@ -450,9 +467,12 @@ bool session_file_read_v2(const std::string& path, const SessionFileIdentity& id
 // missing/truncated/foreign file, counters that are not `want`'s, an extent that is not
 // `tokens`, and a checksum mismatch, leaving `out` untouched every time - a safe miss, never a
 // partial image.  The sidecar is the engine's own bounded file (ring-sized, capped at 64 MiB).
+// `evict_page_cache` (POSIX): after a write, flush the file and release its cached pages (the capture is read
+// again only on a same-conversation rewind); `pages_released` reports whether the release ran.
 bool session_ring_sidecar_write(const std::string& path, const DFlashSnapshotMeta& meta, int64_t tokens,
-                                const void* bytes, uint64_t n, std::string& error);
+                                const void* bytes, uint64_t n, std::string& error, bool evict_page_cache = false,
+                                bool* pages_released = nullptr);
 bool session_ring_sidecar_read(const std::string& path, const DFlashSnapshotMeta& want, int64_t tokens,
-                               std::vector<uint8_t>& out, std::string& error);
+                               std::vector<uint8_t>& out, std::string& error, bool evict_page_cache = false);
 
 } // namespace strata::core

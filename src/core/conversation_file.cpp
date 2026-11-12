@@ -467,6 +467,16 @@ public:
         error_ = std::strerror(errno);
         return false;
     }
+    // Drop this file's cached pages (POSIX: posix_fadvise(DONTNEED) over the whole file).  Call it AFTER sync():
+    // the pages are clean then, so the kernel releases them; pages still under writeback are kept, which is why
+    // the release is reported and never assumed.  The file's bytes are untouched.  Windows has no fadvise.
+    bool release_pages() {
+#ifdef _WIN32
+        return false;
+#else
+        return ::posix_fadvise(fd_, 0, 0, POSIX_FADV_DONTNEED) == 0;
+#endif
+    }
     bool close() {
         if (fd_ < 0) return true;
         const bool ok = ::close(fd_) == 0;
@@ -603,6 +613,9 @@ public:
         if (ok && durable && phase) phase("flush", total_);
         if (ok && durable && flush_fault) { fail_with(flush_fault); ok = false; }
         ok = ok && (!durable || f_.sync());
+        // the bytes are on the device: the pages are clean, so DONTNEED releases them (a file still under
+        // writeback keeps its pages - `pages_released` reports what actually happened, it is never assumed)
+        if (ok && evict_page_cache) pages_released = f_.release_pages();
         ok = f_.close() && ok;
         return ok;
     }
@@ -610,6 +623,9 @@ public:
     SessionPhase phase;
     std::function<void(bool)> mode;   // SessionWriteOptions::mode, reported at the first block that reaches the OS
     uint64_t expected = 0;
+    // SessionWriteOptions::evict_page_cache / the write's outcome (FileSink::finish sets it when the kernel
+    // released the pages); the caller copies it into SessionStatus
+    bool evict_page_cache = false, pages_released = false;
     int write_fault = 0, flush_fault = 0;   // tests: errno values injected at the first block write / the file flush
     bool direct() const { return f_.direct(); }
 private:
@@ -1915,6 +1931,7 @@ bool write_v2_impl(const std::string& path, const SessionFileIdentity& id, const
     if (opt.progress) f.progress.emplace(opt.progress);
     f.phase = opt.phase;
     f.mode = opt.mode;
+    f.evict_page_cache = opt.evict_page_cache;
     f.expected = total;
     if (f.progress) (*f.progress)(0, total);
     const std::function<int(const char*)>* fault = opt.fault ? &opt.fault : nullptr;
@@ -1969,6 +1986,7 @@ bool write_v2_impl(const std::string& path, const SessionFileIdentity& id, const
         ok = f.write(&ph, 8) && f.write(&mh, 8) && f.write(&th, 8) && f.write(kEnd2, 8);
     }
     ok = f.finish(opt.durable) && ok;
+    st.pages_released = f.pages_released;   // the v2 write's page-cache release, when it asked for one
     std::string why;
     if (!ok) {
         why = source_why.empty() ? f.error() : source_why;
@@ -2162,6 +2180,10 @@ bool read_v2_impl(const std::string& path, const SessionFileIdentity& id, const 
         error = "session file v2: " + (why.empty() ? "the sink failed to finish" : why);
         return false;
     }
+    // The restore streamed the whole generation once: with the option on, its pages go back to the kernel now
+    // (the two passes read every byte, so nothing left of this read needs them).  The manifest-only read leaves
+    // the file cached: the full read that follows a manifest read wants those pages.
+    if (limits.evict_page_cache) st.pages_released = raw.release_pages();
     manifest = std::move(parsed);
     bytes = (size_t) size;
     st.error = SessionError::none;
@@ -2405,7 +2427,8 @@ constexpr uint64_t kRingMaxBytes = 64ull << 20;    // the sidecar is ring-sized;
 } // namespace
 
 bool session_ring_sidecar_write(const std::string& path, const DFlashSnapshotMeta& meta, int64_t tokens,
-                                const void* bytes, uint64_t n, std::string& error) {
+                                const void* bytes, uint64_t n, std::string& error, bool evict_page_cache,
+                                bool* pages_released) {
     error.clear();
     if (n > kRingMaxBytes) {
         error = "ring sidecar: " + std::to_string(n) + " bytes over the " + std::to_string(kRingMaxBytes >> 20) +
@@ -2444,12 +2467,23 @@ bool session_ring_sidecar_write(const std::string& path, const DFlashSnapshotMet
     f.close();
 #ifndef _WIN32
     ::chmod(path.c_str(), 0600);   // the tier's own files are private (0700 folder, 0600 files)
+    // A sidecar is written once per paired checkpoint and read only on a same-conversation rewind: its pages are
+    // dead weight in the page cache until then.  Flush it and hand the pages back (the caller counts the release).
+    if (evict_page_cache) {
+        const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+        if (fd >= 0) {
+            if (::fsync(fd) == 0) *pages_released = ::posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED) == 0;
+            ::close(fd);
+        }
+    }
+#else
+    (void) evict_page_cache;
 #endif
     return !f.fail();
 }
 
 bool session_ring_sidecar_read(const std::string& path, const DFlashSnapshotMeta& want, int64_t tokens,
-                               std::vector<uint8_t>& out, std::string& error) {
+                               std::vector<uint8_t>& out, std::string& error, bool evict_page_cache) {
     error.clear();
     const auto refuse = [&](const std::string& what) {
         error = "ring sidecar: " + what;
@@ -2495,6 +2529,18 @@ bool session_ring_sidecar_read(const std::string& path, const DFlashSnapshotMeta
     if (f.gcount() == 1) return refuse(path + " has trailing bytes");
     if (checksum != session_hash64(data.data(), n, 0)) return refuse(path + " ring bytes do not match their checksum");
     out = std::move(data);
+#ifndef _WIN32
+    // The rewind read the sidecar once and its bytes are in the drafter's pools now; the pages go back to the kernel.
+    if (evict_page_cache) {
+        const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+        if (fd >= 0) {
+            ::posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED);
+            ::close(fd);
+        }
+    }
+#else
+    (void) evict_page_cache;
+#endif
     return true;
 }
 
