@@ -59,6 +59,11 @@
     "--conversation-cache-disk-idle-save",
     "--expert-helper-reserve-mib",
     "0",
+    "--expert-helper-ram-relief-packs",
+    "--expert-helper-relief-hot-mib",
+    "15000",
+    "--expert-helper-relief-arena-cap-mib",
+    "22000",
     "--prompt-window-retry"
   ],
   "backend": "hip",
