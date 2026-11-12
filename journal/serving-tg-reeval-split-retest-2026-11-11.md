@@ -664,3 +664,22 @@ warmup (HTTP 200). Lesson reaffirmed: prod pair-restarts are also teardown
 windows for agent spawns — verify serving, not just health, before spawning.
 v0221-vs-v0222 on prod: behavior-identical at current flags (floor defaults
 0); pin bump folds into the next natural window.
+
+## Nov 12 afternoon: TG-regression diagnosis + diet-off armed (operator)
+
+Prod iq3xxs v0221 diet regressed under live load (decode median 25–27 vs 37
+band; 6 slow-read contexts; 1 zero-gen; avail 9.7, swap 14, RSS 51.7).
+Mechanism: conversation KV + parked-snapshot page cache + pack-page rebound
+ate the diet's headroom; capped pairs then faulted inside the token loop.
+Pre-diet decode was pressure-immune (unbounded arena) — the cap traded that
+immunity for headroom. Panels never catch this: single-pass fresh-boot legs
+never build accumulated conversation state; floors were 13.0–13.2, prod
+went to 9.7. Operator directive: **next prod boot = diet-off iq3xxs (known
+fast)** — config edited + pushed (`9385ba0f6`): plain relief + retry kept,
+cap/packs/hot removed, exe v0221. Prod stays up as-is until the next boot.
+Round 5 scope (queued): conversation-cache bounds — but note config already
+has `--conversation-cache-mib 4096`, `--kv-resident 262144`,
+`--conversation-cache-disk-mib 24576`: the gap is page-cache release on
+park + kv-resident sizing + LRU across conversations. Soak validation
+compressed to ~10–12 min (chunked KV growth + park hammering + LRU pass +
+assertions) per operator (72-turn replay too long).
