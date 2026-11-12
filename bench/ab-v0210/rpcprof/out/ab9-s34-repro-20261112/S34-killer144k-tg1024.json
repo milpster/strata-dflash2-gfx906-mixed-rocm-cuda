@@ -1,0 +1,21 @@
+{
+ "arm": "S34",
+ "leg": "killer144k-tg1024",
+ "kind": "prefill",
+ "ctx": 786800,
+ "max_tokens": 1024,
+ "ts": 1794500112.623,
+ "walls": [
+  233.616
+ ],
+ "wall_s": 233.618,
+ "content_from": "content",
+ "prompt_bytes": 786800,
+ "sha256": "eb55898447fd0df5e3b44a50128a6f5d8eb3c062ab9a945a73aa7c02b78bcb41",
+ "elog": "/mnt/srcds/Strata/logs/engine-swift15-f16kv-dflash-w4-q4_0-mixed.log",
+ "elog_start": 5478479,
+ "elog_end": 5482198,
+ "hlog": "/mnt/srcds/Strata/logs/trial-spill40-20261112-170955-2738605-helper.log",
+ "hlog_start": 1448,
+ "hlog_end": 1448
+}

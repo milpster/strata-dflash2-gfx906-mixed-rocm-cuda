@@ -1,0 +1,21 @@
+{
+ "arm": "S34",
+ "leg": "killer144k-tg1024",
+ "kind": "prefill",
+ "ctx": 786800,
+ "max_tokens": 1024,
+ "ts": 1794499601.957,
+ "walls": [
+  349.522
+ ],
+ "wall_s": 349.525,
+ "content_from": "content",
+ "prompt_bytes": 786800,
+ "sha256": "054357f82c65aabbca7be8fe5c7df941e491a5af559d32da4c1a6252a0a2e4b8",
+ "elog": "/mnt/srcds/Strata/logs/engine-soak-v0224.log",
+ "elog_start": 34426,
+ "elog_end": 40426,
+ "hlog": "/mnt/srcds/Strata/logs/trial-spill40-20261112-165723-2562379-helper.log",
+ "hlog_start": 1444,
+ "hlog_end": 1444
+}

@@ -803,3 +803,51 @@ growing exactly as diagnosed; round 5 is the missing half.
 clean-baseline re-rank re-measure want prod down AND a reboot first
 (clears the 16.5 GiB stale swap) — reboot ends the game session, so the
 window waits for game end.
+
+## Nov 12 evening window — repro PASS, round-5 soak FAIL, prod on S34 (17:00–17:33)
+
+Operator: no reboot, validate now, S34-repro first, "I only care for tps
+in tg and pp"; later: "yesterday's fastest is what we use for prod".
+
+**S34 repro (v0219 · trial-s34.json · 6796/4600/512 · plain relief): PASS**
+— killer144k: PP 648.8 (−1.8% vs 660.9), TG 44.3 (+2.8% vs 43.1), both
+inside the 3% band. Wall 233.6 vs 464.9 not comparable (killer prompts
+embed a run-unique tag — anti-cache-rescue by design; tps is the metric).
+RAM: engine RSS 47.5–48.1 during the 142k read, avail 12.7 — the
+unbounded tuple's signature at full context.
+
+**Accidental v0224 datapoint** (leg fired at the surviving soak trial
+before identity check — lesson: ALWAYS verify trial identity from boot
+lines first): killer PP 472.7 / TG 34.0 cached-rerun, wall 349.5.
+
+**Round-5 soak on v0224: FAIL, worse than pre-diet.** At 9.6k-token
+context: RSS 51.3 (pre-diet needed 142k to hit 48.1), avail 7.8, climbing
+monotonically to 54.0. Three defects, evidence in engine-soak-v0224.log:
+1. RAM-tier park bytes accumulate per park of the same conversation:
+   406 MB → 936 MB → 1.59 GB → 2.48 GB (19k tokens); snapshot_bytes
+   ~894 MB at 19k ≈ 47 KB/token vs the old path's 33.
+2. Draft-ring rewind broken: "reading the prompt again (16384 tokens)
+   instead of restoring" → PP collapse (149.7 tok/s; slow-read events at
+   19k tokens, avail 8.0).
+3. adapt swap-in churn: 20 GiB file reads mid-soak.
+Working as designed: disk-park page release (pages-released=6/8, 1.7–2.6
+GiB released), ceiling/LRU wiring, boot flags. Operator killed the soak:
+remaining measurements would only document the defect.
+
+**Prod returned on the S34 tuple** (operator directive): config derived
+verbatim from trial-s34.json (prod sockets/log/port/cache-dir, vision
+kept, exe v0219, plain relief); launcher retuned 4600/512/6796/BIN v0219.
+Verified: v0219 + exact helper tuple from boot identity + ps, gen 1,
+serving HTTP 200 in 5.5 s. Expect uncapped-arena RSS growth under long
+sessions — accepted pending round 6.
+
+**Root cause of the evening's restart-loop shitshow:** every interrupted
+boot left its setsid'd supervisor alive, and supervisors respawn their
+pair forever; stop-prod.sh never TERMed the TRIAL supervisor (pattern
+only matched prod launcher), so cleanups murdered children while the
+orphan supervisor respawned them. Fix: `stop-all.sh` — both supervisors
+via state files FIRST, then launcher/engine/helper/wrapper sweep, then a
+20 s quiet verification. Also: four separate self-SIGTERM incidents from
+`pkill/pgrep -f` patterns matching my own command line — the rule is now
+absolute: kill logic lives in on-disk scripts only, and stop/go calls are
+never mixed in one command.
