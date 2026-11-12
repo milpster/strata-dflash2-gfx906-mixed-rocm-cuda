@@ -1,0 +1,127 @@
+{
+ "requests": [
+  {
+   "segment": "code",
+   "tokens": 256
+  },
+  {
+   "segment": "code",
+   "tokens": 512
+  },
+  {
+   "segment": "code",
+   "tokens": 768
+  },
+  {
+   "segment": "code",
+   "tokens": 1000
+  },
+  {
+   "segment": "docs",
+   "tokens": 256
+  },
+  {
+   "segment": "docs",
+   "tokens": 512
+  },
+  {
+   "segment": "docs",
+   "tokens": 768
+  },
+  {
+   "segment": "docs",
+   "tokens": 1000
+  },
+  {
+   "segment": "english",
+   "tokens": 256
+  },
+  {
+   "segment": "english",
+   "tokens": 512
+  },
+  {
+   "segment": "english",
+   "tokens": 768
+  },
+  {
+   "segment": "english",
+   "tokens": 1000
+  },
+  {
+   "segment": "multilingual",
+   "tokens": 256
+  },
+  {
+   "segment": "multilingual",
+   "tokens": 512
+  },
+  {
+   "segment": "multilingual",
+   "tokens": 768
+  },
+  {
+   "segment": "multilingual",
+   "tokens": 1000
+  },
+  {
+   "segment": "agent",
+   "tokens": 256
+  },
+  {
+   "segment": "agent",
+   "tokens": 512
+  },
+  {
+   "segment": "agent",
+   "tokens": 768
+  },
+  {
+   "segment": "agent",
+   "tokens": 1000
+  }
+ ],
+ "args": [
+  "/mnt/srcds/Strata/build-v0210/rpcw-hip/strata",
+  "--serve",
+  "--gpu",
+  "0,1",
+  "--pack",
+  "/mnt/srcds/ai/iq3xxs-15",
+  "--native",
+  "/mnt/srcds/ai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
+  "--native-dense-gguf",
+  "/mnt/srcds/ai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
+  "--ple-gguf",
+  "/mnt/srcds/ai/Qwen3.8-Flash-Next-PLE-Q8_0.gguf",
+  "--spec",
+  "5",
+  "--spec-min-p",
+  "0.5",
+  "--expert-profile",
+  "/mnt/srcds/Strata/data/expert-profile.bin",
+  "--vram-reserve-mib",
+  "640",
+  "--vram-reserve-later-mib",
+  "640",
+  "--expert-cache-cpu-order",
+  "--prompt-cache-spread",
+  "--expert-cache",
+  "1",
+  "--adapt-every",
+  "100000",
+  "--pcie-frac",
+  "0",
+  "--suffix-draft",
+  "0",
+  "--prompt-cache",
+  "0",
+  "--kv",
+  "fp16",
+  "--max-context",
+  "1512",
+  "--prefill",
+  "auto"
+ ],
+ "env": []
+}

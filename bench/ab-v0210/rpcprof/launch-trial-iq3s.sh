@@ -7,7 +7,7 @@
 set -euo pipefail
 ROOT=${STRATA_PROD_TREE:-/mnt/srcds/Strata}
 WORK="$ROOT/v0215"
-BIN="$ROOT/v0217/build-mixed-gpu"
+BIN="$ROOT/v0219/build-mixed-gpu"
 PY="$ROOT/.venv/bin/python"
 CONFIG=${TRIAL_CONFIG:?TRIAL_CONFIG required}
 SOCKET="$ROOT/run/trial-spill40.sock"

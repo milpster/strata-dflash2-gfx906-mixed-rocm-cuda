@@ -1,0 +1,7 @@
+Filename				Type		Size		Used		Priority
+/mnt/swap5                              file		33554428	2153960		2
+/mnt/swap2                              file		33554428	2136756		2
+/mnt/swap4                              file		33554428	2212144		2
+/home/swap                              file		33554428	0		1
+/home/swap4                             file		33554428	0		1
+/home/swap3                             file		33554428	0		1

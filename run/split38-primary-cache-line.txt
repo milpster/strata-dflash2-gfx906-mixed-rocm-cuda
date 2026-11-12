@@ -1,0 +1,2 @@
+strata generate: expert cache auto: 7.51 GiB free, 256 MiB reserved (+0 MiB for the draft head, +256 MiB for what is allocated after the cache) -> 3231 slots
+strata generate: layer split: CUDA1 runs layers 38-47, expert cache 4870 slots (8.80 GiB), 4870 of its 5120 profiled pairs; slot 0 verified

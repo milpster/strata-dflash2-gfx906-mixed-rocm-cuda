@@ -1,0 +1,23 @@
+{
+  "supervisor_pid": 1374568,
+  "launcher_pid": 1374588,
+  "generation": 1,
+  "state": "attached",
+  "timestamp": 1794337352.614009,
+  "helper_pid": 1374628,
+  "server_pid": 1374991,
+  "engine_log": "/mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261110-200232-1374588.log",
+  "helper_log": "/mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261110-200232-1374588-helper.log",
+  "helper_start": "567732",
+  "server_start": "567837",
+  "engine_stderr_log": "/mnt/srcds/Strata/logs/engine-swift15-f16kv-dflash-w4-q4_0-mixed.log",
+  "engine_pid": 1375327,
+  "engine_start": "568001",
+  "attached_at": 1794337398.2914326,
+  "stage_affinity": {
+    "state": "applied",
+    "moved": 64,
+    "snapshot": "/mnt/srcds/Strata/run/prod-swift15-f16kv-mixed-supervisor-affinity-1375327-568001.retry5.json",
+    "cpus": "3,5,7,9,11,13,15"
+  }
+}

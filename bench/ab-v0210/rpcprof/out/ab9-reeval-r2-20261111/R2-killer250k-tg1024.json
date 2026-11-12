@@ -1,0 +1,21 @@
+{
+ "arm": "R2",
+ "leg": "killer250k-tg1024",
+ "kind": "prefill",
+ "ctx": 1365950,
+ "max_tokens": 1024,
+ "ts": 1794391619.232,
+ "walls": [
+  425.227
+ ],
+ "wall_s": 425.23,
+ "content_from": "content",
+ "prompt_bytes": 1365950,
+ "sha256": "30ce6a2c764a4519e193940abb8c564acb05f959da45bd9b0cce45dbd02b75a2",
+ "elog": "/mnt/srcds/Strata/logs/engine-swift15-f16kv-dflash-w4-q4_0-mixed.log",
+ "elog_start": 4109514,
+ "elog_end": 4114241,
+ "hlog": "/mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261111-104910-872533-helper.log",
+ "hlog_start": 1695,
+ "hlog_end": 1695
+}

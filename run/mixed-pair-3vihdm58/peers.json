@@ -1,0 +1,8 @@
+{
+  "helper_pid": 4040367,
+  "server_pid": 4040381,
+  "engine_log": "/mnt/srcds/Strata/logs/prod-swift-iq3s-f16kv-dflash-w4-q4_0-mixed-20261111-211410-4040361.log",
+  "helper_log": "/mnt/srcds/Strata/logs/prod-swift-iq3s-f16kv-dflash-w4-q4_0-mixed-20261111-211410-4040361-helper.log",
+  "helper_start": "3202934",
+  "server_start": "3203039"
+}

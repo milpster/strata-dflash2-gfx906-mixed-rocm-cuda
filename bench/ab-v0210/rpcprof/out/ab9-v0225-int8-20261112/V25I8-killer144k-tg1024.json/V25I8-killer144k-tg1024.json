@@ -1,0 +1,32 @@
+{
+ "arm": "V25I8",
+ "leg": "killer144k-tg1024",
+ "kind": "prefill",
+ "ctx": 786800,
+ "max_tokens": 1024,
+ "ts": 1794511343.181,
+ "walls": [
+  243.108
+ ],
+ "wall_s": 243.109,
+ "content_from": "content",
+ "prompt_bytes": 786800,
+ "sha256": "0a62b922ff12f3e323ec03f9290e73902f188c7630de658c043527f09472b3e5",
+ "elog": "/mnt/srcds/Strata/logs/engine-v0225-int8.log",
+ "elog_start": 31198,
+ "elog_end": 34829,
+ "hlog": "/mnt/srcds/Strata/logs/trial-spill40-20261112-201550-32830-helper.log",
+ "hlog_start": 1448,
+ "hlog_end": 1448,
+ "mem": {
+  "max_rss_mib": 50031,
+  "min_avail_mib": 10070,
+  "max_swap_used_mib": 3149,
+  "max_vram_mib": {
+   "card3": 16204,
+   "card4": 460,
+   "card2": 16282,
+   "nvidia0": 7144
+  }
+ }
+}

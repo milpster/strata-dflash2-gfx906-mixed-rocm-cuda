@@ -1,0 +1,21 @@
+{
+ "arm": "R4",
+ "leg": "killer144k-tg1024",
+ "kind": "prefill",
+ "ctx": 786800,
+ "max_tokens": 1024,
+ "ts": 1794393380.489,
+ "walls": [
+  256.453
+ ],
+ "wall_s": 256.455,
+ "content_from": "content",
+ "prompt_bytes": 786800,
+ "sha256": "505340c0199a1def7ee5ed8384e3e29c5ebde25ff10a04080016f5fefc604eff",
+ "elog": "/mnt/srcds/Strata/logs/engine-swift15-f16kv-dflash-w4-q4_0-mixed.log",
+ "elog_start": 4135969,
+ "elog_end": 4136990,
+ "hlog": "/mnt/srcds/Strata/logs/trial-spill40-20261111-112603-112724-helper.log",
+ "hlog_start": 1447,
+ "hlog_end": 1447
+}

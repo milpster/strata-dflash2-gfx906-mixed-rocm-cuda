@@ -1,0 +1,272 @@
+{
+  "pid": 2481528,
+  "start": "2809099",
+  "time": "2026-11-10T00:59:13.591486+00:00",
+  "target": [
+    3,
+    5,
+    7,
+    9,
+    11,
+    13,
+    15
+  ],
+  "threads": [
+    {
+      "tid": 2491940,
+      "name": "strata-stage",
+      "start": "2813589",
+      "cpus": [
+        0
+      ]
+    },
+    {
+      "tid": 2491941,
+      "name": "strata-stage",
+      "start": "2813589",
+      "cpus": [
+        0
+      ]
+    },
+    {
+      "tid": 2491942,
+      "name": "strata-stage",
+      "start": "2813589",
+      "cpus": [
+        0
+      ]
+    },
+    {
+      "tid": 2491943,
+      "name": "strata-stage",
+      "start": "2813589",
+      "cpus": [
+        0
+      ]
+    },
+    {
+      "tid": 2491944,
+      "name": "strata-stage",
+      "start": "2813589",
+      "cpus": [
+        0
+      ]
+    },
+    {
+      "tid": 2491945,
+      "name": "strata-stage",
+      "start": "2813589",
+      "cpus": [
+        0
+      ]
+    },
+    {
+      "tid": 2491946,
+      "name": "strata-stage",
+      "start": "2813589",
+      "cpus": [
+        0
+      ]
+    },
+    {
+      "tid": 2491947,
+      "name": "strata-stage",
+      "start": "2813589",
+      "cpus": [
+        0
+      ]
+    },
+    {
+      "tid": 2491948,
+      "name": "strata-stage",
+      "start": "2813589",
+      "cpus": [
+        0
+      ]
+    },
+    {
+      "tid": 2491949,
+      "name": "strata-stage",
+      "start": "2813589",
+      "cpus": [
+        0
+      ]
+    },
+    {
+      "tid": 2491950,
+      "name": "strata-stage",
+      "start": "2813589",
+      "cpus": [
+        0
+      ]
+    },
+    {
+      "tid": 2491951,
+      "name": "strata-stage",
+      "start": "2813589",
+      "cpus": [
+        0
+      ]
+    },
+    {
+      "tid": 2491952,
+      "name": "strata-stage",
+      "start": "2813589",
+      "cpus": [
+        0
+      ]
+    },
+    {
+      "tid": 2491953,
+      "name": "strata-stage",
+      "start": "2813589",
+      "cpus": [
+        0
+      ]
+    },
+    {
+      "tid": 2491954,
+      "name": "strata-stage",
+      "start": "2813589",
+      "cpus": [
+        0
+      ]
+    },
+    {
+      "tid": 2491955,
+      "name": "strata-stage",
+      "start": "2813589",
+      "cpus": [
+        0
+      ]
+    },
+    {
+      "tid": 2491956,
+      "name": "strata-stage",
+      "start": "2813589",
+      "cpus": [
+        0
+      ]
+    },
+    {
+      "tid": 2491957,
+      "name": "strata-stage",
+      "start": "2813589",
+      "cpus": [
+        0
+      ]
+    },
+    {
+      "tid": 2491958,
+      "name": "strata-stage",
+      "start": "2813589",
+      "cpus": [
+        0
+      ]
+    },
+    {
+      "tid": 2491959,
+      "name": "strata-stage",
+      "start": "2813589",
+      "cpus": [
+        0
+      ]
+    },
+    {
+      "tid": 2491960,
+      "name": "strata-stage",
+      "start": "2813589",
+      "cpus": [
+        0
+      ]
+    },
+    {
+      "tid": 2491961,
+      "name": "strata-stage",
+      "start": "2813589",
+      "cpus": [
+        0
+      ]
+    },
+    {
+      "tid": 2491962,
+      "name": "strata-stage",
+      "start": "2813589",
+      "cpus": [
+        0
+      ]
+    },
+    {
+      "tid": 2491963,
+      "name": "strata-stage",
+      "start": "2813589",
+      "cpus": [
+        0
+      ]
+    },
+    {
+      "tid": 2491964,
+      "name": "strata-stage",
+      "start": "2813589",
+      "cpus": [
+        0
+      ]
+    },
+    {
+      "tid": 2491965,
+      "name": "strata-stage",
+      "start": "2813589",
+      "cpus": [
+        0
+      ]
+    },
+    {
+      "tid": 2491966,
+      "name": "strata-stage",
+      "start": "2813589",
+      "cpus": [
+        0
+      ]
+    },
+    {
+      "tid": 2491967,
+      "name": "strata-stage",
+      "start": "2813589",
+      "cpus": [
+        0
+      ]
+    },
+    {
+      "tid": 2491968,
+      "name": "strata-stage",
+      "start": "2813589",
+      "cpus": [
+        0
+      ]
+    },
+    {
+      "tid": 2491969,
+      "name": "strata-stage",
+      "start": "2813589",
+      "cpus": [
+        0
+      ]
+    },
+    {
+      "tid": 2491970,
+      "name": "strata-stage",
+      "start": "2813589",
+      "cpus": [
+        0
+      ]
+    },
+    {
+      "tid": 2491971,
+      "name": "strata-stage",
+      "start": "2813589",
+      "cpus": [
+        0
+      ]
+    }
+  ]
+}

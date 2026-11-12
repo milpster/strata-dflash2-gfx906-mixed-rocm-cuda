@@ -1,0 +1,1 @@
+{"status": "ok", "max_context": 262144, "model": "swift-1.5-iq3_xxs-f16kv", "images": true, "api_key": false, "image_generation": false, "loaded": true, "service": "strata"}

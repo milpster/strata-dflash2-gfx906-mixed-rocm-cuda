@@ -1,0 +1,22 @@
+{
+ "arm": "b20-h7400",
+ "leg": "killer144k-tg1024",
+ "kind": "tg",
+ "ctx": 786801,
+ "max_tokens": 1024,
+ "ts": 1794415764.873,
+ "walls": [
+  278.348,
+  71.858
+ ],
+ "wall_s": 350.209,
+ "content_from": "content",
+ "prompt_bytes": 786801,
+ "sha256": "17cbacd3e9c91dc4ffe37f2c19d58eec98863501276fd0548d78d6102270ad10",
+ "elog": "/mnt/srcds/Strata/logs/engine-swift15-f16kv-dflash-w4-q4_0-mixed.log",
+ "elog_start": 4640084,
+ "elog_end": 4642940,
+ "hlog": "/mnt/srcds/Strata/logs/trial-spill40-20261111-173923-2303415-helper.log",
+ "hlog_start": 1444,
+ "hlog_end": 1444
+}

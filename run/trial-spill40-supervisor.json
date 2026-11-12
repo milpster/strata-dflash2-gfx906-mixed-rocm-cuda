@@ -1,0 +1,23 @@
+{
+  "supervisor_pid": 32824,
+  "launcher_pid": 32830,
+  "generation": 1,
+  "state": "attached",
+  "timestamp": 1794510950.4352658,
+  "helper_pid": 32840,
+  "server_pid": 33085,
+  "engine_log": "/mnt/srcds/Strata/logs/trial-spill40-20261112-201550-32830.log",
+  "helper_log": "/mnt/srcds/Strata/logs/trial-spill40-20261112-201550-32830-helper.log",
+  "helper_start": "16658",
+  "server_start": "16761",
+  "engine_stderr_log": "/mnt/srcds/Strata/logs/engine-v0225-int8.log",
+  "engine_pid": 33567,
+  "engine_start": "16912",
+  "attached_at": 1794511013.3711805,
+  "stage_affinity": {
+    "state": "applied",
+    "moved": 64,
+    "snapshot": "/mnt/srcds/Strata/run/trial-spill40-supervisor-affinity-33567-16912.retry4.json",
+    "cpus": "3,5,7,9,11,13,15"
+  }
+}

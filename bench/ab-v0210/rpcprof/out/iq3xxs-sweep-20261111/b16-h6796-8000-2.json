@@ -1,0 +1,21 @@
+{
+ "arm": "b16-h6796",
+ "leg": "8000-2",
+ "kind": "prefill",
+ "ctx": 8000,
+ "max_tokens": 8,
+ "ts": 1794415871.398,
+ "walls": [
+  7.563
+ ],
+ "wall_s": 7.564,
+ "content_from": "reasoning",
+ "prompt_bytes": 8000,
+ "sha256": "01db7a9d154bb188430b234246589661629c627462db9ec632e33137f49bb45e",
+ "elog": "/mnt/srcds/Strata/logs/engine-swift15-f16kv-dflash-w4-q4_0-mixed.log",
+ "elog_start": 4656045,
+ "elog_end": 4656517,
+ "hlog": "/mnt/srcds/Strata/logs/trial-spill40-20261111-174928-2581406-helper.log",
+ "hlog_start": 1448,
+ "hlog_end": 1448
+}

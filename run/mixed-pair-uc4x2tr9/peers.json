@@ -1,0 +1,8 @@
+{
+  "helper_pid": 32840,
+  "server_pid": 33085,
+  "engine_log": "/mnt/srcds/Strata/logs/trial-spill40-20261112-201550-32830.log",
+  "helper_log": "/mnt/srcds/Strata/logs/trial-spill40-20261112-201550-32830-helper.log",
+  "helper_start": "16658",
+  "server_start": "16761"
+}

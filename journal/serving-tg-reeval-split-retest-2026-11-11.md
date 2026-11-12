@@ -914,3 +914,39 @@ Prod DOWN after pin (standing rule: up only before the next subagent).
 Window plan awaiting operator go: soak + tps panel vs S34 floor
 (PP 648.8 / TG 44.3) + game-coexistence context (game active now —
 avail floors read against the venue, mem-tracked per leg).
+
+## KV policy reversal (operator, 2026-11-12 ~20:0x)
+
+- SUPERSEDES the 2026-11-09 note in mixed-ipc-pcie-ab9: `--kv int8` IS adoptable now.
+- Reason: priority shifted to memory footprint; int8 halves the KV budget (~6.25 -> ~3.0 GiB),
+  fits entirely under kv-resident-mib 4096 -> pinned streaming tail should vanish, VII pressure eases.
+- m2 evidence (perf-neutral hot 217.9 tok/s, parity sha kept) never blocked on measurement.
+- Operator also: NO more soak arms - measurement via tps panel only.
+- kv-resident-mib 4096 stays (rule: only dropped if #2065 pathology fires AND traces to the CUDA card - not met).
+
+## v0225 int8 KV panel (2026-11-12 20:18-20:25, arm V25I8, post-reboot box: swap 0, boot avail 51.5)
+
+Boot: v0225 + S34 tuple (fill 6796/slots 4600/reserve 512) + capped diet flags + cache flags +
+--kv int8 + kv-resident-mib 4096 -> 12864 B/cell, resident 262144/262144 (3.1 GiB, FULL residency,
+pinned tail GONE). Boot avail 17.3 (fp16 same tuple: 13.0). Pinning verified: 64 stage threads on
+3,5,7,9,11,13,15 (config 0,1 inert, CLI wins).
+
+Results vs S34 floor (v0219 fp16 full-residency, PP 648.8 / TG 44.3):
+- killer144k-tg1024: PP 645.8 (-0.5%, parity). TG 33.9-35.0 (-21..-23% REGRESSION).
+- TG vs context: tg1024 (1k ctx) 44.8 (parity!); longtg (29k) 35.0-42.9; killer (142k) 33.9-36.1.
+  -> TG cost is LONG-CONTEXT-SPECIFIC, not flat: small-ctx decode holds the floor.
+- Cache-warm second passes decode faster (41.0-44.8) than right-after-cold-read (33.9-36.1):
+  heavy reads depress following decode (matches soak TG 21-34 pattern).
+- Checkpoint I/O during killer gen: 6 checkpoints, 408 MB (conversation-cache machinery writes
+  during decode at 142k ctx) - candidate TG cost, unproven.
+- Draft acceptance healthy 69% (332/480). Helper clean: timeouts=0 fallbacks=0.
+- Mem per killer leg: maxRSS 48.9 GiB (fp16 capped soak plateau: 52-53), min_avail 10.1 GiB
+  (fp16: 7.8-8.6), swap 3.1, VII VRAM 16.2+16.2 packed, 3080 7144 stable.
+
+Memory verdict: int8 wins decisively - RSS ~-3 GiB, avail +2.5, boot avail +4.3, full KV residency.
+Throughput verdict: PP parity, TG -21% at 142k = the open regression; 3-way confound remains
+(int8 KV attention at long ctx vs capped tuple file-serving vs v0225 checkpoint overhead).
+Deconfound options: one fp16 panel boot on the same tuple, or checkpoint-overhead source read.
+
+Tooling nits: ab9_driver wrote no judge blocks this run -> records.py table empty (raw JSONs +
+elog complete); elog_start/end are BYTE offsets not line numbers.

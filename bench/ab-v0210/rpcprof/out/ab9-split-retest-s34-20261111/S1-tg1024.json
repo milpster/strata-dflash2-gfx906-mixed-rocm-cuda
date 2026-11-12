@@ -1,0 +1,22 @@
+{
+ "arm": "S1",
+ "leg": "tg1024",
+ "kind": "tg",
+ "ctx": 2048,
+ "max_tokens": 1024,
+ "ts": 1794393669.911,
+ "walls": [
+  19.241,
+  14.293
+ ],
+ "wall_s": 33.535,
+ "content_from": "content",
+ "prompt_bytes": 2048,
+ "sha256": "1f779ab099cb57b055432da5d7e869c395ccc3f31ad1cfbcd1b97033af2f2017",
+ "elog": "/mnt/srcds/Strata/logs/engine-swift15-f16kv-dflash-w4-q4_0-mixed.log",
+ "elog_start": 4153884,
+ "elog_end": 4155061,
+ "hlog": "/mnt/srcds/Strata/logs/trial-spill40-20261111-113636-264091-helper.log",
+ "hlog_start": 1448,
+ "hlog_end": 1448
+}

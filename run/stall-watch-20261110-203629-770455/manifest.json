@@ -1,0 +1,8 @@
+{
+  "url": "http://127.0.0.1:1",
+  "state": "/mnt/srcds/Strata/run/prod-swift15-f16kv-mixed-supervisor.json",
+  "seconds": 1.0,
+  "interval": 0.25,
+  "mode": "read-only GET /metrics and procfs",
+  "started": "2026-11-10T20:36:29.770543+01:00"
+}

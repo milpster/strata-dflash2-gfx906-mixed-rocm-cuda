@@ -1,0 +1,33 @@
+{
+ "arm": "V25I8",
+ "leg": "tg1024",
+ "kind": "tg",
+ "ctx": 2048,
+ "max_tokens": 1024,
+ "ts": 1794511518.588,
+ "walls": [
+  30.014,
+  11.025
+ ],
+ "wall_s": 41.038,
+ "content_from": "content",
+ "prompt_bytes": 2048,
+ "sha256": "2549e78a53e862433c1681279aee32bf12e1add7dcc8a190a043d31400bd4044",
+ "elog": "/mnt/srcds/Strata/logs/engine-v0225-int8.log",
+ "elog_start": 42970,
+ "elog_end": 45029,
+ "hlog": "/mnt/srcds/Strata/logs/trial-spill40-20261112-201550-32830-helper.log",
+ "hlog_start": 1448,
+ "hlog_end": 1448,
+ "mem": {
+  "max_rss_mib": 49687,
+  "min_avail_mib": 12072,
+  "max_swap_used_mib": 3497,
+  "max_vram_mib": {
+   "card3": 16204,
+   "card4": 451,
+   "card2": 16282,
+   "nvidia0": 7144
+  }
+ }
+}

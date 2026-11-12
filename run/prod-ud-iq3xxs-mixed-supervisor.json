@@ -1,0 +1,15 @@
+{
+  "supervisor_pid": 1646756,
+  "launcher_pid": 1712069,
+  "generation": 12,
+  "state": "backoff",
+  "timestamp": 1793915532.338791,
+  "helper_pid": 1712075,
+  "server_pid": 1712317,
+  "engine_log": "/mnt/srcds/Strata/logs/prod-ud-iq3xxs-dflash-w4-q4_0-mixed-20261105-225208-1712069.log",
+  "helper_log": "/mnt/srcds/Strata/logs/prod-ud-iq3xxs-dflash-w4-q4_0-mixed-20261105-225208-1712069-helper.log",
+  "helper_start": "723640",
+  "server_start": "723740",
+  "reason": "helper, server exited",
+  "delay_s": 30
+}
