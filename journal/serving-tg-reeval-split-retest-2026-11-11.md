@@ -601,4 +601,25 @@ arm) — sweeping the final code, not pre-round-3. Fixer resumed (same
 session, exact-topic continuation) with phase-1 numbers to beat at same
 relief: longtg ≥28, tg1024 ≥32, killer ≥31, 8k PP ≥170. Serena MCP
 availability in the project fixed (operator) — fixer informed (queued note).
-Pipeline: round 3 → pin v0222 → sweep window → journal/push.
+## Round 3 landed + v0222 pinned + sweep launched (08:1x–08:2x)
+
+Fixer `b4514b0cd` (chain `4294d8545→ed88a6499→fe6c29cd2→b4514b0cd`, pushed):
+`--expert-helper-relief-arena-cap-decode-mib` — decode floor inside the cap,
+15-case ctest, builds/guards green. **Honest correction it forced:** a
+coldest-first drop keeps hottest-first, so the decode budget is a FLOOR
+(`resident = max(cap, hot+D)`), not a re-ordering; cap 20000/D 6000 and cap
+24000/D 6000 land on identical residency. **The cap axis is the knob** — it
+spends on the hottest pairs first, buying decode AND PP. Model (estimates,
+anchored on the two measured points): targets longtg ≥28/PP ≥170 need
+resident ~30k (cap 30000, avail ~14.6); at avail ≥20 the ceiling is
+longtg ~24.
+
+v0222 pinned (SHAs verified: hip `b5e4f1e3…`, cuda `385b43d5…`, helper
+`226e8c51…`). Sweep launched (driver 2533349, `run-iq3s-sweep-v0222.sh`,
+env-armed):
+- arm 1 `cap20k-dec6k`: round-3 delta at phase-1 memory (floor-bound,
+  resident 20,633 vs 19,999)
+- arm 2 `cap30k-dec6k`: the buy-back (resident 30,000, est avail ~14.6,
+  model longtg ~29, tg1024 ~33, killer ~31, PP ~158)
+Prod (iq3xxs v0221 diet) auto-returns after. `hot` stays 15000 (dropping
+below the caches' backing is the prefill collapse `b749c246c` fixed).
