@@ -10,7 +10,7 @@ set -euo pipefail
 ROOT=${STRATA_PROD_TREE:-/mnt/srcds/Strata}
 WORK="$ROOT/v0215"
 # Keep the serving wrapper stable; pin the latest built engine/helper separately.
-BIN="$ROOT/v0220/build-mixed-gpu"
+BIN="$ROOT/v0222/build-mixed-gpu"
 PY="$ROOT/.venv/bin/python"
 CONFIG="$ROOT/prod-config-swift-iq3s-f16kv-dflash-w4-q4_0-mixed.json"
 SOCKET="$ROOT/run/prod-swift-iq3s-f16kv-mixed.sock"

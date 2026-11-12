@@ -623,3 +623,33 @@ env-armed):
   model longtg ~29, tg1024 ~33, killer ~31, PP ~158)
 Prod (iq3xxs v0221 diet) auto-returns after. `hot` stays 15000 (dropping
 below the caches' backing is the prefill collapse `b749c246c` fixed).
+
+## v0222 sweep results (02:11–02:40, `run-iq3s-sweep-v0222.sh`)
+
+Both arms: abort still gone (zero-gen 0), #2065 = 0, all legs completed.
+
+| (iq3_s s34, v0222) | cap20k-dec6k | cap30k-dec6k | phase-1 (cap20k, no D) | pre-diet |
+| --- | ---: | ---: | ---: | ---: |
+| boot avail / RSS | 22.6 / 31.9 | 14.5 / 41.7 | 24.4 / 31.9 | 8.6 / 55.1 |
+| longtg wall / decode | **106.4** / 27.4+29.9 | 119.4 / 35.6+35.1 | 141.9 / 21.0+23.5 | 190.5 / 35.3+32.9 |
+| tg1024 decode | 18.1(cold)+29.7+32.5 | **37.8+42.0+41.0** | 28.1+32.3 | 37.8+34.8 |
+| killer wall / decode | **313.0** / 30.5+28.8 | 369.3 / 34.4+36.9 | 314.4 / 28.7+28.9 | 520.8 / 33.6+34.3 |
+| 80k wall | **60.6** | 127.8 | 60.4 | 91.1 |
+| panel-floor avail / swap | **13.2 / 6.8** | 7.8 / 10.6 ⚠️ | 13.0 / 7.3 | 8.6 / 7.4 |
+
+**Round 3's decode floor is a free win**: at identical memory (resident
+19,998 vs phase-1's 19,999), longtg decode +6–7 (27.4/29.9 vs 21.0/23.5),
+longtg wall −35 s, killer/tg1024/80k unchanged — and it BEAT the fixer's
+model (which capped longtg at ~24 for avail ≥20).
+
+**cap30k fully recovers decode** (35–42, pre-diet band or better) **but the
+pressure relapses**: panel-floor avail 7.8 GiB, swap grows to 10.6, and the
+big reads pay for it (killer 369, 80k 128, rerun tail 84 s). The pressure
+chain is symmetric: more resident bytes = better decode = slower reads and
+the danger zone returns.
+
+**iq3_s serving tuple finalized: split-34 · v0222 · 7400/5000/300 ·
+relief+packs · hot 15000 · cap 20000 · cap-decode 6000 · retry.** Files
+updated (config exe v0222 + flags; launcher BIN v0222), promotion-ready,
+NOT booted — iq3xxs v0221 diet remains the default prod (decode 37 free).
+cap30k documented as the decode-max variant with the pressure caveat.
