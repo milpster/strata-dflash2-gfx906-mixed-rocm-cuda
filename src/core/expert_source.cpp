@@ -7055,8 +7055,9 @@ void ArenaExpertSource::set_arena_reorder(std::vector<uint8_t> hot, std::vector<
     const size_t cells = (size_t) blobs_;
     hot.resize(cells, 0);
     tier_served.resize(cells, 0);
-    heat_.clear();
-    heat_.resize(cells);   // value-initialized to zero: unarmed pairs cost one branch in blob()
+    // std::vector<std::atomic> resize() needs relocatable elements (atomics are not); constructing the
+    // sized vector and move-assigning it value-initializes the counters with no element moves.
+    heat_ = std::vector<std::atomic<int64_t>>(cells);   // zeroed: unarmed pairs cost one branch in blob()
     reorder_hot_ = std::move(hot);
     reorder_tier_ = std::move(tier_served);
     reorder_profile_ = std::move(profile);
