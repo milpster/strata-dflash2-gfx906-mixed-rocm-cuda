@@ -950,3 +950,20 @@ Deconfound options: one fp16 panel boot on the same tuple, or checkpoint-overhea
 
 Tooling nits: ab9_driver wrote no judge blocks this run -> records.py table empty (raw JSONs +
 elog complete); elog_start/end are BYTE offsets not line numbers.
+
+## Round 7 fixer launched (2026-11-12 ~20:4x) — long-ctx TG + iq3_s code round
+
+- OPERATOR GOAL restated: iq3_s + int8 KV in the game-coexistence RAM envelope (~5 GiB game)
+  without inference degrading; plus raw perf for both iq3_s and iq3xxs.
+- Model note (operator, runtime override): the fixer runs glm-5.3 on the Z.AI coding plan
+  (remote), NOT on prod :8009 -> no prod boot needed for subagents this round; prod stays down.
+  (The 2026-11-06 HARD RULE about subagents riding :8009 is mooted while the operator says so.)
+- Brief: attribute the -21% TG@142k (int8 KV attention vs HIP sync checkpoints vs helper lock),
+  fix per evidence, keep round-6 cache semantics intact, land commits on helper-ipc-diet,
+  build + sha a new pinned pair (v0226) for the parent to panel. No soaks, no :8009, no promotion.
+- Evidence handed over: panel numbers (PP parity 645.8, TG 33.9-36.1@142k vs floor 44.3,
+  TG 44.8@1k parity, warm-pass recovery 41-44.8), int8 memory wins, iq3_s v0222 killer wall
+  379.8 s vs iq3xxs-i8 243.1 s, code leads (STRATA_CKPT_ASYNC CUDA-only, generate.cpp:15443
+  periodic ckpt trigger, 6 ckpts/408 MB mid-killer, 11-09 helper-lock 1.57 s).
+- Parent backlog (next benchmark round): fp16 deconfound boot on same tuple to split
+  int8-vs-tuple/v0225 if fixer attribution leaves it open.
