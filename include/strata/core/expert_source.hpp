@@ -1510,6 +1510,10 @@ public:
     /// spend a few seconds between requests converges on decode's set in a handful of boundaries.
     int64_t reorder_arena_by_heat();
     bool arena_reorder_armed() const { return reorder_armed_; }
+    /// helper-ipc-diet round 8: the serving phase note_heat banks into (0: the request is reading
+    /// its prompt or parked at a boundary, 1: the decode loop runs).  The request thread sets it at
+    /// the phase boundaries; the tier's swap-in threads read it relaxed at note time.
+    void set_heat_phase(int phase) { heat_phase_.store(phase, std::memory_order_relaxed); }
 
   private:
     /// The heat counter of one pair: bumped on the decode walk.  No-op while unarmed.
@@ -1529,10 +1533,6 @@ public:
         if (heat_phase_.load(std::memory_order_relaxed) != 0 && i < decode_heat_.size())
             decode_heat_[i].fetch_add(1, std::memory_order_relaxed);
     }
-    /// The serving phase note_heat banks into (0: the request is reading its prompt or parked at a
-    /// boundary, 1: the decode loop runs).  The request thread sets it at the phase boundaries; the
-    /// tier's swap-in threads read it relaxed at note time.
-    void set_heat_phase(int phase) { heat_phase_.store(phase, std::memory_order_relaxed); }
     /// refill_recorded_pairs' per-pair mechanism, reused by the re-rank's promote: read the pair's bytes
     /// from the pack files into a private staging copy, register its page range, take the device alias,
     /// insert the range into the sorted pin tables, write the bytes, clear the flag.  A driver refusal
