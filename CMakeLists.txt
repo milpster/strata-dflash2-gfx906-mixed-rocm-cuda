@@ -970,6 +970,16 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
       add_test(NAME expert_helper_arena_cap_test COMMAND expert_helper_arena_cap_test)
       set_tests_properties(expert_helper_arena_cap_test PROPERTIES TIMEOUT 60)
     endif()
+    # helper-ipc-diet round 8: the pin-range arithmetic the re-rank's promote uses
+    # (include/strata/core/arena_pin_ranges.hpp) - the unregistered gaps of a span against the
+    # sorted pin tables and the union a coalescing re-registration covers.  CPU-only BY
+    # CONSTRUCTION - header-only arithmetic, the test links NO library at all.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/arena_pin_ranges_test.cpp")
+      add_executable(arena_pin_ranges_test tests/core/arena_pin_ranges_test.cpp)
+      target_include_directories(arena_pin_ranges_test PRIVATE include)
+      add_test(NAME arena_pin_ranges_test COMMAND arena_pin_ranges_test)
+      set_tests_properties(arena_pin_ranges_test PROPERTIES TIMEOUT 60)
+    endif()
     # M1 (capacity, parent correction 2): the helper proxy's RESIDENCY lifecycle - registered fill,
     # mid-request disable (residency KEPT, the gate must still consult), per-request re-arm, channel
     # death (residency RELEASED, the gate must recover).  Proxy mode makes no device call (the
