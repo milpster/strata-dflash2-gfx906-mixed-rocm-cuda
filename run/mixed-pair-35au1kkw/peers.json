@@ -1,0 +1,8 @@
+{
+  "helper_pid": 242793,
+  "server_pid": 243270,
+  "engine_log": "/mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261113-003522-242787.log",
+  "helper_log": "/mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261113-003522-242787-helper.log",
+  "helper_start": "1573904",
+  "server_start": "1574008"
+}

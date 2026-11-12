@@ -1293,3 +1293,20 @@ non-config-driven invocations — the fixer's direct ctests; its `env -u` fix is
 
 Engine stopped after measurement (stop-all). v0227 remains pin-candidate; promotion is
 the operator's call.
+
+## PROMOTION — v0227 / iq3_s + int8 KV is prod (2026-11-13 00:37, operator approved)
+
+- New prod config `prod-config-swift15-iq3s-int8kv-dflash-w4-mixed.json` (from the trial
+  iq3s-int8 config; sockets → prod-swift15-iq3s-mixed{,2}.sock; model_name →
+  `swift-1.5-iq3_s-int8kv`; exe → v0227 rpcw-hip; args carry the IQ3_S pack/native/PLE +
+  `--kv int8`; env block canonical 9.0.6/CVD=0,1/SDMA=1).
+- New prod launcher `launch-prod-swift15-iq3s-int8kv-dflash-w4-mixed.sh` (copy of the
+  f16kv launcher; helper → `--pack /mnt/srcds/ai/iq3s --experts
+  ../Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S.gguf`; fill 6796 / slots 4600 / reserve 512
+  unchanged; repaired env block present).
+- Old f16kv launcher + config left untouched as the rollback path.
+- Boot verified: :8009 healthy 00:37:33; engine = v0227 (exe symlink); env 9.0.6/CVD=0,1;
+  custom rocBLAS mapped via hipblas; smoke: exact-compliance "prod-ok", model string
+  correct.
+- Known weak spot carried into prod (operator accepted, next work item): warm/2nd-gen TG
+  (killerL 24.1, longtg 21.4) vs cold (41.1/33.1) — round 9 attacks this.
