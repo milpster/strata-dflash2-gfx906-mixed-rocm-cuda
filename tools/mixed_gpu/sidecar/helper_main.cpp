@@ -43,6 +43,8 @@
 #include "strata/core/expert_helper_reserve.hpp"   // v0232: --reserve-mib's honest clamp (this file owns the fill budget's reserve)
 #include "strata/core/expert_cache.hpp"
 #include "strata/core/finite_rows.hpp"   // helper-ipc-diet: the AVX2 twin of the row finiteness scan
+
+#include <cuda_fp16.h>   // W1: __float2half_rn - the GPU quant twin's fp16 scales (round-to-nearest-even, ggml's CPU contract)
 // M7 (the drafter lane, docs/work/MIXED_BACKEND_RPC_PLAN.md sect12/12a): the serve-runtime drafter
 // (include/strata/core/dflash.hpp's DFlashDrafter: add_context_f32 / propose), the target's native
 // head + pinned embedding it binds, and the metadata-only weight table the bind reads.
@@ -114,6 +116,31 @@ int64_t reply_deadline_ms(int64_t dflt) {
 }
 constexpr int64_t kReserveDefaultMiB = 512;
 
+// W3.1/W3.3 (STRATA_HELPER_WIN_FAST, default OFF - exactly "1"): the helper's half of the bundle
+// is the d_out pre-clear drop below; the ENGINE's half (the window payload's per-frame rebuild and
+// the q8/q8k image's zero-fill) reads the same knob in its own process.  Read once at first use:
+// the helper's environment is fixed for the process's lifetime (reply_override_ms's own pattern).
+bool win_fast() {
+    static const bool v = [] {
+        const char* e = std::getenv("STRATA_HELPER_WIN_FAST");
+        return e != nullptr && e[0] == '1' && e[1] == '\0';
+    }();
+    return v;
+}
+
+// W3.2 (STRATA_HELPER_PINNED_RX, default OFF - exactly "1"): the window image's H2D runs from a
+// PINNED staging slot instead of the channel's pageable RxBuffer (the driver stages pageable
+// copies through a bounce buffer; pinned memory is a direct DMA).  Gated, not free: the pinned
+// allocation is observable under host memory pressure (cudaHostAlloc can fail where malloc would
+// not), so default-off keeps today's allocation behavior exactly.  Read once, as win_fast.
+bool pinned_rx() {
+    static const bool v = [] {
+        const char* e = std::getenv("STRATA_HELPER_PINNED_RX");
+        return e != nullptr && e[0] == '1' && e[1] == '\0';
+    }();
+    return v;
+}
+
 /// The grouped-kernel metadata, the engine's RemoteMeta layout (src/core/remote_experts.cpp:25):
 /// the kernels read the five arrays through pointers into ONE contiguous upload.
 struct GroupMeta {
@@ -155,6 +182,92 @@ void quantize_q8_1_twin(const float* x, int64_t n, uint8_t* y) {
         }
         std::memcpy(y + ib * 36, ds, 4);
     }
+}
+
+// W1 (kBeginF32): the GPU twin of quantize_q8_1_cpu for the WINDOW wire - one thread per 32-value
+// block, every statement the CPU quantizer's own, in its exact order:
+//   - amax: fmaxf(amax, fabsf(xb[i])) accumulated i = 0..31 sequentially - max is associative, so
+//     ANY reduction order gives it; this one also matches the CPU loop verbatim.
+//   - sum: `sum += xb[i]` in the SAME i = 0..31 order as the CPU loop (NOT a butterfly): IEEE-754
+//     fp32 addition with round-to-nearest, one add at a time, so the result is bit-identical to
+//     the CPU's sum by construction - stronger than the prompt tier's twin, which is ULP-close
+//     because the DEVICE kernel there reduces with a shuffle tree.
+//   - d: amax/127.0f with the #606 clamp (|v| > 65504 -> +-65504) - q8_1_finite.hpp's own bits.
+//   - ds: __float2half_rn (round-to-nearest-EVEN) of the clamped d and sum - ggml's
+//     ggml_fp32_to_fp16 CPU contract for the normal range, restated on the device.
+//   - q: roundf(xb[i]/d) clamped to +-127; the all-zero block (amax == 0) writes zeros.
+// The helper is compiled WITHOUT -use_fast_math/-ftz (the CMake target sets no CUDA math flags),
+// so nvcc's IEEE defaults hold: --ftz=false, --prec-div=true; a bare `a += b` is a single IEEE
+// add (nvcc's default FMA contraction applies to a*b+c patterns, of which this body has none).
+// The golden pin is byte-identity against quantize_q8_1_cpu: STRATA_HELPER_F32_QUANT_DUMP=<path>
+// (below) dumps the first frame's input and d_q8 bytes, and
+// tests/core/expert_helper_f32_window_test.cpp compares them byte for byte - a single failed
+// golden compare reverts STRATA_HELPER_F32_WINDOW, and no output can move (the grouped kernel
+// then reads exactly the bytes this kernel wrote in place of the engine's).
+// The #606 clamp constant, the same bits as quantize_q8_1_cpu's kHalfMax (that function is host
+// C++; this TU's device half needs its own).
+constexpr float kF32HalfMax = 65504.0f;
+
+__global__ void __launch_bounds__(256) quantize_q8_1_f32_window_kernel(const float* __restrict__ x,
+                                                                       uint8_t* __restrict__ y,
+                                                                       long long n_blocks) {
+    const long long ib = (long long) blockIdx.x * blockDim.x + threadIdx.x;
+    if (ib >= n_blocks) return;
+    const float* xb = x + ib * 32;
+    float amax = 0.0f, sum = 0.0f;
+    for (int i = 0; i < 32; ++i) {
+        amax = fmaxf(amax, fabsf(xb[i]));
+        sum += xb[i];
+    }
+    float d = amax / 127.0f;
+    if (fabsf(d) > kF32HalfMax) d = copysignf(kF32HalfMax, d);
+    float dv = d, sv = sum;   // ds[0] re-clamps d, ds[1] clamps sum (the CPU's finite() calls)
+    if (fabsf(dv) > kF32HalfMax) dv = copysignf(kF32HalfMax, dv);
+    if (fabsf(sv) > kF32HalfMax) sv = copysignf(kF32HalfMax, sv);
+    const __half d0 = __float2half_rn(dv);
+    const __half s0 = __float2half_rn(sv);
+    std::memcpy(y + ib * 36, &d0, 2);
+    std::memcpy(y + ib * 36 + 2, &s0, 2);
+    int8_t* qs = (int8_t*) (y + ib * 36 + 4);
+    for (int i = 0; i < 32; ++i) {
+        int8_t q;
+        if (amax == 0.0f) q = 0;
+        else {
+            const float qf = roundf(xb[i] / d);
+            q = (int8_t) (qf > 127.0f ? 127.0f : qf < -127.0f ? -127.0f : qf);
+        }
+        qs[i] = q;
+    }
+}
+
+// W1's golden-pin dump: with STRATA_HELPER_F32_QUANT_DUMP=<path> set, the FIRST kBeginF32 frame
+// writes <path>.in (a 16-byte header - the fp32 image's byte count and block count - then the rows
+// as uploaded) and <path>.q8 (the d_q8 bytes the micro-kernel produced) after the frame's sync.
+// The host test then byte-compares <path>.q8 against quantize_q8_1_cpu of <path>.in - the
+// bit-identity pin, executable once a GPU run exists (the build window).  Observability only,
+// default absent: no file is touched on the default path.
+void dump_f32_quant_golden(const uint8_t* img_in_host, const void* q8_dev, int64_t img_bytes,
+                           int64_t n_blocks, int64_t n_q8_bytes) {
+    static bool dumped = false;   // first frame only; serve threads share the process
+    if (dumped) return;
+    dumped = true;
+    const char* p = std::getenv("STRATA_HELPER_F32_QUANT_DUMP");
+    if (p == nullptr || *p == '\0') return;
+    const std::string in_path = std::string(p) + ".in";
+    const std::string q8_path = std::string(p) + ".q8";
+    const int64_t header[2] = {img_bytes, n_blocks};
+    if (std::FILE* f = std::fopen(in_path.c_str(), "wb")) {
+        std::fwrite(header, sizeof(header), 1, f);
+        std::fwrite(img_in_host, 1, (size_t) img_bytes, f);
+        std::fclose(f);
+    }
+    std::vector<uint8_t> q8_host((size_t) n_q8_bytes, 0);
+    if (cudaMemcpy(q8_host.data(), q8_dev, (size_t) n_q8_bytes, cudaMemcpyDeviceToHost) == cudaSuccess &&
+        std::FILE* f = std::fopen(q8_path.c_str(), "wb")) {
+        std::fwrite(q8_host.data(), 1, (size_t) n_q8_bytes, f);
+        std::fclose(f);
+    }
+    std::fprintf(stderr, "expert-helper: f32 window quant golden dump written (%s.in/%s.q8)\n", p, p);
 }
 
 /// R5 P1 (the selected-token prompt tier): THE SAME metadata layout, sized by the protocol's row cap
@@ -308,6 +421,14 @@ struct Helper {
     uint8_t* d_q8 = nullptr;       // the window's activations (n_tok * (H/32) * 36)
     float* d_out = nullptr;        // the compact rows (CAP * H)
     void* d_scratch = nullptr;
+    // W1 (kBeginF32, lazy - allocated on the first frame that needs it, so the default path's
+    // buffers_bytes and footprint stay byte-identical): the fp32 window image's staging.  h_img is
+    // the PINNED host slot every window image upload can copy through (the f32 rows, or the q8/q8k
+    // blocks under STRATA_HELPER_PINNED_RX); d_img_f32 is the device landing of the f32 rows,
+    // read by the quantize micro-kernel that writes d_q8.  kMaxTok * H * 4 = 80 KiB covers the
+    // largest window image of all three wires (f32 80 KiB > q8k 23.4 KiB > q8 23 KiB).
+    uint8_t* h_img = nullptr;      // pinned host, kMaxTok * H * 4
+    float* d_img_f32 = nullptr;    // device, kMaxTok * H * 4 (the f32 rows before quantize)
     // R5 P1 (the prompt tier's OWN device staging, sized by the protocol caps, never by T): the
     // grouped kernel's inputs for one kBeginP.  Pinned+mapped for the same reasons H10 records for
     // d_meta/d_out - serve_prompt reads the meta's fields on the host and copies the rows back with
@@ -355,6 +476,8 @@ struct Helper {
         if (d_q8) cudaFree(d_q8);
         if (d_out) cudaFree(d_out);
         if (d_scratch) cudaFree(d_scratch);
+        if (h_img) cudaFreeHost(h_img);       // W1: the lazy window-image staging
+        if (d_img_f32) cudaFree(d_img_f32);
         if (h_meta_p) cudaFreeHost(h_meta_p);
         if (d_meta_p) cudaFree(d_meta_p);
         if (d_q8_p) cudaFree(d_q8_p);
@@ -737,11 +860,29 @@ int serve_fill(Helper& hp, PayloadView body, uint32_t req_id, uint32_t seq, int6
     return out.write_reply(kFillReport, req_id, seq, payload.data(), payload.size(), deadline_after(600000));
 }
 
-// ---- kBegin / kBeginQ8K: one grouped launch over the claimed entries; kRows answers with the
-// original indices.  image_q8k: the frame's activation image is ggml's Q8_K blocks (the CPU
-// reference's own gate/up image) and the launch is native_expert_grouped_q8k. ----
+// ---- kBegin / kBeginQ8K / kBeginF32: one grouped launch over the claimed entries; kRows answers
+// with the original indices.  image_q8k: the frame's activation image is ggml's Q8_K blocks (the
+// CPU reference's own gate/up image) and the launch is native_expert_grouped_q8k.  image_f32 (W1):
+// the image is the window's RAW fp32 rows - staged into hp.h_img (pinned), uploaded to hp.d_img_f32
+// and quantized on the stream by quantize_q8_1_f32_window_kernel into hp.d_q8, so the grouped
+// launch below reads the same blocks kBegin carries and is byte-for-byte unchanged. ----
+
+// W1/W3.2: the window image's staging, allocated LAZILY on the first frame that uses it (kBeginF32
+// always; kBegin/kBeginQ8K only under STRATA_HELPER_PINNED_RX) - a default-off run never pays the
+// 80 KiB pinned + 80 KiB device or reports it in buffers_bytes, so the fill budget's inputs stay
+// byte-identical today.  `need_f32` also allocates the device landing of the fp32 rows.
+bool ensure_window_img_staging(Helper& hp, bool need_f32, std::string& err) {
+    const size_t bytes = (size_t) kMaxTok * (size_t) H * 4;   // the largest window image of the three wires
+    if (hp.h_img == nullptr &&
+        !cuda_check(cudaHostAlloc((void**) &hp.h_img, bytes, cudaHostAllocPortable),
+                    "window image staging (pinned)", err)) return false;
+    if (need_f32 && hp.d_img_f32 == nullptr &&
+        !cuda_check(cudaMalloc((void**) &hp.d_img_f32, bytes), "f32 image (device)", err)) return false;
+    return true;
+}
+
 int serve_begin(Helper& hp, PayloadView body, uint32_t req_id, uint32_t seq, std::string& err,
-                Socket& out, bool image_q8k, int ring_slot) {
+                Socket& out, bool image_q8k, bool image_f32, int ring_slot) {
     // ONE served frame holds the device lock (see Helper::gpu_mtx): the window tier's staging
     // (h_meta/d_meta/d_q8/d_out/scratch) and the prompt tier's are shared device state, and with
     // --socket2 two threads serve frames at once.  The lock is never held across the loop's read.
@@ -766,7 +907,9 @@ int serve_begin(Helper& hp, PayloadView body, uint32_t req_id, uint32_t seq, std
     if (req.ids_bytes != (int32_t) (n * 4)) return kErrGeometry;
     const size_t res_bytes = (size_t) ((n_tok * hp.n_expert + 7) / 8);
     if (image_q8k && H % 256 != 0) return kErrGeometry;   // whole 256-value super-blocks
-    const int64_t img_row = image_q8k ? (H / 256) * 292 : (H / 32) * 36;   // the wire's pinned image sizes
+    if (image_f32 && H % 32 != 0) return kErrGeometry;    // whole 32-value q8_1 blocks for the quant kernel
+    // the wire's pinned image sizes: q8_1 (H/32)*36, Q8_K (H/256)*292, fp32 H*4 (W1's kBeginF32)
+    const int64_t img_row = image_f32 ? H * 4 : image_q8k ? (H / 256) * 292 : (H / 32) * 36;
     if (n_tok * img_row != req.n_q8) return kErrGeometry;
     if (body.size() != sizeof(req) + (size_t) req.ids_bytes + res_bytes + (size_t) req.n_q8) return kErrShort;
     const int32_t* ids = (const int32_t*) (body.data() + sizeof(req));
@@ -832,12 +975,36 @@ int serve_begin(Helper& hp, PayloadView body, uint32_t req_id, uint32_t seq, std
     }
     start.push_back((int32_t) dst.size());
 
-    // The engine quantized the activations - canonical q8_1 blocks (bit for bit its own
-    // quantize_q8_1_kernel's) or, on the Q8_K wire, the CPU reference's own image
-    // (native_quant_act): upload them verbatim either way, no requantization, and launch the
-    // grouped kernel exactly the in-process tier launches it.
-    if (!cuda_check(cudaMemcpyAsync(hp.d_q8, q8, (size_t) req.n_q8, cudaMemcpyHostToDevice, hp.stream),
-                    "q8 upload", err)) return kErrInternal;
+    // The activations reach d_q8 one of three ways, all producing the same bytes the grouped kernel
+    // reads below:
+    //  - kBegin/kBeginQ8K (default): the engine quantized the image - canonical q8_1 blocks (bit
+    //    for bit its own quantize_q8_1_kernel's) or the CPU reference's own Q8_K image
+    //    (native_quant_act) - uploaded verbatim, no requantization.  Under STRATA_HELPER_PINNED_RX
+    //    (W3.2, default OFF) the copy runs from the pinned h_img staging slot instead of the
+    //    channel's pageable RxBuffer: a direct DMA instead of a driver-staged bounce (the RxBuffer
+    //    itself reallocs as frames grow, so IT cannot be registered - the staging slot is the
+    //    stable pinned range; one ~23 KB host memcpy buys the DMA).
+    //  - kBeginF32 (W1, the engine's STRATA_HELPER_F32_WINDOW + our kFeatureF32Window): the window's
+    //    RAW fp32 rows, staged into the same pinned slot, uploaded to d_img_f32 and quantized on
+    //    the stream by quantize_q8_1_f32_window_kernel - the CPU quantizer's own statements, one
+    //    thread per block, bit-identical including the fp16 sum (see the kernel's proof) - writing
+    //    d_q8 before the grouped launch reads it in the same stream.
+    if (image_f32) {
+        if (!ensure_window_img_staging(hp, true, err)) return kErrInternal;
+        std::memcpy(hp.h_img, q8, (size_t) req.n_q8);
+        if (!cuda_check(cudaMemcpyAsync(hp.d_img_f32, hp.h_img, (size_t) req.n_q8, cudaMemcpyHostToDevice,
+                                        hp.stream), "f32 image upload", err)) return kErrInternal;
+        const long long n_blocks = (long long) n_tok * (H / 32);
+        quantize_q8_1_f32_window_kernel<<<(unsigned) ((n_blocks + 255) / 256), 256, 0, hp.stream>>>(
+            hp.d_img_f32, hp.d_q8, n_blocks);
+        if (!cuda_check(cudaGetLastError(), "f32 window quant launch", err)) return kErrInternal;
+    } else if (pinned_rx()) {
+        if (!ensure_window_img_staging(hp, false, err)) return kErrInternal;
+        std::memcpy(hp.h_img, q8, (size_t) req.n_q8);
+        if (!cuda_check(cudaMemcpyAsync(hp.d_q8, hp.h_img, (size_t) req.n_q8, cudaMemcpyHostToDevice,
+                                        hp.stream), "q8 upload (pinned)", err)) return kErrInternal;
+    } else if (!cuda_check(cudaMemcpyAsync(hp.d_q8, q8, (size_t) req.n_q8, cudaMemcpyHostToDevice, hp.stream),
+                           "q8 upload", err)) return kErrInternal;
     std::memcpy(hp.h_meta->ptr, grp_ptr.data(), grp_ptr.size() * sizeof(grp_ptr[0]));
     std::memcpy(hp.h_meta->start, start.data(), start.size() * sizeof(start[0]));
     std::memcpy(hp.h_meta->dst, dst.data(), dst.size() * sizeof(dst[0]));
@@ -848,7 +1015,27 @@ int serve_begin(Helper& hp, PayloadView body, uint32_t req_id, uint32_t seq, std
     const auto L = strata::kernels::native_expert_layout(fmt.gu_type, fmt.d_type, fmt.n_embd, fmt.n_ff);
     // H14: clear the output rows first - a stale value (the warmup's, a prior window's) must never
     // survive into a reply if the kernel accumulates rather than stores (r17: "helper row non-finite").
-    if (!cuda_check(cudaMemsetAsync(hp.d_out, 0, (size_t) dst.size() * (size_t) H * 4, hp.stream),
+    //
+    // W3.1 (STRATA_HELPER_WIN_FAST, default OFF - the same knob as the engine's payload diet):
+    // skip the clear.  The kernel does NOT accumulate - it STORES, on every row this frame's scan
+    // and reply read, proven for every down-kernel variant native_expert_grouped/_q8k can launch:
+    //  - native_down_kernel writes out[ent_dst[e]*L.n_embd + r] = s*sd, a plain store, for every
+    //    group g < ng (grid-strided in y), every entry e in [grp_start[g], grp_start[g+1]) and every
+    //    column r < L.n_embd (gridDim.x covers ceil(n_embd/8) x 8 rows/warp) - iq_kernels.cu:2207-2228;
+    //  - native_down_multi_kernel: the same store shape per GRP_NC entries (:2279-2443);
+    //  - native_down_ws_kernel via dws_rows: out[dst[c]*n_embd + r] = s[c]*sd, a store (:4489-4497);
+    //  - expdec_down_kernel: out[ent_dst[e+c]*L.n_embd + row0 + r] = s[r][c], a store (:2800-2811);
+    //  - s26_down_l_kernel (:3824/:3836) and s27_down_kernel (:4042/:4054): stores;
+    //  - native_down_amd_kernel (:5706-5734) and native_down_lds_kernel (:6045-6046): stores.
+    //  The only atomic on `out` in the whole TU is nib_hash_kernel's accumulator (:5306) - a
+    //  different buffer, not this path.  serve_begin's entry map builds dst as the exact
+    //  0..dst.size()-1 sequence with grp_start covering every entry, and the scan/pack below read
+    //  only rows [0, compact_claim.size()) = [0, dst.size()) - the memset's exact range, fully
+    //  overwritten in this stream BEFORE the cudaStreamSynchronize below.  The clear guards
+    //  nothing; the diet branch's prompt-tier twin (serve_prompt_core's own comment) removed its
+    //  clear on the same kernel-family proof.  Kept under the env for one release regardless.
+    if (!win_fast() &&
+        !cuda_check(cudaMemsetAsync(hp.d_out, 0, (size_t) dst.size() * (size_t) H * 4, hp.stream),
                     "output clear", err)) return kErrInternal;
     // H14/r22: the scratch too - 191/2560 NaN rows came from cudaMalloc junk the fused pass
     // never wrote; a stale scratch byte must never reach a reply row.
@@ -925,6 +1112,9 @@ int serve_begin(Helper& hp, PayloadView body, uint32_t req_id, uint32_t seq, std
         return rc_w;
     }
     if (!cuda_check(cudaStreamSynchronize(hp.stream), "window sync", err)) return kErrInternal;
+    if (image_f32)   // W1: the golden-pin dump reads the pinned input, then pulls d_q8 back
+        dump_f32_quant_golden(hp.h_img, hp.d_q8, (int64_t) req.n_q8, (long long) n_tok * (H / 32),
+                              (long long) n_tok * (H / 32) * 36);
 
     // H14: prove the rows are finite before the engine refuses them (r17 died to exactly that).
     for (int32_t i = 0; i < (int32_t) compact_claim.size(); ++i) {
@@ -1728,6 +1918,10 @@ accept_peer:
                     //   advertised because this build compiled it; the ENGINE still opts in with
                     //   STRATA_EXPERT_HELPER_Q8K, and a layer whose weight type the Q8_K kernel does
                     //   not serve is refused by name at serve time (native_expert_q8k_supported).
+                    // W1: the fp32 WINDOW wire (kBeginF32) is advertised because this build compiled
+                    //   its GPU quant micro-kernel; the ENGINE still opts in with
+                    //   STRATA_HELPER_F32_WINDOW, and a peer without the bit never sees the frame.
+                    ack.features |= kFeatureF32Window;
                     // M7: the drafter lane is advertised ONLY when the drafter loaded, uploaded and
                     // bound - a peer that never advertised kFeatureDraft never sends kDraftCtx/kDraftReq,
                     // and one that did gets this transport's typed refusal if it sends them to a helper
@@ -1792,13 +1986,16 @@ accept_peer:
             filled = true;
             continue;
         }
-        if (head.type == kBegin || head.type == kBeginQ8K) {
+        if (head.type == kBegin || head.type == kBeginQ8K || head.type == kBeginF32) {
             // kBeginQ8K (default OFF, the engine's STRATA_EXPERT_HELPER_Q8K): the same window
             // request with the activations as Q8_K blocks, served under kBegin's own rules - this
             // helper advertised kFeatureQ8K, so a peer that never saw the bit never sends the frame.
+            // kBeginF32 (W1, default OFF, the engine's STRATA_HELPER_F32_WINDOW): the same request
+            // with the activations as RAW fp32 rows, quantized here on the GPU stream - this helper
+            // advertised kFeatureF32Window, so the frame type never reaches a peer without the bit.
             if (!filled) { rc = kErrRequest; }
             else rc = serve_begin(hp, body, head.req_id, head.seq, err, out, head.type == kBeginQ8K,
-                                  ring_slot);
+                                  head.type == kBeginF32, ring_slot);
             if (rc != kOk) {
                 ErrResp e;
                 e.status = rc;
