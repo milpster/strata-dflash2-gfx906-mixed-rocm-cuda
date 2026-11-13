@@ -2130,3 +2130,15 @@ strings on the hip strata: STRATA_SWAPIN_DEPTH x2, STRATA_GEN_ANCHOR_MIN_TOKENS 
 - bench-storage-depth.py (new): NVMe /dev/nvme0n1p2 does ~2.1 GiB/s on random 2 MiB reads from the 78 GiB GGUF, FLAT across depths 8-128 (thread-concurrent pread). Engine's 1.0 GiB/s at "8/batch" => its batches are effectively serial (QD~1-2), not 8-concurrent. Depth/parallel fix should land the full 2.1x. Projection: killer reads 368 GiB in ~175s, wall ~200s, PP ~710 (>600 target). Beyond ~900 PP needs re-read volume cuts (per-request reuse), shelved for now.
 - W6 DF2_WINDOW=4096 verdict: REJECTED for long-ctx focus (killerL warm 55->21, longtg 71->60; tg1024 warm 80->101 not worth it). Possibly wrong window value for the model's SWA depth; revisit only with drafter-side evidence.
 - Round-15 fixer launched (ses_e2af2706): STRATA_SWAPIN_DEPTH (PP lever) + STRATA_GEN_ANCHOR_MIN_TOKENS gate (anchor long-ctx win without small-ctx cost) -> v0231 pin. Verification window planned: v0231 default regression + SWAPIN_DEPTH arm + gated-anchor arm + W7 tag2.
+
+### Round 14 window final (V1-V4 + T1) + round-16 brief
+- V1 v0231 default: PASS (PP 483 = W4's 454 within drift; reads 1.01 MiB/ms; default path unchanged).
+- V2 +STRATA_SWAPIN_DEPTH=64: WINNER. PP 534.5 (wall 266s, reads 1.33 MiB/ms, 64/batch confirmed), TG in noise band, +128 MiB RSS.
+- V2B DEPTH=128: stream faster (1.55) but overlap collapses -> PP 437. 64 is the sweet spot; wall floor now compute/serialization-bound.
+- V3 depth64+gated anchor: gate works perfectly (anchors only at 142k convs; tg1024 warm 96 = protected) BUT PP 467: the anchor's pair-sidecar I/O contends with the deep read window. Anchor stays OFF until the contention is fixed (round 16 item 2).
+- V4 tag2 (PHASE_TAG=2 MAX=600) + depth64: REJECTED - PP 338s (~420), killerL warm 20, warm leg 67.6s. The re-rank's promote I/O taxes the long-ctx focus.
+- T1 180k infill (winning config): 995KB ~180k tokens in 290.6s = ~620 tok/s, 0 helper errors. PP>600 target met on this shape.
+- CORRECTION: earlier longtg tok/s figures used 1024/wall but the leg generates mt=384 — all longtg numbers were ~2.7x overstated (e.g. "81 tok/s" was really 30). killerL/tg1024 (mt=1024) were correct. Corrected longtg warm across arms: ~24-38 tok/s.
+- Helper reserve floor: preflight shows 512 even with --reserve-mib 300/320 (launcher default 300 too) => the CUDA helper clamps reserve to a built-in 512 floor. 3080 occupancy is therefore code-capped, not config-capped.
+
+ROUND-16 BRIEF (operator-approved): (1) helper --reserve-mib honest floor (~64 clamp, launcher default stays 512) + helper rebuild incl -patient alias (new helper sha breaks the 8d37045c lineage by design); (2) fix anchor-sidecar vs deep-read-window contention so gated anchor ships with depth-64; (3) stretch: per-request re-read reduction (380 GiB for ~40 GiB unique). Prod candidate meanwhile: v0231 + STRATA_SWAPIN_DEPTH=64 (operator's call).
