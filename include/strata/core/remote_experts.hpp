@@ -131,7 +131,10 @@ public:
                std::string& err);
     /// `claimed_out`/`n_claimed_out` (R2): the (token,k) entries THIS begin took, so the dispatch
     /// can recompute exactly those rows on the CPU if the helper's finish fails.  In-process tiers
-    /// answer through owns(); the proxy records its claims here as it sends them.
+    /// answer through owns(); the proxy records its claims here as it sends them.  Proxy mode honors
+    /// `kind`: entries the dispatch served from a Foresight slot (kind 0, not primary-resident) are
+    /// masked resident in the copy of `primary_res` the kBegin frame carries, so the helper skips
+    /// them and `claimed_out` lists exactly the rows the helper answers.
     bool begin(int64_t layer, const float* x, const int32_t* ids, int64_t n_tok,
                int64_t k, const int32_t* kind, const int32_t* primary_res, std::string& err,
                std::vector<int32_t>& claimed_out);
@@ -140,9 +143,15 @@ public:
     /// is never allocated in proxy mode - reading it null-derefed the engine at the dispatch's
     /// kind loop).  Claims are routed indices in ascending order (proxy_begin builds them with an
     /// ascending i loop), so the search is binary; an empty claim list (no window in flight, or a
-    /// begin that failed and cleared them) owns nothing.
+    /// begin that failed and cleared them) owns nothing.  The claim STRIPE (C4a) keeps its second
+    /// half on channel B in `proxy_claims_b_` (also ascending): owns() answers the UNION, so the
+    /// dispatch's kind loop marks every claimed row whichever channel computes it.
     bool owns(int64_t index) const {
-        if (proxy_) return std::binary_search(proxy_claims_.begin(), proxy_claims_.end(), (int32_t) index);
+        if (proxy_) {
+            const int32_t i = (int32_t) index;
+            return std::binary_search(proxy_claims_.begin(), proxy_claims_.end(), i) ||
+                   std::binary_search(proxy_claims_b_.begin(), proxy_claims_b_.end(), i);
+        }
         return owned_[(size_t) index] != 0;
     }
     /// This helper's cache holds (layer, expert): begin() will take its rows unless the plan gave them away.
@@ -293,8 +302,11 @@ public:
 private:
     friend class RemoteExpertOpt;
     /// R2 proxy: send one window and take its rows (the client's I/O is CPU-only; no device call).
+    /// `kind` is the dispatch's classification of this window's entries; its kind-0 entries whose
+    /// expert is not primary-resident were served from a Foresight slot and are masked out of the
+    /// kBegin frame's residency bitmap (see begin above).
     bool proxy_begin(int64_t layer, const float* x, const int32_t* ids, int64_t n_tok, int64_t k,
-                     const int32_t* primary_res, std::string& err, std::vector<int32_t>& claimed_out);
+                     const int32_t* kind, const int32_t* primary_res, std::string& err, std::vector<int32_t>& claimed_out);
     bool proxy_finish(float* out, std::string& err);
     /// The channel the PROMPT tier serves on right now: channel B when the split is live and pinned
     /// for this request (see prompt_usable()), channel A - today's single channel - otherwise.  The
@@ -350,6 +362,14 @@ private:
     /// return its dense rows (group order, as the in-process tier packs `dst`): kRows row j is
     /// claims[j], so the client scatters them at their original indices.
     std::vector<int32_t> proxy_claims_;
+    /// C4a (tg-design.md, the claim stripe; default OFF - STRATA_CLAIM_STRIPE): the striped
+    /// layer's SECOND half, outstanding on channel B as one kBeginP while `proxy_claims_` is in
+    /// flight on channel A.  Ascending entry indices, like proxy_claims_; empty = this layer's
+    /// claim is whole on channel A (today's single-flight behaviour, byte for byte).
+    std::vector<int32_t> proxy_claims_b_;
+    /// STRATA_CLAIM_STRIPE, parsed once at open_socket: the stripe only runs with the second
+    /// channel live (a rig without --expert-helper-socket2 keeps today's single-channel wire).
+    bool claim_stripe_ = false;
     double proxy_ms_begin_ = 0, proxy_ms_wait_ = 0;
     int64_t n_expert_ = 0;
     int32_t groups_ = 0;

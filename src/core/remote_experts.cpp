@@ -146,12 +146,20 @@ void RemoteExperts::close() {
         delete helper_;
         helper_ = nullptr;
         if (helper2_ != nullptr) {   // the prompt tier's own channel (opt-in --expert-helper-socket2)
+            // C4a: B's STRIPE rows are window rows - they fold into the window evidence (the
+            // prompt counters below stay the prompt tier's alone).
+            proxy_stat_reqs_ += helper2_->stat_stripe_requests();
+            proxy_stat_rows_ += helper2_->stat_stripe_rows();
+            proxy_stat_bytes_ += helper2_->stat_stripe_bytes();
             proxy_stat_prompt_reqs_ += helper2_->stat_prompt_requests();
             proxy_stat_prompt_rows_ += helper2_->stat_prompt_rows();
             std::fprintf(stderr, "strata generate: expert-helper: the prompt tier's channel (%s) closed "
-                                 "after %lld prompt requests / %lld prompt rows\n",
+                                 "after %lld prompt requests / %lld prompt rows (%lld striped window "
+                                 "requests / %lld rows)\n",
                          proxy_path2_.c_str(), (long long) helper2_->stat_prompt_requests(),
-                         (long long) helper2_->stat_prompt_rows());
+                         (long long) helper2_->stat_prompt_rows(),
+                         (long long) helper2_->stat_stripe_requests(),
+                         (long long) helper2_->stat_stripe_rows());
             helper2_->bye();
             delete helper2_;
             helper2_ = nullptr;
@@ -168,6 +176,8 @@ void RemoteExperts::close() {
         proxy_bytes_ = 0;
         proxy_ms_begin_ = proxy_ms_wait_ = 0;
         proxy_claims_.clear();
+        proxy_claims_b_.clear();
+        claim_stripe_ = false;
         if (had_residency) fire_helper_residency_release();   // W1: its pairs are the host's job again
     }
     if (device_ < 0) return;
@@ -344,6 +354,58 @@ bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
 // engine the proxy makes no call either - the helper owns all NVIDIA memory.  The channel is the
 // framed AF_UNIX transport (include/strata/core/expert_helper_protocol.hpp); its I/O is shared
 // verbatim with the helper (tools/mixed_gpu/sidecar/helper_frame.cpp).
+// ================= C4a (tg-design.md, the claim stripe; default OFF - STRATA_CLAIM_STRIPE) =================
+//
+// A decode layer's helper claims serialize one kBegin/kRows per claiming layer on the ONE socket
+// the window tier owns, while the prompt tier's channel B sits idle the whole decode.  The stripe
+// splits each layer's claim list at an EXPERT boundary nearest the row midpoint: the first half
+// rides channel A as the layer's own kBegin (its ids carry the B-half's entries as -1, so the
+// helper claims none of them), the second half rides channel B as ONE kBeginP - the claim-batch
+// family's single-part transport, which the helper serves with the SAME grouped launch kBegin
+// gets.  Two channels, two in-flight frames; each channel keeps the protocol's ONE outstanding
+// request.  Consecutive layers cannot pipeline (the doorbell graph waits each layer's rows before
+// the next layer's doorbell can ring - the rows feed the next layer's activations), so splitting
+// the LAYER's claims is the only overlap the dependency chain allows.
+namespace {
+// The stripe's row floor: below this both halves would be a single row and the second frame's
+// fixed cost (a reply wait, a frame, a lock turn on the helper) buys nothing.
+constexpr size_t kStripeMinRows = 4;
+
+// Split `claims` (ascending entry indices) into two halves at the expert boundary nearest the row
+// midpoint: an expert's rows stay whole on one channel, so each frame's groups stay integral and
+// the halves stay within ~2x.  False = no stripe this layer: fewer than kStripeMinRows rows, or
+// every row is one expert's (no boundary exists).
+bool split_stripe_claims(const std::vector<int32_t>& claims, const int32_t* ids,
+                         std::vector<int32_t>& half_a, std::vector<int32_t>& half_b) {
+    if (claims.size() < kStripeMinRows) return false;
+    std::vector<int32_t> experts;   // distinct experts of this layer, first-appearance order
+    std::vector<int64_t> counts;
+    for (const int32_t i : claims) {
+        const int32_t e = ids[(size_t) i];
+        const auto it = std::find(experts.begin(), experts.end(), e);
+        if (it == experts.end()) { experts.push_back(e); counts.push_back(1); }
+        else ++counts[(size_t) (it - experts.begin())];
+    }
+    if (experts.size() < 2) return false;
+    int64_t acc = 0;
+    size_t cut = 0;   // experts[0..cut) ride channel A
+    while (cut + 1 < experts.size() && acc < (int64_t) ((claims.size() + 1) / 2)) {
+        acc += counts[cut];
+        ++cut;
+    }
+    half_a.clear();
+    half_b.clear();
+    for (const int32_t i : claims) {
+        const int32_t e = ids[(size_t) i];
+        if (std::find(experts.begin(), experts.begin() + (int64_t) cut, e) != experts.begin() + (int64_t) cut)
+            half_a.push_back(i);
+        else
+            half_b.push_back(i);
+    }
+    return !half_a.empty() && !half_b.empty();
+}
+}  // namespace
+
 bool RemoteExperts::open_socket(const std::string& path, int64_t slots, int64_t layers, int64_t experts,
                                 int64_t n_embd, int64_t n_ff, int64_t layer_lo, int64_t layer_hi,
                                 int64_t reserve_mib, int64_t timeout_ms,
@@ -491,7 +553,28 @@ bool RemoteExperts::open_socket(const std::string& path, int64_t slots, int64_t 
                                  "drafter lane) on the first, the prompt tier on the second - each "
                                  "channel fails on its own, the other keeps serving\n",
                          path.c_str(), path2.c_str());
+            // C4a (tg-design.md, the claim stripe; default OFF): with both channels live the
+            // window tier may stripe each layer's claims across the two sockets - the second half
+            // rides channel B as one kBeginP (the claim-batch family's single-part transport),
+            // each channel keeping its ONE outstanding request.  Engine-side only: the helper
+            // already serves kBeginP with the same grouped launch kBegin gets; its concurrency
+            // (separate streams under STRATA_HELPER_STREAMS=1) speeds the stripe up but is never
+            // required for correctness - the whole-frame device lock serializes the halves safely
+            // too.  Unset (or "0") keeps today's single-flight wire, byte for byte.
+            const char* stripe_env = std::getenv("STRATA_CLAIM_STRIPE");
+            if (stripe_env != nullptr && stripe_env[0] != '0') {
+                claim_stripe_ = true;
+                std::fprintf(stderr, "expert-helper: claim stripe ON (STRATA_CLAIM_STRIPE): window "
+                                     "layers with %lld+ claimed rows split them across both sockets; "
+                                     "revert = unset the env\n",
+                             (long long) kStripeMinRows);
+            }
         }
+    } else if (std::getenv("STRATA_CLAIM_STRIPE") != nullptr) {
+        // C4a: named and refused, never a silent no-op - a panel leg must be able to SEE that the
+        // knob did not engage (a rig without the second socket keeps today's single-channel wire).
+        std::fprintf(stderr, "expert-helper: STRATA_CLAIM_STRIPE ignored: no --expert-helper-socket2; "
+                             "the window tier keeps the single-channel wire\n");
     }
     return true;
 #endif
@@ -511,17 +594,34 @@ bool RemoteExperts::note_request_start() {
     return helper_usable();
 }
 
-uint64_t RemoteExperts::helper_requests() const { return proxy_stat_reqs_ + (helper_ == nullptr ? 0 : helper_->stat_requests()); }
-uint64_t RemoteExperts::helper_rows() const { return proxy_stat_rows_ + (helper_ == nullptr ? 0 : helper_->stat_rows()); }
-uint64_t RemoteExperts::helper_bytes() const { return proxy_stat_bytes_ + (helper_ == nullptr ? 0 : helper_->stat_bytes()); }
-uint64_t RemoteExperts::helper_timeouts() const { return proxy_stat_timeouts_ + (helper_ == nullptr ? 0 : helper_->stat_timeouts()); }
+// The DONE line's helper= evidence covers BOTH channels' WINDOW rows: channel B's striped halves
+// are window rows (counted in the client's own stripe counters, never its prompt ones), so the
+// offload count still matches the log's helper=rows exactly.
+uint64_t RemoteExperts::helper_requests() const {
+    return proxy_stat_reqs_ + (helper_ == nullptr ? 0 : helper_->stat_requests()) +
+           (helper2_ == nullptr ? 0 : helper2_->stat_stripe_requests());
+}
+uint64_t RemoteExperts::helper_rows() const {
+    return proxy_stat_rows_ + (helper_ == nullptr ? 0 : helper_->stat_rows()) +
+           (helper2_ == nullptr ? 0 : helper2_->stat_stripe_rows());
+}
+uint64_t RemoteExperts::helper_bytes() const {
+    return proxy_stat_bytes_ + (helper_ == nullptr ? 0 : helper_->stat_bytes()) +
+           (helper2_ == nullptr ? 0 : helper2_->stat_stripe_bytes());
+}
+uint64_t RemoteExperts::helper_timeouts() const {
+    return proxy_stat_timeouts_ + (helper_ == nullptr ? 0 : helper_->stat_timeouts()) +
+           (helper2_ == nullptr ? 0 : helper2_->stat_timeouts());
+}
 uint64_t RemoteExperts::helper_fallbacks() const { return proxy_stat_fallbacks_ + (helper_ == nullptr ? 0 : helper_->stat_fallbacks()); }
 void RemoteExperts::note_fallback() { if (helper_ != nullptr) helper_->note_fallback(); }
 
 bool RemoteExperts::proxy_begin(int64_t layer, const float* x, const int32_t* ids, int64_t n_tok, int64_t k,
-                                const int32_t* primary_res, std::string& err, std::vector<int32_t>& claimed_out) {
+                                const int32_t* kind, const int32_t* primary_res, std::string& err,
+                                std::vector<int32_t>& claimed_out) {
     claimed_out.clear();
     proxy_claims_.clear();
+    proxy_claims_b_.clear();
     const int64_t n = n_tok * k;
     if (n <= 0 || n > CAP || n_tok > strata::kernels::cpu::MAXT || k != 10 || layer < 0 || layer >= proxy_layers_) {
         err = "expert-helper: invalid layer, routing width or window size";
@@ -532,17 +632,42 @@ bool RemoteExperts::proxy_begin(int64_t layer, const float* x, const int32_t* id
     // the request keeps its exact semantics with no helper.
     if (!helper_usable()) return true;
     // The claims: entries the plan left to the helper (the dispatch classifies helper candidates as
-    // kind -1 and passes the primary residency; the primary's own kind >= 0 entries never reach a
-    // helper's begin at all - see src/core/expert_source.cpp:4907), routed to an expert the
-    // mirrored fill report holds.  Routing order IS the claim order: the helper's grouped kernel
-    // answers one dense row per claimed entry, in claim order, and the client scatters them back
-    // at the original indices (validate_rows_payload).
+    // kind -1 and passes the primary residency; the primary's own kind >= 0 entries are either
+    // already primary-resident or - with the Foresight helper shadow on - served from a slot, and
+    // both are masked out of `claim_res` below), routed to an expert the mirrored fill report
+    // holds.  Routing order IS the claim order: the helper's grouped kernel answers one dense row
+    // per claimed entry, in claim order, and the client scatters them back at the original indices
+    // (validate_rows_payload).
+    // C1 helper shadow (STRATA_FS_HELPER_SHADOW): the dispatch may have served entries of this layer
+    // from a Foresight slot as kind 0 while the pair is still helper-held and not primary-resident.
+    // The helper derives its own rows from the ids plus the kBegin frame's primary-residency bitmap,
+    // so those experts are marked resident (slot 0) in a COPY of the table the frame carries: the
+    // helper skips them, the claims loop below skips them, and both sides of the kRows validation
+    // (proxy_claims_ vs the reply) agree.  With the shadow off (or no kind) no entry qualifies and
+    // the claims are byte-for-byte today's.
+    thread_local std::vector<int32_t> res_copy;
+    const int32_t* claim_res = primary_res;
+    if (kind != nullptr && primary_res != nullptr) {
+        bool masked = false;
+        for (int64_t i = 0; i < n; ++i) {
+            const int32_t e = ids[i];
+            if (kind[i] != 0 || e < 0 || e >= proxy_experts_) continue;
+            const size_t key = (size_t) layer * (size_t) proxy_experts_ + (size_t) e;
+            if (primary_res[key] >= 0) continue;   // a real hit: the helper already skips it
+            if (!masked) {
+                res_copy.assign(primary_res, primary_res + (size_t) proxy_layers_ * (size_t) proxy_experts_);
+                claim_res = res_copy.data();
+                masked = true;
+            }
+            res_copy[key] = 0;   // pretend residency: the slot serves this expert, not the helper
+        }
+    }
     std::vector<int32_t>& claims = proxy_claims_;
     claims.clear();
     for (int64_t i = 0; i < n; ++i) {
         const int32_t e = ids[i];
         if (e < 0 || e >= proxy_experts_) continue;
-        if (primary_res && primary_res[(size_t) layer * (size_t) proxy_experts_ + (size_t) e] >= 0) continue;
+        if (claim_res && claim_res[(size_t) layer * (size_t) proxy_experts_ + (size_t) e] >= 0) continue;
         if (!proxy_holds(layer, e)) continue;
         claims.push_back((int32_t) i);
     }
@@ -563,11 +688,15 @@ bool RemoteExperts::proxy_begin(int64_t layer, const float* x, const int32_t* id
             if (f.gu_act == (int) GGML_TYPE_Q8_K &&
                 strata::kernels::native_expert_q8k_supported(f.gu_type, proxy_n_embd_)) {
                 thread_local std::vector<uint8_t> q8k;
-                q8k.assign((size_t) n_tok * (size_t) f.act_bytes, 0);
+                // W3.3 (STRATA_HELPER_WIN_FAST, default OFF): resize-once reuse instead of the
+                // per-frame zero-fill - native_quant_act writes every byte of the image, so the
+                // fill guards nothing.  Default keeps today's assign, byte for byte.
+                if (helper_win_fast_enabled()) q8k.resize((size_t) n_tok * (size_t) f.act_bytes);
+                else q8k.assign((size_t) n_tok * (size_t) f.act_bytes, 0);
                 for (int64_t t = 0; t < n_tok; ++t)
                     strata::kernels::cpu::native_quant_act(f, x + (size_t) t * (size_t) proxy_n_embd_,
                                                            q8k.data() + (size_t) t * (size_t) f.act_bytes);
-                const int rc = helper_->begin_q8k((int32_t) layer, (int32_t) n_tok, ids, primary_res,
+                const int rc = helper_->begin_q8k((int32_t) layer, (int32_t) n_tok, ids, claim_res,
                                                   q8k.data(), q8k.size(), proxy_timeout_ms_);
                 if (rc != expert_helper::kOk) {
                     // The begin-time fallback, verbatim: the window is fully CPU-served, the tier
@@ -587,11 +716,86 @@ bool RemoteExperts::proxy_begin(int64_t layer, const float* x, const int32_t* id
             }
         }
     }
+    // W1 (the fp32 window wire, default OFF: STRATA_HELPER_F32_WINDOW with a peer that advertised
+    // kFeatureF32Window): the window's activations ship RAW - the per-frame quantize_q8_1_cpu below
+    // (the decode claim path's ~72-144 us/frame quant tax) moves to the helper's GPU stream as a
+    // micro-kernel bit-identical to the CPU quantizer, writing the same q8_1 blocks the grouped
+    // kernel reads; the reply and the row bytes it produces are unchanged.  Q8_K keeps precedence
+    // above; a peer without the bit falls through to today's CPU quantize + kBegin, byte for byte.
+    if (helper_f32_window_enabled() && helper_->f32_window_supported()) {
+        const int rc = helper_->begin_f32((int32_t) layer, (int32_t) n_tok, ids, claim_res, x,
+                                          proxy_timeout_ms_);
+        if (rc != expert_helper::kOk) {
+            // The begin-time fallback, verbatim: the window is fully CPU-served, the tier re-arms
+            // at the next request, and nothing failed.
+            if (proxy_residency_live()) fire_helper_residency_release();   // W1
+            healthy_ = false;
+            disabled_ = true;
+            claims.clear();
+            err = std::string("expert-helper: begin_f32 send failed: ") + expert_helper::status_name(rc);
+            return true;
+        }
+        claimed_out = claims;
+        computed_ += (int64_t) claims.size();
+        launched_layers_ += 1;
+        proxy_ms_begin_ = helper_->ms_begin();
+        return true;
+    }
     const int64_t q8_blocks = n_tok * (proxy_n_embd_ / 32);
     thread_local std::vector<uint8_t> q8;
-    q8.assign((size_t) q8_blocks * 36u, 0);
+    // W3.3 (STRATA_HELPER_WIN_FAST, default OFF): resize-once reuse instead of the per-frame
+    // zero-fill - quantize_q8_1_cpu writes every output byte (36 per block: 4 of ds + 32 of qs),
+    // so the fill guards nothing.  Default keeps today's assign, byte for byte.
+    if (helper_win_fast_enabled()) q8.resize((size_t) q8_blocks * 36u);
+    else q8.assign((size_t) q8_blocks * 36u, 0);
     quantize_q8_1_cpu(x, n_tok * proxy_n_embd_, q8.data());
-    const int rc = helper_->begin((int32_t) layer, (int32_t) n_tok, ids, primary_res, q8.data(),
+    // C4a: the stripe arm.  Channel B's gate is re-read per layer: a mid-request B death (its own
+    // latch, or a prompt-claim left in flight) drops the stripe for the rest of the request with a
+    // whole-claim kBegin, exactly the wire the tier always sent.  Both channels get foresight's
+    // claim_res (the slot-masked residency table) - the reviewer's merge obligation.
+    thread_local std::vector<int32_t> half_a, half_b;
+    const bool stripe = helper2_ != nullptr && claim_stripe_ && healthy2_ && !disabled2_ &&
+                        helper2_->prompt_rows_supported() && helper2_->idle() &&
+                        split_stripe_claims(claims, ids, half_a, half_b);
+    if (stripe) {
+        // Channel A first (its failure means B was never written - the begin-time fallback below
+        // stands for both halves); its ids carry B's entries as -1 so the helper claims none of
+        // them - kBegin's own rule for an id the tier did not route.
+        thread_local std::vector<int32_t> ids_a;
+        ids_a.assign(ids, ids + n);
+        for (const int32_t i : half_b) ids_a[(size_t) i] = -1;
+        proxy_claims_ = half_a;
+        proxy_claims_b_ = half_b;
+        const int rc_a = helper_->begin((int32_t) layer, (int32_t) n_tok, ids_a.data(), claim_res,
+                                        q8.data(), q8.size(), proxy_timeout_ms_);
+        if (rc_a != expert_helper::kOk) {
+            if (proxy_residency_live()) fire_helper_residency_release();   // W1
+            healthy_ = false;
+            disabled_ = true;
+            claims.clear();
+            proxy_claims_b_.clear();
+            err = std::string("expert-helper: begin send failed: ") + expert_helper::status_name(rc_a);
+            return true;   // the window is fully CPU-served; nothing failed
+        }
+        const int rc_b = helper2_->begin_stripe((int32_t) layer, (int32_t) n_tok, ids, claim_res,
+                                                proxy_claims_b_, q8.data(), q8.size(), proxy_timeout_ms_);
+        if (rc_b != expert_helper::kOk) {
+            // B's own latch, the prompt tier's arm of note_prompt_failure: the WINDOW tier keeps
+            // serving on A.  The B-half's rows were never claimed - the dispatch's kind[] leaves
+            // them CPU candidates, and the CPU share (assembled after this begin) computes them.
+            healthy2_ = false;
+            disabled2_ = true;
+            proxy_claims_b_.clear();
+            err = std::string("expert-helper: stripe begin failed: ") + expert_helper::status_name(rc_b);
+        }
+        claimed_out = claims;
+        for (const int32_t i : proxy_claims_b_) claimed_out.push_back(i);
+        computed_ += (int64_t) claimed_out.size();
+        launched_layers_ += 1;
+        proxy_ms_begin_ = helper_->ms_begin();
+        return true;
+    }
+    const int rc = helper_->begin((int32_t) layer, (int32_t) n_tok, ids, claim_res, q8.data(),
                                   q8.size(), proxy_timeout_ms_);
     if (rc != expert_helper::kOk) {
         // The channel is closed by the client; the tier is out for this request.  Claimed_out
@@ -613,7 +817,7 @@ bool RemoteExperts::proxy_begin(int64_t layer, const float* x, const int32_t* id
 }
 
 bool RemoteExperts::proxy_finish(float* out, std::string& err) {
-    if (proxy_claims_.empty()) return true;
+    if (proxy_claims_.empty() && proxy_claims_b_.empty()) return true;
     const int32_t rows = (int32_t) proxy_claims_.size();
     int32_t got = 0;
     const int rc = helper_->finish(out, proxy_n_embd_, 0, 10, proxy_claims_, proxy_timeout_ms_, got);
@@ -623,12 +827,54 @@ bool RemoteExperts::proxy_finish(float* out, std::string& err) {
         healthy_ = false;
         disabled_ = true;
         proxy_claims_.clear();   // the dispatch recomputes EXACTLY these rows on the CPU
+        if (!proxy_claims_b_.empty()) {
+            // The stripe's B-half is still outstanding and its reply will never be read: an
+            // unread reply desyncs the channel's req_id pairing, so B closes by the transport's
+            // own rule (its rows join the dispatch's CPU recompute - claimed_out carried them).
+            proxy_claims_b_.clear();
+            helper2_->close();
+            healthy2_ = false;
+            disabled2_ = true;
+        }
         err = std::string("expert-helper: finish failed: ") + expert_helper::status_name(rc);
         return false;
     }
     returned_bytes_ += (uint64_t) got * (uint64_t) proxy_n_embd_ * 4ull;
     full_row_bytes_ += (uint64_t) rows * (uint64_t) proxy_n_embd_ * 4ull;
     proxy_claims_.clear();
+    if (!proxy_claims_b_.empty()) {
+        // The stripe's B-half: one kRowsP whose pair positions map to the original entry rows.
+        // finish_prompt validates against the dense pair list and lands the rows at the pair
+        // positions; the scatter below moves each to its entry's row in `out` - the same place
+        // channel A's kRows validator puts its rows.
+        thread_local std::vector<int32_t> pairs;
+        thread_local std::vector<float> scratch;
+        pairs.resize(proxy_claims_b_.size());
+        for (int32_t p = 0; p < (int32_t) pairs.size(); ++p) pairs[(size_t) p] = p;
+        scratch.resize(proxy_claims_b_.size() * (size_t) proxy_n_embd_);
+        int32_t got_b = 0;
+        const int rc_b = helper2_->finish_prompt(scratch.data(), proxy_n_embd_, pairs,
+                                                 proxy_timeout_ms_, got_b);
+        if (rc_b != expert_helper::kOk) {
+            // B's own latch (the client already closed its channel on any failure).  The
+            // dispatch's recompute owns EVERY claimed row of this layer: A's rows may already be
+            // applied and are simply recomputed - the same mixed-backend variance the engine's
+            // CPU/GPU/helper paths already tolerate.
+            healthy2_ = false;
+            disabled2_ = true;
+            const int32_t rows_b = (int32_t) proxy_claims_b_.size();
+            proxy_claims_b_.clear();
+            err = std::string("expert-helper: stripe finish failed: ") + expert_helper::status_name(rc_b);
+            err += " (" + std::to_string(rows_b) + " striped rows)";
+            return false;
+        }
+        for (size_t p = 0; p < proxy_claims_b_.size(); ++p)
+            std::memcpy(out + (size_t) proxy_claims_b_[p] * (size_t) proxy_n_embd_,
+                        scratch.data() + p * (size_t) proxy_n_embd_, (size_t) proxy_n_embd_ * 4);
+        returned_bytes_ += (uint64_t) got_b * (uint64_t) proxy_n_embd_ * 4ull;
+        full_row_bytes_ += (uint64_t) proxy_claims_b_.size() * (uint64_t) proxy_n_embd_ * 4ull;
+        proxy_claims_b_.clear();
+    }
     return true;
 }
 
@@ -702,7 +948,7 @@ int RemoteExperts::draft_round(const float* rows, int64_t n_new, int64_t pos0, i
 bool RemoteExperts::begin(int64_t layer, const float* x, const int32_t* ids, int64_t n_tok,
                           int64_t k, const int32_t* kind, const int32_t* primary_res,
                           std::string& err, std::vector<int32_t>& claimed_out) {
-    if (proxy_) return proxy_begin(layer, x, ids, n_tok, k, primary_res, err, claimed_out);
+    if (proxy_) return proxy_begin(layer, x, ids, n_tok, k, kind, primary_res, err, claimed_out);
     claimed_out.clear();   // an in-process tier's claims are read through owns() by the dispatch
     const bool ok = begin(layer, x, ids, n_tok, k, kind, primary_res, err);
     if (ok && device_ >= 0) {

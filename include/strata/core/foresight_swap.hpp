@@ -18,11 +18,13 @@
 //
 // Switches: STRATA_FS_SLOTS (per layer and card), STRATA_FS_BUDGET (copies per card per finished window, default 32),
 // STRATA_FS_ADMIT (misses within the last 4 windows before an expert is copied, default 1), STRATA_FS_DEPTH,
-// STRATA_FS_VERIFY=1 (test mode: every slot is read back and compared with its source the first time it is used).
+// STRATA_FS_HELPER_SHADOW=1 (slots also serve pairs a helper tier holds; default 0), STRATA_FS_VERIFY=1 (test mode:
+// every slot is read back and compared with its source the first time it is used).
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -42,17 +44,33 @@ struct ForesightSwap {
         uint64_t last_ref = 0;               ///< finished-window count when a plan last pointed here
         unsigned long long dptr = 0;         ///< the slot's device address
         const uint8_t* src = nullptr;        ///< the host blob being copied in
+        int ring_idx = -1;                   ///< `src` is the ring entry with this index (helper shadow), -1 = the arena's own blob
         uint64_t bytes = 0;
         void* ev = nullptr;                  ///< cudaEvent_t on the layer's card
     };
 
     int slots = 0, budget = 32, admit = 1, depth = 4;
+    /// STRATA_FS_HELPER_SHADOW=1 (needs STRATA_FS_SLOTS; default 0 = the engine unchanged): the dispatch
+    /// serves a landed slot BEFORE a helper tier's holds(), so the engine's own card computes the pair
+    /// instead of sending the row over the helper RPC.  Also the gate for the staging ring that lets the
+    /// filler copy pairs the RAM arena dropped (helper-held, MADV_DONTNEED) - see `stage_blob`.
+    bool helper_shadow = false;
+    /// STRATA_FS_RING (helper shadow only): entries in the pinned staging ring.  0 = none allocated.
+    int ring_want = 0;
+    /// The helper shadow's blob source, set by the driver before the first window: stage one pair's
+    /// blob bytes into `dst` and return true - a helper tier's engine-side cache
+    /// (RemoteExperts::copy_cached_blobs) first, else the pack files through the source's batched
+    /// swap-in read.  The helper-ipc rig's socket proxy has no engine-side bytes, so there the pack
+    /// files are the source (the same bytes the helper filled from).  Unset = a pair without a
+    /// pinned arena blob is never copied into a slot, exactly as before.
+    std::function<bool(int64_t, int32_t, uint8_t*)> stage_blob;
     int64_t n_layers = 0, n_expert = 0;
     std::unique_ptr<Slot[]> slot;            ///< n_layers x slots
     std::vector<int16_t> where;              ///< (layer, expert) -> slot in its layer, -1
     std::vector<uint8_t> miss_cnt;           ///< STRATA_FS_ADMIT > 1: recent misses per (layer, expert)
     std::vector<uint64_t> miss_at;
     std::vector<int> layer_card, layer_dev;
+    std::vector<int> card_slots;             ///< allocatable slots per card (STRATA_FS_SLOTS "3,2"); `slots` is the stride
     std::vector<void*> card_stream;          ///< cudaStream_t per card
     std::vector<void*> card_mem;             ///< the slots' allocation per card
     std::vector<int> card_dev;
@@ -62,6 +80,7 @@ struct ForesightSwap {
     std::atomic<bool> failed{false};
     // counters (dispatch thread)
     uint64_t hits = 0, copies = 0, busy = 0, over_budget = 0, pending = 0, predicted = 0;   // (under smu_)
+    uint64_t staged = 0, ring_busy = 0, no_src = 0;   ///< helper shadow: ring staging outcomes (under smu_)
     bool verify = false;                     ///< STRATA_FS_VERIFY=1: read every landed slot back and compare (slow, tests)
     uint64_t verify_ok = 0, verify_bad = 0;
     uint64_t dropped = 0;                    ///< slots dropped because an exchange moved their expert's bytes (under smu_)
@@ -69,13 +88,18 @@ struct ForesightSwap {
     static constexpr int32_t kDropped = -2;  ///< Slot::expert: dropped by `hold`, reusable under the same depth rule
 
     /// Allocates the slots on each card and starts the filler.  `card_of_layer[l]` indexes `devices` (CUDA ids).
+    /// `slots_per_card` (empty = `slots_per_layer` on every card) caps each card's own count, so a split
+    /// rig can fund card0's layers while card1 stays on its thin margin; `slots` stays the array stride.
     bool init(int slots_per_layer, int64_t layers, int64_t experts, const std::vector<int>& card_of_layer,
-              const std::vector<int>& devices, std::string& err);
+              const std::vector<int>& devices, std::string& err, const std::vector<int>& slots_per_card = {});
     ~ForesightSwap();
 
     /// The pool, for a routed expert that is not in the cache: true and its device address when a landed slot holds it.
     bool take(int64_t layer, int32_t expert, unsigned long long& ptr);
     /// The pool, for an expert the CPU computes now: maybe copy it into a slot of its layer for the next windows.
+    /// With the helper shadow on, also the demand feed for helper-claimed rows (the begin seam calls it per
+    /// distinct claimed expert): a pair whose blob the source does not pin - helper-held, dropped from the
+    /// RAM arena - is staged through `stage_blob` into the pinned ring first, then queued like any other.
     void note_miss(ExpertSource* src, int64_t layer, int32_t expert);
     /// The router look-ahead (any thread), for an expert the next layer's router predicts and no cache holds: maybe copy
     /// it into a slot of that layer now, so that the copy has landed when the layer's plan is made.  One prefetch design
@@ -89,16 +113,36 @@ struct ForesightSwap {
     void hold(int64_t layer, int32_t expert);
     void unhold(int64_t layer, int32_t expert);
     std::string report() const;
+    /// The staging ring's entry count (boot line of foresight_swap_from_env; 0 = no ring).
+    int ring_entries() const { return ring_n; }
 
 private:
     void request_locked(ExpertSource* src, int64_t layer, int32_t expert, bool predicted);
+    /// The first half of request_locked, without the blob: true when this pair is not on its way,
+    /// the admit count passes (`count_miss` = bump it - the shadow's re-check after staging skips
+    /// the bump) and the card's copy budget has room.
+    bool gates_pass_locked(int64_t layer, int32_t expert, bool predicted_copy, bool count_miss);
+    /// The second half: pick a reusable slot of the layer and queue its copy from `b` (an entry of
+    /// the staging ring when `ring_idx` >= 0, else a blob the source pinned).  False when every slot
+    /// of the layer is still within `depth` of a window that may read it.
+    bool assign_locked(const uint8_t* b, int ring_idx, int64_t layer, int32_t expert, bool predicted_copy);
+    /// The staging ring: `ring_acquire` hands out a free entry, `ring_release` returns one.  An
+    /// entry stays checked out for the lifetime of the slot it filled (the filler's H2D reads it),
+    /// so a slot's `ring_idx` is released only when the slot itself is reassigned.
+    int ring_acquire();
+    void ring_release(int idx);
     std::mutex smu_;                         ///< slot, where, card_* and the counters: the pool thread and the look-ahead thread
     std::mutex mu_;
+    std::mutex ring_mu_;                     ///< ring_used
     std::condition_variable cv_;
     std::deque<int64_t> queue_;              ///< slot indices whose copy the filler issues
     bool stop_ = false;
     std::thread filler_;
     void fill_loop();
+    int ring_n = 0;                          ///< 0 = no staging ring (shadow off or STRATA_FS_RING=0)
+    uint64_t ring_bytes = 0;                 ///< one entry's bytes: the largest layer blob
+    uint8_t* ring_mem = nullptr;             ///< cudaHostAlloc(ring_n * ring_bytes), freed with the filler joined
+    std::vector<uint8_t> ring_used;
 };
 
 ForesightSwap* foresight_swap_from_env(int64_t layers, int64_t experts, const std::vector<int>& card_of_layer,

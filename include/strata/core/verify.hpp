@@ -580,6 +580,9 @@ private:
     bool ar_off_ = false;
     bool ar_on() const { return all_resident_ && !ar_off_; }
     void refresh_ar();
+    int ar_stable_ = 0;        ///< windows watched since the last ar_off_ flip (STRATA_GRAPH_FAMILY_TRIM's hysteresis)
+    bool ar_trimmed_ = false;  ///< the family the settled flag left behind was freed, or there was none to free
+    void trim_stale_family();
     uint32_t* h_plan_err_ = nullptr; uint32_t* m_plan_err_ = nullptr;   // set by resident_plan on a -1 (all-resident graph)
     const int32_t* h_res_ = nullptr;      ///< the host residency table (VerifyHits::h_res)
     bool device_plan_ = false;            ///< E-6: resident-only layers planned on the device (STRATA_VERIFY_DEVICE_PLAN)

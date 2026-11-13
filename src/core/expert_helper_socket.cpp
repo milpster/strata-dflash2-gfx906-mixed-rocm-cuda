@@ -23,6 +23,7 @@
 #include <unistd.h>   // ::close of the adopted descriptor (AF_UNIX transport; Linux's socket API)
 
 #include <sys/mman.h>   // the prompt tier's OWN pinned activation buffer (mmap + mlock; no device call)
+#include <sys/stat.h>   // W2: fstat of the reply ring's memfd (the mmap's size)
 
 namespace strata::core {
 namespace {
@@ -54,6 +55,13 @@ static int64_t claim_batch_env() {
                ? (int64_t) strata::core::expert_helper::kMaxClaimBatch
                : (int64_t) n;
 }
+
+// W2 (helper-quant-sync-diet.md, the memfd reply ring; default OFF): the ENGINE half of the lane.
+// Presence = on, exactly the STRATA_HELPER_Q8_IMAGE style.  Read per hello (not cached) so the
+// host test can flip it between handshakes; the engine sets it once at startup.  With it unset the
+// hello carries flag 0 and every rows reply stays on the socket, byte-identical - the revert is an
+// env change on either side (the helper's same-named knob gates its half).
+static bool ring_wanted_env() { return std::getenv("STRATA_HELPER_REPLY_RING") != nullptr; }
 
 namespace strata::core {
 
@@ -313,10 +321,12 @@ void ExpertHelperClient::close() {
     fd_ = -1;
     owned_ = false;
     begin_outstanding_ = false;
+    stripe_outstanding_ = false;
     prompt_pairs_ = 0;
     prompt_parts_.clear();   // the claim batch dies with the channel: no queued claim survives a close
     batch_rows_ = 0;
     batch_answered_ = false;
+    release_ring();   // W2: the mapping is channel-scoped - a close or a re-hello tears it down
 }
 
 void ExpertHelperClient::bye() {
@@ -351,15 +361,41 @@ int ExpertHelperClient::hello(int64_t n_layers, int64_t n_expert, int64_t n_embd
     std::memcpy(payload.data(), &req, sizeof(req));
     for (int64_t i = 0; i < n_layers * n_expert; ++i)
         if (claimed[(size_t) i]) payload[sizeof(req) + (size_t) (i >> 3)] |= (uint8_t) (1u << (i & 7));
+    // W2: ask for the reply ring lane (default OFF - STRATA_HELPER_REPLY_RING).  The flag is the
+    // hello's own negotiation: a helper without the ring ignores it (its ack carries no
+    // kFeatureReplyRing and no descriptor) and this client keeps the socket reply, byte-identical.
+    // OLD-PEER COMPAT: a helper binary that PREDATES the flag word refuses any nonzero reserved0
+    // outright - so a kError answer to a flagged hello retries ONCE with the flag clear (any
+    // helper, old or new, accepts flag 0) and the exchange proceeds on the socket alone.  No
+    // engine/helper version combination is ever left without a working channel.
+    bool want = ring_wanted_env();
     expert_helper::Socket s;
     s.adopt(fd_);
     const int64_t deadline = rel(deadline_ms, kDeadlineDefaultMs);
-    int rc = s.write_frame(expert_helper::kHello, ++req_id_, payload.data(), payload.size(), deadline);
-    if (rc != expert_helper::kOk) { s.release(); close(); return rc; }
     expert_helper::Header head;
     expert_helper::PayloadView body;
-    rc = s.read_frame(head, rx_, body, deadline);
-    if (rc != expert_helper::kOk) { s.release(); close(); return rc; }
+    int ring_fd = -1;   // W2: the memfd the helper attaches when the lane is offered
+    int rc = expert_helper::kOk;
+    for (;;) {
+        req.reserved0 = want ? expert_helper::kHelloWantReplyRing : 0u;
+        std::memcpy(payload.data(), &req, sizeof(req));
+        rc = s.write_frame(expert_helper::kHello, ++req_id_, payload.data(), payload.size(), deadline);
+        if (rc != expert_helper::kOk) break;
+        rc = s.read_frame_anc(head, rx_, body, deadline, ring_fd);
+        if (rc != expert_helper::kOk) break;
+        if (head.type == expert_helper::kError && want) {
+            if (ring_fd >= 0) { ::close(ring_fd); ring_fd = -1; }
+            want = false;
+            std::fprintf(stderr, "expert-helper: the peer refused the hello's ring flag (an older "
+                                 "helper?); retrying without it - rows stay on the socket\n");
+            continue;
+        }
+        break;
+    }
+    if (rc != expert_helper::kOk) {
+        if (ring_fd >= 0) ::close(ring_fd);
+        s.release(); close(); return rc;
+    }
     if (head.type != expert_helper::kHelloAck) { s.release(); close(); return head.type == expert_helper::kError ? expert_helper::kErrRequest : expert_helper::kErrProtocol; }
     if (head.req_id != req_id_) { s.release(); close(); return expert_helper::kErrSeq; }
     // R5 P1: the ack's size is negotiated by SHAPE, not assumed.  An R2 helper answers the 24-byte
@@ -387,6 +423,8 @@ int ExpertHelperClient::hello(int64_t n_layers, int64_t n_expert, int64_t n_embd
                   (ack.features & expert_helper::kFeatureDraftBf16) != 0;   // L8: bf16 taps
     q8k_ = (body.size() >= sizeof(expert_helper::HelloAck)) &&
            (ack.features & expert_helper::kFeatureQ8K) != 0;   // the Q8_K activation wire
+    f32_window_ = (body.size() >= sizeof(expert_helper::HelloAck)) &&
+                  (ack.features & expert_helper::kFeatureF32Window) != 0;   // the fp32 window wire (W1)
     // The claim batch's PEER half of the gate: the bit says this helper serves kBeginPB/kRowsPB.
     // The ENGINE half is STRATA_CLAIM_BATCH (default 1).  Both must hold for a batch frame to exist;
     // with the env unset the prompt tier writes kBeginP exactly as today, so the bit changes nothing
@@ -395,9 +433,94 @@ int ExpertHelperClient::hello(int64_t n_layers, int64_t n_expert, int64_t n_embd
                     (ack.features & expert_helper::kFeaturePromptBatch) != 0;
     claim_batch_ = claim_batch_env();
     seq_ = head.seq;
+    // W2: latch the reply ring - map the descriptor when the helper offered the lane, fall back to
+    // the socket reply when it did not.  A ring the ack promised but this side cannot map is a
+    // protocol failure (the helper would send doorbells nobody reads): the hello refuses.
+    {
+        const int rc_ring = map_ring(ring_fd, ack, n_embd, want);
+        if (rc_ring != expert_helper::kOk) { s.release(); close(); return rc_ring; }
+    }
     expert_helper::log_socket_buffers(fd_, "engine");   // helper-ipc-diet: the achieved buffer pair, once per hello
     s.release();
     return expert_helper::kOk;
+}
+
+// W2 (the reply ring's engine half): map (or decline) the memfd the helper attached to the ack.
+// `fd` is this call's descriptor (from read_frame_anc); on every path it is consumed - closed on
+// the fallbacks, left to the mapping on success (the mapping holds the object alive).
+//  - not offered, not wanted: nothing to do (today's exact bytes; a stray fd is still closed);
+//  - wanted, not offered: the fallback with a one-line notice (the panel arm's visible tell);
+//  - offered: fd required, header validated against THIS hello's geometry, mapped read-only.
+// A mismatched header is kErrProtocol, never a lane the two sides read differently.
+int ExpertHelperClient::map_ring(int fd, const expert_helper::HelloAck& ack, int64_t n_embd, bool wanted) {
+    release_ring();
+    const bool offered = (ack.features & expert_helper::kFeatureReplyRing) != 0;
+    if (!offered) {
+        if (fd >= 0) ::close(fd);
+        if (wanted)
+            std::fprintf(stderr, "expert-helper: the peer offered no reply ring; rows stay on the "
+                                 "socket (STRATA_HELPER_REPLY_RING ignored)\n");
+        return expert_helper::kOk;
+    }
+    if (!wanted) {   // the helper must not offer unasked: the flag IS the request
+        if (fd >= 0) ::close(fd);
+        return expert_helper::kErrProtocol;
+    }
+    if (fd < 0) return expert_helper::kErrProtocol;   // the bit without the memfd: split-brain
+    struct stat st {};
+    if (::fstat(fd, &st) != 0 || st.st_size < (off_t) expert_helper::ring_bytes(n_embd)) {
+        ::close(fd);
+        return expert_helper::kErrProtocol;
+    }
+    void* m = ::mmap(nullptr, (size_t) st.st_size, PROT_READ, MAP_SHARED, fd, 0);
+    ::close(fd);   // the mapping is the reference now; the descriptor is redundant
+    if (m == MAP_FAILED) return expert_helper::kErrInternal;
+    const expert_helper::RingHeader* rh = (const expert_helper::RingHeader*) m;
+    if (rh->magic != expert_helper::kRingMagic || rh->version != expert_helper::kRingVersion ||
+        rh->slot_count != expert_helper::kRingSlotCount || rh->n_embd != (uint32_t) n_embd ||
+        rh->max_records != expert_helper::kRingMaxRecords ||
+        rh->slot_stride != expert_helper::ring_slot_stride(n_embd) || rh->reserved0 != 0 ||
+        rh->reserved1 != 0) {
+        ::munmap(m, (size_t) st.st_size);
+        return expert_helper::kErrProtocol;
+    }
+    ring_map_ = (uint8_t*) m;
+    ring_map_bytes_ = (size_t) st.st_size;
+    ring_stride_ = rh->slot_stride;
+    ring_lane_ = true;
+    std::fprintf(stderr, "expert-helper: reply ring mapped (%u slots x %llu B, %llu records/slot); "
+                         "rows replies ride the ring\n",
+                 (unsigned) expert_helper::kRingSlotCount, (unsigned long long) ring_stride_,
+                 (unsigned long long) expert_helper::kRingMaxRecords);
+    return expert_helper::kOk;
+}
+
+// W2: apply a kRowsRing doorbell.  The slot's seq word must equal the doorbell's EXACTLY - the
+// generation seal (the helper published it last, system-fenced) - and the records area is then a
+// whole kRows payload the shared validator runs on unchanged: same header, same length rule, same
+// index/finiteness/whole-or-nothing semantics as the socket bytes.
+int ExpertHelperClient::apply_ring_rows(const expert_helper::RowsRingResp& rr, int64_t n_embd,
+                                        const std::vector<int32_t>& claims, float* out, int32_t& rows) {
+    rows = 0;
+    if (rr.n_rows < 0 || rr.slot < 0 || rr.slot >= (int32_t) expert_helper::kRingSlotCount)
+        return expert_helper::kErrProtocol;
+    if ((uint64_t) rr.n_rows > (uint64_t) expert_helper::kRingMaxRecords) return expert_helper::kErrShort;
+    const uint8_t* slot = expert_helper::ring_slot(ring_map_, (uint32_t) rr.slot, ring_stride_);
+    uint64_t seq_word = 0;
+    std::memcpy(&seq_word, slot, sizeof(seq_word));
+    if (seq_word != rr.seq) return expert_helper::kErrSeq;   // a generation this doorbell did not seal
+    const size_t row_bytes = (size_t) (4 + 4 * (size_t) n_embd);
+    return validate_rows_payload(expert_helper::ring_slot_records(ring_map_, (uint32_t) rr.slot, ring_stride_),
+                                 sizeof(expert_helper::RowsResp) + (size_t) rr.n_rows * row_bytes,
+                                 n_embd, claims, out, rows);
+}
+
+void ExpertHelperClient::release_ring() {
+    if (ring_map_ != nullptr) ::munmap(ring_map_, ring_map_bytes_);
+    ring_map_ = nullptr;
+    ring_map_bytes_ = 0;
+    ring_stride_ = 0;
+    ring_lane_ = false;
 }
 
 int ExpertHelperClient::fill_report(const std::vector<std::pair<int32_t, int32_t>>& pairs, int64_t deadline_ms,
@@ -440,6 +563,29 @@ int ExpertHelperClient::fill_report(const std::vector<std::pair<int32_t, int32_t
     return expert_helper::kOk;
 }
 
+// W3.3 (STRATA_HELPER_WIN_FAST, default OFF): the window tier's claim path rebuilt its request
+// body as a fresh `std::vector<uint8_t>(total, 0)` every frame - one heap allocation plus a full
+// zero-fill the send overwrites entirely.  The gated path reuses a THREAD-LOCAL grow-only buffer
+// (the helper-side RxBuffer's own pattern): resize() zero-fills only growth, so the builder
+// zeroes JUST the primary-residency bitmap (the one section assembled with |=; the header, the
+// ids and the image are memcpy'd over it).  The default path keeps a per-frame vector, and
+// resize() on a fresh one zero-fills everything - today's bytes exactly.  Shared by begin /
+// begin_q8k / begin_f32: the three request bodies differ only in the frame type and the image.
+static void build_window_payload(std::vector<uint8_t>& payload, const expert_helper::BeginReq& req,
+                                 int64_t n_ids, const int32_t* ids, int64_t n_expert, int32_t layer,
+                                 const int32_t* primary_res, size_t res_bytes, const void* image,
+                                 size_t image_bytes) {
+    const size_t total = sizeof(req) + (size_t) n_ids * 4 + res_bytes + image_bytes;
+    payload.resize(total);
+    std::memset(payload.data() + sizeof(req) + (size_t) n_ids * 4, 0, res_bytes);   // the |= section
+    std::memcpy(payload.data(), &req, sizeof(req));
+    std::memcpy(payload.data() + sizeof(req), ids, (size_t) n_ids * 4);   // the routed ids, routing order
+    for (int64_t e = 0; e < n_expert; ++e)   // the layer's PRIMARY residency (slot >= 0), expert-indexed
+        if (primary_res && primary_res[(size_t) layer * (size_t) n_expert + (size_t) e] >= 0)
+            payload[sizeof(req) + (size_t) n_ids * 4 + (size_t) (e >> 3)] |= (uint8_t) (1u << (e & 7));
+    std::memcpy(payload.data() + sizeof(req) + (size_t) n_ids * 4 + res_bytes, image, image_bytes);
+}
+
 int ExpertHelperClient::begin(int32_t layer, int32_t n_tok, const int32_t* ids, const int32_t* primary_res,
                               const uint8_t* q8, size_t q8_bytes, int64_t deadline_ms) {
     if (fd_ < 0) return expert_helper::kErrUnhealthy;
@@ -454,14 +600,10 @@ int ExpertHelperClient::begin(int32_t layer, int32_t n_tok, const int32_t* ids, 
     req.k = (int32_t) expert_helper::kK;
     req.ids_bytes = (int32_t) (n * 4);
     req.n_q8 = (int32_t) q8_bytes;
-    std::vector<uint8_t> payload(sizeof(req) + (size_t) n * 4 + res_bytes + q8_bytes, 0);
-    std::memcpy(payload.data(), &req, sizeof(req));
-    std::memcpy(payload.data() + sizeof(req), ids, (size_t) n * 4);   // the routed ids, routing order
-    for (int64_t e = 0; e < n_expert; ++e) {   // the layer's PRIMARY residency (slot >= 0), expert-indexed
-        if (primary_res && primary_res[(size_t) layer * (size_t) n_expert + (size_t) e] >= 0)
-            payload[sizeof(req) + (size_t) n * 4 + (size_t) (e >> 3)] |= (uint8_t) (1u << (e & 7));
-    }
-    std::memcpy(payload.data() + sizeof(req) + (size_t) n * 4 + res_bytes, q8, q8_bytes);
+    thread_local std::vector<uint8_t> payload_reuse;   // W3.3: the gated grow-only claim-path buffer
+    std::vector<uint8_t> payload_fresh;
+    std::vector<uint8_t>& payload = helper_win_fast_enabled() ? payload_reuse : payload_fresh;
+    build_window_payload(payload, req, n, ids, n_expert, layer, primary_res, res_bytes, q8, q8_bytes);
     // M7 (sect12a, BUG E): the window tier's begin/finish pair spans a layer's compute (the reply
     // is read by finish), so this request is the ONE outstanding request of the protocol for that
     // whole span.  io_mtx_ is held across the write and the outstanding-flag update, and finish
@@ -500,19 +642,60 @@ int ExpertHelperClient::begin_q8k(int32_t layer, int32_t n_tok, const int32_t* i
     req.k = (int32_t) expert_helper::kK;
     req.ids_bytes = (int32_t) (n * 4);
     req.n_q8 = (int32_t) q8k_bytes;   // Q8_K blocks: n_tok * (n_embd/256) * 292
-    std::vector<uint8_t> payload(sizeof(req) + (size_t) n * 4 + res_bytes + q8k_bytes, 0);
-    std::memcpy(payload.data(), &req, sizeof(req));
-    std::memcpy(payload.data() + sizeof(req), ids, (size_t) n * 4);   // the routed ids, routing order
-    for (int64_t e = 0; e < n_expert; ++e)
-        if (primary_res && primary_res[(size_t) layer * (size_t) n_expert + (size_t) e] >= 0)
-            payload[sizeof(req) + (size_t) n * 4 + (size_t) (e >> 3)] |= (uint8_t) (1u << (e & 7));
-    std::memcpy(payload.data() + sizeof(req) + (size_t) n * 4 + res_bytes, q8k, q8k_bytes);
+    thread_local std::vector<uint8_t> payload_reuse;   // W3.3: the gated grow-only claim-path buffer
+    std::vector<uint8_t> payload_fresh;
+    std::vector<uint8_t>& payload = helper_win_fast_enabled() ? payload_reuse : payload_fresh;
+    build_window_payload(payload, req, n, ids, n_expert, layer, primary_res, res_bytes, q8k, q8k_bytes);
     // The ONE outstanding request rule is begin's own (io_mtx_ across the write; finish reads the reply).
     std::lock_guard<std::mutex> io_lk(io_mtx_);
     expert_helper::Socket s;
     s.adopt(fd_);
     const auto t0 = std::chrono::steady_clock::now();
     const int rc = s.write_frame(expert_helper::kBeginQ8K, ++req_id_, payload.data(), payload.size(),
+                                 rel(deadline_ms, kDeadlineDefaultMs));
+    ms_begin_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    if (rc != expert_helper::kOk) { s.release(); close(); return rc; }
+    begin_outstanding_ = true;
+    begin_seq_ = s.seq_out();
+    seq_ = begin_seq_;
+    ++requests_;
+    s.release();
+    return expert_helper::kOk;
+}
+
+int ExpertHelperClient::begin_f32(int32_t layer, int32_t n_tok, const int32_t* ids, const int32_t* primary_res,
+                                  const float* x, int64_t deadline_ms) {
+    if (fd_ < 0) return expert_helper::kErrUnhealthy;
+    // The negotiation gate, BEFORE any write (kBeginQ8K's own rule): kBeginF32 is a frame type an
+    // unadvertised peer cannot type-decode, so it is refused HERE and never reaches the wire.  The
+    // ENGINE half of the gate is STRATA_HELPER_F32_WINDOW (helper_f32_window_enabled) - both must
+    // hold for the frame to exist, so an old helper keeps today's kBegin and an old engine never
+    // asks.
+    if (!f32_window_) return expert_helper::kErrRequest;
+    if (n_expert_ <= 0 || n_embd_ <= 0 || (n_embd_ % 32) != 0)
+        return expert_helper::kErrGeometry;   // whole 32-value blocks for the helper's quant kernel
+    const int64_t n_expert = n_expert_;
+    if (n_tok < 1 || n_tok > expert_helper::kMaxTok) return expert_helper::kErrGeometry;
+    if (x == nullptr) return expert_helper::kErrGeometry;
+    const int64_t n = n_tok * expert_helper::kK;
+    const size_t res_bytes = (size_t) ((n_tok * n_expert + 7) / 8);   // the layer's primary residency bitmap
+    const size_t img_bytes = (size_t) n_tok * (size_t) n_embd_ * sizeof(float);
+    expert_helper::BeginReq req;
+    req.layer = layer;
+    req.n_tok = n_tok;
+    req.k = (int32_t) expert_helper::kK;
+    req.ids_bytes = (int32_t) (n * 4);
+    req.n_q8 = (int32_t) img_bytes;   // the RAW fp32 rows: n_tok * n_embd * 4 (the field's name is kBegin's)
+    thread_local std::vector<uint8_t> payload_reuse;   // W3.3: the gated grow-only claim-path buffer
+    std::vector<uint8_t> payload_fresh;
+    std::vector<uint8_t>& payload = helper_win_fast_enabled() ? payload_reuse : payload_fresh;
+    build_window_payload(payload, req, n, ids, n_expert, layer, primary_res, res_bytes, x, img_bytes);
+    // The ONE outstanding request rule is begin's own (io_mtx_ across the write; finish reads the reply).
+    std::lock_guard<std::mutex> io_lk(io_mtx_);
+    expert_helper::Socket s;
+    s.adopt(fd_);
+    const auto t0 = std::chrono::steady_clock::now();
+    const int rc = s.write_frame(expert_helper::kBeginF32, ++req_id_, payload.data(), payload.size(),
                                  rel(deadline_ms, kDeadlineDefaultMs));
     ms_begin_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     if (rc != expert_helper::kOk) { s.release(); close(); return rc; }
@@ -562,7 +745,11 @@ int ExpertHelperClient::finish(float* out, int64_t n_embd, int32_t n_tok, int64_
         close();
         return expert_helper::kErrRequest;
     }
-    if (head.type != expert_helper::kRows) {
+    // W2: the negotiated channel answers kRowsRing (the rows ride the ring) instead of kRows; the
+    // pairing, the claims and the counters are the same contract either way.  A doorbell on a
+    // channel that never negotiated the ring is the split-brain this must never survive.
+    const bool via_ring = head.type == expert_helper::kRowsRing;
+    if (!via_ring && head.type != expert_helper::kRows) {
         std::fprintf(stderr, "expert-helper: unexpected reply frame type %u; closing the channel\n", head.type);
         s.release(); close(); return expert_helper::kErrProtocol;
     }
@@ -573,12 +760,34 @@ int ExpertHelperClient::finish(float* out, int64_t n_embd, int32_t n_tok, int64_
     }
     (void) n_tok;
     (void) k;
-    rc = validate_rows_payload(body.data(), body.size(), n_embd, claims, out, rows);
-    if (rc != expert_helper::kOk) {
-        std::fprintf(stderr, "expert-helper: the reply failed row validation: %s (%lld rows for %lld claims); "
-                             "closing the channel\n", expert_helper::status_name(rc),
+    if (via_ring) {
+        expert_helper::RowsRingResp rr{};
+        if (body.size() != sizeof(rr)) {
+            std::fprintf(stderr, "expert-helper: the ring doorbell is %zu bytes (want %zu); closing "
+                                 "the channel\n", body.size(), sizeof(rr));
+            s.release(); close(); return expert_helper::kErrShort;
+        }
+        std::memcpy(&rr, body.data(), sizeof(rr));
+        if (!ring_lane_) {
+            std::fprintf(stderr, "expert-helper: a ring doorbell arrived on a channel that never "
+                                 "negotiated the ring; closing the channel\n");
+            s.release(); close(); return expert_helper::kErrProtocol;
+        }
+        rc = apply_ring_rows(rr, n_embd, claims, out, rows);
+        if (rc != expert_helper::kOk) {
+            std::fprintf(stderr, "expert-helper: the ring reply failed validation: %s (%lld rows for "
+                                 "%lld claims); closing the channel\n", expert_helper::status_name(rc),
+                         (long long) rows, (long long) claims.size());
+            s.release(); close(); return rc;
+        }
+    } else {
+        rc = validate_rows_payload(body.data(), body.size(), n_embd, claims, out, rows);
+        if (rc != expert_helper::kOk) {
+            std::fprintf(stderr, "expert-helper: the reply failed row validation: %s (%lld rows for %lld claims); "
+                                 "closing the channel\n", expert_helper::status_name(rc),
                      (long long) rows, (long long) claims.size());
-        s.release(); close(); return rc;
+            s.release(); close(); return rc;
+        }
     }
     bytes_ += (uint64_t) rows * (uint64_t) n_embd * 4ull;
     rows_ += (uint64_t) rows;
@@ -793,7 +1002,8 @@ int ExpertHelperClient::begin_prompt(int32_t layer, const ExpertHelperPromptPlan
 // begin_prompt sends the payload it built, and a one-part batch flush sends the staged bytes.
 // Same frame type, same req_id_/seq_ bookkeeping, same counters, so a claim that took the batch's
 // queue and flushed alone is byte-for-byte and counter-for-counter the claim batch=1 sends.
-int ExpertHelperClient::write_beginp(const std::vector<uint8_t>& payload, int64_t rows, int64_t deadline_ms) {
+int ExpertHelperClient::write_beginp(const std::vector<uint8_t>& payload, int64_t rows, int64_t deadline_ms,
+                                     bool stripe) {
     using namespace expert_helper;
     expert_helper::Socket s;
     s.adopt(fd_);
@@ -806,7 +1016,9 @@ int ExpertHelperClient::write_beginp(const std::vector<uint8_t>& payload, int64_
     begin_seq_ = s.seq_out();
     seq_ = begin_seq_;
     prompt_pairs_ = rows;
-    ++prompt_requests_;
+    stripe_outstanding_ = stripe;
+    if (stripe) ++stripe_requests_;   // the window tier's half-claim: its OWN evidence line
+    else ++prompt_requests_;
     s.release();
     return kOk;
 }
@@ -870,7 +1082,10 @@ int ExpertHelperClient::finish_prompt(float* out, int64_t n_embd, const std::vec
                              "closing the channel\n", (long long) err.status, err.text);
         s.release(); close(); return expert_helper::kErrRequest;
     }
-    if (head.type != expert_helper::kRowsP) {
+    // W2: a negotiated channel answers single-part prompt claims (the tier's own kBeginP and the
+    // stripe's B-half alike) with the kRowsRing doorbell; the pairing and the counters are kRowsP's.
+    const bool via_ring = head.type == expert_helper::kRowsRing;
+    if (!via_ring && head.type != expert_helper::kRowsP) {
         std::fprintf(stderr, "expert-helper: unexpected prompt reply frame type %u; closing the channel\n",
                      head.type);
         s.release(); close(); return expert_helper::kErrProtocol;
@@ -882,16 +1097,39 @@ int ExpertHelperClient::finish_prompt(float* out, int64_t n_embd, const std::vec
     }
     // kRowsP carries kRows' row layout exactly (RowsPResp and RowsResp are the same 8-byte shape,
     // rows are (int32 index, n_embd floats)), so the SAME validator runs: every claim answered, no
-    // unclaimed index, no duplicate, every float finite, applied WHOLE or not at all.
-    rc = validate_rows_payload(body.data(), body.size(), n_embd, claims, out, rows);
+    // unclaimed index, no duplicate, every float finite, applied WHOLE or not at all.  The ring's
+    // records area is byte-for-byte that payload, so the same rule covers both transports.
+    if (via_ring) {
+        expert_helper::RowsRingResp rr{};
+        if (body.size() != sizeof(rr)) {
+            std::fprintf(stderr, "expert-helper: the prompt ring doorbell is %zu bytes (want %zu); "
+                                 "closing the channel\n", body.size(), sizeof(rr));
+            s.release(); close(); return expert_helper::kErrShort;
+        }
+        std::memcpy(&rr, body.data(), sizeof(rr));
+        if (!ring_lane_) {
+            std::fprintf(stderr, "expert-helper: a prompt ring doorbell arrived on a channel that "
+                                 "never negotiated the ring; closing the channel\n");
+            s.release(); close(); return expert_helper::kErrProtocol;
+        }
+        rc = apply_ring_rows(rr, n_embd, claims, out, rows);
+    } else {
+        rc = validate_rows_payload(body.data(), body.size(), n_embd, claims, out, rows);
+    }
     if (rc != expert_helper::kOk) {
         std::fprintf(stderr, "expert-helper: the prompt reply failed row validation: %s (%lld rows for "
                              "%lld claims); closing the channel\n", expert_helper::status_name(rc),
                       (long long) rows, (long long) claims.size());
         s.release(); close(); return rc;
     }
-    prompt_rows_returned_ += (uint64_t) rows;
-    prompt_bytes_ += (uint64_t) rows * (uint64_t) n_embd * 4ull;
+    if (stripe_outstanding_) {   // C4a: the window tier's half-claim, counted as WINDOW evidence
+        stripe_rows_returned_ += (uint64_t) rows;
+        stripe_bytes_ += (uint64_t) rows * (uint64_t) n_embd * 4ull;
+        stripe_outstanding_ = false;
+    } else {
+        prompt_rows_returned_ += (uint64_t) rows;
+        prompt_bytes_ += (uint64_t) rows * (uint64_t) n_embd * 4ull;
+    }
     prompt_pairs_ = 0;
     begin_outstanding_ = false;
     s.release();
@@ -1037,6 +1275,71 @@ int ExpertHelperClient::finish_prompt_batch(float* out, int64_t n_embd, const st
     batch_rows_ -= claimed;
     if (prompt_parts_.empty()) { batch_answered_ = false; prompt_pairs_ = 0; }
     return kOk;
+}
+
+// ---- C4a (tg-design.md, the claim stripe; default OFF - the engine's STRATA_CLAIM_STRIPE): the
+// WINDOW tier's B-half claim, as ONE kBeginP on the prompt tier's own channel. ----
+//
+// The frame is the claim-batch family's single-part shape: pairs are (entry/k, ids[entry]) - the
+// wire's token IS the q8 image row, and the image is the very byte array the layer's kBegin carries
+// (image_format 0, uploaded verbatim), so the helper's serve_prompt_core runs the SAME grouped
+// launch serve_begin makes and returns the SAME rows kBegin would have for those entries.  Nothing
+// is queued: the window walk reads each layer's reply inside the layer (the doorbell graph waits
+// the rows before the next layer's doorbell can ring), so a multi-part kBeginPB queued across
+// layers has no seam to flush on - one kBeginP per layer IS the whole claim-batch reuse the window
+// tier's dependency chain allows.
+int ExpertHelperClient::begin_stripe(int32_t layer, int32_t n_tok, const int32_t* ids,
+                                     const int32_t* primary_res, const std::vector<int32_t>& entries,
+                                     const uint8_t* q8, size_t q8_bytes, int64_t deadline_ms) {
+    using namespace expert_helper;
+    // The negotiation gate, BEFORE any write, exactly as begin_prompt's: a peer that never
+    // advertised the prompt tier never sees this frame type.
+    if (fd_ < 0) return kErrUnhealthy;
+    if (!prompt_rows_) return kErrRequest;
+    if (n_expert_ <= 0 || n_embd_ <= 0) return kErrGeometry;      // the handshake pins the geometry
+    const int64_t rows = (int64_t) entries.size();
+    if (n_tok < 1 || n_tok > kMaxTok || rows < 1 || rows > kMaxRowsPerLayer) return kErrGeometry;
+    if (layer < layer_lo_ || layer > layer_hi_) return kErrGeometry;   // the hello window
+    if (n_embd_ % 32 != 0) return kErrGeometry;
+    if ((int64_t) q8_bytes != (int64_t) n_tok * (n_embd_ / 32) * 36) return kErrGeometry;
+    // Per-expert rows are bounded by the entry count itself (<= n_tok*k <= kMaxEntries), far inside
+    // kMaxRowsPerExpert; the helper rechecks every cap on its own side.
+    const size_t res_bytes = (size_t) ((n_tok * n_expert_ + 7) / 8);   // kBegin's own bitmap shape
+    const size_t total = sizeof(BeginPReq) + (size_t) rows * 8 + res_bytes + q8_bytes;
+    if (total > kMaxFramePayload) return kErrGeometry;
+
+    BeginPReq req;
+    req.layer = layer;
+    req.n_sel_tok = n_tok;
+    req.k = (int32_t) kK;
+    req.n_pairs = (int32_t) rows;
+    req.n_q8 = (int32_t) q8_bytes;
+    req.image_format = 0;   // the canonical q8_1 blocks: the kBegin image, verbatim
+    std::vector<uint8_t> payload(total, 0);
+    std::memcpy(payload.data(), &req, sizeof(req));
+    for (int64_t p = 0; p < rows; ++p) {
+        const int32_t entry = entries[(size_t) p];
+        if (entry < 0 || entry >= (int32_t) (n_tok * kK)) return kErrGeometry;
+        const int32_t token = entry / (int32_t) kK, expert = ids[(size_t) entry];
+        if (expert < 0 || expert >= n_expert_) return kErrGeometry;
+        std::memcpy(payload.data() + sizeof(req) + (size_t) p * 8, &token, 4);
+        std::memcpy(payload.data() + sizeof(req) + (size_t) p * 8 + 4, &expert, 4);
+    }
+    uint8_t* res = payload.data() + sizeof(req) + (size_t) rows * 8;
+    for (int64_t e = 0; e < n_expert_; ++e)   // the layer's PRIMARY residency (same bytes as kBegin's)
+        if (primary_res != nullptr && primary_res[(size_t) layer * (size_t) n_expert_ + (size_t) e] >= 0)
+            res[(size_t) (e >> 3)] |= (uint8_t) (1u << (e & 7));
+    std::memcpy(res + res_bytes, q8, q8_bytes);
+    // The one-outstanding-request rule is the prompt claim's own: io_mtx_ across the write, the
+    // reply read by finish_prompt under the same lock.
+    std::lock_guard<std::mutex> io_lk(io_mtx_);
+    return write_beginp(payload, rows, deadline_ms, /*stripe=*/true);
+}
+
+bool ExpertHelperClient::idle() const {
+    if (fd_ < 0) return false;
+    std::lock_guard<std::mutex> io_lk(io_mtx_);
+    return !begin_outstanding_ && prompt_parts_.empty();
 }
 
 // ---- M7 (the drafter lane, docs/work/MIXED_BACKEND_RPC_PLAN.md sect12/12a): kDraftCtx / kDraftReq. ----

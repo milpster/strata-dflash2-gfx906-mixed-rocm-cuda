@@ -26,6 +26,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 
 namespace strata::program::conv_cache {
 
@@ -116,6 +117,71 @@ inline size_t spread_victim(const int64_t* lens, const uint64_t* stamps, size_t 
         if (v != n) return v;
     }
     return eviction_victim(stamps, n, cap, tail, pinned);
+}
+
+// ---- round 13: STRATA_GEN_ANCHOR and STRATA_PARK_DEBOUNCE_MS (round 15 adds the anchor's
+// STRATA_GEN_ANCHOR_MIN_TOKENS context gate).  Both are default-OFF env knobs; an absent or
+// unusable value keeps the serve path bit-for-bit as before.  The decisions are pure and
+// deterministic here so tests/core/conv_cache_knobs_test.cpp can walk them without a device.
+
+/// STRATA_GEN_ANCHOR=1 (any nonzero integer): capture one checkpoint at T, the conversation's full
+/// length, at the verified complete-request boundary - before the park that would otherwise publish
+/// only the deepest PROMPT-path anchor (checkpoints land at the 16k cadence and the boundary kinds,
+/// never on generated tokens), so every continuation of the conversation re-reads the generated tail.
+/// With the anchor the park publishes anchor=T and the next continuation's tail re-read is 0.
+inline bool gen_anchor_on(const char* env) { return env != nullptr && std::atoi(env) != 0; }
+
+/// STRATA_GEN_ANCHOR_MIN_TOKENS: the gen-end anchor's context gate (round 15).  The anchor wins
+/// long-ctx warm TG (81 -> 95 tok/s at 142-160k) but collapses small-ctx warm TG (80-111 -> 29-44
+/// at 2k), so it is only taken once the conversation is long enough for the win side to exist.
+/// Absent, empty, unparsable or <= 0 = the default 32768 (0 is not a gate - it would re-collapse
+/// the small-context arm); anything else clamped to [1024, 1048576].
+inline int64_t gen_anchor_min_tokens(const char* env) {
+    if (env == nullptr) return 32768;
+    const long v = std::atol(env);
+    if (v <= 0) return 32768;
+    if (v < 1024) return 1024;
+    return v > 1048576 ? (int64_t) 1048576 : (int64_t) v;
+}
+
+/// Whether the end-of-generation anchor capture runs at this boundary.  Each term is the serve
+/// loop's own existing condition: a cancelled request is not a verified boundary, `live_ok` says the
+/// session IS this conversation, checkpointing needs the prompt cache, the anchor exists so a PARK
+/// can publish it (the tier off: nothing to publish, no pair sidecar to write), T must be a real
+/// position, a checkpoint already at T IS the anchor (nothing to add - the capture would only
+/// churn the chain), and T must be at or past the context gate `min_tokens` (gen_anchor_min_tokens;
+/// pass 0 for the ungated decision the gate must not change).
+inline bool gen_anchor_should_capture(bool knob_on, bool cancelled, bool live_ok, int64_t prompt_cache, bool disk_on,
+                                      int64_t T, bool ckpt_at_T, int64_t min_tokens) {
+    return knob_on && !cancelled && live_ok && prompt_cache > 0 && disk_on && T > 0 && !ckpt_at_T && T >= min_tokens;
+}
+
+/// The tail an anchor at T saves the next continuation from re-reading: the tokens between the
+/// deepest anchor the chain already holds and T (0 when nothing is deeper to cover).  Those tokens
+/// re-forward at the measured 9.6-16.6 ms/tok continuation rate when no anchor covers them.
+inline int64_t gen_anchor_saved_tokens(int64_t T, int64_t deepest_anchor) {
+    return T > deepest_anchor ? T - deepest_anchor : 0;
+}
+
+/// STRATA_PARK_DEBOUNCE_MS: skip a disk park within this many milliseconds of the park this process
+/// last wrote.  The park streams the whole conversation (2770 MiB at 142k) per idle boundary, and
+/// the park-gain gate only skips SAME-conversation re-parks, so alternating conversations pay the
+/// full stream back-to-back; the debounce makes a mid-burst park a skip and leaves the published
+/// generation as the insurance it is.  Absent, empty, unparsable or <= 0 = 0 (off); clamped at ten
+/// minutes so a mistyped value cannot park a busy server never.
+inline int64_t park_debounce_ms(const char* env) {
+    if (env == nullptr) return 0;
+    const long v = std::atol(env);
+    if (v <= 0) return 0;
+    constexpr long kMaxMs = 10ll * 60ll * 1000ll;
+    return v > kMaxMs ? (int64_t) kMaxMs : (int64_t) v;
+}
+
+/// Whether a park NOW falls inside the debounce window of the last park written.  `last_park_ms` < 0:
+/// no park yet, never debounced.  The window is [0, debounce_ms): a park exactly N ms after the last
+/// one goes through.  Times are one monotonic clock the caller samples; `now < last` cannot happen.
+inline bool park_debounced(int64_t debounce_ms, int64_t now_ms, int64_t last_park_ms) {
+    return debounce_ms > 0 && last_park_ms >= 0 && now_ms - last_park_ms < debounce_ms;
 }
 
 }  // namespace strata::program::conv_cache

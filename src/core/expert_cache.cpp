@@ -854,6 +854,27 @@ bool ExpertCache::fill_slot_queued(int32_t slot, const uint8_t* host_blob, std::
     return true;
 }
 
+// helper-ipc-diet round 8: the queued fill that refuses to be fatal (see the header).  The retry runs
+// only on an ENQUEUE-time refusal - a copy that never reached the device - so the stream carries
+// nothing from the failed attempt and the blocking copy stands alone on it.
+bool ExpertCache::fill_slot_queued_staged(int32_t slot, const uint8_t* host_blob, std::string& err, int64_t bytes) {
+    if (fill_slot_queued(slot, host_blob, err, bytes)) return true;
+    static const bool fallback_off = [] {
+        const char* v = std::getenv("STRATA_REFILL_FALLBACK");
+        return v != nullptr && std::atoi(v) == 0;
+    }();
+    const std::string queued_err = std::move(err);
+    if (fallback_off) {
+        err = queued_err;
+        return false;
+    }
+    std::fprintf(stderr, "strata: expert cache: a queued fill of slot %d refused (%s); retrying through the "
+                         "staged blocking path\n", (int) slot, queued_err.c_str());
+    if (fill_slot_blocking(slot, host_blob, err, bytes)) return true;
+    err = queued_err + "; the staged retry: " + err;
+    return false;
+}
+
 bool ExpertCache::fill_slot_queued_parts(int32_t slot, const BlobPart* parts, int n, std::string& err) {
     if (sealed_) sealed_write("fill_slot_queued_parts", slot);
     uint8_t* dst = device_slot(slot);

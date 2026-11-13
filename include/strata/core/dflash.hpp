@@ -224,6 +224,13 @@ public:
     /// True when the block [pos, pos+rows)'s readable window is inside retained, CONFIRMED
     /// history (the checkpoint/snapshot paths check before mounting a rewind).
     bool context_retained(int64_t pos, int rows) const;
+    /// A rewind context_retained() refused, with no pair to restore the ring from: mount
+    /// target-only with the ring's horizon AT `pos` (the counters are the guards' whole state -
+    /// include/strata/core/dflash_ring.hpp). The window's rows below pos are the previous turn's,
+    /// so the first rounds propose from stale rows: the verify decides, answers stay exact, and
+    /// acceptance refills the window as the request appends.  The caller restores the target's
+    /// checkpoint itself; this only puts the drafter in a legal, non-stale-claiming state.
+    bool rewind_cold(int64_t pos, std::string& err);
     bool idle(std::string& err) {
         // F1 (STRATA_DF_DEFER_CTX): a prompt-only request and the drafter-pool saves in the
         // park path never reach propose(), so the deferred prompt fusion drains here - the

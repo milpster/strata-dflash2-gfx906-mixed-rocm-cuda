@@ -14,6 +14,7 @@
 #include "strata/core/expert_helper_protocol.hpp"
 
 #include <cstdint>
+#include <cstdlib>   // std::getenv - the wire-diet knobs below (host-only, no device call)
 #include <mutex>
 #include <string>
 #include <vector>
@@ -67,6 +68,26 @@ int select_prompt_rows(const int32_t* cnt, const int32_t* toks, const int32_t* h
                        int64_t max_rows_per_expert, int64_t max_rows_per_layer, int64_t max_sel_tok,
                        ExpertHelperPromptPlan& out);
 
+/// W1 (the fp32 window wire): the ENGINE half of the gate - STRATA_HELPER_F32_WINDOW, default OFF.
+/// Exactly "1" enables; absent, empty, "0" and any other value keep today's bytes (the CPU
+/// quantize + kBegin).  The PEER half is the helper's kFeatureF32Window bit; both must hold for a
+/// kBeginF32 frame to exist.  Read per call, like STRATA_EXPERT_HELPER_Q8K, so a host test can flip
+/// it between handshakes.  CPU-only header arithmetic: the knob test links nothing.
+inline bool helper_f32_window_enabled() {
+    const char* v = std::getenv("STRATA_HELPER_F32_WINDOW");
+    return v != nullptr && v[0] == '1' && v[1] == '\0';
+}
+
+/// W3 (the cheap bundle): STRATA_HELPER_WIN_FAST, default OFF - exactly "1" enables.  Covers the
+/// engine-side trims: the window begin payload's per-frame vector rebuild + zero-fill
+/// (expert_helper_socket.cpp begin/begin_q8k/begin_f32) and the q8/q8k image's zero-fill before
+/// the quantizer overwrites it (remote_experts.cpp proxy_begin).  The helper-side d_out pre-clear
+/// drop rides the same knob in the helper's own process.  Absent/0 = byte-identical today.
+inline bool helper_win_fast_enabled() {
+    const char* v = std::getenv("STRATA_HELPER_WIN_FAST");
+    return v != nullptr && v[0] == '1' && v[1] == '\0';
+}
+
 class ExpertHelperClient {
 public:
     ExpertHelperClient();
@@ -111,6 +132,16 @@ public:
     int begin_q8k(int32_t layer, int32_t n_tok, const int32_t* ids, const int32_t* primary_res,
                   const uint8_t* q8k, size_t q8k_bytes, int64_t deadline_ms);
 
+    /// kBeginF32 (default OFF - STRATA_HELPER_F32_WINDOW, a peer that advertised
+    /// kFeatureF32Window): `begin`'s window request with the activation image as the window's RAW
+    /// fp32 rows (n_tok * n_embd * 4 bytes, `x` verbatim - the engine quantizes NOTHING).  The
+    /// helper quantizes on its GPU stream into the same q8_1 blocks the grouped kernel reads, so
+    /// the reply is kRows exactly as begin's.  Refused locally (kErrRequest, nothing written)
+    /// unless the peer advertised the bit: the frame type never reaches a peer that cannot
+    /// type-decode it.  finish() reads the reply, the same kRows contract as begin's.
+    int begin_f32(int32_t layer, int32_t n_tok, const int32_t* ids, const int32_t* primary_res,
+                  const float* x, int64_t deadline_ms);
+
     /// Read the helper's rows for the outstanding begin and scatter them at the original indices.
     /// Validates: frame type/version, request id, sequence, payload length vs n_embd, index range vs
     /// `claims`, no duplicate index, every claimed index answered, all floats finite.  A validated
@@ -133,6 +164,7 @@ public:
     bool prompt_rows_supported() const { return prompt_rows_; }
     bool prompt_f32_supported() const { return prompt_f32_; }   // M4c (b): the peer quantizes fp32 itself
     bool q8k_supported() const { return q8k_; }   // the peer takes Q8_K activation images (kFeatureQ8K)
+    bool f32_window_supported() const { return f32_window_; }   // the peer quantizes fp32 WINDOW rows (kFeatureF32Window)
     /// The image of the LAST frame build_beginp_payload built (the claim line reports it): its byte
     /// size and its format - 0 the engine's q8_1 blocks, 1 the fp32 rows, 2 the Q8_K blocks.  The
     /// byte size is what the wire carried, so the engine's wire arithmetic is right for every
@@ -142,6 +174,12 @@ public:
     /// True when the peer ADVERTISED the claim batch (kFeaturePromptBatch: it serves kBeginPB/kRowsPB).
     /// A peer without the bit never sees the frame type: begin_prompt keeps the kBeginP path.
     bool prompt_batch_supported() const { return prompt_batch_; }
+    /// W2 (the reply ring): True when THIS channel's hello negotiated the ring - the helper
+    /// attached the memfd, the header validated, and rows replies may arrive as kRowsRing
+    /// doorbells (the rows live in the mapped slot, never on the socket).  False keeps every
+    /// reply on the socket, byte-identical: the lane needs STRATA_HELPER_REPLY_RING on BOTH
+    /// sides (the engine asks with the hello flag, the helper offers with kFeatureReplyRing).
+    bool reply_ring_active() const { return ring_lane_; }
     /// The engine's claim batch: STRATA_CLAIM_BATCH clamped to 1..kMaxClaimBatch, DEFAULT 1.
     /// 1 is EXACTLY today's wire - one kBeginP per claim, one kRowsP per reply, no new frame type
     /// on the channel at all.  K>1 coalesces K consecutive begin_prompt calls into ONE kBeginPB and
@@ -213,6 +251,42 @@ public:
     /// request over kMaxBatchPayload, more reply rows than kMaxBatchPayload covers.  The caller's
     /// per-claim `claims` must match the queued part's claims (the batch's order is the claim order);
     /// a mismatch is kErrSeq and closes the channel - the engine's same-layer fallback owns the rows.
+
+    // ================= C4a (tg-design.md, the claim stripe; default OFF - STRATA_CLAIM_STRIPE):
+    // the WINDOW tier's second-half claim on the prompt tier's frames =================
+    //
+    // A window layer's helper rows are split across BOTH channels: the first half rides channel A
+    // as the layer's own kBegin (fewer rows, byte-for-byte the frame it always sent), the second
+    // half rides channel B as ONE kBeginP - the claim-batch family's own single-part transport,
+    // which the helper serves with the SAME grouped launch serve_begin makes (helper_main.cpp's
+    // serve_prompt_core: "the SAME grouped launch serve_begin makes ... the same q8_1 activation
+    // contract"), so the rows are the rows kBegin would have returned for those entries.  Each
+    /// channel keeps exactly ONE outstanding request (the protocol's per-channel rule): two
+    /// channels, two in-flight frames.  The image is the q8_1 image the layer's kBegin carries
+    /// (image_format 0, uploaded verbatim), so the stripe adds NO helper change, NO wire change and
+    /// no negotiation beyond kFeaturePromptRows, which channel B's own hello already required.
+
+    /// Send the B-half: `entries` are this layer's routed entry indices (ascending, the tail of the
+    /// layer's claim list), `ids`/`primary_res` the arrays the layer's kBegin sees, `q8` the image
+    /// that kBegin carries verbatim (n_tok*(n_embd/32)*36 bytes).  The frame's pair list maps entry
+    /// i to (token i/k, expert ids[i]); the reply is read by the SAME finish_prompt a prompt claim
+    /// uses, with the dense pair list 0..entries.size()-1 as its claims.  Refused BEFORE any write
+    /// with this transport's named statuses: no channel, a peer without the prompt tier, a layer
+    /// outside the hello window, caps, a payload over kMaxFramePayload.
+    int begin_stripe(int32_t layer, int32_t n_tok, const int32_t* ids, const int32_t* primary_res,
+                     const std::vector<int32_t>& entries, const uint8_t* q8, size_t q8_bytes,
+                     int64_t deadline_ms);
+    /// True when NOTHING is in flight or queued on this channel: the stripe's channel-B gate (a
+    /// prompt claim outstanding there would make a second write violate the one-outstanding rule).
+    /// Locked: the prompt tier stages its parts on its own thread.
+    bool idle() const;
+
+    /// The stripe's own counters, kept SEPARATE from both tiers' evidence: the window tier's DONE
+    /// line adds these rows to its helper= line (they ARE window rows), and the prompt tier's
+    /// row-conservation line never sees them (begin_stripe never touches the prompt counters).
+    uint64_t stat_stripe_requests() const { return stripe_requests_; }
+    uint64_t stat_stripe_rows() const { return stripe_rows_returned_; }
+    uint64_t stat_stripe_bytes() const { return stripe_bytes_; }
 
     // ================= M7 (the drafter lane, docs/work/MIXED_BACKEND_RPC_PLAN.md sect12/12a):
     // kDraftCtx / kDraftReq =================
@@ -318,7 +392,7 @@ private:
     // req_id 986 (want 987) seq 1 (want 1)".  io_mtx_ serializes every socket transaction; the
     // draft gate below adds the outstanding-request check, so a draft frame is only written when
     // nothing else is in flight (the gate sleeps, never holding the lock).
-    std::mutex io_mtx_;
+    mutable std::mutex io_mtx_;   // mutable: idle() locks it from a const query
     /// Bounded wait for the shared channel to have no in-flight request, then the caller ships its
     /// draft frame holding io_mtx_.  ON TRUE THE LOCK IS LEFT HELD (the frame's write, its reply's
     /// read and the pairing test all run inside it).  False = the bound expired, the lock is
@@ -329,8 +403,25 @@ private:
     bool prompt_rows_ = false;                      // the peer advertised kFeaturePromptRows
     bool prompt_f32_ = false;                       // the peer advertised kFeaturePromptF32 (M4c (b))
     bool q8k_ = false;                              // the peer advertised kFeatureQ8K (the Q8_K wire)
+    bool f32_window_ = false;                       // the peer advertised kFeatureF32Window (the fp32 window wire)
     bool prompt_batch_ = false;                     // the peer advertised kFeaturePromptBatch
     int64_t claim_batch_ = 1;                       // STRATA_CLAIM_BATCH, clamped: 1 = today's wire
+    // W2 (the reply ring): this channel's read-only mmap of the helper's memfd and the latched
+    // lane.  ring_map_ is null and ring_lane_ false on every fallback - the socket reply path is
+    // the whole truth then, byte-identical to before the lane existed.
+    uint8_t* ring_map_ = nullptr;
+    size_t ring_map_bytes_ = 0;
+    uint64_t ring_stride_ = 0;
+    bool ring_lane_ = false;
+    /// The hello's ring latch: map (or decline) the descriptor the ack attached.  Every path
+    /// consumes `fd`; a helper that offered a ring this side cannot honor is a protocol failure.
+    int map_ring(int fd, const expert_helper::HelloAck& ack, int64_t n_embd, bool wanted);
+    /// Apply one kRowsRing doorbell: seal the slot's seq, then run the shared rows validator on
+    /// the slot's records area (a whole kRows payload by construction).  No socket bytes involved.
+    int apply_ring_rows(const expert_helper::RowsRingResp& rr, int64_t n_embd,
+                        const std::vector<int32_t>& claims, float* out, int32_t& rows);
+    /// Unmap and forget the ring (close, re-hello; idempotent).
+    void release_ring();
     int64_t last_img_bytes_ = 0;                    // the image bytes of the last frame built (the wire's)
     int last_img_fmt_ = -1;                         // and its format: 0 q8_1, 1 fp32, 2 Q8_K
     /// One queued prompt-tier claim (the batch's part): the full kBeginP payload bytes the client
@@ -355,8 +446,11 @@ private:
                             int64_t timeout_ms, int32_t& rows);
     /// The single-claim WRITE both transports share: `begin_prompt` sends the payload it just built,
     /// and a one-part flush sends the staged bytes as the same frame.  The caller holds io_mtx_ (the
-    /// protocol's one-outstanding-request rule spans the write and the reply's read).
-    int write_beginp(const std::vector<uint8_t>& payload, int64_t rows, int64_t deadline_ms);
+    /// protocol's one-outstanding-request rule spans the write and the reply's read).  `stripe`
+    /// marks the window tier's C4a half-claim: the SAME kBeginP write and bookkeeping, counted in
+    /// the stripe's own counters instead of the prompt tier's.
+    int write_beginp(const std::vector<uint8_t>& payload, int64_t rows, int64_t deadline_ms,
+                     bool stripe = false);
     /// The prompt tier's request body (BeginPReq + pairs + primary bitmap + the image quantized from
     /// the tier's own rows) with every cap begin_prompt enforces.  One builder for both transports: a
     /// single claim writes these bytes as kBeginP, a batch queues them as one kBeginPB part, so a
@@ -374,6 +468,11 @@ private:
                                                     // every read_frame (all reads run under io_mtx_ after
                                                     // the startup handshake, so it never races itself)
     int64_t prompt_pairs_ = 0;                      // the outstanding kBeginP's pair count
+    // C4a: the window tier's striped half-claim on this channel - one kBeginP in flight whose rows
+    // are WINDOW rows.  The flag only redirects the counters finish_prompt bumps; the frame, the
+    // one-outstanding bookkeeping and the validator are the prompt claim's own.
+    bool stripe_outstanding_ = false;
+    uint64_t stripe_requests_ = 0, stripe_rows_returned_ = 0, stripe_bytes_ = 0;
     uint64_t requests_ = 0, rows_ = 0, bytes_ = 0, timeouts_ = 0, fallbacks_ = 0;
     uint64_t prompt_requests_ = 0, prompt_rows_returned_ = 0, prompt_bytes_ = 0;
     double ms_begin_ = 0, ms_wait_ = 0;

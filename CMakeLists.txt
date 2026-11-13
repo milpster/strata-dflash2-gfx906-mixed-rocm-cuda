@@ -897,6 +897,20 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     add_test(NAME expert_helper_socket_test COMMAND expert_helper_socket_test)
     set_tests_properties(expert_helper_socket_test PROPERTIES TIMEOUT 120)
 
+    # W1/W3 (window wire diet, 2026-11): the fp32 window wire's knobs, negotiation gate and exact
+    # kBeginF32 frame, plus the GPU-quant golden compare harness - the same CPU-only construction
+    # and the same three sources as expert_helper_socket_test above (the GPU leg runs in the build
+    # window through the dump files; see the test's section 5).
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/expert_helper_f32_window_test.cpp")
+      add_executable(expert_helper_f32_window_test
+        tests/core/expert_helper_f32_window_test.cpp src/core/expert_helper_socket.cpp
+        tools/mixed_gpu/sidecar/helper_frame.cpp)
+      target_include_directories(expert_helper_f32_window_test PRIVATE include)
+      target_link_libraries(expert_helper_f32_window_test PRIVATE ggml-base)
+      add_test(NAME expert_helper_f32_window_test COMMAND expert_helper_f32_window_test)
+      set_tests_properties(expert_helper_f32_window_test PROPERTIES TIMEOUT 60)
+    endif()
+
     add_executable(expert_helper_fallback_test tests/core/expert_helper_fallback_test.cpp
       src/core/expert_helper_fallback.cpp)
     target_include_directories(expert_helper_fallback_test PRIVATE include)
@@ -960,6 +974,79 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_link_libraries(vmm_test PRIVATE strata_engine)
     add_test(NAME vmm_test COMMAND vmm_test)
     set_tests_properties(vmm_test PROPERTIES TIMEOUT 60)
+    # The helper relief's arena cap plan (include/strata/core/relief_arena_cap.hpp), the arithmetic behind
+    # --expert-helper-relief-arena-cap-mib: the hot set's protection, the coldest-first order, the caller's
+    # drop accounted once.  CPU-only BY CONSTRUCTION - header-only plan, the test links NO library at all, and
+    # the sizes it checks are the measured prod ones (46.84 GiB iq3_s / 39.97 GiB iq3xxs over 24576 pairs).
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/expert_helper_arena_cap_test.cpp")
+      add_executable(expert_helper_arena_cap_test tests/core/expert_helper_arena_cap_test.cpp)
+      target_include_directories(expert_helper_arena_cap_test PRIVATE include)
+      add_test(NAME expert_helper_arena_cap_test COMMAND expert_helper_arena_cap_test)
+      set_tests_properties(expert_helper_arena_cap_test PROPERTIES TIMEOUT 60)
+    endif()
+    # helper-ipc-diet round 8: the pin-range arithmetic the re-rank's promote uses
+    # (include/strata/core/arena_pin_ranges.hpp) - the unregistered gaps of a span against the
+    # sorted pin tables and the union a coalescing re-registration covers.  CPU-only BY
+    # CONSTRUCTION - header-only arithmetic, the test links NO library at all.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/arena_pin_ranges_test.cpp")
+      add_executable(arena_pin_ranges_test tests/core/arena_pin_ranges_test.cpp)
+      target_include_directories(arena_pin_ranges_test PRIVATE include)
+      add_test(NAME arena_pin_ranges_test COMMAND arena_pin_ranges_test)
+      set_tests_properties(arena_pin_ranges_test PROPERTIES TIMEOUT 60)
+    endif()
+    # helper-ipc-diet round 13: the two conversation-cache env knobs - the end-of-generation anchor
+    # decision behind STRATA_GEN_ANCHOR and the idle-park debounce arithmetic behind
+    # STRATA_PARK_DEBOUNCE_MS (include/strata/program/conv_cache.hpp), with the default-off
+    # equivalence walked exhaustively.  CPU-only BY CONSTRUCTION - header-only decisions and
+    # arithmetic, the test links NO library at all.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/conv_cache_knobs_test.cpp")
+      add_executable(conv_cache_knobs_test tests/core/conv_cache_knobs_test.cpp)
+      target_include_directories(conv_cache_knobs_test PRIVATE include)
+      add_test(NAME conv_cache_knobs_test COMMAND conv_cache_knobs_test)
+      set_tests_properties(conv_cache_knobs_test PROPERTIES TIMEOUT 60)
+    endif()
+    # Round 15 (swap-in pipeline depth): STRATA_SWAPIN_DEPTH's parsing, clamps and the
+    # swapin_window resolution the pack-file stager applies, plus the batched-read accounting a
+    # fake source sees behind the window.  CPU-only BY CONSTRUCTION - header-only decisions and
+    # arithmetic, the test links NO library at all.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/swapin_depth_test.cpp")
+      add_executable(swapin_depth_test tests/core/swapin_depth_test.cpp)
+      target_include_directories(swapin_depth_test PRIVATE include)
+      add_test(NAME swapin_depth_test COMMAND swapin_depth_test)
+      set_tests_properties(swapin_depth_test PROPERTIES TIMEOUT 60)
+    endif()
+    # v0233 (tail-skip helper guard): STRATA_TAIL_SKIP_HELPER's parsing and the tail_skip_gate
+    # the dispatch's skip loop and the serve banner share - the skip's silent suspension on
+    # helper rigs fixed per entry, with the default-off equivalence against the pre-v0233
+    # blanket rule walked exhaustively.  CPU-only BY CONSTRUCTION - header-only decisions, the
+    # test links NO library at all.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/tail_skip_guard_test.cpp")
+      add_executable(tail_skip_guard_test tests/core/tail_skip_guard_test.cpp)
+      target_include_directories(tail_skip_guard_test PRIVATE include)
+      add_test(NAME tail_skip_guard_test COMMAND tail_skip_guard_test)
+      set_tests_properties(tail_skip_guard_test PROPERTIES TIMEOUT 60)
+    endif()
+    # Round 16 (the helper's honest reserve floor): the clamp range the CUDA helper's --reserve-mib
+    # resolves to (include/strata/core/expert_helper_reserve.hpp) - the pure decision both the
+    # nvcc-only helper and this host test compile.  CPU-only BY CONSTRUCTION - header-only
+    # arithmetic, the test links NO library at all.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/expert_helper_reserve_test.cpp")
+      add_executable(expert_helper_reserve_test tests/core/expert_helper_reserve_test.cpp)
+      target_include_directories(expert_helper_reserve_test PRIVATE include)
+      add_test(NAME expert_helper_reserve_test COMMAND expert_helper_reserve_test)
+      set_tests_properties(expert_helper_reserve_test PROPERTIES TIMEOUT 60)
+    endif()
+    # Round 17 design A (read-once prefill): STRATA_READONCE_MIB's parsing and precedence, the
+    # pin-guard reserve and the effective budget, and the request-scoped LRU window itself -
+    # consult/admit/evict under a byte budget, the RAM guard, the meter counters, and the
+    # re-read collapse at the killer prefill's shape.  CPU-only BY CONSTRUCTION - header-only
+    # decisions and RAM, the test links NO library at all.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/read_once_test.cpp")
+      add_executable(read_once_test tests/core/read_once_test.cpp)
+      target_include_directories(read_once_test PRIVATE include)
+      add_test(NAME read_once_test COMMAND read_once_test)
+      set_tests_properties(read_once_test PROPERTIES TIMEOUT 60)
+    endif()
     # M1 (capacity, parent correction 2): the helper proxy's RESIDENCY lifecycle - registered fill,
     # mid-request disable (residency KEPT, the gate must still consult), per-request re-arm, channel
     # death (residency RELEASED, the gate must recover).  Proxy mode makes no device call (the

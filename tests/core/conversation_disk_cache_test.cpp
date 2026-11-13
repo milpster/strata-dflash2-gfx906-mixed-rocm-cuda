@@ -760,6 +760,57 @@ void test_restart_round_trip() {
     check(r.used() < used, "roundtrip: its bytes came back to the quota");
 }
 
+// The page-cache release (--conversation-cache-evict-page-cache's file-level leg): a park write and a restore
+// read hand the file's cached pages back to the kernel after their flush, and the file's bytes are untouched.
+void test_page_cache_release() {
+    const fs::path d = dir("pagecache");
+    std::string why;
+    const Spec a{100, 1, {}, true, false, false, 0, 1, false};
+    DiskCache c(opts(d, 256u << 20));
+    check(open(c, why), "pages: the tier opens");
+    std::vector<std::vector<uint8_t>> data;
+    const SessionManifestV2 m = build(a, data);
+    uint64_t exact = 0;
+    check(session_file_v2_size(m, exact, why), "pages: the exact size is priced");
+    DiskGeneration meta;
+    meta.tokens = tokens_of(a); meta.images = a.images; meta.cvec = a.cvec; meta.bytes = exact;
+    DiskReservation res;
+    check(c.reserve(exact, 0, disk_generation_index_bytes(meta), res, why), "pages: the write is reserved");
+    SessionWriteOptions wo;
+    wo.evict_page_cache = true;
+    SessionStatus st;
+    size_t bytes = 0;
+    check(session_file_write_v2(res.path, kId, m, sources_of(m, data), bytes, why, wo, &st),
+          "pages: the park write lands with the release asked");
+#ifndef _WIN32
+    check(st.pages_released, "pages: the write released the file's cached pages (fadvise DONTNEED after the flush)");
+#else
+    check(!st.pages_released, "pages: no release is claimed where posix_fadvise has no home");
+#endif
+    check(c.publish(res, std::move(meta), false, why), "pages: the generation publishes");
+    // A write that does not ask for the release never claims one
+    const Spec b{140, 1, {}, true, false, false, 0, 1, false};
+    Parked pb;
+    check(park(c, b, why, &pb), "pages: a plain park (no release asked)");
+    SessionV2Requirement want;
+    want.check_layout = false;
+    SessionReadV2Limits lim;
+    lim.evict_page_cache = true;
+    SessionManifestV2 got;
+    size_t rb = 0;
+    SessionStatus rst;
+    check(session_file_read_v2(pb.path, kId, want, got, rb, why, lim, nullptr, &rst),
+          "pages: the published generation reads back");
+#ifndef _WIN32
+    check(rst.pages_released, "pages: the read released the file's cached pages");
+#endif
+    SessionManifestV2 again;
+    size_t ab = 0;
+    std::string e2;
+    check(session_file_read_v2(pb.path, kId, want, again, ab, e2, {}, nullptr, nullptr) && rb == ab,
+          "pages: the file's bytes are unchanged after the release");
+}
+
 }   // namespace
 
 int main() {
@@ -777,6 +828,7 @@ int main() {
     test_sidecars();
     test_stats_and_index_cost();
     test_restart_round_trip();
+    test_page_cache_release();
     fs::remove_all(g_tmp, ec);
     std::printf("conversation_disk_cache_test: %d checks passed\n", checks);
     return 0;

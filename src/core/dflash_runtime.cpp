@@ -466,11 +466,15 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
         const int64_t m = v != nullptr ? std::atoll(v) : 1;
         return m < 1 ? 1 : (m > 1024 ? 1024 : m);
     }();
+    // The readable window the attention kernel and the rewind guards use: the trained geometry,
+    // or STRATA_DF2_WINDOW's experiment override (dflash_ring.hpp: powers of two above the
+    // trained window only; default keeps today's behavior bit-for-bit).
+    const int64_t df2_attn_window = strata::core::dflash2_effective_window(dg.sliding_window, std::getenv("STRATA_DF2_WINDOW"));
     ring_state_.ring = dg.is_dflash2() && dg.head_dim == 128 && dg.sliding_window > 0
-        ? dflash_ring_capacity(dg.sliding_window * df_ring_mult, 8,
+        ? dflash_ring_capacity(std::max(df2_attn_window, dg.sliding_window * df_ring_mult), 8,
                                (int64_t) strata::core::shapes_of(pool_g_).page_size)
         : 0;
-    ring_state_.window = ring_state_.ring ? dg.sliding_window : 0;
+    ring_state_.window = ring_state_.ring ? df2_attn_window : 0;
     ring_state_.max_rows = 8;      // the widest block: proposals + anchor (propose guards K <= max_rows_)
     ring_state_.capacity = cap_;   // the logical --dflash-window capacity the guards read
     const int64_t pool_cells = ring_state_.ring ? std::min(cap_, ring_state_.ring) : cap_;
@@ -919,6 +923,26 @@ bool DFlashDrafter::context_retained(int64_t pos, int rows) const {
     return ring_state_.context_retained(pos, rows);
 }
 
+bool DFlashDrafter::rewind_cold(int64_t pos, std::string& err) {
+    // A checkpoint rewind the ring cannot serve (its window rows were overwritten and the
+    // checkpoint has no pair): the mount is target-only, so the drafter only needs a legal
+    // horizon AT the resume point.  The counters ARE the guards (include/strata/core/dflash_ring
+    // .hpp): with committed_end = appended_through = pos, appends at [pos, pos+rows) are legal, the
+    // first propose at pos passes retention (the ring covers window + max_rows - 1 cells), and the
+    // window's rows below pos are the previous turn's - stale rows the verify rejects, so the answer
+    // stays exact and only acceptance dips until the appends refill the window.  No pool zeroing:
+    // every read that matters follows this sequence's own appends, as a prefill from 0 does.
+    if (st_.empty()) { err = "dflash: upload before a cold rewind"; return false; }
+    if (pos < 0 || ring_state_.capacity <= 0 || pos > ring_state_.capacity) {
+        err = "dflash: cold rewind to " + std::to_string(pos) + " is outside the drafter's capacity " +
+              std::to_string(ring_state_.capacity);
+        return false;
+    }
+    ring_state_.committed_end = pos;
+    ring_state_.appended_through = pos;
+    return true;
+}
+
 void DFlashDrafter::prepare_projection(const uint16_t* x, int ni, int rows, void* stream) {
     if (quant_types_.empty()) return;
     strata::kernels::bf16_to_f32_bulk(x, proj_float_, (int64_t) ni * rows, stream);
@@ -1198,7 +1222,13 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
     }();
     const bool graph_buckets = dg.is_dflash2() && !reference && graph_buckets_enabled;
     const bool local_attention = dg.is_dflash2() && dg.head_dim == 128 && dg.sliding_window > 0;
-    const int64_t attention_capacity = local_attention ? std::min<int64_t>(scratch_cap_, dg.sliding_window + K)
+    // The launch grid must cover the SAME window the kernel is handed below (ring_state_.window):
+    // attention128_kernel starts each row's span at end-rows-window+1, so chunks sized for the
+    // trained window would attend only the first 2048 rows of a widened STRATA_DF2_WINDOW span -
+    // the newest rows, not the widened ones. ring_state_.window == dg.sliding_window whenever the
+    // knob is off, so the default geometry stays bit-for-bit.
+    const int64_t attn_window = ring_state_.window ? ring_state_.window : dg.sliding_window;
+    const int64_t attention_capacity = local_attention ? std::min<int64_t>(scratch_cap_, attn_window + K)
                                                       : scratch_cap_;
     const int64_t visible_cells = std::min<int64_t>(pos + K, attention_capacity);
     const int64_t attention_cells = graph_on && graph_buckets
@@ -1338,7 +1368,7 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
                     dflash2_attention(q_, pools.k_pool, pools.v_pool, pools.page_table, attn_step_,
                         attn_, (float*) attn_scratch_, K, dg.n_head, dg.n_head_kv,
                         shapes_.page_size, attention_cells,
-                        dg.sliding_window, cs_, (int) ring_state_.ring);
+                        ring_state_.window ? ring_state_.window : dg.sliding_window, cs_, (int) ring_state_.ring);
                 else
 #endif
                 dflash_attn_batch(q_, pools, attn_step_, attention_cells, scratch_cap_, shapes_, (float*) attn_scratch_, attn_, K, cs_);

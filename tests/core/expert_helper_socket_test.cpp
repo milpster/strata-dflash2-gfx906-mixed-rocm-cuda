@@ -9,6 +9,9 @@
 // Exit 0 = every check passed.  Linux only (AF_UNIX): the CMake target is guarded.  The only library
 // linked is ggml-base (CPU-only: ggml's fp16 conversion, for section (8)'s quantizer pin) - no
 // ggml-cpu, no ggml-cuda, no ggml-hip, no device runtime.
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE   // section (22): memfd_create - the reply ring's backing file, no GPU involved
+#endif
 #include "strata/core/expert_helper_socket.hpp"
 
 #include <atomic>
@@ -26,6 +29,7 @@
 
 #include <fcntl.h>
 #include <poll.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/uio.h>
@@ -410,6 +414,134 @@ int handshake_v3(ExpertHelperClient& c, bool features, uint32_t extra_feats = 0)
     srv.join();
     if (wire != 0) return kErrProtocol;
     return rc;
+}
+
+/// W2 (section 22): the fake helper's ring - a REAL memfd sized and headered exactly as
+/// helper_main's ring_create builds it.  The fake writes generations through its RW mapping; the
+/// client reads the same physical pages through the read-only mapping of the fd the ack carried.
+/// No GPU, no pinning: only the sharing and the bytes are under test here.
+struct FakeRing {
+    int fd = -1;
+    uint8_t* map = nullptr;
+    uint64_t stride = 0;
+    unsigned long long seq[2] = {0, 0};
+    bool create(bool corrupt_header) {
+        const uint64_t bytes = ring_bytes(kH);
+        fd = ::memfd_create("strata-eh-test-ring", 0);
+        if (fd < 0) return false;
+        if (::ftruncate(fd, (off_t) bytes) != 0) return false;
+        map = (uint8_t*) ::mmap(nullptr, (size_t) bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        if (map == MAP_FAILED) { map = nullptr; return false; }
+        std::memset(map, 0, (size_t) bytes);
+        RingHeader* rh = (RingHeader*) (void*) map;
+        rh->magic = corrupt_header ? 0xDEADBEEFu : kRingMagic;
+        rh->version = kRingVersion;
+        rh->slot_count = kRingSlotCount;
+        rh->n_embd = (uint32_t) kH;
+        rh->max_records = kRingMaxRecords;
+        rh->slot_stride = ring_slot_stride(kH);
+        stride = rh->slot_stride;
+        return true;
+    }
+    ~FakeRing() {
+        if (map != nullptr) ::munmap(map, (size_t) ring_bytes(kH));
+        if (fd >= 0) ::close(fd);
+    }
+    /// Pack a whole kRows/kRowsP payload into slot s, seal the next generation (the helper's
+    /// publish order: records, release fence, seal) and return the seal for the doorbell.
+    unsigned long long publish(int s, const std::vector<uint8_t>& payload) {
+        uint8_t* slot = ring_slot(map, (uint32_t) s, stride);
+        std::memcpy(slot + 8, payload.data(), payload.size());
+        const unsigned long long v = ++seq[s];
+        std::atomic_thread_fence(std::memory_order_release);
+        *(volatile unsigned long long*) (void*) slot = v;
+        return v;
+    }
+};
+
+/// W2 (section 22): hello against a fake helper that may OFFER the ring (the ack carries
+/// kFeatureReplyRing and the memfd through the transport's real SCM_RIGHTS path).  `want_seen`
+/// reports whether the client's hello asked for the lane; the peer's socket end is left in
+/// g_server_fd for the frame-level sections.  `legacy_refuse` plays a helper BINARY that predates
+/// the flag word: a flagged hello is answered with kError, and the client's flag-clear retry (the
+/// old-peer compat path) is answered with the plain ack.
+int handshake_ring(ExpertHelperClient& c, FakeRing& ring, bool offer, bool corrupt, bool& want_seen,
+                   bool legacy_refuse = false) {
+    int fds[2];
+    if (::socketpair(AF_UNIX, SOCK_STREAM, 0, fds) != 0) return kErrInternal;
+    {
+        Socket s;
+        s.adopt(fds[1]);
+        g_server_fd = s.fd();
+        s.release();
+    }
+    std::atomic<int> wire{0};
+    std::thread srv([fd = fds[1], offer, corrupt, legacy_refuse, &ring, &want_seen, &wire] {
+        Socket s;
+        s.adopt(fd);
+        bool seen_once = false;   // want_seen records the FIRST hello's flag word only
+        for (;;) {
+            Header head;
+            RxBuffer rx;
+            PayloadView body;
+            if (s.read_frame(head, rx, body, deadline_after(5000)) != kOk || head.type != kHello ||
+                body.size() < sizeof(HelloReq)) { wire = 1; return; }
+            HelloReq req;
+            std::memcpy(&req, body.data(), sizeof(req));
+            const bool asked = (req.reserved0 & kHelloWantReplyRing) != 0;
+            if (!seen_once) {
+                want_seen = asked;
+                seen_once = true;
+            }
+            if (legacy_refuse && asked) {   // the pre-flag helper: any nonzero reserved0 is refused
+                const int32_t e = (int32_t) kErrShort;
+                if (s.write_reply(kError, head.req_id, head.seq, (const uint8_t*) &e, sizeof(e),
+                                  deadline_after(5000)) != kOk) wire = 2;
+                continue;   // the retry (flag 0) is answered on the next iteration
+            }
+            HelloAck ack;
+            ack.max_tok = (int32_t) kMaxTok;
+            ack.k = (int32_t) kK;
+            ack.max_entries = (int32_t) kMaxEntries;
+            ack.status = 0;
+            ack.free_mib = 4096;
+            ack.features = kFeaturePromptRows | (offer ? kFeatureReplyRing : 0);
+            // the fd rides EVERY offer (a corrupt-header ring still attaches its fd, so the client's
+            // refusal is the header check, not a missing descriptor)
+            int rc;
+            if (offer)
+                rc = s.write_reply_fd(kHelloAck, head.req_id, head.seq, (const uint8_t*) &ack, sizeof(ack),
+                                      deadline_after(5000), ring.fd);
+            else
+                rc = s.write_reply(kHelloAck, head.req_id, head.seq, (const uint8_t*) &ack, sizeof(ack),
+                                   deadline_after(5000));
+            if (rc != kOk) wire = 2;
+            s.release();   // the peer's end lives on: the frame sections read/write it directly
+            return;
+        }
+    });
+    const int rc0 = c.attach_socket(fds[0], true);
+    if (rc0 != kOk) { srv.join(); return rc0; }
+    int64_t free_mib = 0;
+    const int rc = c.hello(kLayers, kExperts, kH, kFF, 0, kLayer, 1024, 512,
+                           std::vector<uint8_t>((size_t) kLayers * kExperts, 0), 5000, free_mib);
+    srv.join();
+    if (wire != 0) return kErrProtocol;
+    return rc;
+}
+
+/// W2 (section 22): answer the outstanding request with a kRowsRing doorbell (a fresh Socket per
+/// call, so the frame's seq is the one finish()/finish_prompt() pair against - the same shape
+/// write_rows has always had).
+void write_ring_doorbell(unsigned long long seal, int32_t n_rows, uint32_t req_id) {
+    RowsRingResp rr;
+    rr.n_rows = n_rows;
+    rr.slot = 0;
+    rr.seq = seal;
+    Socket srv;
+    srv.adopt(g_server_fd);
+    srv.write_frame(kRowsRing, req_id, (const uint8_t*) &rr, sizeof(rr), deadline_after(5000));
+    srv.release();
 }
 
 /// Decode the kBeginP the client sent and check it EXACTLY: the header's frame type, every BeginPReq
@@ -2396,6 +2528,271 @@ int main(int argc, char** argv) {
               "(21c) the env shrinks the request by exactly n_sel*(H*4 - (H/32)*36) = 3.56x on the image");
         c2.close();
     }
+
+    // ============ (22) W2: THE REPLY RING (STRATA_HELPER_REPLY_RING, default OFF) ============
+    //
+    // The lane is host-testable END TO END with no GPU: the ring is a real memfd, the fake
+    // helper writes generations through its own RW mapping, the ack hands the fd over with the
+    // transport's REAL SCM_RIGHTS path (write_reply_fd/read_frame_anc), and the client reads the
+    // same physical pages through the read-only mapping it built at hello.  The GPU-owned half -
+    // the epilogue kernel's record bytes, the event ordering, the pinned registration - is pinned
+    // separately (see the scaffold note at the section's end).
+    {
+        // (22a) the layout arithmetic both sides share: page-aligned stride, exact coverage, and
+        // a records area whose capacity is EXACTLY one kMaxEntries window claim (the cap that
+        // keeps a prompt claim over 80 rows on the socket reply).
+        const uint64_t stride = ring_slot_stride(kH);
+        check(stride % kRingPage == 0, "(22a) the slot stride is page-aligned");
+        check(stride >= 8u + 8u + (uint64_t) kRingMaxRecords * (4 + (uint64_t) kH * 4),
+              "(22a) the stride covers the seq word + a full kMaxEntries records area");
+        check(ring_bytes(kH) == kRingPage + (uint64_t) kRingSlotCount * stride,
+              "(22a) the ring's byte total is the header page + slot_count * stride");
+        check(ring_slot_records((const uint8_t*) 0x10000, 1, stride) ==
+                  (const uint8_t*) 0x10000 + kRingPage + stride + 8,
+              "(22a) a slot's records sit past the seq word of its own stride");
+    }
+    {
+        // (22b) the negotiation matrix.  The lane needs BOTH sides: the engine asks with the
+        // hello's flag word, the helper answers with kFeatureReplyRing AND the memfd.  Every
+        // other combination must either fall back to today's socket bytes or refuse the hello -
+        // never two sides reading one channel differently.
+        ::setenv("STRATA_HELPER_REPLY_RING", "1", 1);
+        {
+            FakeRing ring;
+            check(ring.create(/*corrupt=*/false), "(22b) the fake ring builds a real memfd ring");
+            bool want_seen = false;
+            ExpertHelperClient c;
+            const int rc = handshake_ring(c, ring, /*offer=*/true, /*corrupt=*/false, want_seen);
+            check_status(rc, kOk, "(22b) wanted + offered: the hello maps the ring");
+            check(want_seen, "(22b) the hello carries kHelloWantReplyRing in its flag word");
+            check(c.reply_ring_active(), "(22b) the lane is latched on the client");
+            c.close();
+        }
+        {
+            FakeRing ring;
+            check(ring.create(false), "(22b) the fake ring builds (fallback case)");
+            bool want_seen = false;
+            ExpertHelperClient c;
+            const int rc = handshake_ring(c, ring, /*offer=*/false, false, want_seen);
+            check_status(rc, kOk, "(22b) wanted + NOT offered: the hello still succeeds");
+            check(want_seen, "(22b) the ask is on the wire even when the peer has no ring");
+            check(!c.reply_ring_active(), "(22b) the lane stays off: every reply is today's socket bytes");
+            c.close();
+        }
+        {
+            FakeRing ring;
+            check(ring.create(/*corrupt=*/true), "(22b) the fake ring builds a CORRUPT header");
+            bool want_seen = false;
+            ExpertHelperClient c;
+            check_status(handshake_ring(c, ring, true, true, want_seen), kErrProtocol,
+                         "(22b) a ring whose header disagrees is refused at hello, never half-used");
+        }
+        {
+            // OLD-PEER COMPAT: a helper binary that predates the flag word refuses the flagged
+            // hello with kError; the client retries ONCE with the flag clear and the exchange
+            // proceeds on the plain socket lane.  No version combination loses the channel.
+            FakeRing ring;
+            check(ring.create(false), "(22b) the fake ring builds (legacy-refuse case)");
+            bool want_seen = false;
+            ExpertHelperClient c;
+            const int rc = handshake_ring(c, ring, /*offer=*/false, false, want_seen,
+                                          /*legacy_refuse=*/true);
+            check_status(rc, kOk, "(22b) a pre-flag helper's refusal is retried without the flag");
+            check(want_seen, "(22b) the flagged hello reached the peer before the retry");
+            check(!c.reply_ring_active(), "(22b) the legacy peer serves plain socket replies");
+            c.close();
+        }
+        ::unsetenv("STRATA_HELPER_REPLY_RING");
+        {
+            // The engine did not ask: a helper that offers anyway is a protocol failure (the
+            // split-brain rule), and a helper that stays quiet changes nothing (every earlier
+            // section of this suite is exactly that case).
+            FakeRing ring;
+            check(ring.create(false), "(22b) the fake ring builds (unasked-offer case)");
+            bool want_seen = true;
+            ExpertHelperClient c;
+            check_status(handshake_ring(c, ring, /*offer=*/true, false, want_seen), kErrProtocol,
+                         "(22b) an offer to a hello that did not ask is refused");
+            check(!want_seen, "(22b) the engine's hello carries flag 0 with the env unset");
+        }
+    }
+    {
+        // (22c) the doorbell through finish(): the records in the slot are applied EXACTLY as the
+        // socket bytes are - same validator, same scatter, same counters.  The seal is the
+        // generation contract: a stale seal is refused and closes the channel; the next
+        // generation of the same slot applies cleanly (the one-outstanding discipline the helper
+        // relies on when it rewrites the slot).
+        ::setenv("STRATA_HELPER_REPLY_RING", "1", 1);
+        FakeRing ring;
+        check(ring.create(false), "(22c) the fake ring builds");
+        bool want_seen = false;
+        ExpertHelperClient c;
+        check_status(handshake_ring(c, ring, true, false, want_seen), kOk, "(22c) negotiated handshake");
+        const std::vector<int32_t> claims = {1, 3, 5};
+        const auto payload = rows_payload({5, 1, 3}, row_val);
+        check(send_begin(c), "(22c) kBegin sent (request 2: hello was 1)");
+        write_ring_doorbell(ring.publish(0, payload), 3, /*req_id=*/2);
+        std::vector<float> out((size_t) kNTok * 10 * kH, -1.0f);
+        int32_t rows = -1;
+        check_status(c.finish(out.data(), kH, kNTok, 10, claims, 5000, rows), kOk,
+                     "(22c) a sealed doorbell is accepted");
+        check(rows == 3, "(22c) the doorbell reports its 3 rows");
+        bool placed = true;
+        for (const int32_t i : claims)
+            for (int64_t col = 0; col < kH; ++col)
+                if (out[(size_t) i * kH + (size_t) col] != (float) row_val(i, col)) placed = false;
+        check(placed, "(22c) the ring's rows land at their ORIGINAL entry indices");
+        check(c.stat_rows() == 3 && c.stat_bytes() == 3ull * kH * 4ull,
+              "(22c) the window's row/byte stats count ring rows exactly");
+
+        // the second generation of the same slot: a fresh begin, a fresh seal, the same slot
+        check(send_begin(c), "(22c) the next kBegin sent (request 3)");
+        const auto payload2 = rows_payload({3, 1}, row_val);
+        write_ring_doorbell(ring.publish(0, payload2), 2, /*req_id=*/3);
+        std::vector<float> out2((size_t) kNTok * 10 * kH, -1.0f);
+        check_status(c.finish(out2.data(), kH, kNTok, 10, {1, 3}, 5000, rows), kOk,
+                     "(22c) the slot's NEXT generation applies (the rewrite contract)");
+        check(rows == 2 && out2[(size_t) 3 * kH] == (float) row_val(3, 0), "(22c) generation 2's rows");
+
+        // a STALE seal (the doorbell names a generation the slot no longer holds): refused, the
+        // channel closed - the tamper seal this lane exists to enforce
+        check(send_begin(c), "(22c) a third kBegin sent (request 4)");
+        const auto payload3 = rows_payload({1}, row_val);
+        const unsigned long long stale = ring.publish(0, payload3);
+        ring.publish(0, payload3);   // the slot moved on: stale is a generation behind
+        write_ring_doorbell(stale, 1, /*req_id=*/4);
+        std::vector<float> out3((size_t) kNTok * 10 * kH, -1.0f);
+        check_status(c.finish(out3.data(), kH, kNTok, 10, {1}, 5000, rows), kErrSeq,
+                     "(22c) a doorbell sealed with a stale generation is refused");
+        check(!c.open(), "(22c) the stale seal closed the channel");
+        ::unsetenv("STRATA_HELPER_REPLY_RING");
+    }
+    {
+        // (22d) a doorbell on a channel that NEVER negotiated: refused by frame type alone -
+        // the same split-brain rule, from the other side.
+        ExpertHelperClient c;
+        check_status(handshake_v3(c, true), kOk, "(22d) plain handshake, no ring asked");
+        check(send_begin(c), "(22d) kBegin sent (request 2: hello was 1)");
+        RowsRingResp rr;
+        rr.n_rows = 0;
+        rr.slot = 0;
+        rr.seq = 1;
+        Socket srv;
+        srv.adopt(g_server_fd);
+        srv.write_frame(kRowsRing, 2, (const uint8_t*) &rr, sizeof(rr), deadline_after(5000));
+        srv.release();
+        std::vector<float> out((size_t) kNTok * 10 * kH, -1.0f);
+        int32_t rows = -1;
+        check_status(c.finish(out.data(), kH, kNTok, 10, {1}, 5000, rows), kErrProtocol,
+                     "(22d) a ring doorbell never negotiated is refused");
+        check(!c.open(), "(22d) the un-negotiated doorbell closed the channel");
+    }
+    {
+        // (22e) the PROMPT tier's doorbell (the stripe B-half's transport): the slot carries a
+        // kRowsP payload verbatim (RowsPResp and RowsResp are the same shape) and finish_prompt
+        // applies it at the PAIR indices.
+        ::setenv("STRATA_HELPER_REPLY_RING", "1", 1);
+        FakeRing ring;
+        check(ring.create(false), "(22e) the fake ring builds");
+        bool want_seen = false;
+        ExpertHelperClient c;
+        check_status(handshake_ring(c, ring, true, false, want_seen), kOk, "(22e) negotiated handshake");
+        std::vector<int32_t> primary((size_t) kLayers * kExperts, -1);
+        ExpertHelperPromptPlan plan;
+        for (int i = 0; i < 3; ++i) { plan.pair_token.push_back(i); plan.pair_expert.push_back(7 + i); }
+        for (int i = 0; i < 3; ++i) plan.tokens.push_back(i);
+        fill_prompt_buffer(c, 3);
+        check_status(begin_prompt_drained(c, plan, primary.data(), 2000), kOk, "(22e) the claim is sent");
+        const std::vector<int32_t> claims = {0, 1, 2};
+        write_ring_doorbell(ring.publish(0, rowsp_payload(claims, row_val)), 3, /*req_id=*/2);
+        std::vector<float> out((size_t) 3 * kH, -1.0f);
+        int32_t rows = -1;
+        check_status(c.finish_prompt(out.data(), kH, claims, 5000, rows), kOk,
+                     "(22e) a sealed prompt doorbell is accepted");
+        check(rows == 3 && out[0] == (float) row_val(0, 0) &&
+                  out[(size_t) 2 * kH + 7] == (float) row_val(2, 7),
+              "(22e) the ring's prompt rows land at the PAIR indices");
+        check(c.stat_prompt_rows() == 3, "(22e) the prompt tier's own counters count ring rows");
+        c.close();
+        ::unsetenv("STRATA_HELPER_REPLY_RING");
+    }
+    {
+        // (23) r18h: THE WINDOW EPILOGUE'S RECORD LAYOUT.  ring_pack_records (helper_main) packs a
+        // slot's records through the protocol header's ring_record_claim/ring_record_floats - the
+        // same accessors this section drives - and the engine applies the same bytes through
+        // finish()'s doorbell path.  The live fault this pins: the epilogue packed only the floats
+        // and the header, so every record's claim word read as the memfd's zeroed page (index 0 for
+        // all 8 rows) and the first STRIPE+RING window died "helper row index refused (0 rows for 8
+        // claims)" (engine-v0233-stripe.log) - the prompt lane survived because serve_prompt packs
+        // host-side with the pair indices.  No GPU here (the kernel cannot run on this host): the
+        // pin is the LAYOUT the kernel must produce, applied by the same client finish() that
+        // refused the live bytes, plus the exact negative - a float-only pack is refused kErrBadId.
+        ::setenv("STRATA_HELPER_REPLY_RING", "1", 1);
+        FakeRing ring;
+        check(ring.create(false), "(23) the fake ring builds");
+        bool want_seen = false;
+        ExpertHelperClient c;
+        check_status(handshake_ring(c, ring, true, false, want_seen), kOk, "(23) negotiated handshake");
+        // The live fault's shape: 8 non-contiguous claims, claim order, values from row_val
+        const std::vector<int32_t> claims = {0, 3, 7, 11, 19, 24, 26, 31};
+        std::vector<float> compact(claims.size() * (size_t) kH);
+        for (size_t r = 0; r < claims.size(); ++r)
+            for (int64_t col = 0; col < kH; ++col)
+                compact[r * (size_t) kH + (size_t) col] = (float) row_val(claims[r], col);
+        // The epilogue's pack, through the SHARED accessors: header, then every record's claim word
+        // and floats - `payload.data()` stands in for the slot's records base the kernel writes.
+        const size_t row_bytes = 4 + (size_t) kH * 4;
+        std::vector<uint8_t> packed(sizeof(RowsResp) + claims.size() * row_bytes, 0);
+        RowsResp rep;
+        rep.n_rows = (int32_t) claims.size();
+        std::memcpy(packed.data(), &rep, sizeof(rep));
+        for (size_t r = 0; r < claims.size(); ++r) {
+            *ring_record_claim(packed.data(), kH, (int32_t) r) = claims[r];
+            for (int64_t col = 0; col < kH; ++col)
+                ring_record_floats(packed.data(), kH, (int32_t) r)[col] = compact[r * (size_t) kH + (size_t) col];
+        }
+        // The NEGATIVE first (it closes the channel): the pre-fix epilogue's exact bytes - header
+        // and floats only, the claim words left as the zeroed page, every record index 0.
+        std::vector<uint8_t> float_only(packed.size(), 0);
+        std::memcpy(float_only.data(), &rep, sizeof(rep));
+        for (size_t r = 0; r < claims.size(); ++r)
+            for (int64_t col = 0; col < kH; ++col)
+                ring_record_floats(float_only.data(), kH, (int32_t) r)[col] = compact[r * (size_t) kH + (size_t) col];
+        check(send_begin(c), "(23) kBegin sent (request 2: hello was 1)");
+        write_ring_doorbell(ring.publish(0, float_only), (int32_t) claims.size(), /*req_id=*/2);
+        std::vector<float> out((size_t) kNTok * 10 * kH, -1.0f);
+        int32_t rows = -1;
+        check_status(c.finish(out.data(), kH, kNTok, 10, claims, 5000, rows), kErrBadId,
+                     "(23) a float-only pack (no claim words) is refused as an index fault");
+        check(rows == 0 && !c.open(), "(23) the refusal closes the channel, 0 rows applied");
+        // The POSITIVE on a fresh client: the accessor-packed records apply whole, 8 rows, each at
+        // its ORIGINAL entry index - the layout the fixed epilogue publishes.
+        ExpertHelperClient c2;
+        check_status(handshake_ring(c2, ring, true, false, want_seen), kOk, "(23) second handshake");
+        check(send_begin(c2), "(23) kBegin sent (request 2: hello was 1)");
+        write_ring_doorbell(ring.publish(0, packed), (int32_t) claims.size(), /*req_id=*/2);
+        std::vector<float> out2((size_t) kNTok * 10 * kH, -1.0f);
+        check_status(c2.finish(out2.data(), kH, kNTok, 10, claims, 5000, rows), kOk,
+                     "(23) the accessor-packed doorbell is accepted");
+        check(rows == (int32_t) claims.size(), "(23) all 8 records apply");
+        bool placed = true;
+        for (const int32_t i : claims)
+            for (int64_t col = 0; col < kH; ++col)
+                if (out2[(size_t) i * kH + (size_t) col] != (float) row_val(i, col)) placed = false;
+        check(placed, "(23) the ring's rows land at their ORIGINAL entry indices");
+        c2.close();
+        ::unsetenv("STRATA_HELPER_REPLY_RING");
+    }
+    // (22f) GPU SCAFFOLD (the build window's addition, none of it runnable on this host): the
+    // helper-side pins that need the card are - (1) DONE on the host: section (23) pins the
+    // epilogue's record layout (header + claim words + floats, through the protocol header's
+    // shared accessors) against the engine's own doorbell validator, the r18h live fault's exact
+    // signature; the device leg that stays is the kernel's STORE of those bytes for one real
+    // window (extend helper_main's --once self-check to diff ring records against the legacy
+    // payload); (2) the event discipline: with STRATA_HELPER_STREAMS unset AND set, two channels'
+    // frames interleave and every doorbell's seal matches its records (a racy slot shows as
+    // kErrSeq at the engine); (3) the fill fence: a kFill issued between two launched frames never
+    // sees a half-written slot.
 
     std::printf("expert_helper_socket_test: %s\n", failures == 0 ? "PASS" : "FAIL");
     return failures == 0 ? 0 : 1;

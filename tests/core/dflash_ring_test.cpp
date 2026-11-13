@@ -213,6 +213,21 @@ int main() {
         check(fresh2.context_retained(T, ROWS), "the restored pair retains the checkpoint's resume: no old-prefix reread");
         check(!fresh2.context_retained(T + 1, ROWS), "the pair refuses a resume past its captured confirmed end");
 
+        // The cold mount (the serve path's answer to a draft miss): no pair, so the drafter's horizon is
+        // SET to the resume point.  The counters are the guards' whole state, so the mount must be legal
+        // from the first round on: propose at T, appends from T, and the window reads that follow are
+        // all retained by the rule (nothing newer than T + rows has appended).
+        DFlashRingState cold = live;
+        cold.committed_end = cold.appended_through = T;
+        check(cold.context_retained(T, ROWS), "the cold horizon retains its own resume");
+        check(cold.propose_allowed(T, ROWS), "the first round at a cold mount proposes (its rows are stale, the verify decides)");
+        check(cold.append_allowed(T, ROWS), "the cold horizon admits the appends at the resume");
+        cold.note_append(T, ROWS);   // the window's rows commit as the request goes on
+        check(cold.propose_allowed(T + ROWS, ROWS) && cold.append_allowed(T + ROWS, ROWS),
+              "the refill proceeds as the request appends");
+        check(cold.context_retained(T - 1, ROWS),
+              "below the cold horizon the ring reads are the previous turn's: guards say retained, the verify decides");
+
         // The retention boundary follows the horizon exactly: the oldest resumable position at a
         // horizon H is H - ring + window - 1, one deeper is overwritten (a ring-wrap capture miss).
         DFlashRingState wrap;
@@ -229,6 +244,23 @@ int main() {
         check(dflash_snapshot_extent(T, RING) == RING, "a deep checkpoint clamps the pair image to the ring");
         check(dflash_snapshot_extent(1000, RING) == 1000, "a short checkpoint's pair image is its own extent");
     }
+
+    // STRATA_DF2_WINDOW (round 11, bench-only): the readable SWA window override. Default and
+    // every invalid value keep the trained geometry; powers of two above it widen the window and
+    // the ring capacity follows (the runtime sizes pools and the attention kernel from the
+    // effective window - dflash2_effective_window is that one source of truth).
+    check(dflash2_effective_window(2048, nullptr) == 2048, "unset knob keeps the trained window");
+    check(dflash2_effective_window(2048, "") == 2048, "empty knob keeps the trained window");
+    check(dflash2_effective_window(2048, "0") == 2048, "0 is off, not a widen-to-zero");
+    check(dflash2_effective_window(2048, "2048") == 2048, "equal to the trained window is a no-op");
+    check(dflash2_effective_window(2048, "1024") == 2048, "narrowing below the trained window is refused");
+    check(dflash2_effective_window(2048, "3000") == 2048, "non-power-of-two is refused");
+    check(dflash2_effective_window(2048, "abc") == 2048, "garbage is refused, not zero");
+    check(dflash2_effective_window(2048, "4096") == 4096, "4096 widens the readable window");
+    check(dflash2_effective_window(2048, "8192") == 8192, "8192 widens the readable window");
+    check(dflash_ring_capacity(4096, ROWS, P) == 4160, "widened window: 4096+7 rounds up to 4160 cells (65 pages)");
+    const uint64_t pools4096 = 5ull * (uint64_t) dflash_ring_capacity(4096, ROWS, P) * 8ull * 128ull * 2ull * 2ull;
+    check(pools4096 == 85196800ull, "five FP16 pools at 4160 cells are exactly 85,196,800 bytes (~81 MiB, the mult-2 point)");
 
     if (failures) {
         std::printf("dflash_ring_test: %d FAILURES\n", failures);

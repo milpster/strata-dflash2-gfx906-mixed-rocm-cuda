@@ -16,6 +16,7 @@
 #include "strata/prefill/share_rules.hpp"
 #include "strata/prefill/pipeline_chunks.hpp"
 #include "strata/core/arch_defaults.hpp"
+#include "strata/core/swapin_depth.hpp"
 #include <atomic>
 #if defined(__cpp_lib_atomic_wait)
 #define STRATA_ATOMIC_WAIT 1   // #1488: std::atomic::wait / notify_all are a GCC 11 library feature; GCC 10 spins instead
@@ -683,9 +684,12 @@ struct PromptStageMemo {
                                        return v != nullptr && std::atoi(v) != 0; }();
     std::unordered_map<int64_t, std::unique_ptr<Slot>> slots;   // key = layer * n_expert + expert
     size_t used = 0;
+    /// W1 lever: the relief forces the memo ON (the dropped pairs must be read once, not every chunk).
+    /// run_impl sets it from the prefill's relief flag; the env STRATA_PROMPT_STAGE_MEMO stays the opt-in.
+    bool force = false;
     /// The pair's staged bytes (nullptr: no hit - off, unseen, or its copy has not run)
     const uint8_t* find(int64_t l, int64_t e, int64_t n_expert) const {
-        if (!on) return nullptr;
+        if (!(on || force)) return nullptr;
         const auto it = slots.find(l * n_expert + e);
         if (it == slots.end()) return nullptr;
         const Slot* s = it->second.get();
@@ -694,7 +698,7 @@ struct PromptStageMemo {
     }
     /// The slot to stage a pair into (nullptr: the cap is reached, the pair keeps today's per-chunk read)
     Slot* reserve(int64_t l, int64_t e, int64_t n_expert, size_t bytes) {
-        if (!on) return nullptr;
+        if (!(on || force)) return nullptr;
         const int64_t key = l * n_expert + e;
         const auto it = slots.find(key);
         if (it != slots.end()) return it->second.get();   // its job was skipped by the routing: fill it again
@@ -718,7 +722,8 @@ struct Stager {
     // D-5: the pinned ring's depth (STRATA_STAGER_RING, default 16) - how far the host copies can run ahead of the
     // DMAs of the unpinned experts' blobs
     int kRing = 16;
-    // pp-opt: the jobs a thread claims at once (STRATA_STAGER_BATCH; set by init's caller, at most kMaxBatch and kRing)
+    // pp-opt: the jobs a thread claims at once (STRATA_STAGER_BATCH; set by init's caller, at most
+    // kMaxBatch and kRing - STRATA_SWAPIN_DEPTH lifts the cap to 512 and sizes the ring with it)
     static constexpr int kMaxBatch = 32;
     int batch = 1;
     // `from` set: the blob is copied by the source itself (CS-T: a GGUF read in place assembles it from its three
@@ -823,11 +828,15 @@ struct Stager {
                     // was a ring entry the routing skipped (an event never recorded returns at once)
                     cudaEventSynchronize(dma_done[i % kRing]);
                 }
-                int32_t rl[kMaxBatch], re[kMaxBatch];
-                uint8_t* rd[kMaxBatch];
+                // STRATA_SWAPIN_DEPTH lifts a run past kMaxBatch (32) up to 512, so the run's arrays are
+                // sized by the claim and kept per thread - the window is allocated once and reused
+                thread_local std::vector<int32_t> rl, re;
+                thread_local std::vector<uint8_t*> rd;
                 // STRATA_PROMPT_STAGE_MEMO=1: the transient jobs that also fill a memo slot (t's bytes from rd[mri[t]])
-                PromptStageMemo::Slot* ms[kMaxBatch];
-                size_t mb[kMaxBatch], mri[kMaxBatch];
+                thread_local std::vector<PromptStageMemo::Slot*> ms;
+                thread_local std::vector<size_t> mb, mri;
+                rl.resize((size_t) k); re.resize((size_t) k); rd.resize((size_t) k);
+                ms.resize((size_t) k); mb.resize((size_t) k); mri.resize((size_t) k);
                 size_t nr = 0, nm = 0;
                 core::ExpertSource* from = nullptr;
                 for (int i = j; i < j + k; ++i) {
@@ -846,7 +855,7 @@ struct Stager {
                     if (jb.memo) { ms[nm] = jb.memo; mb[nm] = jb.bytes; mri[nm] = nr; ++nm; }
                     ++nr;
                 }
-                if (nr > 0 && !from->copy_blobs(rl, re, rd, nr)) {
+                if (nr > 0 && !from->copy_blobs(rl.data(), re.data(), rd.data(), nr)) {
                     std::fprintf(stderr, "prefill: the expert source could not copy experts %d.. of layer %d\n", re[0], rl[0]);
                     std::abort();
                 }
@@ -1944,14 +1953,24 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
             }
         }
         const int threads = stv ? std::clamp(std::atoi(stv), 1, 32) : files ? 32 : std::max(2, std::min(4, hw / 4));
-        if (files && std::getenv("STRATA_STAGER_RING") == nullptr) m.stager->kRing = 4 * threads;
-        // pp-opt: with files, each thread claims runs of neighbouring blobs and reads them as one request (copy_blobs);
-        // STRATA_STAGER_BATCH=1 is the A/B arm (one blob per request, as before)
-        {
-            const char* bv = std::getenv("STRATA_STAGER_BATCH");
-            const int want = bv ? std::atoi(bv) : files ? 8 : 1;
-            m.stager->batch = std::clamp(want, 1, Stager::kMaxBatch);
-        }
+        // pp-opt: with files, each thread claims runs of neighbouring blobs and reads them as one request
+        // (copy_blobs); STRATA_STAGER_BATCH=1 is the A/B arm (one blob per request, as before).
+        // STRATA_SWAPIN_DEPTH (round 15) widens that read window - the run size AND the ring that keeps
+        // a run's buffers distinct - so up to N ~2 MiB blobs are in flight before the batch waits; the
+        // relief serializes the file batches on the arena's file mutex, so the run IS the read queue's
+        // depth (a 142k prefill measured a flat ~1.0 GiB/s behind the 8-deep default on an NVMe that
+        // does 2.5-4+).  swapin_window keeps every existing knob surgical and answers today's numbers
+        // bit-for-bit when the depth knob is absent; the staging stays bounded at the ring it sized.
+        const strata::core::SwapinWindow swin = strata::core::swapin_window(
+            std::getenv("STRATA_SWAPIN_DEPTH"), std::getenv("STRATA_STAGER_BATCH"), std::getenv("STRATA_STAGER_RING"),
+            files, threads);
+        m.stager->kRing = swin.ring;
+        m.stager->batch = swin.run;
+        if (swin.note)
+            std::fprintf(stderr, "prefill: STRATA_SWAPIN_DEPTH=%d: the stager's pack-file runs read up to %d "
+                                 "experts per batch (ring %d, ~%lld MiB of staging in flight per run)\n",
+                         strata::core::swapin_depth(std::getenv("STRATA_SWAPIN_DEPTH")), swin.run, swin.ring,
+                         (long long) ((int64_t) swin.run * (int64_t) MAXBLOB() >> 20));
         if (!m.stager->init((size_t) MAXBLOB(), threads)) ok = false;
         m.stager->batch = std::min(m.stager->batch, m.stager->kRing);
     }
@@ -3634,7 +3653,32 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
 #endif
     // STRATA_PROMPT_STAGE_MEMO=1 (opt-in): this request's memo for the experts the chunk loop re-reads from the
     // pack files (see PromptStageMemo). Off by default: the loops below build every job exactly as before.
+    // W1 lever: the relief forces it ON - a dropped pair read every chunk (~52 ms each, hundreds of
+    // chunks) is read once into the memo; the chunks after it copy from the staged bytes.
     PromptStageMemo stage_memo;
+    stage_memo.force = m.hp_ram_relief;
+    // W1 lever: snapshot the source's cumulative swap-in counters so the request-end line reports only
+    // THIS request's prefill swap-ins (the source is shared across the split's stage threads).
+    const int64_t si_n0 = m.src ? m.src->swap_in_pairs() : 0;
+    const int64_t si_b0 = m.src ? m.src->swap_in_batches() : 0;
+    const int64_t si_y0 = m.src ? m.src->swap_in_bytes() : 0;
+    const int64_t si_t0 = m.src ? m.src->swap_in_ms() : 0;
+    // Round-17 design A ("read-once prefill"): arm the source's request-scoped LRU of blob images
+    // for THIS request (STRATA_READONCE_MIB, default off - the arm is a no-op then, and every
+    // consult behind it too).  A split's stages overlap, so the begin/end nest (refcounted on the
+    // source): the first stage in arms, the last one out frees every image wholesale.  The guard
+    // ends the window on ANY exit - a cancelled or failed prefill never parks its bytes.
+    const int64_t ro_h0 = m.src ? m.src->read_once_hits() : 0;
+    const int64_t ro_r0 = m.src ? m.src->read_once_reads() : 0;
+    const int64_t ro_y0 = m.src ? m.src->read_once_hit_bytes() : 0;
+    const int64_t ro_a0 = m.src ? m.src->read_once_admitted() : 0;
+    const int64_t ro_v0 = m.src ? m.src->read_once_evicted() : 0;
+    const int64_t ro_f0 = m.src ? m.src->read_once_refused() : 0;
+    struct ReadOnceArm {
+        core::ExpertSource* src;
+        ~ReadOnceArm() { if (src != nullptr) src->end_read_once(); }
+    } read_once_arm{m.src};
+    if (m.src) m.src->begin_read_once();
     for (int64_t c0 = 0; c0 < n; c0 += C) {
         if (should_stop && should_stop()) { err = "cancelled"; return false; }
         // the first stage: end the run before this chunk (every chunk before it is handed on; the caller's drain
@@ -7137,6 +7181,44 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         std::fprintf(stderr, "rpcprofile: pass gpu=%d tokens=%lld layers=%lld chunks=%lld pass_us=%lld\n",
                      es_gpu, (long long) n, (long long) (LE - LB), (long long) stats_.chunks,
                      (long long) std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - es_run0).count());
+    }
+    // W1 lever: this request's prefill batched swap-ins (dropped pairs read from the pack files in
+    // unbuffered windows), the number the validation window greps.  Same format as the decode tier's
+    // line; printed only when this request's prefill issued swap-ins (relief drops that missed the
+    // VRAM tier).  The source's counters are cumulative and shared across the split's stage threads,
+    // so this reports the request's delta.
+    if (m.src) {
+        const int64_t dn = m.src->swap_in_pairs() - si_n0;
+        if (dn > 0) {
+            const int64_t db = m.src->swap_in_batches() - si_b0;
+            const int64_t dy = m.src->swap_in_bytes() - si_y0;
+            const int64_t dt = m.src->swap_in_ms() - si_t0;
+            // STRATA_SWAPIN_DEPTH / STRATA_STAGER_BATCH: the read window this request ran with, so a
+            // deep arm's line says its depth without a second grep (default 8 keeps the line as before)
+            char depth[48] = "";
+            if (m.stager != nullptr && m.stager->batch != 8)
+                std::snprintf(depth, sizeof depth, " depth=%d", m.stager->batch);
+            std::fprintf(stderr, "strata serve: adapt swap-in: %lld swaps, %lld batches, %.0f MiB, %lld ms file read (%.2f ms/slot)%s\n",
+                         (long long) dn, (long long) db, (double) dy / 1048576.0, (long long) dt,
+                         (double) dt / (double) dn, depth);
+        }
+        // Round-17 design A: this request's read-once window, the line that says whether the LRU
+        // paid (hits/reads and the RAM it served) and what bounded it (the budget's evictions, the
+        // RAM guard's refusals).  Greppable key: `read-once reuse:`.  Printed only when the window
+        // did something (armed and moved); the knob off prints nothing, as before.
+        const int64_t ro_h = m.src->read_once_hits() - ro_h0;
+        const int64_t ro_r = m.src->read_once_reads() - ro_r0;
+        if (ro_h > 0 || ro_r > 0) {
+            const int64_t ro_y = m.src->read_once_hit_bytes() - ro_y0;
+            const int64_t ro_a = m.src->read_once_admitted() - ro_a0;
+            const int64_t ro_v = m.src->read_once_evicted() - ro_v0;
+            const int64_t ro_f = m.src->read_once_refused() - ro_f0;
+            const int64_t ro_all = ro_h + ro_r;
+            std::fprintf(stderr, "strata serve: read-once reuse: %lld hits / %lld reads (%.1f%%), %.1f GiB served "
+                                 "from RAM; %lld admitted, %lld evicted, %lld refused RAM\n",
+                         (long long) ro_h, (long long) ro_r, 100.0 * (double) ro_h / (double) ro_all,
+                         (double) ro_y / 1073741824.0, (long long) ro_a, (long long) ro_v, (long long) ro_f);
+        }
     }
     return true;
 }

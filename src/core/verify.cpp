@@ -2769,10 +2769,69 @@ void Verifier::refresh_ar() {
     const bool off = lo < 0;
     if (off != ar_off_) {
         ar_off_ = off;
+        ar_stable_ = 0;
+        ar_trimmed_ = false;
         std::fprintf(stderr, "strata verify: layers [%lld, %lld) %s\n", (long long) lb_, (long long) (le_ < 0 ? g_->n_layers : le_),
                      off ? "have experts out of VRAM (a prompt loan, a shrink or a swap): the doorbell graph runs the windows"
                          : "are 100% VRAM resident again: the zero-doorbell graph");
+        return;
     }
+    // STRATA_GRAPH_FAMILY_TRIM = N windows (unset / 0: off, both families stay instantiated for the process's life,
+    // as before): a stage that boots all-resident and is then loaned away captures both graph families, so once the
+    // flag has held for N windows the family it left behind is freed.
+    static const int trim_windows = [] {
+        const char* v = std::getenv("STRATA_GRAPH_FAMILY_TRIM");
+        const int n = v != nullptr ? std::atoi(v) : 0;
+        return n > 0 ? n : 0;
+    }();
+    if (trim_windows > 0 && !ar_trimmed_ && ++ar_stable_ >= trim_windows) trim_stale_family();
+}
+
+// The exec pools a graph family leaves behind when ar_off_ settles the other way (#2065: a card resting a few hundred
+// MiB short hangs at a capture; the freed pools are headroom for the expert cache).  Every refresh_ar caller sits at a
+// window boundary of this stage, so the stream sync evict_window_graph makes before its destroy is enough here too,
+// and a flip back re-captures lazily (one 5-56 ms capture per size).  A flag that oscillates faster than the
+// hysteresis count never frees anything: both families stay live, exactly as before.
+void Verifier::trim_stale_family() {
+    if (no_window_eviction_ || !pl_ple_rows_.empty() || released_.load()) {   // capture_all wants every size at once; pl_launch reads exec_ itself
+        ar_trimmed_ = true;
+        return;
+    }
+    constexpr int top = strata::kernels::kVerifyLongT;
+    auto stale = ar_off_ ? exec_ : exec_nr_;
+    auto stale_launched = ar_off_ ? launched_ : launched_nr_;
+    int pools = 0;
+    for (int sl = 0; sl < 2; ++sl)
+        for (int t = 0; t <= top; ++t) pools += stale[sl][t] != nullptr;
+    if (pools == 0) {
+        ar_trimmed_ = true;
+        return;
+    }
+    size_t free_b = 0, total = 0;
+    if (cudaMemGetInfo(&free_b, &total) != cudaSuccess) (void) cudaGetLastError();
+    // a window the flipped flag abandoned may still be draining on the stream (evict_window_graph's rule)
+    if (cudaStreamSynchronize(cs_) != cudaSuccess) {
+        (void) cudaGetLastError();   // a pending error would end the engine at the next wrapper call (#3702)
+        std::fprintf(stderr, "strata verify: the %s window graph family was kept (its stream did not sync)\n",
+                     ar_off_ ? "all-resident" : "doorbell");
+        return;   // not marked trimmed: the next window tries again
+    }
+    for (int sl = 0; sl < 2; ++sl)
+        for (int t = 0; t <= top; ++t)
+            if (stale[sl][t] != nullptr) {
+                cudaGraphExecDestroy(stale[sl][t]);
+                stale[sl][t] = nullptr;
+                stale_launched[sl][t] = false;   // a re-captured graph of that size is a cold first launch again
+            }
+    ar_trimmed_ = true;
+    size_t free_a = free_b;
+    char delta[64] = "";
+    if (cudaMemGetInfo(&free_a, &total) == cudaSuccess)
+        std::snprintf(delta, sizeof delta, ", free VRAM %zu -> %zu MiB", free_b >> 20, free_a >> 20);
+    else
+        (void) cudaGetLastError();
+    std::fprintf(stderr, "strata verify: freed the %s window graph family (%d exec pools%s); a residency flip back captures it again\n",
+                 ar_off_ ? "all-resident" : "doorbell", pools, delta);
 }
 
 bool Verifier::capture(int T, std::string& err) {
