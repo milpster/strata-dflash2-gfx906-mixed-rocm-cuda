@@ -2,6 +2,7 @@
 #include "strata/core/expert_source.hpp"
 #include "strata/core/swapin_depth.hpp"
 #include "strata/core/tail_skip.hpp"
+#include "strata/core/read_once.hpp"
 #include "strata/core/relief_arena_cap.hpp"
 #include "strata/core/expert_nibble.hpp"
 #include "strata/core/foresight_swap.hpp"
@@ -2575,6 +2576,50 @@ bool FileExpertSource::arm_swap_reads(std::string& why) {
     return true;
 }
 
+// Round-17 design A ("read-once prefill"): arm the REQUEST-scoped LRU of blob images for this
+// prefill.  The prompt path brackets each run_impl with begin/end; a split's stages overlap, so the
+// depth nests - the first one in arms the window, the last one out frees every image wholesale
+// (never parked, never pinned: plain pageable bytes the OS may take back under pressure).
+//
+// The budget is STRATA_READONCE_MIB (the journal's STRATA_PREFILL_REUSE_MIB alias), read against
+// the RAM available minus the STRATA_PIN_RESERVE_GIB reserve (the pin-guard's knob, the #1250
+// discipline): the window never arms above what the box can spare, and every admission step
+// re-checks it (read_once_room_).  Knob off (the default) or no room: nothing arms, and every
+// consult below is behind armed(), so the read path is bit-for-bit today.
+void FileExpertSource::begin_read_once() {
+    if (read_once_depth_.fetch_add(1, std::memory_order_acq_rel) > 0) return;   // a stage joins the armed window
+    static const int64_t knob_mib =
+        read_once_budget_mib(std::getenv("STRATA_READONCE_MIB"), std::getenv("STRATA_PREFILL_REUSE_MIB"));
+    static const uint64_t reserve = read_once_reserve_bytes(std::getenv("STRATA_PIN_RESERVE_GIB"));
+    if (knob_mib <= 0) return;
+    uint64_t available = 0;
+    const uint64_t budget =
+        available_memory_bytes(available) ? read_once_effective_budget((uint64_t) knob_mib << 20, available, reserve) : 0;
+    if (budget == 0) {
+        static std::atomic<bool> said{false};
+        if (!said.exchange(true))
+            std::fprintf(stderr, "FileExpertSource: read-once prefill window NOT armed: %lld MiB asked, but only "
+                                 "%.2f GiB free above the %.2f GiB reserve\n",
+                         (long long) knob_mib, (double) available / 1073741824.0, (double) reserve / 1073741824.0);
+        return;
+    }
+    read_once_room_ = [reserve](uint64_t need) {
+        uint64_t available = 0;
+        return available_memory_bytes(available) && available >= need + reserve;
+    };
+    read_once_.arm(budget);
+    std::fprintf(stderr, "FileExpertSource: read-once prefill window armed: %.2f GiB (of a %lld MiB knob; %.2f GiB "
+                         "free, %.2f GiB reserve) - dropped at the request's end\n",
+                 (double) budget / 1073741824.0, (long long) knob_mib, (double) available / 1073741824.0,
+                 (double) reserve / 1073741824.0);
+}
+
+void FileExpertSource::end_read_once() {
+    if (read_once_depth_.fetch_sub(1, std::memory_order_acq_rel) != 1) return;   // a stage left, the window holds
+    read_once_.disarm();
+    read_once_room_ = nullptr;
+}
+
 bool FileExpertSource::set_unbuffered(uint64_t ram_bytes, std::string& why) {
 #if defined(_WIN32) || defined(__linux__)
     if (base_ == nullptr || paths_.empty() || !direct_.empty()) {
@@ -3475,11 +3520,24 @@ bool FileExpertSource::copy_blob(int64_t layer, int64_t expert, uint8_t* dst) {
             return true;
         }
     }
+    // round-17 design A: a re-read within this request serves from the window's image, not the
+    // drive - the same hook as the resident copy above, request-scoped.  The holder keeps the
+    // image alive across a concurrent eviction for the whole memcpy.
+    if (read_once_.armed()) {
+        if (auto image = read_once_.find((int64_t) index)) {
+            std::memcpy(dst, image.get(), (size_t) bytes);
+            return true;
+        }
+    }
     const auto t0 = std::chrono::steady_clock::now();
     if (!copy_from_files(layer, expert, dst)) return false;
     file_us_.fetch_add((uint64_t) std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count(),
                        std::memory_order_relaxed);
     file_read_bytes_.fetch_add(bytes, std::memory_order_relaxed);
+    if (read_once_.armed()) {   // keep what was just read, under the budget and the RAM guard
+        read_once_.note_reads(1, bytes);
+        read_once_.admit((int64_t) index, dst, bytes, read_once_room_);
+    }
     return true;
 }
 
@@ -3492,6 +3550,7 @@ bool FileExpertSource::copy_blobs(const int32_t* layers, const int32_t* experts,
     thread_local std::vector<Fill> fills;
     fills.clear();
     uint64_t bytes = 0;
+    const bool once = read_once_.armed();   // round-17 design A: consult the window before read_direct
     for (size_t i = 0; i < n; ++i) {
         const int64_t l = layers[i], e = experts[i];
         if (base_ == nullptr || dst[i] == nullptr || l < 0 || e < 0 || l >= n_layers_ || e >= n_expert_) return false;
@@ -3500,6 +3559,12 @@ bool FileExpertSource::copy_blobs(const int32_t* layers, const int32_t* experts,
             (resident_blob(index) != nullptr || (!override_.empty() && override_[index] != nullptr))) {
             if (!copy_blob(l, e, dst[i])) return false;
             continue;
+        }
+        if (once) {
+            if (auto image = read_once_.find((int64_t) index)) {
+                std::memcpy(dst[i], image.get(), layer_blob_bytes_[(size_t) l]);
+                continue;
+            }
         }
         fills.push_back({0, l, e, dst[i]});
         bytes += layer_blob_bytes_[(size_t) l];
@@ -3512,6 +3577,14 @@ bool FileExpertSource::copy_blobs(const int32_t* layers, const int32_t* experts,
     file_us_.fetch_add((uint64_t) std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count(),
                        std::memory_order_relaxed);
     file_read_bytes_.fetch_add(bytes, std::memory_order_relaxed);
+    // round-17 design A: count the misses and keep what was just read, one blob at a time, each
+    // only while the RAM available covers it above the reserve (the pin-guard's stepwise pattern)
+    if (once) {
+        read_once_.note_reads(fills.size(), bytes);
+        for (const Fill& f : fills)
+            read_once_.admit((int64_t) ((size_t) f.layer * (size_t) n_expert_ + (size_t) f.e), f.dst,
+                             layer_blob_bytes_[(size_t) f.layer], read_once_room_);
+    }
     // W1 lever: the prefill's batched swap-in meter (armed by arm_swap_reads).  Every unbuffered
     // read_direct window counts as one swap-in batch of its pairs; the prompt path prints these as
     // its "adapt swap-in" line.  Off (no relief packs): swap_meter_ false, nothing is counted.

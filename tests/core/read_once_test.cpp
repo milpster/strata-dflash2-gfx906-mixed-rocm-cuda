@@ -73,16 +73,16 @@ int main() {
         check(w.admit(10, a, 4, nullptr), "the first blob is admitted");
         check(w.admit(20, b, 4, nullptr), "the second fills the budget");
         check(w.held_bytes() == 8, "the window holds both");
-        const uint8_t* img = w.find(10);
-        check(img != nullptr && std::memcmp(img, a, 4) == 0, "the first blob hits with its bytes");
+        auto img = w.find(10);
+        check(img != nullptr && std::memcmp(img.get(), a, 4) == 0, "the first blob hits with its bytes");
         img = w.find(20);
-        check(img != nullptr && std::memcmp(img, b, 4) == 0, "the second hits too");
-        check(!w.admit(30, c, 4, nullptr), "a third blob over budget: the eviction loop must make room");
-        // 30 evicted nothing yet - the LRU back is 20 (the hit on 10 refreshed it); 20 went for 30
+        check(img != nullptr && std::memcmp(img.get(), b, 4) == 0, "the second hits too");
+        check(w.admit(30, c, 4, nullptr), "a third blob over budget: evicting the least-recent entry makes room");
+        // the LRU back was 10 (the hit on 20 refreshed 20 last; 10 is the least recent); 10 went for 30
         ReadOnceWindow::Counters k = w.counters();
         check(k.evicted == 1 && k.evicted_bytes == 4, "the least-recent entry was evicted for it");
-        check(w.find(20) == nullptr, "the evicted key is a miss again");
-        check(w.find(10) != nullptr, "the refreshed key survived");
+        check(w.find(10) == nullptr, "the evicted key is a miss again");
+        check(w.find(20) != nullptr, "the most recently hit key survived");
         check(w.find(30) != nullptr, "the new key is in");
         check(w.held_bytes() == 8, "the budget is respected exactly");
         // a blob bigger than the whole budget: refused without touching anything
@@ -150,7 +150,10 @@ int main() {
         check(k.hits == (uint64_t) hits && k.reads == (uint64_t) reads,
               "the counters say what the walk saw (the meter's hits/reads)");
         check(k.read_bytes == (uint64_t) (want_reads * blob_bytes), "the read bytes are the misses only");
-        check(k.evicted == 0, "one chunk's set needs no eviction (the budget holds the working set)");
+        check(k.evicted == (uint64_t) ((sweeps - 1) * shared),
+              "each later sweep's admissions evict exactly its unshared half (the LRU tail)");
+        check(w.held_bytes() == (uint64_t) (per_chunk * blob_bytes),
+              "the window holds one chunk's set at every step (the budget is respected exactly)");
     }
 
     if (failures == 0) std::printf("read_once_test: all checks passed\n");

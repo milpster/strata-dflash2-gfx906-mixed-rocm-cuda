@@ -25,6 +25,7 @@
 #include "strata/core/pinned.hpp"
 #include "strata/core/exchange_storage.hpp"
 #include "strata/core/hit_hook.hpp"
+#include "strata/core/read_once.hpp"
 #include "strata/kernels/cpu/pool.hpp"
 
 #include <algorithm>
@@ -276,6 +277,19 @@ public:
     virtual int64_t swap_in_batches() const { return 0; }
     virtual int64_t swap_in_bytes() const { return 0; }
     virtual int64_t swap_in_ms() const { return 0; }
+    /// Round-17 design A ("read-once prefill"): arm/disarm the file tier's REQUEST-scoped LRU of
+    /// blob images (see ReadOnceWindow) for this prefill - the caller brackets its run_impl with
+    /// the pair, and a split's overlapping stages nest (refcounted; the last one out frees every
+    /// image).  The meter counters below are cumulative over the process, as the swap-in counters;
+    /// the prompt path prints their per-request deltas as its "read-once reuse" line.
+    virtual void begin_read_once() {}
+    virtual void end_read_once() {}
+    virtual int64_t read_once_hits() const { return 0; }
+    virtual int64_t read_once_reads() const { return 0; }
+    virtual int64_t read_once_hit_bytes() const { return 0; }
+    virtual int64_t read_once_admitted() const { return 0; }
+    virtual int64_t read_once_evicted() const { return 0; }
+    virtual int64_t read_once_refused() const { return 0; }
     /// The `n` experts of `layer` the CPU is about to ask `blob` for, all at once: a source that reads a file may
     /// fetch them in parallel.  The bytes `blob` then returns are the same.  Default: nothing.
     virtual void prefetch(int64_t layer, const int64_t* experts, int64_t n) { (void) layer; (void) experts; (void) n; }
@@ -1021,6 +1035,18 @@ public:
     int64_t swap_in_batches() const override { return swap_batches_.load(std::memory_order_relaxed); }
     int64_t swap_in_bytes() const override { return swap_bytes_.load(std::memory_order_relaxed); }
     int64_t swap_in_ms() const override { return swap_ms_.load(std::memory_order_relaxed); }
+    /// Round-17 design A: the request-scoped read-once window (read_once.hpp).  begin/end bracket
+    /// a prefill - refcounted, so a split's overlapping stages share one armed window - and the
+    /// counters are the window's, cumulative as the swap-in counters (the prompt path prints
+    /// per-request deltas as its "read-once reuse" line).
+    void begin_read_once() override;
+    void end_read_once() override;
+    int64_t read_once_hits() const override { return (int64_t) read_once_.counters().hits; }
+    int64_t read_once_reads() const override { return (int64_t) read_once_.counters().reads; }
+    int64_t read_once_hit_bytes() const override { return (int64_t) read_once_.counters().hit_bytes; }
+    int64_t read_once_admitted() const override { return (int64_t) read_once_.counters().admitted; }
+    int64_t read_once_evicted() const override { return (int64_t) read_once_.counters().evicted; }
+    int64_t read_once_refused() const override { return (int64_t) read_once_.counters().refused; }
     bool copy_blobs(const int32_t* layers, const int32_t* experts, uint8_t* const* dst, size_t n) override;
     /// CS-T: advances the assembled blobs' age (see staged_blob).
     void begin_layer(int64_t layer, const int32_t* ids, int64_t k) override;
@@ -1187,6 +1213,14 @@ private:
     /// lever); copy_blobs' unbuffered read_direct window counts a batch into these when armed.
     std::atomic<int64_t> swap_pairs_{0}, swap_batches_{0}, swap_bytes_{0}, swap_ms_{0};
     bool swap_meter_ = false;
+    /// Round-17 design A ("read-once prefill"): the REQUEST-scoped LRU of blob images copy_blobs
+    /// consults before read_direct (see read_once.hpp).  `read_once_depth_` nests a split's
+    /// overlapping prefill stages - the first one in arms the window (min(knob, free - reserve)),
+    /// the last one out frees every image wholesale; `read_once_room_` is the admission guard
+    /// (each admit only while the RAM available covers it above STRATA_PIN_RESERVE_GIB).
+    ReadOnceWindow read_once_;
+    std::atomic<int> read_once_depth_{0};
+    std::function<bool(uint64_t)> read_once_room_;
     std::vector<int> role_file_;              ///< 3 x n_layers: index into maps_ / direct_
     /// blobs assembled in the stage buffers (`blob` hands those out): the GGUF in place, or any unbuffered source
     bool staged() const { return !role_ptr_.empty() || !direct_.empty() || io_pf_; }
@@ -1408,6 +1442,16 @@ public:
     int64_t swap_in_batches() const override { return file_ ? file_->swap_in_batches() : 0; }
     int64_t swap_in_bytes() const override { return file_ ? file_->swap_in_bytes() : 0; }
     int64_t swap_in_ms() const override { return file_ ? file_->swap_in_ms() : 0; }
+    /// Round-17 design A: the read-once window lives on the file source this arena reads its
+    /// dropped pairs through (the same lock-free pointer discipline as the swap-in counters).
+    void begin_read_once() override { if (file_) file_->begin_read_once(); }
+    void end_read_once() override { if (file_) file_->end_read_once(); }
+    int64_t read_once_hits() const override { return file_ ? file_->read_once_hits() : 0; }
+    int64_t read_once_reads() const override { return file_ ? file_->read_once_reads() : 0; }
+    int64_t read_once_hit_bytes() const override { return file_ ? file_->read_once_hit_bytes() : 0; }
+    int64_t read_once_admitted() const override { return file_ ? file_->read_once_admitted() : 0; }
+    int64_t read_once_evicted() const override { return file_ ? file_->read_once_evicted() : 0; }
+    int64_t read_once_refused() const override { return file_ ? file_->read_once_refused() : 0; }
     void note_async_read(const uint8_t* blob, void* stream) override;
     void begin_layer(int64_t layer, const int32_t* ids, int64_t k) override;
     void prefetch(int64_t layer, const int64_t* experts, int64_t n) override;

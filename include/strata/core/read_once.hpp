@@ -102,9 +102,10 @@ public:
     }
     bool armed() const { return armed_.load(std::memory_order_acquire); }
 
-    /// The image for `key` (nullptr: miss, or off); `bytes` says how many bytes it holds (the
-    /// layer's blob size).  A hit becomes the most-recent entry.
-    const uint8_t* find(int64_t key, uint64_t* bytes = nullptr) {
+    /// The image for `key` (a null holder: miss, or off).  The returned holder keeps the bytes
+    /// alive across a concurrent eviction, so the copy runs without the lock; hold it for the
+    /// whole memcpy.  A hit becomes the most-recent entry.
+    std::shared_ptr<const uint8_t[]> find(int64_t key) {
         if (!armed()) return nullptr;
         std::lock_guard<std::mutex> lk(mu_);
         const auto it = map_.find(key);
@@ -112,8 +113,7 @@ public:
         order_.splice(order_.begin(), order_, it->second.pos);
         c_.hits += 1;
         c_.hit_bytes += it->second.size;
-        if (bytes != nullptr) *bytes = it->second.size;
-        return it->second.image.get();
+        return it->second.image;
     }
 
     /// Count `n` file-read blobs of `bytes` (what the tier read past the window).

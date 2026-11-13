@@ -3663,6 +3663,22 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
     const int64_t si_b0 = m.src ? m.src->swap_in_batches() : 0;
     const int64_t si_y0 = m.src ? m.src->swap_in_bytes() : 0;
     const int64_t si_t0 = m.src ? m.src->swap_in_ms() : 0;
+    // Round-17 design A ("read-once prefill"): arm the source's request-scoped LRU of blob images
+    // for THIS request (STRATA_READONCE_MIB, default off - the arm is a no-op then, and every
+    // consult behind it too).  A split's stages overlap, so the begin/end nest (refcounted on the
+    // source): the first stage in arms, the last one out frees every image wholesale.  The guard
+    // ends the window on ANY exit - a cancelled or failed prefill never parks its bytes.
+    const int64_t ro_h0 = m.src ? m.src->read_once_hits() : 0;
+    const int64_t ro_r0 = m.src ? m.src->read_once_reads() : 0;
+    const int64_t ro_y0 = m.src ? m.src->read_once_hit_bytes() : 0;
+    const int64_t ro_a0 = m.src ? m.src->read_once_admitted() : 0;
+    const int64_t ro_v0 = m.src ? m.src->read_once_evicted() : 0;
+    const int64_t ro_f0 = m.src ? m.src->read_once_refused() : 0;
+    struct ReadOnceArm {
+        core::ExpertSource* src;
+        ~ReadOnceArm() { if (src != nullptr) src->end_read_once(); }
+    } read_once_arm{m.src};
+    if (m.src) m.src->begin_read_once();
     for (int64_t c0 = 0; c0 < n; c0 += C) {
         if (should_stop && should_stop()) { err = "cancelled"; return false; }
         // the first stage: end the run before this chunk (every chunk before it is handed on; the caller's drain
@@ -7185,6 +7201,23 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
             std::fprintf(stderr, "strata serve: adapt swap-in: %lld swaps, %lld batches, %.0f MiB, %lld ms file read (%.2f ms/slot)%s\n",
                          (long long) dn, (long long) db, (double) dy / 1048576.0, (long long) dt,
                          (double) dt / (double) dn, depth);
+        }
+        // Round-17 design A: this request's read-once window, the line that says whether the LRU
+        // paid (hits/reads and the RAM it served) and what bounded it (the budget's evictions, the
+        // RAM guard's refusals).  Greppable key: `read-once reuse:`.  Printed only when the window
+        // did something (armed and moved); the knob off prints nothing, as before.
+        const int64_t ro_h = m.src->read_once_hits() - ro_h0;
+        const int64_t ro_r = m.src->read_once_reads() - ro_r0;
+        if (ro_h > 0 || ro_r > 0) {
+            const int64_t ro_y = m.src->read_once_hit_bytes() - ro_y0;
+            const int64_t ro_a = m.src->read_once_admitted() - ro_a0;
+            const int64_t ro_v = m.src->read_once_evicted() - ro_v0;
+            const int64_t ro_f = m.src->read_once_refused() - ro_f0;
+            const int64_t ro_all = ro_h + ro_r;
+            std::fprintf(stderr, "strata serve: read-once reuse: %lld hits / %lld reads (%.1f%%), %.1f GiB served "
+                                 "from RAM; %lld admitted, %lld evicted, %lld refused RAM\n",
+                         (long long) ro_h, (long long) ro_r, 100.0 * (double) ro_h / (double) ro_all,
+                         (double) ro_y / 1073741824.0, (long long) ro_a, (long long) ro_v, (long long) ro_f);
         }
     }
     return true;
