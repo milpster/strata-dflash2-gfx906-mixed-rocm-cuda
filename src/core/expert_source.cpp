@@ -1,6 +1,7 @@
 // src/core/expert_source.cpp - the adapter.  See the header for the three clauses of the contract.
 #include "strata/core/expert_source.hpp"
 #include "strata/core/swapin_depth.hpp"
+#include "strata/core/tail_skip.hpp"
 #include "strata/core/relief_arena_cap.hpp"
 #include "strata/core/expert_nibble.hpp"
 #include "strata/core/foresight_swap.hpp"
@@ -5059,10 +5060,14 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
         // STRATA_ROUTE_TAIL_SKIP=R (default 7 on CUDA serve, =0 off; changes the output): a missed expert that EVERY token of the window routes
         // only at rank >= R (the smallest weights of the top-10) is neither copied nor computed; its contribution is
         // zero, without renormalisation (the others keep the weight the router gave them).  Less PCIe and CPU work.
+        // tail_skip_gate (strata/core/tail_skip.hpp): with a helper/remote tier registered the skip needs
+        // STRATA_TAIL_SKIP_HELPER=1, and then holds PER ENTRY - a row a tier holds is the helper's to compute and is
+        // never skipped (begin claims only what it holds, so a skipped row could not reach the helper anyway).
         const int tail_rank = tail_skip_rank();
+        static const char* const tail_helper_env = std::getenv("STRATA_TAIL_SKIP_HELPER");   // read once
         bool skip_d[kMaxWindowEntries];
         for (int q = 0; q < nd; ++q) skip_d[q] = false;
-        if (tail_rank > 0 && d.peer == nullptr && d.remote_count == 0) {
+        if (tail_skip_gate(tail_rank, d.peer != nullptr, d.remote_count, tail_helper_env)) {
             int minr[kMaxWindowEntries];
             for (int q = 0; q < nd; ++q) minr[q] = 99;
             for (int64_t i = 0; i < n; ++i) {
@@ -5074,6 +5079,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                 const int32_t e = ids[distinct[q]];
                 if (e < 0 || e >= d.n_expert || minr[q] < tail_rank) continue;
                 if (d.host_res[(size_t) d.layers * (size_t) d.n_expert + (size_t) e] >= 0) continue;   // resident
+                if (helper_holds(e)) continue;   // STRATA_TAIL_SKIP_HELPER: the helper's to compute - never skipped
                 skip_d[q] = true;
                 --nmiss;
                 ++d.tail_experts;

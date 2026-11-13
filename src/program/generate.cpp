@@ -47,6 +47,7 @@
 #include "strata/core/defaults_026.hpp"
 #include "strata/core/coupled_draft.hpp"
 #include "strata/core/expert_source.hpp"
+#include "strata/core/tail_skip.hpp"
 #include "strata/core/foresight_swap.hpp"
 #include "strata/core/pinned.hpp"
 #include "strata/core/pin_budget.hpp"
@@ -15634,11 +15635,28 @@ int main(int argc, char** argv) {
                                      "few are missed and skipping them costs more draft acceptance than it saves; "
                                      "STRATA_ROUTE_TAIL_SKIP=7 turns it on\n", 100.0 * (double) cached_experts / (double) host_res.size());
             if (tail_default_ok) strata::core::set_tail_skip_rank(7);
-            if (strata::core::tail_skip_rank() > 0 && !all_experts_resident)
-                std::fprintf(stderr, "strata serve: STRATA_ROUTE_TAIL_SKIP=%d is ON%s: a missed expert that every token of a verify window routes at rank %d or "
-                                     "lower is skipped (+10..20%% decode on 12-16 GB cards that miss experts, answers differ slightly from 0.1.41); "
-                                     "STRATA_ROUTE_TAIL_SKIP=0 turns it off\n", strata::core::tail_skip_rank(),
-                             tse == nullptr ? " (default)" : "", strata::core::tail_skip_rank());
+            // The banner says what the dispatch will actually do: tail_skip_gate (strata/core/tail_skip.hpp) is the
+            // same decision the skip loop makes, so a helper rig no longer reads "is ON" over a skip that v0232 kept
+            // silently inert (the "route tail skip" counter never moved there).
+            if (strata::core::tail_skip_rank() > 0 && !all_experts_resident) {
+                const bool tail_skip_on = strata::core::tail_skip_gate(strata::core::tail_skip_rank(), drive.d.peer != nullptr,
+                                                                       drive.d.remote_count, std::getenv("STRATA_TAIL_SKIP_HELPER"));
+                if (tail_skip_on)
+                    std::fprintf(stderr, "strata serve: STRATA_ROUTE_TAIL_SKIP=%d is ON%s%s: a missed expert that every token of a verify window routes at rank %d or "
+                                         "lower is skipped (+10..20%% decode on 12-16 GB cards that miss experts, answers differ slightly from 0.1.41); "
+                                         "%sSTRATA_ROUTE_TAIL_SKIP=0 turns it off\n", strata::core::tail_skip_rank(),
+                                 tse == nullptr ? " (default)" : "",
+                                 drive.d.remote_count > 0 ? " (helper rig: per entry - only the misses no helper tier holds)" : "",
+                                 strata::core::tail_skip_rank(),
+                                 drive.d.remote_count > 0 ? "STRATA_TAIL_SKIP_HELPER=0 suspends it on a helper rig; " : "");
+                else if (drive.d.peer != nullptr)
+                    std::fprintf(stderr, "strata serve: STRATA_ROUTE_TAIL_SKIP=%d is suspended: --peer-device registers a peer expert tier whose rows the skip "
+                                         "would zero\n", strata::core::tail_skip_rank());
+                else
+                    std::fprintf(stderr, "strata serve: STRATA_ROUTE_TAIL_SKIP=%d is suspended: a helper expert tier is registered and the skip would zero its "
+                                         "rows; STRATA_TAIL_SKIP_HELPER=1 skips only the misses no tier holds (the CPU-bound ones), exactly a rig without "
+                                         "a helper\n", strata::core::tail_skip_rank());
+            }
         }
         if (o.adapt_every > 0 && o.adapt_swaps > 0 && !all_experts_resident)
             drive.d.usage.assign((size_t) (g.n_layers * g.n_expert), 0.0f);
