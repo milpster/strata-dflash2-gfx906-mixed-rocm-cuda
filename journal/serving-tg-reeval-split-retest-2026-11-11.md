@@ -2809,3 +2809,53 @@ STRATA_GRAPH_FAMILY_TRIM=8; every other knob OFF. Honest bar state: 64k at the 3
 180k at 29-31.5 (floor not reached — the remaining lever is the staging ring saturation, then the
 stall class). Launcher: launch-trial-spill40.sh now forwards the helper-side knob family
 (REPLY_RING/WIN_FAST/PINNED_RX/STREAMS/F32_QUANT_DUMP) past its env -i sanitization.
+
+**Round 18k — full-residency boot hang root-caused and fixed (v0233-candidate @ 687b459619).**
+The no-relief boots (22:16/22:22/22:29 gens, prod-swift15-...-3010059/3097037/3198324) all died
+after the engine's "loaded 46.84 GiB" line (generate.cpp:8608) and never printed the next engine
+line, "GPU host-callback thread started" — the STRATA_ADAPT_CALLBACK_WARMUP block's
+cudaLaunchHostFunc + cudaStreamSynchronize(default stream). Between those two prints the strata
+side runs NO loop at all: the whole-arena path's post-fill work is O(1) (single alias,
+expert_source.cpp:6547-6557), all registration loops are per-RANGE (pinned.cu:786 whole span = ONE
+cudaHostRegister; :900/:1017 per-range; alias tables per-range) — the task's per-page/per-pair
+suspects were exonerated by reading. The 100%-one-core, read_bytes-zero profile is the HIP driver
+spinning its default-stream sync over the 46.84 GiB PORTABLE|MAPPED THP registration (12.3M pinned
+4K pages) that the PinnedArena constructor made BEFORE the fill; the callback-thread launch over it
+never returns. Proof by contrast: the relief boot passes the identical call in seconds
+(engine-prod-iq3s-v0233.log :27->:29, "reserve only (nothing registered)" -> "loaded" ->
+host-callback line) and registers 21.5 GiB/3440 ranges AFTER the handshake (line 56), serving fine
+— so registration per se is fine; the warm-up call over the whole-span registration is the poison.
+Fix (code-only, v0233-candidate): generate.cpp moved the __linux__ warm-up block to right after the
+device check, BEFORE the arena is reserved/registered — the driver creates its host-callback thread
+while nothing is registered; #1964 affinity rule intact (no cudaSetDevice between the new spot and
+the old, ExpertPool pinning far below). Relief boots: the line just prints ~60 s earlier. Also
+added ~10% progress prints so a slow boot is never silent: whole-span registration begins/ok+seconds
+(pinned.cu), ByNeed + register_after_fill range loops (ranges, GiB), open()/apply_registration alias
+tables (ranges), register_complement pair scan (layers). Engine build clean
+(build-mixed-gpu/rpcw-hip, make -j6 strata, no new warnings on the edited TUs). Host test: the fix
+is GPU-call ordering in generate.cpp — not extractable; every touched loop calls cudaHostRegister/
+cudaHostGetDevicePointer. Range-merge arithmetic stays covered by arena_pin_ranges_test (host,
+green). pinned_alias_test needs a real registration (GPU) — not runnable while prod serves.
+Expected relief-off boot: registration ~60 s (now announced + timed), fill ~57 s, pool+prefills+
+handshake ~20 s -> under ~2.5 min, well inside the 1200 s launcher deadline.
+PROD CHANGE to re-apply full residency (operator mandate: all experts resident, no eviction): drop
+the four relief args from the engine config — --expert-helper-ram-relief, --expert-helper-ram-relief-packs,
+--expert-helper-relief-hot-mib, --expert-helper-relief-arena-cap-mib — keep everything else (env
+STRATA_SWAPIN_DEPTH=64 STRATA_HELPER_RESERVE=320 STRATA_FS_SLOTS=3,2 STRATA_FS_HELPER_SHADOW=1
+STRATA_FS_ADMIT=2 STRATA_GRAPH_FAMILY_TRIM=8, startup-timeout 1200 s). Boot lines to watch:
+"strata pin: registering the whole arena (47.9 GiB) for DMA before the fill ..." -> "... ok in N s"
+-> "GPU host-callback thread started before host-core pinning" (now BEFORE the arena lines) ->
+"loaded 46.84 GiB" -> helper handshake.
+
+### 18m — prod ops (parent): verify-layer-13 death spiral, 576 reserves, boot #7 stable
+Residency flip attempts on the round-1 binary (687b459619) still hung after the expert-cache line ->
+stayed on relief. Relief then entered a NEW fatal mode: "Unrecoverable native verification failure:
+verify: timed out at layer 13; its GPU waits were released" -> engine self-exit -> helper channel
+close -> supervisor rebuild, every ~5 min. Mechanism: each rebuild resumes the same ~131k sessions ->
+card1 back to the #2065 35-MiB-free paging regime -> GPU wait at layer 13 stalls past deadline ->
+fatal. Fix (config): --vram-reserve-mib / --vram-reserve-later-mib 256 -> 576 on relief
+(88f43643d5). Boot #7: up 150 s, survived 4-min traffic window, 0 verify-timeouts, engine stable
+>10 min (gen 10 cumulative). Relief champion stack otherwise unchanged.
+Round 2 (register-last) in flight; reviewer gate now mandatory before any build/flip/arm; all future
+panels carry temp-0 sha guards (driver pins temperature 0 + records completion sha256; killer shape
+= standalone prefill leg ctx=995000 on a fresh boot, no 64k-leg prefix contamination).
