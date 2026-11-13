@@ -1222,7 +1222,13 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
     }();
     const bool graph_buckets = dg.is_dflash2() && !reference && graph_buckets_enabled;
     const bool local_attention = dg.is_dflash2() && dg.head_dim == 128 && dg.sliding_window > 0;
-    const int64_t attention_capacity = local_attention ? std::min<int64_t>(scratch_cap_, dg.sliding_window + K)
+    // The launch grid must cover the SAME window the kernel is handed below (ring_state_.window):
+    // attention128_kernel starts each row's span at end-rows-window+1, so chunks sized for the
+    // trained window would attend only the first 2048 rows of a widened STRATA_DF2_WINDOW span -
+    // the newest rows, not the widened ones. ring_state_.window == dg.sliding_window whenever the
+    // knob is off, so the default geometry stays bit-for-bit.
+    const int64_t attn_window = ring_state_.window ? ring_state_.window : dg.sliding_window;
+    const int64_t attention_capacity = local_attention ? std::min<int64_t>(scratch_cap_, attn_window + K)
                                                       : scratch_cap_;
     const int64_t visible_cells = std::min<int64_t>(pos + K, attention_capacity);
     const int64_t attention_cells = graph_on && graph_buckets
