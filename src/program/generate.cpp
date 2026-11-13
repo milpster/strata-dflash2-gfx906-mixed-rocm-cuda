@@ -23064,25 +23064,39 @@ int main(int argc, char** argv) {
             }
             if (strata::program::conv_cache::gen_anchor_should_capture(gen_anchor, cancelled, live_ok, o.prompt_cache,
                                                                        disk_on(), gen_T, gen_ckpt_at_T, gen_anchor_min)) {
+                // round 16: the anchor's own wall is said on every line below (the checkpoint save,
+                // the pair's ring read and sidecar write) so a panel can attribute PP drift to it
+                // directly - round 15's V3 arm read as "the anchor costs 13% PP" until the server
+                // progress lines showed the loss sat in the prompt's end-of-boundary phase, before
+                // the anchor (which runs after decode, outside prompt_ms's clock entirely).
+                const auto anchor_t0 = Clock::now();
+                const auto anchor_ms = [&] {
+                    return std::chrono::duration<double, std::milli>(Clock::now() - anchor_t0).count();
+                };
                 uint64_t gen_bytes = ckpt_state_bytes(ss, gen_T);
                 for (const auto& st : stages) gen_bytes += ckpt_state_bytes(st->ss, gen_T);
                 if (!ckpt_ram_room(gen_bytes, true, gen_T)) {
-                    std::fprintf(stderr, "strata serve: STRATA_GEN_ANCHOR: anchor at %lld skipped: the RAM floor "
+                    std::fprintf(stderr, "strata serve: STRATA_GEN_ANCHOR: anchor at %lld skipped in %.1f ms: the RAM floor "
                                          "refuses its copy; the request is done and nothing stalls\n",
-                                 (long long) gen_T);
+                                 (long long) gen_T, anchor_ms());
                 } else if (checkpoint_at(gen_T)) {
                     const ConvCheckpoint* a = nullptr;
                     for (const ConvCheckpoint& c : checks)
                         if ((int64_t) c.ids.size() == gen_T) a = &c;
+                    const bool paired = a != nullptr && a->draft_pair.ok();
+                    char sidecar[48] = "";
+                    if (paired)
+                        std::snprintf(sidecar, sizeof sidecar, ", sidecar %llu MiB",
+                                      (unsigned long long) (a->draft_pair.bytes >> 20));
                     std::fprintf(stderr, "strata serve: STRATA_GEN_ANCHOR: anchor at %lld tokens (deepest was %lld: "
-                                         "%lld tail tokens a continuation re-reads no more; pair %s)\n",
+                                         "%lld tail tokens a continuation re-reads no more; pair %s) in %.1f ms%s\n",
                                  (long long) gen_T, (long long) gen_deepest,
                                  (long long) strata::program::conv_cache::gen_anchor_saved_tokens(gen_T, gen_deepest),
-                                 a != nullptr && a->draft_pair.ok() ? "captured" : "not legal here, target-only");
+                                 paired ? "captured" : "not legal here, target-only", anchor_ms(), sidecar);
                 } else {
-                    std::fprintf(stderr, "strata serve: STRATA_GEN_ANCHOR: anchor at %lld not taken (%s); the "
+                    std::fprintf(stderr, "strata serve: STRATA_GEN_ANCHOR: anchor at %lld not taken (%s) in %.1f ms; the "
                                          "published generation keeps the anchors it has\n",
-                                 (long long) gen_T, ckpt_why.empty() ? "capture failed" : ckpt_why.c_str());
+                                 (long long) gen_T, ckpt_why.empty() ? "capture failed" : ckpt_why.c_str(), anchor_ms());
                 }
             }
             // --conversation-cache-disk-idle-save: publish the ACTIVE conversation at this verified boundary.
