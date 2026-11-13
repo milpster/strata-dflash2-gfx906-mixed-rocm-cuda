@@ -242,7 +242,10 @@ struct Helper {
     // lock covers ONE served frame (parse, upload, launch, read the rows back, write the reply) and is
     // NEVER held across a channel's idle read_frame - so channel A's socket I/O overlaps channel B's
     // GPU work, which is the whole point of the split, while the two tiers never touch the same
-    // staging buffers at the same time.
+    // staging buffers at the same time.  (helper-window-diet: the WINDOW tier releases the lock
+    // before its kRows reply write - the frame's stream work ended at its sync and the reply
+    // reads only channel-local bytes, so a stalled peer's EAGAIN wait must not freeze the other
+    // channel; the other served frames keep the full-span rule below.)
     Socket listener2;
     Socket sock2;
     std::mutex gpu_mtx;
@@ -250,7 +253,8 @@ struct Helper {
     // ON turns kFill into the gate's only WRITER and every served frame into a reader, so
     // channel A's window/draft frames and channel B's prompt frames overlap on their OWN
     // streams (the mirror reads are read-only after fill); each frame still excludes fill, and
-    // fill fences both streams because a frame releases the gate only after its sync + reply.
+    // fill fences both streams because a frame releases the gate only after its sync + reply
+    // (the window tier's kRows write included: its stream already drained at the sync).
     std::shared_mutex gpu_gate;
     cudaStream_t stream_p = nullptr;      // ON: the prompt tier's own stream
     bool streams_split = false;           // set once in main; never mutated afterwards
@@ -950,6 +954,14 @@ int serve_begin(Helper& hp, PayloadView body, uint32_t req_id, uint32_t seq, std
     }
     const auto p_ready = prof ? std::chrono::steady_clock::now()
                               : std::chrono::steady_clock::time_point{};
+    // helper-window-diet: the frame's GPU work ended at the sync above and every shared byte it
+    // produced is already copied into this reply payload - release the device lock BEFORE
+    // the reply write.  write_reply re-polls against its deadline on a stalled peer (the Nov 6
+    // reclaim wedge: 90 s of EAGAIN), and gpu_mtx held across that freezes the OTHER channel's
+    // frames too; after the release the write blocks on channel-local bytes only.  Fill fencing
+    // is unchanged: fill needs this frame's STREAM fenced, and the sync already drained it.
+    if (gpu_lk_on) gpu_lk_on.reset();   // same shape as the acquisition, opposite direction
+    else gpu_lk.unlock();
     const int rc_w = out.write_reply(kRows, req_id, seq, payload.data(), payload.size(), deadline_after(reply_deadline_ms(10000)));
     if (prof)   // L3: one line per served window frame; refusals/empty replies stay untimed
         std::fprintf(stderr, "rpcprofile: serve tier=w layer=%d rows=%d queue_us=%lld lock_us=%lld "
