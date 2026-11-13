@@ -6523,7 +6523,10 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
         // device alias of each registered range's start (device_alias adds the blob's distance from it); one
         // refusal drops the whole table: no PCIe share rather than a wrong pointer
         ranges_ = true;
-        for (const auto& r : a->pin_ranges) {
+        const size_t n_rng = a->pin_ranges.size();
+        const size_t rng_step = n_rng >= 10 ? n_rng / 10 : n_rng;   // one line per ~10%: a slow boot stays visible
+        for (size_t ri = 0; ri < n_rng; ++ri) {
+            const auto& r = a->pin_ranges[ri];
             void* d = nullptr;
             if (cudaHostGetDevicePointer(&d, (void*) (base_ + r.first), 0) != cudaSuccess) {
                 (void) cudaGetLastError();
@@ -6533,6 +6536,9 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
             pin_start_.push_back(r.first);
             pin_end_.push_back(r.first + r.second);
             pin_dev_.push_back((const uint8_t*) d);
+            if (rng_step > 0 && (ri + 1) % rng_step == 0 && ri + 1 < n_rng)
+                std::fprintf(stderr, "strata generate: arena alias tables: %zu of %zu registered ranges\n",
+                             ri + 1, n_rng);
         }
         if (!ranges_) {
             pin_start_.clear(); pin_end_.clear(); pin_dev_.clear();
@@ -6839,7 +6845,10 @@ void ArenaExpertSource::apply_registration() {
     if (!a->by_need) return;
     pin_start_.clear(); pin_end_.clear(); pin_dev_.clear();
     ranges_ = !a->pin_ranges.empty();
-    for (const auto& r : a->pin_ranges) {
+    const size_t n_rng = a->pin_ranges.size();
+    const size_t rng_step = n_rng >= 10 ? n_rng / 10 : n_rng;   // one line per ~10%: a slow boot stays visible
+    for (size_t ri = 0; ri < n_rng; ++ri) {
+        const auto& r = a->pin_ranges[ri];
         void* d = nullptr;
         if (cudaHostGetDevicePointer(&d, (void*) (base_ + r.first), 0) != cudaSuccess) {
             (void) cudaGetLastError();
@@ -6849,6 +6858,9 @@ void ArenaExpertSource::apply_registration() {
         pin_start_.push_back(r.first);
         pin_end_.push_back(r.first + r.second);
         pin_dev_.push_back((const uint8_t*) d);
+        if (rng_step > 0 && (ri + 1) % rng_step == 0 && ri + 1 < n_rng)
+            std::fprintf(stderr, "strata generate: arena alias tables: %zu of %zu registered ranges\n",
+                         ri + 1, n_rng);
     }
     if (!ranges_) {
         pin_start_.clear(); pin_end_.clear(); pin_dev_.clear();
@@ -6875,7 +6887,11 @@ void ArenaExpertSource::register_complement(const std::vector<std::pair<int32_t,
     uint64_t span = 0;
     bool open = false;
     int64_t dropped = 0;
+    const int64_t scan_step = n_layers >= 10 ? n_layers / 10 : 1;   // one line per ~10% of the pairs: the scan is silent for seconds
     for (int64_t l = 0; l < n_layers; ++l) {
+        if (n_layers >= 10 && (l + 1) % scan_step == 0 && l + 1 < n_layers)
+            std::fprintf(stderr, "strata generate: arena complement scan: %lld of %lld layers\n",
+                         (long long) (l + 1), (long long) n_layers);
         for (int64_t e = 0; e < n_expert_; ++e) {
             const size_t i = (size_t) (l * n_expert_ + e);
             const uint64_t off = arena_off(l, e);

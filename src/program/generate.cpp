@@ -8298,6 +8298,28 @@ int main(int argc, char** argv) {
             return 1;
         }
     }
+#if defined(__linux__)
+    // 0.1.43.1: on by default (STRATA_ADAPT_CALLBACK_WARMUP=0 turns it off).  Linux threads inherit the creator's CPU mask, and
+    // the host pins itself to one CPU later; a callback thread the driver creates lazily after that would run on the
+    // host's CPU and fight the host's spin-wait (985 us instead of 4 us per callback, #1964 #1975).  Windows CPU Sets are
+    // per thread and not inherited.
+    //
+    // It runs HERE, before the arena is reserved and registered, and not after the load: launching this warm-up over a
+    // whole-arena (46.84 GiB, THP-backed) PORTABLE registration spins the HIP driver's default-stream sync at 100% of
+    // one core and the boot never reaches the helper handshake (journal 2026-11-13 round 18k; a RAM-relief boot, where
+    // nothing is registered at this point, passes it in seconds).  The current device is unchanged between this point
+    // and the old place, and ExpertPool's pinning is far below: the #1964 affinity rule stays satisfied.
+    if (const char* e = std::getenv("STRATA_ADAPT_CALLBACK_WARMUP"); !(e && e[0] == '0')) {
+        // The driver creates its host-callback thread lazily. Create it before ExpertPool pins this thread.
+        if (cudaLaunchHostFunc(nullptr, [](void*) {}, nullptr) != cudaSuccess ||
+            cudaStreamSynchronize(nullptr) != cudaSuccess) {
+            (void) cudaGetLastError();
+            std::fprintf(stderr, "strata generate: could not warm up the GPU host-callback thread (continuing)\n");
+        } else {
+            std::fprintf(stderr, "strata generate: GPU host-callback thread started before host-core pinning\n");
+        }
+    }
+#endif
     strata::core::ArenaExpertSource arena_src;
     strata::core::ExpertSource* srcp = nullptr;
     // #4846 (owner 11-01): the arena first, and when the RAM is still short after the wait and the give-back, the --mmap-experts source
@@ -8626,22 +8648,6 @@ int main(int argc, char** argv) {
         srcp = &arena_src;
     }
     }   // the arena / file pass loop (#4846)
-#if defined(__linux__)
-    // 0.1.43.1: on by default (STRATA_ADAPT_CALLBACK_WARMUP=0 turns it off).  Linux threads inherit the creator's CPU mask, and
-    // the host pins itself to one CPU later; a callback thread the driver creates lazily after that would run on the
-    // host's CPU and fight the host's spin-wait (985 us instead of 4 us per callback, #1964 #1975).  Windows CPU Sets are
-    // per thread and not inherited.
-    if (const char* e = std::getenv("STRATA_ADAPT_CALLBACK_WARMUP"); !(e && e[0] == '0')) {
-        // The driver creates its host-callback thread lazily. Create it before ExpertPool pins this thread.
-        if (cudaLaunchHostFunc(nullptr, [](void*) {}, nullptr) != cudaSuccess ||
-            cudaStreamSynchronize(nullptr) != cudaSuccess) {
-            (void) cudaGetLastError();
-            std::fprintf(stderr, "strata generate: could not warm up the GPU host-callback thread (continuing)\n");
-        } else {
-            std::fprintf(stderr, "strata generate: GPU host-callback thread started before host-core pinning\n");
-        }
-    }
-#endif
     if (o.pool_measure)
         o.pool_affinity = measure_pool_affinity(srcp, o.pool_workers, !o.no_host_worker, o.pool_tasks);
     strata::kernels::cpu::ExpertPool pool(o.pool_workers, /*pin=*/true, /*host_works=*/!o.no_host_worker,
