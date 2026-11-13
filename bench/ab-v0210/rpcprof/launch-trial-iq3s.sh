@@ -61,7 +61,7 @@ done
 env -i "${helper_env[@]}" "$HELPER" \
   --pack ${STRATA_AI_DIR:-/mnt/srcds/ai}/iq3s \
   --experts ../Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S.gguf \
-  --device 0 --slots "$HELPER_SLOTS" --reserve-mib 300 --timeout 63115200000 \
+  --device 0 --slots "$HELPER_SLOTS" --reserve-mib "${STRATA_HELPER_RESERVE:-512}" --timeout 63115200000 \
   --begin-timeout 63115200000 --socket "$SOCKET" --fill-mib "$FILL_MIB" --socket2 "$SOCKET2" \
   >>"$HLOG" 2>&1 < /dev/null &
 helper_pid=$!
