@@ -81,6 +81,26 @@ for ((i=0; i<60; i++)); do
   sleep 1
 done
 [[ -S "$SOCKET" && -S "$SOCKET2" ]] || { echo "Second channel socket missing: $SOCKET2" >&2; exit 1; }
+# Per-arm spec-decode knob overrides (purely additive; boot-arm.sh forwards STRATA_*=...
+# tokens). Unset or empty keeps the config's own value — no fallback number here, so
+# arms whose configs differ keep their values and the engine command line stays
+# byte-identical to the unmodified launcher:
+#   STRATA_SPEC                   -> the --spec N value
+#   STRATA_SPEC_MIN_P             -> the --spec-min-p F value
+#   STRATA_VRAM_RESERVE_LATER_MIB -> the --vram-reserve-later-mib N value
+# The rewritten config stays in run/ (pid-suffixed) as the per-boot audit copy.
+if [[ -n ${STRATA_SPEC:-} || -n ${STRATA_SPEC_MIN_P:-} || -n ${STRATA_VRAM_RESERVE_LATER_MIB:-} ]]; then
+  command -v jq >/dev/null || { echo 'Spec-decode overrides need jq.' >&2; exit 2; }
+  DERIVED_CONFIG="$ROOT/run/trial-spill40-spec-$$.json"
+  jq --arg spec "${STRATA_SPEC:-}" --arg minp "${STRATA_SPEC_MIN_P:-}" \
+     --arg vram "${STRATA_VRAM_RESERVE_LATER_MIB:-}" '
+    (.args | index("--spec")) as $i | if $i != null and $spec != "" then .args[$i+1] = $spec else . end
+    | (.args | index("--spec-min-p")) as $i | if $i != null and $minp != "" then .args[$i+1] = $minp else . end
+    | (.args | index("--vram-reserve-later-mib")) as $i | if $i != null and $vram != "" then .args[$i+1] = $vram else . end
+  ' "$CONFIG" > "$DERIVED_CONFIG"
+  CONFIG="$DERIVED_CONFIG"
+  echo "Spec-decode overrides: spec=${STRATA_SPEC:-<cfg>} spec-min-p=${STRATA_SPEC_MIN_P:-<cfg>} vram-reserve-later-mib=${STRATA_VRAM_RESERVE_LATER_MIB:-<cfg>}"
+fi
 echo "Starting mixed backend on 127.0.0.1:${PORT:-8009}; log: $LOG; helper: $HLOG"
 cd "$WORK"
 env -u CUDA_VISIBLE_DEVICES -u STRATA_ARENA_MMAP -u GPU_PINNED_MIN_XFER_SIZE \

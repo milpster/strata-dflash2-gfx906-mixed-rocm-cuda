@@ -13,11 +13,15 @@ jq --arg exe "$BIN/rpcw-hip/strata" --arg log "/mnt/srcds/Strata/logs/engine-$TA
    '.exe = $exe | .log = $log' "$C" > /tmp/opencode/arm.json && cp /tmp/opencode/arm.json "$C"
 rm -f run/trial-spill40.sock run/trial-spill40-2.sock
 
+# Spec-decode sweep knobs (empty = keep the arm config's own values):
+#   STRATA_SPEC / STRATA_SPEC_MIN_P / STRATA_VRAM_RESERVE_LATER_MIB
 env TRIAL_CONFIG=$C STRATA_PACK=iq3s \
   STRATA_EXPERTS=../Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S.gguf \
   STRATA_BIN=$BIN STRATA_FILL_MIB="${STRATA_FILL_MIB:-6796}" \
   STRATA_HELPER_SLOTS="${STRATA_HELPER_SLOTS:-4600}" \
-  STRATA_HELPER_RESERVE="${STRATA_HELPER_RESERVE:-512}" STRATA_PORT=8019 "$@" \
+  STRATA_HELPER_RESERVE="${STRATA_HELPER_RESERVE:-512}" STRATA_PORT=8019 \
+  STRATA_SPEC="${STRATA_SPEC:-}" STRATA_SPEC_MIN_P="${STRATA_SPEC_MIN_P:-}" \
+  STRATA_VRAM_RESERVE_LATER_MIB="${STRATA_VRAM_RESERVE_LATER_MIB:-}" "$@" \
   setsid nohup "$RPC/launch-trial-spill40.sh" > "logs/${TAG}-boot-$(date +%H%M).log" 2>&1 < /dev/null &
 
 for i in $(seq 1 90); do
