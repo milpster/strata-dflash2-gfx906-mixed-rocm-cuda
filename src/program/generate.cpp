@@ -15557,6 +15557,31 @@ int main(int argc, char** argv) {
             for (int64_t l = 0; l < g.n_layers; ++l) card[(size_t) l] = multi_gpu ? stage_of(l) : 0;
             fs_swap.reset(strata::core::foresight_swap_from_env(g.n_layers, g.n_expert, card, devs));
             drive.d.fs = fs_swap.get();
+            // C1 helper shadow: the filler's blob source for pairs the arena dropped.  A helper tier's
+            // engine-side cache first (RemoteExperts::copy_cached_blobs - an in-process remote tier; the
+            // socket proxy has no engine-side bytes and answers no hits), else the pack files through the
+            // source's batched swap-in read: the same bytes the helper filled from, staged pinned.
+            if (fs_swap && fs_swap->helper_shadow) {
+                strata::core::ExpertSource* stage_src = srcp;
+                std::vector<strata::core::RemoteExperts*> stage_tiers(drive.d.remote, drive.d.remote + drive.d.remote_count);
+                fs_swap->stage_blob = [stage_src, stage_tiers](int64_t layer, int32_t expert, uint8_t* dst) -> bool {
+                    const int32_t l = (int32_t) layer, e = expert;
+                    uint8_t* d = dst;
+                    for (strata::core::RemoteExperts* t : stage_tiers) {
+                        uint8_t got = 0;
+                        std::string err;
+                        if (t->copy_cached_blobs(&l, &e, &d, 1, &got, err) && got) return true;
+                    }
+                    if (stage_src != nullptr) {
+                        std::vector<std::pair<int32_t, int32_t>> pairs{{l, e}};
+                        std::vector<uint8_t*> dsts{dst};
+                        std::vector<uint8_t> ok;
+                        std::string err;
+                        if (stage_src->swap_blobs_batch(pairs, dsts, ok, err) && ok.size() == 1 && ok[0]) return true;
+                    }
+                    return false;
+                };
+            }
             if (fs_swap && drive.d.lookahead != nullptr) lookahead.set_foresight(fs_swap.get());
             src.set_foresight_swap(fs_swap.get());   // #2134: the exchanges hold the experts whose bytes they move
         }

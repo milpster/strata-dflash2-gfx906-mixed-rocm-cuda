@@ -5196,6 +5196,12 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
         // helper finish recomputes EXACTLY those rows on the CPU below.  In-process tiers leave
         // this list empty and keep answering through owns(), exactly as before.
         helper_claims.clear();
+        // C1 helper shadow: every row a tier just claimed is a miss the swap space should catch in the
+        // next windows.  One note per distinct expert keeps the admit counter one miss per window,
+        // exactly like the CPU rows' note at the miss branch above.
+        static thread_local std::vector<uint8_t> fs_fed;
+        const bool fs_feed = d.fs != nullptr && d.fs->helper_shadow;
+        if (fs_feed) fs_fed.assign((size_t) d.n_expert, 0);
         for (int r = 0; r < d.remote_count; ++r) {
             std::vector<int32_t> claimed_rows;
             if (!d.remote[r]->begin(d.layers, x_f, ids, n_tok, k, kind, d.host_res, remote_error, claimed_rows)) {
@@ -5203,6 +5209,15 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
             }
             for (int64_t i = 0; i < n; ++i) if (d.remote[r]->owns(i)) kind[i] = 2;
             for (const int32_t i : claimed_rows) { if (i >= 0 && i < n) kind[i] = 2; helper_claims.push_back(i); }
+            if (fs_feed)
+                for (const int32_t i : claimed_rows)
+                    if (i >= 0 && i < n) {
+                        const int32_t e = ids[i];
+                        if (e >= 0 && e < d.n_expert && !fs_fed[(size_t) e]) {
+                            fs_fed[(size_t) e] = 1;
+                            d.fs->note_miss(d.src, d.layers, e);
+                        }
+                    }
         }
     }
     static const bool dec_batch = [] { const char* v = std::getenv("STRATA_DEC_BATCH"); return v == nullptr || std::atoi(v) != 0; }();
@@ -7434,6 +7449,22 @@ bool ForesightSwap::init(int slots_per_layer, int64_t layers, int64_t experts, c
             }
         }
     }
+    if (helper_shadow && ring_want > 0) {
+        // the staging ring: one pinned entry per in-flight helper-shadow fill (STRATA_FS_RING).  The
+        // filler's H2D must read page-locked memory; the arena's copy of a dropped pair is gone, so
+        // the ring holds the staged bytes for the slot's lifetime.
+        uint64_t max_bb = 0;
+        for (int64_t l = 0; l < layers; ++l) max_bb = std::max(max_bb, (uint64_t) lay.blob_bytes(l));
+        if (cudaHostAlloc((void**) &ring_mem, (size_t) ring_want * (size_t) max_bb, cudaHostAllocDefault) != cudaSuccess) {
+            cudaGetLastError();
+            err = "cannot allocate the " + std::to_string((uint64_t) ring_want * max_bb >> 20) +
+                  " MiB pinned staging ring";
+            return false;
+        }
+        ring_n = ring_want;
+        ring_bytes = max_bb;
+        ring_used.assign((size_t) ring_n, 0);
+    }
     filler_ = std::thread([this] { fill_loop(); });
     return true;
 }
@@ -7451,6 +7482,7 @@ ForesightSwap::~ForesightSwap() {
         if (card_mem[c]) cudaFree(card_mem[c]);
         if (card_stream[c]) cudaStreamDestroy((cudaStream_t) card_stream[c]);
     }
+    if (ring_mem) cudaFreeHost(ring_mem);   // after the syncs: no filler H2D reads it any more
     if (slot)
         for (int64_t i = 0; i < n_layers * slots; ++i)
             if (slot[(size_t) i].ev) cudaEventDestroy((cudaEvent_t) slot[(size_t) i].ev);
@@ -7541,8 +7573,49 @@ void ForesightSwap::unhold(int64_t layer, int32_t expert) {
 }
 
 void ForesightSwap::note_miss(ExpertSource* src, int64_t layer, int32_t expert) {
-    std::lock_guard<std::mutex> smu_lk(smu_);
-    request_locked(src, layer, expert, false);
+    if (layer < 0 || layer >= n_layers || expert < 0 || expert >= n_expert) return;
+    if (src != nullptr && src->pinned(layer, expert)) {
+        std::lock_guard<std::mutex> smu_lk(smu_);
+        request_locked(src, layer, expert, false);
+        return;
+    }
+    if (!helper_shadow || ring_n <= 0 || !stage_blob) {
+        // exactly today: the gates (and their admit/over-budget counters) run before the pinned gate refuses
+        std::lock_guard<std::mutex> smu_lk(smu_);
+        request_locked(src, layer, expert, false);
+        return;
+    }
+    // helper shadow: a pair whose blob the source does not pin - helper-held and dropped from the RAM
+    // arena (MADV_DONTNEED), which request_locked's pinned gate would refuse.  Stage its bytes into a
+    // ring entry first (a helper tier's engine-side cache, else the pack files), then hand the entry to
+    // assign_locked like a pinned blob.  The staging runs OUTSIDE smu_ (a pack read or a helper D2H can
+    // take milliseconds; note_miss is called from the begin seam, where the dispatch thread already
+    // waits on the helper's RPCs), so the gates are re-checked under the lock before the slot is taken.
+    {
+        std::lock_guard<std::mutex> smu_lk(smu_);
+        if (!gates_pass_locked(layer, expert, false, true)) return;   // admit + budget: no bytes read before they pass
+    }
+    const int ri = ring_acquire();
+    if (ri < 0) {
+        std::lock_guard<std::mutex> smu_lk(smu_);
+        ++ring_busy;
+        return;
+    }
+    uint8_t* const dst = ring_mem + (size_t) ri * (size_t) ring_bytes;
+    bool assigned = false;
+    if (stage_blob(layer, expert, dst)) {
+        std::lock_guard<std::mutex> smu_lk(smu_);
+        // re-check: the budget may have filled while the bytes were read (the admit count cannot
+        // un-pass, so it is not bumped again)
+        if (gates_pass_locked(layer, expert, false, false)) {
+            assigned = assign_locked(dst, ri, layer, expert, false);
+            if (assigned) ++staged;
+        }
+    } else {
+        std::lock_guard<std::mutex> smu_lk(smu_);
+        ++no_src;
+    }
+    if (!assigned) ring_release(ri);
 }
 
 void ForesightSwap::predict(ExpertSource* src, int64_t layer, int32_t expert) {
@@ -7552,22 +7625,32 @@ void ForesightSwap::predict(ExpertSource* src, int64_t layer, int32_t expert) {
 }
 
 void ForesightSwap::request_locked(ExpertSource* src, int64_t layer, int32_t expert, bool predicted_copy) {
-    if (failed.load(std::memory_order_relaxed)) return;
-    const size_t key = (size_t) (layer * n_expert + expert);
-    if (where[key] != -1) return;                       // already on its way, or held by an exchange (#2134)
-    const uint64_t now = completed.load(std::memory_order_acquire);
-    if (admit > 1 && !predicted_copy) {
-        if (now > miss_at[key] + 4) miss_cnt[key] = 0;
-        miss_at[key] = now;
-        if (miss_cnt[key] < 255) ++miss_cnt[key];
-        if (miss_cnt[key] < admit) return;
-    }
-    const int c = layer_card[(size_t) layer];
-    if (card_round[(size_t) c] != now) { card_round[(size_t) c] = now; card_used[(size_t) c] = 0; }
-    if (card_used[(size_t) c] >= budget) { ++over_budget; return; }
+    if (!gates_pass_locked(layer, expert, predicted_copy, true)) return;
     if (src == nullptr || !src->pinned(layer, expert)) return;   // async copies need the pinned arena
     const uint8_t* b = src->blob(layer, expert);
     if (b == nullptr) return;
+    (void) assign_locked(b, -1, layer, expert, predicted_copy);
+}
+
+bool ForesightSwap::gates_pass_locked(int64_t layer, int32_t expert, bool predicted_copy, bool count_miss) {
+    if (failed.load(std::memory_order_relaxed)) return false;
+    const size_t key = (size_t) (layer * n_expert + expert);
+    if (where[key] != -1) return false;                   // already on its way, or held by an exchange (#2134)
+    const uint64_t now = completed.load(std::memory_order_acquire);
+    if (count_miss && admit > 1 && !predicted_copy) {
+        if (now > miss_at[key] + 4) miss_cnt[key] = 0;
+        miss_at[key] = now;
+        if (miss_cnt[key] < 255) ++miss_cnt[key];
+        if (miss_cnt[key] < admit) return false;
+    }
+    const int c = layer_card[(size_t) layer];
+    if (card_round[(size_t) c] != now) { card_round[(size_t) c] = now; card_used[(size_t) c] = 0; }
+    if (card_used[(size_t) c] >= budget) { ++over_budget; return false; }
+    return true;
+}
+
+bool ForesightSwap::assign_locked(const uint8_t* b, int ring_idx, int64_t layer, int32_t expert, bool predicted_copy) {
+    const uint64_t now = completed.load(std::memory_order_acquire);
     int best = -1;
     uint64_t best_ref = ~0ull;
     for (int s = 0; s < slots; ++s) {   // an empty slot, else the one used longest ago that no window can still read
@@ -7583,17 +7666,19 @@ void ForesightSwap::request_locked(ExpertSource* src, int64_t layer, int32_t exp
         if (sl.last_ref + (uint64_t) depth > now) continue;
         if (sl.last_ref < best_ref) { best_ref = sl.last_ref; best = s; }
     }
-    if (best < 0) { ++busy; return; }
+    if (best < 0) { ++busy; return false; }
     Slot& sl = slot[(size_t) (layer * slots + best)];
+    if (sl.ring_idx >= 0) ring_release(sl.ring_idx);   // the old occupant's staged bytes are done: its H2D landed, or was never issued (the pick skips those)
     if (sl.expert >= 0) where[(size_t) (layer * n_expert + sl.expert)] = -1;
     sl.expert = expert;
     sl.ready = false;
     sl.loading = true;
     sl.issued.store(false, std::memory_order_relaxed);
     sl.src = b;
+    sl.ring_idx = ring_idx;
     sl.last_ref = now;
-    where[key] = (int16_t) best;
-    ++card_used[(size_t) c];
+    where[(size_t) (layer * n_expert + expert)] = (int16_t) best;
+    ++card_used[(size_t) layer_card[(size_t) layer]];
     ++copies;
     if (predicted_copy) ++predicted;
     {
@@ -7601,6 +7686,20 @@ void ForesightSwap::request_locked(ExpertSource* src, int64_t layer, int32_t exp
         queue_.push_back(layer * slots + best);
     }
     cv_.notify_one();
+    return true;
+}
+
+int ForesightSwap::ring_acquire() {
+    std::lock_guard<std::mutex> lk(ring_mu_);
+    for (int i = 0; i < ring_n; ++i)
+        if (!ring_used[(size_t) i]) { ring_used[(size_t) i] = 1; return i; }
+    return -1;
+}
+
+void ForesightSwap::ring_release(int idx) {
+    if (idx < 0 || idx >= ring_n) return;
+    std::lock_guard<std::mutex> lk(ring_mu_);
+    ring_used[(size_t) idx] = 0;
 }
 
 std::string ForesightSwap::report() const {
@@ -7612,6 +7711,9 @@ std::string ForesightSwap::report() const {
                   (unsigned long long) pending, (unsigned long long) busy, (unsigned long long) over_budget, verify ? "" : "");
     std::string r = buf;
     if (dropped > 0) r += ", " + std::to_string(dropped) + " dropped by exchanges";
+    if (helper_shadow)   // the staging ring's outcomes: staged = fills sourced outside the pinned arena
+        r += ", helper shadow: " + std::to_string(staged) + " staged (" + std::to_string(ring_busy) +
+             " ring full, " + std::to_string(no_src) + " no source)";
     if (verify) r += ", verified " + std::to_string(verify_ok) + " ok / " + std::to_string(verify_bad) + " BAD";
     return r;
 }
@@ -7634,6 +7736,7 @@ ForesightSwap* foresight_swap_from_env(int64_t layers, int64_t experts, const st
     auto* f = new ForesightSwap();
     auto env_int = [](const char* name, int def, int lo) { const char* e = std::getenv(name); const int x = e ? std::atoi(e) : def; return x < lo ? lo : x; };
     f->helper_shadow = env_int("STRATA_FS_HELPER_SHADOW", 0, 0) != 0;
+    f->ring_want = f->helper_shadow ? env_int("STRATA_FS_RING", 16, 1) : 0;
     f->budget = env_int("STRATA_FS_BUDGET", 32, 1);
     f->admit = env_int("STRATA_FS_ADMIT", 1, 1);
     f->depth = env_int("STRATA_FS_DEPTH", 4, 2);
@@ -7645,9 +7748,10 @@ ForesightSwap* foresight_swap_from_env(int64_t layers, int64_t experts, const st
         return nullptr;
     }
     std::fprintf(stderr, "strata serve: foresight swap: %d slots per layer on %zu card(s), up to %d copies per card and "
-                         "window, admit after %d miss(es), reuse after %d windows%s\n",
+                         "window, admit after %d miss(es), reuse after %d windows%s%s\n",
                  f->slots, devices.size(), f->budget, f->admit, f->depth,
-                 f->helper_shadow ? ", helper shadow ON (a landed slot serves a helper-held pair)" : "");
+                 f->helper_shadow ? ", helper shadow ON (a landed slot serves a helper-held pair)" : "",
+                 f->helper_shadow ? (", " + std::to_string(f->ring_n) + "-entry pinned staging ring").c_str() : "");
     return f;
 }
 
