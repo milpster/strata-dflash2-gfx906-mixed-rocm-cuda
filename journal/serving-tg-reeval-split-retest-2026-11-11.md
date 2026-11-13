@@ -1310,3 +1310,117 @@ the operator's call.
   correct.
 - Known weak spot carried into prod (operator accepted, next work item): warm/2nd-gen TG
   (killerL 24.1, longtg 21.4) vs cold (41.1/33.1) — round 9 attacks this.
+
+## Round 9 — warm/2nd-gen TG slowdown: attribution + the PHASE_TAG=2 fix (2026-11-13, GPU-free forensics)
+
+No engine booted, no GPU touched, :8009 untouched. All numbers are the on-disk byte-window records
+(`ab9-v0227-iq3s-20261112`, `ab9-v0226-iq3s-20261112`, `ab9-v0225-int8-20261112`) parsed out of the
+elog windows, plus the panel runners' per-gen summary lines.
+
+### Method: the per-gen table (the panel's "TG" number = the engine's own decode rate)
+
+Per gen I derived, from the summary line alone: `read_ms`, `ms/token` of the read, **ms/verify-step**
+= `gen_ms / (generated - drafts_accepted)` (one target forward per verify step), **tokens/verify**
+= `generated / steps`, `draft acceptance` = accepted/offered, and the expert PCIe rows **per verify
+step** from the hit-rate line. The panel's cold/warm labels = the last pair of a leg's gens.
+
+| arm | leg | gen | read tok | ms/tok | ms/verify | tok/verify | acc% | PCIe rows/verify | t/s |
+|---|---|---|---|---|---|---|---|---|---|
+| V27IQ3S_C | killer144kL 142k | 3 (cold) | 5 | 43.2 | 88.2 | 3.63 | 81.6 | 265 | 41.1 |
+| V27IQ3S_C | killer144kL 142k | 4 (warm) | 535 | 9.6 | 91.8 | 2.22 | 57.8 | 224 | 24.1 |
+| V27IQ3S_C | longtg 29k | 3 (cold) | 5 | 38.6 | 81.4 | 2.69 | 70.1 | 241 | 33.1 |
+| V27IQ3S_C | longtg 29k | 4 (warm) | 215 | 14.8 | **124.9** | 2.67 | 64.5 | 246 | 21.4 |
+| V27IQ3S_C | tg1024 2k | 1/2 | 583/5 | 11.6/25.4 | 84.4/77.0 | — | 66.5/62.3 | — | 30.7/32.6 |
+| V27IQ3S_RR | killer144kL 142k | 3 (cold) | 5 | 40.0 | 104.9 | 3.68 | 81.9 | 272 | 35.1 |
+| V27IQ3S_RR | killer144kL 142k | 4 (warm) | 535 | 9.8 | **86.2** | 2.25 | 63.6 | 206 | 26.1 |
+| V27IQ3S_RR | longtg 29k | 3 (warm) | 215 | 14.4 | **97.7** | 2.88 | 68.7 | 254 | 29.5 |
+| V27IQ3S_RR | killer144k 142k (1st pass) | 1 | 142285 | 1.8 | **161.4** | 3.63 | 85.7 | 252 | 22.5 |
+| V27IQ3S_RR | killer144k 142k (1st pass) | 2 | 535 | 10.7 | **134.9** | 2.39 | 57.8 | 244 | 17.7 |
+| V27IQ3S_C | killer144k 142k (1st pass) | 1/2 | 142284/535 | 1.8/10.7 | 119.6/109.5 | 3.63/3.53 | 82.0/83.9 | 264/243 | 30.3/32.2 |
+| V26IQ3S | longtg 29k | 3/4 | 5/19 | 39.2/13.6 | 86.0/80.2 | 2.64/3.03 | 77.8/61.0 | 325/310 | 37.8/27.0 |
+| V26IQ3S | killer144kL 142k | 2/3 | 5/535 | 40.4/11.2 | 105.2/82.4 | 3.36/1.91 | 73.5/55.2 | 353/283 | 30.2/27.5 |
+| V25I8 | killer144kL 142k | 1/2 | 11211/5 | 3.5/39.2 | 72.5/75.0 | 1.68/4.21 | 64.5/71.9 | 530/514 | 36.1/41.0 |
+| V25I8 | longtg 29k | 3/4 | 5/215 | 37.2/10.6 | 63.1/61.1 | 3.20/2.29 | 70.7/53.7 | 470/494 | 42.9/35.0 |
+
+### Attribution (the dip is TWO mechanisms plus one wall tax; the arena swap storm is exonerated)
+
+1. **The continuation tail is re-read, and slowly.** Every "warm" gen re-sends the previous gen's
+   *generated* tail as prompt: the cache reuses only the published checkpoint, so 535 tokens (142k leg)
+   / 215 (29k leg) / 19-18 come back at **9.6-15 ms/token** (5.2 s / 3.2 s), against 1.8-4.3 ms/token
+   for a bulk prefill read. Cost scales with ctx (142k: 9.6 ms/tok; 29k: 14.8; 2k: 25 for 5 tokens →
+   a ~200 ms fixed mount cost) → it is small-batch attention + mount, **not** KV-int8 requant
+   (hypothesis 3 partly true: the fixed ~200 ms part, not the per-token part).
+2. **Spec-decode degradation on the continuation gen is the headline drop at long ctx.** C killer144kL:
+   cold 3.63 tok/verify → warm 2.22 (−39%), from acceptance 81.6→57.8 **and** proposals/verify
+   3.22→2.10, while ms/verify is flat (88.2→91.8, +4%). 100 % of the 41.1→24.1 is tokens-per-verify,
+   i.e. the drafter, not the target. The same collapse appears in every arm that has a tail-continuation
+   gen (V26 73.5→55.2; V25I8 70.7→53.7 → 42.9→35.0), so it is **not iq3_s-specific** — iq3_s's 1.5-2×
+   ms/verify only amplifies the same loss.
+3. **A v0227-iq3_s-specific verify inflation on the continuation gen** (the longtg warm leg): 81.4→124.9
+   ms/verify (+54 %) at flat tokens/verify and flat expert traffic. n=1 in the C arm; V26's continuation
+   gens show no inflation (86.0→80.2) and the RR arm removes it (97.7). Placement-linked, plan-sensitive.
+4. **Wall tax (not a rate):** the conversation-cache idle park streams the whole conversation to disk
+   after every request — 4.8-5.7 s a park, 20.3 s inside the 120 s killer144kL wall (17 %), and it does
+   NOT overlap the next request's read. That is where the residual wall time is; read+decode+park =
+   131.8 s vs the 120.1 s wall (partial overlap). Prod-config level, not TG-rate.
+5. **Exonerated, with numbers:** expert traffic *inside* the warm decode is flat — PCIe rows per verify
+   step 265→224 (killerL), 241→246 (longtg), hit% 98.5→93.6 / 96.1→95.6 (the % moves only because the
+   lookup totals shrink). The 11-12k-pair / ~24 GiB swap-ins land **before the cold gen**, inside its
+   44-48 s read window (13.5 s of file read absorbed there); the warm gens' swap-ins total 0.06-0.75 s.
+   So hypothesis 1's "warm gen pays swap-ins at decode time" is FALSE as stated; hypothesis 2's
+   "prefill-hot placement decays" is the real one (see the RR asymmetry); hypothesis 4 (helper drift)
+   shows nothing (helper reqs/rows per verify step constant, timeouts=0, fallbacks=0).
+
+### The RR asymmetry, explained and reproduced on CPU
+
+Phase-tag (=1) plans the boundary re-rank on the decode bank. The promote side is then decode's own set
+(the warm recovery: 124.9→97.7 and 91.8→86.2 ms/verify, acceptance +4.2/+5.8 pts). The demote side
+becomes *every resident pair decode never touches* — which on a cap-bound band is the long read's
+sweep: the wide set a fresh 142k-context request's first-pass gens need. That is exactly the measured
+harm (first-pass 119.6→161.4 and 109.5→134.9 ms/verify, killerL g1 92.1→127.5). The panel's own
+swap volume is unchanged between the arms, so the harm is placement, not bytes.
+
+Landed as **STRATA_ARENA_RERANK_PHASE_TAG=2** (+ **STRATA_ARENA_RERANK_READ_WEIGHT=0..8**, default 2):
+plan on the decode bank **plus read_weight/8 of the read bank**, so the promote follows decode's demand
+(the round-8 win) while a read-hot resident keeps a floor the promote must strictly beat (the
+prefill-hot placement survives — round-8's harm). Pure host arithmetic in
+`arena_rerank_heat()` (`include/strata/core/relief_arena_cap.hpp`), fed by the two banks in
+`ArenaExpertSource::reorder_arena_by_heat()` (`src/core/expert_source.cpp:7177+`); tag 0/1 semantics
+untouched, default 0 = prod today, bit-for-bit.
+
+CPU replay of the panel shape (`tests/core/expert_helper_arena_cap_test.cpp` cases 24-25, real planner):
+- tag 0 (mixed): 1800 swaps spent on the read sweep's evictions, decode's warm set promotes **0**,
+  800 of the current decode set's residents demote → the round-7 starvation, reproduced.
+- tag 1 (decode): 1200 swaps, the whole warm set lands, **200 sweep pairs demote** → the round-8 harm, reproduced.
+- tag 2 rw=2: 1000 swaps on the both-bank-cold residents, the promote starts at decode's set,
+  **0 sweep pairs demote, 0 current-decode-set demote** → recovery without the harm.
+- tag 2 rw=0 ≡ tag 1; tag 2 rw=8 restores the starvation (the read bank must be a floor, not a ranker).
+
+### Checks (clean 6.1.0 env: `env -u CUDA_VISIBLE_DEVICES -u HSA_OVERRIDE_GFX_VERSION -u HSA_ENABLE_SDMA`)
+
+- `expert_helper_arena_cap_test` + the arena/helper suite: 6/6 pass; full host subset of the CUDA tree
+  (`ctest -E "parity|bench|mmvq|gemv|dequant|prefill_fused|spill|cuda|gpu|vision|graph|native|iq_|kq_"`):
+  **112/112 pass** (3 skipped by their own guards). Log:
+  `/mnt/srcds/Strata-wt-helper-ipc/build-mixed-gpu/v0228-ctest-host.log`.
+- Both trees rebuilt 100 % on 6.1.0 (`v0228-hip-build.log`, `v0228-cuda-build.log`); the helper pair is
+  bit-identical to v0227 (same SHA), so no launcher/helper change is implied. `strata --help` runs.
+
+### v0228 pin candidate
+
+`/mnt/srcds/Strata/v0228/build-mixed-gpu/` — `SHA256SUMS`:
+- strata(cuda) `034f60781a1f0fd5edbebe6301f755a616e0fc99b3b6e95f29311f48d5b8cb5f`
+- strata(hip) `cdf99f568627f89d957f76053a0f7c9804202848c6ff078a95fddf39eda01f4f`
+- strata-expert-helper / -patient `8d37045c010641f9982ae054e9a9aeece84635f163eac03f99e0e341f4a16506` (= v0227)
+
+### Needs a GPU A/B (operator's box)
+
+1. `STRATA_ARENA_RERANK_PHASE_TAG=2` + `STRATA_ARENA_RERANK_MAX=6000` on the same panel: expect the RR
+   warm recovery (longtg 21.4→~29, killerL warm 24.1→~26) **without** the first-pass damage
+   (killer144k gens must return to 30.3/32.2). Then sweep `STRATA_ARENA_RERANK_READ_WEIGHT=1/2/4` —
+   the floor's strength is the only free parameter.
+2. The drafter's continuation refill (mechanism 2, the biggest single number): measure dflash
+   proposals/verify over the re-read tail — 3.22→2.10 proposals/verify is a drafter-state effect,
+   outside the arena, and unaddressed by this knob.
+3. The idle-park wall tax (4.8-5.7 s per boundary): only worth a knob if the wall, not the rate, matters.
+4. V25I8-vs-iq3_s warm comparison is only valid on same-shaped legs: V25I8's panel legs ran 2 gens
+   (its "warm" gen re-read 5 tokens = a pure cache hit, no tail), so it had no continuation to dip on.
