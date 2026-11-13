@@ -723,7 +723,7 @@ bool RemoteExperts::proxy_begin(int64_t layer, const float* x, const int32_t* id
     // kernel reads; the reply and the row bytes it produces are unchanged.  Q8_K keeps precedence
     // above; a peer without the bit falls through to today's CPU quantize + kBegin, byte for byte.
     if (helper_f32_window_enabled() && helper_->f32_window_supported()) {
-        const int rc = helper_->begin_f32((int32_t) layer, (int32_t) n_tok, ids, primary_res, x,
+        const int rc = helper_->begin_f32((int32_t) layer, (int32_t) n_tok, ids, claim_res, x,
                                           proxy_timeout_ms_);
         if (rc != expert_helper::kOk) {
             // The begin-time fallback, verbatim: the window is fully CPU-served, the tier re-arms
