@@ -5115,10 +5115,12 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                                                                                  : (size_t) slot * (size_t) d.cache_blob));
                 } else if (d.peer != nullptr && d.peer->has(d.layers, e)) {
                     kd = 2;                        // multi-GPU: the second GPU computes it
+                } else if (d.fs != nullptr && (d.fs->helper_shadow || !helper_holds(e)) && d.fs->take(d.layers, e, ptr)) {
+                    kd = 0;                        // Foresight: a landed swap-space slot holds it - a GPU group like a hit
+                                                   // (helper shadow on: the slot also serves pairs a helper tier holds,
+                                                   // before its claim - one take() per row either way)
                 } else if (helper_holds(e)) {
                     // left to the helper: kind -1 until RemoteExperts::begin() claims the row (see above)
-                } else if (d.fs != nullptr && d.fs->take(d.layers, e, ptr)) {
-                    kd = 0;                        // Foresight: a landed swap-space slot holds it - a GPU group like a hit
                 } else {
                     if (d.fs != nullptr) d.fs->note_miss(d.src, d.layers, e);
                     if (miss_rank >= nmiss - m && fetches < P.staging_cap && fetches < 64) {
@@ -7618,7 +7620,12 @@ ForesightSwap* foresight_swap_from_env(int64_t layers, int64_t experts, const st
                                        const std::vector<int>& devices) {
     const char* v = std::getenv("STRATA_FS_SLOTS");
     const int slots = v ? std::atoi(v) : 0;
-    if (slots <= 0) return nullptr;
+    if (slots <= 0) {
+        if (const char* sh = std::getenv("STRATA_FS_HELPER_SHADOW"); sh != nullptr && std::atoi(sh) != 0)
+            std::fprintf(stderr, "strata serve: foresight swap: STRATA_FS_HELPER_SHADOW needs STRATA_FS_SLOTS - the "
+                                 "swap space stays off\n");
+        return nullptr;
+    }
     if (const char* dp = std::getenv("STRATA_VERIFY_DEVICE_PLAN"); dp && std::atoi(dp) != 0) {
         std::fprintf(stderr, "strata serve: foresight swap: off beside STRATA_VERIFY_DEVICE_PLAN (the device would plan "
                              "resident layers without the host)\n");
@@ -7626,6 +7633,7 @@ ForesightSwap* foresight_swap_from_env(int64_t layers, int64_t experts, const st
     }
     auto* f = new ForesightSwap();
     auto env_int = [](const char* name, int def, int lo) { const char* e = std::getenv(name); const int x = e ? std::atoi(e) : def; return x < lo ? lo : x; };
+    f->helper_shadow = env_int("STRATA_FS_HELPER_SHADOW", 0, 0) != 0;
     f->budget = env_int("STRATA_FS_BUDGET", 32, 1);
     f->admit = env_int("STRATA_FS_ADMIT", 1, 1);
     f->depth = env_int("STRATA_FS_DEPTH", 4, 2);
@@ -7637,8 +7645,9 @@ ForesightSwap* foresight_swap_from_env(int64_t layers, int64_t experts, const st
         return nullptr;
     }
     std::fprintf(stderr, "strata serve: foresight swap: %d slots per layer on %zu card(s), up to %d copies per card and "
-                         "window, admit after %d miss(es), reuse after %d windows\n",
-                 f->slots, devices.size(), f->budget, f->admit, f->depth);
+                         "window, admit after %d miss(es), reuse after %d windows%s\n",
+                 f->slots, devices.size(), f->budget, f->admit, f->depth,
+                 f->helper_shadow ? ", helper shadow ON (a landed slot serves a helper-held pair)" : "");
     return f;
 }
 

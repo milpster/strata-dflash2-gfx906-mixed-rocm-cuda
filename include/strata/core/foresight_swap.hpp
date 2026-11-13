@@ -18,7 +18,8 @@
 //
 // Switches: STRATA_FS_SLOTS (per layer and card), STRATA_FS_BUDGET (copies per card per finished window, default 32),
 // STRATA_FS_ADMIT (misses within the last 4 windows before an expert is copied, default 1), STRATA_FS_DEPTH,
-// STRATA_FS_VERIFY=1 (test mode: every slot is read back and compared with its source the first time it is used).
+// STRATA_FS_HELPER_SHADOW=1 (slots also serve pairs a helper tier holds; default 0), STRATA_FS_VERIFY=1 (test mode:
+// every slot is read back and compared with its source the first time it is used).
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
@@ -47,6 +48,11 @@ struct ForesightSwap {
     };
 
     int slots = 0, budget = 32, admit = 1, depth = 4;
+    /// STRATA_FS_HELPER_SHADOW=1 (needs STRATA_FS_SLOTS; default 0 = the engine unchanged): the dispatch
+    /// serves a landed slot BEFORE a helper tier's holds(), so the engine's own card computes the pair
+    /// instead of sending the row over the helper RPC.  Also the gate for the staging ring that lets the
+    /// filler copy pairs the RAM arena dropped (helper-held, MADV_DONTNEED) - see `stage_blob`.
+    bool helper_shadow = false;
     int64_t n_layers = 0, n_expert = 0;
     std::unique_ptr<Slot[]> slot;            ///< n_layers x slots
     std::vector<int16_t> where;              ///< (layer, expert) -> slot in its layer, -1
