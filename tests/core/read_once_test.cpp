@@ -45,8 +45,10 @@ int main() {
     check(read_once_reserve_bytes("0") == (2ull << 30), "\"0\" keeps the default (as the pin-guard reads it)");
     check(read_once_reserve_bytes("junk") == (2ull << 30), "garbage keeps the default");
     check(read_once_effective_budget(0, (8ull << 30), (2ull << 30)) == 0, "the knob off: off, whatever the RAM");
-    check(read_once_effective_budget((4ull << 30), (3ull << 30), (2ull << 30)) == 0,
+    check(read_once_effective_budget((4ull << 30), (2ull << 30), (2ull << 30)) == 0,
           "RAM under the reserve: off");
+    check(read_once_effective_budget((4ull << 30), (3ull << 30), (2ull << 30)) == (1ull << 30),
+          "a sliver of room: the room (3 - 2 GiB)");
     check(read_once_effective_budget((4ull << 30), (12ull << 30), (2ull << 30)) == (4ull << 30),
           "the knob fits: the knob");
     check(read_once_effective_budget((16ull << 30), (12ull << 30), (2ull << 30)) == (10ull << 30),

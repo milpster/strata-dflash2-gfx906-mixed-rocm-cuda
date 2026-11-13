@@ -69,7 +69,7 @@ int main() {
     check(!tail_skip_gate(7, false, 1, nullptr), "a helper tier suspends the skip without the knob (v0232's silent state)");
     check(tail_skip_gate(7, false, 1, "1"), "a helper rig with the knob: the skip runs (per entry - only misses no tier holds)");
     check(tail_skip_gate(7, false, 2, "1"), "two remote tiers with the knob: still per entry");
-    check(tail_skip_gate(0, false, 0, "1"), "rank 0 (STRATA_ROUTE_TAIL_SKIP=0): nothing runs, knob or not");
+    check(!tail_skip_gate(0, false, 0, "1"), "rank 0 (STRATA_ROUTE_TAIL_SKIP=0): nothing runs, knob or not");
 
     if (failures == 0) std::printf("tail_skip_guard_test: all checks passed\n");
     return failures == 0 ? 0 : 1;
