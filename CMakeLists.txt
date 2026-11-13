@@ -1001,6 +1001,17 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
       add_test(NAME swapin_depth_test COMMAND swapin_depth_test)
       set_tests_properties(swapin_depth_test PROPERTIES TIMEOUT 60)
     endif()
+    # v0233 (tail-skip helper guard): STRATA_TAIL_SKIP_HELPER's parsing and the tail_skip_gate
+    # the dispatch's skip loop and the serve banner share - the skip's silent suspension on
+    # helper rigs fixed per entry, with the default-off equivalence against the pre-v0233
+    # blanket rule walked exhaustively.  CPU-only BY CONSTRUCTION - header-only decisions, the
+    # test links NO library at all.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/tail_skip_guard_test.cpp")
+      add_executable(tail_skip_guard_test tests/core/tail_skip_guard_test.cpp)
+      target_include_directories(tail_skip_guard_test PRIVATE include)
+      add_test(NAME tail_skip_guard_test COMMAND tail_skip_guard_test)
+      set_tests_properties(tail_skip_guard_test PROPERTIES TIMEOUT 60)
+    endif()
     # Round 16 (the helper's honest reserve floor): the clamp range the CUDA helper's --reserve-mib
     # resolves to (include/strata/core/expert_helper_reserve.hpp) - the pure decision both the
     # nvcc-only helper and this host test compile.  CPU-only BY CONSTRUCTION - header-only
