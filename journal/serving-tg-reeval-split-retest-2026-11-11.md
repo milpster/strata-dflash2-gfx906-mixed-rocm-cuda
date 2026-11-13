@@ -1424,3 +1424,41 @@ CPU replay of the panel shape (`tests/core/expert_helper_arena_cap_test.cpp` cas
 3. The idle-park wall tax (4.8-5.7 s per boundary): only worth a knob if the wall, not the rate, matters.
 4. V25I8-vs-iq3_s warm comparison is only valid on same-shaped legs: V25I8's panel legs ran 2 gens
    (its "warm" gen re-read 5 tokens = a pure cache hit, no tail), so it had no continuation to dip on.
+
+## Round 9b — v0228 gates (2026-11-13 01:45–03:05, autonomous window)
+
+**Quality gate: GREEN.** CUDA 293: 290 pass, prefill_fused_iq(+_f16) pass serially
+(contention flakes), cuda_spill_guard = documented pre-existing dflash2. HIP 82: 80 pass,
+conversation_copy_streams = pre-existing #2409, split_lend_complement PASSES direct with
+devices visible (ctest CVD=-1 quirk; NOTE: the direct run must scrub the session's empty
+CUDA_VISIBLE_DEVICES or it reports "no ROCm-capable device"). Round-9 arena tests 6/6 +
+host 112/112 (fixer). Nothing new vs the round-8 exception list.
+
+**Speed gate: PARTIAL — same-window verdict + a bigger discovery.**
+- Same-window A/B (quiet box, 02:36–03:00, fresh boots, out/ab9-v0228-clean):
+  tag2 (PHASE_TAG=2 + RERANK_MAX=6000) vs knobs-off v0228:
+  PP 489.1 vs 496.2 (parity); killer144k gen 25.0 vs 16.4; killerL cold 26.0 vs 19.7;
+  killerL warm 31.9 vs 27.4; longtg cold 42.8 vs 35.2; tg1024 29.0/32.8 vs 32.7/35.4
+  (−7..−11%); RSS +~1 GiB. The knob DOES what round-9 designed: warm/continuation legs
+  recover, first-pass long gens improve, short-ctx pays a little.
+- DISCOVERY (blocks the v0227-vs-v0228 verdict): the cold-storm blocking is BISTABLE
+  across boots — killerL cold gen measured 41.1 (v0227 boot 23:54), 26.4 (02:21),
+  19.7 (02:36) with unchanged swap-in volume (~12k pairs/leg all night). After 5 boots +
+  2 ctest suites the box's page-cache/swap state drifted; cross-boot comparisons tonight
+  are invalid. Settling v0227 vs v0228-default vs v0228+tag2 needs a REBOOTED box and
+  interleaved boots (A/B/A/B) in one window.
+- v0228 NOT promoted (prod stays v0227); pin + shas verified (hip cdf99f56,
+  cuda 034f6078, helper 8d37045c bit-identical to v0227).
+
+**Incidents + protocol lessons (parent errors, recorded honestly):**
+1. Round-10 fixer (drafter-collapse forensics, spawned during the gate window) died of
+   ConnectionRefused when prod came down mid-turn — the 2026-11-06 hard rule exists for
+   exactly this; treat "prod-down window while any subagent runs" as forbidden regardless
+   of the 2026-11-11 moot note. It left no code (worktree clean at df8a94877).
+2. Its host builds contaminated control panel #1 (killer prefill 401 s vs 308 s).
+3. Two control panels were lost to a relative elog path bug ($RPC/../../logs resolves to
+   bench/logs — always pass ABSOLUTE elog paths to panel.sh).
+RULE going forward: gate windows run ALONE — no subagents, no builds, nothing else on the box.
+
+**State:** prod v0227 iq3_s+int8 restored 03:04:30 (smoke: exact "prod-ok"). Round-10
+respawn (analysis-only) next; rebooted-box interleaved A/B is the next GPU task.

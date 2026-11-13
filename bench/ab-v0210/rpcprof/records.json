@@ -233,6 +233,24 @@
   "sha": "269d9ba529d7",
   "value": 267.29
  },
+ "killer144k-tg1024[27d21e018f64]:max_rss_mib": {
+  "arm": "V28IQ3S_C",
+  "dir": "ab9-v0228-clean",
+  "sha": "27d21e018f64",
+  "value": 51769
+ },
+ "killer144k-tg1024[27d21e018f64]:min_avail_mib": {
+  "arm": "V28IQ3S_C",
+  "dir": "ab9-v0228-clean",
+  "sha": "27d21e018f64",
+  "value": 12982
+ },
+ "killer144k-tg1024[27d21e018f64]:wall_s": {
+  "arm": "V28IQ3S_C",
+  "dir": "ab9-v0228-clean",
+  "sha": "27d21e018f64",
+  "value": 356.162
+ },
  "killer144k-tg1024[31604a3fb6d0]:gen_tps": {
   "arm": "cap20k-control",
   "dir": "iq3s-sweep-v0222-20261112",
@@ -503,6 +521,24 @@
   "sha": "c609220c4742",
   "value": 276.379
  },
+ "killer144kL-tg1024[e25675673240]:max_rss_mib": {
+  "arm": "V28IQ3S_C",
+  "dir": "ab9-v0228-clean",
+  "sha": "e25675673240",
+  "value": 52645
+ },
+ "killer144kL-tg1024[e25675673240]:min_avail_mib": {
+  "arm": "V28IQ3S_C",
+  "dir": "ab9-v0228-clean",
+  "sha": "e25675673240",
+  "value": 13150
+ },
+ "killer144kL-tg1024[e25675673240]:wall_s": {
+  "arm": "V28IQ3S_C",
+  "dir": "ab9-v0228-clean",
+  "sha": "e25675673240",
+  "value": 89.077
+ },
  "killer144kL-tg1024[fa0a9a217f38]:gen_tps": {
   "arm": "S36",
   "dir": "ab9-split-retest-s36-20261111",
@@ -736,6 +772,24 @@
   "dir": "fix5-arm2-20261111",
   "sha": "41e168cfdd1d",
   "value": 89.959
+ },
+ "longtg[4e3cf393907d]:max_rss_mib": {
+  "arm": "V28IQ3S_C",
+  "dir": "ab9-v0228-clean",
+  "sha": "4e3cf393907d",
+  "value": 52959
+ },
+ "longtg[4e3cf393907d]:min_avail_mib": {
+  "arm": "V28IQ3S_C",
+  "dir": "ab9-v0228-clean",
+  "sha": "4e3cf393907d",
+  "value": 13721
+ },
+ "longtg[4e3cf393907d]:wall_s": {
+  "arm": "V28IQ3S_C",
+  "dir": "ab9-v0228-clean",
+  "sha": "4e3cf393907d",
+  "value": 87.637
  },
  "longtg[509390824796]:gen_tps": {
   "arm": "b20-h7400",
@@ -1907,6 +1961,24 @@
   "sha": "db4d61d2ed85",
   "value": 29.917
  },
+ "tg1024[db5a99c4b304]:max_rss_mib": {
+  "arm": "V28IQ3S_C",
+  "dir": "ab9-v0228-clean",
+  "sha": "db5a99c4b304",
+  "value": 52899
+ },
+ "tg1024[db5a99c4b304]:min_avail_mib": {
+  "arm": "V28IQ3S_C",
+  "dir": "ab9-v0228-clean",
+  "sha": "db5a99c4b304",
+  "value": 13835
+ },
+ "tg1024[db5a99c4b304]:wall_s": {
+  "arm": "V28IQ3S_C",
+  "dir": "ab9-v0228-clean",
+  "sha": "db5a99c4b304",
+  "value": 26.512
+ },
  "tg1024[ded796523853]:gen_tps": {
   "arm": "R4",
   "dir": "ab9-reeval-r4-20261111",
@@ -2608,6 +2680,24 @@
   "dir": "prod-256-warm-20261111",
   "sha": "e489cdfef64c",
   "value": 7.782
+ },
+ "warm[f0b240020c9b]:max_rss_mib": {
+  "arm": "V28IQ3S_C",
+  "dir": "ab9-v0228-clean",
+  "sha": "f0b240020c9b",
+  "value": 40198
+ },
+ "warm[f0b240020c9b]:min_avail_mib": {
+  "arm": "V28IQ3S_C",
+  "dir": "ab9-v0228-clean",
+  "sha": "f0b240020c9b",
+  "value": 15340
+ },
+ "warm[f0b240020c9b]:wall_s": {
+  "arm": "V28IQ3S_C",
+  "dir": "ab9-v0228-clean",
+  "sha": "f0b240020c9b",
+  "value": 16.145
  },
  "warm[f31e4a9696f4]:gen_tps": {
   "arm": "M4A",
