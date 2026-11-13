@@ -14047,9 +14047,29 @@ int main(int argc, char** argv) {
         // The batch slots' live pair ids.  Their slots are declared further down this same body, so the slot
         // reference set is installed there and read by the sidecar reclaim below (empty until then).
         std::function<std::vector<uint64_t>()> disk_slot_pair_ids;
+        // STRATA_PARK_DEBOUNCE_MS (round 13, default off): skip a park within N ms of the last park this process
+        // WROTE.  The stamp is the write's completion on the steady clock; a skip never moves it, so a burst of
+        // conversations parks the first one and the rest wait out the window (their published generations stay
+        // as they were - publication is insurance, the conversations themselves are untouched).
+        static const int64_t park_debounce = strata::program::conv_cache::park_debounce_ms(
+            std::getenv("STRATA_PARK_DEBOUNCE_MS"));
+        int64_t last_disk_park_ms = -1;   // -1: this process has not written a park yet
+        const auto park_now_ms = [] {
+            return (int64_t) std::chrono::duration_cast<std::chrono::milliseconds>(
+                       Clock::now().time_since_epoch()).count();
+        };
         auto disk_park = [&](const ParkSource& src, const strata::core::ConversationCheckpointSplit& cs,
                              std::string& why) -> bool {
             const int64_t T = (int64_t) src.ids.size();
+            if (park_debounce > 0) {
+                const int64_t now = park_now_ms();
+                if (strata::program::conv_cache::park_debounced(park_debounce, now, last_disk_park_ms)) {
+                    why = "park-debounce: " + std::to_string(now - last_disk_park_ms) + " ms since the last park is "
+                          "inside STRATA_PARK_DEBOUNCE_MS=" + std::to_string(park_debounce) + "; the published file "
+                          "stays";
+                    return false;
+                }
+            }
             // --conversation-cache-park-gain gates the DISK tier too: a generation this publish would supersede
             // is the deepest published prefix of these tokens, and a conversation that advanced fewer than the
             // gain past it writes nothing - the published file covers that prefix and a restart re-prefills only
@@ -14147,6 +14167,7 @@ int main(int argc, char** argv) {
             const int64_t anchor = meta.anchor, pair_prefix = meta.pair_prefix;
             const bool tail_draft = meta.tail_draft;
             if (!dc.publish(res, std::move(meta), dir_pending, why)) return false;
+            if (park_debounce > 0) last_disk_park_ms = park_now_ms();   // the debounce window starts at the write's end
             const size_t dropped = dc.retire_superseded(src.ids, src.imgs, src.cvec, dc.stats().last_serial);
             // reclaim: sidecars no live checkpoint and no published generation references any more go, with
             // their bytes.  The live chain is the split's checkpoints while a split park is in flight (the
@@ -23005,6 +23026,50 @@ int main(int argc, char** argv) {
                 live_ok = true;
                 std::fprintf(stderr, "strata serve: cancelled request keeps its conversation: %lld tokens live\n",
                              (long long) pp_reached);
+            }
+            // STRATA_GEN_ANCHOR=1 (round 13, default off): one checkpoint at T, the conversation's full
+            // length, at this verified complete-request boundary - while the running state is still the live
+            // session's and the drafter's ring still holds the tail.  Checkpoints otherwise anchor only
+            // prompt-path positions (the 16k cadence and the boundary kinds), so the deepest anchor a park
+            // publishes sits BEFORE the generated tail and every continuation of this conversation re-reads
+            // that tail at the 9.6-16.6 ms/tok continuation rate; with the anchor in the chain the next park
+            // (the switch-time park of the request that follows, or the idle save below) publishes anchor=T
+            // with its pair, and the continuation after that resumes at T - tail re-read 0.
+            // RAM-neutral by construction: no K/V is copied (the cells stay in the pools and stream at the
+            // park exactly as before; the pair lands as a disk sidecar priced by the tier), the anchor body
+            // is the fixed-size running state every checkpoint holds, the chain's --prompt-cache cap evicts
+            // the least recently used item inside the same capture, and ckpt_ram_room gates the copy with the
+            // prompt path's own rule - a refused anchor is skipped, the finished request never stalls.
+            static const bool gen_anchor = strata::program::conv_cache::gen_anchor_on(std::getenv("STRATA_GEN_ANCHOR"));
+            const int64_t gen_T = (int64_t) live.size();
+            bool gen_ckpt_at_T = false;
+            int64_t gen_deepest = 0;
+            for (const ConvCheckpoint& c : checks) {
+                if ((int64_t) c.ids.size() == gen_T) gen_ckpt_at_T = true;
+                gen_deepest = std::max<int64_t>(gen_deepest, (int64_t) c.ids.size());
+            }
+            if (strata::program::conv_cache::gen_anchor_should_capture(gen_anchor, cancelled, live_ok, o.prompt_cache,
+                                                                       disk_on(), gen_T, gen_ckpt_at_T)) {
+                uint64_t gen_bytes = ckpt_state_bytes(ss, gen_T);
+                for (const auto& st : stages) gen_bytes += ckpt_state_bytes(st->ss, gen_T);
+                if (!ckpt_ram_room(gen_bytes, true, gen_T)) {
+                    std::fprintf(stderr, "strata serve: STRATA_GEN_ANCHOR: anchor at %lld skipped: the RAM floor "
+                                         "refuses its copy; the request is done and nothing stalls\n",
+                                 (long long) gen_T);
+                } else if (checkpoint_at(gen_T)) {
+                    const ConvCheckpoint* a = nullptr;
+                    for (const ConvCheckpoint& c : checks)
+                        if ((int64_t) c.ids.size() == gen_T) a = &c;
+                    std::fprintf(stderr, "strata serve: STRATA_GEN_ANCHOR: anchor at %lld tokens (deepest was %lld: "
+                                         "%lld tail tokens a continuation re-reads no more; pair %s)\n",
+                                 (long long) gen_T, (long long) gen_deepest,
+                                 (long long) strata::program::conv_cache::gen_anchor_saved_tokens(gen_T, gen_deepest),
+                                 a != nullptr && a->draft_pair.ok() ? "captured" : "not legal here, target-only");
+                } else {
+                    std::fprintf(stderr, "strata serve: STRATA_GEN_ANCHOR: anchor at %lld not taken (%s); the "
+                                         "published generation keeps the anchors it has\n",
+                                 (long long) gen_T, ckpt_why.empty() ? "capture failed" : ckpt_why.c_str());
+                }
             }
             // --conversation-cache-disk-idle-save: publish the ACTIVE conversation at this verified boundary.
             // The last commit landed above (nothing reads or copies the session after it), live_ok says the
