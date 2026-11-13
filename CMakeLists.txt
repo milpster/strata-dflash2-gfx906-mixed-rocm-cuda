@@ -980,6 +980,17 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
       add_test(NAME arena_pin_ranges_test COMMAND arena_pin_ranges_test)
       set_tests_properties(arena_pin_ranges_test PROPERTIES TIMEOUT 60)
     endif()
+    # helper-ipc-diet round 13: the two conversation-cache env knobs - the end-of-generation anchor
+    # decision behind STRATA_GEN_ANCHOR and the idle-park debounce arithmetic behind
+    # STRATA_PARK_DEBOUNCE_MS (include/strata/program/conv_cache.hpp), with the default-off
+    # equivalence walked exhaustively.  CPU-only BY CONSTRUCTION - header-only decisions and
+    # arithmetic, the test links NO library at all.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/conv_cache_knobs_test.cpp")
+      add_executable(conv_cache_knobs_test tests/core/conv_cache_knobs_test.cpp)
+      target_include_directories(conv_cache_knobs_test PRIVATE include)
+      add_test(NAME conv_cache_knobs_test COMMAND conv_cache_knobs_test)
+      set_tests_properties(conv_cache_knobs_test PROPERTIES TIMEOUT 60)
+    endif()
     # M1 (capacity, parent correction 2): the helper proxy's RESIDENCY lifecycle - registered fill,
     # mid-request disable (residency KEPT, the gate must still consult), per-request re-arm, channel
     # death (residency RELEASED, the gate must recover).  Proxy mode makes no device call (the
