@@ -1613,3 +1613,73 @@ ABSOLUTE elog paths, no other load on the box):
 7. v0229 + trace + STRATA_DF2_WINDOW=4096; if flat-curve+CKPT_REREAD-collapse per round-10's
    matrix, also 8192
 Then r10-verify-curve.py on the traces → round-10's decision matrix → the fix.
+
+## Round 11b — fixer verification pass + launch-grid fix, v0229 re-pinned (2026-11-13 04:55–05:40, host-only)
+
+No GPU, no :8009 contact, no engine boots (`--help` smoke only). Build dirs: rpcw-{cuda,hip}-fix11.
+The round-11 parent work (50e16d04d + pin) verified end-to-end; one real bug found and fixed.
+
+### Verified (round-10 design vs the tree)
+
+- Phase A = zero code, confirmed by audit: serve-mode trace is live — `generate.cpp:21369` opens
+  STRATA_SPEC_TRACE in append mode, `22180` writes `# request prompt N df2 x spec y`, `22869` writes
+  per verify round `R p T a sfx ms k match | probs(7) | drafts(8) | lookup k | committed a+1`. Gate
+  `timed_round = !first_window` (22286) = every decode window of the request. Fields cover the
+  design's asks (verify idx = line order, proposals = T−1, acceptance = a, drafter probs, ms/verify,
+  pos). CLI block 24441 untouched.
+- B2/B3 knobs confirmed: `STRATA_CKPT_REREAD` at 19726 (full re-read, no pair restore);
+  `--spec-min-p` parsed 4090, documented 1351; df_auto interlock at 21395 as round-10 read.
+- v0229 pin: `sha256sum -c SHA256SUMS` all OK; `rpcw-cuda/strata-expert-helper` =
+  8d37045c010641f9982ae054e9a9aeece84635f163eac03f99e0e341f4a16506 = byte-identical to
+  v0227's and v0228's helper.
+
+### The bug (why the DF2_WINDOW sweep needed cd4c26e9e)
+
+`attention128_kernel` starts each row's attended span at `end − rows − window + 1` (the passed
+window), while the host capped the launch grid at `min(scratch_cap_, dg.sliding_window + K)`
+(dflash_runtime.cpp:1225). With STRATA_DF2_WINDOW=4096 the grid covered only 2048+K chunks from
+the (widened) window's start: the sweep would have attended the OLD first half and never launched
+the newest rows — a shifted-window artifact, not the depth test. Fixed: the capacity reads
+`ring_state_.window` like the kernel arg site (1365). Knob off ⇒ `ring_state_.window ==
+sliding_window` ⇒ bit-for-bit. Scratch/pools already sized from the ring (≥ window+rows), unchanged.
+
+- branch helper-ipc-diet: 50e16d04d (knob, parent) + **cd4c26e9e** (launch-grid fix, this pass)
+- **v0229 rpcw-hip/strata re-pinned: e33b3e7d90208b939f2b37e52c6e54ec02d019dc111318e901332cd4115fc7d1**
+  (was 14b97a6c…, grid-capped); SHA256SUMS regenerated, `sha256sum -c` OK; knob string present,
+  `--help` exits 0. rpcw-cuda side unchanged (034f6078… / 8d37045c…, prod-proven v0228 copies).
+
+### Parser: `r10-verify-curve.py --trace FILE ...`
+
+Parses serve STRATA_SPEC_TRACE files: per request (= one generation) prints rounds, tokens, acc/off,
+acc%, tok/V, prop/V, ms/V, and the round-10 decision buckets — rounds 1–10 / 11–25 / 26–50 / 51–100 /
+101+ with per-bucket acc%, ms/verify, tok/V. Cold-start recovery vs flat depression reads straight
+off the buckets. Fixture-tested; the byte-window summary mode is untouched.
+
+### Host tests (clean env: `env -u CUDA_VISIBLE_DEVICES -u HSA_OVERRIDE_GFX_VERSION -u HSA_ENABLE_SDMA LD_LIBRARY_PATH=/home/srcds/rocm-gfx906-xnack/lib:/opt/rocm-6.1.0/lib`)
+
+| check | result |
+|---|---|
+| dflash_ring_test standalone g++ (11 DF2_WINDOW checks: refusals, 4096/8192, capacity 4160, 81 MiB pools) | all pass |
+| ctest subset ×20 (dflash ring/taps/head_bf16/rope/owned_kv/policy/refusal/tap_plan/tap_slot, window_rule, spec verify/proposal/start, conversation file/v2/stream_state/reclaim/disk_cache/memory) on cuda-fix11 after cd4c26e9e | 19 pass, 1 skip (dflash_tap_collect_test: needs 2 GPUs, exit 77 gate) |
+| cuda-fix11 full `strata`+helper + hip-fix11 `strata` rebuild | 0 errors, both link |
+| hip-fix11 make up-to-date pre-fix; binary sha == pin | confirmed |
+
+### DECISIVE GPU WINDOW (turnkey; reboots the box first, interleaved A/B/A/B, quiet machine)
+
+Boot env for EVERY arm (the session env is poisoned; panel.sh must inject):
+`env -u CUDA_VISIBLE_DEVICES -u HSA_OVERRIDE_GFX_VERSION -u HSA_ENABLE_SDMA LD_LIBRARY_PATH=/home/srcds/rocm-gfx906-xnack/lib:/opt/rocm-6.1.0/lib`
+
+Arms (fresh boot each; legs warm/killer144k/killer144kL/longtg/tg1024; ABSOLUTE elog paths;
+the L-leg gens are the deciding rows):
+1. v0227 (prod) — baseline A
+2. v0228 default — binary-delta B (A/B order with 1)
+3. v0228 + `STRATA_ARENA_RERANK_MAX=6000 STRATA_ARENA_RERANK_PHASE_TAG=2`
+4. v0229 (`/mnt/srcds/Strata/v0229/build-mixed-gpu/`, hip strata e33b3e7d…) +
+   `STRATA_SPEC_TRACE=/mnt/srcds/Strata/logs/spec-trace-v229-base.txt` — curves baseline
+5. v0229 + trace → `spec-trace-v229-reread.txt` + `STRATA_CKPT_REREAD=1`
+6. v0229 + trace → `spec-trace-v229-minp0.txt` + engine args `--spec-min-p 0.0`
+7. v0229 + trace → `spec-trace-v229-win4096.txt` + `STRATA_DF2_WINDOW=4096`; add an 8192 boot
+   (→ win8192) only if the 4096 bucket curve is flat AND arm 5 collapses (round-10 matrix C)
+Then: `r10-verify-curve.py --trace /mnt/srcds/Strata/logs/spec-trace-*.txt` → buckets decide
+(cold→recover = first-N priming; flat+reread-healthy = restore-path conditioning, f32-taps bisect;
+flat+reread-collapses = DF2_WINDOW is the fix candidate + spec-min-p retune).
