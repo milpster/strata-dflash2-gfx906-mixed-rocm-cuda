@@ -54,7 +54,8 @@ case "${1:-}" in
       --state "$ROOT/run/prod-swift15-f16kv-mixed-supervisor.json" --lock "$ROOT/run/mixed-supervisor.lock" \
       --socket "$SOCKET" --socket "$SOCKET2" --nice 1 \
       --stage-cpus 3,5,7,9,11,13,15 \
-      --stall-timeout 600 ;;  # a wedged in-flight read rebuilds the pair after 10 min
+      --stall-timeout 600 \
+      --startup-timeout 1200 ;;  # 2026-11-13: full residency (no ram-relief) init takes ~6-8 min single-threaded; the 360 s default killed every generation before the helper attached/filled
   *) echo 'Usage: launcher [--recover|--single-run]' >&2; exit 2 ;;
 esac
 command -v ss >/dev/null
