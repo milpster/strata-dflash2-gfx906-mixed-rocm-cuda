@@ -991,6 +991,16 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
       add_test(NAME conv_cache_knobs_test COMMAND conv_cache_knobs_test)
       set_tests_properties(conv_cache_knobs_test PROPERTIES TIMEOUT 60)
     endif()
+    # Round 15 (swap-in pipeline depth): STRATA_SWAPIN_DEPTH's parsing, clamps and the
+    # swapin_window resolution the pack-file stager applies, plus the batched-read accounting a
+    # fake source sees behind the window.  CPU-only BY CONSTRUCTION - header-only decisions and
+    # arithmetic, the test links NO library at all.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/swapin_depth_test.cpp")
+      add_executable(swapin_depth_test tests/core/swapin_depth_test.cpp)
+      target_include_directories(swapin_depth_test PRIVATE include)
+      add_test(NAME swapin_depth_test COMMAND swapin_depth_test)
+      set_tests_properties(swapin_depth_test PROPERTIES TIMEOUT 60)
+    endif()
     # M1 (capacity, parent correction 2): the helper proxy's RESIDENCY lifecycle - registered fill,
     # mid-request disable (residency KEPT, the gate must still consult), per-request re-arm, channel
     # death (residency RELEASED, the gate must recover).  Proxy mode makes no device call (the

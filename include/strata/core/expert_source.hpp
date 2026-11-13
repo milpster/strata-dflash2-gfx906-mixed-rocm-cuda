@@ -1167,6 +1167,16 @@ private:
     /// #286: the blobs from the drive, unbuffered: every role's 4 KiB-aligned window is read at once (overlapped on
     /// Windows, io_submit on Linux) into this thread's aligned buffer, then copied into place.  False when a read fails.
     bool read_direct(const Fill* fills, size_t n) const;
+    /// STRATA_SWAPIN_DEPTH (round 15): a batch past the per-thread scratch cap (swapin_depth.hpp's
+    /// swapin_shared_window; the default stager run is ~16 MiB, the biggest non-depth run ~64 MiB)
+    /// reads through ONE shared window instead of growing every calling thread's retained scratch
+    /// to the deep run's bytes (a 128-deep run is ~256 MiB; thirty stager threads keeping one each
+    /// would be gigabytes).  The guard spans the whole batch; the arena's file batches already
+    /// serialize on file_mu_, so it rarely contends; the buffer is allocated once at its
+    /// high-water mark and reused.
+    mutable std::mutex deep_win_mu_;
+    mutable uint8_t* deep_win_ = nullptr;
+    mutable size_t deep_win_cap_ = 0;
     bool open_direct(std::string& why);
     /// Windows: experts.bin mapped again as `open` maps it (begin/end_startup_unbuffered).
     bool map_view(std::string& why);

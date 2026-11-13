@@ -1,5 +1,6 @@
 // src/core/expert_source.cpp - the adapter.  See the header for the three clauses of the contract.
 #include "strata/core/expert_source.hpp"
+#include "strata/core/swapin_depth.hpp"
 #include "strata/core/relief_arena_cap.hpp"
 #include "strata/core/expert_nibble.hpp"
 #include "strata/core/foresight_swap.hpp"
@@ -987,7 +988,10 @@ bool file_tier_unbuffered(const std::vector<std::string>& paths, uint64_t arena_
 
 // ================================ THE FILE-BACKED SOURCE ================================
 
-FileExpertSource::~FileExpertSource() { close(); }
+FileExpertSource::~FileExpertSource() {
+    close();
+    std::free(deep_win_);   // STRATA_SWAPIN_DEPTH's shared deep window (see read_direct)
+}
 
 #if defined(__linux__)
 namespace {
@@ -2993,6 +2997,26 @@ bool FileExpertSource::read_direct(const Fill* fills, size_t n) const {
         sc.buf = posix_memalign(&p, (size_t) kSector, sc.cap) == 0 ? (uint8_t*) p : nullptr;
         if (sc.buf == nullptr) { sc.cap = 0; return false; }
     }
+    // STRATA_SWAPIN_DEPTH: a deep batch (past the per-thread scratch cap) reads through the ONE shared
+    // window instead of growing this thread's RETAINED scratch to the run's bytes - the depth's
+    // staging stays one reused buffer whatever the stager's thread count is (a 128-deep run is
+    // ~256 MiB; thirty stager threads keeping one each would be gigabytes).  The guard spans the
+    // whole batch, so the window's bytes are read and copied out under it; the arena's file batches
+    // already serialize on file_mu_, so this only orders rare non-arena deep callers.
+    const bool deep = swapin_shared_window((int64_t) total);
+    std::unique_lock<std::mutex> deep_lk(deep_win_mu_, std::defer_lock);
+    if (deep) {
+        deep_lk.lock();
+        if (total > deep_win_cap_) {
+            const size_t cap = (size_t) ((total + (1u << 20) - 1) >> 20 << 20);
+            void* p = nullptr;
+            if (posix_memalign(&p, (size_t) kSector, cap) != 0) return false;
+            std::free(deep_win_);
+            deep_win_ = (uint8_t*) p;
+            deep_win_cap_ = cap;
+        }
+    }
+    const uint8_t* rbuf = deep ? deep_win_ : sc.buf;
     sc.got.assign(sc.req.size(), -1);
     sc.cb.resize(std::min<size_t>(sc.req.size(), (size_t) kDepth));
     sc.cbp.resize(sc.cb.size());
@@ -3006,7 +3030,7 @@ bool FileExpertSource::read_direct(const Fill* fills, size_t n) const {
             std::memset(&c, 0, sizeof c);
             c.aio_lio_opcode = IOCB_CMD_PREAD;
             c.aio_fildes = (uint32_t) r.fd;
-            c.aio_buf = (uint64_t) (uintptr_t) (sc.buf + r.pos);
+            c.aio_buf = (uint64_t) (uintptr_t) (rbuf + r.pos);
             c.aio_nbytes = r.size;
             c.aio_offset = (int64_t) r.a0;
             c.aio_data = (uint64_t) (w0 + j);
@@ -3043,7 +3067,7 @@ bool FileExpertSource::read_direct(const Fill* fills, size_t n) const {
     for (const Window& x : sc.win) {
         // a request may run past the end of the file: only the role's own bytes have to arrive
         if (sc.got[x.req] < 0 || (uint64_t) sc.got[x.req] < x.in_req + x.skip + x.n) return false;
-        std::memcpy(x.dst + x.at, sc.buf + sc.req[x.req].pos + x.in_req + x.skip, (size_t) x.n);
+        std::memcpy(x.dst + x.at, rbuf + sc.req[x.req].pos + x.in_req + x.skip, (size_t) x.n);
     }
     return true;
 #else

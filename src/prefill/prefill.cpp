@@ -16,6 +16,7 @@
 #include "strata/prefill/share_rules.hpp"
 #include "strata/prefill/pipeline_chunks.hpp"
 #include "strata/core/arch_defaults.hpp"
+#include "strata/core/swapin_depth.hpp"
 #include <atomic>
 #if defined(__cpp_lib_atomic_wait)
 #define STRATA_ATOMIC_WAIT 1   // #1488: std::atomic::wait / notify_all are a GCC 11 library feature; GCC 10 spins instead
@@ -721,7 +722,8 @@ struct Stager {
     // D-5: the pinned ring's depth (STRATA_STAGER_RING, default 16) - how far the host copies can run ahead of the
     // DMAs of the unpinned experts' blobs
     int kRing = 16;
-    // pp-opt: the jobs a thread claims at once (STRATA_STAGER_BATCH; set by init's caller, at most kMaxBatch and kRing)
+    // pp-opt: the jobs a thread claims at once (STRATA_STAGER_BATCH; set by init's caller, at most
+    // kMaxBatch and kRing - STRATA_SWAPIN_DEPTH lifts the cap to 512 and sizes the ring with it)
     static constexpr int kMaxBatch = 32;
     int batch = 1;
     // `from` set: the blob is copied by the source itself (CS-T: a GGUF read in place assembles it from its three
@@ -826,11 +828,15 @@ struct Stager {
                     // was a ring entry the routing skipped (an event never recorded returns at once)
                     cudaEventSynchronize(dma_done[i % kRing]);
                 }
-                int32_t rl[kMaxBatch], re[kMaxBatch];
-                uint8_t* rd[kMaxBatch];
+                // STRATA_SWAPIN_DEPTH lifts a run past kMaxBatch (32) up to 512, so the run's arrays are
+                // sized by the claim and kept per thread - the window is allocated once and reused
+                thread_local std::vector<int32_t> rl, re;
+                thread_local std::vector<uint8_t*> rd;
                 // STRATA_PROMPT_STAGE_MEMO=1: the transient jobs that also fill a memo slot (t's bytes from rd[mri[t]])
-                PromptStageMemo::Slot* ms[kMaxBatch];
-                size_t mb[kMaxBatch], mri[kMaxBatch];
+                thread_local std::vector<PromptStageMemo::Slot*> ms;
+                thread_local std::vector<size_t> mb, mri;
+                rl.resize((size_t) k); re.resize((size_t) k); rd.resize((size_t) k);
+                ms.resize((size_t) k); mb.resize((size_t) k); mri.resize((size_t) k);
                 size_t nr = 0, nm = 0;
                 core::ExpertSource* from = nullptr;
                 for (int i = j; i < j + k; ++i) {
@@ -849,7 +855,7 @@ struct Stager {
                     if (jb.memo) { ms[nm] = jb.memo; mb[nm] = jb.bytes; mri[nm] = nr; ++nm; }
                     ++nr;
                 }
-                if (nr > 0 && !from->copy_blobs(rl, re, rd, nr)) {
+                if (nr > 0 && !from->copy_blobs(rl.data(), re.data(), rd.data(), nr)) {
                     std::fprintf(stderr, "prefill: the expert source could not copy experts %d.. of layer %d\n", re[0], rl[0]);
                     std::abort();
                 }
@@ -1947,14 +1953,24 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
             }
         }
         const int threads = stv ? std::clamp(std::atoi(stv), 1, 32) : files ? 32 : std::max(2, std::min(4, hw / 4));
-        if (files && std::getenv("STRATA_STAGER_RING") == nullptr) m.stager->kRing = 4 * threads;
-        // pp-opt: with files, each thread claims runs of neighbouring blobs and reads them as one request (copy_blobs);
-        // STRATA_STAGER_BATCH=1 is the A/B arm (one blob per request, as before)
-        {
-            const char* bv = std::getenv("STRATA_STAGER_BATCH");
-            const int want = bv ? std::atoi(bv) : files ? 8 : 1;
-            m.stager->batch = std::clamp(want, 1, Stager::kMaxBatch);
-        }
+        // pp-opt: with files, each thread claims runs of neighbouring blobs and reads them as one request
+        // (copy_blobs); STRATA_STAGER_BATCH=1 is the A/B arm (one blob per request, as before).
+        // STRATA_SWAPIN_DEPTH (round 15) widens that read window - the run size AND the ring that keeps
+        // a run's buffers distinct - so up to N ~2 MiB blobs are in flight before the batch waits; the
+        // relief serializes the file batches on the arena's file mutex, so the run IS the read queue's
+        // depth (a 142k prefill measured a flat ~1.0 GiB/s behind the 8-deep default on an NVMe that
+        // does 2.5-4+).  swapin_window keeps every existing knob surgical and answers today's numbers
+        // bit-for-bit when the depth knob is absent; the staging stays bounded at the ring it sized.
+        const strata::core::SwapinWindow swin = strata::core::swapin_window(
+            std::getenv("STRATA_SWAPIN_DEPTH"), std::getenv("STRATA_STAGER_BATCH"), std::getenv("STRATA_STAGER_RING"),
+            files, threads);
+        m.stager->kRing = swin.ring;
+        m.stager->batch = swin.run;
+        if (swin.note)
+            std::fprintf(stderr, "prefill: STRATA_SWAPIN_DEPTH=%d: the stager's pack-file runs read up to %d "
+                                 "experts per batch (ring %d, ~%lld MiB of staging in flight per run)\n",
+                         strata::core::swapin_depth(std::getenv("STRATA_SWAPIN_DEPTH")), swin.run, swin.ring,
+                         (long long) ((int64_t) swin.run * (int64_t) MAXBLOB() >> 20));
         if (!m.stager->init((size_t) MAXBLOB(), threads)) ok = false;
         m.stager->batch = std::min(m.stager->batch, m.stager->kRing);
     }
@@ -7161,9 +7177,14 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
             const int64_t db = m.src->swap_in_batches() - si_b0;
             const int64_t dy = m.src->swap_in_bytes() - si_y0;
             const int64_t dt = m.src->swap_in_ms() - si_t0;
-            std::fprintf(stderr, "strata serve: adapt swap-in: %lld swaps, %lld batches, %.0f MiB, %lld ms file read (%.2f ms/slot)\n",
+            // STRATA_SWAPIN_DEPTH / STRATA_STAGER_BATCH: the read window this request ran with, so a
+            // deep arm's line says its depth without a second grep (default 8 keeps the line as before)
+            char depth[48] = "";
+            if (m.stager != nullptr && m.stager->batch != 8)
+                std::snprintf(depth, sizeof depth, " depth=%d", m.stager->batch);
+            std::fprintf(stderr, "strata serve: adapt swap-in: %lld swaps, %lld batches, %.0f MiB, %lld ms file read (%.2f ms/slot)%s\n",
                          (long long) dn, (long long) db, (double) dy / 1048576.0, (long long) dt,
-                         (double) dt / (double) dn);
+                         (double) dt / (double) dn, depth);
         }
     }
     return true;
