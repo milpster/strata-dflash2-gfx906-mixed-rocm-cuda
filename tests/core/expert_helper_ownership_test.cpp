@@ -25,6 +25,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <mutex>   // (F) f32-wire saw: the fake's recording vs the main thread's read
 #include <string>
 #include <thread>
 #include <vector>
@@ -516,6 +517,161 @@ void run_window_channel_dies() {
     tb.join();
 }
 
+/// (F) W1's engine-side negotiation matrix: the REAL RemoteExperts::begin (proxy_begin) against a
+/// fake helper that advertises (or not) kFeatureF32Window and RECORDS the window frame's type and
+/// image bytes before answering kRows.  The matrix this pins, end to end through the engine's own
+/// gate (STRATA_HELPER_F32_WINDOW x the peer's bit):
+///   bit + env  -> kBeginF32, the image the window's fp32 rows VERBATIM (no engine quantize);
+///   bit + off  -> kBegin, the image quantize_q8_1_cpu's bytes (today's frame, byte for byte);
+///   no bit + env -> kBegin with the same bytes (an old helper never sees the new frame type).
+struct F32WireSaw {
+    std::mutex mtx;
+    int frame_type = 0;
+    int64_t img_bytes = 0;
+    std::vector<uint8_t> image;
+};
+void f32_wire_fake(const std::string& path, bool advertise, F32WireSaw& saw, std::atomic<bool>& up) {
+    up = false;
+    Socket srv;
+    if (srv.listen_bind(path) != kOk) return;
+    const int peer = srv.accept(deadline_after(25000));
+    if (peer < 0) { srv.unbind(); return; }
+    Socket conn;
+    conn.adopt(peer);
+    up = true;
+    RxBuffer rx;
+    for (;;) {
+        Header head;
+        PayloadView body;
+        if (conn.read_frame(head, rx, body, deadline_after(4000)) != kOk) break;
+        if (head.type == kHello) {
+            HelloAck ack;
+            ack.max_tok = (int32_t) kMaxTok;
+            ack.k = (int32_t) kK;
+            ack.max_entries = (int32_t) kMaxEntries;
+            ack.status = 0;
+            ack.free_mib = 7000;
+            ack.features = advertise ? (kFeaturePromptRows | kFeatureF32Window) : kFeaturePromptRows;
+            const uint8_t* p = reinterpret_cast<const uint8_t*>(&ack);
+            if (conn.write_reply(kHelloAck, head.req_id, head.seq, p, sizeof(ack),
+                                 deadline_after(2000)) != kOk) break;
+        } else if (head.type == kFill) {
+            std::vector<uint8_t> payload(sizeof(FillReport));
+            FillReport rep;
+            rep.resident = kFillN;
+            rep.bytes = (int64_t) kFillN * 2329856;
+            rep.n_pairs = (int32_t) kFillN;
+            std::memcpy(payload.data(), &rep, sizeof(rep));
+            for (int i = 0; i < (int) kFillN; ++i) {
+                const size_t at = payload.size();
+                payload.resize(at + 8);
+                std::memcpy(payload.data() + at, &kFillPairs[i][0], 4);
+                std::memcpy(payload.data() + at + 4, &kFillPairs[i][1], 4);
+            }
+            if (conn.write_reply(kFillReport, head.req_id, head.seq, payload.data(), payload.size(),
+                                 deadline_after(2000)) != kOk) break;
+        } else if (head.type == kBegin || head.type == kBeginF32) {
+            if (body.size() < sizeof(BeginReq)) break;
+            BeginReq req;
+            std::memcpy(&req, body.data(), sizeof(req));
+            {   // record the frame BEFORE the reply, under the saw's own lock
+                std::lock_guard<std::mutex> lk(saw.mtx);
+                saw.frame_type = (int) head.type;
+                saw.img_bytes = req.n_q8;
+                const size_t res = (size_t) ((req.n_tok * kExperts + 7) / 8);
+                const uint8_t* img = body.data() + sizeof(BeginReq) + (size_t) req.ids_bytes + res;
+                saw.image.assign(img, img + (size_t) req.n_q8);
+            }
+            const int64_t n = (int64_t) req.n_tok * req.k;
+            const int32_t* ids = (const int32_t*) (body.data() + sizeof(BeginReq));
+            std::vector<int32_t> claims;
+            for (int64_t i = 0; i < n; ++i)
+                if (fill_holds(req.layer, ids[i])) claims.push_back((int32_t) i);
+            const std::vector<uint8_t> p = rows_body_for(claims);
+            if (conn.write_reply(kRows, head.req_id, head.seq, p.data(), p.size(),
+                                 deadline_after(8000)) != kOk) break;
+        } else {
+            break;
+        }
+    }
+    conn.close();
+    srv.close();
+    srv.unbind();
+    up = false;
+}
+
+void run_f32_window_wire() {
+    std::printf("(F) W1 fp32 window wire: the engine's env x peer-bit matrix through proxy_begin\n");
+    const auto leg = [&](const char* tag, bool advertise, const char* set_env, int want_type) {
+        const std::string path = test_path(tag);
+        ::unlink(path.c_str());
+        std::atomic<bool> up{ false };
+        F32WireSaw saw;
+        std::thread th(f32_wire_fake, path, advertise, std::ref(saw), std::ref(up));
+        for (int i = 0; i < 500 && !up; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(4));
+
+        std::vector<std::pair<int32_t, int32_t>> ranked{ { 3, 10 }, { 7, 20 }, { 41, 5 } };
+        std::vector<uint8_t> claimed((size_t) kLayers * kExperts, 0);
+        RemoteExperts t;
+        std::string err;
+        const bool opened = t.open_socket(path, 3, kLayers, kExperts, kH, kFF, 0, kLayers - 1,
+                                          512, 4000, ranked, claimed, err);
+        char what[96];
+        std::snprintf(what, sizeof what, "%s: open_socket registers the proxy", tag);
+        check(opened, what);
+        if (!opened) { ::unsetenv("STRATA_HELPER_F32_WINDOW"); th.join(); return; }
+        if (set_env != nullptr) ::setenv("STRATA_HELPER_F32_WINDOW", set_env, 1);
+        else ::unsetenv("STRATA_HELPER_F32_WINDOW");
+
+        std::vector<int32_t> claims;
+        std::vector<int32_t> primary((size_t) kLayers * kExperts, -1);
+        for (int64_t i = 0; i < kWinTok * kH; ++i) x_win[i] = (float) ((i * 31 + 7) % 193) * 0.5f - 3.0f;
+        const bool ok = t.begin(kWinLayer, x_win, win_ids, kWinTok, 10, nullptr, primary.data(), err, claims);
+        std::vector<float> out((size_t) 80 * kH, 0.0f);
+        const bool fin = ok && t.finish(out.data(), err);
+        ::unsetenv("STRATA_HELPER_F32_WINDOW");
+        t.close();
+        th.join();
+        std::snprintf(what, sizeof what, "%s: the window is served (begin + finish)", tag);
+        if (!ok || !fin || (int64_t) claims.size() != kWinClaims) {
+            check(false, what);
+            return;
+        }
+        check(true, what);
+        int type = 0;
+        int64_t img_bytes = 0;
+        std::vector<uint8_t> image;
+        {
+            std::lock_guard<std::mutex> lk(saw.mtx);
+            type = saw.frame_type;
+            img_bytes = saw.img_bytes;
+            image = saw.image;
+        }
+        char what[96];
+        std::snprintf(what, sizeof what, "%s: the frame type is %s", tag,
+                      want_type == (int) kBeginF32 ? "kBeginF32" : "kBegin");
+        check(type == want_type, what);
+        if (want_type == (int) kBeginF32) {
+            std::snprintf(what, sizeof what, "%s: the image is the fp32 rows verbatim (%lld B)", tag,
+                          (long long) (kWinTok * kH * 4));
+            check(img_bytes == (int64_t) kWinTok * kH * 4 &&
+                      image.size() == (size_t) (kWinTok * kH * 4) &&
+                      std::memcmp(image.data(), x_win, (size_t) (kWinTok * kH * 4)) == 0,
+                  what);
+        } else {
+            std::vector<uint8_t> ref((size_t) (kWinTok * (kH / 32)) * 36u, 0);
+            quantize_q8_1_cpu(x_win, kWinTok * kH, ref.data());
+            std::snprintf(what, sizeof what, "%s: the image is quantize_q8_1_cpu's bytes today", tag);
+            check(img_bytes == (int64_t) ref.size() && image.size() == ref.size() &&
+                      std::memcmp(image.data(), ref.data(), ref.size()) == 0,
+                  what);
+        }
+    };
+    leg("f32w-on", true, "1", (int) kBeginF32);      // new engine + new helper: the fp32 wire
+    leg("f32w-off", true, nullptr, (int) kBegin);    // old engine (env off) + new helper: today's wire
+    leg("f32w-old", false, "1", (int) kBegin);       // new engine + old helper: the fallback wire
+}
+
 }  // namespace
 
 int main() {
@@ -530,6 +686,7 @@ int main() {
     run_empty_fill();
     run_prompt_channel_dies();
     run_window_channel_dies();
+    run_f32_window_wire();
     std::printf("%s: %d failure(s)\n",
                 failures == 0 ? "expert_helper_ownership_test PASS" : "FAIL", failures);
     return failures == 0 ? 0 : 1;

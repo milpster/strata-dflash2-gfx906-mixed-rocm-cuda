@@ -897,6 +897,20 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     add_test(NAME expert_helper_socket_test COMMAND expert_helper_socket_test)
     set_tests_properties(expert_helper_socket_test PROPERTIES TIMEOUT 120)
 
+    # W1/W3 (window wire diet, 2026-11): the fp32 window wire's knobs, negotiation gate and exact
+    # kBeginF32 frame, plus the GPU-quant golden compare harness - the same CPU-only construction
+    # and the same three sources as expert_helper_socket_test above (the GPU leg runs in the build
+    # window through the dump files; see the test's section 5).
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/expert_helper_f32_window_test.cpp")
+      add_executable(expert_helper_f32_window_test
+        tests/core/expert_helper_f32_window_test.cpp src/core/expert_helper_socket.cpp
+        tools/mixed_gpu/sidecar/helper_frame.cpp)
+      target_include_directories(expert_helper_f32_window_test PRIVATE include)
+      target_link_libraries(expert_helper_f32_window_test PRIVATE ggml-base)
+      add_test(NAME expert_helper_f32_window_test COMMAND expert_helper_f32_window_test)
+      set_tests_properties(expert_helper_f32_window_test PROPERTIES TIMEOUT 60)
+    endif()
+
     add_executable(expert_helper_fallback_test tests/core/expert_helper_fallback_test.cpp
       src/core/expert_helper_fallback.cpp)
     target_include_directories(expert_helper_fallback_test PRIVATE include)
