@@ -688,7 +688,11 @@ bool RemoteExperts::proxy_begin(int64_t layer, const float* x, const int32_t* id
             if (f.gu_act == (int) GGML_TYPE_Q8_K &&
                 strata::kernels::native_expert_q8k_supported(f.gu_type, proxy_n_embd_)) {
                 thread_local std::vector<uint8_t> q8k;
-                q8k.assign((size_t) n_tok * (size_t) f.act_bytes, 0);
+                // W3.3 (STRATA_HELPER_WIN_FAST, default OFF): resize-once reuse instead of the
+                // per-frame zero-fill - native_quant_act writes every byte of the image, so the
+                // fill guards nothing.  Default keeps today's assign, byte for byte.
+                if (helper_win_fast_enabled()) q8k.resize((size_t) n_tok * (size_t) f.act_bytes);
+                else q8k.assign((size_t) n_tok * (size_t) f.act_bytes, 0);
                 for (int64_t t = 0; t < n_tok; ++t)
                     strata::kernels::cpu::native_quant_act(f, x + (size_t) t * (size_t) proxy_n_embd_,
                                                            q8k.data() + (size_t) t * (size_t) f.act_bytes);
@@ -712,9 +716,38 @@ bool RemoteExperts::proxy_begin(int64_t layer, const float* x, const int32_t* id
             }
         }
     }
+    // W1 (the fp32 window wire, default OFF: STRATA_HELPER_F32_WINDOW with a peer that advertised
+    // kFeatureF32Window): the window's activations ship RAW - the per-frame quantize_q8_1_cpu below
+    // (the decode claim path's ~72-144 us/frame quant tax) moves to the helper's GPU stream as a
+    // micro-kernel bit-identical to the CPU quantizer, writing the same q8_1 blocks the grouped
+    // kernel reads; the reply and the row bytes it produces are unchanged.  Q8_K keeps precedence
+    // above; a peer without the bit falls through to today's CPU quantize + kBegin, byte for byte.
+    if (helper_f32_window_enabled() && helper_->f32_window_supported()) {
+        const int rc = helper_->begin_f32((int32_t) layer, (int32_t) n_tok, ids, primary_res, x,
+                                          proxy_timeout_ms_);
+        if (rc != expert_helper::kOk) {
+            // The begin-time fallback, verbatim: the window is fully CPU-served, the tier re-arms
+            // at the next request, and nothing failed.
+            if (proxy_residency_live()) fire_helper_residency_release();   // W1
+            healthy_ = false;
+            disabled_ = true;
+            claims.clear();
+            err = std::string("expert-helper: begin_f32 send failed: ") + expert_helper::status_name(rc);
+            return true;
+        }
+        claimed_out = claims;
+        computed_ += (int64_t) claims.size();
+        launched_layers_ += 1;
+        proxy_ms_begin_ = helper_->ms_begin();
+        return true;
+    }
     const int64_t q8_blocks = n_tok * (proxy_n_embd_ / 32);
     thread_local std::vector<uint8_t> q8;
-    q8.assign((size_t) q8_blocks * 36u, 0);
+    // W3.3 (STRATA_HELPER_WIN_FAST, default OFF): resize-once reuse instead of the per-frame
+    // zero-fill - quantize_q8_1_cpu writes every output byte (36 per block: 4 of ds + 32 of qs),
+    // so the fill guards nothing.  Default keeps today's assign, byte for byte.
+    if (helper_win_fast_enabled()) q8.resize((size_t) q8_blocks * 36u);
+    else q8.assign((size_t) q8_blocks * 36u, 0);
     quantize_q8_1_cpu(x, n_tok * proxy_n_embd_, q8.data());
     // C4a: the stripe arm.  Channel B's gate is re-read per layer: a mid-request B death (its own
     // latch, or a prompt-claim left in flight) drops the stripe for the rest of the request with a

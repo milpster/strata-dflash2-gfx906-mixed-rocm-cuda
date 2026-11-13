@@ -423,6 +423,8 @@ int ExpertHelperClient::hello(int64_t n_layers, int64_t n_expert, int64_t n_embd
                   (ack.features & expert_helper::kFeatureDraftBf16) != 0;   // L8: bf16 taps
     q8k_ = (body.size() >= sizeof(expert_helper::HelloAck)) &&
            (ack.features & expert_helper::kFeatureQ8K) != 0;   // the Q8_K activation wire
+    f32_window_ = (body.size() >= sizeof(expert_helper::HelloAck)) &&
+                  (ack.features & expert_helper::kFeatureF32Window) != 0;   // the fp32 window wire (W1)
     // The claim batch's PEER half of the gate: the bit says this helper serves kBeginPB/kRowsPB.
     // The ENGINE half is STRATA_CLAIM_BATCH (default 1).  Both must hold for a batch frame to exist;
     // with the env unset the prompt tier writes kBeginP exactly as today, so the bit changes nothing
@@ -561,6 +563,29 @@ int ExpertHelperClient::fill_report(const std::vector<std::pair<int32_t, int32_t
     return expert_helper::kOk;
 }
 
+// W3.3 (STRATA_HELPER_WIN_FAST, default OFF): the window tier's claim path rebuilt its request
+// body as a fresh `std::vector<uint8_t>(total, 0)` every frame - one heap allocation plus a full
+// zero-fill the send overwrites entirely.  The gated path reuses a THREAD-LOCAL grow-only buffer
+// (the helper-side RxBuffer's own pattern): resize() zero-fills only growth, so the builder
+// zeroes JUST the primary-residency bitmap (the one section assembled with |=; the header, the
+// ids and the image are memcpy'd over it).  The default path keeps a per-frame vector, and
+// resize() on a fresh one zero-fills everything - today's bytes exactly.  Shared by begin /
+// begin_q8k / begin_f32: the three request bodies differ only in the frame type and the image.
+static void build_window_payload(std::vector<uint8_t>& payload, const expert_helper::BeginReq& req,
+                                 int64_t n_ids, const int32_t* ids, int64_t n_expert, int32_t layer,
+                                 const int32_t* primary_res, size_t res_bytes, const void* image,
+                                 size_t image_bytes) {
+    const size_t total = sizeof(req) + (size_t) n_ids * 4 + res_bytes + image_bytes;
+    payload.resize(total);
+    std::memset(payload.data() + sizeof(req) + (size_t) n_ids * 4, 0, res_bytes);   // the |= section
+    std::memcpy(payload.data(), &req, sizeof(req));
+    std::memcpy(payload.data() + sizeof(req), ids, (size_t) n_ids * 4);   // the routed ids, routing order
+    for (int64_t e = 0; e < n_expert; ++e)   // the layer's PRIMARY residency (slot >= 0), expert-indexed
+        if (primary_res && primary_res[(size_t) layer * (size_t) n_expert + (size_t) e] >= 0)
+            payload[sizeof(req) + (size_t) n_ids * 4 + (size_t) (e >> 3)] |= (uint8_t) (1u << (e & 7));
+    std::memcpy(payload.data() + sizeof(req) + (size_t) n_ids * 4 + res_bytes, image, image_bytes);
+}
+
 int ExpertHelperClient::begin(int32_t layer, int32_t n_tok, const int32_t* ids, const int32_t* primary_res,
                               const uint8_t* q8, size_t q8_bytes, int64_t deadline_ms) {
     if (fd_ < 0) return expert_helper::kErrUnhealthy;
@@ -575,14 +600,10 @@ int ExpertHelperClient::begin(int32_t layer, int32_t n_tok, const int32_t* ids, 
     req.k = (int32_t) expert_helper::kK;
     req.ids_bytes = (int32_t) (n * 4);
     req.n_q8 = (int32_t) q8_bytes;
-    std::vector<uint8_t> payload(sizeof(req) + (size_t) n * 4 + res_bytes + q8_bytes, 0);
-    std::memcpy(payload.data(), &req, sizeof(req));
-    std::memcpy(payload.data() + sizeof(req), ids, (size_t) n * 4);   // the routed ids, routing order
-    for (int64_t e = 0; e < n_expert; ++e) {   // the layer's PRIMARY residency (slot >= 0), expert-indexed
-        if (primary_res && primary_res[(size_t) layer * (size_t) n_expert + (size_t) e] >= 0)
-            payload[sizeof(req) + (size_t) n * 4 + (size_t) (e >> 3)] |= (uint8_t) (1u << (e & 7));
-    }
-    std::memcpy(payload.data() + sizeof(req) + (size_t) n * 4 + res_bytes, q8, q8_bytes);
+    thread_local std::vector<uint8_t> payload_reuse;   // W3.3: the gated grow-only claim-path buffer
+    std::vector<uint8_t> payload_fresh;
+    std::vector<uint8_t>& payload = helper_win_fast_enabled() ? payload_reuse : payload_fresh;
+    build_window_payload(payload, req, n, ids, n_expert, layer, primary_res, res_bytes, q8, q8_bytes);
     // M7 (sect12a, BUG E): the window tier's begin/finish pair spans a layer's compute (the reply
     // is read by finish), so this request is the ONE outstanding request of the protocol for that
     // whole span.  io_mtx_ is held across the write and the outstanding-flag update, and finish
@@ -621,19 +642,60 @@ int ExpertHelperClient::begin_q8k(int32_t layer, int32_t n_tok, const int32_t* i
     req.k = (int32_t) expert_helper::kK;
     req.ids_bytes = (int32_t) (n * 4);
     req.n_q8 = (int32_t) q8k_bytes;   // Q8_K blocks: n_tok * (n_embd/256) * 292
-    std::vector<uint8_t> payload(sizeof(req) + (size_t) n * 4 + res_bytes + q8k_bytes, 0);
-    std::memcpy(payload.data(), &req, sizeof(req));
-    std::memcpy(payload.data() + sizeof(req), ids, (size_t) n * 4);   // the routed ids, routing order
-    for (int64_t e = 0; e < n_expert; ++e)
-        if (primary_res && primary_res[(size_t) layer * (size_t) n_expert + (size_t) e] >= 0)
-            payload[sizeof(req) + (size_t) n * 4 + (size_t) (e >> 3)] |= (uint8_t) (1u << (e & 7));
-    std::memcpy(payload.data() + sizeof(req) + (size_t) n * 4 + res_bytes, q8k, q8k_bytes);
+    thread_local std::vector<uint8_t> payload_reuse;   // W3.3: the gated grow-only claim-path buffer
+    std::vector<uint8_t> payload_fresh;
+    std::vector<uint8_t>& payload = helper_win_fast_enabled() ? payload_reuse : payload_fresh;
+    build_window_payload(payload, req, n, ids, n_expert, layer, primary_res, res_bytes, q8k, q8k_bytes);
     // The ONE outstanding request rule is begin's own (io_mtx_ across the write; finish reads the reply).
     std::lock_guard<std::mutex> io_lk(io_mtx_);
     expert_helper::Socket s;
     s.adopt(fd_);
     const auto t0 = std::chrono::steady_clock::now();
     const int rc = s.write_frame(expert_helper::kBeginQ8K, ++req_id_, payload.data(), payload.size(),
+                                 rel(deadline_ms, kDeadlineDefaultMs));
+    ms_begin_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    if (rc != expert_helper::kOk) { s.release(); close(); return rc; }
+    begin_outstanding_ = true;
+    begin_seq_ = s.seq_out();
+    seq_ = begin_seq_;
+    ++requests_;
+    s.release();
+    return expert_helper::kOk;
+}
+
+int ExpertHelperClient::begin_f32(int32_t layer, int32_t n_tok, const int32_t* ids, const int32_t* primary_res,
+                                  const float* x, int64_t deadline_ms) {
+    if (fd_ < 0) return expert_helper::kErrUnhealthy;
+    // The negotiation gate, BEFORE any write (kBeginQ8K's own rule): kBeginF32 is a frame type an
+    // unadvertised peer cannot type-decode, so it is refused HERE and never reaches the wire.  The
+    // ENGINE half of the gate is STRATA_HELPER_F32_WINDOW (helper_f32_window_enabled) - both must
+    // hold for the frame to exist, so an old helper keeps today's kBegin and an old engine never
+    // asks.
+    if (!f32_window_) return expert_helper::kErrRequest;
+    if (n_expert_ <= 0 || n_embd_ <= 0 || (n_embd_ % 32) != 0)
+        return expert_helper::kErrGeometry;   // whole 32-value blocks for the helper's quant kernel
+    const int64_t n_expert = n_expert_;
+    if (n_tok < 1 || n_tok > expert_helper::kMaxTok) return expert_helper::kErrGeometry;
+    if (x == nullptr) return expert_helper::kErrGeometry;
+    const int64_t n = n_tok * expert_helper::kK;
+    const size_t res_bytes = (size_t) ((n_tok * n_expert + 7) / 8);   // the layer's primary residency bitmap
+    const size_t img_bytes = (size_t) n_tok * (size_t) n_embd_ * sizeof(float);
+    expert_helper::BeginReq req;
+    req.layer = layer;
+    req.n_tok = n_tok;
+    req.k = (int32_t) expert_helper::kK;
+    req.ids_bytes = (int32_t) (n * 4);
+    req.n_q8 = (int32_t) img_bytes;   // the RAW fp32 rows: n_tok * n_embd * 4 (the field's name is kBegin's)
+    thread_local std::vector<uint8_t> payload_reuse;   // W3.3: the gated grow-only claim-path buffer
+    std::vector<uint8_t> payload_fresh;
+    std::vector<uint8_t>& payload = helper_win_fast_enabled() ? payload_reuse : payload_fresh;
+    build_window_payload(payload, req, n, ids, n_expert, layer, primary_res, res_bytes, x, img_bytes);
+    // The ONE outstanding request rule is begin's own (io_mtx_ across the write; finish reads the reply).
+    std::lock_guard<std::mutex> io_lk(io_mtx_);
+    expert_helper::Socket s;
+    s.adopt(fd_);
+    const auto t0 = std::chrono::steady_clock::now();
+    const int rc = s.write_frame(expert_helper::kBeginF32, ++req_id_, payload.data(), payload.size(),
                                  rel(deadline_ms, kDeadlineDefaultMs));
     ms_begin_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     if (rc != expert_helper::kOk) { s.release(); close(); return rc; }

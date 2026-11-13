@@ -86,14 +86,13 @@ inline constexpr uint32_t kFeatureDraft = 4u;            // HelloAck.features bi
 inline constexpr uint32_t kFeatureDraftBf16 = 8u;        // HelloAck.features bit 3 (L8: bf16 draft taps)
 inline constexpr uint32_t kFeatureQ8K = 16u;             // bit 4: Q8_K activation images (kBeginQ8K, image_format 2)
 inline constexpr uint32_t kFeaturePromptBatch = 32u;     // bit 5: K prompt-tier claims in ONE exchange (kBeginPB/kRowsPB)
+inline constexpr uint32_t kFeatureF32Window = 64u;       // bit 6: fp32 WINDOW activations (kBeginF32, helper-quantized on GPU)
 // W2 (helper-quant-sync-diet.md, the memfd reply ring; default OFF - STRATA_HELPER_REPLY_RING on
 // BOTH sides): bit 7 says this helper created the reply ring, registered it pinned+mapped, and
 // attached its memfd to the kHelloAck via SCM_RIGHTS - rows replies on the negotiated channel
 // shrink to the kRowsRing doorbell and the engine reads the rows out of its own read-only mmap.
 // The bit is set ONLY when the engine's kHello asked (HelloReq::reserved0's
 // kHelloWantReplyRing): an old engine never asks, so an old exchange never allocates the ring.
-// (bit 6 is window-wire-diet's kFeatureF32Window; this lane renumbered off it at landing so the
-// two branches compose without a constant clash.)
 inline constexpr uint32_t kFeatureReplyRing = 128u;      // bit 7: reply ring memfd attached to the ack
 
 // Frame types.  Exactly one request is outstanding: the engine sends hello, fill, and a begin; each
@@ -148,14 +147,24 @@ enum FrameType : uint32_t {
     // payload, concatenated in the engine's claim order.
     kBeginPB = 18,        // engine -> helper: n_parts prompt-tier sub-requests in one frame
     kRowsPB = 19,         // helper -> engine: n_parts kRowsP replies in one frame
+    // W1 (the fp32 WINDOW wire, default OFF - the engine's STRATA_HELPER_F32_WINDOW, and only to a
+    // peer that advertised kFeatureF32Window): the SAME window request and reply as kBegin, but the
+    // activation image is the window's RAW fp32 rows (n_tok * n_embd * 4 bytes) - the engine skips
+    // its per-frame quantize_q8_1_cpu (the decode claim path's ~72-144 us/frame quant tax) and the
+    // helper quantizes on its GPU stream with a micro-kernel that is bit-identical to the CPU
+    // quantizer (same amax/sum statement order, same fp16 scales, same roundf/clamps), writing the
+    // same d_q8 blocks the grouped kernel reads today - the launch itself is unchanged.  The SAME
+    // extension rule as the frames above: a new frame type, never sent to a peer that did not
+    // advertise the bit, so a mixed build answers with this transport's typed refusal, never a
+    // misparse.  Reply stays kRows, byte for byte kBegin's.
+    kBeginF32 = 20,       // engine -> helper: the window's activations as raw fp32 rows (reply stays kRows)
     // W2 (the reply ring's doorbell; sent ONLY on a channel whose hello negotiated the ring - the
     // peer that did not ask for it never sees the frame type): the rows for the outstanding
     // kBegin / kBeginQ8K / single-part kBeginP are packed in the ring slot named here, not on the
     // socket.  The slot's records area is BYTE-FOR-BYTE the kRows/kRowsP payload that would have
     // been sent (sizeof(RowsResp) + n_rows * (4 + n_embd*4)), so the receiving validator runs
     // unchanged on the mapped bytes.  An n_rows of 0 is the empty reply (the slot holds the
-    // RowsResp header and the seq word, no records).  (21, not 20: window-wire-diet's kBeginF32
-    // landed on 20 first - same-rebase composition.)
+    // RowsResp header and the seq word, no records).
     kRowsRing = 21,       // helper -> engine: the reply is in the ring slot (slot/seq/n_rows)
 };
 

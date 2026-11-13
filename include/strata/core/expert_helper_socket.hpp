@@ -14,6 +14,7 @@
 #include "strata/core/expert_helper_protocol.hpp"
 
 #include <cstdint>
+#include <cstdlib>   // std::getenv - the wire-diet knobs below (host-only, no device call)
 #include <mutex>
 #include <string>
 #include <vector>
@@ -67,6 +68,26 @@ int select_prompt_rows(const int32_t* cnt, const int32_t* toks, const int32_t* h
                        int64_t max_rows_per_expert, int64_t max_rows_per_layer, int64_t max_sel_tok,
                        ExpertHelperPromptPlan& out);
 
+/// W1 (the fp32 window wire): the ENGINE half of the gate - STRATA_HELPER_F32_WINDOW, default OFF.
+/// Exactly "1" enables; absent, empty, "0" and any other value keep today's bytes (the CPU
+/// quantize + kBegin).  The PEER half is the helper's kFeatureF32Window bit; both must hold for a
+/// kBeginF32 frame to exist.  Read per call, like STRATA_EXPERT_HELPER_Q8K, so a host test can flip
+/// it between handshakes.  CPU-only header arithmetic: the knob test links nothing.
+inline bool helper_f32_window_enabled() {
+    const char* v = std::getenv("STRATA_HELPER_F32_WINDOW");
+    return v != nullptr && v[0] == '1' && v[1] == '\0';
+}
+
+/// W3 (the cheap bundle): STRATA_HELPER_WIN_FAST, default OFF - exactly "1" enables.  Covers the
+/// engine-side trims: the window begin payload's per-frame vector rebuild + zero-fill
+/// (expert_helper_socket.cpp begin/begin_q8k/begin_f32) and the q8/q8k image's zero-fill before
+/// the quantizer overwrites it (remote_experts.cpp proxy_begin).  The helper-side d_out pre-clear
+/// drop rides the same knob in the helper's own process.  Absent/0 = byte-identical today.
+inline bool helper_win_fast_enabled() {
+    const char* v = std::getenv("STRATA_HELPER_WIN_FAST");
+    return v != nullptr && v[0] == '1' && v[1] == '\0';
+}
+
 class ExpertHelperClient {
 public:
     ExpertHelperClient();
@@ -111,6 +132,16 @@ public:
     int begin_q8k(int32_t layer, int32_t n_tok, const int32_t* ids, const int32_t* primary_res,
                   const uint8_t* q8k, size_t q8k_bytes, int64_t deadline_ms);
 
+    /// kBeginF32 (default OFF - STRATA_HELPER_F32_WINDOW, a peer that advertised
+    /// kFeatureF32Window): `begin`'s window request with the activation image as the window's RAW
+    /// fp32 rows (n_tok * n_embd * 4 bytes, `x` verbatim - the engine quantizes NOTHING).  The
+    /// helper quantizes on its GPU stream into the same q8_1 blocks the grouped kernel reads, so
+    /// the reply is kRows exactly as begin's.  Refused locally (kErrRequest, nothing written)
+    /// unless the peer advertised the bit: the frame type never reaches a peer that cannot
+    /// type-decode it.  finish() reads the reply, the same kRows contract as begin's.
+    int begin_f32(int32_t layer, int32_t n_tok, const int32_t* ids, const int32_t* primary_res,
+                  const float* x, int64_t deadline_ms);
+
     /// Read the helper's rows for the outstanding begin and scatter them at the original indices.
     /// Validates: frame type/version, request id, sequence, payload length vs n_embd, index range vs
     /// `claims`, no duplicate index, every claimed index answered, all floats finite.  A validated
@@ -133,6 +164,7 @@ public:
     bool prompt_rows_supported() const { return prompt_rows_; }
     bool prompt_f32_supported() const { return prompt_f32_; }   // M4c (b): the peer quantizes fp32 itself
     bool q8k_supported() const { return q8k_; }   // the peer takes Q8_K activation images (kFeatureQ8K)
+    bool f32_window_supported() const { return f32_window_; }   // the peer quantizes fp32 WINDOW rows (kFeatureF32Window)
     /// The image of the LAST frame build_beginp_payload built (the claim line reports it): its byte
     /// size and its format - 0 the engine's q8_1 blocks, 1 the fp32 rows, 2 the Q8_K blocks.  The
     /// byte size is what the wire carried, so the engine's wire arithmetic is right for every
@@ -371,6 +403,7 @@ private:
     bool prompt_rows_ = false;                      // the peer advertised kFeaturePromptRows
     bool prompt_f32_ = false;                       // the peer advertised kFeaturePromptF32 (M4c (b))
     bool q8k_ = false;                              // the peer advertised kFeatureQ8K (the Q8_K wire)
+    bool f32_window_ = false;                       // the peer advertised kFeatureF32Window (the fp32 window wire)
     bool prompt_batch_ = false;                     // the peer advertised kFeaturePromptBatch
     int64_t claim_batch_ = 1;                       // STRATA_CLAIM_BATCH, clamped: 1 = today's wire
     // W2 (the reply ring): this channel's read-only mmap of the helper's memfd and the latched
