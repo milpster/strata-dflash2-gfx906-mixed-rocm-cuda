@@ -2520,3 +2520,292 @@ killer 466.7 tok/s / 375.3 s; killerL 121.0; longtg 93.1; tg1024 42.6; TG gens 2
 
 ### Next
 Fill-raise arm -> drafter-depth arm (STRATA_SPEC_MIN_P=0.4 via 452e5257ce passthrough) -> Q8_IMAGE arm -> build window for D+I+C5+C3+C1+C4 when ladder ends -> panel-tg on winners -> prod restore proposal.
+
+## Round 18c — C3.1 graph-family trim landed (2026-11-13 evening, code-only)
+
+Lane C3 (this journal's code-lane table): worktree `/mnt/srcds/Strata-wt-graphtrim`, branch
+**graph-family-trim** off v0232b-hotfix, commit **532ba8cd2b** (`feat(core): free the stale verify
+graph family behind STRATA_GRAPH_FAMILY_TRIM`, +63 lines: verify.cpp refresh_ar/trim_stale_family,
+verify.hpp members, DETAILS.md opt-in row). Knob **STRATA_GRAPH_FAMILY_TRIM=N** (value = hysteresis
+windows, min 1; unset/0 = off = today's bits) — default OFF per the design doc's containment note.
+Mechanics: after ar_off_ has held for N windows, cudaGraphExecDestroy the other family's exec_
+/exec_nr_ pools (evict_window_graph's rule: sync cs_ first, reset launched_ flags so a recapture is
+a cold first launch; skip when pipelined windows read exec_ directly, when capture_all holds
+no_window_eviction_, or after release). Flip-back re-captures lazily (5-56 ms/size). Expect
+~50-150 MiB/card freed in the always-doorbell rig (log line prints pools + free-VRAM before->after);
+funds C1's card1 Foresight slots and moves card1 off the 229 MiB #2065 knife edge. Panel arm
+suggestion: STRATA_GRAPH_FAMILY_TRIM=8. Not built, not run (box benchmarking); joins the
+D+I+C5+C3+C1 build window.
+
+## Round 18d — W1 fp32 window wire + W3 wire diet landed (2026-11-13 night, code-only)
+
+Lane W1+W3 of the helper-quant-sync-diet design (out/ab9-window-20261113/analysis/
+helper-quant-sync-diet.md; W2/W4 stay with the claim-stripe lane).  Worktree
+`/mnt/srcds/Strata-wt-wirediet`, branch **window-wire-diet** off v0232b-hotfix c7be950984, commits
+**d678fb08ba** (feat(core): fp32 window wire + win-fast payload diet), **b774ee868a** (feat(helper):
+GPU quant twin + window-lock trims), **1d9a980708** (test(core): end-to-end pins).  All default-OFF;
+unset/0 = today's bytes on every path.
+
+**W1 — kBeginF32** (frame type 20, HelloAck bit kFeatureF32Window=64, the exact kBeginQ8K
+negotiation pattern: never sent to a bit-less peer, an old engine never asks).  Engine:
+proxy_begin skips quantize_q8_1_cpu and ships the window's fp32 rows verbatim via
+ExpertHelperClient::begin_f32 when STRATA_HELPER_F32_WINDOW=1 AND the peer advertised the bit (Q8_K
+keeps precedence; fallback = today's kBegin).  Helper: serve_begin(image_f32) stages the rows in a
+LAZY pinned slot (h_img, kMaxTok*H*4 = 80 KiB; nothing allocated on default runs so buffers_bytes
+is unchanged), uploads to d_img_f32, and quantize_q8_1_f32_window_kernel writes d_q8 BEFORE the
+grouped launch — the launch itself is byte-for-byte unchanged (the doc rejected fusing quant into
+the GEMM: the image is re-read per group).  Bit-identity: one thread per 32-block running the CPU
+quantizer's own statements in order (sequential amax/sum — NOT a butterfly — so the fp16 SUM is
+bit-identical too, stronger than the prompt tier's ULP-close twin; #606 clamp, __float2half_rn,
+roundf ±127); helper target sets no fast-math flags so nvcc's IEEE defaults hold.  Expected
+−60-130 µs/frame net per the design (engine −72-144, helper lock +~15).  Golden pin:
+STRATA_HELPER_F32_QUANT_DUMP=<path> dumps the first frame's input+output;
+expert_helper_f32_window_test's compare runs for real under STRATA_TEST_F32_WINDOW_DUMP=<path>
+(deferred to the build window — GPU execution only).
+
+**W3** — STRATA_HELPER_WIN_FAST=1 (the doc's own name) covers W3.1+W3.3; W3.2 is separately
+gated STRATA_HELPER_PINNED_RX=1 (pinned allocation is OOM-observable, so it rides its own knob).
+- W3.1: the d_out pre-clear drops under the knob.  Store semantics PROVEN (comment at the call
+  site): every down-kernel variant native_expert_grouped/_q8k can reach STORES
+  out[ent_dst*H+r] — native_down_kernel :2226, multi :2279-2443, dws_rows :4496, expdec :2806-2811,
+  s26 :3824/3836, s27 :4042/4054, amd :5706-5734, lds :6045-6046 — never += , and the only atomic
+  on `out` in the TU is nib_hash_kernel's accumulator (:5306, a different buffer).  serve_begin's
+  entry map covers exactly the memset's range; scan/pack read only that range.  Kept gated one
+  release per the design's containment rule.
+- W3.2: the q8/q8k H2D copies from the pinned h_img staging instead of the pageable RxBuffer (the
+  RxBuffer itself reallocs as prompt frames grow, so registering IT is unsound — the staging slot
+  is the stable pinned range; cost = one ~23 KB host memcpy).  Deviation from the doc's letter
+  (cudaHostRegister of the RxBuffer) noted: same DMA effect, no realloc hazard, no giant
+  registration cliff.
+- W3.3: engine-side thread-local grow-only payload (begin/begin_q8k/begin_f32 share one builder;
+  only the |= residency bitmap is zeroed) + resize-once q8/q8k images in proxy_begin.
+
+**Composition**: does not touch helper-window-diet's spans (its narrowed scratch clear, grow-only
+kRows reply buffer, and lock-before-reply-write all predate on this base and stay).  Neighboring
+hunks for the rebase: serve_begin's upload/clear block (mine: image dispatch + clear gate) sits
+between their scratch-clear hunk and their reply-write hunk; my dispatch edit adds kBeginF32 to
+their `head.type == kBegin || kBeginQ8K` line.  The claim-stripe lane shares
+expert_helper_protocol.hpp (my additions: kFeatureF32Window=64, kBeginF32=20 — no existing lines
+moved) and expert_helper_socket.cpp (my additions: the two knob helpers above the class, the
+build_window_payload static below validate_rows_payload, begin_f32 after begin_q8k, the
+thread_local payload lines inside begin/begin_q8k, f32_window_ latch line in hello).
+
+Tests (host-only, no links beyond the socket test's own three-source shape):
+expert_helper_f32_window_test (new; CMake-registered beside expert_helper_socket_test) + ownership
+test section (F) driving the REAL proxy_begin over a recording fake helper for the full env×bit
+matrix (old engine↔new helper, new engine↔old helper, and both-on).  Not built, not run.
+
+Build window: fresh configure, then HIP round-13 recipe (-DCMAKE_HIP_COMPILER=/opt/rocm-6.1.0/
+llvm/bin/clang++, -DCMAKE_HIP_ARCHITECTURES=gfx906, -DCMAKE_PREFIX_PATH=/home/srcds/rocm-gfx906-
+xnack;/opt/rocm-6.1.0, STRATA_HIP_GFX906=ON, STRATA_ENABLE_DFLASH2=ON, STRATA_HAVE_DFLASH2=OFF,
+STRATA_BUILD_TESTS=ON, nice -n 10 make -j8).  The CUDA helper must ALSO be rebuilt (helper_main.cpp
+changed; separate CUDA tree — STRATA_BUILD_EXPERT_HELPER=ON there).  Then: run
+expert_helper_f32_window_test + expert_helper_ownership_test; run the helper once with
+STRATA_HELPER_F32_WINDOW=1 STRATA_HELPER_F32_QUANT_DUMP=/tmp/opencode/f32golden and rerun the test
+with STRATA_TEST_F32_WINDOW_DUMP=/tmp/opencode/f32golden for the real golden compare; a single
+failed compare = revert the env, nothing else.
+
+## Round 18e — claim-stripe lane: stage-1 stripe + stage-2 reply ring/W4 landed (2026-11-13 night, code-only)
+
+The claim-stripe lane (this journal's round-18b code-lane table, C4 follow-up), both stages landed
+as code-only commits.  Worktree `/mnt/srcds/Strata-wt-claimstripe`, branch **claim-stripe** off
+v0232b-hotfix c7be950984, commits **da334704ee** (stage 1, `feat(core): stripe decode window claims
+across both helper sockets (STRATA_CLAIM_STRIPE)`, engine-side only) and **3b964e33c2** (stage 2,
+`feat(helper): reply ring lane + event-driven completion (STRATA_HELPER_REPLY_RING)`, +1060/-26
+over 6 files).  Not built, not run (box benchmarking); joins the D+I+C5+C3+C1+W build window.
+
+**Stage 1 (STRATA_CLAIM_STRIPE, default OFF)**: decode claims stop serializing one kBegin/kRows per
+claiming layer on the window channel.  With the env set and `--expert-helper-socket2` live, each
+layer's claim list splits at the expert boundary nearest the row midpoint: the A-half rides channel
+A as the layer's own kBegin (B's entries masked to -1), the B-half rides channel B as ONE kBeginP
+(the claim-batch family's single-part transport).  Both channels' replies fold into the window's
+scatter; counters/DONE-line reporting unchanged.  Layers under 4 claimed rows, single-expert
+claims and the Q8_K wire path keep today's single-flight frames.  Correctness never depends on
+STRATA_HELPER_STREAMS (the W4 note below is about the HELPER's lock, not the stripe).
+
+**Stage 2 — W2 (the memfd reply ring)**: with STRATA_HELPER_REPLY_RING set on BOTH sides, the
+helper allocates a 2-slot pinned+mapped ring (slot 0 = primary channel, slot 1 = --socket2;
+~1.6 MB at H=2560: stride 823,296 B page-aligned, header page + 2 strides), exposes the same
+pages to the engine as a memfd attached to the kHelloAck via SCM_RIGHTS (new transport methods
+write_reply_fd/read_frame_anc in helper_frame.cpp — the shared TU both sides compile), and a
+negotiated rows reply shrinks to the 16-byte kRowsRing doorbell {n_rows, slot, seq}.  A slot's
+records area is BYTE-FOR-BYTE the kRows/kRowsP payload the socket would carry, so the engine's
+validate_rows_payload runs verbatim on the mapped bytes (apply_ring_rows).  serve_begin's
+epilogue kernel `ring_pack_records` (one block, grid-stride over the row floats, system-fence +
+syncthreads before thread 0 publishes the seq seal) packs `[claim_idx | H floats]` straight into
+the slot — the :708-712 host pack loop AND the 72-90 KB of row bytes both leave the frame.
+Ownership per the doc's contract: slot k belongs to channel k for the process lifetime; the
+one-outstanding-per-channel rule makes each slot's generations strictly sequential (the next
+kBegin on a channel cannot arrive before the engine consumed the previous doorbell); the per-slot
+seq word is the tamper seal — a doorbell whose seal disagrees is kErrSeq and closes the channel
+(host test pins the stale-seal refusal).  Per-slot pinned claim staging (h_ring_claims[2]): a
+host memcpy into mapped memory is NOT a stream op, so a single shared staging buffer would let
+channel B's parse overwrite the claims channel A's queued-but-not-executed epilogue still reads —
+one buffer per slot closes it.  serve_prompt's lane (the stripe's B-half transport) copies the
+core's already-packed reply into the slot and answers with the doorbell (the prompt tier's pack
+is decode-sized for the B-half; claims over the 80-row slot cap keep today's kRowsP per frame —
+per-frame fallback, no renegotiation; kRowsPB multi-part always stays on the socket).
+
+**Stage 2 — W4 (event completion, early lock release) rides the lane and only the lane**:
+serve_begin releases the device lock AT LAUNCH (both lock modes: gpu_mtx and the L2 gate) because
+the frame's rows already left the shared d_out with the epilogue — the scan reads the slot, never
+d_out, so the next frame's kernel may overwrite d_out the moment this frame's stream work
+completes; d_q8/d_meta/d_scratch reuse is safe by stream FIFO (or per-tier staging under
+STRATA_HELPER_STREAMS).  The serve thread waits its OWN cudaEvent (recorded after the epilogue;
+spin on cudaEventQuery then cudaEventSynchronize) instead of draining the stream; serve_fill
+event-fences BOTH slots' events before touching device state (fill waits events, not replies —
+the events are recorded at birth so an idle channel is covered).  Without the ring the lock keeps
+today's full span in THIS tree (helper-window-diet's release-before-reply is a separate branch);
+serve_prompt keeps its whole-frame lock (its pack still reads d_out_p host-side).  Default
+single-stream mode gets wire overlap only (B's full-lock frame drains A's FIFO tail); true
+compute concurrency still needs STRATA_HELPER_STREAMS — but correctness holds in both modes.
+
+**Negotiation (every old/new combination works)**: the engine asks with HelloReq::reserved0's
+kHelloWantReplyRing (unknown bits refused by name, kErrProtocol); the helper answers
+kFeatureReplyRing + the memfd, or neither.  A helper BINARY that predates the flag word refuses
+any nonzero reserved0 with kError — the client retries the hello ONCE with the flag clear and
+proceeds on the socket lane (host test pins the retry).  The engine refuses a bit-without-fd ack
+(split-brain guard) and a header that disagrees with its own hello geometry (magic/version/
+n_embd/stride, validated against fstat's size).  The engine's knob is read per-hello (env flip =
+engine restart, as every other knob here); the helper's env allocates the ring at startup and a
+creation failure disables the lane only (socket replies, one stderr line).
+
+**Composition (rebase map for the integrator)**: stage 2 shares the wire-diet-edited files —
+expert_helper_protocol.hpp: my additions are kFeatureReplyRing=128 (bit 7 — RENUMBERED OFF 64 at
+landing: window-wire-diet's kFeatureF32Window took bit 6 first, same-rebase clash avoided) +
+kRowsRing=21 (20 is wirediet's kBeginF32) + kHelloWantReplyRing + the Ring/RowsRingResp/
+layout-helper block before the M7 section + write_reply_fd/read_frame_anc/write_seq(fd=-1) on
+Socket — no existing lines moved except write_seq's signature tail.  expert_helper_socket.cpp:
+knob helper after claim_batch_env, hello()'s send/read restructured into the retry loop (the flag
+set + read_frame_anc + the kError retry), map_ring/apply_ring_rows/release_ring after hello,
+ring_lane_/ring_map_ members + reply_ring_active() in the header, finish()'s via_ring dispatch
+around the type check, finish_prompt()'s same dispatch, release_ring() in close().
+helper_frame.cpp is NOT edited by wirediet (clean): read_all_anc in the anon namespace +
+write_reply_fd + the fd param on write_seq.  helper_main.cpp (not edited by wirediet or
+window-diet beyond their own hunks): Helper ring fields + teardown, the W2 helper block (kernel +
+ring_slot_of/ring_reply_sealed/ring_event_wait/ring_create) after cuda_check, serve_fill's event
+fence after its locks, serve_begin's `int ring_slot` param + empty-claims ring branch + the
+ring/W4 path between the launch check and the legacy sync, serve_prompt's `ring_slot` param +
+via_ring reply wrapper, serve_channel's ring_slot local (reset at accept_peer) + hello flags
+parse + ack bit/fd + both dispatch sites, main's ring_create call, usage()'s env line.
+
+**Tests** (expert_helper_socket_test section 22, host-only, no GPU, no new links — a real memfd
++ the transport's real SCM_RIGHTS path): layout arithmetic (page-aligned stride, exact coverage,
+records offset), the full negotiation matrix (wanted+offered maps the ring; wanted+not-offered
+falls back; corrupt header refused; unasked-offer refused; legacy-helper kError → flag-clear
+retry), doorbell application through finish (original indices, counters) + generation sequencing
++ stale-seal kErrSeq, un-negotiated doorbell kErrProtocol, prompt doorbell at the pair indices.
+GPU pins scaffolded as (22f): epilogue bytes vs the legacy pack, event ordering across both
+stream modes, fill fence.
+
+**Build window (this lane needs the CUDA helper rebuilt too)**: fresh HIP configure per round-13
+recipe (clang++/gfx906/xnack paths as in 18d), `nice -n 10 make -j8 rpcw-hip/strata` for the
+engine, and in a separate CUDA tree `STRATA_BUILD_EXPERT_HELPER=ON make strata-expert-helper`
+(helper_main.cpp + helper_frame.cpp changed — nvcc compiles the epilogue kernel).  Then
+expert_helper_socket_test (section 22 included); panel arm: STRATA_CLAIM_STRIPE=1 +
+STRATA_HELPER_REPLY_RING=1 on both sides with --socket2 live; watch the boot notice
+("reply ring mapped") and rpcprofile's ring=1 lines; single failed doorbell = unset the env on
+either side, nothing else.
+
+**Round 18f — C1 foresight-shadow landed (backfilled record; entry was missing).**
+Branch foresight-shadow @ /mnt/srcds/Strata-wt-foresight, 4 commits off c7be950984:
+b4506679a4 (Fix 1: dispatch order host_res -> peer -> fs->take -> helper_holds -> miss, gated
+fs->helper_shadow; single take() per row either way), 8dbf925022 (Fix 2: proxy_begin gets kind;
+slot-served experts masked slot-0 "resident" in a lazy full-table copy feeding BOTH the kBegin
+bitmap and the claims loop -> helper row derivation and proxy_claims_ stay row-for-row; no wire
+change), d8af6a98bd (Fix 3: pinned staging ring STRATA_FS_RING default 16 x ~32 MiB, shadow-only;
+note_miss admit/budget gates, stage_blob stages pair bytes OUTSIDE the slot lock, demand feed one
+note_miss per distinct claimed expert at the begin seam; provider = copy_cached_blobs then
+ExpertSource::swap_blobs_batch fallback — the socket-proxy tier has no engine-side bytes, so the
+doc's copy_cached_blobs-only source was adjusted; same bytes, engine hit-path arithmetic),
+d4d81db959 (STRATA_FS_SLOTS accepts "3,2" per card; boot line prints the split).
+Knobs: STRATA_FS_SLOTS (N uniform | "3,2"; unset = swap off), STRATA_FS_HELPER_SHADOW 0/1
+default 0 (needs FS_SLOTS), STRATA_FS_BUDGET 32, STRATA_FS_ADMIT 1 (arm recommends 2),
+STRATA_FS_DEPTH 4, STRATA_FS_RING 16. Shadow panel arm: STRATA_FS_SLOTS=3,2
+STRATA_FS_HELPER_SHADOW=1 STRATA_FS_ADMIT=2 (+ STRATA_GRAPH_FAMILY_TRIM=8 for card1 headroom).
+Deferred: host test (no-links claim-suppression/slot-accounting test — add in the build window).
+Reviewer verdict PASS-with-notes: all four fixes present, reorder a no-op shadow-off, claim-mask
+sound; notes = missing host test + this missing entry, stage_blob runs synchronously on the
+dispatch thread (ring-bounded), exchange-dropped slots leak their ring entry until reassign.
+Engine-only build (round-13 recipe, fresh dir rpcw-hip-foresight).
+
+**Round 18g — review gate over all 8 lanes (lanes-review.md written).**
+0 FAIL; 7x PASS-with-notes / PASS. One semantic merge obligation for the integration branch:
+merged proxy_begin must forward foresight's claim_res into ALL FOUR begin variants
+(begin/begin_q8k/begin_stripe/begin_f32) or the combined FS_HELPER_SHADOW+STRIPE/F32 arm breaks
+with kErrShort channel closures. Feature bits 64/128 and frame types 20/21 collision-free;
+cherry-pick order tailskip -> graphtrim -> foresight -> claim-stripe -> helper-window-diet ->
+read-once -> wirediet holds (conflict map in the review doc). helper-diet note: the narrowed
+memset is the SCRATCH clear (d_out was already claim-sized at base) — scratch-tail staleness is
+the W3.1 proof class, guarded by the still-live scan. Eyemark top-5: (1) panel the C1 shadow
+with the claim_res fix (+27-42% -> 36-41 tok/s), (2) drafter acceptance at long ctx (2.58 -> 4+
+drafted/window ~= +13-14 tok/s), (3) stripe+ring arm with STRATA_HELPER_STREAMS=1 (+15-30% of
+post-C1 residual), (4) W1 F32 golden pin + arm (-2-4 ms/window), (5) move stage_blob staging off
+the dispatch thread. Build window still gated on the operator's go.
+
+**Round 18h — v0233 arm-2 live fault root-caused: the ring window lane never stored the claim words.**
+Arm 2 (stripe+ring+streams over the shadow) booted clean on both channels but the WARM leg's first
+window exchange died on BOTH: engine "expert-helper: the ring reply failed validation: helper row
+index refused (0 rows for 8 claims)" then "channel closed after 1 requests / 0 rows (CPU fallbacks
+1)" + "the prompt tier's channel (socket2) closed after 34 prompt requests / 27660 prompt rows
+(1 striped window requests / 0 rows)"; warm request degraded to helper=reqs=0 rows=0; helper exited
+(channel closed), panel died ConnectionReset (logs engine-v0233-stripe.log:~113, trial-spill40-...
+-helper.log). Diagnosis: B's 34 kBeginP ring doorbells applied fine (serve_prompt packs its slot
+records HOST-side with the pair indices, helper_main.cpp:1425-1428/1470-1478), so the ring per se,
+the per-channel slots (ring_slot = secondary ? 1 : 0, :1937), the seals and the stripe's B-half
+transport were all exonerated, as were the shared_lock W4 release (:1082-1083) and the
+claim_res/shadow bitmap agreement (engine remote_experts.cpp:667-673 vs helper serve_begin:935-950).
+The helper's "1 windows served" + kErrBadId pointed at channel A's own kBegin ring reply, and
+serve_begin's epilogue kernel ring_pack_records (helper_main.cpp:536-557, born in 6296f933fc)
+took `claims` as a parameter but NEVER wrote the 4-byte claim index of any record - it stored only
+the floats and the RowsResp header, so every record's index word read the memfd's zeroed page
+(all-zero index -> unclaimed or duplicate) -> validate_rows_payload kErrBadId (expert_helper_socket
+.cpp:93-97) -> channel A closed -> proxy_finish closed B unread (remote_experts.cpp:830-838).
+Ring-specific, not stripe-specific: ANY non-empty window kBegin with STRATA_HELPER_REPLY_RING died;
+arm 1 passed because its window rows rode the socket. Host test sect 22 missed it because the
+window pack is device code; (22f) had already named the gap.
+Fix (v0233-candidate @ 1ce7ca8261, code-only): the record layout lives once in the protocol header
+as ring_record_claim/ring_record_floats (expert_helper_protocol.hpp, __host__ __device__ under
+__CUDACC__/__HIP__), the kernel stores each claim word from the staged claims before the
+threadfence/sync/seal publish, and expert_helper_socket_test section (23) pins it end to end on a
+FakeRing through the real finish() doorbell path - the accessor-packed slot applies 8 rows at their
+original entry indices, and the pre-fix float-only bytes are refused kErrBadId with the live
+fault's exact signature. Gating untouched (ring default off). Syntax-probed host TUs clean
+(g++ -fsyntax-only); no builds/engines touched per arm-2 constraints.
+Validation re-run (arm-2 env set, unchanged): STRATA_CLAIM_STRIPE=1 STRATA_HELPER_REPLY_RING=1
+STRATA_HELPER_STREAMS=1 STRATA_FS_SLOTS=3,2 STRATA_FS_HELPER_SHADOW=1 STRATA_FS_ADMIT=2
+STRATA_GRAPH_FAMILY_TRIM=8 STRATA_SWAPIN_DEPTH=64 STRATA_HELPER_RESERVE=320 (helper side needs
+STRATA_HELPER_REPLY_RING=1 too). Expect: both channels' "reply ring mapped", first window exchange
+applies rows (rpcprofile ring=1 lines), DONE line helper=reqs>=1 rows>0 fallbacks=0, no
+"ring reply failed validation".
+
+**Round 18i — v0233 arm campaign complete: the shadow stack is the champion.**
+Integration branch v0233-candidate (/mnt/srcds/Strata-wt-integ): all 8 lanes cherry-picked off
+c7be950984 in reviewer order + 4 integration fixes (claim_res forwarded into all four begin
+variants incl. begin_f32; ring_n accessor; nvcc-illegal and-declaration in the golden dump;
+shadowed buffer in the ownership test) + the ring epilogue claim-word fix (18h, 1ce7ca8261).
+Host ctest 8/8 after fixes; F32 golden pin PASSED on live GPU output (GPU quant twin ==
+quantize_q8_1_cpu byte-for-byte).
+Arms (lean TG panel, base = v0232b-hotfix + STRATA_SWAPIN_DEPTH=64 + reserve 320):
+- ARM1_SHADOW (FS_SLOTS=3,2 FS_HELPER_SHADOW=1 FS_ADMIT=2 GRAPH_FAMILY_TRIM=8): CHAMPION.
+  180k warm TG 29.0-31.5 (R3A 18.8-23.8, +29-68%); 16k 25.6/26.6 (was 22.2); 64k 34.3 peak;
+  PP 64k 521.5 (+45%), PP 180k 578.7 (+9%). 4472 experts served from swap by panel end;
+  180k draft acceptance rose 65% -> 71-82%. #2065 warning fired once at 35 MiB free (no stall);
+  staging ring saturated (69 staged, 108k ring-full) -> next lever is ring size/off-thread staging.
+- ARM2R (+CLAIM_STRIPE+REPLY_RING+STREAMS, after the 18h fix): 0 validation failures, full panel,
+  but 180k warm 24.8-27.2 and acceptance back to 65% — parity/worse; REJECTED for prod (lanes stay
+  landed, default-off). The 18h fix itself is validated in production shape.
+- ARM3_F32WIRE (+F32_WINDOW+WIN_FAST+PINNED_RX): parity-to-worse (fp32 image is 3.6x the q8 bytes
+  per frame; the engine quant skip does not pay for it here); REJECTED for prod. Golden pin stands
+  as the lane's correctness deliverable.
+- ARM4_DRAFTER (+SPEC_MIN_P=0.4): 16k TG 30.6 and PP 16k 265.9 (+78%) but 64k warm collapsed to
+  11-16 and 180k to 21-26.9 — deeper drafts at unchanged acceptance cost more than they earn;
+  REJECTED.
+- ARM5_FILLRAISE (+FILL_MIB=7300): +103 slots (3675 vs 3572; budget formula, not +400), hit rate
+  flat 96.4%, 180k worse with a 6.3 stall; REJECTED.
+PROD PROPOSAL (operator's call): v0233-candidate binaries + env STRATA_SWAPIN_DEPTH=64
+STRATA_HELPER_RESERVE=320 STRATA_FS_SLOTS=3,2 STRATA_FS_HELPER_SHADOW=1 STRATA_FS_ADMIT=2
+STRATA_GRAPH_FAMILY_TRIM=8; every other knob OFF. Honest bar state: 64k at the 35 floor (34.3),
+180k at 29-31.5 (floor not reached — the remaining lever is the staging ring saturation, then the
+stall class). Launcher: launch-trial-spill40.sh now forwards the helper-side knob family
+(REPLY_RING/WIN_FAST/PINNED_RX/STREAMS/F32_QUANT_DUMP) past its env -i sanitization.
