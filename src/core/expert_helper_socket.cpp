@@ -313,6 +313,7 @@ void ExpertHelperClient::close() {
     fd_ = -1;
     owned_ = false;
     begin_outstanding_ = false;
+    stripe_outstanding_ = false;
     prompt_pairs_ = 0;
     prompt_parts_.clear();   // the claim batch dies with the channel: no queued claim survives a close
     batch_rows_ = 0;
@@ -793,7 +794,8 @@ int ExpertHelperClient::begin_prompt(int32_t layer, const ExpertHelperPromptPlan
 // begin_prompt sends the payload it built, and a one-part batch flush sends the staged bytes.
 // Same frame type, same req_id_/seq_ bookkeeping, same counters, so a claim that took the batch's
 // queue and flushed alone is byte-for-byte and counter-for-counter the claim batch=1 sends.
-int ExpertHelperClient::write_beginp(const std::vector<uint8_t>& payload, int64_t rows, int64_t deadline_ms) {
+int ExpertHelperClient::write_beginp(const std::vector<uint8_t>& payload, int64_t rows, int64_t deadline_ms,
+                                     bool stripe) {
     using namespace expert_helper;
     expert_helper::Socket s;
     s.adopt(fd_);
@@ -806,7 +808,9 @@ int ExpertHelperClient::write_beginp(const std::vector<uint8_t>& payload, int64_
     begin_seq_ = s.seq_out();
     seq_ = begin_seq_;
     prompt_pairs_ = rows;
-    ++prompt_requests_;
+    stripe_outstanding_ = stripe;
+    if (stripe) ++stripe_requests_;   // the window tier's half-claim: its OWN evidence line
+    else ++prompt_requests_;
     s.release();
     return kOk;
 }
@@ -890,8 +894,14 @@ int ExpertHelperClient::finish_prompt(float* out, int64_t n_embd, const std::vec
                       (long long) rows, (long long) claims.size());
         s.release(); close(); return rc;
     }
-    prompt_rows_returned_ += (uint64_t) rows;
-    prompt_bytes_ += (uint64_t) rows * (uint64_t) n_embd * 4ull;
+    if (stripe_outstanding_) {   // C4a: the window tier's half-claim, counted as WINDOW evidence
+        stripe_rows_returned_ += (uint64_t) rows;
+        stripe_bytes_ += (uint64_t) rows * (uint64_t) n_embd * 4ull;
+        stripe_outstanding_ = false;
+    } else {
+        prompt_rows_returned_ += (uint64_t) rows;
+        prompt_bytes_ += (uint64_t) rows * (uint64_t) n_embd * 4ull;
+    }
     prompt_pairs_ = 0;
     begin_outstanding_ = false;
     s.release();
@@ -1037,6 +1047,71 @@ int ExpertHelperClient::finish_prompt_batch(float* out, int64_t n_embd, const st
     batch_rows_ -= claimed;
     if (prompt_parts_.empty()) { batch_answered_ = false; prompt_pairs_ = 0; }
     return kOk;
+}
+
+// ---- C4a (tg-design.md, the claim stripe; default OFF - the engine's STRATA_CLAIM_STRIPE): the
+// WINDOW tier's B-half claim, as ONE kBeginP on the prompt tier's own channel. ----
+//
+// The frame is the claim-batch family's single-part shape: pairs are (entry/k, ids[entry]) - the
+// wire's token IS the q8 image row, and the image is the very byte array the layer's kBegin carries
+// (image_format 0, uploaded verbatim), so the helper's serve_prompt_core runs the SAME grouped
+// launch serve_begin makes and returns the SAME rows kBegin would have for those entries.  Nothing
+// is queued: the window walk reads each layer's reply inside the layer (the doorbell graph waits
+// the rows before the next layer's doorbell can ring), so a multi-part kBeginPB queued across
+// layers has no seam to flush on - one kBeginP per layer IS the whole claim-batch reuse the window
+// tier's dependency chain allows.
+int ExpertHelperClient::begin_stripe(int32_t layer, int32_t n_tok, const int32_t* ids,
+                                     const int32_t* primary_res, const std::vector<int32_t>& entries,
+                                     const uint8_t* q8, size_t q8_bytes, int64_t deadline_ms) {
+    using namespace expert_helper;
+    // The negotiation gate, BEFORE any write, exactly as begin_prompt's: a peer that never
+    // advertised the prompt tier never sees this frame type.
+    if (fd_ < 0) return kErrUnhealthy;
+    if (!prompt_rows_) return kErrRequest;
+    if (n_expert_ <= 0 || n_embd_ <= 0) return kErrGeometry;      // the handshake pins the geometry
+    const int64_t rows = (int64_t) entries.size();
+    if (n_tok < 1 || n_tok > kMaxTok || rows < 1 || rows > kMaxRowsPerLayer) return kErrGeometry;
+    if (layer < layer_lo_ || layer > layer_hi_) return kErrGeometry;   // the hello window
+    if (n_embd_ % 32 != 0) return kErrGeometry;
+    if ((int64_t) q8_bytes != (int64_t) n_tok * (n_embd_ / 32) * 36) return kErrGeometry;
+    // Per-expert rows are bounded by the entry count itself (<= n_tok*k <= kMaxEntries), far inside
+    // kMaxRowsPerExpert; the helper rechecks every cap on its own side.
+    const size_t res_bytes = (size_t) ((n_tok * n_expert_ + 7) / 8);   // kBegin's own bitmap shape
+    const size_t total = sizeof(BeginPReq) + (size_t) rows * 8 + res_bytes + q8_bytes;
+    if (total > kMaxFramePayload) return kErrGeometry;
+
+    BeginPReq req;
+    req.layer = layer;
+    req.n_sel_tok = n_tok;
+    req.k = (int32_t) kK;
+    req.n_pairs = (int32_t) rows;
+    req.n_q8 = (int32_t) q8_bytes;
+    req.image_format = 0;   // the canonical q8_1 blocks: the kBegin image, verbatim
+    std::vector<uint8_t> payload(total, 0);
+    std::memcpy(payload.data(), &req, sizeof(req));
+    for (int64_t p = 0; p < rows; ++p) {
+        const int32_t entry = entries[(size_t) p];
+        if (entry < 0 || entry >= (int32_t) (n_tok * kK)) return kErrGeometry;
+        const int32_t token = entry / (int32_t) kK, expert = ids[(size_t) entry];
+        if (expert < 0 || expert >= n_expert_) return kErrGeometry;
+        std::memcpy(payload.data() + sizeof(req) + (size_t) p * 8, &token, 4);
+        std::memcpy(payload.data() + sizeof(req) + (size_t) p * 8 + 4, &expert, 4);
+    }
+    uint8_t* res = payload.data() + sizeof(req) + (size_t) rows * 8;
+    for (int64_t e = 0; e < n_expert_; ++e)   // the layer's PRIMARY residency (same bytes as kBegin's)
+        if (primary_res != nullptr && primary_res[(size_t) layer * (size_t) n_expert_ + (size_t) e] >= 0)
+            res[(size_t) (e >> 3)] |= (uint8_t) (1u << (e & 7));
+    std::memcpy(res + res_bytes, q8, q8_bytes);
+    // The one-outstanding-request rule is the prompt claim's own: io_mtx_ across the write, the
+    // reply read by finish_prompt under the same lock.
+    std::lock_guard<std::mutex> io_lk(io_mtx_);
+    return write_beginp(payload, rows, deadline_ms, /*stripe=*/true);
+}
+
+bool ExpertHelperClient::idle() const {
+    if (fd_ < 0) return false;
+    std::lock_guard<std::mutex> io_lk(io_mtx_);
+    return !begin_outstanding_ && prompt_parts_.empty();
 }
 
 // ---- M7 (the drafter lane, docs/work/MIXED_BACKEND_RPC_PLAN.md sect12/12a): kDraftCtx / kDraftReq. ----

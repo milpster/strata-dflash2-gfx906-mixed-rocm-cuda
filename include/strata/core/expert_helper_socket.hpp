@@ -214,6 +214,42 @@ public:
     /// per-claim `claims` must match the queued part's claims (the batch's order is the claim order);
     /// a mismatch is kErrSeq and closes the channel - the engine's same-layer fallback owns the rows.
 
+    // ================= C4a (tg-design.md, the claim stripe; default OFF - STRATA_CLAIM_STRIPE):
+    // the WINDOW tier's second-half claim on the prompt tier's frames =================
+    //
+    // A window layer's helper rows are split across BOTH channels: the first half rides channel A
+    // as the layer's own kBegin (fewer rows, byte-for-byte the frame it always sent), the second
+    // half rides channel B as ONE kBeginP - the claim-batch family's own single-part transport,
+    // which the helper serves with the SAME grouped launch serve_begin makes (helper_main.cpp's
+    // serve_prompt_core: "the SAME grouped launch serve_begin makes ... the same q8_1 activation
+    // contract"), so the rows are the rows kBegin would have returned for those entries.  Each
+    /// channel keeps exactly ONE outstanding request (the protocol's per-channel rule): two
+    /// channels, two in-flight frames.  The image is the q8_1 image the layer's kBegin carries
+    /// (image_format 0, uploaded verbatim), so the stripe adds NO helper change, NO wire change and
+    /// no negotiation beyond kFeaturePromptRows, which channel B's own hello already required.
+
+    /// Send the B-half: `entries` are this layer's routed entry indices (ascending, the tail of the
+    /// layer's claim list), `ids`/`primary_res` the arrays the layer's kBegin sees, `q8` the image
+    /// that kBegin carries verbatim (n_tok*(n_embd/32)*36 bytes).  The frame's pair list maps entry
+    /// i to (token i/k, expert ids[i]); the reply is read by the SAME finish_prompt a prompt claim
+    /// uses, with the dense pair list 0..entries.size()-1 as its claims.  Refused BEFORE any write
+    /// with this transport's named statuses: no channel, a peer without the prompt tier, a layer
+    /// outside the hello window, caps, a payload over kMaxFramePayload.
+    int begin_stripe(int32_t layer, int32_t n_tok, const int32_t* ids, const int32_t* primary_res,
+                     const std::vector<int32_t>& entries, const uint8_t* q8, size_t q8_bytes,
+                     int64_t deadline_ms);
+    /// True when NOTHING is in flight or queued on this channel: the stripe's channel-B gate (a
+    /// prompt claim outstanding there would make a second write violate the one-outstanding rule).
+    /// Locked: the prompt tier stages its parts on its own thread.
+    bool idle() const;
+
+    /// The stripe's own counters, kept SEPARATE from both tiers' evidence: the window tier's DONE
+    /// line adds these rows to its helper= line (they ARE window rows), and the prompt tier's
+    /// row-conservation line never sees them (begin_stripe never touches the prompt counters).
+    uint64_t stat_stripe_requests() const { return stripe_requests_; }
+    uint64_t stat_stripe_rows() const { return stripe_rows_returned_; }
+    uint64_t stat_stripe_bytes() const { return stripe_bytes_; }
+
     // ================= M7 (the drafter lane, docs/work/MIXED_BACKEND_RPC_PLAN.md sect12/12a):
     // kDraftCtx / kDraftReq =================
     //
@@ -318,7 +354,7 @@ private:
     // req_id 986 (want 987) seq 1 (want 1)".  io_mtx_ serializes every socket transaction; the
     // draft gate below adds the outstanding-request check, so a draft frame is only written when
     // nothing else is in flight (the gate sleeps, never holding the lock).
-    std::mutex io_mtx_;
+    mutable std::mutex io_mtx_;   // mutable: idle() locks it from a const query
     /// Bounded wait for the shared channel to have no in-flight request, then the caller ships its
     /// draft frame holding io_mtx_.  ON TRUE THE LOCK IS LEFT HELD (the frame's write, its reply's
     /// read and the pairing test all run inside it).  False = the bound expired, the lock is
@@ -355,8 +391,11 @@ private:
                             int64_t timeout_ms, int32_t& rows);
     /// The single-claim WRITE both transports share: `begin_prompt` sends the payload it just built,
     /// and a one-part flush sends the staged bytes as the same frame.  The caller holds io_mtx_ (the
-    /// protocol's one-outstanding-request rule spans the write and the reply's read).
-    int write_beginp(const std::vector<uint8_t>& payload, int64_t rows, int64_t deadline_ms);
+    /// protocol's one-outstanding-request rule spans the write and the reply's read).  `stripe`
+    /// marks the window tier's C4a half-claim: the SAME kBeginP write and bookkeeping, counted in
+    /// the stripe's own counters instead of the prompt tier's.
+    int write_beginp(const std::vector<uint8_t>& payload, int64_t rows, int64_t deadline_ms,
+                     bool stripe = false);
     /// The prompt tier's request body (BeginPReq + pairs + primary bitmap + the image quantized from
     /// the tier's own rows) with every cap begin_prompt enforces.  One builder for both transports: a
     /// single claim writes these bytes as kBeginP, a batch queues them as one kBeginPB part, so a
@@ -374,6 +413,11 @@ private:
                                                     // every read_frame (all reads run under io_mtx_ after
                                                     // the startup handshake, so it never races itself)
     int64_t prompt_pairs_ = 0;                      // the outstanding kBeginP's pair count
+    // C4a: the window tier's striped half-claim on this channel - one kBeginP in flight whose rows
+    // are WINDOW rows.  The flag only redirects the counters finish_prompt bumps; the frame, the
+    // one-outstanding bookkeeping and the validator are the prompt claim's own.
+    bool stripe_outstanding_ = false;
+    uint64_t stripe_requests_ = 0, stripe_rows_returned_ = 0, stripe_bytes_ = 0;
     uint64_t requests_ = 0, rows_ = 0, bytes_ = 0, timeouts_ = 0, fallbacks_ = 0;
     uint64_t prompt_requests_ = 0, prompt_rows_returned_ = 0, prompt_bytes_ = 0;
     double ms_begin_ = 0, ms_wait_ = 0;
