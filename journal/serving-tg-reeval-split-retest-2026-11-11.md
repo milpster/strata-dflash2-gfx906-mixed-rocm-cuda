@@ -1867,3 +1867,106 @@ swappiness=10 — a launcher-level change, no engine code.
 **State:** no code changes, no builds, no boots; prod untouched. Parser used as-committed
 (r10-verify-curve.py). Next GPU window: the A4 discriminator pair (optionally with
 STRATA_SPEC_TRACE on, folding round-11b's arms 4-7 decision into the same boots).
+
+## Round 13 — the two knob-gated fixes landed (GEN_ANCHOR + PARK_DEBOUNCE, host-verified)
+
+No GPU, no boots, no :8009. Implemented round-12's top-2 designs as default-off env knobs on
+helper-ipc-diet (base cd4c26e9e), host-tested, HIP-built nice -j8 in a fresh dir, pinned v0230.
+
+### Landed (commits 6967f6e16 + b7b39f4d2, branch helper-ipc-diet)
+
+**1. STRATA_GEN_ANCHOR=1 (design #1: end-of-generation anchor+pair checkpoint).** At the verified
+complete-request boundary (generate.cpp, the `--conversation-cache-disk-idle-save` block, before
+any later park): `checkpoint_at(T)` with T = the conversation's full length, while the running
+state is still the live session's and the drafter's ring still holds the tail. checkpoint_at is
+the same capture the 16k prompt boundaries run (its eviction cap, pool, threads paths all apply);
+its built-in `ring_pair_capture` writes the pair sidecar at the boundary, so the next park
+(switch-time or idle-save) publishes anchor=T, pair_prefix=T via the existing meta loop — the
+deepest anchor is no longer the last prompt-path position, and a continuation resumes at T:
+the 535/215-token generated-tail re-read (9.6–16.6 ms/tok) becomes 0.
+Gate chain (pure, in include/strata/program/conv_cache.hpp): knob on AND !cancelled AND live_ok
+AND prompt_cache>0 AND disk_on AND T>0 AND no checkpoint already at T; then the prompt path's own
+RAM rule — ckpt_state_bytes + ckpt_ram_room(bytes, may_evict=true, T). A refused anchor is
+skipped with a stderr note; the finished request never stalls. Log line per request:
+`STRATA_GEN_ANCHOR: anchor at N tokens (deepest was D: N-D tail tokens a continuation re-reads
+no more; pair captured|not legal here, target-only)`.
+
+**RAM-neutrality argument (the hard rule):** no K/V is copied anywhere on the new path — the KV
+cells at [0,T) stay in the pools and stream to the file at park time exactly as before (the park
+already paid no host copy), and the pair lands as a DISK sidecar priced against the tier budget
+by can_capture_sidecar (its host buffer is transient inside ring_pair_capture). The anchor body
+is the checkpoint's FIXED-SIZE running state (gdn/ple/tails/dead/block_pos — conversation_state
+sizes, independent of T), i.e. the same bytes every 16k-cadence checkpoint holds; the chain's
+--prompt-cache cap (default 6) evicts the LRU non-root item INSIDE the same capture, so a chain
+at cap (the 142k steady state: ~8 periodic checkpoints capped to 6) ends with net 0 new host
+bytes. Below cap the growth is one fixed-size body — the identical growth any prompt-path
+checkpoint causes, under the same ckpt_ram_room admission. Disk grows by one checkpoint body +
+pair region per published generation (~118 MB body class at this model + ~80 MiB ring), priced by
+the existing reservation.
+
+**2. STRATA_PARK_DEBOUNCE_MS=N (design #2a: idle-park debounce, default 0=off).** Top of
+disk_park: a park whose write would start within N ms of the last park this process WROTE is
+skipped (`why = "park-debounce: X ms since the last park is inside STRATA_PARK_DEBOUNCE_MS=N"`,
+surfacing as the existing "disk park skipped (...)" line). The stamp is the write's completion
+time on the steady clock, set right after dc.publish succeeds; skips and failures never move it,
+so the first park of a burst pays the stream and the rest wait out the window while their
+published generations stay as the insurance they are. ~10 lines + the two pure helpers; the
+delta-park redesign stays out of scope. Parse: absent/empty/garbage/<=0 → 0 (off); clamped at
+10 min.
+
+Default-off is bit-for-bit for both: gen_anchor_should_capture(false, …) is false for EVERY
+combination of serve-loop conditions (tested exhaustively), park_debounced(0, …) is false for
+every clock pair (tested), and the generate.cpp additions are strictly inside `if (knob)` guards.
+
+### Host tests (tests/core/conv_cache_knobs_test.cpp, no links — arena_pin_ranges_test's pattern)
+
+Direct g++ mode (round-11's documented mode) AND the tree target (CMake block beside
+arena_pin_ranges_test, STRATA_BUILD_TESTS default-ON on x86): all checks pass — env parses,
+exhaustive default-off equivalence over the booleans and the clock terms, each on-path refusal
+term, the tail arithmetic on the measured shapes (killerL 535 = 142815−142280, longtg 215), and
+the [0,N) window incl. the first-park and exact-boundary cases. Also re-run green (the header
+I touched): conversation_cache_test (4861 checks), program conv_cache_test, dflash_ring_test,
+arena_pin_ranges_test, expert_helper_arena_cap_test.
+
+### Build + pin v0230
+
+Fresh configure build-mixed-gpu/rpcw-hip-fix13 (never touched fix7/fix11): Release, Unix
+Makefiles, CMAKE_HIP_COMPILER=/opt/rocm-6.1.0/llvm/bin/clang++, gfx906, PREFIX_PATH
+rocm-gfx906-xnack;6.1.0, STRATA_HIP_GFX906=ON, STRATA_ENABLE_DFLASH2=ON, STRATA_HAVE_DFLASH2=OFF,
+STRATA_BUILD_TESTS=ON, GGML_CCACHE (warm). GOTCHA repeated from round-11, sharper: a fresh
+configure WITHOUT -DCMAKE_HIP_COMPILER auto-picks /opt/rocm's 7.15 clang (CMAKE_PREFIX_PATH does
+not steer the HIP compiler) and device.cu dies on __AMDGCN_WAVEFRONT_SIZE — pass the compiler
+explicitly. HIP_FLAGS and the STRATA_ cache verified identical to fix11's. nice -n 10 make -j8.
+
+v0230 (/mnt/srcds/Strata/v0230/build-mixed-gpu/ + SHA256SUMS):
+- rpcw-hip/strata 832d6f3fe37c98f823e6b758c16beec1aa36694f1d03d6dd400443c4badd7487 (fix13 build;
+  differs from v0229's e33b3e7d…; STRATA_GEN_ANCHOR ×4 and STRATA_PARK_DEBOUNCE_MS ×2 in
+  `strings`; --help exit 0)
+- rpcw-cuda/{strata, strata-expert-helper} = byte-exact COPIES from v0229 (034f6078… /
+  8d37045c…, cmp-verified): the CUDA side is untouched again, the helper NOT rebuilt.
+
+### ctest host subset
+
+The v0228-gate host list (81 runnable here of its 82; split_lend_complement_test and
+conversation_copy_streams_test are CUDA-tree tests the HIP configure does not build, the two
+known Not-Runs of that gate) + the new conv_cache_knobs_test + conv_cache_test: **81/81 passed,
+0 failed** (log: logs/v0230-ctest-hip-host.log, clean env, no GPU touched).
+
+### GPU window arms (v0230)
+
+1. v0230 + STRATA_GEN_ANCHOR=1 — expect: killerL tail gens' 5.1–5.3 s re-read → 0 (log line
+   verifies the anchor + pair per request); longtg −2.5–3.6 s; the round-10 continuation-collapse
+   trigger (pair-restore × tail-re-read × depth) is removed by construction — watch the tail-gen
+   acc% recover toward the healthy 81.5 (that is worth more than the wall seconds).
+2. v0230 + STRATA_PARK_DEBOUNCE_MS=1500 — expect: alternating-conversation boundaries stop
+   re-streaming 2770 MiB inside bursts ("disk park skipped (park-debounce: …)"); killerL wall
+   −17–20% IF the wall's boundaries are within-window (legs tens of seconds apart will NOT
+   debounce — the skip log line decides which it is; that measurement itself is the arm's value).
+3. Combo notes (tag-2 = STRATA_ARENA_RERANK_MAX=6000 + STRATA_ARENA_RERANK_PHASE_TAG=2):
+   GEN_ANCHOR changes the mount path (resume at T with a restored pair instead of pair-restore at
+   the prompt anchor + tail re-read), so tag-2's 02:5x cold-gen acceptance gains should be
+   re-read on the ANCHOR arm before any prod decision; PARK_DEBOUNCE is orthogonal to the decode
+   path (park timing only) and combines safely with either — but measure the two knobs on
+   SEPARATE boots first (they move different mechanisms; a combined boot cannot attribute).
+   STRATA_SPEC_TRACE stays free on every arm.
+
