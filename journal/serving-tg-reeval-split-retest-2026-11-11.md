@@ -1565,3 +1565,51 @@ warranted by this round; the drafter dip is a decode-rate issue on long-ctx cont
 **State:** no engine changes. New file: `bench/ab-v0210/rpcprof/r10-verify-curve.py` (parser,
 committed with this section). Prod untouched. Next GPU tasks in order: rebooted-box interleaved
 v0227/v0228 A/B (round 9b), then B.2 (CKPT_REREAD) + curve trace, then the DF2_WINDOW patch.
+
+## Round 11 — DF2_WINDOW knob + trace readiness (2026-11-13 04:00–04:30, parent-built)
+
+The fixer lane failed twice this round (two silent no-op completions, no artifacts) — the
+parent implemented round-10's design directly. Two design corrections found while doing it:
+1. Phase A needed NO code: serve-mode per-round tracing ALREADY exists — STRATA_SPEC_TRACE
+   opens a file in the serve loop (generate.cpp:21369) and writes "# request prompt …" per
+   request (22180) and "R p T a sfx ms k match | probs …" per verify round (22869+). The
+   panels never set the env; round-10's "the serve loop has no per-round trace" was a
+   misread of the CLI-only block at 24441. The GPU window just sets STRATA_SPEC_TRACE.
+2. Phase B4 shrank to a geometry knob: STRATA_DF_RING_MULT (retention) already existed and
+   left the readable window at the trained 2048; the new knob widens the window itself.
+
+LANDED (helper-ipc-diet 50e16d04d):
+- include/strata/core/dflash_ring.hpp: dflash2_effective_window(sliding_window, env) — pure
+  helper; powers of two above the trained window only, default/unusable values keep the
+  trained geometry bit-for-bit.
+- src/core/dflash_runtime.cpp: ring capacity max(effective window, sliding_window*mult);
+  ring_state_.window = effective window; the dflash2_attention kernel arg reads
+  ring_state_.window (was hardcoded dg.sliding_window). Scratch/pool sizing follows the
+  ring capacity unchanged.
+- tests/core/dflash_ring_test.cpp: 11 new checks (refusals, 4096/8192, capacity 4160 =
+  65 pages, pools 85,196,800 B ≈ 81 MiB at 4096) — ALL PASS (standalone g++ build + the
+  fix11 tree's binary would not generate a make target for it in these configures; the
+  direct compile is the test's documented mode: pure header, no links).
+
+PIN v0229 (/mnt/srcds/Strata/v0229/build-mixed-gpu/ + SHA256SUMS):
+- rpcw-hip/strata 14b97a6c… (fix11 build; knob string present; --help runs; built with
+  STRATA_HIP_GFX906 + DFLASH2=ON + HAVE_DFLASH2=OFF, prefix paths = custom rocBLAS +
+  6.1.0 — NOTE: a fresh configure WITHOUT -DCMAKE_PREFIX_PATH pulls /opt/rocm (7.15)
+  headers and fails; always pass it)
+- rpcw-cuda/{strata, strata-expert-helper} = byte-exact COPIES from v0228 (034f6078… /
+  8d37045c…): my fix11 helper rebuild differed (fresh-dir config drift, +550 KB) so the
+  pin deliberately reuses the prod-proven CUDA side; the knob exists only in the HIP
+  engine, which is the only binary the serve path runs.
+
+DECISIVE GPU WINDOW RECIPE (rebooted box, interleaved, one window — everything left):
+Arms (each: fresh boot, panel.sh legs warm/killer144k/killer144kL/longtg/tg1024,
+ABSOLUTE elog paths, no other load on the box):
+1. v0227 (prod binary) — baseline arm A
+2. v0228 default (knobs off) — binary-delta arm; A/B/A/B order with arm 1
+3. v0228 + STRATA_ARENA_RERANK_MAX=6000 + STRATA_ARENA_RERANK_PHASE_TAG=2
+4. v0229 + STRATA_SPEC_TRACE=/mnt/srcds/Strata/logs/spec-trace-<arm>.txt (curves!)
+5. v0229 + trace + STRATA_CKPT_REREAD=1 (killerL only needs deciding power)
+6. v0229 + trace + --spec-min-p 0.0 (config args edit)
+7. v0229 + trace + STRATA_DF2_WINDOW=4096; if flat-curve+CKPT_REREAD-collapse per round-10's
+   matrix, also 8192
+Then r10-verify-curve.py on the traces → round-10's decision matrix → the fix.
