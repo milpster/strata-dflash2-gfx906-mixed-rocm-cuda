@@ -519,7 +519,8 @@ uint64_t RemoteExperts::helper_fallbacks() const { return proxy_stat_fallbacks_ 
 void RemoteExperts::note_fallback() { if (helper_ != nullptr) helper_->note_fallback(); }
 
 bool RemoteExperts::proxy_begin(int64_t layer, const float* x, const int32_t* ids, int64_t n_tok, int64_t k,
-                                const int32_t* primary_res, std::string& err, std::vector<int32_t>& claimed_out) {
+                                const int32_t* kind, const int32_t* primary_res, std::string& err,
+                                std::vector<int32_t>& claimed_out) {
     claimed_out.clear();
     proxy_claims_.clear();
     const int64_t n = n_tok * k;
@@ -532,17 +533,42 @@ bool RemoteExperts::proxy_begin(int64_t layer, const float* x, const int32_t* id
     // the request keeps its exact semantics with no helper.
     if (!helper_usable()) return true;
     // The claims: entries the plan left to the helper (the dispatch classifies helper candidates as
-    // kind -1 and passes the primary residency; the primary's own kind >= 0 entries never reach a
-    // helper's begin at all - see src/core/expert_source.cpp:4907), routed to an expert the
-    // mirrored fill report holds.  Routing order IS the claim order: the helper's grouped kernel
-    // answers one dense row per claimed entry, in claim order, and the client scatters them back
-    // at the original indices (validate_rows_payload).
+    // kind -1 and passes the primary residency; the primary's own kind >= 0 entries are either
+    // already primary-resident or - with the Foresight helper shadow on - served from a slot, and
+    // both are masked out of `claim_res` below), routed to an expert the mirrored fill report
+    // holds.  Routing order IS the claim order: the helper's grouped kernel answers one dense row
+    // per claimed entry, in claim order, and the client scatters them back at the original indices
+    // (validate_rows_payload).
+    // C1 helper shadow (STRATA_FS_HELPER_SHADOW): the dispatch may have served entries of this layer
+    // from a Foresight slot as kind 0 while the pair is still helper-held and not primary-resident.
+    // The helper derives its own rows from the ids plus the kBegin frame's primary-residency bitmap,
+    // so those experts are marked resident (slot 0) in a COPY of the table the frame carries: the
+    // helper skips them, the claims loop below skips them, and both sides of the kRows validation
+    // (proxy_claims_ vs the reply) agree.  With the shadow off (or no kind) no entry qualifies and
+    // the claims are byte-for-byte today's.
+    thread_local std::vector<int32_t> res_copy;
+    const int32_t* claim_res = primary_res;
+    if (kind != nullptr && primary_res != nullptr) {
+        bool masked = false;
+        for (int64_t i = 0; i < n; ++i) {
+            const int32_t e = ids[i];
+            if (kind[i] != 0 || e < 0 || e >= proxy_experts_) continue;
+            const size_t key = (size_t) layer * (size_t) proxy_experts_ + (size_t) e;
+            if (primary_res[key] >= 0) continue;   // a real hit: the helper already skips it
+            if (!masked) {
+                res_copy.assign(primary_res, primary_res + (size_t) proxy_layers_ * (size_t) proxy_experts_);
+                claim_res = res_copy.data();
+                masked = true;
+            }
+            res_copy[key] = 0;   // pretend residency: the slot serves this expert, not the helper
+        }
+    }
     std::vector<int32_t>& claims = proxy_claims_;
     claims.clear();
     for (int64_t i = 0; i < n; ++i) {
         const int32_t e = ids[i];
         if (e < 0 || e >= proxy_experts_) continue;
-        if (primary_res && primary_res[(size_t) layer * (size_t) proxy_experts_ + (size_t) e] >= 0) continue;
+        if (claim_res && claim_res[(size_t) layer * (size_t) proxy_experts_ + (size_t) e] >= 0) continue;
         if (!proxy_holds(layer, e)) continue;
         claims.push_back((int32_t) i);
     }
@@ -567,7 +593,7 @@ bool RemoteExperts::proxy_begin(int64_t layer, const float* x, const int32_t* id
                 for (int64_t t = 0; t < n_tok; ++t)
                     strata::kernels::cpu::native_quant_act(f, x + (size_t) t * (size_t) proxy_n_embd_,
                                                            q8k.data() + (size_t) t * (size_t) f.act_bytes);
-                const int rc = helper_->begin_q8k((int32_t) layer, (int32_t) n_tok, ids, primary_res,
+                const int rc = helper_->begin_q8k((int32_t) layer, (int32_t) n_tok, ids, claim_res,
                                                   q8k.data(), q8k.size(), proxy_timeout_ms_);
                 if (rc != expert_helper::kOk) {
                     // The begin-time fallback, verbatim: the window is fully CPU-served, the tier
@@ -591,7 +617,7 @@ bool RemoteExperts::proxy_begin(int64_t layer, const float* x, const int32_t* id
     thread_local std::vector<uint8_t> q8;
     q8.assign((size_t) q8_blocks * 36u, 0);
     quantize_q8_1_cpu(x, n_tok * proxy_n_embd_, q8.data());
-    const int rc = helper_->begin((int32_t) layer, (int32_t) n_tok, ids, primary_res, q8.data(),
+    const int rc = helper_->begin((int32_t) layer, (int32_t) n_tok, ids, claim_res, q8.data(),
                                   q8.size(), proxy_timeout_ms_);
     if (rc != expert_helper::kOk) {
         // The channel is closed by the client; the tier is out for this request.  Claimed_out
@@ -702,7 +728,7 @@ int RemoteExperts::draft_round(const float* rows, int64_t n_new, int64_t pos0, i
 bool RemoteExperts::begin(int64_t layer, const float* x, const int32_t* ids, int64_t n_tok,
                           int64_t k, const int32_t* kind, const int32_t* primary_res,
                           std::string& err, std::vector<int32_t>& claimed_out) {
-    if (proxy_) return proxy_begin(layer, x, ids, n_tok, k, primary_res, err, claimed_out);
+    if (proxy_) return proxy_begin(layer, x, ids, n_tok, k, kind, primary_res, err, claimed_out);
     claimed_out.clear();   // an in-process tier's claims are read through owns() by the dispatch
     const bool ok = begin(layer, x, ids, n_tok, k, kind, primary_res, err);
     if (ok && device_ >= 0) {

@@ -131,7 +131,10 @@ public:
                std::string& err);
     /// `claimed_out`/`n_claimed_out` (R2): the (token,k) entries THIS begin took, so the dispatch
     /// can recompute exactly those rows on the CPU if the helper's finish fails.  In-process tiers
-    /// answer through owns(); the proxy records its claims here as it sends them.
+    /// answer through owns(); the proxy records its claims here as it sends them.  Proxy mode honors
+    /// `kind`: entries the dispatch served from a Foresight slot (kind 0, not primary-resident) are
+    /// masked resident in the copy of `primary_res` the kBegin frame carries, so the helper skips
+    /// them and `claimed_out` lists exactly the rows the helper answers.
     bool begin(int64_t layer, const float* x, const int32_t* ids, int64_t n_tok,
                int64_t k, const int32_t* kind, const int32_t* primary_res, std::string& err,
                std::vector<int32_t>& claimed_out);
@@ -293,8 +296,11 @@ public:
 private:
     friend class RemoteExpertOpt;
     /// R2 proxy: send one window and take its rows (the client's I/O is CPU-only; no device call).
+    /// `kind` is the dispatch's classification of this window's entries; its kind-0 entries whose
+    /// expert is not primary-resident were served from a Foresight slot and are masked out of the
+    /// kBegin frame's residency bitmap (see begin above).
     bool proxy_begin(int64_t layer, const float* x, const int32_t* ids, int64_t n_tok, int64_t k,
-                     const int32_t* primary_res, std::string& err, std::vector<int32_t>& claimed_out);
+                     const int32_t* kind, const int32_t* primary_res, std::string& err, std::vector<int32_t>& claimed_out);
     bool proxy_finish(float* out, std::string& err);
     /// The channel the PROMPT tier serves on right now: channel B when the split is live and pinned
     /// for this request (see prompt_usable()), channel A - today's single channel - otherwise.  The
