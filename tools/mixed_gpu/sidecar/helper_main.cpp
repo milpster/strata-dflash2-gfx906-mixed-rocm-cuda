@@ -262,10 +262,11 @@ void dump_f32_quant_golden(const uint8_t* img_in_host, const void* q8_dev, int64
         std::fclose(f);
     }
     std::vector<uint8_t> q8_host((size_t) n_q8_bytes, 0);
-    if (cudaMemcpy(q8_host.data(), q8_dev, (size_t) n_q8_bytes, cudaMemcpyDeviceToHost) == cudaSuccess &&
-        std::FILE* f = std::fopen(q8_path.c_str(), "wb")) {
-        std::fwrite(q8_host.data(), 1, (size_t) n_q8_bytes, f);
-        std::fclose(f);
+    if (cudaMemcpy(q8_host.data(), q8_dev, (size_t) n_q8_bytes, cudaMemcpyDeviceToHost) == cudaSuccess) {
+        if (std::FILE* f = std::fopen(q8_path.c_str(), "wb")) {
+            std::fwrite(q8_host.data(), 1, (size_t) n_q8_bytes, f);
+            std::fclose(f);
+        }
     }
     std::fprintf(stderr, "expert-helper: f32 window quant golden dump written (%s.in/%s.q8)\n", p, p);
 }
