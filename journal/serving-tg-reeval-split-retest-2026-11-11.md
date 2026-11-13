@@ -1970,3 +1970,163 @@ known Not-Runs of that gate) + the new conv_cache_knobs_test + conv_cache_test: 
    SEPARATE boots first (they move different mechanisms; a combined boot cannot attribute).
    STRATA_SPEC_TRACE stays free on every arm.
 
+
+## Round 14 (Nov 13, window attempt 2 + regression forensics)
+
+**Operator:** game done, GPUs released; later: "engine memory went through the roof", "continue on your own, figure out why we are regressing so hard, fix it, measure it — i want to come back to a fast iq3s". Full autonomy granted.
+
+**W1 (v0228 + RERANK_MAX=6000 + PHASE_TAG=2 + SPEC_TRACE) aborted:** warmup 179.7 s, RSS 45.7 G (normal 39.2), killer prefill 25+ min at 1/3 done. Halted via stop-all.
+
+**Forensics (regress-table.py, new in rpcprof/):**
+- Only ONE commit between v0227 and v0228: df8a94877. a68338ac4 + 565fffd3f are IN v0227 (ancestry verified). The v0228 diff at default (knobs off) is functionally identical: arena_rerank_heat(0,w,mixed,decode)=mixed; one extra relaxed atomic load per cell at boundaries. **No default-path regression is possible from this diff.**
+- ms/slot truth table: v0228 boots p50 1.20-1.25 (same as v0227), p90 2.04-2.38 vs v0227 1.33 (02:00, cleanest box) and prod 1.72 (evening, 593 samples). Round-12's "2.0-2.2 on all v0228 boots" was tail-reading, not median.
+- First-request read wall varies 8->48 s on the SAME v0228 binary, 24-43 s on prod v0227: tracks box state, not binary. Every boot's first short request is a cold conversation (0 reused; reuse appears from the 2nd request).
+- W1's catastrophe quantified: "OS read 69528.4 MB (5813 major faults) for 22474.2 MB of expert reads" = 3.1x readahead amplification under page-cache pressure (avail 7.3 G, swap 11.7 G). The FADV discipline is fine; the box recycled readahead pages before use.
+- Killer prefill: c3 (v0228 clean) 287 s was the fastest all campaign; D02's 400 s was the game's swap storm (round-12 verdict stands).
+
+**Verdict: no v0228 binary regression.** The perceived regression = box-state-dependent cold-sweep + read tails + W1 booting at the worst memory state of the campaign. Residual p90 tail signal gets settled by same-box A/B: W2 (v0227 def, running) vs v0230 arms.
+
+**Window plan (revised):** W2 v0227-def baseline (today's box) -> W3 v0230+GEN_ANCHOR=1 -> W4 v0230+PARK_DEBOUNCE_MS=1500 -> W5 fill-7400 (+GEN_ANCHOR if W3 clean) -> prod restore on the winner. Tag-2 discrimination dropped (exonerated + confound dissolved). New tool: regress-table.py (cross-boot ms/slot + warm walls + RSS table, read-only).
+
+## Round 14 window results (W2-W6) + PP root cause
+
+**Targets (operator):** warm TG protected as-is; focus cold TG tok/s; long-ctx PP > 600 tok/s.
+
+**Arms (out/ab9-window-20261113, same-day box, killer legs in tok/s cold/warm):**
+| arm | PP wall | PP tok/s | killerL 142k | longtg 160k | tg1024 2k |
+|---|---|---|---|---|---|
+| W2 v0227 def | 555s | 256 | 12/53 | 16/81 | 59/111 |
+| W4 v0230 def+debounce1500 | 313s | 454 | 8/55 | 15/71 | 63/80 |
+| W3 v0230+GEN_ANCHOR | 295s | 482 | 13/49 | 13/95 | 28/44 |
+| W5 replicate | 328s | ~433 | 15/45 | 17/92 | 31/29 |
+
+**Findings:**
+1. GEN_ANCHOR: replicated TRADE — long-ctx warm TG 81->95/92 (+15%) BUT small-ctx warm TG 80-111->29-44 (collapse). Knob-attributed (W4 default recovers 63/80). Fix: ctx-threshold gate (anchor only when conversation > ~32k tokens) keeps both. Until then anchor stays OUT of prod (warm-TG protection).
+2. PARK_DEBOUNCE_MS=1500: gate fires (skip lines logged), no TG cost, default-off safe. Candidate for prod idle behavior but its real test is idle serving, not the panel.
+3. PP ROOT CAUSE (the big one): killer prefill reads 368 GiB from the GGUF (78 GiB universe, 39 GiB locked RAM, ~39 GiB streams) at 1.00 MiB/ms with 8 swaps/batch = under-queued NVMe (/dev/nvme0n1p2, local). Per-chunk demand overflows the 13 GiB lending pool -> evict-refetch thrash; the 8-deep in-flight window (~16 MiB) caps reads at ~1 GiB/s where the NVMe can do 2.5-4+. Read side 377s vs wall 313s (overlapped): prefill is 100% I/O-bound.
+4. PP fix design: deepen swap-in in-flight window (64-128 swaps, async submission without per-batch waits) -> expected read 2.5+ GiB/s -> PP ~700-950. Complements: per-request reuse of streamed blobs (bigger change, later).
+5. DF2_WINDOW (W6): PP identical (454.2, 313s) as expected; TG verdict pending panel end.
+6. Fill-7400 was a no-op: budget = device_free - reserve - buffers caps at ~6796 (fill-mib 7400 reached the helper but wasn't binding). The 3080's ~700 MiB "free" is reserve+fixed buffers. Only lever there is shaving STRATA_HELPER_RESERVE (~1-2%, risky).
+
+**Next: round-15 fixer brief** (1) swap-in pipeline depth (PP>600), (2) GEN_ANCHOR ctx gate. Then verify v0231 + W7 tag2 cold-TG arm.
+
+## Round 15 — the two fixes landed: STRATA_SWAPIN_DEPTH + STRATA_GEN_ANCHOR_MIN_TOKENS (host-verified, v0231)
+
+No GPU, no boots, no :8009. Both fixes on helper-ipc-diet (base b7b39f4d2 = round 13), HIP-built
+nice -j8 in a fresh dir (rpcw-hip-fix15), pinned v0231.
+
+### What the swap-in path actually looked like (surprises worth recording)
+
+The round-14 mental model ("submit-8-wait inside the expert source") was wrong in a useful way:
+
+- `read_direct` (FileExpertSource, expert_source.cpp:2793) is ALREADY deep: Linux native AIO
+  (SYS_io_setup/io_submit, no library, per-thread contexts), O_DIRECT fds, the WHOLE batch queued
+  with one io_submit before the first wait, waves capped at kDepth=256 requests, adjacent windows
+  merged to 32 MiB. No pread loop, no thread pool needed on this path, FADV discipline elsewhere
+  untouched.
+- The 8 came from the CALLER: the prompt stager claims runs of `batch`=8 jobs (STRATA_STAGER_BATCH's
+  files-profile default, prefill.cpp) and the arena serializes every file batch on `file_mu_`
+  (ArenaExpertSource::copy_blobs) — so exactly ONE ~8-pair/~16 MiB batch is ever in flight: the
+  measured flat 1.0 GiB/s. The meter (swap_batches_) counts per read_direct window, hence
+  "8 swaps/batch" in the request-end line.
+- The decode tier's adapt rounds (swap_in_read -> swap_blobs_batch) already batch whole rounds
+  (up to adapt_swaps=96) — not the prefill storm, untouched.
+
+### Fix 1 — STRATA_SWAPIN_DEPTH (the PP>600 lever)
+
+New pure header include/strata/core/swapin_depth.hpp: `swapin_depth(env)` (absent/empty/garbage/<=0
+-> 8; clamp 1..512) and `swapin_window(...)` -> {run, ring, note}: the stager's run size AND the
+ring that keeps one run's buffers distinct (`ring = max(4*threads, depth)`, files profile). The
+stager's fixed run arrays (kMaxBatch=32) became per-thread vectors so a run can reach 512; an
+explicit STRATA_STAGER_BATCH still wins the run size and an explicit STRATA_STAGER_RING still wins
+the ring (the surgical A/B knobs keep their sides). With the knob ABSENT the window is today's
+number pair for every combination of the other knobs — walked in the test against the pre-round-15
+rules spelled out there (bit-for-bit default). read advice, eviction, everything else untouched.
+Log: the request-end "adapt swap-in:" line appends ` depth=N` when the run is not 8 (prefix
+unchanged, the validation greps still hit); one startup note prints the window and its MiB.
+
+**RAM-neutrality argument (the staging window bound):** the ring is allocated once at stager init
+(32 threads -> 128 buffers x ~2 MiB = ~256 MiB, ALREADY there today; depth 64 and 128 leave it at
+128 = zero new ring bytes). The deep run's bounce buffer (read_direct's scratch) is the one real
+cost, and it is bounded to ONE shared reused window: batches larger than 64 MiB (a 33+-pair run;
+the default 8-pair run is ~16 MiB) read through a single mutex-guarded buffer on the source,
+allocated once at its high-water mark, freed at shutdown — because a per-THREAD scratch at depth
+128 would have let 32 stager threads retain ~256 MiB each (gigabytes). Default-sized batches keep
+the exact per-thread scratch path as before. Costs: **depth 64 = ~128 MiB (shared window) + 0 new
+ring; depth 128 = ~256 MiB + 0 new ring; depth 512 = ~1 GiB window + ring grows to ~1 GiB** (the
+clamp's ceiling, operator's choice). Thread scratches never grow on deep runs (every storm batch
+takes the shared window).
+
+### Fix 2 — STRATA_GEN_ANCHOR_MIN_TOKENS (the small-ctx gate)
+
+`gen_anchor_min_tokens(env)` in conv_cache.hpp: default 32768, clamp 1024..1048576, 0/negative/
+garbage -> the default (0 is not a gate). The gate is one more term inside
+`gen_anchor_should_capture` (`T >= min`, boundary inclusive): at/above the gate the decision is
+EXACTLY the ungated one for every serve-loop combination (walked in the test); below it a small
+conversation captures nothing even with the anchor on — the W3/W5 2k collapse (80-111 -> 29-44)
+cannot happen, and killerL/longtg (142-160k) keep the 81->95 win. With STRATA_GEN_ANCHOR off
+nothing changes whatever the gate says (exhaustive). generate.cpp parses it once and prints one
+note per process when the anchor is on ("gen-end anchors from N tokens up").
+
+### Host tests (tests/core/, the round-13 no-links pattern)
+
+- NEW swapin_depth_test (CMake block beside conv_cache_knobs_test, no links): parsing/clamps;
+  default equivalence vs the spelled-out pre-round-15 rules over both profiles x thread counts x
+  12 batch-env x 10 ring-env values; the window (run+ring widen together, note); surgical
+  precedence; a fake pack source exercising the run accounting (1000 jobs: depth 8 -> 125
+  batches, 64 -> 16, 512 -> 2; every job read once; skips only shrink runs) — the pairs/batches
+  the "adapt swap-in" line reports IS the window; and the shared-window bound (<=64 MiB thread
+  scratch, >64 MiB the one shared buffer).
+- conv_cache_knobs_test extended (3b/3c): min-token parsing incl. 0-is-not-a-gate and both clamps;
+  at/above-gate == ungated for every condition; below-gate captures nothing; boundary edges
+  (32767/32768/32769); the measured shapes (2048 refuses, 142815/160000 capture).
+- ctest host subset (v0230's 81-name list + swapin_depth_test = 82; log
+  logs/v0231-ctest-hip-host.log): **20 passed / 53 failed / 9 skipped.** ALL 20 host-runnable
+  tests green (incl. conv_cache_test, both knob tests, arena/pin/expert-helper host tests). The
+  53 failures are every one device unavailability ("no ROCm-capable device is detected" /
+  "device allocation failed" — the GPUs are back with prod; round 13 ran this same list green
+  because the operator had released them then; three of the quietest verified by direct run).
+  The 9 skips are device-dependent dflash/ple/pinned_alias self-skips (7 of them passed on device
+  in v0230, 2 skipped there too). No host regression against v0230's pass set.
+
+### Build + pin v0231
+
+Fresh configure build-mixed-gpu/rpcw-hip-fix15: round-13 recipe (Release, Unix Makefiles,
+CMAKE_HIP_COMPILER=/opt/rocm-6.1.0/llvm/bin/clang++ — the journal-proven 6.1.0 path; the brief's
+hip/bin/hipcc is the same toolchain wrapped, fix13/v0230 used the llvm path — gfx906, PREFIX_PATH
+rocm-gfx906-xnack;6.1.0, STRATA_HIP_GFX906=ON, ENABLE_DFLASH2=ON, HAVE_DFLASH2=OFF,
+BUILD_TESTS=ON, warm ccache). nice -n 10 make -j8 x3 (one -Werror-class fix on the way: vectors
+need .data() at copy_blobs; logs fix15-build{,2,3}.log).
+
+v0231 (/mnt/srcds/Strata/v0231/build-mixed-gpu/ + SHA256SUMS):
+| file | sha256 |
+|---|---|
+| rpcw-hip/strata (fix15 build) | 3856bc7ba73ee737efd49c1841ce42ae813bca93950d4612985a7e3215367f22 |
+| rpcw-cuda/strata | 034f60781a1f0fd5edbebe6301f755a616e0fc99b3b6e95f29311f48d5b8cb5f |
+| rpcw-cuda/strata-expert-helper | 8d37045c010641f9982ae054e9a9aeece84635f163eac03f99e0e341f4a16506 |
+| rpcw-cuda/strata-expert-helper-patient | 8d37045c010641f9982ae054e9a9aeece84635f163eac03f99e0e341f4a16506 |
+
+CUDA trio = byte-exact copies from v0230 (cmp-verified, shas identical to the recorded v0229/
+v0230 lineage; CUDA NOT rebuilt; the -patient alias included — the round-14 boot breaker).
+strings on the hip strata: STRATA_SWAPIN_DEPTH x2, STRATA_GEN_ANCHOR_MIN_TOKENS x2;
+--help exit 0.
+
+### Suggested measurement arms (v0231)
+
+1. **STRATA_SWAPIN_DEPTH=64 first.** It is the cheapest RAM per GiB/s (~128 MiB shared window,
+   ring already 128 at 32 threads) and 8x the queue depth; the "adapt swap-in" line's swaps/
+   batches should read ~64 and ms/slot should drop as the read rate leaves 1.0 GiB/s. If the
+   killer prefill's read side (377 s of a 313 s wall) scales toward 2.5 GiB/s, PP lands ~700+.
+   Then 128 (window ~256 MiB) for the remainder; only if 64 shows NO gain is the lever elsewhere
+   (then the drive is not queue-depth-bound and the per-request blob-reuse design is next).
+2. **STRATA_GEN_ANCHOR=1 (gate at the 32768 default)** on a W3-style arm: expect longtg warm TG
+   to keep ~95 and tg1024 2k to stay at the W4-default ~80-111 (the once-per-process note line
+   confirms the gate; small convs simply log no anchor). If a shape of interest straddles 32k,
+   bracket with MIN_TOKENS=16384 / 65536 — the boundary is inclusive.
+3. Depth and anchor are orthogonal (read window vs park/anchor path) and combine safely, but
+   measure on separate boots first, as ever. STRATA_SPEC_TRACE free on every arm.
+
+### Round 14 addendum: storage ceiling + W6 verdict
+- bench-storage-depth.py (new): NVMe /dev/nvme0n1p2 does ~2.1 GiB/s on random 2 MiB reads from the 78 GiB GGUF, FLAT across depths 8-128 (thread-concurrent pread). Engine's 1.0 GiB/s at "8/batch" => its batches are effectively serial (QD~1-2), not 8-concurrent. Depth/parallel fix should land the full 2.1x. Projection: killer reads 368 GiB in ~175s, wall ~200s, PP ~710 (>600 target). Beyond ~900 PP needs re-read volume cuts (per-request reuse), shelved for now.
+- W6 DF2_WINDOW=4096 verdict: REJECTED for long-ctx focus (killerL warm 55->21, longtg 71->60; tg1024 warm 80->101 not worth it). Possibly wrong window value for the model's SWA depth; revisit only with drafter-side evidence.
+- Round-15 fixer launched (ses_e2af2706): STRATA_SWAPIN_DEPTH (PP lever) + STRATA_GEN_ANCHOR_MIN_TOKENS gate (anchor long-ctx win without small-ctx cost) -> v0231 pin. Verification window planned: v0231 default regression + SWAPIN_DEPTH arm + gated-anchor arm + W7 tag2.
