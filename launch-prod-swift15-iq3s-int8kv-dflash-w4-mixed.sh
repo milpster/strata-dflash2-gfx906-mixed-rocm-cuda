@@ -14,7 +14,13 @@ set -euo pipefail
 ROOT=${STRATA_PROD_TREE:-/mnt/srcds/Strata}
 WORK="$ROOT/v0215"
 # Keep the serving wrapper stable; pin the latest built engine/helper separately.
-BIN="$ROOT/v0219/build-mixed-gpu"
+# 2026-11-13: v0233 promoted (ARM1_SHADOW champion, journal 18i): v0233-candidate engine+helper
+# (all 8 lanes landed, default-off) + foresight shadow stack in the config env
+# (STRATA_FS_SLOTS=3,2 STRATA_FS_HELPER_SHADOW=1 STRATA_FS_ADMIT=2 STRATA_GRAPH_FAMILY_TRIM=8
+# STRATA_SWAPIN_DEPTH=64) + helper reserve 512->320 (R3A: fill binds at 6796 either way).
+# Measured vs v0227 split pin (R3A lean panel): 180k warm TG 18.8-23.8 -> 29.0-31.5;
+# PP 64k 359.9 -> 521.5; PP 180k 529.5 -> 578.7.
+BIN="$ROOT/v0233/build-mixed-gpu"
 PY="$ROOT/.venv/bin/python"
 CONFIG="$ROOT/prod-config-swift15-iq3s-int8kv-dflash-w4-mixed.json"
 SOCKET="$ROOT/run/prod-swift15-iq3s-mixed.sock"
@@ -86,7 +92,7 @@ done
 env -i "${helper_env[@]}" "$HELPER" \
   --pack /mnt/srcds/ai/iq3s \
   --experts ../Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S.gguf \
-  --device 0 --slots 4600 --reserve-mib 512 --timeout 63115200000 \
+  --device 0 --slots 4600 --reserve-mib 320 --timeout 63115200000 \
   --begin-timeout 63115200000 --socket "$SOCKET" --fill-mib 6796 --socket2 "$SOCKET2" \
   >>"$HLOG" 2>&1 < /dev/null &
 helper_pid=$!
