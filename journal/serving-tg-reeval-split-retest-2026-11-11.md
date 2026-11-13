@@ -2349,3 +2349,104 @@ names or mask HSA_VISIBLE_DEVICES to keep the freeze literal.
   real reserve` (helper_main.cpp + expert_helper_reserve.hpp + expert_helper_reserve_test.cpp +
   CMake) and `feat(serve): report the generation-end anchor's own wall time` (generate.cpp).
 - main: launcher defaults + this journal section.
+
+## Round 16 hotfix — the v0232 killer-admission hang: verdict, v0232b, and the discriminator confound
+
+**The fault as reported (17:00-17:12)**: v0232 pin via boot-arm defaults (no env): warm ctx=512 legs
+complete; the first killer request (786,800 B ≈ 142,282 tok, prefill) hangs at admission — 0 B engine
+log growth for 9+ min, zero 'adapt swap-in'/'checkpoint at' lines, 0 MiB/s disk, 11 CPU threads
+RUNNING, 1 thread kfd_wait_on_events, helper idle (no frames). stop-all clears it. The v0231 pin
+"same request" progresses (first progress ~t+60 s). Both commits since v0231 (3856bc7b/919c42148)
+were in the bisect space: a8f63678f (helper reserve authority) and 6d4dc0ca7 (anchor timing).
+
+### What the evidence actually says (all checked host-side, no GPU contact)
+
+1. **Engine binaries: v0232 ≡ v0231 + one provably DEAD hunk.** Full strings+symbol diff of
+   v0231/rpcw-hip/strata vs v0232's: the ONLY content delta is 6d4dc0ca7's three anchor format
+   strings ("in %.1f ms", ", sidecar %llu MiB"), a CSWTCH renumber and lambda renumbering (+428 B
+   .text). The hunk sits inside `if (gen_anchor_should_capture(...))` whose first term is
+   `gen_anchor_on(getenv("STRATA_GEN_ANCHOR"))` — **false at default knobs, and the boot had no
+   env** (conv_cache.hpp:132,154). The v0232 boot never executed one new instruction of it.
+   Build provenance verified: fix16 configured from this worktree, pin sha == build dir sha,
+   llama.cpp pinned (3cf03257).
+2. **Helper binaries: value-identical at this configuration.** v0232's helper (6de16b7f) vs v0231's
+   (8d37045c): a8f63678f's reserve plumbing is inert here — launcher passes --reserve-mib 512, the
+   engine's hello carries its 512 default, clamp(512)=512; BOTH helper logs preflight
+   "reserve 512 MiB" and fill the identical 3560 slots / 6.61 GiB, and their boot logs are
+   line-identical. Previously unrecorded: the v0231 helper descends from the Nov 12 23:03 build
+   (rpcw-cuda-fix7 dir), so the v0232 helper ALSO picked up the DF2_WINDOW drafter code
+   (50e16d04d + cd4c26e9e, Nov 13 04:22) — knob-off inert by construction
+   (`dflash2_effective_window` returns `sliding_window` when the env is unset; "bit-for-bit with
+   the knob off"). No arena/swapin/claim-batch deltas (strings absent from both helpers).
+3. **The hang's true location: INSIDE chunk-0 prefill, not "at admission".** The wrapper's
+   "reading the prompt: 142,283 tokens" with no "N of M" means engine progress total == 0: the
+   engine never emitted the first `PP <done> <total>` line (printed per completed 16384-token
+   chunk, generate.cpp:20042). The missing third "skip parking" is EXPECTED, not evidence of an
+   intake hang: the switch-time park is gated by `park_worth` and skips silently for a 360-token
+   conv. The killer WAS admitted (the ~1 MB GEN ids line fully drained the stdin pipe — the
+   wrapper's blocking write returned), found no restore (same as v0231's "0 reused"), and then
+   chunk 0 never finished: no helper prompt claim (layer 0 never completed), no checkpoint at
+   16384, no swap-in; 11 threads spinning = the prompt path's CPU share + pool; the one
+   kfd_wait_on_events thread = a GPU event that never completes. That is the box's documented
+   **#2065 mode** — the engine log warned at BOTH boots: "only 229 MiB of VRAM free at the start
+   of this request … a window may never finish (#2065)".
+4. **The discriminator was confounded by sequencing.** The v0231 "same request" boot at 17:10 ran
+   the killer FIRST (its log: the killer is request #1; the verify-window graph captures happen
+   mid-killer at 98k+ tokens). The v0232 boot ran TWO warm legs first — their captured graphs,
+   K/V pools and prompt-tier buffers were resident when the killer's chunk 0 launched. Killer-first
+   vs warm-first changes free VRAM and capture state at killer time. One boot per pin is one
+   sample per arm, not a bisect.
+
+**Verdict**: no executed-code difference exists between the pins on the killer's path; both round-16
+commits are inert by execution in this boot. Prime suspect by elimination is the v0232 ENGINE build
+(6d4dc0ca7 — the only engine delta, dead but layout-shifting: +428 B .text, renumbered lambdas), so
+**v0232b reverts it**. a8f63678f is kept: it is the wanted fix, value-inert in this configuration,
+and its helper lineage carries the (inert) DF2 code either way. **If v0232b's panel boot still
+hangs, NEITHER round-16 commit is guilty**: re-boot the v0231 pin with the same warm→killer
+sequence to test the confound, and treat the fault as #2065 VRAM exhaustion at the killer's first
+window (the card had 173-229 MiB free at request start all day; --vram-reserve-mib 256 with
+262144 context is the knife's edge).
+
+### v0232b (branch v0232b-hotfix = 919c42148 + cherry-picked a8f63678f = c7be950984)
+
+Engine built fresh (build-mixed-gpu/rpcw-hip-fix16b, round-15 recipe verbatim:
+STRATA_ENABLE_CUDA=ON + STRATA_HIP_GFX906=ON + STRATA_ENABLE_DFLASH2=ON + STRATA_HAVE_DFLASH2=OFF,
+gfx906 via /opt/rocm-6.1.0/llvm/bin/clang++, PREFIX_PATH rocm-gfx906-xnack;6.1.0, Release, Unix
+Makefiles, nice -n 10 make -j8; logs fix16b-hip-{configure,build}.log). Helper fresh
+(rpcw-cuda-fix16b) from the frozen golden conf + ROCm prefix, `make -j8 strata-expert-helper` ONLY,
+cuobjdump sm_86 guard PASS, -patient = plain cp, cmp identical (logs fix16b-cuda-{configure,build}
+.log). rpcw-cuda/strata = byte-exact copy from v0231 (sha identical to the recorded lineage).
+
+v0232b (/mnt/srcds/Strata/v0232b/build-mixed-gpu/ + SHA256SUMS):
+| file | sha256 |
+|---|---|
+| rpcw-hip/strata (fix16b build) | 95d94d4e8b61d085c98740897d4b87ffdbefcf82ecc6ddfdecc4ff4cd6ac1373 |
+| rpcw-cuda/strata | 034f60781a1f0fd5edbebe6301f755a616e0fc99b3b6e95f29311f48d5b8cb5f |
+| rpcw-cuda/strata-expert-helper | 42358985b20a72b4913e9cc2d936972fd6696378cc7fdf1913e7ee002ece3fd3 |
+| rpcw-cuda/strata-expert-helper-patient | 42358985b20a72b4913e9cc2d936972fd6696378cc7fdf1913e7ee002ece3fd3 |
+
+Strings: the fix16b engine carries NO anchor-timing format ("pair %s) in %.1f ms", "sidecar %llu
+MiB", "skipped in %.1f ms" all absent) and is strings-identical to v0231's engine modulo build
+paths; STRATA_GEN_ANCHOR x6, STRATA_SWAPIN_DEPTH x2 as in v0231. The helper carries the
+clamp/warn/authority lines. Both --help exit 0.
+
+### Host tests (v0232b)
+
+Same 83-name list as v0232 (logs/v0232b-ctest-hip-host.log): **76 passed, 2 skipped
+(ple_parity, pinned_alias_test — the usual device-dependent self-skips), 5 failed — ALL five on
+host-RAM malloc, not logic**: dequant_wide_parity, gfx906_gdn_rec_head, kv_stream_parity,
+kv_window_parity, batch_rows_parity each abort with "out of memory" (the box holds 52 of 62 GiB in
+prod+game at this hour; round 16's green 83/83 ran on a freer box). Their assertion output before
+the abort is clean (kv_stream_parity: "0 failures … ring restore: identical"; kv_window_parity:
+"bad 0, stale slots 0"). Retried once serially: same malloc aborts. The names this hotfix can
+affect (conv_cache_test, conv_cache_knobs_test, expert_helper_reserve_test, swapin_depth_test,
+the arena/pin/expert-helper host tests) are all green, and the engine TU delta vs v0231 is zero
+source lines.
+
+### Round-16b commits
+
+- helper-ipc-diet worktree, branch **v0232b-hotfix** @ c7be950984 = 919c42148 + `feat(helper):
+  make --reserve-mib the fill budget's real reserve` (cherry-pick of a8f63678f, conflicts none).
+  helper-ipc-diet itself keeps 6d4dc0ca7; the anchor-timing idea can return once the hang is
+  attributed, ideally with the computation outside the boundary block.
+- this journal section (main).
