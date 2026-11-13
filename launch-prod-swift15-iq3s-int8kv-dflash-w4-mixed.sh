@@ -94,7 +94,7 @@ env -i "${helper_env[@]}" "$HELPER" \
   --pack /mnt/srcds/ai/iq3s \
   --experts ../Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S.gguf \
   --device 0 --slots 4600 --reserve-mib 320 --timeout 63115200000 \
-  --begin-timeout 63115200000 --socket "$SOCKET" --fill-mib 6796 --socket2 "$SOCKET2" \
+  --begin-timeout 63115200000 --socket "$SOCKET" --fill-mib 7400 --socket2 "$SOCKET2" \
   >>"$HLOG" 2>&1 < /dev/null &
 helper_pid=$!
 if [[ -n ${STRATA_PAIR_RECORD:-} ]]; then
