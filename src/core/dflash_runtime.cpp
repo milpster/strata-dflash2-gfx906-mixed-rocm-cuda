@@ -466,11 +466,15 @@ bool DFlashDrafter::upload(const ModelGeometry& target_g, SessionState& ss, int 
         const int64_t m = v != nullptr ? std::atoll(v) : 1;
         return m < 1 ? 1 : (m > 1024 ? 1024 : m);
     }();
+    // The readable window the attention kernel and the rewind guards use: the trained geometry,
+    // or STRATA_DF2_WINDOW's experiment override (dflash_ring.hpp: powers of two above the
+    // trained window only; default keeps today's behavior bit-for-bit).
+    const int64_t df2_attn_window = strata::core::dflash2_effective_window(dg.sliding_window, std::getenv("STRATA_DF2_WINDOW"));
     ring_state_.ring = dg.is_dflash2() && dg.head_dim == 128 && dg.sliding_window > 0
-        ? dflash_ring_capacity(dg.sliding_window * df_ring_mult, 8,
+        ? dflash_ring_capacity(std::max(df2_attn_window, dg.sliding_window * df_ring_mult), 8,
                                (int64_t) strata::core::shapes_of(pool_g_).page_size)
         : 0;
-    ring_state_.window = ring_state_.ring ? dg.sliding_window : 0;
+    ring_state_.window = ring_state_.ring ? df2_attn_window : 0;
     ring_state_.max_rows = 8;      // the widest block: proposals + anchor (propose guards K <= max_rows_)
     ring_state_.capacity = cap_;   // the logical --dflash-window capacity the guards read
     const int64_t pool_cells = ring_state_.ring ? std::min(cap_, ring_state_.ring) : cap_;
@@ -1358,7 +1362,7 @@ bool DFlashDrafter::propose(int32_t x, int64_t pos, int block, int32_t* out, std
                     dflash2_attention(q_, pools.k_pool, pools.v_pool, pools.page_table, attn_step_,
                         attn_, (float*) attn_scratch_, K, dg.n_head, dg.n_head_kv,
                         shapes_.page_size, attention_cells,
-                        dg.sliding_window, cs_, (int) ring_state_.ring);
+                        ring_state_.window ? ring_state_.window : dg.sliding_window, cs_, (int) ring_state_.ring);
                 else
 #endif
                 dflash_attn_batch(q_, pools, attn_step_, attention_cells, scratch_cap_, shapes_, (float*) attn_scratch_, attn_, K, cs_);

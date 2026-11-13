@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 
 namespace strata::core {
 
@@ -24,6 +25,18 @@ inline int64_t dflash_ring_capacity(int64_t window, int64_t max_rows, int64_t pa
     if (window <= 0 || max_rows < 1 || pages < 1) return 0;
     const int64_t union_cells = window + max_rows - 1;
     return (union_cells + pages - 1) / pages * pages;
+}
+
+/// STRATA_DF2_WINDOW (bench-only experiment, default off): the dflash2 drafter's READABLE SWA
+/// window, widened beyond the trained sliding_window for round-10's depth-blindness test
+/// (2026-11: the drafter's 2048-row window goes structurally blind as generation depth at 142k
+/// grows; 4096/8192 are the sweep points). Powers of two above `sliding_window` only — anything
+/// else keeps the trained geometry bit-for-bit. The runtime sizes the ring capacity, scratch,
+/// and the attention kernel's window from this value. The drafter was TRAINED at
+/// sliding_window: attendance beyond it may degrade, which is exactly what the sweep measures.
+inline int64_t dflash2_effective_window(int64_t sliding_window, const char* env) {
+    const int64_t w = env != nullptr ? std::atoll(env) : 0;
+    return w > 1 && (w & (w - 1)) == 0 && w > sliding_window ? w : sliding_window;
 }
 
 /// The physical cell a logical (absolute) cell reads and writes: the ring identity, with 0 as the
