@@ -454,6 +454,81 @@ int main() {
               "equal heat: the demote order is the profile's cold end");
     }
 
+    // 24. Round 9 - the heat MIX (arena_rerank_heat).  tag 0 is the mixed counter, tag 1 the decode bank,
+    //     tag 2 the decode bank + read_weight/8 of the read bank (the read bank = mixed - decode).
+    {
+        check(arena_rerank_heat(0, 2, 64, 0) == 64, "tag 0: the mixed counter, unchanged");
+        check(arena_rerank_heat(1, 2, 64, 0) == 0, "tag 1: the read bank alone earns nothing");
+        check(arena_rerank_heat(1, 2, 64, 9) == 9, "tag 1: the decode bank passes through");
+        check(arena_rerank_heat(2, 0, 64, 9) == 9, "tag 2 with read_weight 0 is exactly tag 1");
+        check(arena_rerank_heat(2, 2, 64, 0) == 16, "tag 2: a read-only pair keeps 2/8 of its read heat");
+        check(arena_rerank_heat(2, 8, 64, 0) == 64, "tag 2 with read_weight 8 is the read bank at full weight");
+        check(arena_rerank_heat(2, 2, 100, 40) == 55, "tag 2: 40 decode + (100-40) read x 2/8");
+        check(arena_rerank_heat(2, 2, 30, 40) == 40, "tag 2: a bank that lags the decode bank adds no negative floor");
+        check(arena_rerank_heat(3, 2, 64, 9) == 22, "a tag above 2 behaves as tag 2 (9 decode + 55 read x 2/8)");
+    }
+
+    // 25. Round 9 - the panel boundary, replayed on the v0227 iq3_s shape.  The boot cap's keep [0,12000) is
+    //     the long read's SWEEP (10000 pairs heat 240, decode never touches them), 1000 residents are cold in
+    //     both banks, 1000 residents are the CURRENT decode set (30/30).  The cap's evictions hold the read
+    //     sweep's tail (1800 pairs, mixed 120, decode 0) and the warm generation's decode set (1200 pairs,
+    //     30/30 - the pairs the 2nd gen swaps in).  The band is cap-bound (12000 MiB of 1 MiB pairs), so every
+    //     promote is paid by a demote.  Tag 0 starves decode's set behind the read-heat evictions (the round-7
+    //     finding); tag 1 converges it and burns 200 sweep pairs (the round-8 harm); tag 2 converges it on the
+    //     zero-heat pairs and leaves the sweep's placement home.
+    {
+        const auto panel = [&](int64_t tag, int64_t rw) {
+            Fixture f = make(1024, 24576);
+            std::vector<uint8_t> tier((size_t) LAYERS * (size_t) EXPERTS, 0), resident((size_t) LAYERS * (size_t) EXPERTS, 0);
+            std::vector<int64_t> mixed((size_t) LAYERS * (size_t) EXPERTS, 0), decode((size_t) LAYERS * (size_t) EXPERTS, 0);
+            for (size_t i = 0; i < 12000; ++i) resident[i] = 1;                       // the boot cap's keep
+            for (size_t i = 0; i < 11000; ++i) mixed[i] = 240;                        // the long read's sweep (resident)
+            for (size_t i = 13200; i < 15000; ++i) mixed[i] = 120;                    // the sweep's evicted tail
+            for (size_t i = 8000; i < 9000; ++i) { mixed[i] = 30; decode[i] = 30; }   // the current decode set (resident)
+            for (size_t i = 12000; i < 13200; ++i) { mixed[i] = 30; decode[i] = 30; } // the warm gen's swap-ins (evicted)
+            std::vector<int64_t> heat((size_t) LAYERS * (size_t) EXPERTS);
+            for (size_t i = 0; i < heat.size(); ++i) heat[i] = arena_rerank_heat(tag, rw, mixed[i], decode[i]);
+            return relief_arena_reorder_plan(LAYERS, EXPERTS, 12000 * MIB, 0, f.profile, f.hot, tier,
+                                             resident, heat, bytes_of(f));
+        };
+        auto index_of = [](const std::pair<int32_t, int32_t>& p) { return (size_t) p.first * (size_t) EXPERTS + (size_t) p.second; };
+        auto count_in = [&](const std::vector<std::pair<int32_t, int32_t>>& v, size_t lo, size_t hi) {
+            size_t n = 0;
+            for (const auto& p : v)
+                if (index_of(p) >= lo && index_of(p) < hi) ++n;
+            return n;
+        };
+        const auto p0 = panel(0, 2), p1 = panel(1, 2), p2 = panel(2, 2), p2w8 = panel(2, 8);
+
+        // Tag 0 (mixed heat): the read sweep's evictions (120) outrank the warm set (30), so the strict-win
+        // loop spends its swaps promoting read-phase pairs and demoting the current decode set, and decode's
+        // warm set gets nothing.
+        check(p0.swaps == 1800, "tag 0: 1800 swaps, all spent on the read sweep's evictions");
+        check(count_in(p0.promote, 12000, 13200) == 0, "tag 0: decode's warm set never promotes - the band never converges (round 7)");
+        check(count_in(p0.demote, 8000, 9000) == 800, "tag 0: 800 of the current decode set's residents demote against the read-heat promotions");
+
+        // Tag 1 (decode bank): the whole warm set lands in one boundary, and the demote reaches the sweep.
+        check(p1.swaps == 1200, "tag 1: decode's whole set converges in one boundary (the round-8 warm recovery)");
+        check(count_in(p1.promote, 12000, 13200) == 1200, "tag 1: every warm-set pair promotes");
+        check(count_in(p1.demote, 0, 11000) == 200, "tag 1: 200 read-sweep pairs demote once the zero-heat pool runs out (the round-8 first-pass harm)");
+
+        // Tag 2 (decode + read/4 floor): decode's set promotes first, only the both-bank-cold pairs demote,
+        // and the strict-win rule stops before touching the sweep.
+        check(p2.swaps == 1000, "tag 2: the zero-heat residents pay 1000 swaps, then the sweep's floor stops the loop");
+        check(p2.promote[0] == std::make_pair((int32_t) (12000 / EXPERTS), (int32_t) (12000 % EXPERTS)),
+              "tag 2: the promote starts at decode's own set (the recovery keeps its direction)");
+        check(count_in(p2.promote, 12000, 13200) == 1000, "tag 2: 1000 of the warm set lands this boundary, the rest converges next");
+        check(count_in(p2.demote, 0, 11000) == 0, "tag 2: the read sweep's placement survives the boundary (the first-pass set stays home)");
+        check(count_in(p2.demote, 8000, 9000) == 0, "tag 2: the current decode set's residents are not demoted");
+
+        // read_weight is the dial between the two known behaviors: 0 is tag 1, 8 puts the read bank back on top.
+        const auto p2w0 = panel(2, 0);
+        check(p2w0.swaps == 1200 && count_in(p2w0.demote, 0, 11000) == 200, "tag 2 read_weight 0 is exactly tag 1 (the harm returns)");
+        check(p2w8.swaps == 1800 && count_in(p2w8.promote, 12000, 13200) == 0,
+              "tag 2 read_weight 8 restores the mixed-heat starvation - the read bank must stay a floor, not a ranker");
+        check(count_in(p2w8.demote, 8000, 9000) == 800, "tag 2 read_weight 8 burns the current decode set's residents, as tag 0 does");
+    }
+
     if (failures) {
         std::printf("expert_helper_arena_cap_test: %d FAILURES\n", failures);
         return 1;

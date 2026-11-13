@@ -7174,22 +7174,36 @@ int64_t ArenaExpertSource::reorder_arena_by_heat() {
         const long n = v != nullptr ? std::atol(v) : 0;
         return n > 0 ? (int64_t) n : (int64_t) 64;
     }();
-    // STRATA_ARENA_RERANK_PHASE_TAG=1 (round 8, default 0: today's mixed heat): plan on the DECODE
-    // bank.  The round-7 panels found the read-phase swap-in heat (a long prompt's window sweeps,
-    // thousands of pairs) drowning the decode window's demand in the mixed counter - the plan only
-    // found 14-33 strict-win swaps a boundary while decode's first window carried 5072.  On the
-    // decode bank the promote side is decode's own demand and the demote side falls to resident
-    // pairs decode never touches: the storm's set converges in a handful of boundaries.
-    static const bool phase_tag = [] {
+    // STRATA_ARENA_RERANK_PHASE_TAG (round 8, default 0: today's mixed heat): 1 plans on the DECODE
+    // bank, 2 (round 9) plans on the decode bank with read_weight/8 of the read bank as a demote floor.
+    // The round-7 panels found the read-phase swap-in heat (a long prompt's window sweeps, thousands of
+    // pairs) drowning the decode window's demand in the mixed counter - the plan only found 14-33
+    // strict-win swaps a boundary while decode's first window carried 5072.  On the decode bank the
+    // promote side is decode's own demand: the storm's set converges in a handful of boundaries.  The
+    // round-8 panel's asymmetry: tag 1's demote side ALSO evicts the resident pairs only the read phase
+    // touches, and a fresh long-context request pays that in its first-pass gens (v0227 RR: the 142k
+    // prefill leg's verify 119.6 -> 161.4 ms/token-step, its continuation 109.5 -> 134.9) while the warm
+    // continuations of the SAME conversation recover (longtg 124.9 -> 97.7, killerL 91.8 -> 86.2).  Tag
+    // 2 keeps the recovery and gives a read-hot resident a floor the promote must strictly beat, so the
+    // prefill's wide placement survives the boundary.  STRATA_ARENA_RERANK_READ_WEIGHT=0..8 weights the
+    // read bank under tag 2 (default 1; 0 is exactly tag 1, 8 is the read bank at full weight).
+    static const int64_t phase_tag = [] {
         const char* v = std::getenv("STRATA_ARENA_RERANK_PHASE_TAG");
-        return v != nullptr && std::atoi(v) != 0;
+        return v != nullptr ? (int64_t) std::atoi(v) : (int64_t) 0;
+    }();
+    static const int64_t read_weight = [] {
+        const char* v = std::getenv("STRATA_ARENA_RERANK_READ_WEIGHT");
+        const long n = v != nullptr ? std::atol(v) : 2;
+        return n < 0 ? (int64_t) 0 : (n > 8 ? (int64_t) 8 : (int64_t) n);
     }();
     const int64_t n_layers = blobs_ / n_expert_;
     const size_t cells = (size_t) blobs_;
     std::vector<int64_t> heat(cells);
     std::vector<uint8_t> resident(cells, 0);
     for (size_t i = 0; i < cells; ++i) {
-        heat[i] = (phase_tag && i < decode_heat_.size() ? decode_heat_[i] : heat_[i]).load(std::memory_order_relaxed);
+        const int64_t mixed = heat_[i].load(std::memory_order_relaxed);
+        const int64_t decode = i < decode_heat_.size() ? decode_heat_[i].load(std::memory_order_relaxed) : 0;
+        heat[i] = arena_rerank_heat(phase_tag, read_weight, mixed, decode);
         resident[i] = (i < unfilled_flag_.size() && unfilled_flag_[i] == 0) ? 1 : 0;
     }
     const auto plan = relief_arena_reorder_plan(

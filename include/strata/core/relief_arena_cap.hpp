@@ -186,6 +186,28 @@ struct ReliefArenaReorderPlan {
     bool floor_bound = false;                           ///< demotes stopped on the decode floor's guarantee
 };
 
+/// The re-rank's heat MIX for one pair out of its two banks (helper-ipc-diet round 9).  `mixed` is the
+/// all-phase counter (ArenaExpertSource::heat_: the read's swap-ins and the decode's together), `decode`
+/// is the decode-phase bank (decode_heat_, the subset the round-8 phase tag banks).  The read bank is
+/// their difference.  STRATA_ARENA_RERANK_PHASE_TAG selects:
+///   0 (default): the mixed counter - the round-6/7 behavior.  A long prompt's read sweep (thousands of
+///      pairs) drowns the decode window's demand, so the band never converges on decode's set.
+///   1: the decode bank alone - the round-8 knob.  The promote side is decode's own set (the v0227 RR
+///      panel recovered the warm legs: longtg's continuation verify 124.9 -> 97.7 ms, killerL's 91.8 ->
+///      86.2 with acceptance 57.8 -> 63.6), and the demote side is EVERY resident pair decode never
+///      touched - including the wide set a fresh long read/verify needs.  The same panel paid that on
+///      the first-pass 142k gens (verify 119.6 -> 161.4 ms, 109.5 -> 134.9 ms).
+///   2: the decode bank plus read_weight/8 of the read bank - plans on decode's set (the round-8 win)
+///      while a read-hot resident keeps a floor the promote must STRICTLY beat, so the prefill's wide
+///      placement survives the boundary (the round-8 harm).  read_weight 0..8: 0 is tag 1, 8 puts the
+///      read bank at full weight.
+inline int64_t arena_rerank_heat(int64_t tag, int64_t read_weight, int64_t mixed, int64_t decode) {
+    if (tag == 0) return mixed;
+    if (tag == 1) return decode;
+    const int64_t read = mixed > decode ? mixed - decode : 0;
+    return decode + read * read_weight / 8;
+}
+
 template <typename PairBytes>
 ReliefArenaReorderPlan relief_arena_reorder_plan(int64_t n_layers, int64_t n_expert, uint64_t cap_bytes,
                                                  uint64_t decode_floor_bytes,

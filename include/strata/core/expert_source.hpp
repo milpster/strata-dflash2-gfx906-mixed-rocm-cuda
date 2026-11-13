@@ -1524,7 +1524,11 @@ public:
     /// band never converged on decode's set.  STRATA_ARENA_RERANK_PHASE_TAG=1 (default 0: today's
     /// mixed heat) makes reorder_arena_by_heat plan on the decode bank alone: a pair earns
     /// promotion only by DECODE demand, and a resident pair decode never touches is demote-first -
-    /// decode-window demand outranks read-phase heat by construction.
+    /// decode-window demand outranks read-phase heat by construction.  Round 9 adds =2 (arena_rerank_heat):
+    /// the decode bank plus read_weight/8 of the read bank, so the promote follows decode's set while a
+    /// read-hot resident keeps a floor the promote must strictly beat - the round-8 panel showed tag 1
+    /// recovers the warm continuations of the same conversation and pays for it on the first-pass
+    /// long-context gens, whose wide read set tag 1 demotes.
     void note_heat(int64_t layer, int64_t expert) {
         if (heat_.empty() || layer < 0 || expert < 0 || expert >= n_expert_) return;
         const size_t i = (size_t) (layer * n_expert_ + expert);
