@@ -647,10 +647,10 @@ void run_f32_window_wire() {
             img_bytes = saw.img_bytes;
             image = saw.image;
         }
-        char what[96];
-        std::snprintf(what, sizeof what, "%s: the frame type is %s", tag,
+        char what2[96];
+        std::snprintf(what2, sizeof what2, "%s: the frame type is %s", tag,
                       want_type == (int) kBeginF32 ? "kBeginF32" : "kBegin");
-        check(type == want_type, what);
+        check(type == want_type, what2);
         if (want_type == (int) kBeginF32) {
             std::snprintf(what, sizeof what, "%s: the image is the fp32 rows verbatim (%lld B)", tag,
                           (long long) (kWinTok * kH * 4));
