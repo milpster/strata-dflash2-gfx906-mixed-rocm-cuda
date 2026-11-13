@@ -1462,3 +1462,106 @@ RULE going forward: gate windows run ALONE — no subagents, no builds, nothing 
 
 **State:** prod v0227 iq3_s+int8 restored 03:04:30 (smoke: exact "prod-ok"). Round-10
 respawn (analysis-only) next; rebooted-box interleaved A/B is the next GPU task.
+
+## Round 10 — spec-decode collapse on continuation gens (2026-11-13, respawn, analysis-only)
+
+No builds, no GPU, :8009 untouched. Data = the byte-window records of ab9-v0227/v0226/v0225/v0228-clean
+parsed with the new `bench/ab-v0210/rpcprof/r10-verify-curve.py` (derives acc/off, steps, tok/V, prop/V,
+ms/V per gen from the engine's own summary lines). Code read on the v0228 worktree (df8a94877).
+
+### The per-gen facts (the decisive rows)
+
+| arm | mount + re-read | gen position | acc% (off) | tok/V | ms/V | verdict |
+|---|---|---|---|---|---|---|
+| V27IQ3S_C | pair-restore, 5 tok | 1st pass g2 / L g3 | 82.0/83.9, 81.6 | 3.63 | 88–120 | healthy |
+| V26IQ3S    | pair-restore, 535 tok | **1st pass g2** (2nd gen) | **85.2** (411) | 3.43 | 114.5 | **healthy** |
+| V27IQ3S_C  | pair-restore, 535 tok | **L g4** (4th gen, 142k) | **57.8** (282) | 2.22 | 91.8 | **collapse, ms/V flat** |
+| V26IQ3S    | pair-restore, 535 tok | L g3 (4th gen) | 55.2 (87) | 2.26 | 82.4 | collapse |
+| V28IQ3S_T2 | pair-restore, 535 tok | L g2 (4th-gen ctx) | 60.2 (244) → **73.5 next gen** | 2.52 | 96.6 | collapse, gen-local |
+| V28IQ3S_C3 | pair-restore, 535 tok | L g3 | 62.9 (229) | 2.36 | 86.1 | collapse |
+| V27IQ3S_RR | pair-restore, 535 tok | 1st pass g2 | 57.8 (173) | 2.39 | 134.9 | collapse + RR ms/V inflation |
+| V27IQ3S_C  | cold-rewind@131072, 11213 tok reread | L g1 (quiet boot) | **81.5** (459) | 3.63 | 92.1 | healthy (window rebuilt by the reread) |
+| V28IQ3S_C3 | cold-rewind@131072 | L g1 (02:36 storm boot) | 55.8 | 2.19 | 156.0 | bistable-storm artifact, not drafter |
+| all arms   | 215 tok reread @29k | deep gens | 53.7–71.6 (−3..−23 pts) | — | — | intermediate dip |
+| all arms   | tg1024 (2k ctx) | any | 62–73 | 2.5–2.8 | — | **no dip** |
+
+Pattern: dip = pair-restore mount × tail re-read × generation depth, scaling with ctx
+(142k: −15..−24 pts; 29k: −3..−23; 2k: 0). Healthy at the 2nd gen on the SAME mount+re-read,
+collapsed at the 4th; the next gen is healthy again (V28T2 60.2→73.5). Not iq3_s-specific, not
+knob-specific (tag-2 arm collapses too), not arena-related (RR only inflates ms/V).
+
+### Q1 — why proposals/verify 3.22→2.10: the confidence gate, not a budget
+
+`--spec-min-p 0.5` is set and df_auto is OFF (block fixed 5; the auto policy only engages with
+spec-min-p ≤ 0 and no block: generate.cpp:21395). The verify window is T = 1 + the count of leading
+drafts whose top-1 probability ≥ 0.5 — `choose_window()` `include/strata/spec/window_rule.hpp:56-69`,
+dprob from the dflash2 selector (`src/core/dflash_runtime.cpp:1505-1516`, probs out 1529-1532). So
+proposals/verify 2.10 = the drafter's OWN probabilities fell under 0.5 after the 2nd draft on average:
+the gate is a symptom of draft degradation, not an adaptive step-down; no per-token cap exists.
+
+### Q4 — the exact cache-hit re-read path (v0228 tree)
+
+Mount (continuation gens): `generate.cpp:19706` ring check → pair branch `19708-19725` →
+`ring_pair_restore()` `13732-13770` (sidecar ring image = FULL ring rows + exact counters via
+`restore_snapshot()` `dflash_runtime.cpp:899-915`); cold branch `19729-19745` →
+`rewind_cold()` `dflash_runtime.cpp:922-940` (counters=resume, window rows below are the PREVIOUS
+turn — the documented stale-row refill). Disk-park restore (L g1): from_live path `19617-19653`
+(the ring ships inside the v2 file, the pair block is skipped). Re-read rows append through the
+prompt-path tap callback `11835-11846` → `add_context` `dflash_runtime.cpp:792-860`
+(gap guard 811-814, note_append 842, true rope positions). Decode rounds append via
+`add_context_f32` `22728-22732`.
+
+Ring math (`include/strata/core/dflash_ring.hpp:46-52`, window 2048, ring≈2304): after
+pair-restore@142280 + 535 re-read, the first propose's window [140769, 142816) is fully covered =
+restored rows [140769..142280) + fresh appends [142281..142816). **The drafter's KV is provably
+intact on this path — no truncation, no proposal misalignment over cache-hit tokens.** The
+cold-rewind staleness self-heals: its 11k-token reread rebuilds the 2048-row window before decode,
+which is why quiet boots run it at 81.5. Tap fidelity is also exonerated: the 142k bulk prefills
+append the SAME bf16 prompt plane for 11-142k rows and run 81.5-82.0 acceptance.
+
+### Q2/Q3 — attribution as far as aggregates allow
+
+With gate, KV state, cold-rewind staleness, and tap fidelity exonerated, the collapse is the
+drafter's **conditioning** going stale against the target at 142k as generation depth grows: the
+target's greedy top-1 deep in a 142k conversation conditions on history far beyond the drafter's
+2048-row SWA (the trained geometry); the window is intact but structurally blind, and depth
+amplifies the mismatch (2nd gen healthy, 4th collapsed; 29k mild; 2k none). This is the leading
+hypothesis, NOT proven: per-gen aggregates cannot see within-gen curves (STRATA_SPEC_TRACE
+`generate.cpp:24441-24448` is CLI-only; the serve loop has no per-round trace). Blend arithmetic
+for C-arm L g4 (57.8 avg): full recovery fits a ~50-verify cold start (≈37 % of steps); flat
+depression fits equally. The curve decides — next round.
+
+### Design for the GPU round (nothing built this round)
+
+A. **Serve-side curve instrumentation** (~10 lines, host-buildable): reuse the `STRATA_SPEC_TRACE`
+env — open the file per request at the serve request start (`18815-18850` region) and append
+`round T accepted offer ms pos` in the round-end block (`22743-22758`, after `++df_windows[T-1]`).
+Curves = first 50 verifies vs the rest; decides recovery vs flat.
+
+B. **L-leg ablations, one boot each, quiet box** (panel fixture `ab9_*`, killerL leg):
+1. instrumented baseline (repeat of tonight's numbers);
+2. `STRATA_CKPT_REREAD=1` (exists, `generate.cpp:19726`): full reread rebuilds the draft context,
+   NO pair restore. Healthy → the restore+tail combo is the trigger; collapses → depth/content
+   conditioning confirmed;
+3. `--spec-min-p 0.0`: fixed 6-row windows → raw acceptance per offer + full-window ms/V.
+   Arithmetic says the gate is ~break-even at 142k (q≈0.43: 2.55 tok/105 ms vs 2.22 tok/91.8 ms);
+   measure;
+4. **new knob `STRATA_DF2_WINDOW`** (~6 lines): geometry override of the readable SWA window at
+   upload (`dflash_runtime.cpp:446-475` — window_, ring via the df_ring_mult path 461-472, scratch
+   sizing 557-558/609) and the kernel arg site (`1356-1361`). Sweep 4096/8192: tests the
+   beyond-2048-blindness hypothesis directly. VRAM cost is small (ring pools are the only growth:
+   ~47 MiB → ~172 MiB for mult 4 at n_head_kv=8). CPU test: `tests/core/dflash_ring_test.cpp`
+   mult + window cases;
+5. fixture control, no engine code: L-leg variant whose 535-tail = the prompt's own last 535
+   tokens (not a generated tail) — isolates generated-tail content from re-read mechanics.
+6. secondary: `--kv f16` boot on L-leg isolates int8 requant of the 535 re-read rows.
+
+C. Decision matrix: curves cold→recover → first-N-tokens target-only priming on continuation gens
+(cheap); curves flat + CKPT_REREAD healthy → restore-path conditioning, bisect with an f32-tail-taps
+patch (prompt plane `11843` vs verify plane); flat + CKPT_REREAD collapses → conditioning beyond
+2048: STRATA_DF2_WINDOW sweep is the fix candidate + spec-min-p retune. Prod today: no change is
+warranted by this round; the drafter dip is a decode-rate issue on long-ctx continuations only.
+
+**State:** no engine changes. New file: `bench/ab-v0210/rpcprof/r10-verify-curve.py` (parser,
+committed with this section). Prod untouched. Next GPU tasks in order: rebooted-box interleaved
+v0227/v0228 A/B (round 9b), then B.2 (CKPT_REREAD) + curve trace, then the DF2_WINDOW patch.
