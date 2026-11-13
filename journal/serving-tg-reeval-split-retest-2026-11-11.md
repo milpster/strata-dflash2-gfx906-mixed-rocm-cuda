@@ -2497,3 +2497,26 @@ cross PCIe/other-GPU per step; 3080 sits at 229–475 MiB free.
 
 Constraint discovered: stop-all.sh kills the PROD supervisor too (prod-swift15-f16kv-mixed), and
 subagent model inference rides prod :8009 — so stop-all/boot only between subagent turns.
+
+## Round 18b — analysis + code lanes, R3A, fill-mib discovery (2026-11-13 ~19:00)
+
+### Analysis lanes (all committed to out/ab9-window-20261113/analysis/)
+- **C forensics (tg-pp-forensics.md)**: hot window time is ctx-independent (77-94 ms at 142k = same as <2k); slow killer gens are STALLS (W5 ran byte-equal counters at 119 ms/window = 30.5 tok/s vs others 137-402). Hit rate/rows/helper-reqs flat while ms/window varies 4.5x (R2<=0.35). Sensitivity: 1 hit pt = +1-3 tok/s; 0.1 ms/slot = 0.2-0.3 tok/s. Roofline 40-48 tok/s; drafter fills only 2.58 of spec-5 (+1 drafted/window = ~+9 tok/s). PP: 9.4x re-read confirmed (366-390 GiB for ~40 unique, 197.5 GiB lending-pool storm); depth-64 arms read at 1.41-1.43 GiB/s vs 0.96-0.98 default — v0232b ships the slow default, prod must set STRATA_SWAPIN_DEPTH=64. Read-once realistic PP 600-750.
+- **G helper audit**: window tier = one kBegin per layer per window, one outstanding/channel, gpu_mtx serial, full 0.66 MB scratch memset + reply alloc/zero-fill + lock-held sendmsg per frame; no decode batching (structurally impossible cross-layer), no priority, -patient = reply patience only. fill-mib 6796 binds (4600 slots); helper drops non-resident rows to CPU pool (12997 pairs / 26 GiB). Q8K negative, HELPER_STREAMS 0.995, CLAIM_BATCH inert. STRATA_HELPER_Q8_IMAGE=1 = -42% lock span (untested arm).
+- **E design (tg-design.md)**: offload rows == helper RPCs (--pcie-frac 0); ms/tok = 9.9 + 0.29*rows/tok; rows/tok 85 -> 50 lands ~41 tok/s. C1 Foresight shadow (+27-42%): fs->take shadowed by helper_holds check, proxy_begin claim-blind, filler needs pinned blob — 3 small fixes. C3: exec_/exec_nr_ graph families BOTH instantiated at boot on gfx906, stale one never freed — teardown funds Foresight + de-risks #2065. C5 CORRECTION: ROUTE_TAIL_SKIP banner claims ON but the remote_count==0 guard makes it inert on helper rigs (my banner-only check was wrong). C2 (decode swap depth) rejected for TG. C4 claim stripe = follow-up.
+- **A census**: STRATA_SWAPIN_DEPTH default is 8 (not 16); its #1 (tail-skip inactive) was WRONG for this rig per banner, then corrected by E (inert via remote guard — C5 fixes). Engine --expert-helper-reserve-mib ignored by helper (known).
+
+### Code lanes (all code-only, no builds — box benchmarking)
+| lane | branch/worktree | commits |
+|---|---|---|
+| D read-once design A | read-once-prefill @ Strata-wt-helper-ipc | a2cddd32b9 + c89d626480 (STRATA_READONCE_MIB, default off, RAM-guarded, request-scoped LRU, host test) |
+| I helper window diet | helper-window-diet @ Strata-wt-helper-diet | 51b3899a11 + a2c30a5e55 + d596de441c (claim-sized memset, grow-only reply, lock-before-write) |
+| C5/C3/C1/C4 | 4 fresh worktrees off v0232b-hotfix | running |
+
+D died once on provider quota (reset 2026-11-15; operator restored early) — resumed same session, landed clean. Subagents confirmed NOT riding local :8009 (no listener; survived stop-all empirically).
+
+### R3A_L320 (v0232b + DEPTH64 + reserve 320) + the fill-mib discovery
+killer 466.7 tok/s / 375.3 s; killerL 121.0; longtg 93.1; tg1024 42.6; TG gens 20-26 — flat-to-worse vs V2 (534.5). nvidia0 7170 vs R2's 7144 MiB = only +26 MiB: **lowering reserve bought nothing because fill-mib 6796 is the binding cap** (budget = free - reserve stays > 6796 at both 512 and 320). Plain reserve ladder cut (R3C pointless); the real residency arm = reserve 320 + FILL_MIB 7300 (~+400 slots), #2065 headroom is the watched risk. Lean TG panel (panel-tg.sh, f425d55427: warm + tg16k/tg64k/tg180k token-scaled mt 512, tg180k = T1's exact 995000-byte prompt = the 180k infill) ran on the R3A boot; standard panel.sh retired after R3A (per operator: lean panel's fresh-prefill passes carry the PP numbers).
+
+### Next
+Fill-raise arm -> drafter-depth arm (STRATA_SPEC_MIN_P=0.4 via 452e5257ce passthrough) -> Q8_IMAGE arm -> build window for D+I+C5+C3+C1+C4 when ladder ends -> panel-tg on winners -> prod restore proposal.
