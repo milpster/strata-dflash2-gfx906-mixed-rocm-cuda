@@ -119,8 +119,9 @@ inline size_t spread_victim(const int64_t* lens, const uint64_t* stamps, size_t 
     return eviction_victim(stamps, n, cap, tail, pinned);
 }
 
-// ---- round 13: STRATA_GEN_ANCHOR and STRATA_PARK_DEBOUNCE_MS.  Both are default-OFF env knobs; an
-// absent or unusable value keeps the serve path bit-for-bit as before.  The decisions are pure and
+// ---- round 13: STRATA_GEN_ANCHOR and STRATA_PARK_DEBOUNCE_MS (round 15 adds the anchor's
+// STRATA_GEN_ANCHOR_MIN_TOKENS context gate).  Both are default-OFF env knobs; an absent or
+// unusable value keeps the serve path bit-for-bit as before.  The decisions are pure and
 // deterministic here so tests/core/conv_cache_knobs_test.cpp can walk them without a device.
 
 /// STRATA_GEN_ANCHOR=1 (any nonzero integer): capture one checkpoint at T, the conversation's full
@@ -130,15 +131,29 @@ inline size_t spread_victim(const int64_t* lens, const uint64_t* stamps, size_t 
 /// With the anchor the park publishes anchor=T and the next continuation's tail re-read is 0.
 inline bool gen_anchor_on(const char* env) { return env != nullptr && std::atoi(env) != 0; }
 
+/// STRATA_GEN_ANCHOR_MIN_TOKENS: the gen-end anchor's context gate (round 15).  The anchor wins
+/// long-ctx warm TG (81 -> 95 tok/s at 142-160k) but collapses small-ctx warm TG (80-111 -> 29-44
+/// at 2k), so it is only taken once the conversation is long enough for the win side to exist.
+/// Absent, empty, unparsable or <= 0 = the default 32768 (0 is not a gate - it would re-collapse
+/// the small-context arm); anything else clamped to [1024, 1048576].
+inline int64_t gen_anchor_min_tokens(const char* env) {
+    if (env == nullptr) return 32768;
+    const long v = std::atol(env);
+    if (v <= 0) return 32768;
+    if (v < 1024) return 1024;
+    return v > 1048576 ? (int64_t) 1048576 : (int64_t) v;
+}
+
 /// Whether the end-of-generation anchor capture runs at this boundary.  Each term is the serve
 /// loop's own existing condition: a cancelled request is not a verified boundary, `live_ok` says the
 /// session IS this conversation, checkpointing needs the prompt cache, the anchor exists so a PARK
 /// can publish it (the tier off: nothing to publish, no pair sidecar to write), T must be a real
-/// position, and a checkpoint already at T IS the anchor (nothing to add - the capture would only
-/// churn the chain).
+/// position, a checkpoint already at T IS the anchor (nothing to add - the capture would only
+/// churn the chain), and T must be at or past the context gate `min_tokens` (gen_anchor_min_tokens;
+/// pass 0 for the ungated decision the gate must not change).
 inline bool gen_anchor_should_capture(bool knob_on, bool cancelled, bool live_ok, int64_t prompt_cache, bool disk_on,
-                                      int64_t T, bool ckpt_at_T) {
-    return knob_on && !cancelled && live_ok && prompt_cache > 0 && disk_on && T > 0 && !ckpt_at_T;
+                                      int64_t T, bool ckpt_at_T, int64_t min_tokens) {
+    return knob_on && !cancelled && live_ok && prompt_cache > 0 && disk_on && T > 0 && !ckpt_at_T && T >= min_tokens;
 }
 
 /// The tail an anchor at T saves the next continuation from re-reading: the tokens between the

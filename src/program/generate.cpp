@@ -23041,6 +23041,20 @@ int main(int argc, char** argv) {
             // the least recently used item inside the same capture, and ckpt_ram_room gates the copy with the
             // prompt path's own rule - a refused anchor is skipped, the finished request never stalls.
             static const bool gen_anchor = strata::program::conv_cache::gen_anchor_on(std::getenv("STRATA_GEN_ANCHOR"));
+            // round 15, the context gate: the anchor's win is long-ctx only (W3: 81 -> 95 tok/s warm
+            // at 142-160k) and it collapsed small-ctx warm TG (W3/W5: 80-111 -> 29-44 at 2k), so
+            // should_capture takes it only at or past this many verified tokens.  Default 32768;
+            // the knob off is unchanged whatever the gate says.
+            static const int64_t gen_anchor_min =
+                strata::program::conv_cache::gen_anchor_min_tokens(std::getenv("STRATA_GEN_ANCHOR_MIN_TOKENS"));
+            static const bool gen_anchor_gated = [&] {
+                if (gen_anchor)
+                    std::fprintf(stderr, "strata serve: STRATA_GEN_ANCHOR=1: gen-end anchors from %lld tokens up "
+                                         "(STRATA_GEN_ANCHOR_MIN_TOKENS; below it the small-context warm-TG cost wins)\n",
+                                 (long long) gen_anchor_min);
+                return true;
+            }();
+            (void) gen_anchor_gated;
             const int64_t gen_T = (int64_t) live.size();
             bool gen_ckpt_at_T = false;
             int64_t gen_deepest = 0;
@@ -23049,7 +23063,7 @@ int main(int argc, char** argv) {
                 gen_deepest = std::max<int64_t>(gen_deepest, (int64_t) c.ids.size());
             }
             if (strata::program::conv_cache::gen_anchor_should_capture(gen_anchor, cancelled, live_ok, o.prompt_cache,
-                                                                       disk_on(), gen_T, gen_ckpt_at_T)) {
+                                                                       disk_on(), gen_T, gen_ckpt_at_T, gen_anchor_min)) {
                 uint64_t gen_bytes = ckpt_state_bytes(ss, gen_T);
                 for (const auto& st : stages) gen_bytes += ckpt_state_bytes(st->ss, gen_T);
                 if (!ckpt_ram_room(gen_bytes, true, gen_T)) {
