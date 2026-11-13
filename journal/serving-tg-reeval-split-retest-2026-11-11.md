@@ -1698,3 +1698,172 @@ the lane fails to REPORT, not always to work.
 v0229 re-pinned from cd4c26e9e: hip strata e33b3e7d… (supersedes the stale 14b97a6c,
 which was built pre-fix and carries the bug — do not boot 14b97a6c with DF2_WINDOW set);
 cuda side unchanged (byte-exact v0228 copies). Ring tests unaffected (host math).
+
+## Round 12 — the B1 flip verdict + ranked fix designs (2026-11-13, fixer, analysis-only)
+
+No GPU, no builds, no :8009, no engine boots. Data: the byte-window records of
+`ab9-decisive-20261113` (D01_V27 = v0227 knobs-off, D02_V28T2 = v0228+RERANK_MAX=6000+
+PHASE_TAG=2, boots 10:50/11:03), `ab9-v0228-clean` (C3/T2, 02:36/02:49) and
+`ab9-v0227-iq3s-20261112` (C/RR, 23:54/00:10) via `r10-verify-curve.py`, plus boot logs
+(`experts loaded … GiB/s` is in every `trial-spill40-*.log` — a free per-boot file-path
+regime probe nobody was reading). Code read on helper-ipc-diet cd4c26e9e.
+
+### A1 — the arm × leg × gen table (t/s · acc% · tok/V · ms/V · read ms/tok)
+
+Decisive gens only (full dump: `r10-verify-curve.py ab9-decisive-20261113 ab9-v0228-clean
+ab9-v0227-iq3s-20261112`); "cold" = the 5-token pure-mount gen, "tail" = 535/215-token
+generated-tail re-read gen.
+
+| window/arm | killer144k g1 (142k storm) | killerL g1 (cold-rewind 11k) | killerL cold (5 tok) | killerL tail (535) | longtg g1 (12.7k reread) | longtg cold (5 tok) | longtg tail (215) | tg1024 g1/g2 |
+|---|---|---|---|---|---|---|---|---|
+| 23:5x V27_C | 30.3 · 82.0 · 3.63 · 119.6 · 1.8 | 39.5 · 81.5 · 92.1 | 41.1 · 81.6 · 3.63 · 88.2 | 25.0 · 65.2 | 33.2 · 70.4 · 86.9 | 33.1 · 70.1 · 2.69 · 81.4 | 21.4 · 64.5 · 124.9 | 30.7 · 66.5 / 32.6 · 62.3 |
+| 23:5x V27_RR | 22.5 · 85.7 · 161.4 · 1.8 | 22.3 · 69.9 · 127.5 | 35.1 · 81.9 · 104.9 | 26.1 · 63.6 | 26.7 · 59.6 · 93.9 | 34.5 · 79.5 · 95.9 | 29.5 · 68.7 · 97.7 | 28.4 · 69.4 / 32.9 · 64.3 |
+| 02:5x V28_C3 | 16.4 · 65.3 · 162.7 · 2.0 | 14.0 · 55.8 · 156.0 | 19.7 · 85.9 · 189.5 | 27.4 · 62.9 · 86.1 | 20.6 · 66.7 · 128.2 | 35.2 · 68.4 · 75.4 | 30.2 · 65.4 · 84.9 | 32.7 · 66.8 / 35.4 · 67.4 |
+| 02:5x V28_T2 | 25.0 · 73.4 · 118.3 · 2.0 | 28.1 · 75.5 · 113.9 | 31.9 · 73.5 · 92.8 | 26.0 · 60.2 · 96.6 | 32.6 · 80.6 · 103.1 | **42.8** · 79.4 · 76.0 | 29.8 · 71.6 · 92.6 | 29.0 · 68.1 / 32.8 · 69.5 |
+| 11:2x D01_V27 | 18.3 · 67.4 · 152.2 · 2.3 | 29.1 · 65.1 · 93.8 | 26.9 · 81.6 · 134.7 | 17.4 · 55.9 · 120.1 | 35.8 · 80.2 · 92.6 | **40.7** · 81.8 · 82.8 | 30.7 · 61.8 · 67.6 | 32.6 · 77.6 / 32.0 · 65.5 |
+| 11:2x D02_T2 | 11.8 · 62.0 · 220.1 · 2.0 | 21.6 · 65.7 · 128.9 | 25.0 · 59.7 · 102.6 | (no tail gen) | 20.6 · 86.4 · 174.2 | **18.9** · 80.5 · 167.3 | 20.6 · 73.6 · 124.5 | 30.3 · 89.4 / 25.9 · 69.7 · 103.8 |
+
+### A2 — the flip is decode-rate (ms/verify), full stop
+
+The two quoted flips decompose cleanly:
+- longtg cold 42.8 (T2@02:5x) → 18.9 (D02@11:2x) vs D01's 40.7: acc FLAT (79.4 / 80.5 /
+  81.8), tok/V flat (3.25/3.16/3.37), read ms/tok flat (38.0/39.6/39.2), expert rows/V
+  flat (244/247), decode hit% flat (98.2/97.5), helper timeouts 0 — **ms/verify 76.0 →
+  167.3 vs 82.8** is 100%+ of the loss.
+- tg1024 32.6 → 25.9 vs D01 32.0: acc 65.5 → 69.7 (tag2 BETTER), ms/V 80.3 → 103.8.
+- Same for killer144k g1 (ms/V 220.1, the worst ever recorded) — D01's own 152.2 shows
+  the morning inflation was already there before the knob arm.
+- Spec-decode (accepted/offers) did NOT flip: tag2's cold-gen acceptance benefit
+  reproduced identically in both windows (longtg g1 86.4 T2 AND D02 vs 66.7 C3 / 80.2
+  D01), and the 535/215-tail depth collapse (55–63%) sits in every arm of every window.
+
+### A3 — swap-in: volume and placement constant; the ms/slot regime splits by boot
+
+Per-leg swap-in totals (byte-window attribution: g1-read storm vs boundaries):
+- storms: killer144k ≈ 197k swaps, killerL/longtg ≈ 10.8–11.2k, tg1024 ≈ 1.1k — flat
+  across ALL 7 boots. Boundary swap-ins: 35–1800 ms per leg, always at mount time
+  (between gens), never inside decode windows — placement unchanged in both regimes.
+  The round-9b "blocking bistability with flat volume" is NOT swap-ins landing in decode.
+- **ms/slot is bimodal by boot**: 1.21–1.32 (V27_C, V27_RR, D01) vs 2.02–2.23 (V28 C-lost,
+  C3, T2, D02). Boundary slots are always ~1.1 (page-cache-hot); the storm slots halve.
+- The regime is set at BOOT, before any leg or knob: expert-load rate D01 1.60 GiB/s vs
+  D02 1.17 GiB/s (slowest of all 70+ boots on record); two aborted boots right after the
+  panel read 1.73 and 2.19 GiB/s — the file path swings per boot, it does not decay.
+- Box drift over the morning is real and monotone: swap-in-use 7.8 GiB (D01 warm, 11:06)
+  → 10.4–11.3 (D01 legs) → 9.6 (D02 warm, 11:20) → **13.2 GiB peak during D02's
+  killer144k (11:32)**; min avail 14.5 → 11.5 GiB. D02's legs ran while the box was
+  actively swapping the game; D01's did not.
+
+### A4 — verdict + the one-boot-pair discriminator
+
+**Verdict: B1 was morning box-regime drift, not tag-2.** The knob's mechanisms (heat
+planning) act on acceptance/placement — both reproduced identically at 02:5x and 11:2x —
+and it has no path to doubling ms/verify at flat acceptance, flat expert traffic and flat
+helper traffic. What flipped is the box's decode service time between D01's boot
+(10:50, pre-thrash, load 1.60 GiB/s, storm slots 1.2 ms) and D02's boot (11:03,
+worst-ever load 1.17 GiB/s, storm slots 2.2 ms, +3 GiB less avail, game swap-storm
+peaking mid-panel). Two host-side candidates fit the signature (decode 2× at flat
+counts, nothing logged): (a) decode-time expert row fetches turning disk-backed /
+PCIe-contended, (b) KV-spill40 host pages faulting. The panels never sampled vmstat or
+pgmajfault — that is the missing observable, not more engine lines.
+
+One formal confound remains: every v0227 boot read storm slots fast and every v0228 boot
+slow (7/7). Code-wise v0228−v0227 is arena-only and default-off, but nothing in the logs
+can break the binary-vs-box correlation. Cheap kill (see below).
+
+**Discriminator — ONE boot pair, ~40 min, game running (do it in the game regime, that
+is the regime that flips):**
+1. Boot A = v0228 default; immediately Boot B = v0228 + RERANK_MAX=6000 + PHASE_TAG=2
+   (coin-flip the order; a tolerated 3rd boot of v0227-default settles the slot confound).
+2. Per leg run `vmstat 1 > vmstat-<arm>-<leg>.log &` and record the boot's
+   `experts loaded … GiB/s`. Legs: warm/killer144k/killer144kL/longtg/tg1024, absolute
+   elog paths (round-9b lesson).
+3. Decision on longtg cold + tg1024 g2 + killer144k g1: ms/V splits by KNOB (>25% both
+   directions) → tag2 regime-dependent, keep it off prod; ms/V tracks boot-load GiB/s or
+   vmstat si/so+majflt → box regime, tag2 stands on its 02:5x numbers. acc% must stay
+   flat across the pair (it has in all three windows); if acc flips instead, escalate to
+   the round-11b STRATA_SPEC_TRACE recipe. Optionally add `STRATA_SPEC_TRACE` to both
+   boots — free, and it settles the round-10 curve question in the same pair.
+
+## Round 12 — Mission B: ranked fix designs (code-read on cd4c26e9e, nothing built)
+
+### #1 (top) — end-of-generation anchor+pair checkpoint: stop re-reading the tail you just decoded
+
+Mechanism 1 measured: every continuation gen re-reads the previous gen's tail at
+9.6–16.6 ms/tok (5.1–5.3 s at 142k, 2.5–3.6 s at 29k) vs 1.8–4.3 bulk. Path: the tail is
+a fresh prompt part > short_read (default 64, `generate.cpp:1103`) → batched
+`read_part` (`generate.cpp:20384`, single chunk — `plan.single` 20412), one `sp.run`
+(20500) paying the documented fixed ~300 ms + ~180 ms slot lend/refill
+(`generate.cpp:19890-19896`), plus per-token attention over the FULL mounted 142k KV
+(bulk starts from an empty prefix — the asymmetry is inherent). But the KV for those
+535 tokens existed in the slot 30 s earlier: **checkpoints only anchor prompt-path
+positions** (cadence `--prompt-cache-every` 16384 at 15443; boundary kinds turn/root/
+message/pin at 21285-21298; near-tail `--prompt-cache-tail` 15446 covers the prompt's
+own tail, not generated tokens) — so the deepest paired anchor is 142280 and the
+generated tail is re-forwarded every request.
+Fix: capture one checkpoint (target KV + drafter pair sidecar — the pair capture
+machinery is `note_sidecar` 13724 / `meta.anchor`,`meta.pair_prefix` 14080-14086,
+`tail_draft` 14087-14094) at end-of-generation idle, before the park. The park then
+publishes anchor=T with a pair → the next resume reuses T, tail re-read = 0.
+Expected: −5 s/boundary on killerL walls, −2.5-3.6 s on longtg, and it removes round-10's
+continuation-collapse trigger (pair-restore × tail-re-read × depth, the 81.6→57.8 acc
+dip) — if the trigger is what round-10 thinks, warm killerL recovers toward ~35-40 t/s,
+which is worth more than the wall seconds. Cost: one checkpoint capture per request end
+(the state is live in-slot; same cost as the 6 boundary captures a leg already pays);
+park bytes +~80 MiB. RAM-room gate already exists (`ckpt_ram_room` 15452).
+
+### #2 — idle-park cost (mechanism 4, 4.8–6.8 s per boundary, 17–20% of killerL wall)
+
+`disk_park` (`generate.cpp:14050-14149`) streams the WHOLE conversation through
+`session_file_write_v2` (14125) — 142k tokens ≈ 2770 MiB — per idle boundary; the
+park-gain gate (14058-14064) only skips when the SAME conversation advanced < N, so
+alternating conversations (the panel's A/B legs; prod multi-client) always pay full
+streams, and the 512 MiB RAM ceiling ("parked to disk only", 14939) forces the disk tier
+at 142k regardless. Three moves, ranked by cost/benefit:
+- (a, ~10 lines) idle debounce: park only after ≥2-5 s true idle (new
+  `--conversation-cache-park-min-idle-s`, same shape as park-gain). Back-to-back requests
+  never park mid-burst — that is exactly the 17-20% wall case. Long-idle conversations
+  still park; nothing else changes.
+- (b) delta park: the v2 manifest's regions for the unchanged prefix reference the
+  superseded generation's file instead of re-streaming bytes (retire_superseded at 14150
+  already tracks the lineage). 2770 MiB → tens of MiB, 6 s → <0.5 s. Writer+resume change,
+  needs its own round.
+- (c) overlap: park on a detached thread (COW the checkpoint split) or fold into the next
+  read's storm window — same disk either way. Note `STRATA_REFILL_OVERLAP=1` (21300) is
+  the existing opt-in for the analogous refill overlap; measure it on the L-legs first.
+
+### #3 — PP swing 546→490→436 and the storm bistability: two additive host terms
+
+Decomposed from the records: PP 546.8/544.4 (quiet v0227 boots) vs 489.1/496.2 (slow-slot
+v0228 boots) vs 435.8 (D01, game era). Term 1: storm slot cost — 197k swaps at 1.2-1.3
+ms/slot (quiet) vs 2.0-2.2 (drifted boots) stretches the storm against the read window;
+term 2: D01's storm cost was IDENTICAL to quiet (257 vs 261 s) yet PP dropped 546→436 —
++70 s of non-storm prefill under game load (host forward-path contention; the same term
+that doubled D02's decode ms/V 20 min later). So the round-9b/10 "storm-blocking
+bistability" and the PP swing are the same two-term host regime; nothing in the engine
+binary explains it, but the 7/7 v0227-fast/v0228-slow slot split stays open until the
+discriminator pair. Fix candidates, data first: (i) capture vmstat/pgmajfault per leg in
+panel.sh (this round's flip would have been attributed at a glance); (ii) boot-time pack
+pre-warm — one sequential 46.8 GiB read at boot (~25-30 s) normalizes the page-cache
+regime so storm ms/slot stops being a per-boot coin flip; (iii) if vmstat shows majfault
+storms on the slow boots, mlock the KV-spill file or give the engine's cgroup
+swappiness=10 — a launcher-level change, no engine code.
+
+### #4 — smaller items the data surfaced
+
+- Warmup arming cost: warm-leg g1 read at 42.9 (T2) / 71.8 (D02) / 161.7 (C3!) ms/tok =
+  tag2's first-boundary rerank pass on empty heat banks. Pre-arm the plan once during the
+  boot fill, or gate the first rerank until a boundary with data. One-off cost, but it
+  contaminates every panel's first leg.
+- tag2's tg1024 tax (−7..−11%, 02:5x) is still unmeasured against READ_WEIGHT 1/2/4
+  (round-9's own sweep design) — fold into any future tag2 boot.
+- 5-token mounts pay ~200 ms fixed (pair-restore + mount) even at 2k ctx — if #1 lands
+  this disappears for same-conversation turns; cross-conversation mounts keep it.
+- D02's decode 167 ms/V with expert rows/V, hit%, helper traffic ALL flat: whatever it is
+  (row-fetch cost vs KV-spill faults), it is invisible to the engine's own counters —
+  the vmstat capture in the discriminator pair is the cheap instrumentation that would
+  have caught it this morning.
+
+**State:** no code changes, no builds, no boots; prod untouched. Parser used as-committed
+(r10-verify-curve.py). Next GPU window: the A4 discriminator pair (optionally with
+STRATA_SPEC_TRACE on, folding round-11b's arms 4-7 decision into the same boots).
