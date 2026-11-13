@@ -113,6 +113,8 @@ struct ForesightSwap {
     void hold(int64_t layer, int32_t expert);
     void unhold(int64_t layer, int32_t expert);
     std::string report() const;
+    /// The staging ring's entry count (boot line of foresight_swap_from_env; 0 = no ring).
+    int ring_entries() const { return ring_n; }
 
 private:
     void request_locked(ExpertSource* src, int64_t layer, int32_t expert, bool predicted);

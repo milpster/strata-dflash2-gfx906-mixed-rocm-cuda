@@ -7853,7 +7853,7 @@ ForesightSwap* foresight_swap_from_env(int64_t layers, int64_t experts, const st
                          "window, admit after %d miss(es), reuse after %d windows%s%s\n",
                  slots_note.c_str(), devices.size(), f->budget, f->admit, f->depth,
                  f->helper_shadow ? ", helper shadow ON (a landed slot serves a helper-held pair)" : "",
-                 f->helper_shadow ? (", " + std::to_string(f->ring_n) + "-entry pinned staging ring").c_str() : "");
+                 f->helper_shadow ? (", " + std::to_string(f->ring_entries()) + "-entry pinned staging ring").c_str() : "");
     return f;
 }
 
