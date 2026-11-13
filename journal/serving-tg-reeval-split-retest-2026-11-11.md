@@ -2142,3 +2142,210 @@ strings on the hip strata: STRATA_SWAPIN_DEPTH x2, STRATA_GEN_ANCHOR_MIN_TOKENS 
 - Helper reserve floor: preflight shows 512 even with --reserve-mib 300/320 (launcher default 300 too) => the CUDA helper clamps reserve to a built-in 512 floor. 3080 occupancy is therefore code-capped, not config-capped.
 
 ROUND-16 BRIEF (operator-approved): (1) helper --reserve-mib honest floor (~64 clamp, launcher default stays 512) + helper rebuild incl -patient alias (new helper sha breaks the 8d37045c lineage by design); (2) fix anchor-sidecar vs deep-read-window contention so gated anchor ships with depth-64; (3) stretch: per-request re-read reduction (380 GiB for ~40 GiB unique). Prod candidate meanwhile: v0231 + STRATA_SWAPIN_DEPTH=64 (operator's call).
+
+## Round 16 — the honest reserve floor + the anchor-contention verdict (host-verified, v0232)
+
+No GPU, no boots, no :8009. Both items on helper-ipc-diet (base 919c42148 = round 15), HIP-built
+nice -j8 in a fresh dir (rpcw-hip-fix16) + CUDA helper rebuilt in its own target (rpcw-cuda-fix16,
+golden conf), pinned v0232.
+
+### Item 1 — the "512 floor" was a DEAD OPTION, not a clamp
+
+The brief assumed the CUDA helper clamps --reserve-mib at a built-in 512 floor. It does not — there
+is no clamp anywhere. The measured "preflight says reserve 512 whatever you launch it with" is
+simpler and worse:
+
+- `helper_main.cpp` parses `--reserve-mib` into `o.reserve_mib` (parse(), the `>= 0` check) and then
+  NEVER READS IT AGAIN. No code between parse and exit uses `o.reserve_mib` — grep-clean.
+- The fill budget's reserve is the global `g_reserve`, initialized to `kReserveDefaultMiB = 512` and
+  OVERWRITTEN at every kHello with the ENGINE's `req.reserve_mib` (old helper_main.cpp:1457) — the
+  engine's `--expert-helper-reserve-mib` (src/program/generate.cpp:785, default 512; the hello send
+  is src/core/expert_helper_socket.cpp:335-346). No config ever sets it (trial-spill40-on.json,
+  server.py's `expert_helper_reserve_mib` hook: both absent).
+- So the launcher's `--reserve-mib ${STRATA_HELPER_RESERVE:-300}` (launch-trial-spill40.sh:65) was
+  decoration: the effective reserve was always the engine's 512 default. Occupancy was code-capped
+  by a dead argument, exactly the round-14 W6 note ("budget = device_free - reserve - buffers caps
+  at ~6796").
+
+The fix (helper source only, as the brief scoped it):
+- NEW pure header `include/strata/core/expert_helper_reserve.hpp`: `clamp_reserve_mib` = clamp
+  64..4096 (kReserveFloorMiB/kReserveCeilMiB), warn-threshold constant 256. Host-compilable, so the
+  decision is testable with no GPU and no nvcc.
+- `helper_main.cpp` main(): right after parse, the option is clamped once with two one-line notes
+  (out-of-range clamp names the original; a final value below 256 warns "little room to survive the
+  card's other users"). `g_reserve = o.reserve_mib` from there on.
+- kHello no longer overwrites it (helper_main.cpp:1463-1468): the helper owns its card, so its own
+  clamped option is authoritative. The wire field stays untouched (HelloReq's layout is pinned by
+  static_assert, expert_helper_protocol.hpp:381) and pre-v0232 helpers keep reading it; the ENGINE
+  keeps sending it unchanged — `--expert-helper-reserve-mib` becomes transport-only for v0232+
+  helpers (documented at the ignore site; no engine-side edit, per the brief's "helper's own target
+  only").
+- The two relisten resets (pre-hello re-listen and --persist re-listen) now reset to the OPTION
+  (o.reserve_mib), not the constant — a persisted helper keeps its operator's reserve across engine
+  incarnations.
+- `usage()` documents the clamp and the authority.
+
+Default preservation (the brief's CRITICAL clause): the launcher's default is raised 300 -> 512 in
+the same change — `launch-trial-spill40.sh:65` (the named launcher) and `launch-trial-iq3s.sh:64`
+(hardcoded 300, same dead-argument situation; left at 300 the new helper would have silently bound
+300). `launch-trial-r7.sh` already defaulted 512. With no explicit STRATA_HELPER_RESERVE the
+effective reserve stays exactly today's 512; with one set, it finally binds (64 testable, warned
+below 256, capped at 4096 so a typo cannot empty the fill).
+
+Helper host test: no arg-parse host test existed (parse() lives in the nvcc-only TU); added
+`tests/core/expert_helper_reserve_test.cpp` (tests/core no-links pattern, CMake block beside
+swapin_depth_test): range constants, in-range pass-through (incl. the measured 300/320/512), the
+0/63->64 and 4097/kMaxMiB->4096 clamps, the exclusive-256 warning predicate, and the measured
+shapes as named checks.
+
+### Item 2 — verified mechanism: the hypothesis is DISPROVEN (evidence below); the anchor costs ~0% of PP at depth 64
+
+The brief's hypothesis: the gen-end anchor's ring-pair sidecar write (assumed direct I/O) contends
+with the swap-in deep window via the same file-path lock. Verified from code and the V2/V3 window
+logs — every leg of that hypothesis fails:
+
+1. NO SHARED LOCK. The sidecar write is NOT the disk tier's DIO path: `session_ring_sidecar_write`
+   (src/core/conversation_file.cpp:2429) is a plain buffered `std::ofstream` + fsync +
+   fadvise(DONTNEED) over the sidecar's own fd. The deep window is `deep_win_mu_` inside
+   `FileExpertSource::read_direct` (src/core/expert_source.cpp:3006-3019) and the arena's file
+   batches serialize on `file_mu_` (expert_source.cpp:6502). Different objects, different files,
+   different tiers — nothing shared.
+2. NO OVERLAP. The engine serves ONE request at a time (the stdin line queue, generate.cpp:16598+
+   next_line; the serve loop admits the next request only after the current one's request-end
+   section). The gen-end anchor (generate.cpp:23065+) runs AFTER decode, and PP's clock —
+   `prompt_ms`, captured at "prompt done" (generate.cpp:21375, r0 at :18994) — is STOPPED before
+   decode even starts. The anchor's I/O cannot be inside PP by construction.
+3. THE V3 PP DROP LIVES ELSEWHERE (measured): the killer legs' server progress lines decompose the
+   walls — V2: 131,072 tokens @227 s -> 142,281 @255 s -> 142,285 @266 s (the last ~4 tokens: 11 s;
+   wall 285.5 = prompt 266.2 + decode 15.0 + park 4.2). V3: 131,072 @227 s -> 142,279 @258 s ->
+   142,283 @305 s (the last ~4 tokens: **47 s**; wall 374.2 = prompt 304.9 + decode ~66 s [1024 tok,
+   V2 generated 265] + tail ~3 s). The PP delta 534.5->466.7 is prompt_ms 266.2->304.9, i.e. a
+   +36 s END-OF-PROMPT boundary stall that exists in BOTH arms (V2 pays 11 s of the same phase) —
+   before the gen anchor of that request has run, and before any anchor at all in that boot (the
+   two warm-ups were 298/348 tokens, below the 32768 gate). The swap-in meter lines are byte-equal
+   between arms (8 x ~16.9 s chunk storms + 99.4/99.5k swaps, 197.4/197.6 GiB, 148.0/148.6 s; plus
+   the same 6143-swap tail) — identical read volume and read time. A same-phase stall that varies
+   4x with identical work is round-14's documented box-tail ("first-request read wall varies 8->48 s
+   on the SAME binary; tracks box state"), and V3 was a single-shot arm after V2B's depth-128 boot
+   (swap-in-use 10.9 vs 9.8 GiB at leg start).
+4. THE ANCHOR'S OWN MEASURED COST: V3's request tail (decode end -> done) is ~3 s of a 374 s wall —
+   anchor (checkpoint + pair capture + sidecar) + the 6.4 s park overlapping the response stream.
+   ~0.8% of wall, 0.0% of prompt_ms. The <= ~2% PP target is met by measurement, not by a fix.
+
+What ACTUALLY couples the conversation-cache tier and the read stream (the honest answer to "say
+what couples them"): (a) the prompt-boundary checkpoints' ring_pair_capture ATTEMPTS run
+mid-prefill at every 16k cadence (generate.cpp checkpoint_at -> ring_pair_capture, :15321 old
+numbering) — but the logs show every one failing the legality check cheaply (the drafter lags one
+chunk: "confirmed end 16384" at checkpoint 32768, in both arms), so no write and no drafter drain
+happens there; (b) the pair RESTORE read at warm-leg request start (<= 64 MiB sidecar, inside
+prompt_ms) shares the NVMe with the re-prefill's swap-in storm — bounded at ~0.03 s of device time
+at the measured 2.1 GiB/s; (c) the real end-of-prompt cost is the boundary phase itself (final
+partial-chunk reads + turn/message/root/pin checkpoint saves + dflash drain + head restore +
+room close), which is where V3's +36 s sat.
+
+Code change shipped for item 2 (small, no semantics change): the anchor's three log lines now carry
+their own wall clock ("... pair captured) in %.1f ms, sidecar N MiB", generate.cpp:23072-23105) so
+the next window attributes PP drift to the anchor DIRECTLY instead of by hypothesis — round 15's
+V3 read "the anchor costs 13% PP" until the progress lines said otherwise. Round-13 semantics
+(anchor content, pair-capture correctness, restore behavior) are byte-for-byte unchanged;
+conv_cache_knobs_test untouched (no knob-parse change, as the brief expected).
+
+Recommendation for the operator: anchor + depth-64 may ship together; treat V3's 466.7 as an
+unreplicated boundary-tail reading (V2B, same no-anchor binary family, spanned 437-534 across
+single boots). If a replicate still shows a gap, grep the new "in %.1f ms" anchor lines first.
+
+### Item 3 (stretch, DESIGN ONLY — not implemented) — read-once/reuse for the 142k killer prefill
+
+Measured base: the killer prefill reads 368-380 GiB from the 78 GiB GGUF for ~40 GiB unique experts
+(~9x re-read): 8 x ~22 GiB chunk sweeps (the per-16k-chunk swap-in lines) + a ~197 GiB
+lending-pool re-read storm (the 99.5k-swap line), because the 13 GiB lending pool cannot hold a
+~22 GiB per-chunk working set. Storage ceiling 2.1 GiB/s (bench-storage-depth.py) => today's read
+floor ~175-185 s; the wall floor is compute/serialization (~200 s at depth 64, PP ~710).
+
+Anchor points: the chunk sweep is the prompt stager's per-chunk job runs (src/prefill/prefill.cpp,
+stager + STRATA_STAGER_BATCH/STRATA_SWAPIN_DEPTH window, include/strata/core/swapin_depth.hpp:50);
+every dropped pair re-reads through FileExpertSource::copy_blobs -> read_direct
+(src/core/expert_source.cpp:3493+); the pool that thrashes is the RAM lending pool's admission
+(ArenaExpertSource, expert_source.cpp:6502 file_mu_ serialization). A layer-major variant already
+exists behind STRATA_PREFILL_LAYER_MAJOR (prefill.cpp:7200+) but does not change WHAT is re-read,
+only the order within a super-chunk.
+
+Design A — request-scoped LRU window over the streamed set (RECOMMENDED first step):
+- A per-request, knob-gated (STRATA_PREFILL_REUSE_MIB, default 0 = off) host-side LRU of blob
+  images keyed by (layer, expert), consulted by copy_blobs BEFORE read_direct (same hook as the
+  existing resident/complement copy at expert_source.cpp:3470-3478 — the window is just a
+  request-scoped `override_` with LRU eviction and a byte budget read from available_memory_bytes()
+  minus a headroom).
+- Why it works at this shape: adjacent 16k chunks share most of their routed set (8 chunks x 22 GiB
+  sweeps over a 40 GiB unique set ~= every chunk re-reads ~19.7 GiB of the previous chunk's
+  experts). A window holding even ONE chunk's set makes the next chunk's sweep mostly hits; with
+  ~10 GiB (what the box actually has free at killer time — min_avail ~12.6 GiB, swap already 10-11
+  GiB in use) an LRU over file-ordered sweeps holds roughly the last half of the previous sweep =>
+  expected read volume ~368 -> ~150-200 GiB, PP ~600-700 at depth 64.
+- RAM BOUND IS THE RISK: this window competes with the page cache and the pools that already push
+  the box into swap. It MUST be admitted stepwise (the pin-guard pattern, expert_source.cpp:3868+)
+  and dropped wholesale at request end (never parked, never pinned). FADV discipline unchanged.
+- Effort: ~2-3 focused days (admission + LRU + copy_blobs hook + meter line "reuse hits/batches" +
+  a fake-source host test in the swapin_depth_test pattern).
+
+Design B — request-scoped pack cache spilled to the disk tier (the ~900 PP ceiling):
+- Write each first-read blob ONCE into a request-scoped ring file (the conversation-cache disk
+  tier's AlignedFile/DIO machinery, conversation_file.cpp:83+), then serve re-reads from it:
+  GGUF random reads collapse to 40 GiB (write) + ~40-80 GiB cache reads, both at or above the
+  2.1 GiB/s ceiling with the deep window's queueing. Expected PP ~850-950 (the round-14 addendum's
+  "beyond ~900 needs re-read cuts" becomes reachable).
+- Costs: a new file lifecycle (create at request start, unlink at end/idle; crash-safe because it
+  is never referenced by published generations), ~2x the write bandwidth, and careful interaction
+  with FADV (the cache's own pages must be DONTNEED'd or DIO'd, not left dirty).
+- Effort: ~5-8 days. Risks: device-level write-vs-read contention with the park path (item 2's
+  original worry applies HERE, for real), the disk tier's 24 GiB budget, and the prefill wall
+  becoming write-bound on slower boxes.
+- Sequencing: land A first (it is reversible, default-off, and its meter lines tell you B's exact
+  hit-rate ceiling); only go B if A's ceiling < 700 PP and the operator still wants >900.
+
+### Build + pin v0232
+
+Fresh configure build-mixed-gpu/rpcw-hip-fix16 (round-13/15 recipe: Release, Unix Makefiles,
+CMAKE_HIP_COMPILER=/opt/rocm-6.1.0/llvm/bin/clang++ — the journal-proven 6.1.0 path — gfx906,
+PREFIX_PATH rocm-gfx906-xnack;6.1.0, STRATA_HIP_GFX906=ON, ENABLE_DFLASH2=ON, HAVE_DFLASH2=OFF,
+BUILD_TESTS=ON, warm ccache), nice -n 10 make -j8, one pass clean (logs fix16-hip-{configure,build}
+.log). Helper: fresh build-mixed-gpu/rpcw-cuda-fix16 from the frozen golden conf
+(tools/mixed_gpu/golden/rpcw-cuda.cmake) + the ROCm pins, `make -j8 strata-expert-helper` ONLY (the
+engine CUDA side not rebuilt), guard PASS (cuobjdump sm_86), -patient alias = plain cp, cmp-identical
+(logs fix16-cuda-{configure,build}.log).
+
+v0232 (/mnt/srcds/Strata/v0232/build-mixed-gpu/ + SHA256SUMS):
+| file | sha256 |
+|---|---|
+| rpcw-hip/strata (fix16 build) | af16964d9f4aa15ea919a43619824ef40f5f8b4b0a7a3c30e2f0a0c19e0d16c8 |
+| rpcw-cuda/strata | 034f60781a1f0fd5edbebe6301f755a616e0fc99b3b6e95f29311f48d5b8cb5f |
+| rpcw-cuda/strata-expert-helper | 6de16b7f6917c73ec7df0c80e60a76e90de9ba46431ab4f0b21d18dee3c7deac |
+| rpcw-cuda/strata-expert-helper-patient | 6de16b7f6917c73ec7df0c80e60a76e90de9ba46431ab4f0b21d18dee3c7deac |
+
+rpcw-cuda/strata = byte-exact copy from v0231 (cmp-verified, sha identical to the v0229/v0230/v0231
+lineage — the engine CUDA side deliberately NOT rebuilt). The helper pair is a NEW sha
+(6de16b7f…), breaking the 8d37045c lineage BY DESIGN (item 1); the two helper files cmp identical to
+each other. Strings: the helper carries the clamp/warn/authority lines ("clamped to %lld", "below
+the recommended", "no longer overrides it"); the hip engine carries the anchor timing format
+("pair %s) in %.1f ms"), STRATA_GEN_ANCHOR x6, STRATA_SWAPIN_DEPTH x2. Both --help exit 0.
+
+### Host tests (v0232)
+
+Subset discipline: v0231's 82-name host list + expert_helper_reserve_test = 83 (log
+logs/v0232-ctest-hip-host.log): **83/83 green (81 passed, 2 skipped: ple_parity, pinned_alias_test —
+the usual device-dependent self-skips), 0 failed.** DISCIPLINE NOTE, recorded honestly: the brief
+expected the device-dependent names in that list to FAIL "no GPU" under the frozen-GPU window; they
+instead FOUND devices and ran (sub-second serial runs, e.g. dequant_s2_parity 0.70 s) — the freeze
+is operator policy (the game owns the cards), not absent hardware, and the clean env (env -i, no
+HSA_OVERRIDE) is exactly the state round 8 proved lets the VIIs enumerate natively. No further GPU
+contact was made after the run (no boots, no serving, no :8009); the host-runnables the gate counts
+(conv_cache_test, both knob tests, swapin_depth_test, expert_helper_reserve_test, the arena/pin/
+expert-helper host tests) are all in the green 81. Next window should pass `-R` with the HOST-ONLY
+names or mask HSA_VISIBLE_DEVICES to keep the freeze literal.
+
+### Round-16 commits
+
+- helper-ipc-diet (worktree 919c42148 + 2): `feat(helper): make --reserve-mib the fill budget's
+  real reserve` (helper_main.cpp + expert_helper_reserve.hpp + expert_helper_reserve_test.cpp +
+  CMake) and `feat(serve): report the generation-end anchor's own wall time` (generate.cpp).
+- main: launcher defaults + this journal section.
