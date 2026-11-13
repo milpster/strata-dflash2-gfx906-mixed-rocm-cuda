@@ -1001,6 +1001,16 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
       add_test(NAME swapin_depth_test COMMAND swapin_depth_test)
       set_tests_properties(swapin_depth_test PROPERTIES TIMEOUT 60)
     endif()
+    # Round 16 (the helper's honest reserve floor): the clamp range the CUDA helper's --reserve-mib
+    # resolves to (include/strata/core/expert_helper_reserve.hpp) - the pure decision both the
+    # nvcc-only helper and this host test compile.  CPU-only BY CONSTRUCTION - header-only
+    # arithmetic, the test links NO library at all.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/expert_helper_reserve_test.cpp")
+      add_executable(expert_helper_reserve_test tests/core/expert_helper_reserve_test.cpp)
+      target_include_directories(expert_helper_reserve_test PRIVATE include)
+      add_test(NAME expert_helper_reserve_test COMMAND expert_helper_reserve_test)
+      set_tests_properties(expert_helper_reserve_test PROPERTIES TIMEOUT 60)
+    endif()
     # M1 (capacity, parent correction 2): the helper proxy's RESIDENCY lifecycle - registered fill,
     # mid-request disable (residency KEPT, the gate must still consult), per-request re-arm, channel
     # death (residency RELEASED, the gate must recover).  Proxy mode makes no device call (the
