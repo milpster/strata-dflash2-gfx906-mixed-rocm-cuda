@@ -7397,7 +7397,7 @@ void ArenaExpertSource::warm(int64_t layer, const int64_t* experts, int64_t n) {
 namespace strata::core {
 
 bool ForesightSwap::init(int slots_per_layer, int64_t layers, int64_t experts, const std::vector<int>& card_of_layer,
-                         const std::vector<int>& devices, std::string& err) {
+                         const std::vector<int>& devices, std::string& err, const std::vector<int>& slots_per_card) {
     slots = slots_per_layer;
     n_layers = layers;
     n_expert = experts;
@@ -7409,6 +7409,10 @@ bool ForesightSwap::init(int slots_per_layer, int64_t layers, int64_t experts, c
     layer_card = card_of_layer;
     layer_dev.resize((size_t) layers);
     card_dev = devices;
+    card_slots = slots_per_card;
+    if (card_slots.size() < devices.size())
+        card_slots.resize(devices.size(), card_slots.empty() ? (int) slots : card_slots.back());
+    else if (card_slots.size() > devices.size()) card_slots.resize(devices.size());
     card_stream.assign(devices.size(), nullptr);
     card_mem.assign(devices.size(), nullptr);
     card_round.assign(devices.size(), ~0ull);
@@ -7417,7 +7421,7 @@ bool ForesightSwap::init(int slots_per_layer, int64_t layers, int64_t experts, c
     for (size_t c = 0; c < devices.size(); ++c) {
         uint64_t bytes = 0;
         for (int64_t l = 0; l < layers; ++l)
-            if (card_of_layer[(size_t) l] == (int) c) bytes += (uint64_t) slots * (uint64_t) lay.blob_bytes(l);
+            if (card_of_layer[(size_t) l] == (int) c) bytes += (uint64_t) card_slots[c] * (uint64_t) lay.blob_bytes(l);
         if (bytes == 0) continue;
         const OnDevice on(devices[c]);
         cudaStream_t s = nullptr;
@@ -7434,7 +7438,7 @@ bool ForesightSwap::init(int slots_per_layer, int64_t layers, int64_t experts, c
             if (card_of_layer[(size_t) l] != (int) c) continue;
             layer_dev[(size_t) l] = devices[c];
             const uint64_t bb = (uint64_t) lay.blob_bytes(l);
-            for (int s2 = 0; s2 < slots; ++s2) {
+            for (int s2 = 0; s2 < card_slots[c]; ++s2) {
                 Slot& sl = slot[(size_t) (l * slots + s2)];
                 sl.dptr = (unsigned long long) ((uint8_t*) card_mem[c] + off);
                 sl.bytes = bb;
@@ -7653,7 +7657,8 @@ bool ForesightSwap::assign_locked(const uint8_t* b, int ring_idx, int64_t layer,
     const uint64_t now = completed.load(std::memory_order_acquire);
     int best = -1;
     uint64_t best_ref = ~0ull;
-    for (int s = 0; s < slots; ++s) {   // an empty slot, else the one used longest ago that no window can still read
+    const int sl_max = card_slots.empty() ? slots : card_slots[(size_t) layer_card[(size_t) layer]];
+    for (int s = 0; s < sl_max; ++s) {   // an empty slot, else the one used longest ago that no window can still read
         Slot& sl = slot[(size_t) (layer * slots + s)];
         if (sl.loading) {   // copied in but never asked for since: landed long ago -> an ordinary candidate
             if (sl.last_ref + (uint64_t) depth > now || !sl.issued.load(std::memory_order_acquire)) continue;
@@ -7720,9 +7725,26 @@ std::string ForesightSwap::report() const {
 
 ForesightSwap* foresight_swap_from_env(int64_t layers, int64_t experts, const std::vector<int>& card_of_layer,
                                        const std::vector<int>& devices) {
+    // STRATA_FS_SLOTS: one number = that many slots on every card, exactly as before; a comma list is
+    // per card, in card order ("3,2" = 3 slots on card0's layers, 2 on card1's - the split rigs' card1
+    // sits on a thin VRAM margin, so it takes fewer; card0 at 2 slots is ~133 MiB, card1 at 2 is ~55 MiB).
     const char* v = std::getenv("STRATA_FS_SLOTS");
-    const int slots = v ? std::atoi(v) : 0;
-    if (slots <= 0) {
+    std::vector<int> slots_per_card;
+    int all_slots = 0;
+    if (v != nullptr) {
+        const std::string spec(v);
+        size_t pos = 0;
+        for (;;) {
+            const size_t comma = spec.find(',', pos);
+            slots_per_card.push_back(std::clamp(std::atoi(spec.substr(pos, comma == std::string::npos
+                                                                          ? std::string::npos
+                                                                          : comma - pos).c_str()), 0, 64));
+            if (comma == std::string::npos) break;
+            pos = comma + 1;
+        }
+        for (const int sc : slots_per_card) all_slots = std::max(all_slots, sc);
+    }
+    if (all_slots <= 0) {
         if (const char* sh = std::getenv("STRATA_FS_HELPER_SHADOW"); sh != nullptr && std::atoi(sh) != 0)
             std::fprintf(stderr, "strata serve: foresight swap: STRATA_FS_HELPER_SHADOW needs STRATA_FS_SLOTS - the "
                                  "swap space stays off\n");
@@ -7742,14 +7764,21 @@ ForesightSwap* foresight_swap_from_env(int64_t layers, int64_t experts, const st
     f->depth = env_int("STRATA_FS_DEPTH", 4, 2);
     f->verify = env_int("STRATA_FS_VERIFY", 0, 0) != 0;
     std::string err;
-    if (!f->init(std::min(slots, 64), layers, experts, card_of_layer, devices, err)) {
+    if (!f->init(all_slots, layers, experts, card_of_layer, devices, err, slots_per_card)) {
         std::fprintf(stderr, "strata serve: foresight swap: %s - swap space off\n", err.c_str());
         delete f;
         return nullptr;
     }
-    std::fprintf(stderr, "strata serve: foresight swap: %d slots per layer on %zu card(s), up to %d copies per card and "
+    std::string slots_note = std::to_string(f->slots) + " slots per layer";
+    if (std::any_of(f->card_slots.begin(), f->card_slots.end(), [&](int sc) { return sc != f->slots; })) {
+        slots_note = "slots per layer per card:";
+        for (size_t c = 0; c < f->card_slots.size(); ++c)
+            slots_note += " card" + std::to_string(c) + ":" + std::to_string(f->card_slots[c]) + ",";
+        slots_note.pop_back();
+    }
+    std::fprintf(stderr, "strata serve: foresight swap: %s on %zu card(s), up to %d copies per card and "
                          "window, admit after %d miss(es), reuse after %d windows%s%s\n",
-                 f->slots, devices.size(), f->budget, f->admit, f->depth,
+                 slots_note.c_str(), devices.size(), f->budget, f->admit, f->depth,
                  f->helper_shadow ? ", helper shadow ON (a landed slot serves a helper-held pair)" : "",
                  f->helper_shadow ? (", " + std::to_string(f->ring_n) + "-entry pinned staging ring").c_str() : "");
     return f;

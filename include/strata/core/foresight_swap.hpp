@@ -70,6 +70,7 @@ struct ForesightSwap {
     std::vector<uint8_t> miss_cnt;           ///< STRATA_FS_ADMIT > 1: recent misses per (layer, expert)
     std::vector<uint64_t> miss_at;
     std::vector<int> layer_card, layer_dev;
+    std::vector<int> card_slots;             ///< allocatable slots per card (STRATA_FS_SLOTS "3,2"); `slots` is the stride
     std::vector<void*> card_stream;          ///< cudaStream_t per card
     std::vector<void*> card_mem;             ///< the slots' allocation per card
     std::vector<int> card_dev;
@@ -87,8 +88,10 @@ struct ForesightSwap {
     static constexpr int32_t kDropped = -2;  ///< Slot::expert: dropped by `hold`, reusable under the same depth rule
 
     /// Allocates the slots on each card and starts the filler.  `card_of_layer[l]` indexes `devices` (CUDA ids).
+    /// `slots_per_card` (empty = `slots_per_layer` on every card) caps each card's own count, so a split
+    /// rig can fund card0's layers while card1 stays on its thin margin; `slots` stays the array stride.
     bool init(int slots_per_layer, int64_t layers, int64_t experts, const std::vector<int>& card_of_layer,
-              const std::vector<int>& devices, std::string& err);
+              const std::vector<int>& devices, std::string& err, const std::vector<int>& slots_per_card = {});
     ~ForesightSwap();
 
     /// The pool, for a routed expert that is not in the cache: true and its device address when a landed slot holds it.
