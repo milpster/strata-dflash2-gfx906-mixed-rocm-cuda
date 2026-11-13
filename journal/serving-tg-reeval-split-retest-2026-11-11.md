@@ -1683,3 +1683,18 @@ the L-leg gens are the deciding rows):
 Then: `r10-verify-curve.py --trace /mnt/srcds/Strata/logs/spec-trace-*.txt` → buckets decide
 (cold→recover = first-N priming; flat+reread-healthy = restore-path conditioning, f32-taps bisect;
 flat+reread-collapses = DF2_WINDOW is the fix candidate + spec-min-p retune).
+
+## Round 11 addendum — the "dead" fixer delivered; v0229 RE-PINNED (2026-11-13 06:05)
+
+Correction to the round-11 record: fixer attempt #1 (ses_e2d22f3c…) did NOT no-op — it
+worked asynchronously and committed cd4c26e9e at 05:55, after the parent's 50e16d04d:
+the launch grid for dflash2_attention must follow the widened window
+(attention_capacity was still dg.sliding_window + K, while the kernel's span math
+targets ring_state_.window — a DF2_WINDOW>2048 knob would silently attend the wrong
+rows; default-off stays bit-for-bit). A genuine correctness bug in the parent's knob,
+caught by reading the kernel's span arithmetic. The "silent no-op" conclusion was wrong;
+the lane fails to REPORT, not always to work.
+
+v0229 re-pinned from cd4c26e9e: hip strata e33b3e7d… (supersedes the stale 14b97a6c,
+which was built pre-fix and carries the bug — do not boot 14b97a6c with DF2_WINDOW set);
+cuda side unchanged (byte-exact v0228 copies). Ring tests unaffected (host math).
