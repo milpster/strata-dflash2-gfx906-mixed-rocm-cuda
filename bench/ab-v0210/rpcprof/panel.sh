@@ -13,6 +13,9 @@ run() { # leg kind ctx mt
     --out "$OUT/$ARM-$1.json" --elog "$ELOG" --hlog "$HLOG" --url "$URL"
 }
 
+# every leg marker also lands in a stable file watch-panel.sh can tail (operator view)
+exec > >(tee -a "$OUT/panel-progress.log") 2>&1
+
 run warm                 warm    512     64
 run killer144k-tg1024    prefill 786800  1024
 run killer144kL-tg1024   tg      786801  1024
