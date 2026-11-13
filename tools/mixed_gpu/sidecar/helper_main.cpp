@@ -30,6 +30,7 @@
 // launch, read the rows back, write the reply) and the lock is never held across a channel's idle
 // read.  WITH --socket2 ABSENT: one socket, one accept, one thread, the loop exactly as it was.
 #include "strata/core/expert_helper_protocol.hpp"
+#include "strata/core/expert_helper_reserve.hpp"   // v0232: --reserve-mib's honest clamp (this file owns the fill budget's reserve)
 #include "strata/core/expert_cache.hpp"
 #include "strata/core/finite_rows.hpp"   // helper-ipc-diet: the AVX2 twin of the row finiteness scan
 // M7 (the drafter lane, docs/work/MIXED_BACKEND_RPC_PLAN.md sect12/12a): the serve-runtime drafter
@@ -1260,7 +1261,7 @@ struct Options {
     std::string socket2;
     std::string experts_file = "experts.bin";
     int64_t slots = 0;                 // 0: the budget decides (the fill report stays authoritative)
-    int64_t reserve_mib = kReserveDefaultMiB;
+    int64_t reserve_mib = kReserveDefaultMiB;   // the fill budget's reserve (clamped 64..4096 in main; the engine's hello value is ignored)
     int64_t fill_mib = 0;              // 0: the card's budget decides (today's behaviour, byte for byte)
     int64_t layers_cap = -1;           // -1: every layer the layout has
     int64_t device = 1;
@@ -1334,6 +1335,11 @@ void usage() {
         "  prompt tier stops queueing behind its window tier (and the other way round).  Same frames,\n"
         "  same handshake on both sockets; the mirrored experts are shared, one kFill fills them.\n"
         "  Absent = one socket, one thread, exactly the behaviour before this option.\n"
+        "  --reserve-mib N: the VRAM the fill leaves free on this card (default 512, clamped to 64..4096;\n"
+        "  below 256 warns once - the fill then has little room to survive the card's other users).\n"
+        "  This option is authoritative for the fill budget: the engine's hello no longer overrides it\n"
+        "  (before v0232 the option was parsed but never used, and the engine's own 512 default always\n"
+        "  won - a --reserve-mib 300 helper still preflighted \"reserve 512 MiB\").\n"
         "  --fill-mib (opt-in): cap the fill's UPLOADED EXPERT BYTES at N MiB (0 = the card's budget\n"
         "  decides, exactly the behaviour before this option).  Every fill report names WHY it stopped\n"
         "  (slots / fill-mib / budget / ranked candidates exhausted) and the device's raw free MiB\n"
@@ -1454,7 +1460,12 @@ accept_peer:
                     // sends the same geometry on both), so this is the same write of the same bytes.
                     unpack_claimed_bitmap(body.data() + sizeof(req), (size_t) claimed_bytes,
                                           (size_t) hp.n_layers * (size_t) hp.n_expert, g_claimed);
-                    g_reserve = req.reserve_mib;
+                    // v0232: kHello's reserve_mib is NOT taken anymore.  Until v0231 the helper's
+                    // own --reserve-mib was parsed but never used and this line overwrote the
+                    // budget's reserve with the ENGINE's --expert-helper-reserve-mib (default 512),
+                    // so every helper-side reserve request below 512 was dead.  The helper owns its
+                    // card, so its own clamped option is authoritative (set once in main); the wire
+                    // field stays as-is for pre-v0232 helpers, which keep reading it.
                     g_slots = req.slots;
                     hello_seen = true;   // from here on the connection is the engine's, one-shot again
                     log_socket_buffers(out.fd(), "helper");   // helper-ipc-diet: the achieved buffer pair
@@ -1599,7 +1610,7 @@ accept_peer:
         std::fprintf(stderr, "expert-helper: the peer left before hello; NOT exiting, listening again\n");
         out.close();
         g_claimed.clear();
-        g_reserve = kReserveDefaultMiB;
+        g_reserve = o.reserve_mib;   // the helper's own clamped option, unchanged by any hello
         g_slots = 0;
         filled = false;
         rc_loop = 0;
@@ -1629,6 +1640,26 @@ int main(int argc, char** argv) {
     Options o;
     std::string err;
     if (!parse(argc, argv, o, err)) return fail("arguments", err);
+    // v0232: the helper's OWN --reserve-mib is the fill budget's reserve (before, the option was
+    // parsed and never used - the engine's kHello value silently decided it, so a --reserve-mib 300
+    // helper still preflighted "reserve 512").  Clamped here, once, with the honest-floor warning:
+    // below 256 MiB a display/peer hiccup on the card can OOM the fill; 64 remains testable.
+    {
+        const int64_t given = o.reserve_mib;
+        o.reserve_mib = strata::core::expert_helper::clamp_reserve_mib(given);
+        if (o.reserve_mib != given)
+            std::fprintf(stderr, "expert-helper: --reserve-mib %lld outside %lld..%lld, clamped to %lld\n",
+                         (long long) given,
+                         (long long) strata::core::expert_helper::kReserveFloorMiB,
+                         (long long) strata::core::expert_helper::kReserveCeilMiB,
+                         (long long) o.reserve_mib);
+        if (o.reserve_mib < strata::core::expert_helper::kReserveWarnBelowMiB)
+            std::fprintf(stderr, "expert-helper: --reserve-mib %lld MiB is below the recommended %lld: the fill "
+                                 "has little room to survive the card's other users\n",
+                         (long long) o.reserve_mib,
+                         (long long) strata::core::expert_helper::kReserveWarnBelowMiB);
+    }
+    g_reserve = o.reserve_mib;   // the budget's reserve from here on (kHello no longer overwrites it)
     if (reply_override_ms() > 0)
         std::fprintf(stderr, "expert-helper: reply write deadlines overridden to %lld ms (STRATA_HELPER_REPLY_TIMEOUT_MS)\n",
                      (long long) reply_override_ms());
@@ -1899,7 +1930,7 @@ int main(int argc, char** argv) {
         // serve_fill skips pairs the cache still holds).  Reset the engine-bound handshake state
         // exactly as serve_channel's pre-hello re-listen does.
         g_claimed.clear();
-        g_reserve = kReserveDefaultMiB;
+        g_reserve = o.reserve_mib;   // the helper's own clamped option, unchanged by any hello
         g_slots = 0;
         hp.layer_lo = hp.layer_hi = 0;
         if (g_wake_pipe[0] >= 0) {   // drain the wake byte: a stale wake must not end the new accept
