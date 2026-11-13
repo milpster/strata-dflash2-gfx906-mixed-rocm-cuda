@@ -142,6 +142,12 @@ public:
     /// True when the peer ADVERTISED the claim batch (kFeaturePromptBatch: it serves kBeginPB/kRowsPB).
     /// A peer without the bit never sees the frame type: begin_prompt keeps the kBeginP path.
     bool prompt_batch_supported() const { return prompt_batch_; }
+    /// W2 (the reply ring): True when THIS channel's hello negotiated the ring - the helper
+    /// attached the memfd, the header validated, and rows replies may arrive as kRowsRing
+    /// doorbells (the rows live in the mapped slot, never on the socket).  False keeps every
+    /// reply on the socket, byte-identical: the lane needs STRATA_HELPER_REPLY_RING on BOTH
+    /// sides (the engine asks with the hello flag, the helper offers with kFeatureReplyRing).
+    bool reply_ring_active() const { return ring_lane_; }
     /// The engine's claim batch: STRATA_CLAIM_BATCH clamped to 1..kMaxClaimBatch, DEFAULT 1.
     /// 1 is EXACTLY today's wire - one kBeginP per claim, one kRowsP per reply, no new frame type
     /// on the channel at all.  K>1 coalesces K consecutive begin_prompt calls into ONE kBeginPB and
@@ -367,6 +373,22 @@ private:
     bool q8k_ = false;                              // the peer advertised kFeatureQ8K (the Q8_K wire)
     bool prompt_batch_ = false;                     // the peer advertised kFeaturePromptBatch
     int64_t claim_batch_ = 1;                       // STRATA_CLAIM_BATCH, clamped: 1 = today's wire
+    // W2 (the reply ring): this channel's read-only mmap of the helper's memfd and the latched
+    // lane.  ring_map_ is null and ring_lane_ false on every fallback - the socket reply path is
+    // the whole truth then, byte-identical to before the lane existed.
+    uint8_t* ring_map_ = nullptr;
+    size_t ring_map_bytes_ = 0;
+    uint64_t ring_stride_ = 0;
+    bool ring_lane_ = false;
+    /// The hello's ring latch: map (or decline) the descriptor the ack attached.  Every path
+    /// consumes `fd`; a helper that offered a ring this side cannot honor is a protocol failure.
+    int map_ring(int fd, const expert_helper::HelloAck& ack, int64_t n_embd, bool wanted);
+    /// Apply one kRowsRing doorbell: seal the slot's seq, then run the shared rows validator on
+    /// the slot's records area (a whole kRows payload by construction).  No socket bytes involved.
+    int apply_ring_rows(const expert_helper::RowsRingResp& rr, int64_t n_embd,
+                        const std::vector<int32_t>& claims, float* out, int32_t& rows);
+    /// Unmap and forget the ring (close, re-hello; idempotent).
+    void release_ring();
     int64_t last_img_bytes_ = 0;                    // the image bytes of the last frame built (the wire's)
     int last_img_fmt_ = -1;                         // and its format: 0 q8_1, 1 fp32, 2 Q8_K
     /// One queued prompt-tier claim (the batch's part): the full kBeginP payload bytes the client

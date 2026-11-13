@@ -86,6 +86,15 @@ inline constexpr uint32_t kFeatureDraft = 4u;            // HelloAck.features bi
 inline constexpr uint32_t kFeatureDraftBf16 = 8u;        // HelloAck.features bit 3 (L8: bf16 draft taps)
 inline constexpr uint32_t kFeatureQ8K = 16u;             // bit 4: Q8_K activation images (kBeginQ8K, image_format 2)
 inline constexpr uint32_t kFeaturePromptBatch = 32u;     // bit 5: K prompt-tier claims in ONE exchange (kBeginPB/kRowsPB)
+// W2 (helper-quant-sync-diet.md, the memfd reply ring; default OFF - STRATA_HELPER_REPLY_RING on
+// BOTH sides): bit 7 says this helper created the reply ring, registered it pinned+mapped, and
+// attached its memfd to the kHelloAck via SCM_RIGHTS - rows replies on the negotiated channel
+// shrink to the kRowsRing doorbell and the engine reads the rows out of its own read-only mmap.
+// The bit is set ONLY when the engine's kHello asked (HelloReq::reserved0's
+// kHelloWantReplyRing): an old engine never asks, so an old exchange never allocates the ring.
+// (bit 6 is window-wire-diet's kFeatureF32Window; this lane renumbered off it at landing so the
+// two branches compose without a constant clash.)
+inline constexpr uint32_t kFeatureReplyRing = 128u;      // bit 7: reply ring memfd attached to the ack
 
 // Frame types.  Exactly one request is outstanding: the engine sends hello, fill, and a begin; each
 // expect a reply of the named type with the same request id.  A frame with an unexpected type, version,
@@ -139,6 +148,15 @@ enum FrameType : uint32_t {
     // payload, concatenated in the engine's claim order.
     kBeginPB = 18,        // engine -> helper: n_parts prompt-tier sub-requests in one frame
     kRowsPB = 19,         // helper -> engine: n_parts kRowsP replies in one frame
+    // W2 (the reply ring's doorbell; sent ONLY on a channel whose hello negotiated the ring - the
+    // peer that did not ask for it never sees the frame type): the rows for the outstanding
+    // kBegin / kBeginQ8K / single-part kBeginP are packed in the ring slot named here, not on the
+    // socket.  The slot's records area is BYTE-FOR-BYTE the kRows/kRowsP payload that would have
+    // been sent (sizeof(RowsResp) + n_rows * (4 + n_embd*4)), so the receiving validator runs
+    // unchanged on the mapped bytes.  An n_rows of 0 is the empty reply (the slot holds the
+    // RowsResp header and the seq word, no records).  (21, not 20: window-wire-diet's kBeginF32
+    // landed on 20 first - same-rebase composition.)
+    kRowsRing = 21,       // helper -> engine: the reply is in the ring slot (slot/seq/n_rows)
 };
 
 // Frame limits the reader enforces before allocating anything.
@@ -172,8 +190,14 @@ struct HelloReq {
     int64_t slots = 0;        // exact count (auto resolved by the engine)
     int64_t reserve_mib = 512;
     uint32_t claimed_bytes = 0;
+    // W2: the hello's FLAG WORD (0 = today's meaning, "no flags").  An old helper requires 0 here
+    // and ignores the field; a new helper refuses an UNKNOWN bit by name, so a future flag is
+    // negotiated, never misparsed.  Only kHelloWantReplyRing exists today: "I will mmap the reply
+    // ring and read kRowsRing doorbells" - the helper answers it with kFeatureReplyRing and the
+    // memfd attached to the ack, or without either (the plain-socket fallback, byte-identical).
     uint32_t reserved0 = 0;
 };
+inline constexpr uint32_t kHelloWantReplyRing = 1u;   // HelloReq::reserved0: ask for the reply ring
 
 struct HelloAck {
     int32_t max_tok = 0;
@@ -309,6 +333,84 @@ struct RowsPBResp {
 // sizeof(RowsPResp) + n_rows * (4 + n_embd*4).  A part whose rows the helper did not compute is
 // absent INSIDE its own part (the per-part contract), and the engine validates each part against
 // that part's own claims - a missing row is the same-layer CPU fallback, never a silent zero.
+
+// ---- W2 (helper-quant-sync-diet.md §W2): the memfd REPLY RING (default OFF both sides). ----
+//
+// The negotiated lane moves rows replies OFF the socket: the helper allocates a fixed table of
+// kRingSlotCount slots ONCE as pinned+mapped host memory, exposes the same physical pages to the
+// engine as a memfd attached to the kHelloAck (SCM_RIGHTS), and a reply becomes the kRowsRing
+// doorbell - slot, generation seq, n_rows - while the rows themselves live in the slot.  The
+// helper's epilogue kernel packs `[int32 claim_idx | n_embd floats]` records straight into the
+// slot (serve_begin's host pack loop disappears), and the engine reads them out of its own
+// read-only mmap.  Everything about the rows is unchanged: the records area of a slot is
+// BYTE-FOR-BYTE the kRows/kRowsP payload the socket would carry, so validate_rows_payload runs
+// verbatim on the mapped bytes, and every cap/refusal/fallback rule of the socket reply applies.
+//
+// OWNERSHIP (the doc's contract, one-outstanding-per-channel as the bound): slot k belongs to
+// channel k (0 = the primary socket, 1 = --socket2) for the whole process lifetime, so with the
+// protocol's ONE outstanding request per channel the generations of one slot are strictly
+// sequential: the helper may only rewrite slot k when the NEXT kBegin/kBeginP on that channel
+// arrives - which the engine cannot send before finish()/finish_prompt() consumed the previous
+// doorbell (io_mtx_ + begin_outstanding_), i.e. the previous generation is dead.  The per-slot
+// seq word is the tamper seal the engine validates: the epilogue publishes it (system-fence,
+// last) and the doorbell carries the same value; a slot whose seq word disagrees with its
+// doorbell is a protocol failure and closes the channel.  Cross-channel aliasing cannot happen -
+// dedicated slots, never k mod N.
+//
+// The ring is a DECODE-lane device: a slot holds kRingMaxRecords rows (kMaxEntries - a window
+// claim's own cap, and the claim stripe's B-half is under the same bound), so serve_begin ALWAYS
+// uses the lane when negotiated, while a prompt claim with more rows than a slot holds keeps
+// today's kRowsP socket reply for that frame (a per-frame fallback, no renegotiation).  kRowsPB
+// multi-part replies always stay on the socket.
+inline constexpr uint32_t kRingMagic = 0x53545252u;       // "STRR"
+inline constexpr uint32_t kRingVersion = 1u;
+inline constexpr uint32_t kRingSlotCount = 2;             // one per channel (see the contract above)
+inline constexpr uint32_t kRingMaxRecords = 80;           // == kMaxEntries: rows one slot can hold
+inline constexpr uint64_t kRingPage = 4096;               // slot strides stay page-aligned
+
+/// The ring's first page, exactly as both sides map it.  The engine validates every field against
+/// its own hello geometry before trusting a slot: magic/version, the negotiated n_embd, and that
+/// the mapping covers header + slot_count * slot_stride (the memfd's own size, from fstat).
+struct RingHeader {
+    uint32_t magic = 0;          // kRingMagic
+    uint32_t version = 0;        // kRingVersion
+    uint32_t slot_count = 0;     // kRingSlotCount
+    uint32_t n_embd = 0;         // the hello's n_embd (records carry n_embd floats)
+    uint32_t max_records = 0;    // kRingMaxRecords
+    uint32_t reserved0 = 0;
+    uint64_t slot_stride = 0;    // ring_slot_stride(n_embd): page-aligned, seq word included
+    uint64_t reserved1 = 0;
+};
+
+/// One slot, at `map + kRingPage + slot * stride`: an 8-byte generation seq word (0 in a fresh
+/// ring), then the records area - RowsResp + records - which a doorbell's reader validates as a
+/// whole kRows payload.  The seq word is written LAST (system-fence before it) and read by the
+/// engine through a volatile load.
+inline uint64_t ring_slot_stride(int64_t n_embd) {
+    const uint64_t used = 8u /*seq*/ + 8u /*RowsResp*/ +
+                          (uint64_t) kRingMaxRecords * (uint64_t) (4 + n_embd * 4);
+    return (used + kRingPage - 1) & ~(kRingPage - 1);
+}
+inline uint64_t ring_bytes(int64_t n_embd) {
+    return kRingPage + (uint64_t) kRingSlotCount * ring_slot_stride(n_embd);
+}
+inline uint8_t* ring_slot(uint8_t* map, uint32_t slot, uint64_t stride) {
+    return map + kRingPage + (uint64_t) slot * stride;
+}
+inline const uint8_t* ring_slot_records(const uint8_t* map, uint32_t slot, uint64_t stride) {
+    return ring_slot(const_cast<uint8_t*> (map), slot, stride) + 8;   // past the seq word
+}
+
+/// The kRowsRing payload: WHICH slot, WHICH generation, HOW many rows.  The records themselves are
+/// in the slot; nothing else travels.  The engine cross-checks n_rows against the slot's own
+/// RowsResp (validate_rows_payload does, reading the mapped bytes).
+struct RowsRingResp {
+    int32_t n_rows = 0;
+    int32_t slot = 0;
+    uint64_t seq = 0;           // the slot's generation the doorbell seals
+};
+static_assert(sizeof(RowsRingResp) == 16, "the kRowsRing doorbell is 16 bytes: no hidden padding");
+static_assert(offsetof(RowsRingResp, seq) == 8, "the doorbell's seq sits at byte 8");
 
 // ---- M7 (the drafter lane; docs/work/MIXED_BACKEND_RPC_PLAN.md sect12): the draft frames. ----
 //
@@ -513,6 +615,18 @@ public:
     /// channel closed after one window - r11..r16).
     int write_reply(uint32_t type, uint32_t req_id, uint32_t echo_seq, const uint8_t* payload, size_t n,
                     int64_t deadline_ms);
+    /// W2 (the reply ring): write_reply with ONE descriptor riding SCM_RIGHTS on the same frame.
+    /// Used for the kHelloAck that hands the reply ring's memfd to the engine.  On a partial send
+    /// the kernel transfers the fd with the FIRST skb's bytes; the retry loop then sends the rest
+    /// of the frame without the control message (the fd never duplicates, never drops).
+    int write_reply_fd(uint32_t type, uint32_t req_id, uint32_t echo_seq, const uint8_t* payload,
+                       size_t n, int64_t deadline_ms, int fd);
+    /// Read the next frame, receiving any descriptor the peer attached with SCM_RIGHTS: `out_fd`
+    /// is -1 when none arrived, else the CALLER'S fd to close (the kernel's own dup).  More than
+    /// one descriptor is a protocol failure (both fds closed, nothing returned).  Otherwise the
+    /// read is read_frame's own: same deadlines, same RxBuffer reuse, same payload view.
+    int read_frame_anc(Header& head, RxBuffer& rx, PayloadView& payload, int64_t deadline_ms,
+                       int& out_fd) const;
     /// Read the next frame.  The payload lands in the caller's grow-only `rx` (see RxBuffer) and
     /// `payload` views exactly head.len of it, valid until the next read_frame on THIS socket.
     /// A non-ok return leaves `payload` empty - never a stale view.
@@ -525,7 +639,7 @@ public:
 
 private:
     int write_seq(uint32_t seq, uint32_t type, uint32_t req_id, const uint8_t* payload, size_t n,
-                  int64_t deadline_ms);
+                  int64_t deadline_ms, int fd = -1);
     int fd_ = -1;
     std::string bound_path_;
     uint32_t seq_out_ = 0;

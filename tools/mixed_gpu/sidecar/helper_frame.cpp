@@ -87,6 +87,55 @@ void set_socket_buffers(int fd) {
     ::setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &want, sizeof(want));
 }
 
+// W2 (the reply ring): read_all's own drain loop with the SCM_RIGHTS pickup.  recvmsg instead of
+// recv for every burst of this read - a control message rides whichever skb the peer's sendmsg
+// queued first, and a plain recv would silently DROP the descriptor (the kernel discards control
+// data a receiver had no buffer for).  ONE descriptor is the contract: a second is a protocol
+// failure, everything received is closed and nothing is returned.  MSG_CTRUNC means the peer sent
+// more control data than one fd - the same refusal.  Used once per hello; the cost is irrelevant.
+int read_all_anc(int fd, uint8_t* data, size_t n, int64_t deadline_ms, int& out_fd) {
+    size_t off = 0;
+    while (off < n) {
+        const int pr = poll_once(fd, POLLIN, deadline_ms);
+        if (pr < 0) return kErrUnhealthy;
+        if (pr == 0) return kErrTimeout;
+        for (;;) {
+            struct iovec iov{data + off, n - off};
+            char cbuf[CMSG_SPACE(sizeof(int))] = {};
+            struct msghdr mh = {};
+            mh.msg_iov = &iov;
+            mh.msg_iovlen = 1;
+            mh.msg_control = cbuf;
+            mh.msg_controllen = sizeof(cbuf);
+            const ssize_t r = ::recvmsg(fd, &mh, MSG_NOSIGNAL);
+            if (r > 0) {
+                for (struct cmsghdr* cm = CMSG_FIRSTHDR(&mh); cm != nullptr; cm = CMSG_NXTHDR(&mh, cm)) {
+                    if (cm->cmsg_level != SOL_SOCKET || cm->cmsg_type != SCM_RIGHTS) continue;
+                    const size_t data_bytes = cm->cmsg_len - CMSG_ALIGN(sizeof(struct cmsghdr));
+                    for (size_t b = 0; b + sizeof(int) <= data_bytes; b += sizeof(int)) {
+                        int got = -1;
+                        std::memcpy(&got, CMSG_DATA(cm) + b, sizeof(int));
+                        if (out_fd != -1) { ::close(got); return kErrProtocol; }   // one, never two
+                        out_fd = got;
+                    }
+                }
+                if (mh.msg_flags & MSG_CTRUNC) {   // more control data than one fd's space
+                    if (out_fd != -1) { ::close(out_fd); out_fd = -1; }
+                    return kErrProtocol;
+                }
+                off += (size_t) r;
+                if (off >= n) return kOk;
+                continue;
+            }
+            if (r == 0) return kErrUnhealthy;   // EOF: the peer is gone
+            if (errno == EINTR) continue;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) break;   // drained: re-poll the same deadline
+            return kErrUnhealthy;
+        }
+    }
+    return kOk;
+}
+
 }  // namespace
 
 void log_socket_buffers(int fd, const char* side) {
@@ -354,8 +403,14 @@ int Socket::write_reply(uint32_t type, uint32_t req_id, uint32_t echo_seq, const
     return write_seq(echo_seq, type, req_id, payload, n, deadline_ms);
 }
 
+int Socket::write_reply_fd(uint32_t type, uint32_t req_id, uint32_t echo_seq, const uint8_t* payload,
+                           size_t n, int64_t deadline_ms, int fd) {
+    // W2: write_reply's bytes plus ONE descriptor in the SCM_RIGHTS control message.
+    return write_seq(echo_seq, type, req_id, payload, n, deadline_ms, fd);
+}
+
 int Socket::write_seq(uint32_t seq, uint32_t type, uint32_t req_id, const uint8_t* payload, size_t n,
-                      int64_t deadline_ms) {
+                      int64_t deadline_ms, int fd) {
     if (n > kMaxFramePayload) return kErrProtocol;
     Header h;
     h.type = type;
@@ -368,6 +423,10 @@ int Socket::write_seq(uint32_t seq, uint32_t type, uint32_t req_id, const uint8_
     size_t lens[2] = {kHeaderBytes, n};
     void* bases[2] = {head, (void*) payload};
     size_t off = 0;
+    // W2: the control message rides the FIRST sendmsg of this frame only - a partial send has
+    // already transferred the descriptor with the bytes the kernel queued, so the resume loop
+    // must not attach it again (a second attachment would dup the fd into the peer a second time).
+    bool fd_pending = fd >= 0;
     while (off < kHeaderBytes + n) {
         // helper-ipc-diet: ONE poll per burst, then sendmsg until the socket buffer is full (see
         // read_all's identical shape).  Same absolute deadline, same EAGAIN-then-re-poll rule,
@@ -393,10 +452,21 @@ int Socket::write_seq(uint32_t seq, uint32_t type, uint32_t req_id, const uint8_
             struct msghdr mh = {};
             mh.msg_iov = v;
             mh.msg_iovlen = cnt;
+            char cbuf[CMSG_SPACE(sizeof(int))] = {};
+            if (fd_pending) {
+                mh.msg_control = cbuf;
+                mh.msg_controllen = sizeof(cbuf);
+                struct cmsghdr* cm = CMSG_FIRSTHDR(&mh);
+                cm->cmsg_level = SOL_SOCKET;
+                cm->cmsg_type = SCM_RIGHTS;
+                cm->cmsg_len = CMSG_LEN(sizeof(int));
+                std::memcpy(CMSG_DATA(cm), &fd, sizeof(int));
+            }
             const ssize_t w = ::sendmsg(fd_, &mh, MSG_NOSIGNAL);
             if (w > 0) {
                 off += (size_t) w;
                 if (off >= kHeaderBytes + n) return kOk;
+                fd_pending = false;   // the descriptor left with the first queued bytes
                 continue;
             }
             if (w == 0) return kErrUnhealthy;   // the transport's existing rule: a zero write is a dead channel
@@ -426,6 +496,32 @@ int Socket::read_frame(Header& head, RxBuffer& rx, PayloadView& payload, int64_t
         rx.cap = want;
     }
     if (head.len && read_all(rx.p, head.len, deadline_ms) != kOk) { payload = {}; return kErrUnhealthy; }
+    payload = PayloadView{rx.p, (size_t) head.len};
+    return kOk;
+}
+
+int Socket::read_frame_anc(Header& head, RxBuffer& rx, PayloadView& payload, int64_t deadline_ms,
+                           int& out_fd) const {
+    // W2: read_frame's own loop with the descriptor pickup.  The hello ack is the only frame this
+    // reads (once per channel), so the recvmsg-vs-recv cost is irrelevant; the deadline, the
+    // grow-only buffer and the payload view semantics are read_frame's own.
+    out_fd = -1;
+    payload = {};
+    if (fd_ < 0) return kErrUnhealthy;
+    uint8_t raw[kHeaderBytes];
+    int rc = read_all_anc(fd_, raw, kHeaderBytes, deadline_ms, out_fd);
+    if (rc != kOk) return rc;
+    rc = decode_header(raw, head);
+    if (rc != kOk) return rc;
+    if (head.len > rx.cap) {
+        size_t want = rx.cap ? rx.cap * 2 : (size_t) 2u << 20;
+        while (want < (size_t) head.len) want *= 2;
+        uint8_t* grown = (uint8_t*) ::realloc(rx.p, want);
+        if (grown == nullptr) return kErrInternal;
+        rx.p = grown;
+        rx.cap = want;
+    }
+    if (head.len && read_all_anc(fd_, rx.p, head.len, deadline_ms, out_fd) != kOk) return kErrUnhealthy;
     payload = PayloadView{rx.p, (size_t) head.len};
     return kOk;
 }

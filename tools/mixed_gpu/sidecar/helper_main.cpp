@@ -29,6 +29,16 @@
 // filled mirror.  The device is shared, so one served frame holds Helper::gpu_mtx (parse, upload,
 // launch, read the rows back, write the reply) and the lock is never held across a channel's idle
 // read.  WITH --socket2 ABSENT: one socket, one accept, one thread, the loop exactly as it was.
+//
+// W2 (the reply ring; default OFF - STRATA_HELPER_REPLY_RING, and only for hellos that ask):
+// rows replies on a negotiated channel travel as the tiny kRowsRing doorbell while the rows
+// themselves ride a memfd-shared pinned ring (see the protocol header's ring contract).  W4 rides
+// the same lane: serve_begin releases the device lock AT LAUNCH and waits its own frame's event -
+// correct BECAUSE the ring gives each channel its own output slot (the shared d_out may already be
+// rewritten by the next frame when the scan runs; the records in the slot cannot be).
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE   // memfd_create (the reply ring's shared backing file; glibc guards it)
+#endif
 #include "strata/core/expert_helper_protocol.hpp"
 #include "strata/core/expert_helper_reserve.hpp"   // v0232: --reserve-mib's honest clamp (this file owns the fill budget's reserve)
 #include "strata/core/expert_cache.hpp"
@@ -51,6 +61,7 @@
 #include <cuda_runtime.h>
 
 #include <atomic>
+#include <cerrno>
 #include <cmath>
 #include <csignal>
 #include <chrono>
@@ -244,6 +255,22 @@ struct Helper {
     cudaStream_t stream_p = nullptr;      // ON: the prompt tier's own stream
     bool streams_split = false;           // set once in main; never mutated afterwards
     std::thread chan2;
+    // W2 (the reply ring, default OFF): created once in main when STRATA_HELPER_REPLY_RING is set,
+    // offered ONLY to hellos that carry kHelloWantReplyRing.  Slot k is channel k's OWN for the
+    // process lifetime (0 = the primary socket, 1 = --socket2): the one-outstanding-per-channel
+    // rule makes each slot's generations strictly sequential, so a slot is free exactly when the
+    // next request on ITS channel arrives.  Thread ownership: ring_seq/ev[slot] belong to that
+    // channel's serve thread (and serve_fill, which event-fences both - W4).
+    int ring_fd = -1;                        // the memfd; every ack's SCM_RIGHTS is a fresh dup of it
+    uint8_t* ring_map = nullptr;             // RW mapping of the memfd, registered pinned+mapped
+    uint64_t ring_stride = 0;
+    unsigned long long ring_seq[2] = {0, 0}; // the last generation PUBLISHED per slot (its thread only)
+    cudaEvent_t ring_ev[2] = {};             // W4: the slot's frame-completion event (recorded at birth)
+    // PER-SLOT, like everything the epilogue reads: a host memcpy into MAPPED memory is not a
+    // stream op, so a single shared staging buffer would let channel B's parse overwrite the
+    // claims channel A's queued-but-not-yet-executed epilogue still reads.  One buffer per slot,
+    // written only by its channel's serve thread, closes the hole.
+    int32_t* h_ring_claims[2] = {nullptr, nullptr};
     ExpertCache cache;
     MappedPack pack;
     // A v4 pack (the 2026-11-06 prod model): native_experts.txt's per-role shard column places a
@@ -331,6 +358,21 @@ struct Helper {
         if (d_scratch_p) cudaFree(d_scratch_p);
         if (stream) cudaStreamDestroy(stream);
         if (stream_p) cudaStreamDestroy(stream_p);
+        // W2: the ring's teardown mirrors its creation - unregister before unmapping, the events
+        // last (a recorded event must not outlive its destruction with a waiter, and none exists
+        // here: both channels are joined before the Helper dies).
+        for (int s = 0; s < 2; ++s) {
+            if (h_ring_claims[s]) cudaFreeHost(h_ring_claims[s]);
+            if (ring_ev[s]) cudaEventDestroy(ring_ev[s]);
+            h_ring_claims[s] = nullptr;
+        }
+        if (ring_map) {
+            cudaHostUnregister(ring_map);
+            ::munmap(ring_map, (size_t) strata::core::expert_helper::ring_bytes(H));
+        }
+        if (ring_fd >= 0) ::close(ring_fd);
+        ring_map = nullptr;
+        ring_fd = -1;
         h_meta = nullptr; d_meta = nullptr; d_q8 = nullptr; d_out = nullptr; d_scratch = nullptr;
         h_meta_p = nullptr; d_meta_p = nullptr; d_q8_p = nullptr; d_out_p = nullptr; d_scratch_p = nullptr;
         stream = nullptr;
@@ -353,6 +395,125 @@ bool cuda_check(cudaError_t e, const char* what, std::string& err) {
     return false;
 }
 
+// ---- W2 (helper-quant-sync-diet.md §W2): the reply ring's helpers and the epilogue kernel. ----
+
+/// The W2 epilogue: pack the grouped kernel's compact rows into one ring slot's records area and
+/// publish the generation seal.  The records are BYTE-FOR-BYTE a kRows payload's body (RowsResp
+/// then `[claim_idx | H floats]` per row), written straight into the memfd's pinned pages the
+/// engine maps - serve_begin's host pack loop and the reply's row bytes both disappear.  ONE
+/// block (the seal's __syncthreads is block-scoped); grid-stride over the floats keeps the
+/// writes coalesced.  The seal is written LAST: every thread fences its record writes system-wide
+/// (mapped host memory), the block syncs, then thread 0 publishes - a doorbell-ordered reader
+/// sees either the old generation or all of this one, never a mix.
+__global__ void ring_pack_records(const float* __restrict__ rows, const int32_t* __restrict__ claims,
+                                  int32_t n_rows, int32_t h,
+                                  uint8_t* __restrict__ records, unsigned long long* __restrict__ seq_word,
+                                  unsigned long long seq) {
+    const int64_t row_bytes = 4 + (int64_t) h * 4;
+    const int64_t total = (int64_t) n_rows * h;
+    for (int64_t j = (int64_t) blockIdx.x * blockDim.x + threadIdx.x; j < total;
+         j += (int64_t) gridDim.x * blockDim.x) {
+        const int32_t i = (int32_t) (j / h);
+        const int32_t c = (int32_t) (j % h);
+        float* dst = (float*) (void*) (records + 8 + (int64_t) i * row_bytes + 4);
+        dst[c] = rows[(size_t) i * h + c];
+    }
+    if (threadIdx.x == 0 && blockIdx.x == 0) {
+        RowsResp* rep = (RowsResp*) (void*) records;
+        rep->n_rows = n_rows;
+        rep->reserved0 = 0;
+    }
+    __threadfence_system();
+    __syncthreads();
+    if (threadIdx.x == 0 && blockIdx.x == 0) *(volatile unsigned long long*) seq_word = seq;
+}
+
+/// This channel's slot base in the ring (the seq word lives at [0], the records at [8..)).
+uint8_t* ring_slot_of(const Helper& hp, int slot) {
+    return expert_helper::ring_slot(hp.ring_map, (uint32_t) slot, hp.ring_stride);
+}
+
+/// Publish a generation whose records are ALREADY in the slot (host-written: the empty reply, the
+/// prompt tier's core-packed payload) and answer with the doorbell.  Release-fence then seal -
+/// the doorbell's socket write is the acquire side the engine's read rides on.
+int ring_reply_sealed(Helper& hp, int slot, int32_t n_rows, uint32_t req_id, uint32_t seq, Socket& out) {
+    RowsRingResp rr;
+    rr.n_rows = n_rows;
+    rr.slot = (int32_t) slot;
+    rr.seq = ++hp.ring_seq[slot];
+    std::atomic_thread_fence(std::memory_order_release);
+    *(volatile unsigned long long*) (void*) ring_slot_of(hp, slot) = rr.seq;
+    return out.write_reply(kRowsRing, req_id, seq, (const uint8_t*) &rr, sizeof(rr),
+                           deadline_after(reply_deadline_ms(1000)));
+}
+
+/// W4's event wait: a short spin on cudaEventQuery (decode frames complete in tens of
+/// microseconds), then the sync API's own wait.  Unlike the old cudaStreamSynchronize this drains
+/// ONLY this frame - a later frame's work enqueued on the same stream is not waited on.
+bool ring_event_wait(const Helper& hp, int slot, std::string& err) {
+    cudaError_t q = cudaErrorNotReady;
+    for (int spin = 0; spin < 512; ++spin) {
+        q = cudaEventQuery(hp.ring_ev[slot]);
+        if (q == cudaSuccess || q != cudaErrorNotReady) break;
+    }
+    if (q != cudaSuccess) {
+        cudaGetLastError();   // clear a sticky query error; the sync below reports the real one
+        return cuda_check(cudaEventSynchronize(hp.ring_ev[slot]), "ring event wait", err);
+    }
+    return true;
+}
+
+/// Create the ring (main, before any accept): memfd + RW mapping + header + pinned/mapped
+/// registration + the per-slot events.  A failure here only disables the lane - the helper keeps
+/// its socket replies, and no hello is ever offered the bit.
+bool ring_create(Helper& hp, std::string& err) {
+    const uint64_t bytes = expert_helper::ring_bytes(H);
+    hp.ring_fd = ::memfd_create("strata-expert-helper-ring", 0);
+    if (hp.ring_fd < 0) { err = std::string("memfd_create: ") + std::strerror(errno); return false; }
+    if (::ftruncate(hp.ring_fd, (off_t) bytes) != 0) {
+        err = std::string("ftruncate: ") + std::strerror(errno);
+        return false;
+    }
+    hp.ring_map = (uint8_t*) ::mmap(nullptr, (size_t) bytes, PROT_READ | PROT_WRITE, MAP_SHARED,
+                                    hp.ring_fd, 0);
+    if (hp.ring_map == MAP_FAILED) {
+        hp.ring_map = nullptr;
+        err = std::string("mmap: ") + std::strerror(errno);
+        return false;
+    }
+    std::memset(hp.ring_map, 0, (size_t) bytes);   // fault + zero every page before pinning
+    expert_helper::RingHeader* rh = (expert_helper::RingHeader*) (void*) hp.ring_map;
+    rh->magic = kRingMagic;
+    rh->version = kRingVersion;
+    rh->slot_count = kRingSlotCount;
+    rh->n_embd = (uint32_t) H;
+    rh->max_records = kRingMaxRecords;
+    rh->slot_stride = expert_helper::ring_slot_stride(H);
+    hp.ring_stride = rh->slot_stride;
+    if (!cuda_check(cudaHostRegister(hp.ring_map, (size_t) bytes,
+                                     cudaHostRegisterPortable | cudaHostRegisterMapped),
+                    "ring pin+map", err))
+        return false;
+    for (int s = 0; s < (int) kRingSlotCount; ++s)
+        if (!cuda_check(cudaHostAlloc((void**) &hp.h_ring_claims[s], kRingMaxRecords * sizeof(int32_t),
+                                      cudaHostAllocPortable | cudaHostAllocMapped),
+                        "ring claims staging", err))
+            return false;
+    for (int s = 0; s < (int) kRingSlotCount; ++s) {
+        if (!cuda_check(cudaEventCreateWithFlags(&hp.ring_ev[s], cudaEventDisableTiming),
+                        "ring event", err))
+            return false;
+        // recorded at birth: an always-recorded event is always legal to query/synchronize, so
+        // serve_fill's fence and a first frame's wait need no "was it used yet" state
+        if (!cuda_check(cudaEventRecord(hp.ring_ev[s], 0), "ring event birth", err)) return false;
+    }
+    std::fprintf(stderr, "expert-helper: reply ring ready (%u slots x %llu B, %u records/slot; "
+                         "offered to hellos that ask)\n",
+                 (unsigned) kRingSlotCount, (unsigned long long) hp.ring_stride,
+                 (unsigned) kRingMaxRecords);
+    return true;
+}
+
 // ---- kFill: fill the cache within the card's budget, in the engine's rank order ----
 int serve_fill(Helper& hp, PayloadView body, uint32_t req_id, uint32_t seq, int64_t reserve_mib,
                const std::vector<uint8_t>& claimed, int64_t max_slots, std::string& err, Socket& out) {
@@ -368,6 +529,15 @@ int serve_fill(Helper& hp, PayloadView body, uint32_t req_id, uint32_t seq, int6
     } else {
         gpu_lk_off.emplace(hp.gpu_mtx);
     }
+    // W4 (the doc's fill-fencing rule): on the ring lane a served frame releases the device lock
+    // AT LAUNCH, so winning the lock no longer proves the last frame's kernel finished - fence
+    // BOTH slots' events, not just their replies.  Cheap when idle (a completed event returns at
+    // once; the events are recorded at birth, so a channel that never served is covered too).
+    // Without the ring (the default) the lock still spans completion and this is skipped whole.
+    if (hp.ring_fd >= 0)
+        for (int s = 0; s < (int) kRingSlotCount; ++s)
+            if (!cuda_check(cudaEventSynchronize(hp.ring_ev[s]), "fill ring fence", err))
+                return kErrInternal;
     if (body.size() < sizeof(FillReq)) return kErrShort;
     FillReq req;
     std::memcpy(&req, body.data(), sizeof(req));
@@ -567,7 +737,7 @@ int serve_fill(Helper& hp, PayloadView body, uint32_t req_id, uint32_t seq, int6
 // original indices.  image_q8k: the frame's activation image is ggml's Q8_K blocks (the CPU
 // reference's own gate/up image) and the launch is native_expert_grouped_q8k. ----
 int serve_begin(Helper& hp, PayloadView body, uint32_t req_id, uint32_t seq, std::string& err,
-                Socket& out, bool image_q8k) {
+                Socket& out, bool image_q8k, int ring_slot) {
     // ONE served frame holds the device lock (see Helper::gpu_mtx): the window tier's staging
     // (h_meta/d_meta/d_q8/d_out/scratch) and the prompt tier's are shared device state, and with
     // --socket2 two threads serve frames at once.  The lock is never held across the loop's read.
@@ -632,6 +802,14 @@ int serve_begin(Helper& hp, PayloadView body, uint32_t req_id, uint32_t seq, std
     }
     if (claims.size() > (size_t) CAP) return kErrGeometry;
     if (claims.empty()) {   // nothing resident in this window: an empty rows reply, the CPU serves it all
+        if (ring_slot >= 0) {
+            // W2: the negotiated lane answers empty too - a 0-row doorbell over a sealed, empty
+            // records area (host-written: no kernel ran, there are no rows to pack).
+            RowsResp* rep = (RowsResp*) (void*) (ring_slot_of(hp, ring_slot) + 8);
+            rep->n_rows = 0;
+            rep->reserved0 = 0;
+            return ring_reply_sealed(hp, ring_slot, 0, req_id, seq, out);
+        }
         RowsResp rep;
         rep.n_rows = 0;
         std::vector<uint8_t> payload(sizeof(rep), 0);
@@ -682,6 +860,66 @@ int serve_begin(Helper& hp, PayloadView body, uint32_t req_id, uint32_t seq, std
                                                (const uint8_t*) hp.d_q8, hp.d_scratch, hp.d_out, hp.stream);
     if (!cuda_check(cudaGetLastError(), image_q8k ? "native_expert_grouped_q8k launch"
                                                   : "native_expert_grouped launch", err)) return kErrInternal;
+    if (ring_slot >= 0) {
+        // ==== W2 (the ring lane) + W4 (event completion, lock released at launch).  The epilogue
+        // packs this frame's rows - with their claim indices - straight into this channel's slot
+        // (stream-ordered after the grouped launch), then seals the generation; the reply is the
+        // 16-byte doorbell and the rows never touch the socket.
+        const int32_t n_rows = (int32_t) compact_claim.size();
+        const size_t row_bytes = 4 + (size_t) H * 4;
+        std::memcpy(hp.h_ring_claims[ring_slot], compact_claim.data(), (size_t) n_rows * sizeof(int32_t));
+        uint8_t* slot = ring_slot_of(hp, ring_slot);
+        const unsigned long long seal = ++hp.ring_seq[ring_slot];
+        ring_pack_records<<<1, 256, 0, hp.stream>>>(hp.d_out, hp.h_ring_claims[ring_slot], n_rows,
+                                                    (int32_t) H, slot + 8,
+                                                    (unsigned long long*) (void*) slot, seal);
+        if (!cuda_check(cudaGetLastError(), "ring pack launch", err)) return kErrInternal;
+        if (!cuda_check(cudaEventRecord(hp.ring_ev[ring_slot], hp.stream), "ring event record", err))
+            return kErrInternal;
+        // W4's contract, spelled where it bites:
+        //  - d_out lifetime: this frame's rows LEFT the shared d_out with the epilogue (they live
+        //    in this channel's OWN slot now), so the next frame's kernel may overwrite d_out the
+        //    moment this frame's stream work completes - the scan below reads the slot, never
+        //    d_out.  d_q8/d_meta/d_scratch reuse is safe by stream order (one stream: FIFO; the
+        //    split: per-tier staging), which is exactly why the mutex can go here.
+        //  - the lock ends AT LAUNCH (both lock modes): the other channel may parse, upload and
+        //    launch its own frame while this one still computes.
+        //  - one-outstanding-per-channel is unchanged and load-bearing: it bounds live events and
+        //    slot generations to one per channel, and it is what lets this thread wait ONLY its
+        //    own event.  serve_fill fences both slots' events (its W4 note).
+        if (gpu_lk_on.has_value()) gpu_lk_on.reset();
+        else if (gpu_lk.owns_lock()) gpu_lk.unlock();
+        if (!ring_event_wait(hp, ring_slot, err)) return kErrInternal;
+        // H14 over the packed records (host reads of the pinned slot - no PCIe round trip); the
+        // engine's validator still refuses what this logs, exactly as on the socket path.
+        for (int32_t i = 0; i < n_rows; ++i) {
+            const float* row = (const float*) (const void*) (slot + 8 + sizeof(RowsResp) +
+                                                             (size_t) i * row_bytes + 4);
+            if (all_finite(row, (size_t) H)) continue;
+            std::fprintf(stderr, "expert-helper: window row %d of %d (claim %d, expert %d) is non-finite "
+                                 "(first floats %g %g %g %g)\n", i, n_rows, compact_claim[i],
+                         ids[compact_claim[i]], row[0], row[1], row[2], row[3]);
+            break;
+        }
+        RowsRingResp rr;
+        rr.n_rows = n_rows;
+        rr.slot = (int32_t) ring_slot;
+        rr.seq = seal;
+        const auto p_ready = prof ? std::chrono::steady_clock::now()
+                                  : std::chrono::steady_clock::time_point{};
+        const int rc_w = out.write_reply(kRowsRing, req_id, seq, (const uint8_t*) &rr, sizeof(rr),
+                                         deadline_after(reply_deadline_ms(10000)));
+        if (prof)   // L3: the same line, rows_kb = the records the lane carried (the socket's 16 B doorbell is the delta)
+            std::fprintf(stderr, "rpcprofile: serve tier=w layer=%d rows=%d queue_us=%lld lock_us=%lld "
+                                 "reply_us=%lld rows_kb=%lld ring=1\n", (int) layer, n_rows,
+                         (long long) p_queue_us,
+                         (long long) (std::chrono::duration_cast<std::chrono::microseconds>(
+                                          p_ready - p_entry).count() - p_queue_us),
+                         (long long) std::chrono::duration_cast<std::chrono::microseconds>(
+                                          std::chrono::steady_clock::now() - p_ready).count(),
+                         (long long) ((sizeof(RowsResp) + (size_t) n_rows * row_bytes) / 1024));
+        return rc_w;
+    }
     if (!cuda_check(cudaStreamSynchronize(hp.stream), "window sync", err)) return kErrInternal;
 
     // H14: prove the rows are finite before the engine refuses them (r17 died to exactly that).
@@ -993,7 +1231,7 @@ static int serve_prompt_core(Helper& hp, PayloadView body, std::vector<uint8_t>&
 }
 
 int serve_prompt(Helper& hp, PayloadView body, uint32_t req_id, uint32_t seq, std::string& err,
-                 Socket& out) {
+                 Socket& out, int ring_slot) {
     // The prompt tier's OWN staging (h_meta_p/d_meta_p/d_q8_p/d_out_p/scratch_p) and the grouped
     // kernel it launches are shared device state: with --socket2 this frame and a window frame can
     // arrive at the same moment, on different channels.  Same lock as serve_begin, never across a
@@ -1017,18 +1255,40 @@ int serve_prompt(Helper& hp, PayloadView body, uint32_t req_id, uint32_t seq, st
     if (rc != kOk) return rc;
     const auto p_ready = prof ? std::chrono::steady_clock::now()
                               : std::chrono::steady_clock::time_point{};
-    const int rc_w = out.write_reply(kRowsP, req_id, seq, payload.data(), payload.size(), deadline_after(reply_deadline_ms(10000)));
+    // W2: the negotiated lane carries the core's packed reply bytes into this channel's slot (one
+    // small mapped memcpy - the B-half claims are decode-sized) and answers with the doorbell,
+    // taking the 72-90 KB of rows OFF the socket.  A claim bigger than a slot's record capacity
+    // keeps today's kRowsP for that frame - a per-frame fallback, no renegotiation.  The prompt
+    // tier keeps its WHOLE-FRAME lock either way (W4's early release is serve_begin's, where the
+    // epilogue removes d_out from the critical path; this tier's pack stays host-side).
+    const bool via_ring = ring_slot >= 0 && n_rows <= (int32_t) kRingMaxRecords;
+    int rc_w;
+    if (via_ring) {
+        uint8_t* slot = ring_slot_of(hp, ring_slot);
+        std::memcpy(slot + 8, payload.data(), payload.size());
+        RowsRingResp rr;
+        rr.n_rows = n_rows;
+        rr.slot = (int32_t) ring_slot;
+        rr.seq = ++hp.ring_seq[ring_slot];
+        std::atomic_thread_fence(std::memory_order_release);
+        *(volatile unsigned long long*) (void*) slot = rr.seq;
+        rc_w = out.write_reply(kRowsRing, req_id, seq, (const uint8_t*) &rr, sizeof(rr),
+                               deadline_after(reply_deadline_ms(10000)));
+    } else {
+        rc_w = out.write_reply(kRowsP, req_id, seq, payload.data(), payload.size(), deadline_after(reply_deadline_ms(10000)));
+    }
     if (prof) {   // L3: one line per served prompt frame; refusals/empty replies stay untimed
         char spans_txt[320];
         format_serve_spans(spans, spans_txt, sizeof(spans_txt));   // appended, same write as the line
         std::fprintf(stderr, "rpcprofile: serve tier=p layer=%d rows=%d queue_us=%lld lock_us=%lld "
-                             "reply_us=%lld rows_kb=%lld%s\n", (int) layer, n_rows,
+                             "reply_us=%lld rows_kb=%lld%s%s\n", (int) layer, n_rows,
                      (long long) p_queue_us,
                      (long long) (std::chrono::duration_cast<std::chrono::microseconds>(
                                       p_ready - p_entry).count() - p_queue_us),
                      (long long) std::chrono::duration_cast<std::chrono::microseconds>(
                                       std::chrono::steady_clock::now() - p_ready).count(),
-                     (long long) ((payload.size() - sizeof(RowsPResp)) / 1024), spans_txt);
+                     (long long) ((payload.size() - sizeof(RowsPResp)) / 1024),
+                     via_ring ? " ring=1" : "", spans_txt);
     }
     return rc_w;
 }
@@ -1355,7 +1615,14 @@ void usage() {
         "  (kRows, kRowsP, kDraftAck, kDraftReply, kHelloAck) uses N ms instead of the call's own\n"
         "  default, so a slow-but-alive engine that stops draining its socket (a reclaim-suspended\n"
         "  GPU queue) never costs the channel. Unset = each call's own default, byte for byte; a\n"
-        "  DEAD peer is POLLHUP and is detected at once either way.\n");
+        "  DEAD peer is POLLHUP and is detected at once either way.\n"
+        "  STRATA_HELPER_REPLY_RING=1 (opt-in env, default OFF): allocate the pinned REPLY RING and\n"
+        "  offer it to engine hellos that ask for it (the engine's same-named env) - negotiated\n"
+        "  rows replies shrink to a 16-byte doorbell and the rows travel through the memfd-shared\n"
+        "  ring, one dedicated slot per channel, with the socket reply kept verbatim for any peer\n"
+        "  or frame that did not negotiate it.  The lane also enables the early device-lock release\n"
+        "  at kernel launch (event-driven completion) on the window tier; correctness never depends\n"
+        "  on STRATA_HELPER_STREAMS either way.\n");
 }
 
 /// Serve ONE accepted connection: accept on `listener`, run the frame loop on `out`, answer every
@@ -1371,7 +1638,12 @@ constexpr int kConnAcceptFailed = -1;
 constexpr int kConnStop = -2;
 int serve_channel(Helper& hp, Socket& out, Socket& listener, const Options& o, bool secondary, std::string& err) {
     bool hello_seen = false;
+    // W2: this channel's ring slot (-1 = the lane is OFF here: never asked, or no ring exists).
+    // Set by this channel's OWN hello, read by every serve below; a re-accepted peer re-helloes
+    // before any frame, so it is always re-negotiated before use.
+    int ring_slot = -1;
 accept_peer:
+    ring_slot = -1;   // W2: a new peer negotiates its own hello before any frame
     int fd = listener.accept(deadline_after(o.idle_timeout_ms));
     if (fd < 0) {
         if (g_stop.load()) {   // SIGTERM/SIGINT during the idle accept: exit cleanly, release the card
@@ -1416,7 +1688,11 @@ accept_peer:
                 HelloReq req;
                 std::memcpy(&req, body.data(), sizeof(req));
                 const int64_t claimed_bytes = (int64_t) req.claimed_bytes;
-                if (req.reserved0 != 0 || body.size() != sizeof(req) + (size_t) claimed_bytes) rc = kErrShort;
+                // W2: reserved0 is the hello's FLAG WORD.  An unknown bit is refused by name (a
+                // future flag is negotiated, never misparsed); the size check keeps its own status.
+                const bool ring_ask = (req.reserved0 & kHelloWantReplyRing) != 0;
+                if ((req.reserved0 & ~(uint32_t) kHelloWantReplyRing) != 0) rc = kErrProtocol;
+                else if (body.size() != sizeof(req) + (size_t) claimed_bytes) rc = kErrShort;
                 else if (req.n_embd != H || req.n_ff != FF || req.n_layers != hp.n_layers ||
                          req.n_expert != hp.n_expert) rc = kErrGeometry;
                 else if (req.layer_lo < 0 || req.layer_hi < req.layer_lo || req.layer_hi >= hp.n_layers)
@@ -1445,11 +1721,23 @@ accept_peer:
                     // and one that did gets this transport's typed refusal if it sends them to a helper
                     // without a drafter (the frame types exist, the service does not).
                     if (hp.draft_ready) ack.features |= kFeatureDraft | kFeatureDraftBf16;   // L8: bf16 taps too
+                    // W2: the ring is offered ONLY when it exists AND this hello asked for it -
+                    // the ack then carries the feature bit AND the memfd itself (SCM_RIGHTS on
+                    // the same frame; the kernel dups the descriptor per attachment).  A hello
+                    // that did not ask keeps the exact legacy ack, even with the ring allocated.
+                    if (ring_ask && hp.ring_fd >= 0) {
+                        ack.features |= kFeatureReplyRing;
+                        ring_slot = secondary ? 1 : 0;   // the channel's OWN slot, for the process lifetime
+                    }
                     size_t free_b = 0, total_b = 0;
                     cudaMemGetInfo(&free_b, &total_b);
                     ack.free_mib = (int64_t) free_b / 1048576ll;
-                    rc = out.write_reply(kHelloAck, head.req_id, head.seq, (const uint8_t*) &ack, sizeof(ack),
-                                              deadline_after(reply_deadline_ms(5000)));
+                    rc = ring_slot >= 0
+                             ? out.write_reply_fd(kHelloAck, head.req_id, head.seq, (const uint8_t*) &ack,
+                                                 sizeof(ack), deadline_after(reply_deadline_ms(5000)),
+                                                 hp.ring_fd)
+                             : out.write_reply(kHelloAck, head.req_id, head.seq, (const uint8_t*) &ack,
+                                               sizeof(ack), deadline_after(reply_deadline_ms(5000)));
                     // Remember the claimed bitmap for the fill (the engine sends it with kHello).  The wire
                     // packs bit-per-pair (protocol: flat/8, bit 1 = a stage holds it); serve_fill indexes
                     // byte-per-pair, so unpack here.  H8: it used to be stored raw, and every pair of the
@@ -1497,7 +1785,8 @@ accept_peer:
             // request with the activations as Q8_K blocks, served under kBegin's own rules - this
             // helper advertised kFeatureQ8K, so a peer that never saw the bit never sends the frame.
             if (!filled) { rc = kErrRequest; }
-            else rc = serve_begin(hp, body, head.req_id, head.seq, err, out, head.type == kBeginQ8K);
+            else rc = serve_begin(hp, body, head.req_id, head.seq, err, out, head.type == kBeginQ8K,
+                                  ring_slot);
             if (rc != kOk) {
                 ErrResp e;
                 e.status = rc;
@@ -1517,7 +1806,7 @@ accept_peer:
             // is the SAME on both (the fill travels on one channel), so a kBeginP on the second
             // channel is served from the slots the first channel's fill created.
             if (!filled) { rc = kErrRequest; }
-            else rc = serve_prompt(hp, body, head.req_id, head.seq, err, out);
+            else rc = serve_prompt(hp, body, head.req_id, head.seq, err, out, ring_slot);
             if (rc != kOk) {
                 ErrResp e;
                 e.status = rc;
@@ -1718,6 +2007,29 @@ int main(int argc, char** argv) {
         hp.streams_split = true;
         std::fprintf(stderr, "expert-helper: L2 stream split on (window/draft on the primary "
                              "stream, prompt on its own; fill fences both)\n");
+    }
+    // W2: the reply ring (opt-in STRATA_HELPER_REPLY_RING, default OFF).  Created before the
+    // first accept so every hello can negotiate it; a creation failure disables the lane only -
+    // the helper answers hellos without kFeatureReplyRing and serves socket replies, exactly the
+    // pre-ring behaviour.
+    if (std::getenv("STRATA_HELPER_REPLY_RING") && !ring_create(hp, err)) {
+        if (hp.ring_map != nullptr) {
+            cudaHostUnregister(hp.ring_map);
+            ::munmap(hp.ring_map, (size_t) expert_helper::ring_bytes(H));
+        }
+        if (hp.ring_fd >= 0) ::close(hp.ring_fd);
+        for (int s = 0; s < (int) kRingSlotCount; ++s) {
+            if (hp.h_ring_claims[s] != nullptr) cudaFreeHost(hp.h_ring_claims[s]);
+            hp.h_ring_claims[s] = nullptr;
+            if (hp.ring_ev[s] != nullptr) {
+                cudaEventDestroy(hp.ring_ev[s]);
+                hp.ring_ev[s] = nullptr;
+            }
+        }
+        hp.ring_map = nullptr;
+        hp.ring_fd = -1;
+        std::fprintf(stderr, "expert-helper: reply ring unavailable (%s); serving socket replies\n",
+                     err.c_str());
     }
     if (!cuda_check(cudaHostAlloc((void**) &hp.h_meta, sizeof(GroupMeta), cudaHostAllocPortable | cudaHostAllocMapped),
                     "meta staging", err)) return fail("buffers", err);
