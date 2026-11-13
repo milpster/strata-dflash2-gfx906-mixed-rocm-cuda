@@ -2450,3 +2450,50 @@ source lines.
   helper-ipc-diet itself keeps 6d4dc0ca7; the anchor-timing idea can return once the hang is
   attributed, ideally with the computation outside the boundary block.
 - this journal section (main).
+
+## Round 18 — R2 verdict (v0232b no-hang), TG bar raised to 35/40, parallel lanes (2026-11-13 evening)
+
+### R2_V232B panel (v0232b, default depth, helper reserve 512 authoritative; 17:58–18:08)
+
+| leg | wall s | engine detail |
+|---|---|---|
+| warm | 12.1 | 297 read @34.1; 34 gen @21.7 |
+| killer144k | 357.8 | **142,283 read @482.6 tok/s; 515 gen @12.0 — NO HANG** |
+| killer144kL | 129.0 | rewind 11,212 read @162.3; gens 88/515/79/400 → 24.6/**39.5**/27.8/21.2 |
+| longtg | 77.7 | 12,682 read @266.7; gens 28.5/25.0/31.7/30.0 |
+| tg1024 | 29.0 | gens 28.8/30.6 |
+
+**Verdict: the exact sequence that killed R1 (v0232def: engine kHello overwrote the helper
+reserve → 229 MiB free → #2065 chunk-0 hang, RemoteDisconnected) ran clean on v0232b** through a
+degraded box (min avail 8.6 GiB, swap 12–13.3 GiB). #2065 VRAM-exhaustion mechanism confirmed at
+binary level; v0232b hotfix validated; v0232b cleared to ship. PP identical to v0231 (482.6 vs
+482.7 — fix costs nothing); killer-gen improved 7.5 → 12.0 tok/s.
+
+### Mem verification (operator query after R2)
+
+R2 late-leg RSS 49.4–50.8 GiB = mid-pack (day band 49.3–53.2; W4 peaked 53.2). R2 > V1 by
+~0.7–1.1 GiB on late legs is explained by killerL running 4 generation passes (extra 131k rewind:
+88+515+79+400 tok) vs V1's 2 (233+548) — more experts touched → more arena residency. Warm-boot
+RSS identical across all arms (39.9–40.3 GiB); arena cap 22 GiB / conv-RAM 512 MiB / disk 24 GiB
+never crossed; min_avail never below 8.6 GiB. No leak signature. Swap 13.3 GiB is game residue
+(grew 7.8→13.3 across arms all afternoon independent of binary).
+
+### TG bar change (operator)
+
+Warm TG ~25–32 tok/s is NO LONGER acceptable: **floor 35, target 40.** Reachability evidence:
+the killerL 131k-rewind pass hit 39.5 tok/s with the expert working set hot in VRAM — residency,
+not compute, is the gap. Loss budget per engine stats: decode hit 94–96% → 12–16% of routed rows
+cross PCIe/other-GPU per step; 3080 sits at 229–475 MiB free.
+
+### Parallel lanes (operator granted multi-agent on glm-5.3)
+
+| lane | who | state |
+|---|---|---|
+| A decode-knob census (all STRATA_* env + serve args, ranked for TG) | explorer | running, read-only on Strata-wt-helper-ipc |
+| B launcher env passthrough (STRATA_SPEC, STRATA_SPEC_MIN_P, STRATA_VRAM_RESERVE_LATER_MIB) | fixer | running, additive-only in bench repo |
+| C TG/PP forensic roofline from today's logs → out/ab9-window-20261113/analysis/tg-pp-forensics.md | oracle | running, no GPU |
+| D engine coding: round-17 design A read-once PP + top-ranked TG change | fixer | gated on A+C output; builds only in GPU-idle window |
+| GPU reserve ladder 320/192/128 on v0232b+DEPTH64 (TG+PP per step, slots, killer stability) | parent | next subagent-turn gap |
+
+Constraint discovered: stop-all.sh kills the PROD supervisor too (prod-swift15-f16kv-mixed), and
+subagent model inference rides prod :8009 — so stop-all/boot only between subagent turns.
