@@ -2716,13 +2716,83 @@ int main(int argc, char** argv) {
         c.close();
         ::unsetenv("STRATA_HELPER_REPLY_RING");
     }
+    {
+        // (23) r18h: THE WINDOW EPILOGUE'S RECORD LAYOUT.  ring_pack_records (helper_main) packs a
+        // slot's records through the protocol header's ring_record_claim/ring_record_floats - the
+        // same accessors this section drives - and the engine applies the same bytes through
+        // finish()'s doorbell path.  The live fault this pins: the epilogue packed only the floats
+        // and the header, so every record's claim word read as the memfd's zeroed page (index 0 for
+        // all 8 rows) and the first STRIPE+RING window died "helper row index refused (0 rows for 8
+        // claims)" (engine-v0233-stripe.log) - the prompt lane survived because serve_prompt packs
+        // host-side with the pair indices.  No GPU here (the kernel cannot run on this host): the
+        // pin is the LAYOUT the kernel must produce, applied by the same client finish() that
+        // refused the live bytes, plus the exact negative - a float-only pack is refused kErrBadId.
+        ::setenv("STRATA_HELPER_REPLY_RING", "1", 1);
+        FakeRing ring;
+        check(ring.create(false), "(23) the fake ring builds");
+        bool want_seen = false;
+        ExpertHelperClient c;
+        check_status(handshake_ring(c, ring, true, false, want_seen), kOk, "(23) negotiated handshake");
+        // The live fault's shape: 8 non-contiguous claims, claim order, values from row_val
+        const std::vector<int32_t> claims = {0, 3, 7, 11, 19, 24, 26, 31};
+        std::vector<float> compact(claims.size() * (size_t) kH);
+        for (size_t r = 0; r < claims.size(); ++r)
+            for (int64_t col = 0; col < kH; ++col)
+                compact[r * (size_t) kH + (size_t) col] = (float) row_val(claims[r], col);
+        // The epilogue's pack, through the SHARED accessors: header, then every record's claim word
+        // and floats - `payload.data()` stands in for the slot's records base the kernel writes.
+        const size_t row_bytes = 4 + (size_t) kH * 4;
+        std::vector<uint8_t> packed(sizeof(RowsResp) + claims.size() * row_bytes, 0);
+        RowsResp rep;
+        rep.n_rows = (int32_t) claims.size();
+        std::memcpy(packed.data(), &rep, sizeof(rep));
+        for (size_t r = 0; r < claims.size(); ++r) {
+            *ring_record_claim(packed.data(), kH, (int32_t) r) = claims[r];
+            for (int64_t col = 0; col < kH; ++col)
+                ring_record_floats(packed.data(), kH, (int32_t) r)[col] = compact[r * (size_t) kH + (size_t) col];
+        }
+        // The NEGATIVE first (it closes the channel): the pre-fix epilogue's exact bytes - header
+        // and floats only, the claim words left as the zeroed page, every record index 0.
+        std::vector<uint8_t> float_only(packed.size(), 0);
+        std::memcpy(float_only.data(), &rep, sizeof(rep));
+        for (size_t r = 0; r < claims.size(); ++r)
+            for (int64_t col = 0; col < kH; ++col)
+                ring_record_floats(float_only.data(), kH, (int32_t) r)[col] = compact[r * (size_t) kH + (size_t) col];
+        check(send_begin(c), "(23) kBegin sent (request 2: hello was 1)");
+        write_ring_doorbell(ring.publish(0, float_only), (int32_t) claims.size(), /*req_id=*/2);
+        std::vector<float> out((size_t) kNTok * 10 * kH, -1.0f);
+        int32_t rows = -1;
+        check_status(c.finish(out.data(), kH, kNTok, 10, claims, 5000, rows), kErrBadId,
+                     "(23) a float-only pack (no claim words) is refused as an index fault");
+        check(rows == 0 && !c.open(), "(23) the refusal closes the channel, 0 rows applied");
+        // The POSITIVE on a fresh client: the accessor-packed records apply whole, 8 rows, each at
+        // its ORIGINAL entry index - the layout the fixed epilogue publishes.
+        ExpertHelperClient c2;
+        check_status(handshake_ring(c2, ring, true, false, want_seen), kOk, "(23) second handshake");
+        check(send_begin(c2), "(23) kBegin sent (request 2: hello was 1)");
+        write_ring_doorbell(ring.publish(0, packed), (int32_t) claims.size(), /*req_id=*/2);
+        std::vector<float> out2((size_t) kNTok * 10 * kH, -1.0f);
+        check_status(c2.finish(out2.data(), kH, kNTok, 10, claims, 5000, rows), kOk,
+                     "(23) the accessor-packed doorbell is accepted");
+        check(rows == (int32_t) claims.size(), "(23) all 8 records apply");
+        bool placed = true;
+        for (const int32_t i : claims)
+            for (int64_t col = 0; col < kH; ++col)
+                if (out2[(size_t) i * kH + (size_t) col] != (float) row_val(i, col)) placed = false;
+        check(placed, "(23) the ring's rows land at their ORIGINAL entry indices");
+        c2.close();
+        ::unsetenv("STRATA_HELPER_REPLY_RING");
+    }
     // (22f) GPU SCAFFOLD (the build window's addition, none of it runnable on this host): the
-    // helper-side pins that need the card are - (1) the epilogue kernel's slot bytes == the host
-    // pack loop's bytes for the same d_out contents (extend helper_main's --once self-check to
-    // diff ring records against the legacy payload for one window); (2) the event discipline:
-    // with STRATA_HELPER_STREAMS unset AND set, two channels' frames interleave and every
-    // doorbell's seal matches its records (a racy slot shows as kErrSeq at the engine); (3) the
-    // fill fence: a kFill issued between two launched frames never sees a half-written slot.
+    // helper-side pins that need the card are - (1) DONE on the host: section (23) pins the
+    // epilogue's record layout (header + claim words + floats, through the protocol header's
+    // shared accessors) against the engine's own doorbell validator, the r18h live fault's exact
+    // signature; the device leg that stays is the kernel's STORE of those bytes for one real
+    // window (extend helper_main's --once self-check to diff ring records against the legacy
+    // payload); (2) the event discipline: with STRATA_HELPER_STREAMS unset AND set, two channels'
+    // frames interleave and every doorbell's seal matches its records (a racy slot shows as
+    // kErrSeq at the engine); (3) the fill fence: a kFill issued between two launched frames never
+    // sees a half-written slot.
 
     std::printf("expert_helper_socket_test: %s\n", failures == 0 ? "PASS" : "FAIL");
     return failures == 0 ? 0 : 1;

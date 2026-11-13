@@ -530,22 +530,25 @@ bool cuda_check(cudaError_t e, const char* what, std::string& err) {
 /// then `[claim_idx | H floats]` per row), written straight into the memfd's pinned pages the
 /// engine maps - serve_begin's host pack loop and the reply's row bytes both disappear.  ONE
 /// block (the seal's __syncthreads is block-scoped); grid-stride over the floats keeps the
-/// writes coalesced.  The seal is written LAST: every thread fences its record writes system-wide
-/// (mapped host memory), the block syncs, then thread 0 publishes - a doorbell-ordered reader
-/// sees either the old generation or all of this one, never a mix.
+/// writes coalesced, and every record's claim word is stored from the staged claims array
+/// (r18h: the store was missing and a slot's indices read as the zeroed page - the engine's
+/// validator refused the first window doorbell with kErrBadId).  The seal is written LAST:
+/// every thread fences its record writes system-wide (mapped host memory), the block syncs,
+/// then thread 0 publishes - a doorbell-ordered reader sees either the old generation or all
+/// of this one, never a mix.
 __global__ void ring_pack_records(const float* __restrict__ rows, const int32_t* __restrict__ claims,
                                   int32_t n_rows, int32_t h,
                                   uint8_t* __restrict__ records, unsigned long long* __restrict__ seq_word,
                                   unsigned long long seq) {
-    const int64_t row_bytes = 4 + (int64_t) h * 4;
     const int64_t total = (int64_t) n_rows * h;
     for (int64_t j = (int64_t) blockIdx.x * blockDim.x + threadIdx.x; j < total;
          j += (int64_t) gridDim.x * blockDim.x) {
         const int32_t i = (int32_t) (j / h);
         const int32_t c = (int32_t) (j % h);
-        float* dst = (float*) (void*) (records + 8 + (int64_t) i * row_bytes + 4);
-        dst[c] = rows[(size_t) i * h + c];
+        ring_record_floats(records, h, i)[c] = rows[(size_t) i * h + c];
     }
+    for (int32_t i = (int32_t) threadIdx.x; i < n_rows; i += (int32_t) blockDim.x)
+        *ring_record_claim(records, h, i) = claims[i];   // the idx word validate_rows_payload reads
     if (threadIdx.x == 0 && blockIdx.x == 0) {
         RowsResp* rep = (RowsResp*) (void*) records;
         rep->n_rows = n_rows;

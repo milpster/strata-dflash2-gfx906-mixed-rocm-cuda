@@ -410,6 +410,27 @@ inline const uint8_t* ring_slot_records(const uint8_t* map, uint32_t slot, uint6
     return ring_slot(const_cast<uint8_t*> (map), slot, stride) + 8;   // past the seq word
 }
 
+/// The records area's per-record accessors - the ONE layout definition shared by the helper's
+/// window epilogue kernel (ring_pack_records, device code) and the host tests that pin its bytes:
+/// record `row` is [claim_idx | n_embd floats] at `records + sizeof(RowsResp) + row*(4+n_embd*4)`,
+/// where `records` is a slot's payload base (what ring_slot_records returns on the engine side and
+/// `slot + 8` on the helper's).  The claim word is NOT optional: a slot packed with only the floats
+/// reads its indices from the zeroed page (every record claims entry 0) and the engine's
+/// validate_rows_payload refuses the doorbell with kErrBadId - the r18h live fault
+/// ("helper row index refused (0 rows for 8 claims)", engine-v0233-stripe.log).  Host-decorated
+/// only under a device compiler; plain inline everywhere else.
+#if defined(__CUDACC__) || defined(__HIP__)
+#define STRATA_RING_HD __host__ __device__
+#else
+#define STRATA_RING_HD
+#endif
+inline STRATA_RING_HD int32_t* ring_record_claim(uint8_t* records, int64_t n_embd, int32_t row) {
+    return (int32_t*) (void*) (records + sizeof(RowsResp) + (int64_t) row * (4 + n_embd * 4));
+}
+inline STRATA_RING_HD float* ring_record_floats(uint8_t* records, int64_t n_embd, int32_t row) {
+    return (float*) (void*) (records + sizeof(RowsResp) + (int64_t) row * (4 + n_embd * 4) + 4);
+}
+
 /// The kRowsRing payload: WHICH slot, WHICH generation, HOW many rows.  The records themselves are
 /// in the slot; nothing else travels.  The engine cross-checks n_rows against the slot's own
 /// RowsResp (validate_rows_payload does, reading the mapped bytes).
