@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
-# TG-dense panel for a trial arm — decode-focused leg set for the raised bar
-# (35 tok/s floor / 40 target): three passes per TG context, plus a prefill
-# killer between the 16k and 64k legs so a post-prefill-cold TG pass is also
-# measured. Each tg leg runs twice in-driver (fresh prefill + cached rerun).
-# byte→token: --ctx is prompt BYTES — 160000 B ≈ 29k tokens, 786800 B ≈
-# 142,283 tokens. Byte values must stay EXACT so records stay comparable
-# with existing arms.
+# Lean TG panel for a trial arm (operator spec: ~5 decode runs, no filler).
+# Contexts are TOKEN-scaled: --ctx is prompt BYTES at ~5.527 B/token —
+# 88400 B ≈ 16k tokens, 354000 B ≈ 64k tokens, 995000 B = exactly T1's
+# 180k-token infill prompt (comparable with its 620 tok/s PP record).
+# Each tg leg runs twice in-driver (fresh prefill + cached rerun) — that
+# read+gen pair is the driver's unit. ~6-8 min per arm.
 # usage: panel-tg.sh ARM OUTDIR ELOG HLOG [URL]
 set -euo pipefail
 RPC=/mnt/srcds/Strata/bench/ab-v0210/rpcprof
@@ -23,21 +22,9 @@ run() { # leg kind ctx mt
 exec > >(tee -a "$OUT/panel-progress.log") 2>&1
 
 run warm            warm    512     64
-run tg2k-p1         tg      2048    1024
-run tg2k-p2         tg      2048    1024
-run tg2k-p3         tg      2048    1024
-run tg16k-p1        tg      16384   384
-run tg16k-p2        tg      16384   384
-run tg16k-p3        tg      16384   384
-# killer prefill (142,283 tokens) evicts cached contexts, so the 64k pass right
-# after it decodes post-prefill-cold.
-run killer144k      prefill 786800  1024
-run tg64k-cold-p1   tg      65536   384
-run tg64k-p2        tg      65536   384
-run tg64k-p3        tg      65536   384
-run tg160k-p1       tg      160000  384
-run tg160k-p2       tg      160000  384
-run tg160k-p3       tg      160000  384
+run tg16k           tg      88400   512
+run tg64k           tg      354000  512
+run tg180k          tg      995000  512
 
 echo "=== panel done $(date +%H:%M:%S); records:"
 "$PY" "$RPC/records.py" --update "$OUT"
