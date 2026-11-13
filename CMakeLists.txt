@@ -1022,6 +1022,17 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
       add_test(NAME expert_helper_reserve_test COMMAND expert_helper_reserve_test)
       set_tests_properties(expert_helper_reserve_test PROPERTIES TIMEOUT 60)
     endif()
+    # Round 17 design A (read-once prefill): STRATA_READONCE_MIB's parsing and precedence, the
+    # pin-guard reserve and the effective budget, and the request-scoped LRU window itself -
+    # consult/admit/evict under a byte budget, the RAM guard, the meter counters, and the
+    # re-read collapse at the killer prefill's shape.  CPU-only BY CONSTRUCTION - header-only
+    # decisions and RAM, the test links NO library at all.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/read_once_test.cpp")
+      add_executable(read_once_test tests/core/read_once_test.cpp)
+      target_include_directories(read_once_test PRIVATE include)
+      add_test(NAME read_once_test COMMAND read_once_test)
+      set_tests_properties(read_once_test PROPERTIES TIMEOUT 60)
+    endif()
     # M1 (capacity, parent correction 2): the helper proxy's RESIDENCY lifecycle - registered fill,
     # mid-request disable (residency KEPT, the gate must still consult), per-request re-arm, channel
     # death (residency RELEASED, the gate must recover).  Proxy mode makes no device call (the
