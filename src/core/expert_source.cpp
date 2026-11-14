@@ -6323,11 +6323,18 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
     // the earliest point where a request's DMA could read the arena.  A capped pin (STRATA_ARENA_PIN_GIB,
     // the WDDM multi-GPU 8 GiB) keeps the old before-fill registration: its sliced fallback exists
     // to fill DURING the registration and is not restructurable.  Opt out: STRATA_REGISTER_LAST=0.
+    // Linux-only (the #if below): off-Linux the post-fill registration would walk already-faulted
+    // pages - costlier, may refuse outright (pinned.cu), and a refusal loses the sliced-prefix
+    // fallback - so non-Linux keeps the historical before-fill registration.
+#if defined(__linux__)
     const bool register_last = !by_need && !relief_reserve && !deferred && max_pinned_bytes == 0 &&
                                arena_pin_cap_gib() == -1 && shared_arena_file.empty() &&
                                !arena_no_register() &&
                                (std::getenv("STRATA_REGISTER_LAST") == nullptr ||
                                 std::string(std::getenv("STRATA_REGISTER_LAST")) != "0");
+#else
+    const bool register_last = false;
+#endif
     PinnedArena* a = relief_reserve || register_last ? new PinnedArena(want + (uint64_t) blob, PinnedArena::ReserveOnly{})
                     : by_need ? new PinnedArena(arena_bytes + (uint64_t) blob, PinnedArena::ByNeed{}, need_ranges,
                                                 max_pinned_bytes, shared_arena_file, pack_hash)
