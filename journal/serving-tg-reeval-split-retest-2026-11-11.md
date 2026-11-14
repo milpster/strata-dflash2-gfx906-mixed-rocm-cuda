@@ -3307,3 +3307,11 @@ Two box reboots (~21:43, ~21:53) killed the first attempts mid-fill; lane v3 (po
 **Reserve 192 survives 92% of max context.** Combined with the clean 192 arm legs (18ah), the served stack — pin 2e433a82, split 30, MMQ 0, FS 2,8, reserve 192, helper 220 — is stress-validated; a light-traffic survival window remains the last formality before calling 192 servable.
 
 Quality-tool notes settled en route: the teacher-forced abort (`free(): invalid pointer`, exit -6) was **library resolution, not the binary** — under the launcher's LD_LIBRARY_PATH the engine reaches `session is up` (wrapper `quality/strata-ldp.sh`). The remaining exit-1 was config: `--spec` needs its qqA companions (`--spec-min-p 0.5 --expert-profile … --vram-reserve-mib 640 --vram-reserve-later-mib 640 --expert-cache-cpu-order --prompt-cache-spread`) or the verify tier refuses the minimal `--expert-cache 1` profile. qqNIGHT now mirrors qqA's pattern on new-tree paths; retry in flight.
+
+## Round 18aj — quality gate lands; concurrent prefill answers; prefill batch knob found
+
+**Teacher-forced quality (NIGHT.tsv, 4,995 positions, new pin + XXS + MMQ off):** vs the historical IQ3_S-era A.tsv — top1 agreement **86.81%**, KL mean **0.1488** / p99 2.171, PPL **3.924 vs 4.115** (same 999-position segments; note A is the old-tree IQ3_S run, not a Q8_0 literal despite the label). XXS pays a real distribution gap (~13% top-token divergence, heavy KL tail) yet matches-or-beats reference PPL — acceptable for the serving tier it is. En route: the tool's bare-subprocess abort was library resolution (wrapper fixes it); `--spec` needs its qqA companions under `--expert-cache 1`. Tool's "ended before READY" on slow CPU-expert boots is a ready-wait artifact, not a crash.
+
+**Concurrent prefill (2×80k simultaneous, single-slot config):** both completed, each at ~2× wall (351 s vs ~180) — aggregate = single-stream (~456 tok/s). The engine **arbitrates**: one prompt-path loan at a time (single borrow pair in log), no pool collision, no OOM. With real usage at one slot, moot; recorded as the worst case behaving safely.
+
+**Prefill batch size:** prod runs `--prefill 16384` (read progress confirms: 240k read reported at exact 16k multiples). Request-level `--batch/--slots` (2–8, VRAM-per-slot) exists but is off by design here. Sweep 8192/16384/32768 queued.
