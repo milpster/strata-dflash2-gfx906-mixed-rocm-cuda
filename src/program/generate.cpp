@@ -29,6 +29,7 @@
 #include "strata/core/remote_expert_opt.hpp"
 #include "strata/core/expert_cache.hpp"
 #include "strata/core/expert_nibble.hpp"
+#include "strata/core/vram_guard.hpp"
 #include "strata/core/conversation_snapshot.hpp"
 #include "strata/core/conversation_stream_state.hpp"
 #include "strata/core/dflash_ring.hpp"
@@ -1995,12 +1996,10 @@ bool launch_blocking() {
 /// #2065: the VRAM free when the current request began (-1 before the first); the stall report prints it, because a
 /// card this full is the one measured cause of a window that never finishes (the driver pages GPU memory).
 std::atomic<int64_t> g_req_vram_free_mib{-1};
-constexpr int64_t kVramSafeMib =
-#ifdef _WIN32
-    1024;   // WDDM pages instead of failing (docs/DETAILS.md, the sysmem fallback): the line #2065 fell below
-#else
-    512;
-#endif
+/// The low line itself lives with the per-GPU VRAM guard now (vram_guard::kLowMib; round 18p hoisted
+/// it there so the guard's check and this warning cannot drift apart).  WDDM pages instead of failing
+/// (docs/DETAILS.md, the sysmem fallback), so the line sits higher there.
+constexpr int64_t kVramSafeMib = strata::core::vram_guard::kLowMib;
 
 #if defined(_WIN32)
 // STRATA_STALL_STACKS=1: the call stack of every other thread, in the stall report.  The other threads are suspended while
@@ -8987,6 +8986,26 @@ int main(int argc, char** argv) {
             o.expert_cache = (int) fit;
         }
     }
+    // Round 18p: the per-GPU VRAM guard (vram_guard.hpp, STRATA_VRAM_GUARD=1, off by default) starts
+    // each card's reserve floor at what the boot really kept.  The sizing above has settled
+    // o.vram_reserve_mib on THIS device (the auto path may have lowered it, #496); the split stages
+    // publish theirs in the stage loop below.
+    int vram_guard_dev = -1;
+    if (cudaGetDevice(&vram_guard_dev) == cudaSuccess && vram_guard_dev >= 0)
+        strata::core::vram_guard::set_base_mib(vram_guard_dev, o.vram_reserve_mib);
+    // And the guard's reclaim donor, registered once, before any request can reach a check site.
+    // The engine's real runtime VRAM reclaim is the parked conversations' K/V slots
+    // (STRATA_PARK_VRAM_MIB): conversation_park_vram_release_all joins the park copy in flight and
+    // frees every slot on the card it lives on - the same release the serve path itself uses when
+    // the K/V cannot grow.  It runs OUTSIDE the guard's locks (N1).  Slots are whole 64 MiB-rounded
+    // parked images, so a step usually recalls more than it asked for; the guard logs the real
+    // figure, and 0 (the slots off, or nothing parked) is an honest 0.  On HIP ExpertCache::shrink
+    // refuses (no VMM segments), so this is the donor that actually frees VRAM there.
+    strata::core::vram_guard::set_reclaim([](int device, int64_t want_mib) -> int64_t {
+        (void) device;
+        (void) want_mib;   // the slot pool is engine-wide: every card's slots go, the honest total back
+        return (int64_t) (strata::core::conversation_park_vram_release_all() >> 20);
+    });
     // plan v0.3 P6: a native pack's blobs differ per layer, so the same VRAM holds more experts than slots of
     // the largest blob would. The shared cache below sizes slots in profile order.
     // #369: that list does not match --expert-cache-per-layer. A range is layer * quota + n, so a size cut for
@@ -9422,6 +9441,11 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: layer split, CUDA%d: %.2f GiB free of %.2f, room for experts %.2f GiB\n",
                          st.dev, (double) fb / 1073741824.0, (double) tb / 1073741824.0, (double) room / 1073741824.0);
         }
+        // the VRAM guard's boot floor for this card: the reserve figure the sizing kept here (a later
+        // stage's own --vram-reserve-later-mib when one was given, else the same --vram-reserve-mib;
+        // the walk's kStageLateAllocMib pricing term is not part of the reserve itself)
+        strata::core::vram_guard::set_base_mib(st.dev,
+            o.vram_reserve_later_mib >= 0 ? o.vram_reserve_later_mib : o.vram_reserve_mib);
         std::vector<int64_t> sized;
         int64_t used = 0;
         for (const auto& pr : st.profile) {

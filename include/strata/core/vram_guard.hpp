@@ -9,7 +9,8 @@
 //
 // The guard (operator mandate, round 18m: "fix residency but only by 64mb steps on the gpu it
 // happened at"): when a card reports less free VRAM than the request-start warning's low line
-// (kVramSafeMib in src/program/generate.cpp, mirrored in the TU), THAT card's reserve floor grows
+// (kLowMib below - generate.cpp's file-local kVramSafeMib until round 18p hoisted it here), THAT card's
+// reserve floor grows
 // by exactly one step (64 MiB by default) and the card's reclaim donor is asked to free about a
 // step's worth.  The floor never shrinks on its own (hysteresis: a card that once ran low keeps
 // its headroom) and the growth stops at +STRATA_VRAM_GUARD_MAX_MIB over the card's boot floor.
@@ -28,6 +29,17 @@
 
 namespace strata::core::vram_guard {
 
+/// The low line the request-start warning reads (#2065): under it the driver can page GPU memory to
+/// system RAM and a window may never finish.  WDDM pages instead of failing, so the line sits higher.
+/// One definition for the guard and generate.cpp's warning alike (round 18p's N3: it was mirrored
+/// in each TU before, and the two could drift).
+inline constexpr int64_t kLowMib =
+#ifdef _WIN32
+    1024;
+#else
+    512;
+#endif
+
 /// One relaxed atomic load: the STRATA_VRAM_GUARD=1 switch, off unless the env says exactly "1".
 bool enabled();
 
@@ -37,11 +49,13 @@ bool enabled();
 /// cannot walk the floor to the cap in seconds.
 void configure(bool on, int64_t step_mib, int64_t max_growth_mib, int64_t min_step_ms);
 
-/// The engine's per-card reclaim donor: free about `want_mib` on `device` (that card's
-/// expert-cache slots are the natural pool) and return the MiB it actually freed.  It runs on
-/// the check path under the guard's lock, so it must not call back into the guard, allocate,
-/// or wait on a stream the caller depends on.  nullptr (the default) means the guard grows the
-/// floor and logs that nothing was reclaimed.
+/// The engine's per-card reclaim donor: free about `want_mib` on `device` and return the MiB it
+/// actually freed.  It runs on the check path OUTSIDE every guard lock (round 18p's N1: a slow donor
+/// on one card must not stall another card's checks, and a donor that re-entered the guard could not
+/// deadlock), serialized on the donor's own mutex because the engine's recall machinery is one pool.
+/// While it runs, check() answers nothing-to-do on that thread, so the donor's own probes cannot
+/// recurse.  It may join a copy in flight or free for real; it must not allocate.  nullptr (the
+/// default) means the guard grows the floor and logs that nothing was reclaimed.
 using Reclaim = int64_t (*)(int device, int64_t want_mib);
 void set_reclaim(Reclaim fn);
 
