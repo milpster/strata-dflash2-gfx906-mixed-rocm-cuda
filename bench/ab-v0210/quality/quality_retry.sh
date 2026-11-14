@@ -18,7 +18,8 @@ for i in $(seq 1 60); do
   S=$(ls -t $R/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-2026111*.log | grep -v -- '-helper' | head -1)
   RD=$(tr -d '\0' < "$S" 2>/dev/null | grep -a 'ready: http://' | tail -1)
   TS=$(stat -c %Y "$S" 2>/dev/null)
-  [ -n "$RD" ] && [ $(( $(date +%s) - TS )) -lt 150 ] && break
+  PORT=$(curl -s -m 5 http://127.0.0.1:8009/v1/models 2>/dev/null | head -c 20)
+  [ -n "$RD" ] && [ -n "$PORT" ] && [ $(( $(date +%s) - TS )) -lt 300 ] && break
   sleep 10
 done
 echo "READY: ${RD:-TIMEOUT}"
