@@ -1030,6 +1030,7 @@ PinnedArena::PinnedArena(uint64_t bytes, ReserveOnly) : capacity(bytes) {
 uint64_t PinnedArena::register_after_fill(const std::vector<std::pair<uint64_t, uint64_t>>& ranges, bool lock_rest) {
     if (base == nullptr || !by_need) return 0;   // only the ReserveOnly arena registers late
     constexpr uint64_t kPage = 4096;
+    const auto t0 = std::chrono::steady_clock::now();   // the per-~10% progress lines carry elapsed seconds (18t)
     uint64_t total = 0;
     bool refused = false;
     const size_t n_rng = ranges.size();
@@ -1064,8 +1065,9 @@ uint64_t PinnedArena::register_after_fill(const std::vector<std::pair<uint64_t, 
         ++registered_slices;
         total += b - a;
         if (rng_step > 0 && rng_i % rng_step == 0 && rng_i < n_rng)
-            std::fprintf(stderr, "strata pin: registered after the fill: %zu of %zu ranges (%.1f GiB)\n",
-                         rng_i, n_rng, (double) registered_bytes / 1073741824.0);
+            std::fprintf(stderr, "strata pin: registered after the fill: %zu of %zu ranges (%.1f GiB, %.0f s)\n",
+                         rng_i, n_rng, (double) registered_bytes / 1073741824.0,
+                         std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
         if (refused) break;
     }
     note = "registered after the fill: " + std::to_string(pin_ranges.size()) + " ranges (" +

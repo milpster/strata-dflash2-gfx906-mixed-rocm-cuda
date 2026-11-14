@@ -6958,6 +6958,11 @@ void ArenaExpertSource::register_whole() {
     // nothing was dropped - so no boot-time driver sync (a cache fill's, a warm-up's, a capture's) ever
     // runs over a live whole-span registration: on a ROCm box that sync spins over the 12.3M pinned
     // 4 KiB pages at 100% of one core and the boot never returns (journal 2026-11-13 rounds 18k/18l).
+    // Round 18s: boot-side was not enough - the FIRST request then wedged the same way (its kernel
+    // submission / stream sync spinning over the live single-call registration), so the registration
+    // itself now takes the relief path's PROVEN range shape (18k measured: 21.5 GiB / 3440 ranges,
+    // ~6.4 MiB each, requests served fine over it indefinitely): register_after_fill range BY range,
+    // so no single cudaHostRegister - and no single lazy GPUVM fault wave - covers the 12.3M pages.
     // Boot-time, one thread; a no-op unless open() armed the shape, and once only.
     if (!register_last_ || base_ == nullptr || arena_ == nullptr) return;
     register_last_ = false;
@@ -6965,16 +6970,42 @@ void ArenaExpertSource::register_whole() {
     const auto t0 = std::chrono::steady_clock::now();
     std::fprintf(stderr, "strata pin: registering the whole arena (%.1f GiB) as the last boot step ...\n",
                  (double) arena_capacity_ / 1073741824.0);
-    // ONE page-outward range over the full capacity, the spare blob included (register_complement's
-    // last-span rule): the packed layout's blobs straddle page boundaries, and a range boundary would
-    // un-pin every blob it cuts (pin_range_of answers one range or none).  lock_rest = true: on a
-    // refusal the arena keeps the working-set lock - resident with no alias, the UMA degrade.
-    const uint64_t got = a->register_after_fill(std::vector<std::pair<uint64_t, uint64_t>>{{0, arena_capacity_}}, true);
+    // The relief shape over the full capacity (register_complement's construction): ranges of
+    // consecutive blobs, closed at blob boundaries, the last one through arena_capacity_ (the spare
+    // blob included - its last-span rule).  Relief's boundaries fall on DROPPED-blob offsets, so a
+    // held blob is never cut; with nothing dropped the close must instead fall on a PAGE-ALIGNED
+    // blob offset (register_after_fill's 4 KiB kPage): the outward rounding hands a shared boundary
+    // page to the earlier range, so a blob starting mid-page in the next range would straddle two
+    // registrations and have no DMA alias - pin_range_of answers one range or none (the V4-r3
+    // lesson).  A span closes once it reaches the complement's measured per-range scale (~6.4 MiB
+    // average, 18k; 8 MiB target), bounding each call's page-table work and each request-time
+    // fault wave.  A layout with no interior page-aligned blob offset keeps the 18n single range.
+    const int64_t n_layers = blobs_ / (n_expert_ > 0 ? n_expert_ : 1);
+    std::vector<std::pair<uint64_t, uint64_t>> whole;
+    if (n_layers > 0 && n_expert_ > 0) {
+        constexpr uint64_t kPage = 4096;              // register_after_fill's kPage
+        constexpr uint64_t kRangeTarget = 8ull << 20; // the relief complement's measured band (18k)
+        uint64_t span = 0;
+        for (int64_t l = 0; l < n_layers; ++l)
+            for (int64_t e = 0; e < n_expert_; ++e) {
+                const uint64_t off = arena_off(l, e);
+                if (off > span && off - span >= kRangeTarget && off % kPage == 0) {
+                    whole.emplace_back(span, off - span);
+                    span = off;
+                }
+            }
+        if (arena_capacity_ > span) whole.emplace_back(span, arena_capacity_ - span);
+    }
+    if (whole.empty()) whole.emplace_back(0, arena_capacity_);   // no aligned interior boundary: the 18n single range
+    // lock_rest = true: on a refusal the arena keeps the working-set lock over the unregistered rest -
+    // resident with no alias, the UMA degrade, non-fatal and loud - while every range registered
+    // before the refusal stays DMA-able (register_after_fill stops at the first, pin-by-need's rule).
+    const uint64_t got = a->register_after_fill(whole, true);
     apply_registration();
-    std::fprintf(stderr, "strata pin: register-last: whole-arena registration %s in %.1f s (%.1f GiB registered)\n",
+    std::fprintf(stderr, "strata pin: register-last: whole-arena registration %s in %.1f s (%.1f GiB registered, %zu range(s))\n",
                  got == arena_capacity_ ? "ok" : "stopped at the driver's refusal",
                  std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(),
-                 (double) got / 1073741824.0);
+                 (double) got / 1073741824.0, a->pin_ranges.size());
 }
 
 FileExpertSource* ArenaExpertSource::file_source() const {
