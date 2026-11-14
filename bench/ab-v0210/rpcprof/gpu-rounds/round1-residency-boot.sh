@@ -94,7 +94,6 @@ for i in $(seq 1 160); do  # 160 x 15s = 40 min ceiling (cold boots + range regi
   fi
   [ -n "${SEEN[regok]:-}" ] && [ -n "${SEEN[up]:-}" ] && break
 done
-PIN_CAP=$(python3 -c "import json;print(json.load(open('$CFG'))['env'].get('STRATA_ARENA_PIN_GIB',''))")
 [ -n "${SEEN[warm]:-}" ] || { echo "MISSING banner: host-callback warm-up"; false; }
 if [ -z "$PIN_CAP" ]; then
   [ -n "${SEEN[reg]:-}" ]  || { echo "MISSING banner: whole-arena registration (register-last not armed?)"; false; }
@@ -104,6 +103,7 @@ else
 fi
 [ -n "${SEEN[up]:-}" ]   || { echo "Engine never came up on :8009"; false; }
 tr -d '\0' < "$ELOG" | grep -aE 'whole arena|host-callback|expert cache auto|loaded [0-9.]+ GiB' | head -8 | tee "$OUT/round1.banners.txt"
+PIN_CAP=$(python3 -c "import json;print(json.load(open('$CFG'))['env'].get('STRATA_ARENA_PIN_GIB',''))" || echo "")
 
 if [ -z "$PIN_CAP" ]; then
 echo "== 4b. range-count gate (review): a degenerate count means the 18n single-range spin — abort BEFORE the first request"
