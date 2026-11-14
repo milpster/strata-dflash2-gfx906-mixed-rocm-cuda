@@ -2859,3 +2859,42 @@ fatal. Fix (config): --vram-reserve-mib / --vram-reserve-later-mib 256 -> 576 on
 Round 2 (register-last) in flight; reviewer gate now mandatory before any build/flip/arm; all future
 panels carry temp-0 sha guards (driver pins temperature 0 + records completion sha256; killer shape
 = standalone prefill leg ctx=995000 on a fresh boot, no 64k-leg prefix contamination).
+
+**Round 18n — register-last lands: the whole-arena registration as the LAST boot step
+(v0233-candidate @ 23fb6b114b).**
+Round 1 (18k, 687b459619) moved the host-callback warm-up before the registration but the no-relief
+boot still hung after the expert-cache line: EVERY remaining boot-time driver sync over the live
+whole-span registration (the cache fills' syncs, the warm-ups', the captures') spins over the 12.3M
+pinned 4 KiB pages. Round 2 generalizes the relief path's proven shape WITHOUT the drop: open()
+reserves the arena ReserveOnly (resident-but-unregistered; the fill writes plain pages, nothing
+evicts them during boot) and the whole-span cudaHostRegister runs LAST, so no boot sync ever sees a
+registration. Nothing is dropped - every expert stays resident (the operator mandate).
+Implementation (3 files, +80/-1): expert_source.hpp declares register_whole()/register_last() and
+the register_last_ member; open() arms register-last for exactly the plain whole-arena pin
+(!by_need, !relief_reserve, !deferred, max_pinned_bytes==0, arena_pin_cap_gib()==-1, no shared file,
+!arena_no_register(), STRATA_REGISTER_LAST=0 opts out) and takes the ReserveOnly path;
+register_whole() (expert_source.cpp, after register_complement) is ONE page-outward
+register_after_fill range over the full capacity (the packed layout's blobs straddle pages; a range
+boundary would un-pin the blobs it cuts - pin_range_of's one-range rule; lock_rest=true: a refusal
+keeps the working-set lock, the UMA degrade) + apply_registration() for the alias tables; close()
+clears the flag. generate.cpp calls it as the LAST statement before the serve loop's READY print
+(after pin_sim_report and pin_reserve_release_hard) and at the head of the one-shot request loop -
+the two places a request's DMA can first reach the arena.
+New boot-phase ordering (relief off, one line per phase):
+1. GPU host-callback warm-up (round 1's spot, before the arena)
+2. arena reserved UNREGISTERED (ReserveOnly; note says "registers as the last boot step") + fill
+   ("loaded 46.84 GiB"; no registration line between them anymore)
+3. pools, cache fills, drafter warm-ups, graph captures, helper handshake (all over an
+   unregistered arena - the hang is structurally gone)
+4. "strata pin: registering the whole arena (47.9 GiB) as the last boot step ..." ->
+   "strata pin: register-last: whole-arena registration ok in N s (47.9 GiB registered)" (the same
+   begin/ok+seconds pair round 1 gave the before-fill registration; a driver refusal prints
+   "stopped at the driver's refusal" and degrades to locked-no-alias)
+5. "READY <ctx> stop" -> serve loop accepts requests
+Build evidence: build-mixed-gpu/rpcw-hip, `nice make -j6 strata 2>&1 | tee ../build-18n-register-
+last.log; PIPESTATUS[0]` -> exit 0, [100%] Built target strata, binary 50,012,632 B @ 2026-11-14
+11:11:01 (was 50,000,600 B @ 2026-11-13 23:24:01, the round-1 build); zero warnings on the new
+lines (the HIP nodiscard/unused noise is unchanged). A concurrent 18o lane (vram_guard) shares the
+worktree; its files are NOT in this commit (staged: only the 3 files above). Not yet flipped to
+prod: the reviewer gate (18m) runs before any boot/flip/arm, and pinned_alias_test still needs a
+real registration - not runnable while prod serves.
