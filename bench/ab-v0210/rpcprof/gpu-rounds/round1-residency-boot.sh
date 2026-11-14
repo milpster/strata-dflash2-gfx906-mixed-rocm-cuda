@@ -10,6 +10,7 @@ LAUNCH="$STRATA/launch-prod-swift15-iq3s-int8kv-dflash-w4-mixed.sh"
 PIN_DIR="$STRATA/v0233/build-mixed-gpu/rpcw-hip"
 ELOG="$STRATA/logs/engine-prod-iq3s-v0233.log"
 OUT="$STRATA/bench/ab-v0210/rpcprof/out/gpu-rounds-20261114"
+RESERVE_MIB="${RESERVE_MIB:-2304}"   # post-boot request path needs ~1.5 GiB (weight arena) + margin
 BIN="${1:-/mnt/srcds/Strata-wt-integ/build-mixed-gpu/rpcw-hip/strata-final-all-lanes-13269309b7}"
 mkdir -p "$OUT"
 
@@ -18,6 +19,7 @@ mkdir -p "$OUT"
 
 restore_relief() {
   echo "RESTORING RELIEF CONFIG"
+  bash "$STRATA/stop-all.sh" >/dev/null 2>&1 || true; sleep 3
   cp "$OUT/config.pre-residency.bak" "$CFG"
   cp "$OUT/strata.pre-residency.bak" "$PIN_DIR/strata"
   (cd "$PIN_DIR" && sha256sum strata > SHA256SUMS)
@@ -48,8 +50,12 @@ while i < len(a):
     else:
         out.append(a[i]); i += 1
 c["args"] = out
+a = out
+for i, f in enumerate(a):
+    if f in ("--vram-reserve-mib", "--vram-reserve-later-mib"):
+        a[i+1] = str(RESERVE_MIB)
 json.dump(c, open(p, "w"), indent=2)
-print("args now:", len(a), "->", len(out))
+print("args now:", len(a), "; reserves:", [a[i+1] for i, f in enumerate(a) if f in ("--vram-reserve-mib", "--vram-reserve-later-mib")])
 EOF
 
 echo "== 3. pin binary + refresh SHA256SUMS"
@@ -68,8 +74,9 @@ for i in $(seq 1 80); do   # 80 x 15s = 20 min ceiling
   [[ "$L" == *"host-callback thread started"* ]] && SEEN[warm]=1
   [[ "$L" == *"expert cache auto"* ]] && SEEN[cache]=1
   [[ "$L" == *"registering the whole arena"*"last boot step"* ]] && SEEN[reg]=1
-  [[ "$L" == *"ok in"*s*"whole arena"* || "$L" == *"whole arena"*"ok in"* ]] && SEEN[regok]=1
-  if curl -s -m 3 http://127.0.0.1:8009/v1/models 2>/dev/null | grep -q swift; then SEEN[up]=1; fi
+  [[ "$L" == *"registration ok in"* ]] && SEEN[regok]=1
+  if curl -s -m 3 http://127.0.0.1:8009/v1/models 2>/dev/null | grep -q swift && \
+     [ -n "${SEEN[regok]:-}" ]; then SEEN[up]=1; fi
   # banner ORDER check: registration must come after the cache fill (register-LAST)
   if [ -n "${SEEN[reg]:-}" ] && [ -z "${SEEN[cache]:-}" ]; then
     echo "ORDER VIOLATION: registration banner before expert-cache line"; false
