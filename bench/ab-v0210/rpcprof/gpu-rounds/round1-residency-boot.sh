@@ -89,6 +89,12 @@ done
 [ -n "${SEEN[up]:-}" ]   || { echo "Engine never came up on :8009"; false; }
 tr -d '\0' < "$ELOG" | grep -aE 'whole arena|host-callback|expert cache auto|loaded [0-9.]+ GiB' | head -8 | tee "$OUT/round1.banners.txt"
 
+echo "== 4b. range-count gate (review): a degenerate count means the 18n single-range spin — abort BEFORE the first request"
+RANGES=$(tr -d '\0' < "$ELOG" | grep -a 'registration ok in' | tail -1 | grep -oE '[0-9]+ range' | grep -oE '[0-9]+' | head -1)
+echo "registered ranges: ${RANGES:-none-parsed}"
+[ -n "$RANGES" ] || { echo "ABORT: could not parse range count from the ok banner"; false; }
+[ "$RANGES" -ge 100 ] || { echo "ABORT: only $RANGES ranges — shape degraded toward the single-range spin (review note)"; false; }
+
 echo "== 5. first-request smoke (reviewer note E): retries until the engine is truly READY"
 echo "   (registration-ok + /v1/models is NOT readiness: post-registration init takes minutes;"
 echo "    early requests are dropped and the supervisor may rebuild once — retrying covers both)"
