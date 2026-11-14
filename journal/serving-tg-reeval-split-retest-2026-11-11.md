@@ -3069,3 +3069,10 @@ after the test fix (first run 0/1, the missing configure above). Zero warnings o
 only). expert_source.* untouched (the 18n-lane gate landed separately as c873503f0c mid-round);
 rpcw-hip not built; the HIP engine build stays for wrap-up. Not flipped to prod (guard default OFF).
 Skipped N5/N6 (the review marked them low/trivial; not in this lane's mandate).
+
+- Addendum (staging review): the 18q premise "strictly less concurrency than today's multi-dispatch-thread
+  inline staging" is wrong as stated — serve is serial (one drive.d.fs). Safety holds via the lookahead
+  thread's PRE-EXISTING concurrent ring_release plus the mutex-guarded ring; that is the relied-on argument.
+  Also: the ON path has zero host-test coverage — the ARM7 arm is the stager's first-ever execution; its
+  pass criteria are stage_drops/ring_busy report lines + the temp-0 sha guard, and any sha delta vs
+  knob-off is a defect (rows shifting helper/CPU->GPU-slot must be bitwise identical), not noise.
