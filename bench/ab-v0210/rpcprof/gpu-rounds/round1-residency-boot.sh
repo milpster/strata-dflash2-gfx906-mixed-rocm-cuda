@@ -79,7 +79,7 @@ echo "== 4. boot and watch banners (startup-timeout 1200s is the hard stop)"
 : > "$ELOG"
 setsid nohup "$LAUNCH" > "$STRATA/logs/prod-v0233-residency-boot.log" 2>&1 &
 declare -A SEEN=()
-for i in $(seq 1 80); do   # 80 x 15s = 20 min ceiling
+for i in $(seq 1 160); do  # 160 x 15s = 40 min ceiling (cold boots + range registration ~16 min; server patience now 2400s)
   sleep 15
   L=$(tr -d '\0' < "$ELOG" 2>/dev/null || true)
   [[ "$L" == *"host-callback thread started"* ]] && SEEN[warm]=1
