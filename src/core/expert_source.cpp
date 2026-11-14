@@ -7544,6 +7544,8 @@ void ArenaExpertSource::warm(int64_t layer, const int64_t* experts, int64_t n) {
 // ---- Foresight swap space (see include/strata/core/foresight_swap.hpp) ------------------------------------------
 namespace strata::core {
 
+static constexpr size_t kStageQueueMax = 16384;   // STRATA_STAGE_OFFTHREAD: pending staging notes cap
+
 bool ForesightSwap::init(int slots_per_layer, int64_t layers, int64_t experts, const std::vector<int>& card_of_layer,
                          const std::vector<int>& devices, std::string& err, const std::vector<int>& slots_per_card) {
     slots = slots_per_layer;
@@ -7618,10 +7620,17 @@ bool ForesightSwap::init(int slots_per_layer, int64_t layers, int64_t experts, c
         ring_used.assign((size_t) ring_n, 0);
     }
     filler_ = std::thread([this] { fill_loop(); });
+    if (stage_offthread && ring_n > 0) stager_ = std::thread([this] { stage_loop(); });
     return true;
 }
 
 ForesightSwap::~ForesightSwap() {
+    {
+        std::lock_guard<std::mutex> lk(stage_mu_);
+        stage_stop_ = true;
+    }
+    stage_cv_.notify_all();
+    if (stager_.joinable()) stager_.join();   // first: the stager may still queue a copy onto the filler
     {
         std::lock_guard<std::mutex> lk(mu_);
         stop_ = true;
@@ -7743,11 +7752,38 @@ void ForesightSwap::note_miss(ExpertSource* src, int64_t layer, int32_t expert) 
     // assign_locked like a pinned blob.  The staging runs OUTSIDE smu_ (a pack read or a helper D2H can
     // take milliseconds; note_miss is called from the begin seam, where the dispatch thread already
     // waits on the helper's RPCs), so the gates are re-checked under the lock before the slot is taken.
+    // STRATA_STAGE_OFFTHREAD=1 moves even that off the seam: the note is queued and a stager thread runs
+    // stage_miss - the seam itself only notes.
+    if (stage_offthread) {
+        {
+            std::lock_guard<std::mutex> lk(stage_mu_);
+            if (stage_queue_.size() >= kStageQueueMax) {   // a dead ring must not grow the queue without bound
+                ++stage_drops;
+                return;
+            }
+            stage_queue_.push_back(StageReq{layer, expert});
+        }
+        stage_cv_.notify_one();
+        return;
+    }
+    stage_miss(layer, expert, false);
+}
+
+// note_miss's helper-shadow body (the comment above it); the inline seam passes `wait_ring` false - the
+// exact old sequence - and the stager thread true.
+void ForesightSwap::stage_miss(int64_t layer, int32_t expert, bool wait_ring) {
     {
         std::lock_guard<std::mutex> smu_lk(smu_);
         if (!gates_pass_locked(layer, expert, false, true)) return;   // admit + budget: no bytes read before they pass
     }
-    const int ri = ring_acquire();
+    int ri = ring_acquire();
+    if (ri < 0 && wait_ring)
+        for (int tries = 0; ri < 0 && tries < 500; ++tries) {   // ~1 s in 2 ms steps: keep staging ahead of the seam
+            std::unique_lock<std::mutex> lk(stage_mu_);
+            if (stage_stop_) return;   // closing: the demand dies with the swap space
+            stage_cv_.wait_for(lk, std::chrono::milliseconds(2));
+            ri = ring_acquire();
+        }
     if (ri < 0) {
         std::lock_guard<std::mutex> smu_lk(smu_);
         ++ring_busy;
@@ -7768,6 +7804,21 @@ void ForesightSwap::note_miss(ExpertSource* src, int64_t layer, int32_t expert) 
         ++no_src;
     }
     if (!assigned) ring_release(ri);
+}
+
+void ForesightSwap::stage_loop() {
+    strata::platform::name_this_thread("strata-stage");
+    for (;;) {
+        StageReq q;
+        {
+            std::unique_lock<std::mutex> lk(stage_mu_);
+            stage_cv_.wait(lk, [&] { return stage_stop_ || !stage_queue_.empty(); });
+            if (stage_stop_) return;
+            q = stage_queue_.front();
+            stage_queue_.pop_front();
+        }
+        stage_miss(q.layer, q.expert, true);
+    }
 }
 
 void ForesightSwap::predict(ExpertSource* src, int64_t layer, int32_t expert) {
@@ -7867,6 +7918,8 @@ std::string ForesightSwap::report() const {
     if (helper_shadow)   // the staging ring's outcomes: staged = fills sourced outside the pinned arena
         r += ", helper shadow: " + std::to_string(staged) + " staged (" + std::to_string(ring_busy) +
              " ring full, " + std::to_string(no_src) + " no source)";
+    if (stage_offthread)   // the stager's own backpressure: notes the queue cap dropped
+        r += ", " + std::to_string(stage_drops.load()) + " staging notes dropped (queue full)";
     if (verify) r += ", verified " + std::to_string(verify_ok) + " ok / " + std::to_string(verify_bad) + " BAD";
     return r;
 }
@@ -7911,6 +7964,7 @@ ForesightSwap* foresight_swap_from_env(int64_t layers, int64_t experts, const st
     f->admit = env_int("STRATA_FS_ADMIT", 1, 1);
     f->depth = env_int("STRATA_FS_DEPTH", 4, 2);
     f->verify = env_int("STRATA_FS_VERIFY", 0, 0) != 0;
+    f->stage_offthread = env_int("STRATA_STAGE_OFFTHREAD", 0, 0) != 0;
     std::string err;
     if (!f->init(all_slots, layers, experts, card_of_layer, devices, err, slots_per_card)) {
         std::fprintf(stderr, "strata serve: foresight swap: %s - swap space off\n", err.c_str());
@@ -7925,10 +7979,12 @@ ForesightSwap* foresight_swap_from_env(int64_t layers, int64_t experts, const st
         slots_note.pop_back();
     }
     std::fprintf(stderr, "strata serve: foresight swap: %s on %zu card(s), up to %d copies per card and "
-                         "window, admit after %d miss(es), reuse after %d windows%s%s\n",
+                         "window, admit after %d miss(es), reuse after %d windows%s%s%s\n",
                  slots_note.c_str(), devices.size(), f->budget, f->admit, f->depth,
                  f->helper_shadow ? ", helper shadow ON (a landed slot serves a helper-held pair)" : "",
-                 f->helper_shadow ? (", " + std::to_string(f->ring_entries()) + "-entry pinned staging ring").c_str() : "");
+                 f->helper_shadow ? (", " + std::to_string(f->ring_entries()) + "-entry pinned staging ring").c_str() : "",
+                 f->stage_offthread && f->ring_entries() > 0
+                     ? ", ring staging off the begin seam (STRATA_STAGE_OFFTHREAD)" : "");
     return f;
 }
 
