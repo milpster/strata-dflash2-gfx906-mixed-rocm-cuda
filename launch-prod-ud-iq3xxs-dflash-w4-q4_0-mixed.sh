@@ -93,7 +93,7 @@ done
 env -i "${helper_env[@]}" "$HELPER" \
   --pack ${STRATA_AI_DIR:-/mnt/srcds/ai}/iq3xxs-ud \
   --experts ../Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00004.gguf \
-  --device 0 --slots 4600 --reserve-mib 320 --timeout 63115200000 \
+  --device 0 --slots 4600 --reserve-mib 240 --timeout 63115200000 \
   --begin-timeout 63115200000 --socket "$SOCKET" --fill-mib 7100 --socket2 "$SOCKET2" \
   >>"$HLOG" 2>&1 < /dev/null &
 helper_pid=$!
