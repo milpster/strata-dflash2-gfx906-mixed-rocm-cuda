@@ -12,13 +12,21 @@ mkdir -p "$OUT"
 cd "$RPC"
 
 for R in 64 128; do
-  echo "== ARM7_R$R: boot champion env + STRATA_FS_RING=$R"
+  echo "== ARM7_R$R: boot champion env + STRATA_FS_RING=$R (knob-off control for the staging arm)"
   bash boot-arm.sh ARM7_R$R "STRATA_FS_RING=$R" 2>&1 | tee "$OUT/arm7-r$R-boot.txt" | tail -3
   HLOG=$(ls -t "$STRATA"/logs/trial-*helper.log 2>/dev/null | head -1)
   echo "== panel"
   ./panel-tg.sh ARM7_R$R "$OUT" "$(ls -t "$STRATA"/logs/engine-arm7-r$R-*.log | head -1)" "$HLOG" \
     2>&1 | tee "$OUT/arm7-r$R-panel.txt" | tail -5
 done
+
+echo "== ARM7_STAGE: champion env + STRATA_STAGE_OFFTHREAD=1 — stager FIRST EXECUTION (review note); sha delta vs controls = defect"
+bash boot-arm.sh ARM7_STAGE "STRATA_STAGE_OFFTHREAD=1" 2>&1 | tee "$OUT/arm7-stage-boot.txt" | tail -3
+HLOG=$(ls -t "$STRATA"/logs/trial-*helper.log 2>/dev/null | head -1)
+./panel-tg.sh ARM7_STAGE "$OUT" "$(ls -t "$STRATA"/logs/engine-arm7-stage-*.log | head -1)" "$HLOG" \
+  2>&1 | tee "$OUT/arm7-stage-panel.txt" | tail -5
+echo "-- stager report lines (pass criteria: stage_drops/ring_busy present, ring-full ~0, checkpoints 1-4):"
+tr -d '\0' < "$(ls -t "$STRATA"/logs/engine-arm7-stage-*.log | head -1)" | grep -aE 'stage_drops|ring staging|ring_busy|checkpoint' | tail -6 | tee "$OUT/arm7-stage-stager.txt"
 
 echo "== verdicts: per-leg fresh-vs-rerun sha (within arm) + tps vs champion (ARM1 records)"
 python3 - << 'EOF'
