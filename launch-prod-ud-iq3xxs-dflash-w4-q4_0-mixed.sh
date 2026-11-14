@@ -23,7 +23,7 @@ WORK="$ROOT/v0215"
 BIN="$ROOT/v0233/build-mixed-gpu"
 PY="$ROOT/.venv/bin/python"
 CONFIG="$ROOT/prod-config-ud-iq3xxs-dflash-w4-q4_0-mixed.json"
-SOCKET="$ROOT/run/prod-ud-iq3xxs-mixed.sock"
+SOCKET="$ROOT/run/prod-iq3xxs-ud-mixed.sock"
 SOCKET2="$ROOT/run/prod-ud-iq3xxs-mixed2.sock"
 HELPER="$BIN/rpcw-cuda/strata-expert-helper-patient"
 # KSM is OPT-IN here (SPEC-stage2 lever 4): measured general_profit -109.9 MB on this pair
