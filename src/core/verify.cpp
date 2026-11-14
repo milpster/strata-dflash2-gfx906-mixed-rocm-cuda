@@ -16,6 +16,7 @@
 #include "strata/core/window_evict.hpp"
 #include "strata/core/expert_nibble.hpp"
 #include "strata/core/pin_budget.hpp"
+#include "strata/core/vram_guard.hpp"
 #if defined(STRATA_VERIFY_HGL)
 #include "strata/core/host_graph_launch.hpp"
 #endif
@@ -2840,9 +2841,13 @@ bool Verifier::capture(int T, std::string& err) {
     if (exec_t != nullptr) return true;
     {   // said before the capture: a process that exits inside it (#1275: Windows, 313 MiB free) leaves this line as the trace
         size_t free_b = 0, total_b = 0;
-        if (cudaMemGetInfo(&free_b, &total_b) == cudaSuccess)
+        if (cudaMemGetInfo(&free_b, &total_b) == cudaSuccess) {
+            // 18o: this card is about to capture while a few hundred MiB short - the exact #2065 hang - so the
+            // per-GPU guard gets the figure it needs to step THIS card's reserve floor first (inert unless
+            // STRATA_VRAM_GUARD=1); the capture line below stays the trace either way
+            vram_guard::check(device_, (int64_t) (free_b >> 20));
             std::fprintf(stderr, "strata verify: capturing the %d-token window (%zu MiB of VRAM free)\n", T, free_b >> 20);
-        else
+        } else
             (void) cudaGetLastError();
     }
     if (cudaStreamBeginCapture(cs_, cudaStreamCaptureModeThreadLocal) != cudaSuccess) {

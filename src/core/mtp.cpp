@@ -1,6 +1,7 @@
 // src/core/mtp.cpp - see include/strata/core/mtp.hpp.
 #include "strata/core/mtp.hpp"
 #include "strata/core/pin_budget.hpp"
+#include "strata/core/vram_guard.hpp"
 #include "strata/kernels/qsa_prompt_attn.hpp"
 #include "strata/core/coupled_draft.hpp"
 #include "strata/core/spec_prob.hpp"
@@ -1784,6 +1785,14 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
         }
         (void) cudaStreamQuery(cs_);
         prefetch_ple(tokens[a]);
+        {   // 18o: the wait below is where a paged card stalls (#2065's fatal shape) - with the guard on, one
+            // cudaMemGetInfo lets it step THIS card's reserve floor before the wait starts (inert otherwise)
+            size_t free_b = 0, total_b = 0;
+            int dev = 0;
+            if (vram_guard::enabled() && cudaGetDevice(&dev) == cudaSuccess &&
+                cudaMemGetInfo(&free_b, &total_b) == cudaSuccess)
+                vram_guard::check(dev, (int64_t) (free_b >> 20));
+        }
         progress_at("mtp draft: waiting for the GPU");   // #2065
         for (int j = 0; j + 1 < max_steps; ++j) {
             uint32_t spins = 0;
@@ -1821,6 +1830,13 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
         if (dt) cudaEventRecord(g_dt.ea[0], cs_);
         (void) cudaStreamQuery(cs_);
         prefetch_ple(tokens[a]);
+        {   // 18o: the same probe as the fixed-step branch above - the wait below is #2065's stall shape
+            size_t free_b = 0, total_b = 0;
+            int dev = 0;
+            if (vram_guard::enabled() && cudaGetDevice(&dev) == cudaSuccess &&
+                cudaMemGetInfo(&free_b, &total_b) == cudaSuccess)
+                vram_guard::check(dev, (int64_t) (free_b >> 20));
+        }
         progress_at("mtp draft: waiting for the GPU");   // #2065: a stall here read as "decode", the verify window before it
         auto wait_step = [&](int j) {
             uint32_t spins = 0;

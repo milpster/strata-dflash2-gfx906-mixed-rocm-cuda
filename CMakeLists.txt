@@ -840,6 +840,10 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     # its byte-budget arithmetic and the promotion gate, over masks and profile data, with no device call.
     src/core/expert_helper_socket.cpp src/core/expert_helper_fallback.cpp
     src/core/expert_helper_candidates.cpp
+    # v0233 round 18o (per-GPU VRAM guard): the per-card reserve floor the #2065 check sites step
+    # in 64 MiB increments (STRATA_VRAM_GUARD).  CPU-only by construction, like the two helpers
+    # above: no device call, no CUDA include.
+    src/core/vram_guard.cpp
     tools/mixed_gpu/sidecar/helper_frame.cpp)
   # Upstream's drafter, same rule as its kernels above: OFF means the TU is not compiled at all (see the runtime print).
   if(STRATA_HAVE_DFLASH2)
@@ -993,6 +997,16 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
       target_include_directories(arena_pin_ranges_test PRIVATE include)
       add_test(NAME arena_pin_ranges_test COMMAND arena_pin_ranges_test)
       set_tests_properties(arena_pin_ranges_test PROPERTIES TIMEOUT 60)
+    endif()
+    # v0233 round 18o (per-GPU VRAM guard): STRATA_VRAM_GUARD's state machine - the 64 MiB steps
+    # on the card that ran low, the never-shrink hysteresis, the growth cap, the step window and
+    # the per-card isolation.  CPU-only BY CONSTRUCTION - the TU makes no device call (the check
+    # sites read the card), so the test links its one TU and nothing else.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/vram_guard_test.cpp")
+      add_executable(vram_guard_test tests/core/vram_guard_test.cpp src/core/vram_guard.cpp)
+      target_include_directories(vram_guard_test PRIVATE include)
+      add_test(NAME vram_guard_test COMMAND vram_guard_test)
+      set_tests_properties(vram_guard_test PROPERTIES TIMEOUT 60)
     endif()
     # helper-ipc-diet round 13: the two conversation-cache env knobs - the end-of-generation anchor
     # decision behind STRATA_GEN_ANCHOR and the idle-park debounce arithmetic behind
