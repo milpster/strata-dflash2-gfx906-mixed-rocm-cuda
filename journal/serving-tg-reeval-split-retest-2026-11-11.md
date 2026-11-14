@@ -3219,3 +3219,14 @@ find the largest request-safe registration; PP measured at the winner.
 - Other ranked levers recorded in the notes file (PP: reserve 576->832 per engine #2065 warning vs operator occupancy directive — settled empirically next round; WMMA port #4859. TG: FS slot pressure 'no free slot' 8,630->36,607 on long generations; KV 4096 MiB resident vs 1.8 GiB at 80k).
 - Champion (spec5-p0.5) restored at 709f170c0f, prod UP 17:47:11 (ready line, completion answered).
 - Round 18aa (running): --vram-reserve-mib descent 512/448/384/320 with break detection; prod ends on the measured last-good edge.
+
+## Round 18ab — helper fill to budget (win) + turnaround levers falsified + revert (2026-11-14 ~18:30-19:00)
+- Reserve descent (agent, halted at operator floor 384): arms 512/448/384 all served (tg jsons XXS-resv{512,448,384}-tg.json); 320 arm committed then cancelled per operator - not measured. Prod reserve = 384 (edge = operator floor, not a break).
+- Helper fill-mib 6796 -> 7100 (7e04e2b893): fill now stops at BUDGET not the cap - 3630 slots / 6.80 GiB vs 3546 / 6.63 GiB (+84 slots, +180 MiB actually used). Stale era cap had left it behind. Keep.
+- Turnaround arm (prefill 8192 + conv-cache-ram 2048 + SWAPIN_DEPTH 128, 05e8d182a0) - ALL FALSIFIED (judge lines, elog 18:5x):
+  - boundary UNMOVED: 65536 reused + 14453 re-read (the --prefill grid does not control the cross-prompt restore floor; spec-sweep hypothesis wrong - boundary lives in conversation/prompt-cache restore logic)
+  - re-read SLOWER: 211.8 tok/s / 68 s (vs 272.5 / 53 s) - SWAPIN_DEPTH 128 worse than 64
+  - warm TG 22.5-27.3 (vs 29.1), helper reqs UP 6085-7460 (vs ~4967)
+  - NEW artifact: "79984 reused + 5 read in 15102 ms (0.3 tok/s)" - 15 s serve stall with conv-cache 2048
+- Reverted to champion knobs (prefill 16384, conv 512, SWAPIN 64; 82c7d320dd), reserve 384 + fill 7100 retained. Prod rebooted on the known-good shape.
+- gfx906 INT8-dot prompt port: stage 1 (upstream MMQ row-id fix family, determinism suspect #1) cherry-pick lane dispatched; port planning next.
