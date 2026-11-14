@@ -3165,3 +3165,14 @@ guard convention). Watch: the printed range count (a small count means sparse pa
 offsets - the shape degraded toward 18n and the spin may persist); registration wall time may grow
 past 186 s (per-call overhead x ~5900, the 1200 s launcher deadline has margin); GPUVM/VRAM figures
 unchanged vs 18r/18s (2304/2304 reserves).
+
+**Round 18u — GPU R1 attempts 9-11: infra closed; the 900s ENGINE_READY kill; range registration works.**
+Attempt 9: idempotent-commit abort (config already committed by attempt 8) — fixed (|| true).
+Attempt 10 (post-reboot, cold): the range-shape registration RAN CLEAN — banner "registering the whole
+arena", 4608 ranges, 10% progress lines, 42.7 of 46.8 GiB at 205 s — but the boot died at ~917 s:
+serve/server.py's ENGINE_READY_S default 900 kills the engine before READY on a cold boot (fill +
+tail phases + ~4 min registration > 15 min); the server exit cascaded helper SIGTERM + supervisor
+rebuild. Fix: launcher exports STRATA_ENGINE_READY_S=2400 (70660bf6c6); round1 loop widened to 40 min.
+Attempt 11 running with all infra fixes. Flip-script infra bugs closed this session: env pass-through,
+fail markers, smoke-before-READY, straggler races, set-e pkill, rename-installs, idempotent commits,
+orphan gate, range-count gate, server patience.
