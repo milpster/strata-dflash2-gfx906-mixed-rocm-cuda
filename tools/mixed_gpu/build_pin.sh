@@ -23,7 +23,7 @@ if grep -q '^CMAKE_CUDA_COMPILER:' "build-mixed-gpu/$DST/CMakeCache.txt"; then e
 ldd "build-mixed-gpu/$DST/strata" 2>/dev/null | grep -q libamdhip64 || { echo "GUARD FAIL: no libamdhip64"; exit 9; }
 objdump -h "build-mixed-gpu/$DST/strata" | grep -q '\.hip_fatbin' || { echo "GUARD FAIL: no .hip_fatbin"; exit 9; }
 [ "$(strings -a "build-mixed-gpu/$DST/strata" | grep -c gfx906)" -gt 0 ] || { echo "GUARD FAIL: no gfx906 strings"; exit 9; }
-strings -a "build-mixed-gpu/$DST/strata" | grep -q 'prefill mmq:' || { echo "GUARD FAIL: MMQ state line missing"; exit 9; }
+[ "$(strings -a "build-mixed-gpu/$DST/strata" | grep -c 'prefill mmq:')" -gt 0 ] || { echo "GUARD FAIL: MMQ state line missing"; exit 9; }
 echo "=== GUARD PASS: golden-config gfx906 HIP build with MMQ state line ==="
 sha256sum "build-mixed-gpu/$DST/strata" | tee "build-mixed-gpu/$DST/strata.sha256"
 echo "=== BUILD PIN COMPLETE ($(date +%H:%M:%S)) ==="
