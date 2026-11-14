@@ -3188,3 +3188,24 @@ Pivot (config, no code): STRATA_ARENA_PIN_GIB — the arena stays 46.8 GiB resid
 but only a ~22 GiB profile-hot prefix takes DMA registration (relief's proven page scale); the tail
 stays locked + staged (RAM-speed, no disk). Next boot bisects the cap upward (22 -> 26 -> 30 ...) to
 find the largest request-safe registration; PP measured at the winner.
+
+## Round 18w — kernel 7.3.1 discriminator + mlock leg (2026-11-14 ~16:00-16:35)
+- Operator rebooted to kernel 7.3.1-x64v3-xanmod1 (archaeology lane: full residency last served on <=7.3.1). sysctl vm.compact_unevictable_allowed=0 set; ulimit -l unlimited.
+- Engine lane: commit 660d9f0dc7 (STRATA_ARENA_MLOCK, reviewer PASS-NOTES; binary strata-mlock-660d9f0dc sha f094ddcb) pins registered arena spans post-cudaHostRegister (10 sites, knob-gated).
+- R1 boot (IQ3_S full residency + mlock): host-callback first, loaded 46.84 GiB @1.85 GiB/s, expert cache 2916 slots (9.73 GiB free, 2304 reserved), register-last whole-arena registration ok in 563.2 s (4608 ranges), arena mlock: RLIMIT unlimited, locked 46.84 GiB over 4608 spans in 128.0 s. NO spin. RAM 54/62 with swap-thrash during load (si/so ~160 MB/s; engine write_bytes 0 — writes were kernel swap-out, not the engine). Killed at operator request before smoke verdict.
+- Verdict: 12.3M-page registration + first-touch survived on 7.3.1+mlock; the 18v request-time spin did not appear.
+
+## Round 18x — XXS full residency WITHOUT mlock on 7.3.1 (~16:40-16:47)
+- ud-iq3_xxs full-residency boot (relief dropped, reserves 2304, mlock off, commit e45b227333): registration progressed 4480 ranges (~47 GiB XXS arena) and completed, then the request path stalled (operator observed) — the 18v signature, on 7.3.1, without mlock. Killed.
+- Verdict: kernel 7.3.1 ALONE does not restore full residency; mlock is the load-bearing fix (invalidation hypothesis from the ROCm research lane holds). Full-residency+mlock for XXS remains the untried fast path.
+
+## Round 18y — XXS relief champion: boot, bench, promotion (~16:48-17:05)
+- Config restored to champion relief shape (f13c4ce81b: relief args back, reserves 576, mlock off, dedicated elog logs/engine-prod-ud-iq3xxs-v0233.log; launcher fixes c770aa7411 sockets + a9eac52642 helper pack iq3xxs-ud/XXS-shard1/fill 6796; clone base bb0ec893f3).
+- Boot: ready 16:48 (server log 'ready: http://'; /v1/models NOT readiness — burned twice tonight), smoke attempt 1 OK.
+- Bench (ab9_driver, temp 0 + sha, ctx 442400 ~= 79989 tokens):
+  - fill fresh-80k: 516.3 tok/s PP (0 reused). IQ3_S relief champion reference: 578.7 fresh-180k.
+  - tg run 1 (65536 reused + 14453 re-read @272.5 tok/s = 53 s turnaround): 10.2 tok/s TG, drafts 261/409 (64%).
+  - tg run 2 cached (79984 reused, 236 ms): 29.1 tok/s TG, drafts 273/404 (68%), helper reqs 4967/leg.
+- Interpretation: XXS warm TG is champion-class (29.0-31.5 band); the cold path (partial cache reuse + expert streaming) is the deficit. 65536-of-79989 reuse boundary is a cache-chunking artifact worth a knob look.
+- PROMOTED to prod. restore-prod.sh default is now xxs relief (8a9336a3a6). Prod serving ud-iq3_xxs on :8009.
+- Spec sweep (spec x min-p) + PP/turnaround/TG lever analysis delegated (single agent, protocol arms spec4/0.5 spec4/0.65 spec5/0.65 spec3/0.5, champion restore mandatory) — results in next round.
