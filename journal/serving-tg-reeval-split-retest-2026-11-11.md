@@ -3209,3 +3209,13 @@ find the largest request-safe registration; PP measured at the winner.
 - Interpretation: XXS warm TG is champion-class (29.0-31.5 band); the cold path (partial cache reuse + expert streaming) is the deficit. 65536-of-79989 reuse boundary is a cache-chunking artifact worth a knob look.
 - PROMOTED to prod. restore-prod.sh default is now xxs relief (8a9336a3a6). Prod serving ud-iq3_xxs on :8009.
 - Spec sweep (spec x min-p) + PP/turnaround/TG lever analysis delegated (single agent, protocol arms spec4/0.5 spec4/0.65 spec5/0.65 spec3/0.5, champion restore mandatory) — results in next round.
+
+## Round 18z — XXS spec sweep: all arms invalidated by stack-wide temp-0 nondeterminism (2026-11-14 ~17:00-17:50)
+- 4 arms (spec4/0.5, spec4/0.65, spec5/0.65, spec3/0.5), 5 boots, protocol per notes/2026-11-14-xxs-spec-sweep-results.md (tools: spec_sweep_arm.sh, restore_boot.sh).
+- EVERY arm failed the within-arm temp-0 sha guard: same prompt yields 334-680 tokens at temperature 0 across runs. Nondeterminism is stack-wide, not spec-knob-specific. NOTE: the earlier 18y baseline also shows it (411 vs 422 tokens within one leg invocation).
+- Provisional (invalid) leader spec4-p0.5: warm TG 32.9-34.5 vs champion 29.1 (+~4); PP unchanged by spec knobs (512.3-538.8 vs 516.3). Highest acceptance (79-86% at p0.65) gave the WORST warm TG — per-step overhead dominates; do not chase acceptance via min-p.
+- Determinism suspect #1: the upstream-verified MMQ row-id OOB read in our exact gfx906 prefill path (gemm.cu:1282-1296, STRATA_DENSE_MMQ=1; upstream fix family f225844d19/14dd746f6a/697b6d67a7, zero-conflict). Priority of upstream wave-1 raised from hygiene to correctness blocker for all spec tuning.
+- Turnaround lever located: judge lines checkpoint at 16k multiples and cross-prompt restore floors to 65536 of 79989 tokens; --prefill 16384 is the chunking knob (8192 => boundary 73728, ~halves the 51.5-55 s re-prefill; one-boot candidate). Re-read runs ~280 tok/s vs 539 fresh (swap-in pre-staging: SWAPIN_DEPTH/FS_SLOTS).
+- Other ranked levers recorded in the notes file (PP: reserve 576->832 per engine #2065 warning vs operator occupancy directive — settled empirically next round; WMMA port #4859. TG: FS slot pressure 'no free slot' 8,630->36,607 on long generations; KV 4096 MiB resident vs 1.8 GiB at 80k).
+- Champion (spec5-p0.5) restored at 709f170c0f, prod UP 17:47:11 (ready line, completion answered).
+- Round 18aa (running): --vram-reserve-mib descent 512/448/384/320 with break detection; prod ends on the measured last-good edge.
