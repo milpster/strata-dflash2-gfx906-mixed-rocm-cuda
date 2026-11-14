@@ -2898,6 +2898,7 @@ lines (the HIP nodiscard/unused noise is unchanged). A concurrent 18o lane (vram
 worktree; its files are NOT in this commit (staged: only the 3 files above). Not yet flipped to
 prod: the reviewer gate (18m) runs before any boot/flip/arm, and pinned_alias_test still needs a
 real registration - not runnable while prod serves.
+- Addendum (review note A): condition now Linux-gated as documented; non-Linux keeps before-fill registration (c873503f0c)
 
 **Round 18o — the per-GPU VRAM guard lands (v0233-candidate @ ce210ea4ea).**
 The 18m diagnosis: on the 2x Radeon VII split a card's free VRAM sinks to tens of MiB at long
