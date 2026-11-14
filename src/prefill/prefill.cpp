@@ -1622,6 +1622,11 @@ const MmqPlan& mmq_plan() {
         const auto& lay = strata::kernels::cpu::expert_layout();
         const char* env = std::getenv("STRATA_PREFILL_MMQ");
         const bool on = mmq::built() && (env == nullptr || std::atoi(env) != 0);
+        // audit, printed once per start with the plan: the effective MMQ prompt-path state and its source. The env
+        // is the only runtime switch - the CMake option of the same name does not gate the gfx906 build (the path
+        // is always compiled in), so the state below is the truth the engine runs with.
+        if (env == nullptr) std::fprintf(stderr, "prefill mmq: %s (env unset, default) [built=%d]\n", on ? "on" : "off", (int) mmq::built());
+        if (env != nullptr) std::fprintf(stderr, "prefill mmq: %s (env=%s) [built=%d]\n", on ? "on" : "off", env, (int) mmq::built());
         const int64_t layers = lay.native ? (int64_t) lay.fmt.size() : lay.n_layers;
         p.layer.assign((size_t) std::max<int64_t>(layers, 0), 0);
         p.fo.assign(p.layer.size(), 0);
@@ -2370,6 +2375,8 @@ bool Prefill::draft_kv(core::MtpDrafter& mtp, const float* R_rows, const int32_t
     // E-9: the drafter's Q8_0 matrices through Q8_1 x Q8_0 MMQ - its own pass's integer dot products (mmvq), so
     // its K/V stay close to what the drafter computes itself; STRATA_MTP_BATCH_F16=1: FP16 GEMMs (the A/B)
     static const bool f16_only = [] { const char* v = std::getenv("STRATA_MTP_BATCH_F16"); return v && v[0] == '1'; }();
+    // the q8 MMQ carve above is the DEFAULT; STRATA_MTP_BATCH_F16=1 is the opt-out that reverts the drafter's
+    // projections to the FP16 GEMMs (the A/B baseline arm)
     const bool q8 = !f16_only && mmq::built() && mmq::fits(kQ8_0, Nn) && mmq::fits(kQ8_0, KV);   // #420
     const uint64_t per_row = 4 * (2 * Nn + 4 * HCN + LR + HC + Nn + 2 * KV + 1) + 2 * (Nn + 2 * HCN + LR + Nn) + 64 +
                              (q8 ? (uint64_t) mmq::q8_bytes(g.hc, Nn) + 8 * g.hc : 0);   // (8 * hc: the row table twice, see its margin below)
