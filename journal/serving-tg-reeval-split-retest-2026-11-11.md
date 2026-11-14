@@ -2959,6 +2959,13 @@ stepped" for a fresh card when uptime < the window; 0 is now explicitly "never s
 (vram_guard.cpp:100).
 Not flipped to prod (default OFF; the 18m reviewer gate runs before any arm, and the donor TODO
 above is the follow-up for the generate.cpp lane).
+- Addendum (donor review, PASS-NOTES): N-c — with STRATA_PARK_VRAM_MIB unset (today's prod env) the
+  donor structurally frees 0: the enabled guard is honest logging until park-vram is on; enablement must
+  be measured WITH park-vram, and no enablement decision may assume the floor reserves anything on its
+  own. N-b — donor-vs-serve-path release_all safety rests on the single-host-thread contract; if any
+  check site ever moves off-thread (the staging lane's copy_nonblocking is the adjacent risk), the park
+  slot pool needs a mutex first. N-a — t_in_donor lacks RAII (no realistic throw path today; scope guard
+  when next touched).
 
 **Round 18q — off-thread begin-seam staging lands (v0233-candidate @ d4f7b95052).**
 The TG stall evidence (prod, eyemark #5, journal 18i ARM1): the helper shadow's ring staging runs
