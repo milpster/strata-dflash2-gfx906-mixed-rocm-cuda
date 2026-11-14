@@ -94,17 +94,24 @@ for i in $(seq 1 160); do  # 160 x 15s = 40 min ceiling (cold boots + range regi
   fi
   [ -n "${SEEN[regok]:-}" ] && [ -n "${SEEN[up]:-}" ] && break
 done
+PIN_CAP=$(python3 -c "import json;print(json.load(open('$CFG'))['env'].get('STRATA_ARENA_PIN_GIB',''))")
 [ -n "${SEEN[warm]:-}" ] || { echo "MISSING banner: host-callback warm-up"; false; }
-[ -n "${SEEN[reg]:-}" ]  || { echo "MISSING banner: whole-arena registration (register-last not armed?)"; false; }
-[ -n "${SEEN[regok]:-}" ] || { echo "MISSING banner: registration ok"; false; }
+if [ -z "$PIN_CAP" ]; then
+  [ -n "${SEEN[reg]:-}" ]  || { echo "MISSING banner: whole-arena registration (register-last not armed?)"; false; }
+  [ -n "${SEEN[regok]:-}" ] || { echo "MISSING banner: registration ok"; false; }
+else
+  echo "capped pin (STRATA_ARENA_PIN_GIB=$PIN_CAP): register-last banners not expected (sliced path)"
+fi
 [ -n "${SEEN[up]:-}" ]   || { echo "Engine never came up on :8009"; false; }
 tr -d '\0' < "$ELOG" | grep -aE 'whole arena|host-callback|expert cache auto|loaded [0-9.]+ GiB' | head -8 | tee "$OUT/round1.banners.txt"
 
+if [ -z "$PIN_CAP" ]; then
 echo "== 4b. range-count gate (review): a degenerate count means the 18n single-range spin — abort BEFORE the first request"
 RANGES=$(tr -d '\0' < "$ELOG" | grep -a 'registration ok in' | tail -1 | grep -oE '[0-9]+ range' | grep -oE '[0-9]+' | head -1)
 echo "registered ranges: ${RANGES:-none-parsed}"
 [ -n "$RANGES" ] || { echo "ABORT: could not parse range count from the ok banner"; false; }
 [ "$RANGES" -ge 100 ] || { echo "ABORT: only $RANGES ranges — shape degraded toward the single-range spin (review note)"; false; }
+fi
 
 echo "== 5. first-request smoke (reviewer note E): retries until the engine is truly READY"
 echo "   (registration-ok + /v1/models is NOT readiness: post-registration init takes minutes;"

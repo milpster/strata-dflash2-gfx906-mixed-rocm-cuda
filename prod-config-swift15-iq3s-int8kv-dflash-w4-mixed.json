@@ -92,7 +92,8 @@
     "STRATA_FS_SLOTS": "3,2",
     "STRATA_FS_HELPER_SHADOW": "1",
     "STRATA_FS_ADMIT": "2",
-    "STRATA_GRAPH_FAMILY_TRIM": "8"
+    "STRATA_GRAPH_FAMILY_TRIM": "8",
+    "STRATA_ARENA_PIN_GIB": "22"
   },
   "env_to_user": true,
   "exe": "/mnt/srcds/Strata/v0233/build-mixed-gpu/rpcw-hip/strata",
