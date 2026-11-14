@@ -140,6 +140,10 @@ set(STRATA_ORACLE_BUILD_DIR "" CACHE PATH "frozen by freeze_build_conf.sh from "
 set(STRATA_ORACLE_SOURCE_DIR "" CACHE PATH "frozen by freeze_build_conf.sh from ")
 set(STRATA_PLE_FIXTURE_DIR "/mnt/srcds/Strata/bench/micro" CACHE PATH "frozen by freeze_build_conf.sh from ")
 set(STRATA_PORTABLE "OFF" CACHE BOOL "frozen by freeze_build_conf.sh from ")
+# INERT on this tree (gfx906 audit 2026-11-14): the CUDA branch of CMakeLists.txt sets STRATA_PREFILL_MMQ=1 on
+# strata_prefill unconditionally, so this OFF never gates the sm_86 build either; the runtime switch is the env
+# var of the same name (unset = on). Kept OFF because freeze_build_conf.sh re-freezes verbatim from the proven
+# tree's cache (option default OFF) and drops this comment on the way.
 set(STRATA_PREFILL_MMQ "OFF" CACHE BOOL "frozen by freeze_build_conf.sh from ")
 set(STRATA_SDE "" CACHE FILEPATH "frozen by freeze_build_conf.sh from ")
 set(STRATA_WERROR "OFF" CACHE BOOL "frozen by freeze_build_conf.sh from ")

@@ -155,6 +155,12 @@ set(STRATA_P2_DIAGNOSTICS "OFF" CACHE BOOL "frozen by freeze_build_conf.sh from 
 set(STRATA_PARITY_GFX1100_QSA_SCORES "OFF" CACHE BOOL "frozen by freeze_build_conf.sh from ")
 set(STRATA_PLE_FIXTURE_DIR "/mnt/srcds/Strata-wt-disk-cache/bench/micro" CACHE PATH "frozen by freeze_build_conf.sh from ")
 set(STRATA_PORTABLE "OFF" CACHE BOOL "frozen by freeze_build_conf.sh from ")
+# TRUTH, gfx906 audit 2026-11-14: this cache line is INERT for what the rpcw-hip tree builds. A gfx906 HIP build
+# takes the CUDA branch of CMakeLists.txt, which compiles the MMQ prompt path and sets STRATA_PREFILL_MMQ=1 on
+# strata_prefill unconditionally - whatever this OFF says, the path is in the binary and the engine defaults it ON.
+# The OFF stays because freeze_build_conf.sh re-freezes these set() lines verbatim from a proven tree's cache
+# (which holds the option's OFF default) and would drop this comment: if it disappears, re-add it.
+# The runtime switch is the env var of the same name (unset = on); mmq_plan() prints "prefill mmq: ..." once per start.
 set(STRATA_PREFILL_MMQ "OFF" CACHE BOOL "frozen by freeze_build_conf.sh from ")
 set(STRATA_Q6K_EXPERTS "ON" CACHE BOOL "frozen by freeze_build_conf.sh from ")
 set(STRATA_WERROR "OFF" CACHE BOOL "frozen by freeze_build_conf.sh from ")
