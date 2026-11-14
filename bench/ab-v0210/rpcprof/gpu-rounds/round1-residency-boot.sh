@@ -89,12 +89,20 @@ done
 [ -n "${SEEN[up]:-}" ]   || { echo "Engine never came up on :8009"; false; }
 tr -d '\0' < "$ELOG" | grep -aE 'whole arena|host-callback|expert cache auto|loaded [0-9.]+ GiB' | head -8 | tee "$OUT/round1.banners.txt"
 
-echo "== 5. first-request smoke: one small temp-0 completion over the fresh registration (reviewer note E)"
+echo "== 5. first-request smoke (reviewer note E): retries until the engine is truly READY"
+echo "   (registration-ok + /v1/models is NOT readiness: post-registration init takes minutes;"
+echo "    early requests are dropped and the supervisor may rebuild once — retrying covers both)"
 MID=$(curl -s -m 3 http://127.0.0.1:8009/v1/models | python3 -c "import json,sys;print(json.load(sys.stdin)['data'][0]['id'])")
-SMOKE=$(curl -s -m 180 http://127.0.0.1:8009/v1/chat/completions -H 'Content-Type: application/json' \
-  -d "{\"model\":\"$MID\",\"messages\":[{\"role\":\"user\",\"content\":\"Say OK.\"}],\"max_tokens\":8,\"temperature\":0}")
+SMOKE=""
+for i in $(seq 1 20); do
+  sleep 30
+  SMOKE=$(curl -s -m 240 http://127.0.0.1:8009/v1/chat/completions -H 'Content-Type: application/json' \
+    -d "{\"model\":\"$MID\",\"messages\":[{\"role\":\"user\",\"content\":\"Say OK.\"}],\"max_tokens\":8,\"temperature\":0}")
+  if echo "$SMOKE" | grep -q '"content"'; then echo "smoke content on attempt $i (~$((i*30))s)"; break; fi
+  echo "attempt $i: no content yet ($(echo "$SMOKE" | head -c 60))"
+done
 echo "$SMOKE" | head -c 200; echo
-echo "$SMOKE" | grep -q '"content"' || { echo "SMOKE FAILED: no completion content"; false; }
+echo "$SMOKE" | grep -q '"content"' || { echo "SMOKE FAILED after 20 attempts (~10 min): engine never served a completion"; false; }
 NS=$(tr -d '\0' < "$ELOG" | grep -acE 'verify: timed out|stopped unexpectedly') || NS=0
 [ "$NS" -eq 0 ] || { echo "$NS fatal lines after smoke request"; false; }
 echo "$SMOKE" > "$OUT/round1.smoke.json"
