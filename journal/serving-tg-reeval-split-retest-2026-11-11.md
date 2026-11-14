@@ -3176,3 +3176,15 @@ rebuild. Fix: launcher exports STRATA_ENGINE_READY_S=2400 (70660bf6c6); round1 l
 Attempt 11 running with all infra fixes. Flip-script infra bugs closed this session: env pass-through,
 fail markers, smoke-before-READY, straggler races, set-e pkill, rename-installs, idempotent commits,
 orphan gate, range-count gate, server patience.
+
+**Round 18v — GPU R1 attempt 12: range shape does NOT cure the spin; the limit is total pinned pages.**
+Attempt 12 (4608-range chunked registration): boot clean, registration ok 288.4 s, engine REACHED
+READY ("ready: http://..."), then the first smoke request WEDGED the first forward pass: curl quit
+at 240 s, the server sent STOP, the engine never honored it, server SIGKILLed (-9) after 304 s and
+rebuilt; retry attempts 2-20 hit the same wedge/kill cycle. Conclusion: the ROClr spin scales with
+TOTAL live registered pages (full arena 12.3M 4-KiB pages spins; relief's ~5.6M complement serves) —
+chunking does not help. Full-span DMA registration is a driver wall on this stack.
+Pivot (config, no code): STRATA_ARENA_PIN_GIB — the arena stays 46.8 GiB resident (operator policy),
+but only a ~22 GiB profile-hot prefix takes DMA registration (relief's proven page scale); the tail
+stays locked + staged (RAM-speed, no disk). Next boot bisects the cap upward (22 -> 26 -> 30 ...) to
+find the largest request-safe registration; PP measured at the winner.
