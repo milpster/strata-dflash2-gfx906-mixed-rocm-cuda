@@ -1,0 +1,32 @@
+{
+ "arm": "D_V231CHK",
+ "leg": "killer144k-tg1024",
+ "kind": "prefill",
+ "ctx": 786800,
+ "max_tokens": 64,
+ "ts": 1794586657.224,
+ "walls": [
+  306.599
+ ],
+ "wall_s": 306.601,
+ "content_from": "content",
+ "prompt_bytes": 786800,
+ "sha256": "b84905134bf624fbf9b19e5d5b534cd1e52b93371676a8b9dd71809313def29e",
+ "elog": "/mnt/srcds/Strata/logs/engine-d-v231chk.log",
+ "elog_start": 11075,
+ "elog_end": 16862,
+ "hlog": "/mnt/srcds/Strata/logs/trial-spill40-20261113-171032-2813029-helper.log",
+ "hlog_start": 1441,
+ "hlog_end": 1441,
+ "mem": {
+  "max_rss_mib": 48498,
+  "min_avail_mib": 9804,
+  "max_swap_used_mib": 10869,
+  "max_vram_mib": {
+   "card3": 16195,
+   "card4": 455,
+   "card2": 16290,
+   "nvidia0": 7144
+  }
+ }
+}

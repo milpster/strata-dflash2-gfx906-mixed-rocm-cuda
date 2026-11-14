@@ -1,0 +1,33 @@
+{
+ "arm": "LEVER",
+ "leg": "tg80k",
+ "kind": "tg",
+ "ctx": 442400,
+ "max_tokens": 1024,
+ "ts": 1794678376.807,
+ "walls": [
+  28.305,
+  19.554
+ ],
+ "wall_s": 47.861,
+ "content_from": "content",
+ "prompt_bytes": 442400,
+ "sha256": "30875f1caaa9a420e2c0014cc067c058a9894441008e59aeeac7cd9ea51f1f16",
+ "elog": "/mnt/srcds/Strata/logs/engine-prod-ud-iq3xxs-v0233.log",
+ "elog_start": 274675,
+ "elog_end": 276949,
+ "hlog": "/mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261114-183745-2276590-helper.log",
+ "hlog_start": 1466,
+ "hlog_end": 1466,
+ "mem": {
+  "max_rss_mib": 46966,
+  "min_avail_mib": 11395,
+  "max_swap_used_mib": 7102,
+  "max_vram_mib": {
+   "card3": 15952,
+   "card4": 254,
+   "card2": 16359,
+   "nvidia0": 7336
+  }
+ }
+}

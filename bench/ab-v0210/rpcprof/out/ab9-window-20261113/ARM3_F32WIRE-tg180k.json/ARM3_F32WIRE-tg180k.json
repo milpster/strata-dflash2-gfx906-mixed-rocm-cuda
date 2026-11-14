@@ -1,0 +1,33 @@
+{
+ "arm": "ARM3_F32WIRE",
+ "leg": "tg180k",
+ "kind": "tg",
+ "ctx": 995000,
+ "max_tokens": 512,
+ "ts": 1794599443.108,
+ "walls": [
+  261.254,
+  17.445
+ ],
+ "wall_s": 278.704,
+ "content_from": "content",
+ "prompt_bytes": 995000,
+ "sha256": "a71c53e7a1512f036cb36ceea469d4dbd5e1e3f997712683dc9e32f50c781998",
+ "elog": "/mnt/srcds/Strata/logs/engine-v0233-f32.log",
+ "elog_start": 25368,
+ "elog_end": 32142,
+ "hlog": "/mnt/srcds/Strata/logs/trial-spill40-20261113-203818-1617225-helper.log",
+ "hlog_start": 1551,
+ "hlog_end": 1551,
+ "mem": {
+  "max_rss_mib": 52278,
+  "min_avail_mib": 12571,
+  "max_swap_used_mib": 8344,
+  "max_vram_mib": {
+   "card3": 16281,
+   "card4": 451,
+   "card2": 16328,
+   "nvidia0": 7144
+  }
+ }
+}

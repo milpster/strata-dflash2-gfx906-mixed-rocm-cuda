@@ -1,0 +1,33 @@
+{
+ "arm": "D02_V28T2",
+ "leg": "killer144kL-tg1024",
+ "kind": "tg",
+ "ctx": 786801,
+ "max_tokens": 1024,
+ "ts": 1794565269.921,
+ "walls": [
+  76.724,
+  27.556
+ ],
+ "wall_s": 104.283,
+ "content_from": "content",
+ "prompt_bytes": 786801,
+ "sha256": "6cdbbbcdbda994a547a982339dde39a98863f68eff911ce7c2c90d9411596023",
+ "elog": "/mnt/srcds/Strata/logs/eng-d02-v0228t2.log",
+ "elog_start": 20792,
+ "elog_end": 23581,
+ "hlog": "/mnt/srcds/Strata/logs/trial-spill40-20261113-110353-1746507-helper.log",
+ "hlog_start": 1443,
+ "hlog_end": 1443,
+ "mem": {
+  "max_rss_mib": 51996,
+  "min_avail_mib": 11091,
+  "max_swap_used_mib": 10985,
+  "max_vram_mib": {
+   "card3": 16221,
+   "card4": 466,
+   "card2": 16293,
+   "nvidia0": 7144
+  }
+ }
+}

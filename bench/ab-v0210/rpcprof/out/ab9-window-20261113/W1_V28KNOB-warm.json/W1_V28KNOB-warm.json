@@ -1,0 +1,32 @@
+{
+ "arm": "W1_V28KNOB",
+ "leg": "warm",
+ "kind": "warm",
+ "ctx": 512,
+ "max_tokens": 64,
+ "ts": 1794569356.468,
+ "walls": [
+  179.712
+ ],
+ "wall_s": 179.713,
+ "content_from": "content",
+ "prompt_bytes": 512,
+ "sha256": "c35dc197e108cb91c0a939319525193a68312dd6b85c7aa4deac4ad1b0274ee6",
+ "elog": "/mnt/srcds/Strata/logs/engine-w1-v0228knob.log",
+ "elog_start": 13482,
+ "elog_end": 17291,
+ "hlog": "/mnt/srcds/Strata/logs/trial-spill40-20261113-122412-2897945-helper.log",
+ "hlog_start": 1441,
+ "hlog_end": 1441,
+ "mem": {
+  "max_rss_mib": 46845,
+  "min_avail_mib": 7524,
+  "max_swap_used_mib": 12022,
+  "max_vram_mib": {
+   "card3": 16164,
+   "card4": 443,
+   "card2": 16259,
+   "nvidia0": 7118
+  }
+ }
+}

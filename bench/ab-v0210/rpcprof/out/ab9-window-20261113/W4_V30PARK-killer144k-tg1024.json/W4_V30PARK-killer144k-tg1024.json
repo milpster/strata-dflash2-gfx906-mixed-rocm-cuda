@@ -1,0 +1,32 @@
+{
+ "arm": "W4_V30PARK",
+ "leg": "killer144k-tg1024",
+ "kind": "prefill",
+ "ctx": 786800,
+ "max_tokens": 1024,
+ "ts": 1794574479.229,
+ "walls": [
+  367.258
+ ],
+ "wall_s": 367.259,
+ "content_from": "content",
+ "prompt_bytes": 786800,
+ "sha256": "0ab3aba538c7f89cb56b32cc6236e37d25fdd8ccc44d8ae494ae976bf211b95a",
+ "elog": "/mnt/srcds/Strata/logs/engine-w4-v0230park.log",
+ "elog_start": 14479,
+ "elog_end": 17493,
+ "hlog": "/mnt/srcds/Strata/logs/trial-spill40-20261113-134548-4050394-helper.log",
+ "hlog_start": 1443,
+ "hlog_end": 1443,
+ "mem": {
+  "max_rss_mib": 51735,
+  "min_avail_mib": 13435,
+  "max_swap_used_mib": 8555,
+  "max_vram_mib": {
+   "card3": 16220,
+   "card4": 292,
+   "card2": 16291,
+   "nvidia0": 7144
+  }
+ }
+}

@@ -1,0 +1,33 @@
+{
+ "arm": "R2_V232B",
+ "leg": "killer144kL-tg1024",
+ "kind": "tg",
+ "ctx": 786801,
+ "max_tokens": 1024,
+ "ts": 1794589610.742,
+ "walls": [
+  103.57,
+  25.465
+ ],
+ "wall_s": 129.039,
+ "content_from": "content",
+ "prompt_bytes": 786801,
+ "sha256": "86783f716ce750af5c92f6b380f97f7666a073500ee8e051122d2e1510e41b76",
+ "elog": "/mnt/srcds/Strata/logs/engine-r2-v0232b.log",
+ "elog_start": 19003,
+ "elog_end": 23402,
+ "hlog": "/mnt/srcds/Strata/logs/trial-spill40-20261113-175531-3461771-helper.log",
+ "hlog_start": 1441,
+ "hlog_end": 1441,
+ "mem": {
+  "max_rss_mib": 50768,
+  "min_avail_mib": 9876,
+  "max_swap_used_mib": 13317,
+  "max_vram_mib": {
+   "card3": 16221,
+   "card4": 459,
+   "card2": 16292,
+   "nvidia0": 7144
+  }
+ }
+}

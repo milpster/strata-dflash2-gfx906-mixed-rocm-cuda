@@ -1,0 +1,32 @@
+{
+ "arm": "R2_V232B",
+ "leg": "warm",
+ "kind": "warm",
+ "ctx": 512,
+ "max_tokens": 64,
+ "ts": 1794589123.61,
+ "walls": [
+  12.103
+ ],
+ "wall_s": 12.103,
+ "content_from": "content",
+ "prompt_bytes": 512,
+ "sha256": "348237682996df0fc97759aa1e37b5da25ef22a6d75c5459d687d3f58d1f5b61",
+ "elog": "/mnt/srcds/Strata/logs/engine-r2-v0232b.log",
+ "elog_start": 11076,
+ "elog_end": 14573,
+ "hlog": "/mnt/srcds/Strata/logs/trial-spill40-20261113-175531-3461771-helper.log",
+ "hlog_start": 1441,
+ "hlog_end": 1441,
+ "mem": {
+  "max_rss_mib": 40330,
+  "min_avail_mib": 13239,
+  "max_swap_used_mib": 11981,
+  "max_vram_mib": {
+   "card3": 16165,
+   "card4": 475,
+   "card2": 16235,
+   "nvidia0": 7144
+  }
+ }
+}

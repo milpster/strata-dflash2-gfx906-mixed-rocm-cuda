@@ -1,0 +1,4 @@
+strata generate: GPU host-callback thread started before host-core pinning
+strata generate: loaded 46.84 GiB at 1.85 GiB/s
+strata generate: expert cache auto: 9.73 GiB free, 2304 MiB reserved (+0 MiB for the draft head, +256 MiB for what is allocated after the cache) -> 2916 slots
+strata pin: registering the whole arena (46.8 GiB) as the last boot step ...

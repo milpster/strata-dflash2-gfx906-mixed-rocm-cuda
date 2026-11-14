@@ -1,0 +1,32 @@
+{
+ "arm": "W3_V30ANCHOR",
+ "leg": "warm",
+ "kind": "warm",
+ "ctx": 512,
+ "max_tokens": 64,
+ "ts": 1794572502.702,
+ "walls": [
+  14.409
+ ],
+ "wall_s": 14.41,
+ "content_from": "content",
+ "prompt_bytes": 512,
+ "sha256": "6adb2f0adf97eee72d635b867e5295fc717706df4fa876ebf6a65c563fede379",
+ "elog": "/mnt/srcds/Strata/logs/engine-w3-v0230anchor.log",
+ "elog_start": 11075,
+ "elog_end": 14843,
+ "hlog": "/mnt/srcds/Strata/logs/trial-spill40-20261113-131938-3678022-helper.log",
+ "hlog_start": 1443,
+ "hlog_end": 1443,
+ "mem": {
+  "max_rss_mib": 40266,
+  "min_avail_mib": 15733,
+  "max_swap_used_mib": 9100,
+  "max_vram_mib": {
+   "card3": 16165,
+   "card4": 455,
+   "card2": 16235,
+   "nvidia0": 7144
+  }
+ }
+}

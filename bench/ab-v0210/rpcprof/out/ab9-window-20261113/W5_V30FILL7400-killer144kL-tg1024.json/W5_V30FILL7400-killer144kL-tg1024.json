@@ -1,0 +1,33 @@
+{
+ "arm": "W5_V30FILL7400",
+ "leg": "killer144kL-tg1024",
+ "kind": "tg",
+ "ctx": 786801,
+ "max_tokens": 1024,
+ "ts": 1794573743.804,
+ "walls": [
+  70.214,
+  22.919
+ ],
+ "wall_s": 93.136,
+ "content_from": "content",
+ "prompt_bytes": 786801,
+ "sha256": "92ba37a0b9ed44c501c7f17465079b92ad28c2d509771e79f78e7cf46176e380",
+ "elog": "/mnt/srcds/Strata/logs/engine-w5-v0230fill7400.log",
+ "elog_start": 19495,
+ "elog_end": 22446,
+ "hlog": "/mnt/srcds/Strata/logs/trial-spill40-20261113-133241-3863994-helper.log",
+ "hlog_start": 1441,
+ "hlog_end": 1441,
+ "mem": {
+  "max_rss_mib": 53750,
+  "min_avail_mib": 12142,
+  "max_swap_used_mib": 8717,
+  "max_vram_mib": {
+   "card3": 16221,
+   "card4": 449,
+   "card2": 16293,
+   "nvidia0": 7146
+  }
+ }
+}

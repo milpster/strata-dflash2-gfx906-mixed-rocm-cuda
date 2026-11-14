@@ -1,0 +1,33 @@
+{
+ "arm": "ARM5_FILLRAISE",
+ "leg": "tg180k",
+ "kind": "tg",
+ "ctx": 995000,
+ "max_tokens": 512,
+ "ts": 1794601945.074,
+ "walls": [
+  254.711,
+  61.345
+ ],
+ "wall_s": 316.06,
+ "content_from": "content",
+ "prompt_bytes": 995000,
+ "sha256": "be6adf28dba3da0f0b1e4dce1d8efe171c7225ed3d78e433c23f446cf43c2af6",
+ "elog": "/mnt/srcds/Strata/logs/engine-v0233-fillraise.log",
+ "elog_start": 25685,
+ "elog_end": 32426,
+ "hlog": "/mnt/srcds/Strata/logs/trial-spill40-20261113-212009-2209319-helper.log",
+ "hlog_start": 1441,
+ "hlog_end": 1441,
+ "mem": {
+  "max_rss_mib": 53076,
+  "min_avail_mib": 12738,
+  "max_swap_used_mib": 10305,
+  "max_vram_mib": {
+   "card3": 16281,
+   "card4": 462,
+   "card2": 16328,
+   "nvidia0": 7336
+  }
+ }
+}

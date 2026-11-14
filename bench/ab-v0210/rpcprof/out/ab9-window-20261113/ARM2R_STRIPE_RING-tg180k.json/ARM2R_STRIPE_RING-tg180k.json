@@ -1,0 +1,33 @@
+{
+ "arm": "ARM2R_STRIPE_RING",
+ "leg": "tg180k",
+ "kind": "tg",
+ "ctx": 995000,
+ "max_tokens": 512,
+ "ts": 1794600359.827,
+ "walls": [
+  260.42,
+  54.539
+ ],
+ "wall_s": 314.963,
+ "content_from": "content",
+ "prompt_bytes": 995000,
+ "sha256": "90f96022e20812c1f401adfafdb3efcbfdea0db0ae27264a36d590efcfd1c2da",
+ "elog": "/mnt/srcds/Strata/logs/engine-v0233-stripe2.log",
+ "elog_start": 24899,
+ "elog_end": 33332,
+ "hlog": "/mnt/srcds/Strata/logs/trial-spill40-20261113-205419-1845233-helper.log",
+ "hlog_start": 1649,
+ "hlog_end": 1649,
+ "mem": {
+  "max_rss_mib": 53757,
+  "min_avail_mib": 12455,
+  "max_swap_used_mib": 9923,
+  "max_vram_mib": {
+   "card3": 16281,
+   "card4": 452,
+   "card2": 16328,
+   "nvidia0": 7144
+  }
+ }
+}

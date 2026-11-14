@@ -1,0 +1,33 @@
+{
+ "arm": "W4_V30PARK",
+ "leg": "tg1024",
+ "kind": "tg",
+ "ctx": 2048,
+ "max_tokens": 1024,
+ "ts": 1794574737.189,
+ "walls": [
+  16.187,
+  12.794
+ ],
+ "wall_s": 28.981,
+ "content_from": "content",
+ "prompt_bytes": 2048,
+ "sha256": "e65a98edc89c5f78668e4054181df37fc17d4441c5a3477689b190549f971903",
+ "elog": "/mnt/srcds/Strata/logs/engine-w4-v0230park.log",
+ "elog_start": 27264,
+ "elog_end": 28866,
+ "hlog": "/mnt/srcds/Strata/logs/trial-spill40-20261113-134548-4050394-helper.log",
+ "hlog_start": 1443,
+ "hlog_end": 1443,
+ "mem": {
+  "max_rss_mib": 53015,
+  "min_avail_mib": 15640,
+  "max_swap_used_mib": 8923,
+  "max_vram_mib": {
+   "card3": 16220,
+   "card4": 292,
+   "card2": 16292,
+   "nvidia0": 7144
+  }
+ }
+}

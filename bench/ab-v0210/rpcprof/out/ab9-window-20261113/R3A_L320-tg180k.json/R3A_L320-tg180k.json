@@ -1,0 +1,33 @@
+{
+ "arm": "R3A_L320",
+ "leg": "tg180k",
+ "kind": "tg",
+ "ctx": 995000,
+ "max_tokens": 512,
+ "ts": 1794591908.211,
+ "walls": [
+  282.498,
+  46.224
+ ],
+ "wall_s": 328.727,
+ "content_from": "content",
+ "prompt_bytes": 995000,
+ "sha256": "072dc438d96b43a96609f28cfd3ef280724dc492e77fbdcdfeffb7824e8771fc",
+ "elog": "/mnt/srcds/Strata/logs/engine-r3a-v0232b-l320.log",
+ "elog_start": 37398,
+ "elog_end": 44880,
+ "hlog": "/mnt/srcds/Strata/logs/trial-spill40-20261113-182121-3831467-helper.log",
+ "hlog_start": 1443,
+ "hlog_end": 1443,
+ "mem": {
+  "max_rss_mib": 51944,
+  "min_avail_mib": 10183,
+  "max_swap_used_mib": 11646,
+  "max_vram_mib": {
+   "card3": 16221,
+   "card4": 460,
+   "card2": 16294,
+   "nvidia0": 7170
+  }
+ }
+}

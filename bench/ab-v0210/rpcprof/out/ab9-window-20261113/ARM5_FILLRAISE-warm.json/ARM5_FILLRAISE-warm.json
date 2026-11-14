@@ -1,0 +1,32 @@
+{
+ "arm": "ARM5_FILLRAISE",
+ "leg": "warm",
+ "kind": "warm",
+ "ctx": 512,
+ "max_tokens": 64,
+ "ts": 1794601352.265,
+ "walls": [
+  12.752
+ ],
+ "wall_s": 12.752,
+ "content_from": "content",
+ "prompt_bytes": 512,
+ "sha256": "64750ecc04b06a9b2cadeef8ae197372e9aaa9d437c05209cbed1ac48265afea",
+ "elog": "/mnt/srcds/Strata/logs/engine-v0233-fillraise.log",
+ "elog_start": 11788,
+ "elog_end": 15652,
+ "hlog": "/mnt/srcds/Strata/logs/trial-spill40-20261113-212009-2209319-helper.log",
+ "hlog_start": 1441,
+ "hlog_end": 1441,
+ "mem": {
+  "max_rss_mib": 40022,
+  "min_avail_mib": 16698,
+  "max_swap_used_mib": 8886,
+  "max_vram_mib": {
+   "card3": 16225,
+   "card4": 437,
+   "card2": 16358,
+   "nvidia0": 7336
+  }
+ }
+}

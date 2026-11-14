@@ -1,0 +1,32 @@
+{
+ "arm": "W6_V30DF2W",
+ "leg": "warm",
+ "kind": "warm",
+ "ctx": 512,
+ "max_tokens": 64,
+ "ts": 1794575003.709,
+ "walls": [
+  14.068
+ ],
+ "wall_s": 14.068,
+ "content_from": "content",
+ "prompt_bytes": 512,
+ "sha256": "6676d1f5793a5ff3b107052beba7cc386de19f2fa8b0590c266ee9e5045096ed",
+ "elog": "/mnt/srcds/Strata/logs/engine-w6-v0230df2w.log",
+ "elog_start": 11074,
+ "elog_end": 14471,
+ "hlog": "/mnt/srcds/Strata/logs/trial-spill40-20261113-140019-62125-helper.log",
+ "hlog_start": 1443,
+ "hlog_end": 1443,
+ "mem": {
+  "max_rss_mib": 40308,
+  "min_avail_mib": 15536,
+  "max_swap_used_mib": 7768,
+  "max_vram_mib": {
+   "card3": 16164,
+   "card4": 455,
+   "card2": 16235,
+   "nvidia0": 7144
+  }
+ }
+}

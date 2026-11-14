@@ -1,0 +1,33 @@
+{
+ "arm": "D01_V27",
+ "leg": "longtg",
+ "kind": "tg",
+ "ctx": 160000,
+ "max_tokens": 384,
+ "ts": 1794564130.04,
+ "walls": [
+  62.137,
+  8.641
+ ],
+ "wall_s": 70.779,
+ "content_from": "content",
+ "prompt_bytes": 160000,
+ "sha256": "be24a8338cd84c3b164ddb05536d660edd7f4eb39b4c126af86abc37dc124054",
+ "elog": "/mnt/srcds/Strata/logs/eng-d01-v0227.log",
+ "elog_start": 21794,
+ "elog_end": 25669,
+ "hlog": "/mnt/srcds/Strata/logs/trial-spill40-20261113-105046-1559167-helper.log",
+ "hlog_start": 1443,
+ "hlog_end": 1443,
+ "mem": {
+  "max_rss_mib": 50734,
+  "min_avail_mib": 14505,
+  "max_swap_used_mib": 11277,
+  "max_vram_mib": {
+   "card3": 16220,
+   "card4": 463,
+   "card2": 16292,
+   "nvidia0": 7144
+  }
+ }
+}

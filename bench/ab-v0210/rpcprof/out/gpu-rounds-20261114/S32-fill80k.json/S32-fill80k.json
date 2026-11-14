@@ -1,0 +1,32 @@
+{
+ "arm": "S32",
+ "leg": "fill80k",
+ "kind": "prefill",
+ "ctx": 442400,
+ "max_tokens": 8,
+ "ts": 1794679839.485,
+ "walls": [
+  192.6
+ ],
+ "wall_s": 192.602,
+ "content_from": "reasoning",
+ "prompt_bytes": 442400,
+ "sha256": "01db7a9d154bb188430b234246589661629c627462db9ec632e33137f49bb45e",
+ "elog": "/mnt/srcds/Strata/logs/engine-prod-ud-iq3xxs-v0233.log",
+ "elog_start": 332217,
+ "elog_end": 335954,
+ "hlog": "/mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261114-190536-2685969-helper.log",
+ "hlog_start": 1465,
+ "hlog_end": 1465,
+ "mem": {
+  "max_rss_mib": 46266,
+  "min_avail_mib": 15911,
+  "max_swap_used_mib": 8802,
+  "max_vram_mib": {
+   "card3": 15934,
+   "card4": 441,
+   "card2": 16345,
+   "nvidia0": 7336
+  }
+ }
+}
