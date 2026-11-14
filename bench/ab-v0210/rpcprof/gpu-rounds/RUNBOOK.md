@@ -29,9 +29,13 @@ sha MISMATCH = correctness stop: quarantine (STRATA_REGISTER_LAST=0), fix round 
 
 ## Round 3 — ARM7 ring sweep (round3-arm7-ring.sh)
 Gate in: round2 done (sha OK) + prod may be taken down again.
-Does: for R in 64 128: boot champion env + STRATA_FS_RING=$R via boot-arm.sh ->
-  panel-tg.sh ARM7_R$R -> per-leg fresh-vs-rerun sha verdicts (determinism within
-  arm) + tps vs champion records (out/ab9-window-20261113/ARM1_*).
+NOTE (staging review): with STRATA_STAGE_OFFTHREAD=1 this is the stager's FIRST-EVER execution
+  (zero host-test coverage on the ON path). Pass criteria: stage_drops/ring_busy report lines present,
+  ring-full rejections ~0, checkpoints 1-4 — and any temp-0 sha delta vs knob-off is a DEFECT
+  (transport-only change; rows shifting helper/CPU->GPU-slot must stay bitwise identical), not noise.
+Does: for R in 64 128: boot champion env + STRATA_FS_RING=$R (+ STRATA_STAGE_OFFTHREAD=1 arm
+  and a knob-off control) via boot-arm.sh -> panel-tg.sh ARM7_R$R -> per-leg fresh-vs-rerun sha
+  verdicts (determinism within arm) + tps vs champion records (out/ab9-window-20261113/ARM1_*).
 Gate out: winner table; ring only promotes if >= champion warm-180k TG AND all
   sha verdicts OK; otherwise champion stands and the env is simply not set.
 
