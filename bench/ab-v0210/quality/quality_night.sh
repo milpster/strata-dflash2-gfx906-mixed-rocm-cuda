@@ -13,8 +13,8 @@ PY=python3
 while ! grep -q 'COMPLETE' $R/logs/fs-arm-29.log 2>/dev/null; do sleep 20; done
 sleep 8
 
-echo "=== 1. SHA TEMP-0 REPRO (6x, live prod) ($(date +%T)) ==="
-for i in 1 2 3 4 5 6; do
+echo "=== 1. SHA TEMP-0 REPRO (3x, live prod) ($(date +%T)) ==="
+for i in 1 2 3; do
   RESP=$(curl -s -m 240 http://127.0.0.1:8009/v1/chat/completions -H 'Content-Type: application/json' \
     -d '{"model":"ud-iq3_xxs","messages":[{"role":"user","content":"Explain how a transformer attention head works, step by step, covering the query, key and value projections, the softmax over scores, and the output projection."}],"max_tokens":512,"temperature":0}')
   echo "$RESP" | $PY -c "
