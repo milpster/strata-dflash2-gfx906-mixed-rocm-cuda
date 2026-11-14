@@ -6312,7 +6312,23 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
     // written; nothing else pressures it during boot) and no request has run yet.
     const bool relief_reserve = !by_need && shared_arena_file.empty() &&
                                  (ram_relief_ || std::getenv("STRATA_ARENA_COLLAPSE") != nullptr);
-    PinnedArena* a = relief_reserve ? new PinnedArena(want + (uint64_t) blob, PinnedArena::ReserveOnly{})
+    // register-last (Linux, the whole-arena pin): on a ROCm box, EVERY driver call made while the
+    // whole-span registration is live - the default-stream syncs (the host-callback warm-up, the
+    // cache fills' syncs), spinning over 12.3M pinned 4 KiB pages - hangs at 100% of one core
+    // (journal 2026-11-13 round 18k/18l).  The relief path's shape is the proof: fill unregistered,
+    // register late, serve.  So the boot takes the same shape WITHOUT the drop: reserve unregistered
+    // (resident: the fill writes every byte and the pages stay, nothing evicts during boot), and
+    // register_whole() runs as the LAST boot step - after the pools, the cache fills, the drafter's
+    // warm-ups, the graph captures and the helper handshake - right before the serve loop's READY,
+    // the earliest point where a request's DMA could read the arena.  A capped pin (STRATA_ARENA_PIN_GIB,
+    // the WDDM multi-GPU 8 GiB) keeps the old before-fill registration: its sliced fallback exists
+    // to fill DURING the registration and is not restructurable.  Opt out: STRATA_REGISTER_LAST=0.
+    const bool register_last = !by_need && !relief_reserve && !deferred && max_pinned_bytes == 0 &&
+                               arena_pin_cap_gib() == -1 && shared_arena_file.empty() &&
+                               !arena_no_register() &&
+                               (std::getenv("STRATA_REGISTER_LAST") == nullptr ||
+                                std::string(std::getenv("STRATA_REGISTER_LAST")) != "0");
+    PinnedArena* a = relief_reserve || register_last ? new PinnedArena(want + (uint64_t) blob, PinnedArena::ReserveOnly{})
                     : by_need ? new PinnedArena(arena_bytes + (uint64_t) blob, PinnedArena::ByNeed{}, need_ranges,
                                                 max_pinned_bytes, shared_arena_file, pack_hash)
                    : deferred ? new PinnedArena(want + (uint64_t) blob, bounds, PinnedArena::Deferred{})
@@ -6566,6 +6582,15 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
     n_expert_ = n_expert;
     reads_ = 0;
     note_ = a->note;
+    register_last_ = register_last;
+    if (register_last) {
+        // The fill wrote plain pages.  register_whole() - the whole-span cudaHostRegister + the alias
+        // tables - is the LAST boot step, run by the caller right before serve's READY (nothing before
+        // it can DMA from the arena; the relief boot's identical shape is the proof, journal 2026-11-13
+        // round 18l).  The boot's own syncs never see a 12.3M-page registration to spin over.
+        note_ = "registers as the last boot step (register-last; the whole-arena pin runs right before "
+                "the first request) - " + note_;
+    }
     gib_per_s_ = st.gib_per_second();
     load_seconds_ = st.seconds;
     load_read_s_ = st.read_seconds;
@@ -6600,6 +6625,7 @@ void ArenaExpertSource::close() {
     unfilled_.store(0);
     unfilled_bytes_ = 0;
     arena_capacity_ = 0;
+    register_last_ = false;
     shared_backing_ = false;
     std::lock_guard<std::mutex> lk(file_mu_);
     file_.reset();
@@ -6916,6 +6942,32 @@ void ArenaExpertSource::register_complement(const std::vector<std::pair<int32_t,
     std::fprintf(stderr, "strata generate: --expert-helper-ram-relief: registered what stayed behind the helper's "
                          "%llu pairs (%lld dropped, %zu range(s), %.2f GiB)\n",
                  (unsigned long long) held.size(), (long long) dropped, comp.size(), (double) got / 1073741824.0);
+}
+
+void ArenaExpertSource::register_whole() {
+    // register-last, the LAST boot step (the caller runs this immediately before serve's READY or the
+    // one-shot request loop): the whole span over the ReserveOnly arena - the same register_after_fill +
+    // apply_registration the relief path runs after its drop, with no complement to build because
+    // nothing was dropped - so no boot-time driver sync (a cache fill's, a warm-up's, a capture's) ever
+    // runs over a live whole-span registration: on a ROCm box that sync spins over the 12.3M pinned
+    // 4 KiB pages at 100% of one core and the boot never returns (journal 2026-11-13 rounds 18k/18l).
+    // Boot-time, one thread; a no-op unless open() armed the shape, and once only.
+    if (!register_last_ || base_ == nullptr || arena_ == nullptr) return;
+    register_last_ = false;
+    PinnedArena* a = static_cast<PinnedArena*>(arena_);   // stored opaque; the type is complete here
+    const auto t0 = std::chrono::steady_clock::now();
+    std::fprintf(stderr, "strata pin: registering the whole arena (%.1f GiB) as the last boot step ...\n",
+                 (double) arena_capacity_ / 1073741824.0);
+    // ONE page-outward range over the full capacity, the spare blob included (register_complement's
+    // last-span rule): the packed layout's blobs straddle page boundaries, and a range boundary would
+    // un-pin every blob it cuts (pin_range_of answers one range or none).  lock_rest = true: on a
+    // refusal the arena keeps the working-set lock - resident with no alias, the UMA degrade.
+    const uint64_t got = a->register_after_fill(std::vector<std::pair<uint64_t, uint64_t>>{{0, arena_capacity_}}, true);
+    apply_registration();
+    std::fprintf(stderr, "strata pin: register-last: whole-arena registration %s in %.1f s (%.1f GiB registered)\n",
+                 got == arena_capacity_ ? "ok" : "stopped at the driver's refusal",
+                 std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(),
+                 (double) got / 1073741824.0);
 }
 
 FileExpertSource* ArenaExpertSource::file_source() const {

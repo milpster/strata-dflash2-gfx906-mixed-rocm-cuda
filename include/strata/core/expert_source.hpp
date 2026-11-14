@@ -1618,6 +1618,19 @@ public:
     /// W1: rebuild pin_start_/pin_end_/pin_dev_/layer_pcie_ from the arena's registered ranges -
     /// the same build open() does for a pin-by-need arena, run again after register_complement().
     void apply_registration();
+    /// register-last (the whole-arena pin without relief, opt-out STRATA_REGISTER_LAST=0): open() built the
+    /// arena RESIDENT-BUT-UNREGISTERED (the fill writes plain pages; nothing evicts them during boot).
+    /// This is the whole-span cudaHostRegister plus the alias tables, and the caller runs it as the LAST
+    /// boot step - after the pools, the cache fills, the warm-ups, the graph captures and the helper
+    /// handshake - immediately before serve's READY: the last point where a request's DMA can read the
+    /// arena.  On a ROCm box every boot-time driver sync over a live whole-span registration (12.3M pinned
+    /// 4 KiB pages) spins at 100% of one core and hangs the boot (journal 2026-11-13 rounds 18k/18l);
+    /// the relief path's late registration is the working shape this generalizes.  A no-op when open()
+    /// took any other pinning (capped, by-need, deferred, shared, relief, UMA).
+    void register_whole();
+    /// True when open() armed the register-last shape: the caller MUST call register_whole() before
+    /// anything can DMA from the arena (serve's READY, the one-shot request loop).
+    bool register_last() const { return register_last_; }
     /// How many pairs are dropped, and the bytes given back (0: the flag did nothing on this source)
     int64_t unfilled_pairs() const { return unfilled_.load(std::memory_order_relaxed); }
     uint64_t unfilled_bytes() const { return unfilled_bytes_; }
@@ -1711,6 +1724,7 @@ private:
     std::vector<std::pair<int32_t, int32_t>> dropped_reads_;   ///< STRATA_WINDOW_POPULATE: dropped pairs a window read (see refill_recorded_pairs)
     std::unordered_map<int64_t, char> dropped_reads_seen_;     ///< note_dropped_read's dedup: pairs recorded this cycle, swapped empty with dropped_reads_ at refill_recorded_pairs
     bool ram_relief_ = false;                 ///< W1: open() builds the arena with nothing registered
+    bool register_last_ = false;              ///< register-last: open() left the whole span unregistered; register_whole() is the caller's last boot step
     std::atomic<int64_t> unfilled_{0};
     uint64_t unfilled_bytes_ = 0;
     uint64_t arena_capacity_ = 0;             ///< open()'s arena bytes (the spare blob on top)

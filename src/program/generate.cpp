@@ -16900,6 +16900,14 @@ int main(int argc, char** argv) {
         }
         strata::core::pin_sim_report("at READY");
         strata::core::pin_reserve_release_hard();   // the load is over: nothing else needs the headroom
+        // register-last (round 18n): the whole-arena pin's registration is the LAST boot step - after
+        // the pools, the cache fills, the warm-ups, the graph captures and the helper handshake,
+        // immediately before the serve loop accepts requests.  Every boot-time driver sync has already
+        // run over an UNREGISTERED arena; on a ROCm box such a sync over a live whole-span registration
+        // spins over the 12.3M pinned 4 KiB pages and hangs the boot (round 18k).  A no-op for every
+        // other pinning (relief registered its complement right after the handshake already).
+        if (arena_src.register_last())
+            arena_src.register_whole();
         std::printf("READY %lld stop\n", (long long) o.max_context);   // "stop": this engine honours STOP
         std::fflush(stdout);
         std::string line;
@@ -23707,6 +23715,11 @@ int main(int argc, char** argv) {
 #endif
         return 0;
     }
+
+    // register-last (round 18n): the one-shot loop's first prefill may DMA from the arena; the
+    // registration is the last boot step here too (the serve block runs it just before its READY).
+    if (arena_src.register_last())
+        arena_src.register_whole();
 
     // ---- plan v0.3 P5: the prompt's conditioning positions [0, n_prompt - 1) in batched chunks.  The token loop
     // then starts at the last prompt position, whose prediction is the first generated token.
