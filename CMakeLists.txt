@@ -2228,7 +2228,10 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   set_tests_properties(pinned_alias_test PROPERTIES SKIP_RETURN_CODE 77)
 
   # #3350 / #3470: the conversation copy streams and events are pooled across short-lived threads (needs a device, else skips)
-  add_executable(conversation_copy_streams_test src/core/conversation_copy_streams_test.cpp)
+  # The header-only conversation_copy.hpp steps the per-GPU VRAM guard (round 18o); vram_guard.cpp is an
+  # engine-owned CPU-only source, so - like memory_guard_test and vram_guard_test - the test compiles it directly
+  # instead of linking strata_engine (which would drag in the kernels).
+  add_executable(conversation_copy_streams_test src/core/conversation_copy_streams_test.cpp src/core/vram_guard.cpp)
   target_include_directories(conversation_copy_streams_test PRIVATE include)
   target_link_libraries(conversation_copy_streams_test PRIVATE strata_core ${_strata_gpu_runtime_target})
   add_test(NAME conversation_copy_streams_test COMMAND conversation_copy_streams_test)
