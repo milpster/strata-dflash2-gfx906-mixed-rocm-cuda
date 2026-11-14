@@ -4,30 +4,30 @@
  "kind": "tg",
  "ctx": 442400,
  "max_tokens": 1024,
- "ts": 1794684650.815,
+ "ts": 1794687569.866,
  "walls": [
-  100.545,
-  20.969
+  102.592,
+  27.476
  ],
- "wall_s": 121.517,
+ "wall_s": 130.071,
  "content_from": "content",
  "prompt_bytes": 442400,
- "sha256": "56f280615a1d72a7a8f11457b2b603374c03ef802ebd9bb5c684ddf6ed42293c",
+ "sha256": "17c530fad35a75c7a212eb1d65a0bd6f58653a9a5ed2ef11327d2260757a7be6",
  "elog": "/mnt/srcds/Strata/logs/engine-prod-ud-iq3xxs-v0233.log",
- "elog_start": 528523,
- "elog_end": 532394,
- "hlog": "/mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261114-202409-3831415-helper.log",
- "hlog_start": 1466,
- "hlog_end": 1466,
+ "elog_start": 647142,
+ "elog_end": 653542,
+ "hlog": "/mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261114-211128-921119-helper.log",
+ "hlog_start": 1592,
+ "hlog_end": 1592,
  "mem": {
-  "max_rss_mib": 49334,
-  "min_avail_mib": 15987,
-  "max_swap_used_mib": 9442,
+  "max_rss_mib": 49884,
+  "min_avail_mib": 16414,
+  "max_swap_used_mib": 9741,
   "max_vram_mib": {
-   "card3": 16157,
-   "card4": 448,
-   "card2": 16272,
-   "nvidia0": 7336
+   "card3": 16194,
+   "card4": 438,
+   "card2": 16359,
+   "nvidia0": 7436
   }
  }
 }

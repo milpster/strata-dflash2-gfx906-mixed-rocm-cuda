@@ -1,0 +1,48 @@
+{
+  "pid": 266770,
+  "start": "139935",
+  "time": "2026-11-14T13:11:54.025217+00:00",
+  "target": [
+    3,
+    5,
+    7,
+    9,
+    11,
+    13,
+    15
+  ],
+  "threads": [
+    {
+      "tid": 280647,
+      "name": "strata-stage",
+      "start": "145965",
+      "cpus": [
+        0
+      ]
+    },
+    {
+      "tid": 280648,
+      "name": "strata-stage",
+      "start": "145965",
+      "cpus": [
+        0
+      ]
+    },
+    {
+      "tid": 280649,
+      "name": "strata-stage",
+      "start": "145965",
+      "cpus": [
+        0
+      ]
+    },
+    {
+      "tid": 280650,
+      "name": "strata-stage",
+      "start": "145965",
+      "cpus": [
+        0
+      ]
+    }
+  ]
+}

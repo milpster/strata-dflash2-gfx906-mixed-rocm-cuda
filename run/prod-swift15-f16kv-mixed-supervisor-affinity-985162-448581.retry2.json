@@ -1,0 +1,80 @@
+{
+  "pid": 985162,
+  "start": "448581",
+  "time": "2026-11-14T14:03:25.419276+00:00",
+  "target": [
+    3,
+    5,
+    7,
+    9,
+    11,
+    13,
+    15
+  ],
+  "threads": [
+    {
+      "tid": 1000198,
+      "name": "strata-stage",
+      "start": "455039",
+      "cpus": [
+        0
+      ]
+    },
+    {
+      "tid": 1000199,
+      "name": "strata-stage",
+      "start": "455039",
+      "cpus": [
+        0
+      ]
+    },
+    {
+      "tid": 1000200,
+      "name": "strata-stage",
+      "start": "455039",
+      "cpus": [
+        0
+      ]
+    },
+    {
+      "tid": 1000201,
+      "name": "strata-stage",
+      "start": "455039",
+      "cpus": [
+        0
+      ]
+    },
+    {
+      "tid": 999965,
+      "name": "strata-stage",
+      "start": "455016",
+      "cpus": [
+        0
+      ]
+    },
+    {
+      "tid": 999966,
+      "name": "strata-stage",
+      "start": "455016",
+      "cpus": [
+        0
+      ]
+    },
+    {
+      "tid": 999967,
+      "name": "strata-stage",
+      "start": "455016",
+      "cpus": [
+        0
+      ]
+    },
+    {
+      "tid": 999968,
+      "name": "strata-stage",
+      "start": "455016",
+      "cpus": [
+        0
+      ]
+    }
+  ]
+}
