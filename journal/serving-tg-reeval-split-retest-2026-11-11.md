@@ -3083,3 +3083,16 @@ Skipped N5/N6 (the review marked them low/trivial; not in this lane's mandate).
   Also: the ON path has zero host-test coverage — the ARM7 arm is the stager's first-ever execution; its
   pass criteria are stage_drops/ring_busy report lines + the temp-0 sha guard, and any sha delta vs
   knob-off is a defect (rows shifting helper/CPU->GPU-slot must be bitwise identical), not noise.
+
+**Round 18r — GPU R1: first residency flip fails on request-time VRAM; reserve 2304 retry.**
+First flip on the final all-lanes binary (sha 4f748b9a): register-last architecture VERIFIED —
+banners in order, whole-arena registration ok in 185.8 s (46.8 GiB, no hang, no spin — the round-2
+fix works). But the FIRST request died fatally: cudaMalloc(1538035200) for the weight arena failed
+(526 MiB free post-boot): the full 46.8 GiB registration costs more GPUVM than relief's partial
+complement, and the request-time 1.47 GiB weight arena exceeds the +256 MiB after-cache calibration.
+Engine exits fatally on this OOM -> supervisor restarts (and the script's restore bugs — smoke before
+READY, cp-before-stop — collided supervisors; config/binary state re-derived). Fix attempt: reserves
+576 -> 2304/2304 (post-boot free ~2.25 GiB > 1.5 GiB arena + margin; cache slots shrink ~1.7 GiB),
+round1 script gates fixed (registration-ok banner matched, smoke after registration, restore stops
+first). Retry running. Note: if long sessions still squeeze at 2304, the adaptive answer is the VRAM
+guard with park-vram measured in, not another static bump.
