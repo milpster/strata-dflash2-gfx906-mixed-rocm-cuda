@@ -3269,3 +3269,13 @@ Result (split 30 + MMQ 0 + FS 2,8): **fill 179.5s → 445.5 PP tok/s — night's
 ## Round 18af — reserve descent restart: 256 first (operator), 16-MiB steps only on stall class
 
 Operator order after 18ac/18ae: first test cuts reserve 384→**256** (the historical fatal value, era pre-mlock/pre-split-30/pre-MMQ-off — conditions changed, retest justified). Policy: if 256 serves clean → done; only if the verify-timeout/stall class reappears → descend in 16-MiB increments from 384 (368/352/336/…). Safety rig: shrink/LOW/reserve-adaptation line capture, light-traffic survival window before calling it servable, one-commit revert to 384 staged. `gpu-rounds/reserve_arm.sh 256` chained behind the FS arm via log-marker wait (pgrep waits retired — launch-plumbing forks/zombies deadlocked queues 3× tonight; killed harmlessly each time).
+
+## Round 18ag — reserve 256 survived; fs2 adaptive guard: no headroom left
+
+RSV256 arm (split 30, MMQ 0, FS 2,8, reserve 256): boot clean, no shrink/LOW/verify lines. Card0 cache 4885→**4951 slots** (+66 for the 128 MiB), card1 3985 unchanged; card0 post-fill 99.1% used. TG 29.9/29.1/32.3 — noise-neutral. **No stall class → per operator policy the descent stops: 256 is the floor** (the historical 256 fatal was pre-mlock/pre-split-30/pre-MMQ-off era; conditions changed and it now serves). Light-traffic survival watch run post-arm before declaring servable.
+
+fs2 adaptive chain (push card1 FS to a 180 MiB floor, cap +4): measured card1 free at this config = **209 MiB → 0 extra slots → kept 2,8**. Nothing left to push on card1.
+
+Fill-wall bimodality noted: boots of near-identical configs land in a fast class (179-187 s) or slow class (211-226 s; RSV256 = 354.2 tok/s). Cross-boot PP claims beyond controlled back-to-back pairs are unreliable tonight; the controlled pair (MMQOFF vs MMQON) stands: OFF +7% PP, +12% TG med.
+
+Serving config after tonight (committed): layer_split 30, STRATA_PREFILL_MMQ=0, STRATA_FS_SLOTS=2,8, --vram-reserve-mib 256, spec 5, fill-mib 7100. Caches 4951/3985 + helper 3628 (brimmed to budget floor). Engine pin unchanged (f094ddcb mlock build); mmqfix-86ab69094f pin pending (crash-insurance only, MMQ now runtime-off).
