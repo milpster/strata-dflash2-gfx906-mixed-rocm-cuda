@@ -21,7 +21,7 @@ restore_relief() {
   echo "RESTORING RELIEF CONFIG"
   bash "$STRATA/stop-all.sh" >/dev/null 2>&1 || true; sleep 3
   cp "$OUT/config.pre-residency.bak" "$CFG"
-  cp "$OUT/strata.pre-residency.bak" "$PIN_DIR/strata"
+  cp "$OUT/strata.pre-residency.bak" "$PIN_DIR/strata.new" && mv -f "$PIN_DIR/strata.new" "$PIN_DIR/strata"
   (cd "$PIN_DIR" && sha256sum strata > SHA256SUMS)
   (cd "$STRATA" && git add prod-config-swift15-iq3s-int8kv-dflash-w4-mixed.json && \
     git commit -q -m "revert(prod): restore relief config after failed residency boot" || true)
@@ -33,11 +33,13 @@ trap 'restore_relief' ERR
 echo "== 1. stop prod (sanctioned tool only)"
 bash "$STRATA/stop-all.sh" 2>&1 | tail -1
 
-echo "== 1b. wait until NOTHING executes the pin binary (orphan-engine gate)"
+echo "== 1b. kill stragglers and wait until NOTHING executes the pin binary"
+pkill -9 -f 'pair_supervisor[.]py' 2>/dev/null; pkill -9 -f 'launch-prod-[s]wift15' 2>/dev/null
 for i in $(seq 1 20); do
-  if ! fuser "$PIN_DIR/strata" >/dev/null 2>&1 && ! pgrep -f 'v0233/build-mixed-gpu/rpcw-hip/strata' >/dev/null 2>&1; then
+  if ! fuser "$PIN_DIR/strata" >/dev/null 2>&1 && ! pgrep -f 'v0233/build-mixed-gpu/rpcw-hip/strat[a]' >/dev/null 2>&1; then
     echo "pin binary clear after ~$((i*3))s"; break
   fi
+  [ $((i % 5)) = 0 ] && pkill -9 -f 'v0233/build-mixed-gpu/rpcw-hip/strat[a]' 2>/dev/null
   sleep 3
   [ "$i" = 20 ] && { echo "ABORT: a process still holds the pin binary after 60s"; pgrep -af 'v0233/build-mixed-gpu/rpcw-hip/strata' | head -3; false; }
 done
@@ -68,7 +70,7 @@ print("args now:", len(a), "; reserves:", [a[i+1] for i, f in enumerate(a) if f 
 EOF
 
 echo "== 3. pin binary + refresh SHA256SUMS"
-cp "$BIN" "$PIN_DIR/strata"
+cp "$BIN" "$PIN_DIR/strata.new" && mv -f "$PIN_DIR/strata.new" "$PIN_DIR/strata"
 (cd "$PIN_DIR" && sha256sum strata > SHA256SUMS.new && grep -v ' strata$' SHA256SUMS >> SHA256SUMS.new 2>/dev/null || true; mv SHA256SUMS.new SHA256SUMS)
 (cd "$STRATA" && git add prod-config-swift15-iq3s-int8kv-dflash-w4-mixed.json && \
   git commit -q -m "feat(prod): full expert residency on register-last binary - relief args dropped, reserves 576")
