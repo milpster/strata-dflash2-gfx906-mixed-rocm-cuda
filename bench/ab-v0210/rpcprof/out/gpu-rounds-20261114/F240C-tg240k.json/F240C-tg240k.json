@@ -1,0 +1,33 @@
+{
+ "arm": "F240C",
+ "leg": "tg240k",
+ "kind": "tg",
+ "ctx": 1327200,
+ "max_tokens": 1024,
+ "ts": 1794690674.052,
+ "walls": [
+  125.817,
+  36.841
+ ],
+ "wall_s": 162.663,
+ "content_from": "content",
+ "prompt_bytes": 1327200,
+ "sha256": "b9e1292aab876f3241bd0ef4ad923b13f6b2ca17a936df7a29f000a4069e6a05",
+ "elog": "/mnt/srcds/Strata/logs/engine-prod-ud-iq3xxs-v0233.log",
+ "elog_start": 740803,
+ "elog_end": 747136,
+ "hlog": "/mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261114-215844-108367-helper.log",
+ "hlog_start": 1591,
+ "hlog_end": 1591,
+ "mem": {
+  "max_rss_mib": 51427,
+  "min_avail_mib": 14589,
+  "max_swap_used_mib": 6859,
+  "max_vram_mib": {
+   "card3": 16158,
+   "card4": 405,
+   "card2": 16361,
+   "nvidia0": 7436
+  }
+ }
+}

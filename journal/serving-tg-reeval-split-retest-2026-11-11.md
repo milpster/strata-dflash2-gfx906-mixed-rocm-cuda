@@ -3295,3 +3295,15 @@ Serving config after tonight (committed): layer_split 30, STRATA_PREFILL_MMQ=0, 
 **Teacher-forced quality run crashed at engine start (exit -6, `free(): invalid pointer`) — spawn-path, not binary.** Same signature as the MMQ test-binary crashes, but this binary serves perfectly under the prod launcher. Bare subprocesses (tool, ctest) resolve a different system ROCm than the launcher's pinned `LD_LIBRARY_PATH` (gfx906-xnack + /opt/rocm-6.1.0); wrapper `quality/strata-ldp.sh` now gives the tool's engine the launcher env. Retry chained; if it still aborts with the launcher env, it's a minimal-config-path heap bug → oracle. Historical A-vs-C reproduction dropped (C.tsv.seg.json not retained).
 
 **Box reboot ~21:43** killed the 240k fill mid-leg and all chains; resume lane (boot at 192 cfg → 240k stress → quality retry → restore) dispatched from committed state. rsv192 arm had already COMPLETEd at 21:33:08 — its verdict stands.
+
+## Round 18ai — 240k stress passes on reserve-192: the pushed stack is max-context-clean
+
+Two box reboots (~21:43, ~21:53) killed the first attempts mid-fill; lane v3 (port-probe boot gate — stale-log ready lines had let a leg fire against a booting server) rerun clean on the 192 boot:
+
+- **Fill 239,782 tokens**: cold-read boundary 10,406 read at 199.4 tok/s (52.2 s), total wall 501.9 s. The deepest prompt-path loans rode through — card0 borrows 3642 slots, card1 borrows 3384 of its 3985 (6.73 GiB each) — with zero shrink/do-not-fit/OOM/timeout lines.
+- **TG×1024 on the 240k context**: 28.0 tok/s (514 gen/18.3 s) and 25.7 tok/s — vs ~30–32 at 80k, i.e. mild degradation at 3× context, no thrash class, drafts accepted ~70%.
+- Boot itself: ready in 81 s (fast class; gen-1 exit was supervisor-recovered).
+
+**Reserve 192 survives 92% of max context.** Combined with the clean 192 arm legs (18ah), the served stack — pin 2e433a82, split 30, MMQ 0, FS 2,8, reserve 192, helper 220 — is stress-validated; a light-traffic survival window remains the last formality before calling 192 servable.
+
+Quality-tool notes settled en route: the teacher-forced abort (`free(): invalid pointer`, exit -6) was **library resolution, not the binary** — under the launcher's LD_LIBRARY_PATH the engine reaches `session is up` (wrapper `quality/strata-ldp.sh`). The remaining exit-1 was config: `--spec` needs its qqA companions (`--spec-min-p 0.5 --expert-profile … --vram-reserve-mib 640 --vram-reserve-later-mib 640 --expert-cache-cpu-order --prompt-cache-spread`) or the verify tier refuses the minimal `--expert-cache 1` profile. qqNIGHT now mirrors qqA's pattern on new-tree paths; retry in flight.

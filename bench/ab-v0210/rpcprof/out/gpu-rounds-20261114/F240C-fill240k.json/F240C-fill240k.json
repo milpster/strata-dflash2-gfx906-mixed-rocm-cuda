@@ -1,0 +1,32 @@
+{
+ "arm": "F240C",
+ "leg": "fill240k",
+ "kind": "prefill",
+ "ctx": 1327200,
+ "max_tokens": 8,
+ "ts": 1794690511.215,
+ "walls": [
+  501.913
+ ],
+ "wall_s": 501.915,
+ "content_from": "reasoning",
+ "prompt_bytes": 1327200,
+ "sha256": "01db7a9d154bb188430b234246589661629c627462db9ec632e33137f49bb45e",
+ "elog": "/mnt/srcds/Strata/logs/engine-prod-ud-iq3xxs-v0233.log",
+ "elog_start": 734541,
+ "elog_end": 740803,
+ "hlog": "/mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261114-215844-108367-helper.log",
+ "hlog_start": 1591,
+ "hlog_end": 1591,
+ "mem": {
+  "max_rss_mib": 47429,
+  "min_avail_mib": 14459,
+  "max_swap_used_mib": 3975,
+  "max_vram_mib": {
+   "card3": 16156,
+   "card4": 427,
+   "card2": 16360,
+   "nvidia0": 7436
+  }
+ }
+}
