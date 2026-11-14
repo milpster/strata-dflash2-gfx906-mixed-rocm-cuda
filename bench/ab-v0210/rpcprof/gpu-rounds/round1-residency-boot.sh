@@ -82,7 +82,17 @@ done
 [ -n "${SEEN[up]:-}" ]   || { echo "Engine never came up on :8009"; false; }
 tr -d '\0' < "$ELOG" | grep -aE 'whole arena|host-callback|expert cache auto|loaded [0-9.]+ GiB' | head -8 | tee "$OUT/round1.banners.txt"
 
-echo "== 5. survival watch: 8 min of live traffic (old spiral died <5 min)"
+echo "== 5. first-request smoke: one small temp-0 completion over the fresh registration (reviewer note E)"
+MID=$(curl -s -m 3 http://127.0.0.1:8009/v1/models | python3 -c "import json,sys;print(json.load(sys.stdin)['data'][0]['id'])")
+SMOKE=$(curl -s -m 180 http://127.0.0.1:8009/v1/chat/completions -H 'Content-Type: application/json' \
+  -d "{\"model\":\"$MID\",\"messages\":[{\"role\":\"user\",\"content\":\"Say OK.\"}],\"max_tokens\":8,\"temperature\":0}")
+echo "$SMOKE" | head -c 200; echo
+echo "$SMOKE" | grep -q '"content"' || { echo "SMOKE FAILED: no completion content"; false; }
+NS=$(tr -d '\0' < "$ELOG" | grep -acE 'verify: timed out|stopped unexpectedly') || NS=0
+[ "$NS" -eq 0 ] || { echo "$NS fatal lines after smoke request"; false; }
+echo "$SMOKE" > "$OUT/round1.smoke.json"
+
+echo "== 6. survival watch: 8 min of live traffic (old spiral died <5 min)"
 sleep 480
 curl -s -m 3 http://127.0.0.1:8009/v1/models >/dev/null || { echo "Engine died inside survival window"; false; }
 N=$(tr -d '\0' < "$ELOG" | grep -acE 'verify: timed out|stopped unexpectedly') || N=0

@@ -12,7 +12,7 @@ Does: stop-all -> backup config -> drop the four relief args -> keep reserves 57
     1. "GPU host-callback thread started" BEFORE any arena registration line
     2. "registering the whole arena (NN.N GiB) as the last boot step" then "... ok in N s"
        appearing AFTER the expert-cache fill line and the helper handshake
-    3. "loaded 46.84 GiB" -> health on :8009 -> 8 min survival watch (old spiral died <5 min)
+    3. "loaded 46.84 GiB" -> health on :8009 -> first-request smoke (temp-0 completion, reviewer note E) -> 8 min survival watch
 Gate out: banners in order + health + survival -> marker round1.ok
 Failure: any hang past startup-timeout 1200 s, or banners out of order ->
   config auto-restored from backup, relief binary re-pinned, boot relief, marker round1.fail.
