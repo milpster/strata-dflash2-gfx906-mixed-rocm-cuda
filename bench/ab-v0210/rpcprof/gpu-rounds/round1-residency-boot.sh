@@ -34,12 +34,12 @@ echo "== 1. stop prod (sanctioned tool only)"
 bash "$STRATA/stop-all.sh" 2>&1 | tail -1
 
 echo "== 1b. kill stragglers and wait until NOTHING executes the pin binary"
-pkill -9 -f 'pair_supervisor[.]py' 2>/dev/null; pkill -9 -f 'launch-prod-[s]wift15' 2>/dev/null
+pkill -9 -f 'pair_supervisor[.]py' 2>/dev/null || true; pkill -9 -f 'launch-prod-[s]wift15' 2>/dev/null || true
 for i in $(seq 1 20); do
   if ! fuser "$PIN_DIR/strata" >/dev/null 2>&1 && ! pgrep -f 'v0233/build-mixed-gpu/rpcw-hip/strat[a]' >/dev/null 2>&1; then
     echo "pin binary clear after ~$((i*3))s"; break
   fi
-  [ $((i % 5)) = 0 ] && pkill -9 -f 'v0233/build-mixed-gpu/rpcw-hip/strat[a]' 2>/dev/null
+  if [ $((i % 5)) = 0 ]; then pkill -9 -f 'v0233/build-mixed-gpu/rpcw-hip/strat[a]' 2>/dev/null || true; fi
   sleep 3
   [ "$i" = 20 ] && { echo "ABORT: a process still holds the pin binary after 60s"; pgrep -af 'v0233/build-mixed-gpu/rpcw-hip/strata' | head -3; false; }
 done
