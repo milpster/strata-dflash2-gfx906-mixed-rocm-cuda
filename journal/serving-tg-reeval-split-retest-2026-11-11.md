@@ -3230,3 +3230,42 @@ find the largest request-safe registration; PP measured at the winner.
   - NEW artifact: "79984 reused + 5 read in 15102 ms (0.3 tok/s)" - 15 s serve stall with conv-cache 2048
 - Reverted to champion knobs (prefill 16384, conv 512, SWAPIN 64; 82c7d320dd), reserve 384 + fill 7100 retained. Prod rebooted on the known-good shape.
 - gfx906 INT8-dot prompt port: stage 1 (upstream MMQ row-id fix family, determinism suspect #1) cherry-pick lane dispatched; port planning next.
+
+## Round 18ac — 2026-11-14 evening: XXS layer-split sweep (36/34/32/30/28) — champion 30
+
+Method: `gpu-rounds/split_arm.sh N` (sets `layer_split` config field — NOT an args flag), one boot per arm, fill80k + tg80k×2 via ab9_driver, judges from engine elog. Spec 5 throughout; reserve 384; fill-mib 7100.
+
+| split | c0/c1 | slots (final) | fill 1st-80k | TG tok/s | verdict |
+|---|---|---|---|---|---|
+| 36 | 36/12 | 3410 | 186.0s / 430.0 | 29.1/26.7/29.4 | falsified: worst slots, TG flat |
+| 34 | 34/14 | 3630 | 186.7s / 428.4 | 29.1 | old champion (IQ3_S-era carryover) |
+| 32 | 32/16 | 3528 | 192.6s / 415.3 | 27.7–30.7 | balance but no ceiling gain |
+| **30** | 30/18 | 4885/3985 | **183.1s / 436.8** | **29.4/32.2/32.7 + repro 18.8/31.2/31.0** | **champion: TG +11% vs 34, PP +2%** |
+| 28 | 28/20 | 3410 | 216.1s / 370.1 | 28.2/24.3/**15.7** | cliff: binding card flipped, thrash tail |
+
+Mechanism: TG is a serial pipeline; heavier card gates the token loop (30/18 = 1.67× vs 34/14 = 2.43×). Below 30 the mirrored-min sizing flips to card1 and slot collapse (3410) triggers expert thrash on long generations. Fill is split-insensitive in 32–36; 28 collapses on both. Boot-to-boot variance in card0 free ≈ ±300 MiB (±90 slots) observed at split 30 (3531 vs 3649 auto-line draws) — slot deltas <100 are noise. Config committed at `layer_split: 30`.
+
+## Round 18ad — MMQ revelation + A/B: path was NEVER off; pinned OFF after OFF wins both metrics
+
+Oracle review (GO-WITH-CHANGES) of the "gfx906 INT8-dot port plan" found: `STRATA_PREFILL_MMQ` CMake option is INERT on gfx906 (CUDA branch compiles the path unconditionally, CMakeLists ~2947); runtime default is ON (env unset → on); the 2026-10-24 fork-policy gate (b7383aae) is not an ancestor of HEAD — policy silently eroded. Verified against prod pin sha f094ddcb: 70 `prefill::mmq` symbols present, no env pin → **prod had been running MMQ all along; every earlier number tonight is MMQ-ON data**.
+
+A/B (same binary, env-only, back-to-back boots, split 30): `gpu-rounds/mmq_ab.sh`:
+
+| arm | PP fill | TG (3 judges) | cache final |
+|---|---|---|---|
+| STRATA_PREFILL_MMQ=0 | **379.0** | **29.5/33.9/31.8 (med 31.8)** | 4885/3985 |
+| STRATA_PREFILL_MMQ=1 | 354.1 | 28.4/14.5/31.6 (med 28.4) | 4885/3985 |
+
+OFF +7% PP, +12% TG median, ON threw a 14.5 thrash tail. Both arms' fills ~15% below the split window (suspected residue from 3 crashed device-init test processes just before) — within-window pair valid. Cache sizing is NOT mode-dependent (earlier "OFF frees slots" read was a runbook grep artifact: the 3649 `auto` lines are an early pass; final 4885/3985 identical in both arms — mirroring is sizing-symmetric, per-card content).
+
+Verdict: **STRATA_PREFILL_MMQ=0 pinned in prod config** (commit; review's recommendation to pin explicitly). Tile-tuning upside now bounded by the A/B gap (≤7–12%) with generic GCN tiles losing to dequant→FP16→rocBLAS end-to-end on Vega 20. MMQ test binaries in fresh `rpcw-hip-mmq` dir (built with -DSTRATA_BUILD_TESTS=ON; golden freezes tests OFF) crash `free(): invalid pointer` past device init — instrument bug (suspected toolchain/lib mismatch), serving unaffected, parked. Engine audit line `prefill mmq: on/off` landed (ad115336b4, v0233-candidate); golden truth fix 87dd02ca2a + runbook da00d59fe2 on main.
+
+## Round 18ae — FS_SLOTS rebalance 3,2 → 2,8 (geometry was stale)
+
+`STRATA_FS_SLOTS` is absolute per-card slot counts (0–64 clamp; `expert_source.cpp:7967+`), slot size ∝ card's layer count (~59/~35 MiB at split 30). Old 3,2 spent ~200 MiB on tight card0 / ~55 MiB on card1 — tuned for a card1-thin era. Rebalanced 2,8 ≈ 118 MiB card0 / ~283 MiB card1. Banner confirms "card0:2, card1:8"; card1 now 97.8% used (slack spent).
+
+Result (split 30 + MMQ 0 + FS 2,8): **fill 179.5s → 445.5 PP tok/s — night's best**; TG 28.1/31.7/30.5 (med 30.5, noise-neutral vs 31.8). FS-alone attribution not isolated (plain-MMQOFF fill baseline was in the contaminated window); reserve-256 arm provides a second sample of this stack. Helper (3080): brimmed to budget floor — post-fill 506 MiB free = 320 reserve + 180 request buffers + rounding; NO idle MiB (earlier +95-slot claim was a buffers misread; corrected).
+
+## Round 18af — reserve descent restart: 256 first (operator), 16-MiB steps only on stall class
+
+Operator order after 18ac/18ae: first test cuts reserve 384→**256** (the historical fatal value, era pre-mlock/pre-split-30/pre-MMQ-off — conditions changed, retest justified). Policy: if 256 serves clean → done; only if the verify-timeout/stall class reappears → descend in 16-MiB increments from 384 (368/352/336/…). Safety rig: shrink/LOW/reserve-adaptation line capture, light-traffic survival window before calling it servable, one-commit revert to 384 staged. `gpu-rounds/reserve_arm.sh 256` chained behind the FS arm via log-marker wait (pgrep waits retired — launch-plumbing forks/zombies deadlocked queues 3× tonight; killed harmlessly each time).
