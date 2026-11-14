@@ -40,8 +40,8 @@ legs() {  # legs <arm-tag>
   python3 $RPC/ab9_driver.py --arm "$1" --leg tg80k --kind tg --ctx 442400 --max-tokens 1024 --out $OUT/$1-tg80k.json --elog "$ELOG" --hlog "$H" 2>&1 | tail -1 | cut -c1-120
 }
 echo "=== waiting for v0233.1 build ($(date +%T)) ==="
-while ! grep -q 'BUILD PIN COMPLETE' /mnt/srcds/Strata-wt-integ/build-mixed-gpu/rpcw-hip-v0233pin1/../build-pin-v0233-1b.log 2>/dev/null && ! grep -q 'BUILD PIN COMPLETE' $R/logs/build-pin-v0233-1b.log 2>/dev/null; do
-  grep -qE 'Error [0-9]' $R/logs/build-pin-v0233-1b.log 2>/dev/null && { echo "BUILD FAILED - ABORT SWEEP"; exit 1; }
+while ! grep -q 'BUILD PIN COMPLETE' /mnt/srcds/Strata-wt-integ/build-mixed-gpu/rpcw-hip-v0233pin1/../build-pin-v0233-1c.log 2>/dev/null && ! grep -q 'BUILD PIN COMPLETE' $R/logs/build-pin-v0233-1c.log 2>/dev/null; do
+  grep -qE 'Error [0-9]' $R/logs/build-pin-v0233-1c.log 2>/dev/null && { echo "BUILD FAILED - ABORT SWEEP"; exit 1; }
   sleep 20
 done
 echo "=== build ok: swap pin -> v0233.1 ($(date +%T)) ==="
