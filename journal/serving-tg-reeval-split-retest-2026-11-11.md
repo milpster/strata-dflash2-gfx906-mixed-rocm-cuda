@@ -3096,3 +3096,15 @@ READY, cp-before-stop — collided supervisors; config/binary state re-derived).
 round1 script gates fixed (registration-ok banner matched, smoke after registration, restore stops
 first). Retry running. Note: if long sessions still squeeze at 2304, the adaptive answer is the VRAM
 guard with park-vram measured in, not another static bump.
+
+**Round 18s — GPU R1 attempt 4: request-time ROCclr spin over the full-span registration.**
+Reserve 2304 confirmed at boot (2488 MiB free post-load; weight-arena OOM class resolved) and
+registration completed (139.7 s) — but the FIRST REQUEST wedged the engine: 100.0% of one core,
+log frozen immediately after "registration ok", request hung (curl empty), 46.2 GiB RSS resident.
+This is the ROCclr spin signature, moved from boot-time (rounds 18k/18l, fixed by register-last)
+to REQUEST-TIME: the first request's driver sync spins over the live 12.3M-page whole-span
+registration. Relief never hits this because its registered complement is smaller / differently
+shaped. Prod restored to relief (2304-config reverted with the round1 restore path). Next lane:
+differential of register_whole's single {0, capacity} range vs the relief path's
+register_complement range construction (count, granularity, chunking, flags) — make the full-span
+registration take the proven shape (per-2-MiB-page / per-layer ranges with progress prints).
