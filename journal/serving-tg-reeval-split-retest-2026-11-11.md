@@ -2898,3 +2898,63 @@ lines (the HIP nodiscard/unused noise is unchanged). A concurrent 18o lane (vram
 worktree; its files are NOT in this commit (staged: only the 3 files above). Not yet flipped to
 prod: the reviewer gate (18m) runs before any boot/flip/arm, and pinned_alias_test still needs a
 real registration - not runnable while prod serves.
+
+**Round 18o — the per-GPU VRAM guard lands (v0233-candidate @ ce210ea4ea).**
+The 18m diagnosis: on the 2x Radeon VII split a card's free VRAM sinks to tens of MiB at long
+contexts (the "only 35 MiB of VRAM free" #2065 warning class), the driver pages GPU memory, and a
+GPU wait stalls past its deadline -> "Unrecoverable native verification failure: verify: timed out
+at layer 13" -> engine self-exit. Static --vram-reserve-mib only partially mitigates: pressure is
+per-card and time-varying. Operator mandate: "fix residency but only by 64mb steps on the gpu it
+happened at" -> a per-GPU adaptive guard, env-gated default OFF (campaign convention).
+Design (new module include/strata/core/vram_guard.hpp + src/core/vram_guard.cpp, CPU-only TU by
+construction - no CUDA call, so the host test links it alone): per-device state {boot floor, floor,
+step count, last-step timestamp, cap-said flag}, 16-slot static table, atomics for every read +
+one mutex over the step path (the check sites are hot; a disabled check is one relaxed atomic
+load). check(dev, free_mib): free >= the low line (512 MiB Linux / 1024 Windows - the mirror of
+generate.cpp's file-local kVramSafeMib) -> nothing (hysteresis: the floor never shrinks); under it
+-> floor += exactly one step (default 64 MiB), at most once per 1 s per card, growth capped at
++4096 MiB over the card's boot floor (one loud cap line per card), then the card's reclaim donor
+(fn pointer set by the engine) is asked to free ~a step; check returns still-low so the caller
+keeps its own warning.
+Sites wired (probe BEFORE the risky point; one call each):
+- src/core/verify.cpp:2850 (Verifier::capture): the site's existing cudaMemGetInfo figure feeds
+  check(device_, ...) right before the window capture - the exact #2065 capture-hang spot (the
+  observed fatal was verification at layer 13, card 0); the "capturing the %d-token window" trace
+  line stays.
+- src/core/mtp.cpp:1796 and :1839 (both "mtp draft: waiting for the GPU" #2065 waits, fixed-step
+  and top-k branches): guarded cudaGetDevice+cudaMemGetInfo (only when enabled) then check(dev,...)
+  before the spin-wait - the same stall shape as the verify fatal.
+- src/core/conversation_copy.hpp:151 (copy_nonblocking): same guarded probe before the device
+  copy - parked K/V coming back is exactly the long-context regime that pushes a card under the
+  line, so the next capture finds the floor already stepped.
+Log line format (stderr, "CUDA%d" matches the per-card serve lines):
+  strata vram guard: CUDA0: 35 MiB free is under the 512 MiB line: reserve floor 700 -> 764 MiB (+64 MiB, step 1), reclaimed 64 MiB
+  (no donor yet: "... reclaimed 0 MiB (no reclaim donor registered)")
+  strata vram guard: CUDA0: still 30 MiB free but the reserve floor is capped at 4896 MiB (4096 MiB over the 800 MiB boot floor): not raising it further - lower --max-context / --batch or raise --vram-reserve-mib
+Env knobs: STRATA_VRAM_GUARD=1 enables (exactly "1"; anything else/unset = fully inert - one
+atomic load per check). STRATA_VRAM_GUARD_STEP_MIB (default 64), STRATA_VRAM_GUARD_MAX_MIB
+(default 4096). Read once at first use; configure() lets a test/engine override.
+BLOCKER (per the lane split, 18n owns expert_source/generate): the per-card reclaim donor cannot
+be registered from this lane. ExpertCache::shrink refuses on HIP (no VMM segments), so the real
+donor is the engine's own per-card loan/swap recall, reachable only from src/program/generate.cpp
+(parallel-lane owned). Exact intended call sites are documented as the TODO at src/core/
+vram_guard.cpp:76: (1) after the "expert cache auto:" sizing (~generate.cpp:8820) call
+set_base_mib(dev, o.vram_reserve_mib) per card; (2) once at startup call set_reclaim() with a
+lambda that trims ~want_mib from THAT card's pool. Until that lands the guard steps and logs per
+card with "no reclaim donor registered" - the floor growth + the naming of the card that ran low
+are live, the actual freeing needs the generate.cpp call.
+Build+test evidence (own dir, rpcw-hip flags replicated from build-mixed-gpu/rpcw-hip's cache:
+STRATA_ENABLE_CUDA=ON, STRATA_ENABLE_HIP=OFF, STRATA_HIP_GFX906=ON, Release, tests on, the
+community-tuning/MMQ/native-experts set): build-mixed-gpu/rpcw-hip-guard, `nice make -j6 strata`
+-> exit 0, [100%] Built target strata, binary 44,122,632 B @ 2026-11-14 11:18:31 (rpcw-hip
+untouched, still the 18n build). Host unit test tests/core/vram_guard_test.cpp (arena_pin_ranges
+convention; CMakeLists registers vram_guard_test = test TU + vram_guard.cpp, no other lib):
+off/inert, 64 MiB steps 700->764->828, hysteresis (recovered card keeps its floor), cap at
+base+192=892 with the capped report changing nothing, the 1 s step window blocking an immediate
+second step, per-card isolation (card 1 steps while card 0's floor/count are untouched), a rising
+boot floor lifting the floor, out-of-range devices ignored - `ctest -R '^vram_guard_test$'`:
+1/1 Passed (0.00 s). The test caught one real bug pre-commit: last_step_ms==0 meant "recently
+stepped" for a fresh card when uptime < the window; 0 is now explicitly "never stepped"
+(vram_guard.cpp:100).
+Not flipped to prod (default OFF; the 18m reviewer gate runs before any arm, and the donor TODO
+above is the follow-up for the generate.cpp lane).
