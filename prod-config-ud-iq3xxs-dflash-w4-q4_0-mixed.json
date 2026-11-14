@@ -23,7 +23,7 @@
     "--prefill",
     "16384",
     "--spec",
-    "3",
+    "5",
     "--spec-min-p",
     "0.5",
     "--max-context",
