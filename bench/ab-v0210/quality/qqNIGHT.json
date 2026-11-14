@@ -1,5 +1,5 @@
 {
-  "exe": "/mnt/srcds/Strata/v0233/build-mixed-gpu/rpcw-hip/strata",
+  "exe": "/mnt/srcds/Strata/bench/ab-v0210/quality/strata-ldp.sh",
   "args": [
     "--gpu",
     "0,1",
