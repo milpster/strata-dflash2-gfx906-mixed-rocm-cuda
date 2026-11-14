@@ -49,7 +49,6 @@
     "0",
     "--expert-helper-slots",
     "4600",
-    "--expert-helper-ram-relief",
     "--conversation-cache-dir",
     "/mnt/srcds/Strata-wt-helper-ipc/run/diet-soak-cache",
     "--conversation-cache-disk-mib",
@@ -61,12 +60,7 @@
     "512",
     "--kv-resident-mib",
     "4096",
-    "--conversation-cache-evict-page-cache",
-    "--expert-helper-ram-relief-packs",
-    "--expert-helper-relief-hot-mib",
-    "15000",
-    "--expert-helper-relief-arena-cap-mib",
-    "22000"
+    "--conversation-cache-evict-page-cache"
   ],
   "backend": "hip",
   "cwd": "/mnt/srcds/Strata",
