@@ -114,7 +114,7 @@ SMOKE=""
 for i in $(seq 1 20); do
   sleep 30
   SMOKE=$(curl -s -m 240 http://127.0.0.1:8009/v1/chat/completions -H 'Content-Type: application/json' \
-    -d "{\"model\":\"$MID\",\"messages\":[{\"role\":\"user\",\"content\":\"Say OK.\"}],\"max_tokens\":8,\"temperature\":0}")
+    -d "{\"model\":\"$MID\",\"messages\":[{\"role\":\"user\",\"content\":\"Say OK.\"}],\"max_tokens\":8,\"temperature\":0}") || SMOKE=""
   if echo "$SMOKE" | grep -q '"content"'; then echo "smoke content on attempt $i (~$((i*30))s)"; break; fi
   echo "attempt $i: no content yet ($(echo "$SMOKE" | head -c 60))"
 done
