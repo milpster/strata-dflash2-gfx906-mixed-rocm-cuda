@@ -33,6 +33,15 @@ trap 'restore_relief' ERR
 echo "== 1. stop prod (sanctioned tool only)"
 bash "$STRATA/stop-all.sh" 2>&1 | tail -1
 
+echo "== 1b. wait until NOTHING executes the pin binary (orphan-engine gate)"
+for i in $(seq 1 20); do
+  if ! fuser "$PIN_DIR/strata" >/dev/null 2>&1 && ! pgrep -f 'v0233/build-mixed-gpu/rpcw-hip/strata' >/dev/null 2>&1; then
+    echo "pin binary clear after ~$((i*3))s"; break
+  fi
+  sleep 3
+  [ "$i" = 20 ] && { echo "ABORT: a process still holds the pin binary after 60s"; pgrep -af 'v0233/build-mixed-gpu/rpcw-hip/strata' | head -3; false; }
+done
+
 echo "== 2. backup + config: drop the four relief args (keep reserves 576, env knobs, startup-timeout 1200)"
 cp "$CFG" "$OUT/config.pre-residency.bak"
 cp "$PIN_DIR/strata" "$OUT/strata.pre-residency.bak"
