@@ -734,6 +734,7 @@ cudaError_t register_range(PinnedArena& arena, void* p, uint64_t n) {
 #else
     (void) arena;
 #endif
+    if (e == cudaSuccess) arena_mlock_span(p, n);   // STRATA_ARENA_MLOCK: a registered span must never move (KFD userptr)
     return e;
 }
 }  // namespace
@@ -871,6 +872,7 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds,
             }
         }
     }
+    arena_mlock_report(registered_bytes < bytes ? bytes - registered_bytes : 0);
 }
 
 PinnedArena::PinnedArena(uint64_t bytes, ByNeed, const std::vector<std::pair<uint64_t, uint64_t>>& ranges,
@@ -969,6 +971,7 @@ PinnedArena::PinnedArena(uint64_t bytes, ByNeed, const std::vector<std::pair<uin
         // a partial lock is unlocked region by region in the destructor; what it did not reach was never locked
         // (VirtualUnlock/munlock of an unlocked page is harmless), so the list is kept whole
     }
+    arena_mlock_report(hole_bytes);
 }
 
 PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds, Deferred)
@@ -1009,6 +1012,7 @@ void PinnedArena::register_slices(std::atomic<int>& ready) {
             note = lr.note + "; " + note;
         }
     }
+    arena_mlock_report(capacity - registered_bytes);
     ready.store(INT_MAX, std::memory_order_release);   // every slice done (or given up on)
 }
 
@@ -1097,6 +1101,7 @@ uint64_t PinnedArena::register_after_fill(const std::vector<std::pair<uint64_t, 
             note = lr.note + " (" + std::to_string(hole_bytes >> 20) + " MiB of holes); " + note;
         }
     }
+    arena_mlock_report(capacity - registered_bytes);
     return total;
 }
 

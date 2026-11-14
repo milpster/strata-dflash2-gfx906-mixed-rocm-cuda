@@ -16,6 +16,7 @@
 #include "strata/artifact/gguf_reader.hpp"
 
 #include "strata/core/pinned.hpp"
+#include "strata/core/pin_budget.hpp"
 #include "strata/platform/memory.hpp"
 #include "strata/kernels/elementwise.hpp"
 #include "strata/kernels/quantize_act.hpp"
@@ -4109,6 +4110,7 @@ bool FileExpertSource::pin_cache_complement(
                             if (cudaHostGetDevicePointer(&alias, arena, 0) == cudaSuccess && alias != nullptr) {
                                 device = (const uint8_t*) alias;
                                 partial_pin = w;
+                                arena_mlock_span(arena, w);   // STRATA_ARENA_MLOCK: the registered prefix must never move
                             } else {
                                 (void) cudaGetLastError();
                                 (void) cudaHostUnregister(arena);
@@ -4152,6 +4154,7 @@ bool FileExpertSource::pin_cache_complement(
                             if (cudaHostGetDevicePointer(&alias, arena, 0) == cudaSuccess && alias != nullptr) {
                                 device = (const uint8_t*) alias;
                                 partial_pin = w;
+                                arena_mlock_span(arena, w);   // STRATA_ARENA_MLOCK: the registered prefix must never move
                             } else {
                                 (void) cudaGetLastError();
                                 (void) cudaHostUnregister(arena);
@@ -4173,6 +4176,7 @@ bool FileExpertSource::pin_cache_complement(
                                      : strata::platform::LockResult{true, 0, ""};
                 locked = lr.locked_bytes;
                 note += (note.empty() ? "" : "; ") + lr.note;
+                if (partial_pin > 0) arena_mlock_report(bytes - partial_pin);
             }
         }
         host = (const uint8_t*) arena;
@@ -7183,6 +7187,7 @@ bool ArenaExpertSource::refill_pair(int32_t layer, int32_t expert, uint64_t& fil
                 rdp != nullptr) pin_dev_[i] = (const uint8_t*) rdp;
             (void) cudaGetLastError();
             a->registered_bytes += pin_end_[i] - pin_start_[i];
+            arena_mlock_span((uint8_t*) base_ + (size_t) pin_start_[i], (uint64_t) (pin_end_[i] - pin_start_[i]));
         }
     };
     size_t taken = 0;   // pieces [first, first + taken) left the runtime (an exclusive end)
@@ -7231,6 +7236,7 @@ bool ArenaExpertSource::refill_pair(int32_t layer, int32_t expert, uint64_t& fil
     pin_dev_.insert(pin_dev_.begin() + (long) pos, (const uint8_t*) dp);
     a->pin_ranges.insert(a->pin_ranges.begin() + (long) pos, std::make_pair(u.first, u.second - u.first));
     a->registered_bytes += u.second - u.first;
+    arena_mlock_span((uint8_t*) base_ + (size_t) u.first, (uint64_t) (u.second - u.first));
     std::memcpy((uint8_t*) base_ + (size_t) off, stage.data(), (size_t) lay.blob_bytes(layer));
     {   // clear the flag with the same lock blob()/pinned() re-check under (refill_run's rule)
         std::lock_guard<std::mutex> lk(file_mu_);
@@ -7301,6 +7307,7 @@ bool ArenaExpertSource::release_pair(int32_t layer, int32_t expert, uint64_t& fr
         pin_dev_.insert(pin_dev_.begin() + (long) pos, (const uint8_t*) dp);
         a->pin_ranges.insert(a->pin_ranges.begin() + (long) pos, std::make_pair(s, t - s));
         a->registered_bytes += t - s;
+        arena_mlock_span((uint8_t*) base_ + (size_t) s, (uint64_t) (t - s));
         return true;
     };
     if (cudaHostUnregister((uint8_t*) base_ + (size_t) rlo) != cudaSuccess) {
