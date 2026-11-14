@@ -18,7 +18,17 @@
     "--ple-gguf",
     "/mnt/srcds/ai/Qwen3.8-Flash-Next-PLE-Q8_0.gguf",
     "--spec",
-    "5"
+    "5",
+    "--spec-min-p",
+    "0.5",
+    "--expert-profile",
+    "/mnt/srcds/Strata/data/expert-profile.bin",
+    "--vram-reserve-mib",
+    "640",
+    "--vram-reserve-later-mib",
+    "640",
+    "--expert-cache-cpu-order",
+    "--prompt-cache-spread"
   ],
   "env": {
     "STRATA_PREFILL_MMQ": "0"
