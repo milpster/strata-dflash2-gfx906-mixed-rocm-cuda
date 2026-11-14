@@ -2959,3 +2959,59 @@ stepped" for a fresh card when uptime < the window; 0 is now explicitly "never s
 (vram_guard.cpp:100).
 Not flipped to prod (default OFF; the 18m reviewer gate runs before any arm, and the donor TODO
 above is the follow-up for the generate.cpp lane).
+
+**Round 18q — off-thread begin-seam staging lands (v0233-candidate @ d4f7b95052).**
+The TG stall evidence (prod, eyemark #5, journal 18i ARM1): the helper shadow's ring staging runs
+INLINE in ForesightSwap::note_miss at the begin seam — expert_pool_dispatch_multi's claimed-rows
+feed (expert_source.cpp:~5291, one note per distinct claimed expert per tier) and the CPU-miss
+note (:~5198) — so the request thread blocks on a pack read / helper D2H of milliseconds per
+staged pair, between the helper's begin RPC and the decode continuing; the ring barely cycles
+because staging sits BEHIND the seam instead of ahead of it (69 blobs staged vs 108k ring-full
+rejections; 4-6 checkpoint lines per stall vs the usual 1-4).
+Design (no async path existed — the filler thread only issues H2D; staging into the ring was
+inline-only): a DEDICATED stager thread inside ForesightSwap.  STRATA_STAGE_OFFTHREAD=1 (default
+0; read once in foresight_swap_from_env beside the STRATA_FS_* knobs via env_int; needs
+STRATA_FS_HELPER_SHADOW with its staging ring — without them the flag is inert and no thread
+starts) moves note_miss's helper-shadow slow path off the seam: the note only queues the
+(layer, expert) demand (stage_mu_/stage_cv_, FIFO, cap 16384 — a deeper queue drops the note like
+the inline ring-full refusal would, counted in the new stage_drops counter and the report line);
+the stager runs stage_miss(), the EXACT old sequence — gates under smu_ (admit + budget, miss
+counted at stage time), ring_acquire, the bytes read OUTSIDE every lock (the stage_blob lambda:
+copy_cached_blobs under read_mu_, else swap_blobs_batch under file_mu_ — both already
+cross-thread; strictly LESS concurrency than today, where every dispatch thread ran stage_blob
+inline), then the gates re-checked and assign_locked.  One gate at the seam (the stage_offthread
+branch in note_miss, the funnel both seam sites call); nothing scattered.  The stager WAITS OUT a
+full ring (~1 s in 2 ms steps, stage_cv_ with the dtor's notify) instead of rejecting, so "ring
+full" (ring_busy) now counts sustained exhaustion only — entries that free within a second are
+consumed by the waiting stager, which is what keeps staging AHEAD of the decode.
+Lifecycle: stager started in init() right after the filler (only stage_offthread && ring_n > 0);
+~ForesightSwap sets stage_stop_ + notify, joins the stager FIRST (it may still queue a copy onto
+the filler), then stops/joins the filler, then the card syncs, ring_mem free and event destroys —
+no use-after-close (the lambda's captured ExpertSource/RemoteExperts outlive fs_swap by
+generate.cpp's declaration order, the same guarantee the filler rides).
+Knob-off correctness: note_miss's inline path is the verbatim old sequence via
+stage_miss(..., false) (same locks, same order, same counters — wait_ring false skips the wait
+loop); no stager thread, no queue, boot note and report() byte-identical.  The 1ce7ca8261
+claim-word fix lives in the HELPER reply ring (helper_main.cpp/protocol header) — untouched here;
+this lane's ring is ForesightSwap's pinned staging ring, whose acquire/release/claim protocol
+(ring_used under ring_mu_, a slot holds its entry until reassignment, release inside
+assign_locked's pick) is respected unchanged — the stager is just a new caller of the same
+sequence.
+ARM7 (the measurable signature): ring-full rejections COLLAPSE toward ~0 (staging waits and
+cycles entries instead of rejecting; ring_busy only fires on >1 s sustained exhaustion — watch
+the report line "helper shadow: N staged (R ring full, S no source)" + the new "D staging notes
+dropped (queue full)"), staged count should climb far past 69, checkpoint lines back to 1-4 per
+window with no mid-generation stall clusters at helper=healthy timeouts=0 fallbacks=0.
+Boot line to watch: the foresight swap note gains ", ring staging off the begin seam
+(STRATA_STAGE_OFFTHREAD)".
+Transport-only change: a slot either lands in time and serves the same bytes or the row keeps
+today's helper/CPU fallback — the temp-0 sha guard (18m convention) MUST show identical
+completion shas with the knob on vs off; any sha delta is a defect.
+Build evidence: build-mixed-gpu/rpcw-hip, `nice make -j6 strata 2>&1 | tee
+../build-18q-stage-offthread.log; PIPESTATUS[0]` -> exit 0, [100%] Built target strata, binary
+50,018,488 B @ 2026-11-14 11:45:04 (was 50,012,632 B @ 11:11:01, the 18n build); the one
+expert_source.cpp warning (the 'reserve' capture, :2606) is pre-existing (present in the 18n
+log).  Host tests (host-only, default-off inline path compiled in): file_expert_source_test
+(covers note_miss via the foresight-exchange cases), swapin_depth_test, tail_skip_guard_test ->
+`ctest -R` 3/3 Passed (0.37 s).  No dedicated off-thread stager host test exists (lane 3's
+deferred test debt covers the same surface); the reviewer gate (18m) runs before any arm.
