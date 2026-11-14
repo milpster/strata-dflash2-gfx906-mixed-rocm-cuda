@@ -24,7 +24,7 @@ BIN="$ROOT/v0233/build-mixed-gpu"
 PY="$ROOT/.venv/bin/python"
 CONFIG="$ROOT/prod-config-ud-iq3xxs-dflash-w4-q4_0-mixed.json"
 SOCKET="$ROOT/run/prod-iq3xxs-ud-mixed.sock"
-SOCKET2="$ROOT/run/prod-ud-iq3xxs-mixed2.sock"
+SOCKET2="$ROOT/run/prod-iq3xxs-ud-mixed2.sock"
 HELPER="$BIN/rpcw-cuda/strata-expert-helper-patient"
 # KSM is OPT-IN here (SPEC-stage2 lever 4): measured general_profit -109.9 MB on this pair
 # (2026-11-08 17:22 baseline; -636 MB by 2026-11-09 11:01, pages_sharing 141 -> 0, ksmd ~0.1-0.2 %
@@ -91,10 +91,10 @@ for v in STRATA_RPC_PROFILE STRATA_VERIFY_PROFILE STRATA_HELPER_REPLY_TIMEOUT_MS
   [[ -n ${!v:-} ]] && helper_env+=("$v=${!v}")
 done
 env -i "${helper_env[@]}" "$HELPER" \
-  --pack /mnt/srcds/ai/iq3s \
-  --experts ../Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S.gguf \
+  --pack ${STRATA_AI_DIR:-/mnt/srcds/ai}/iq3xxs-ud \
+  --experts ../Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00004.gguf \
   --device 0 --slots 4600 --reserve-mib 320 --timeout 63115200000 \
-  --begin-timeout 63115200000 --socket "$SOCKET" --fill-mib 7400 --socket2 "$SOCKET2" \
+  --begin-timeout 63115200000 --socket "$SOCKET" --fill-mib 6796 --socket2 "$SOCKET2" \
   >>"$HLOG" 2>&1 < /dev/null &
 helper_pid=$!
 if [[ -n ${STRATA_PAIR_RECORD:-} ]]; then
