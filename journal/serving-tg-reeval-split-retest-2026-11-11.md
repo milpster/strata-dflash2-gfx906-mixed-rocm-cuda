@@ -3015,3 +3015,57 @@ log).  Host tests (host-only, default-off inline path compiled in): file_expert_
 (covers note_miss via the foresight-exchange cases), swapin_depth_test, tail_skip_guard_test ->
 `ctest -R` 3/3 Passed (0.37 s).  No dedicated off-thread stager host test exists (lane 3's
 deferred test debt covers the same surface); the reviewer gate (18m) runs before any arm.
+
+**Round 18p — vram guard donor wiring.**
+The 18o TODO (src/core/vram_guard.cpp) is discharged: the two generate.cpp call sites landed, plus the
+review's N1-N4. Commit 13269309b7 on v0233-candidate (4 files: generate.cpp, vram_guard.hpp/.cpp,
+vram_guard_test.cpp; +173/-63).
+Call sites (generate.cpp @ 13269309b7):
+1. set_base_mib(dev, base) x2: generate.cpp:8995 - right after the expert-cache sizing if/else chain
+   ends (the auto path's #496 lowering and the spill block have settled o.vram_reserve_mib by then;
+   cudaGetDevice picks the device the sizing read its free figure on) - and generate.cpp:9447, inside
+   the per-stage layer-split loop right after the "layer split, CUDA%d: ... room for experts" print,
+   with the per-card figure the walk kept: --vram-reserve-later-mib when given, else
+   --vram-reserve-mib (kStageLateAllocMib is a pricing term, deliberately NOT part of the floor).
+2. set_reclaim(donor) once at startup: generate.cpp:9004, before anything can reach a check site.
+The donor (the review's "per-card loan/swap recall"): conversation_park_vram_release_all() - the
+engine's own VRAM-pressure recall of the parked conversations' K/V slots (STRATA_PARK_VRAM_MIB; each
+slot cudaFree'd on the card it lives on, conversation_snapshot.cpp vram_kv_free), the same release
+the serve path itself uses when the K/V cannot grow (generate.cpp kvg_ensure retry, ~11285/19575).
+Survey that ruled out the alternatives: ExpertCache::shrink refuses on HIP (no VMM segments, the
+review said as much), the #533 elastic VRAM command is one-NVIDIA-GPU --vram-elastic only, the
+elastic K/V and relend paths need xcache.vmm_range() (null on HIP), the prompt-path loan's recall
+(refill) returns slots to expert duty without freeing a byte, and the pin reserves are host RAM.
+Granularity: whole 64 MiB-rounded parked K/V images (often >> a 64 MiB step) and the slot pool is
+engine-wide (a low card's report releases every card's slots; per-device filtering needs a core API
+this lane's file scope could not add) - the donor returns the REAL MiB freed and the guard logs it
+verbatim; 0 (slots off / nothing parked, e.g. STRATA_PARK_VRAM_MIB unset) is an honest 0, never faked.
+N1 shape (snapshot, donate outside, no reentry): check() now decides the whole step under g_mu
+(window recheck, cap, floor raise, counter, timestamp), snapshots the donor pointer + figures,
+RELEASES g_mu, then calls the donor under its own g_donor_mu (the engine's recall is one unthreaded
+pool: two cards stepping at once donate one after the other), then logs outside every lock. A
+thread_local t_in_donor makes check() answer nothing-to-do on that thread while its donor runs, so
+the donor's own probes cannot recurse (and can no longer deadlock the old single-lock shape, which a
+re-entering probe would have). Hot checks (not low / windowed) never touch either mutex, so a slow
+donor on card A cannot stall card B's draft-path checks.
+N2: the step clamps to the cap - step = min(step_mib, base + max_growth - floor) - so a non-divisor
+STRATA_VRAM_GUARD_MAX_MIB lands the floor exactly on base+max (500+100: 500->564->600, +36 on the
+last step) and the cap log line stops overstating; the donor is asked for the clamped amount.
+N3: kLowMib hoisted to include/strata/core/vram_guard.hpp (inline constexpr, 512 / 1024 _WIN32);
+generate.cpp's kVramSafeMib is now an alias onto it (generate.cpp:2002), one definition, no drift.
+N4: the test's set_reclaim moved BEFORE case 0 (the "off: the donor is never asked" assert can fail
+now), and a first-in-main env case verifies the activation path (setenv STRATA_VRAM_GUARD=1 +
+STEP_MIB=128 before the guard's read-once config initializes: enabled() true, floor 100->228, "no
+reclaim donor registered" logged). New cases: the N2 non-divisor clamp (564->600, donor asked 64
+then 36) and the N1 no-reentry contract (the fake donor re-enters check() from inside itself on
+card 4: check answers nothing-to-do, exactly one step, one donor call - under the old shape this was
+a recursive g_mu deadlock). The env case caught nothing, the N2 case caught a missing configure() in
+the test itself (first run: 3 FAILs, all my test bug, fixed).
+Build+test evidence (build-mixed-gpu/rpcw-hip-guard, CUDA-ON/HIP-OFF, untouched by this lane):
+`nice make -j6 strata vram_guard_test` -> exit 0, [100%] Built target strata, binary 44,128,744 B @
+2026-11-14 11:48:51; vram_guard_test 27,088 B. `ctest -R vram_guard_test` -> 1/1 Passed (0.00 s)
+after the test fix (first run 0/1, the missing configure above). Zero warnings on the new lines
+(build-18p-donor.log: the 338 warnings are the pre-existing HIP nodiscard/unused noise, line-shifted
+only). expert_source.* untouched (the 18n-lane gate landed separately as c873503f0c mid-round);
+rpcw-hip not built; the HIP engine build stays for wrap-up. Not flipped to prod (guard default OFF).
+Skipped N5/N6 (the review marked them low/trivial; not in this lane's mandate).
