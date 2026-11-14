@@ -73,7 +73,7 @@ echo "== 3. pin binary + refresh SHA256SUMS"
 cp "$BIN" "$PIN_DIR/strata.new" && mv -f "$PIN_DIR/strata.new" "$PIN_DIR/strata"
 (cd "$PIN_DIR" && sha256sum strata > SHA256SUMS.new && grep -v ' strata$' SHA256SUMS >> SHA256SUMS.new 2>/dev/null || true; mv SHA256SUMS.new SHA256SUMS)
 (cd "$STRATA" && git add prod-config-swift15-iq3s-int8kv-dflash-w4-mixed.json && \
-  git commit -q -m "feat(prod): full expert residency on register-last binary - relief args dropped, reserves 576")
+  git commit -q -m "feat(prod): full expert residency on register-last binary - relief args dropped, reserves 576") || echo "(config already committed - idempotent rerun)"
 
 echo "== 4. boot and watch banners (startup-timeout 1200s is the hard stop)"
 : > "$ELOG"
