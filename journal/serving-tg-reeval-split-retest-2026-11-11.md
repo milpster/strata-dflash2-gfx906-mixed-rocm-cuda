@@ -3108,3 +3108,60 @@ shaped. Prod restored to relief (2304-config reverted with the round1 restore pa
 differential of register_whole's single {0, capacity} range vs the relief path's
 register_complement range construction (count, granularity, chunking, flags) — make the full-span
 registration take the proven shape (per-2-MiB-page / per-layer ranges with progress prints).
+
+**Round 18t — register-last takes the relief range shape: the whole arena registered range-by-range (v0233-candidate @ fc5f89cc3d).**
+The 18s differential, answered by reading (case: relief DOES chunk):
+- Relief: register_complement (expert_source.cpp:6910-6952, pre-change line numbers) builds comp =
+  MAXIMAL SPANS OF CONSECUTIVE STILL-HELD BLOBS - a boundary only where a DROPPED blob starts - and
+  register_after_fill (pinned.cu:1030-1099) issues ONE cudaHostRegister(PORTABLE|MAPPED per
+  pinned.cu:723-724) PER SPAN, page-outward rounded (V4-r3). The measured relief boot (18k): 21.5 GiB
+  / 3440 ranges = ~6.4 MiB per call, requests served fine over it indefinitely, including syncs over
+  the live registration.
+- Register-last (18n @ 23fb6b114b): register_whole passed ONE range {0, arena_capacity_} - ONE
+  cudaHostRegister over 46.84 GiB = 12.3M 4-KiB pages. Boot ok in 139-186 s, but the FIRST request
+  wedged (18r/18s: 100% of one core, log frozen right after "registration ok", empty reply, 2x).
+So the differential is per-call page-table scale (plus one lazy GPUVM fault wave over the whole
+span on first touch), not the registration's existence: relief's ~6.4 MiB/call shape is the proven
+request-time-safe point at 3440 ranges.
+Fix (expert_source.cpp register_whole only + a print in pinned.cu): the full span takes the same
+construction - ranges of consecutive blobs over [0, arena_capacity_], each span closed at the first
+PAGE-ALIGNED blob offset once it reaches >= 8 MiB (the complement's measured band), the last span
+through arena_capacity_ (the complement's last-span rule, spare blob included). Page-aligned close
+is the load-bearing detail: relief's boundaries never cut a HELD blob (they are dropped-blob
+offsets); with nothing dropped, a non-aligned boundary hands the shared page to the earlier range
+(register_after_fill's head-trim) and the blob starting mid-page straddles two registrations -
+pin_range_of answers one range or none (V4-r3) and the first DMA of that pair dies "invalid
+argument". A layout with no interior page-aligned blob offset falls back to the 18n single range
+(loud: the ok line prints 1 range). ~5,900 ranges at 8 MiB for 46.84 GiB. Refusal semantics kept:
+lock_rest=true - first refusal stops (pin-by-need's rule), the unregistered rest keeps the
+working-set lock (UMA degrade, non-fatal, loud), and ranges registered before a refusal STAY
+DMA-able (strictly better than 18n, where any refusal left nothing registered). Architecture kept:
+last boot step, generate.cpp call sites (:16933/:23745) unedited, STRATA_REGISTER_LAST=0 opt-out,
+Linux gate (c873503f0c), no-ops for every other pinning mode, once-only idempotent.
+Prints: register_after_fill's per-~10% progress line now carries elapsed seconds ("registered
+after the fill: N of M ranges (X GiB, Y s)"); the banner pair is unchanged except the ok line gains
+the count: "... ok in N s (X GiB registered, R range(s))".
+Expected request-time effect: each cudaHostRegister maps ~2k 4-KiB pages instead of 12.3M, and the
+first request's kernel submission / stream sync / weight-arena cudaMalloc meets the relief-proven
+per-range table (3440-range complement serving fine is the existence proof at 21.5 GiB). NOT
+addressed here: 18r's GPUVM cost of the full-span page tables (2304/2304 reserves stay required).
+Build evidence: build-mixed-gpu/rpcw-hip, `nice make -j6 strata 2>&1 | tee
+../build-18t-relief-shape.log; PIPESTATUS[0]` -> exit 0, [100%] Built target strata; binary
+50,020,744 B @ 2026-11-14 13:14:14 (was 50,019,320 B @ 12:18:12, the 18p rebuild); zero warnings
+on the edited lines (the 43 are the pre-existing HIP nodiscard noise).
+Host tests: `ctest -R 'arena_pin_ranges_test|file_expert_source_test'` -> arena_pin_ranges_test
+1/1 Passed (0.01 s, post-change). file_expert_source_test TIMED OUT (its 60 s CMake TIMEOUT, zero
+output) - PRE-EXISTING on this box state, proven by differential: change stashed, both TUs rebuilt
+(exit 0), the pre-change binary hangs identically (RC=124 before any output, even under stdbuf
+-o0); strace shows the block inside ROCclr startup's DRM enumeration (the /dev/dri/renderD130 walk,
+last syscall a never-returning close on a DRM fd) while prod serves on the relief cards - the test
+links strata_engine, whose HIP runtime init probes the render nodes the live server holds. None of
+the test's cases reach register_whole/register_after_fill (its pacing cases parse canned meminfo
+strings, tests/core/file_expert_source_test.cpp:404-419). Re-run when prod is idle; not a
+regression of this round. No GPU in this lane - the parent validates: expected boot "registering
+the whole arena (46.8 GiB) as the last boot step ..." -> per-10% range progress (GiB, s) -> "...
+ok in N s (46.8 GiB registered, ~5900 range(s))" -> READY -> first request completes (temp-0 sha
+guard convention). Watch: the printed range count (a small count means sparse page-aligned blob
+offsets - the shape degraded toward 18n and the spin may persist); registration wall time may grow
+past 186 s (per-call overhead x ~5900, the 1200 s launcher deadline has margin); GPUVM/VRAM figures
+unchanged vs 18r/18s (2304/2304 reserves).
