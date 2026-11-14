@@ -10,7 +10,7 @@ golden="$ROOT/tools/mixed_gpu/golden/rpcw-hip.cmake"
 git -C "$ROOT" rev-parse --short HEAD | sed 's/^/building from HEAD /'
 rm -rf "build-mixed-gpu/$DST"
 args=(-C "$golden"
-  -DCMAKE_PREFIX_PATH=/home/srcds/rocm-gfx906-xnack;/opt/rocm-6.1.0
+  "-DCMAKE_PREFIX_PATH=/home/srcds/rocm-gfx906-xnack;/opt/rocm-6.1.0"
   -DROCM_PATH=/opt/rocm-6.1.0
   -DHIP_PATH=/opt/rocm-6.1.0
   -DHIP_ROOT_DIR=/opt/rocm-6.1.0)
