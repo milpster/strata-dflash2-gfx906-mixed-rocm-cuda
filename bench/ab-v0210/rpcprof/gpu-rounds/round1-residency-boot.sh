@@ -11,7 +11,7 @@ PIN_DIR="$STRATA/v0233/build-mixed-gpu/rpcw-hip"
 ELOG="$STRATA/logs/engine-prod-iq3s-v0233.log"
 OUT="$STRATA/bench/ab-v0210/rpcprof/out/gpu-rounds-20261114"
 RESERVE_MIB="${RESERVE_MIB:-2304}"   # post-boot request path needs ~1.5 GiB (weight arena) + margin
-BIN="${1:-/mnt/srcds/Strata-wt-integ/build-mixed-gpu/rpcw-hip/strata-final-all-lanes-13269309b7}"
+BIN="${1:-/mnt/srcds/Strata-wt-integ/build-mixed-gpu/rpcw-hip/strata-final-all-lanes-fc5f89cc3d}"
 mkdir -p "$OUT"
 
 [ -x "$BIN" ] || { echo "REFUSE: no binary at $BIN"; exit 1; }
