@@ -31,9 +31,9 @@
     "--kv",
     "int8",
     "--vram-reserve-mib",
-    "576",
+    "2304",
     "--vram-reserve-later-mib",
-    "576",
+    "2304",
     "--kv-resident",
     "262144",
     "--pcie-frac",
@@ -55,7 +55,6 @@
     "0",
     "--expert-helper-slots",
     "4600",
-    "--expert-helper-ram-relief",
     "--conversation-cache-dir",
     "/mnt/srcds/Strata-wt-helper-ipc/run/diet-soak-cache",
     "--conversation-cache-disk-mib",
@@ -67,12 +66,7 @@
     "512",
     "--kv-resident-mib",
     "4096",
-    "--conversation-cache-evict-page-cache",
-    "--expert-helper-ram-relief-packs",
-    "--expert-helper-relief-hot-mib",
-    "15000",
-    "--expert-helper-relief-arena-cap-mib",
-    "22000"
+    "--conversation-cache-evict-page-cache"
   ],
   "backend": "hip",
   "cwd": "/mnt/srcds/Strata",
@@ -98,8 +92,7 @@
     "STRATA_FS_SLOTS": "3,2",
     "STRATA_FS_HELPER_SHADOW": "1",
     "STRATA_FS_ADMIT": "2",
-    "STRATA_GRAPH_FAMILY_TRIM": "8",
-    "STRATA_ARENA_MLOCK": "1"
+    "STRATA_GRAPH_FAMILY_TRIM": "8"
   },
   "env_to_user": true,
   "exe": "/mnt/srcds/Strata/v0233/build-mixed-gpu/rpcw-hip/strata",
