@@ -36,8 +36,8 @@ bash "$STRATA/stop-all.sh" 2>&1 | tail -1
 echo "== 2. backup + config: drop the four relief args (keep reserves 576, env knobs, startup-timeout 1200)"
 cp "$CFG" "$OUT/config.pre-residency.bak"
 cp "$PIN_DIR/strata" "$OUT/strata.pre-residency.bak"
-python3 - "$CFG" << 'EOF'
-import json, sys
+RESERVE_MIB="$RESERVE_MIB" python3 - "$CFG" << 'EOF'
+import json, os, sys
 p = sys.argv[1]
 c = json.load(open(p))
 RELIEF = {"--expert-helper-ram-relief", "--expert-helper-ram-relief-packs",
@@ -53,7 +53,7 @@ c["args"] = out
 a = out
 for i, f in enumerate(a):
     if f in ("--vram-reserve-mib", "--vram-reserve-later-mib"):
-        a[i+1] = str(RESERVE_MIB)
+        a[i+1] = os.environ.get("RESERVE_MIB", "2304")
 json.dump(c, open(p, "w"), indent=2)
 print("args now:", len(a), "; reserves:", [a[i+1] for i, f in enumerate(a) if f in ("--vram-reserve-mib", "--vram-reserve-later-mib")])
 EOF
