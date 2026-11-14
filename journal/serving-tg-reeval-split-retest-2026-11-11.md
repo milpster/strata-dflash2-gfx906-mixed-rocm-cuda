@@ -3279,3 +3279,19 @@ fs2 adaptive chain (push card1 FS to a 180 MiB floor, cap +4): measured card1 fr
 Fill-wall bimodality noted: boots of near-identical configs land in a fast class (179-187 s) or slow class (211-226 s; RSV256 = 354.2 tok/s). Cross-boot PP claims beyond controlled back-to-back pairs are unreliable tonight; the controlled pair (MMQOFF vs MMQON) stands: OFF +7% PP, +12% TG med.
 
 Serving config after tonight (committed): layer_split 30, STRATA_PREFILL_MMQ=0, STRATA_FS_SLOTS=2,8, --vram-reserve-mib 256, spec 5, fill-mib 7100. Caches 4951/3985 + helper 3628 (brimmed to budget floor). Engine pin unchanged (f094ddcb mlock build); mmqfix-86ab69094f pin pending (crash-insurance only, MMQ now runtime-off).
+
+## Round 18ah — pin 2e433a82 serving; helper 220; FS 2,9 falsified; 192 passes legs; repro verdict
+
+**Pin swap landed.** Golden rebuild `build_pin.sh` (ctest-free) from ad115336b4-lineage golden config produced sha16 `2e433a826404305f`; two guard bugs fixed en route (unquoted `;` in CMAKE_PREFIX_PATH array; pipefail+`grep -q` SIGPIPE false negative). First swap attempt hit ETXTBSY (cp before stop-all) — redone stop→cp→boot; old f094ddcb kept beside it as `strata.bak-f094ddcb`. Validation boot: identity line `prefill mmq: off (env=0) [built=1]` ✓, TG 31.9/33.6/30.8, fill 192.3 s / 416.0 PP tok/s. Pin is behavior-identical to the validated stack plus the audit line — mlock, mmq-fix, CMake fix all in.
+
+**Helper reserve 320→220** (operator: 240 then 220): helper fill 3628→3676 slots. Helper warns 220 < its recommended 256; failure mode is soft (VIAs cover on OOM). Watching for overnight cleanliness before calling it final.
+
+**FS 2,9 falsified — reverted.** The +1 card1 slot (13 MiB margin vs the ~162 MiB staging-ring floor) threw exactly the guarded signature: one TG leg collapsed to **12.2 tok/s** (442 tok in 36 s) plus a 535-token re-read taking 10.3 s at 51.5 tok/s. Every 2,8 boot tonight (12 judges) stayed ≥28. card1's "no free slot" contention is real (~35k counts) but not worth a thrash class. Revert commit f000470316; final FS = **2,8**.
+
+**Temp-0 SHA repro: 3/3 diverged** on the new pin (a3114d60 / 02c34262 / 89a35b91; 206/194/198 words, all finish=length). Nondeterminism persists with MMQ off and the new binary — not pin-introduced, not MMQ-introduced; root cause remains open. Characterization only, as planned.
+
+**Reserve 256→192 (operator push, +64 MiB past the fresh floor).** Arm ran clean before the box reboot interrupted the night: TG judges **32.0/28.7/29.4**, no shrink/LOW/stall lines, no thrash class. 192 passes its legs — 240k fill + TG×1024 stress and a survival window still owed before it's called servable (that leg was killed mid-fill by the reboot and is being re-run).
+
+**Teacher-forced quality run crashed at engine start (exit -6, `free(): invalid pointer`) — spawn-path, not binary.** Same signature as the MMQ test-binary crashes, but this binary serves perfectly under the prod launcher. Bare subprocesses (tool, ctest) resolve a different system ROCm than the launcher's pinned `LD_LIBRARY_PATH` (gfx906-xnack + /opt/rocm-6.1.0); wrapper `quality/strata-ldp.sh` now gives the tool's engine the launcher env. Retry chained; if it still aborts with the launcher env, it's a minimal-config-path heap bug → oracle. Historical A-vs-C reproduction dropped (C.tsv.seg.json not retained).
+
+**Box reboot ~21:43** killed the 240k fill mid-leg and all chains; resume lane (boot at 192 cfg → 240k stress → quality retry → restore) dispatched from committed state. rsv192 arm had already COMPLETEd at 21:33:08 — its verdict stands.
