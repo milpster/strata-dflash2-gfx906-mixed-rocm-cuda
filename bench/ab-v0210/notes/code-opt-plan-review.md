@@ -187,3 +187,53 @@ Consequences for the plan:
 The plan's structure — default-OFF gates, commit slicing, lane discipline, promotion as an operator decision, pin `36ecbe98` untouched — is consistent with the campaign conventions throughout; with the changes above (1-4 before their respective phases), P0 may start.
 
 *End of review.*
+
+---
+
+## Re-review (round 2, 2026-11-15)
+
+Re-reviewed the amended plan (451 → 480 lines; amendment markers walked section by section; the three load-bearing NEW citations spot-checked in the worktree at HEAD `84fc595dd9`, read-only). Fresh context since round 1: post-reboot PRODCHECK2 read warm TG **22.1** — the collapse survives a full reboot; pinning fix confirmed live; PCIe link-width under load is the open suspect alongside clocks.
+
+### Blocking findings — resolution status
+
+**1. F5 redesign — RESOLVED.**
+- The amended section (plan :293-332) drops the early-raise **structurally**: doorbell path keeps every flag write byte-for-byte today's (`*flag = want` at :3616 unchanged, sole raiser = the service loop); the thread only derives rows + `gather_batch` and is **joined after `pool()` returns and before the raise**; started after `stage_inputs` returns (removing the raise-wiped-by-reset hazard entirely since the thread never writes a flag); failure path = err recorded, checked at :3661-3663, no flag write, no hang. This is exactly the redesign required.
+- The "why the original was dropped" note (:295) states the mechanism correctly and with the right anchors: `:1497-1500` guards the PLE wait with `if (ar_on())`; `m_flag_ >= ring` is the CPU-rows contract (`:2460/:2466`); flagA mid-dispatch from `publish_plan` (`:3867-3871` via `P.publish` at expert_source.cpp:5249); flagB mid-pool from `fetch_dma`'s host func (`:3839-3865`) — all verified in round 1 and correctly transcribed. It also correctly concedes the KL gate could not certify the old design (schedule-dependent race) — the fix is structural, not tested-in.
+- The ar_on() thread-raise variant is retained only as an optional, separately-switchable non-prod variant (:311) — matches the round-1 recommendation.
+- Win honestly restated as bounded by the overlapped `ms_pool` slice (:313), and the DoD adds a **join-ordering test** plus the failure-path test (:321) — the one-raiser rule as an asserted behavior.
+- New anchors spot-checked: `ple_rows` derivation at verify.cpp:**3377-3386** ✓ (local `prev` copy only — `ss.ple_prev` is not written there, so hoisting to the thread is race-free; `prefetch_rows` warming at :3384 moves with it, harmless/earlier); the ar pre-launch raise block at verify.cpp:**3393-3403** ✓ (gather :3396, `h_flag_ = 1` at :3401, `flag_raised` :3402 — the block the amendment labels "pre-launch" as distinct from the :3504-3516 post-launch block; both exist as described).
+
+**2. F2 stale-seq + QFUSE + gating — RESOLVED.**
+- **Stale-seq**: plan :226 now specifies the exact `stage_inputs` reset (`m_xq_seq_[0]/[1] = 0` beside `h_seq_` at verify.cpp:3160-3163) with the correct rationale (capture-baked ring values restart at 1; stale values would pass `>= want` instantly) and the safety argument (previous graph fully synced at :3661). Test case (v) (:245) covers a window-2 replay in-tree. Risks table (:257) and DoD (:261) updated to match.
+- **QFUSE**: plan :228 states ring use is NOT gated on `!q8_ffn`, cites the right facts (STRATA_QFUSE default 1 at arch_defaults.cpp:86; `q8_ffn` at verify.cpp:2207), and rests correctness on the parity chain; :246 makes the QFUSE-producer leg of `xq_triple_parity` **mandatory**, citing gr_parity.cpp:416-417 (verified in round 1) for QFUSE==native, giving QFUSE==native==rows==cpu. Risks (:258) add the per-layer fallback if gr_parity ever fails. Exactly what was required.
+- **Gating**: the tail publish now requires the helper tier to be configured (:227) and the ring allocation itself is gate-conditional so OFF boots keep identical RSS (:226). Both accepted.
+
+**3. F4 serve-thread serialization + ack-drain — RESOLVED.**
+- **Serve thread**: plan :383 names the constraint with the verified anchors (helper_main.cpp serve-thread-per-socket serial frame loop) and makes the fix structural: the kPrefetch handler **acks immediately** (n_queued) and stages on a helper-side staging thread, OR the prefetch rides the second socket (stripe channel-B precedent) — "pick one at implementation; the socket test covers both orders." Ack semantics changed from n_staged to n_queued accordingly (:380). Correct.
+- **Ack drain**: plan :387 moves the correctness point to the **reply reader** — `finish()` "tolerates and consumes any number of LEADING kPrefetchAck frames under `io_mtx_` before the expected kRows," with the begin() peek demoted to a fast path. Spot-checked: `ExpertHelperClient::finish` is at expert_helper_socket.cpp:**710**, its whole read under `io_mtx_` (:716) with a single `read_frame` at :723 — exactly where a leading ack would otherwise be a protocol failure, so the amendment targets the right line. New test (ii-b) (:406) exercises the ack-between-kBegin-and-kRows interleave on a fake helper; the commit message for the client path (:400) names the finish() drain.
+- Remaining F4 content (predictor, PCIe pre-stage, thrash bounds, descope rule) unchanged from round 1 and still sound.
+
+### Non-blocking items — resolution status
+
+- **F6** — RESOLVED: `STRATA_VERIFY_COMPLEMENT` all-slots boot added to the ladder (c) and DoD (checksums equal gate-on vs gate-off); `verify_slot`'s one-slot-per-boot nature stated exactly (:93, :102); per-phase DoD (H2D-phase ≥2×, end-to-end caveated read-bound with the 671 MB/s ≈ 14.3 s/14.8 s math restated); per-thread `OnDevice` requirement in the change list (:91) with commit-message instruction; baseline-confound risk bullet (:111) tying to Re-baselining.
+- **F8** — RESOLVED: reframed to "after THIS window's draft, before launch" with the round-1 reasoning transcribed (:124); window-0 special case eliminated by design (:139); `kHistMax` marked asserted-not-verified with an implementation-time check (:140).
+- **F3** — RESOLVED: destination corrected to `d.nact_multi + t*kNativeActBytes` with the Q2/non-native destinations distinguished (:268); stride fast path + per-row/fallback; test target updated to `nact_multi` (:279); ep-skip fresh-bytes note kept for posterity (:286).
+- **F1 penalized-greedy** — RESOLVED: armed by design with the correct code fact (`hist_d_ != nullptr` fires at :3687 even when greedy; temperature-0 deterministic) (:156); parity matrix extended with the penalized-greedy mode (:167); risks note that excluding it later would be a documented value loss (:174).
+- **Re-baselining section** — RESOLVED and, critically, **mechanism-independent**: F7c first (mandatory), qq KL gates proceed now (speed-independent), ALL tg80k judge legs and WT%/BT% acceptance numbers held for *confirmed warm-TG band restoration on the adopted config*, fresh class bands for F6/F7ab, lane hygiene. The new PRODCHECK2 datum (22.1 post-reboot — collapse survives reboot; PCIe link-width the open suspect) changes nothing in the rules: they gate on band restoration, not on any particular suspect being confirmed. Cosmetic only: the suspect list in the section preamble (:68 — "GPU under-load clocks pending; the A1MMAP4 config differential... a post-reboot re-measurement is in flight") predates PRODCHECK2 and could add the PCIe-link-width suspect and the reboot-survival datum; the journal, not the plan, is the right home for that update.
+
+### Internal consistency
+
+- Master table (:33-41): F6 2 boots/complement gate/tg80k held; F7c "FIRST code item — mandatory"; F2/F3/F5 judges HELD; F5's band restated ms_pool-bounded; all gains marked placeholder. ✓
+- Phasing (:57, :61): F5 coded only from the redesigned section; measurement edges (judge legs → band restoration; F7c → first) added as a distinct edge class. ✓
+- First week (:436-462): Day-1 step 0 re-baselining checkpoint; F7c before everything; Day-2 complement boot; Day-4/Day-5 judge legs replaced by additional qq passes while held; F5 code-only from the amended section. GPU-hour estimates updated coherently (~0.75-1.5 h/day + held legs deferred, not deleted). ✓
+- DoD summary table (:468-478): every row carries its amendment (complement checksums, stale-seq + QFUSE legs, nact_multi stride, join-ordering tests, fresh class bands, ack-before-kRows). ✓
+- **One residual wording nit (non-blocking)**: F1's ladder (c) (:168 — "Judges leg optional … expect ~+0.5-1%") and its DoD row (:179 — "a sampled tg leg shows the second sync gone") do not carry the explicit "held until band restoration" marker that F2/F3/F5/F6 carry. The blanket Re-baselining rule (:74, "ALL tg80k judge legs … WAIT") and Day 3 (:448, "tg80k held") govern, so there is no substantive contradiction — but the two F1 lines should carry the marker for textual consistency when the plan is next touched. The "+0.5-1%" there is also an unrebased placeholder like the others.
+
+### Final verdict
+
+**APPROVE for P0 start** (upgraded from APPROVE-WITH-CHANGES).
+
+All three blocking findings are resolved structurally in the amended text — not merely re-worded — and the four blocking-class constraints land with verified anchors and in-tree tests that would catch their respective regressions. The non-blocking items are all resolved. The plan's own remaining gate is operational, not textual: judge legs and speed-based acceptance numbers stay held until the warm-TG band is restored on the adopted AUX_CPUS config (per PRODCHECK2, still collapsed at 22.1 post-reboot, PCIe link-width the open suspect) — the plan encodes this correctly and mechanism-independently. P0 (F7c first, then F6/F8/F1) may start; F5 is to be coded only from its amended section; F2's lane boots follow its amended ladder; F4 proceeds to P3 per its amended design.
+
+*End of re-review.*
+
