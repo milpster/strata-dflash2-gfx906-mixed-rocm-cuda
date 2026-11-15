@@ -19,3 +19,8 @@ for i in $(seq 1 90); do
 done
 if [ -z "$RD" ]; then echo "BOOT FAIL ($TAG) ($(date +%T))"; exit 1; fi
 echo "ready[$TAG]: $RD ($(date +%T))"
+# Surface the pair supervisor's stage-affinity outcome for this boot (read-only probe).
+SUP=$(ls -t $R/run/prod-swift15*-supervisor.json 2>/dev/null | head -1)
+AFF=unknown
+[ -n "$SUP" ] && AFF=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('stage_affinity',{}).get('state','unknown'))" "$SUP" 2>/dev/null)
+echo "affinity: ${AFF:-unknown}"

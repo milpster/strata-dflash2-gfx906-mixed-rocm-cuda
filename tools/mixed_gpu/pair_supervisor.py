@@ -40,7 +40,8 @@ REQUEST_DONE = re.compile(r"strata serve: prompt [0-9,]+ tokens")
 READ_TICK = re.compile(r"reading the prompt: ([0-9,]+ of [0-9,]+) tokens")
 GENERATION_TICK = re.compile(r"^\[strata\] .+: [0-9,]+ of (?:budget|max) ")
 STAGE_SCRIPT = Path(__file__).resolve().parent / "staging_affinity.py"
-STAGE_ATTEMPTS = 30  # The engine renames itself strata-host only after early serve startup.
+STAGE_ATTEMPTS = 30  # Fast window: the engine renames itself strata-host only after early serve startup.
+STAGE_LATE_INTERVAL = 60  # Staging threads spawn lazily at first staging work; retry slowly afterwards.
 
 
 def helper_degraded(line: str) -> bool:
@@ -153,7 +154,7 @@ def engine_process(server: int, executable: Path, known: dict[int, str]) -> tupl
     return None
 
 
-def apply_stage_affinity(engine: tuple[int, str], cpus: str, snapshot: Path) -> tuple[bool, int | None, bool, str | None]:
+def apply_stage_affinity(engine: tuple[int, str], cpus: str, snapshot: Path) -> tuple[bool, int | None, str | None]:
     """One bounded application of the staging-thread move; the tool snapshots first."""
     result = subprocess.run(
         [sys.executable, str(STAGE_SCRIPT), "apply", "--pid", str(engine[0]),
@@ -164,9 +165,7 @@ def apply_stage_affinity(engine: tuple[int, str], cpus: str, snapshot: Path) -> 
     if result.returncode != 0:
         lines = (result.stderr or result.stdout).strip().splitlines()
         error = lines[-1] if lines else f"exit status {result.returncode}"
-    return (result.returncode == 0, int(moved.group(1)) if moved else None,
-            "No CPU-0 strata-stage threads found" in result.stderr
-            or "must name a live strata-host" in result.stderr, error)
+    return (result.returncode == 0, int(moved.group(1)) if moved else None, error)
 
 
 class LogTail:
@@ -296,6 +295,7 @@ def supervise(args: argparse.Namespace) -> int:
                 engine_attached = False
                 stage_attempts = 0
                 stage_result: dict | None = None
+                stage_next = 0.0
                 reason = "launcher exited"
                 publish = dict(supervisor_pid=os.getpid(), launcher_pid=child.pid,
                                generation=generation, state="starting", timestamp=time.time())
@@ -375,26 +375,39 @@ def supervise(args: argparse.Namespace) -> int:
                             # The engine re-pins its strata-stage threads to CPU 0 at
                             # every start, and the hostapp shares that core. Re-apply the
                             # approved move for this engine incarnation after attach.
+                            # The threads spawn lazily at first staging work, so a fast
+                            # window is followed by low-cadence retries for this engine's
+                            # lifetime. An affinity miss never restarts the pair by itself.
                             if (args.stage_cpus and healthy and engine is not None
                                     and stage_result is None
-                                    and stage_attempts < STAGE_ATTEMPTS):
+                                    and (stage_attempts < STAGE_ATTEMPTS
+                                         or time.monotonic() >= stage_next)):
                                 stage_attempts += 1
-                                suffix = "" if stage_attempts == 1 else f".retry{stage_attempts}"
+                                late = stage_attempts > STAGE_ATTEMPTS
+                                suffix = ".late" if late else ("" if stage_attempts == 1
+                                                               else f".retry{stage_attempts}")
                                 snapshot = args.state.with_name(
                                     f"{args.state.stem}-affinity-{engine[0]}-{engine[1]}{suffix}.json")
+                                if late:
+                                    # One stable name for every late retry; a leftover was
+                                    # already restored by the tool. It creates exclusively.
+                                    snapshot.unlink(missing_ok=True)
                                 try:
-                                    applied, moved, retryable, error = apply_stage_affinity(
+                                    applied, moved, error = apply_stage_affinity(
                                         engine, args.stage_cpus, snapshot)
                                 except subprocess.TimeoutExpired:
-                                    applied, moved, retryable, error = (False, None, False,
-                                                                        "staging-affinity tool timed out")
+                                    applied, moved, error = (False, None,
+                                                             "staging-affinity tool timed out")
                                 if applied:
                                     stage_result = {"state": "applied", "moved": moved,
                                                     "snapshot": str(snapshot)}
-                                elif not retryable or stage_attempts >= STAGE_ATTEMPTS:
-                                    # Threads may spawn late; otherwise record and move on.
-                                    # An affinity miss never restarts the pair by itself.
-                                    stage_result = {"state": "failed", "error": error}
+                                elif stage_attempts >= STAGE_ATTEMPTS:
+                                    stage_next = time.monotonic() + STAGE_LATE_INTERVAL
+                                    publish["stage_affinity"] = {"state": "pending",
+                                                                 "attempts": stage_attempts,
+                                                                 "error": error,
+                                                                 "cpus": args.stage_cpus}
+                                    write_json(args.state, publish)
                                 if stage_result is not None:
                                     publish["stage_affinity"] = dict(stage_result,
                                                                     cpus=args.stage_cpus)

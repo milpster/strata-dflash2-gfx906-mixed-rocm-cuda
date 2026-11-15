@@ -30,6 +30,19 @@ def threads(pid):
             continue
 
 
+def engine(pid):
+    """The engine renames its main thread strata-host only late in serve startup;
+    its `strata --serve` command line identifies it from the first exec on."""
+    try:
+        if Path(f"/proc/{pid}/comm").read_text().strip() == "strata-host":
+            return True
+        argv = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+    except OSError:
+        return False
+    return any(part.rsplit(b"/", 1)[-1] == b"strata" and next_arg == b"--serve"
+               for part, next_arg in zip(argv, argv[1:]))
+
+
 def inspect(pid):
     groups = collections.Counter((t["name"], tuple(t["cpus"])) for t in threads(pid))
     for (name, cpus), count in sorted(groups.items()):
@@ -74,7 +87,7 @@ def main():
     if args.pid is None:
         parser.error("inspect/apply requires --pid")
     process = Path(f"/proc/{args.pid}")
-    if process.joinpath("comm").read_text().strip() != "strata-host":
+    if not engine(args.pid):
         parser.error("PID must name a live strata-host process")
     if args.action == "inspect":
         inspect(args.pid)
@@ -84,29 +97,34 @@ def main():
     target = sorted({int(cpu) for cpu in args.cpus.split(",")})
     if not target or 0 in target or not set(target) <= os.sched_getaffinity(0):
         parser.error("CPUs must be allowed on this host and must exclude CPU 0")
+    stage = [t for t in threads(args.pid) if t["name"] == "strata-stage"]
+    movable = [t for t in stage if t["cpus"] == [0]]
+    if not stage:
+        parser.error("No CPU-0 strata-stage threads found; nothing changed")
     saved = {
         "pid": args.pid,
         "start": start_time(process),
         "time": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "target": target,
-        "threads": [t for t in threads(args.pid) if t["name"] == "strata-stage" and t["cpus"] == [0]],
+        "threads": movable,
     }
-    if not saved["threads"]:
-        parser.error("No CPU-0 strata-stage threads found; nothing changed")
-    # Save before the first mutation. Exclusive creation prevents overwriting a rollback.
-    with args.snapshot.open("x") as output:
-        json.dump(saved, output, indent=2)
-        output.write("\n")
-    try:
-        for thread in saved["threads"]:
-            os.sched_setaffinity(thread["tid"], target)
-            if sorted(os.sched_getaffinity(thread["tid"])) != target:
-                raise RuntimeError(f"Affinity readback failed for {thread['tid']}")
-    except (OSError, RuntimeError):
-        restore(saved)
-        raise
-    print(f"Moved {len(saved['threads'])} staging threads to CPUs {args.cpus}", flush=True)
-    print(f"Rollback: {__file__} restore --snapshot {args.snapshot}", flush=True)
+    # Threads already off CPU 0 (moved before, or engine-placed) leave nothing to do.
+    if movable:
+        # Save before the first mutation. Exclusive creation prevents overwriting a rollback.
+        with args.snapshot.open("x") as output:
+            json.dump(saved, output, indent=2)
+            output.write("\n")
+        try:
+            for thread in movable:
+                os.sched_setaffinity(thread["tid"], target)
+                if sorted(os.sched_getaffinity(thread["tid"])) != target:
+                    raise RuntimeError(f"Affinity readback failed for {thread['tid']}")
+        except (OSError, RuntimeError):
+            restore(saved)
+            raise
+    print(f"Moved {len(movable)} staging threads to CPUs {args.cpus}", flush=True)
+    if movable:
+        print(f"Rollback: {__file__} restore --snapshot {args.snapshot}", flush=True)
     inspect(args.pid)
 
 
