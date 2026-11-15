@@ -3460,3 +3460,17 @@ A4 lane launched (F16-off measurement); queue continues A1→A2→DET→A3→B6.
 F16-off boot (knob confirmed: banner absent in the 15:14 engine log): fresh 80k fill 390.9 tok/s (204.5 s read). F16-on history: fast class 432-455 (176-186 s), slow class 352-379 (211-227 s). The 204.5 s read sits in the slow-wall class, so single-boot attribution is confounded by the bimodality: the flag is worth +3% (vs slow class) to +14% (vs fast class) — every case says KEEP. TG unaffected (28.9 warm, mid-band; expected, prompt-path-only flag). Quality framing: the FP16 rounding is inside EVERY validated campaign baseline (all gates measured with it); removing it would cost double-digit PP for bit-exactness-to-default that nothing requires. DECISION: keep, zero action, prod unchanged.
 
 Lane-toolkit learnings: (1) a second fill leg per boot is conversation-cache-resident (64.8 s "fill" = cache hit) — ONE fresh fill per boot, nfill>1 is useless; (2) the outer tr pipe block-buffers the lane log for minutes — elog + driver jsons (out/gpu-rounds-20261115/<ARM>-<leg>.json/<leg>.json with walls) are the live source of truth; switching to stdbuf -oL for later lanes.
+
+## Round 18bc — A1 verdict: --ple-io mmap NO-ADOPT (no expected-value win, real costs); roadmap #1 falsified on this box
+
+3 mmap boots (knob-verified: no probe line, no direct-warning, --ple-io mmap in engine cmdline):
+| boot | fresh 80k fill | read wall | boundary re-read | warm TG |
+|---|---|---|---|---|
+| 1 | 401.5 | 199.2 s | 231.3 | 29.6 |
+| 2 | 397.1 | 201.4 s | 248.0 | 30.8 |
+| 3 | 416.3 | 192.2 s | 243.7 | 26.8 |
+Direct history: bimodal fast 432-455 (176-186 s) / slow 352-379 (211-227 s); boundary 234-236; TG band 26-34.
+
+Reading: mmap REPLACED the bimodal fill distribution with a tight mid cluster (mean ~405 ±2.5%) — it never reaches the direct fast class and never the slow class. Expected value matches direct's ~50/50 mix (~404) — ZERO expected gain. Boundary re-reads unchanged within noise (the 54 MB/s probe tax does NOT bind our boundary legs — that class is expert/conversation-cache-shaped, not PLE-I/O-shaped). Warm TG unchanged. Costs are real: engine RSS 34 GiB (PLE table resident vs direct's no-mapping), box packed 62/62, less headroom for the relief arenas. VERDICT: NO-ADOPT, prod unchanged (direct). Researcher's top pick (A1+B5, est. +3-10% PP) falsified on this hardware; the fill-wall bimodality remains unexplained — B6 (queue priming) and B4 (checkpoint-off-read-path) stay the live suspects.
+
+Incidents this round (3 lane-bash deaths at serving-start, all on mmap boots): each boot script died silently right after the ready line (boot 1 old lane_boot, boots 2-3 patched setsid --fork; stdbuf exonerated on boot 3 — plain run died too). Engine always survived and served the salvage legs. Best theory: transient memory pressure at PLE mmap first-touch (50.7 GiB table) reaps the small lane bash; kernel logs unreadable (no perms). Workaround proven 3/3: legs-only invocations never span the ready transition — all remaining lanes run boot-phase and legs-phase as separate invocations (a2_arm.sh per-arm one-shots; orphaned setsid --fork launch also tests the session-context-killer theory). stop-all note: variant launchers (launch-<tag>) don't match its 'launch-prod-|launch-trial-' patterns, but the engine/helper/server patterns + shared supervisor state file still stop variant stacks fully.
