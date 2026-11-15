@@ -3454,3 +3454,9 @@ AUDIT LEADS: (a) CONFIRMED latent: layer.cpp:1595/1620 ignore hc_bf16_view_pair 
 IF EVER REVIVED: check layer.cpp returns; default TUNE off on gfx906 or make wide/ld32 alignment-safe + stress parity; run the missing stock+NATIVE cell; prove H1 directly with STRATA_HC_Q8_TUNE=0 on the fix (flip to pass = proof).
 
 A4 lane launched (F16-off measurement); queue continues A1→A2→DET→A3→B6.
+
+## Round 18bb — A4 verdict: STRATA_HIP_PROMPT_F16=1 is worth +3-14% PP — KEEP (no change)
+
+F16-off boot (knob confirmed: banner absent in the 15:14 engine log): fresh 80k fill 390.9 tok/s (204.5 s read). F16-on history: fast class 432-455 (176-186 s), slow class 352-379 (211-227 s). The 204.5 s read sits in the slow-wall class, so single-boot attribution is confounded by the bimodality: the flag is worth +3% (vs slow class) to +14% (vs fast class) — every case says KEEP. TG unaffected (28.9 warm, mid-band; expected, prompt-path-only flag). Quality framing: the FP16 rounding is inside EVERY validated campaign baseline (all gates measured with it); removing it would cost double-digit PP for bit-exactness-to-default that nothing requires. DECISION: keep, zero action, prod unchanged.
+
+Lane-toolkit learnings: (1) a second fill leg per boot is conversation-cache-resident (64.8 s "fill" = cache hit) — ONE fresh fill per boot, nfill>1 is useless; (2) the outer tr pipe block-buffers the lane log for minutes — elog + driver jsons (out/gpu-rounds-20261115/<ARM>-<leg>.json/<leg>.json with walls) are the live source of truth; switching to stdbuf -oL for later lanes.
