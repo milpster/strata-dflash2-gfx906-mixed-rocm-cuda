@@ -3412,3 +3412,11 @@ Helper-only cut (launcher --reserve-mib 220->156, ROCm held at its 192 floor): b
 ## Round 18av — helper 92 falsified (no gain); final reserves 192/156
 
 Second helper cut (156->92, ROCm 192): clean boot/fill/TG/no-NaN — but helper fill identical to 156 (3703 slots, 368 MiB free after). The helper is assignment-bound at 3703 (its full share of the expert split), no longer capacity-bound; the extra 64 MiB bought nothing. Reverted to 156 (the last level that bought slots, +20 vs 220). Final reserve state: ROCm 192 (floor; 128 = NaN #879), helper 156 (assignment floor).
+
+## Round 18aw — trim fix WORKS on VRAM (+210 slots); native HC_Q8 path = 4/4 harness poison
+
+Fix binary b2ca53c0 (multi-GPU swap + per-device trim, STRATA_HC_Q8_TRIM default on) booted with HC_Q8=1: banner **5193 experts / 9.62 GiB — the swap works** (OFF 4983/9.67, broken-pre-fix 4577/8.48). Judges: fill 391.2 (HC_Q8-on PP tax persists), warm TG 27.8, acc 64.1%; shas diverged (known placement-trajectory).
+
+Quality gate: native HC_Q8 failed the teacher-forced harness **4/4 attempts** (#267 verify-timeout at varying layers: 18 pre-fix this morning, then 0 / None / 27 today; one full segment passes sometimes before the wedge) vs INJECT **3/3 clean passes** (HCQ8, HCQ8T full runs + segments). Isolation: tuned kernels (HCQ8T pass) and trim fix (pending discriminator) are exonerated-or-pending; the NATIVE upload loop (cudaMemcpy of the GGUF's own Q8_0 bytes into hc_q8) is the poisoned variable — upstream engine bug, wedge signature = #267 class, nondeterministic layer. Prod restored serving on b2ca53c0 with HC_Q8 off (default).
+
+Discriminator staged+running: fixed binary + INJECT teacher-forced. PASS -> trim fix sound, stays pinned; FAIL -> revert pin to 36ecbe98. HC_Q8 serving verdict regardless: OFF (native unpassable; INJECT+fix would trade +210 slots for a ~9% PP tax — operator decision for another day, data in this round).
