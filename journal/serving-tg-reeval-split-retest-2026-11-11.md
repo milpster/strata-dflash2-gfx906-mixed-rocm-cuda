@@ -3343,3 +3343,11 @@ Also this round: v0233.2-candidate built (v0233.1 + PR #2955 NaN-preserving bf16
 **dflash-block knob: inside boot-class noise.** B7's sweep-1 win (32.4) did not reproduce on v0233.2 (28.2/27.4); block 5 itself swung 33.2 → 26.2 across two boots; acceptance swung 64-79% with no block correlation. The tg5k round (100k infill + max_tokens 5120) revealed why deep sampling was illusory: generations self-terminate naturally at ~380-480 tokens on this corpus — "1024-token" legs were never token-bound. Verdict pending T5B5: no config change justified; block 5 stays.
 
 **HC_Q8 campaign opened (operator mandate: tune for gfx906, complete + enable).** Discovery: STRATA_HC_Q8 = hyper-connection projections stored Q8_0 (verify read), default ON only for gfx12/gfx1151 — OFF on gfx906; we run bf16 reads. Runtime env toggle (STRATA_HC_Q8=1 [+ _INJECT=1 for bf16 GGUFs]) — no rebuild needed. Arm chained: env boot + judges + greedy sha 3x + teacher-forced qqHCQ8 vs A.tsv + NIGHT.tsv (isolates knob from pin delta). Branch hc-q8-gfx906 cut from v0233.2-candidate for the kernel work.
+
+## Round 18ao — tg5k closes the dflash question: adopt block 7; adaptive final loss
+
+tg5k round (100k infill, max_tokens 5120 — generations self-terminate ~200-480 tok, so effectively another natural-end sample with deeper fills): T5AD (B0/0.55) 26.8 / 64.8% · T5B7 29.0 / 64.0% · T5B5 26.2 / 62.8%. Boundary-after-fill thrash pass (14.8) appears on first-gen passes across arms — phase artifact, not config.
+
+Verdict corrected from 18an's lean: across ALL four direct block comparisons tonight B7 >= B5 (32.4>29.1 sweep1; 28.2/27.4>26.2 nightcap; 29.0>26.2 tg5k) and adaptive (B0) loses every round at both conf thresholds. Acceptance parity (63-65%) means B7's TG edge is steady, not an acceptance fluke. **Decision: --dflash-block 7** (the artifact's trained max), flipped at campaign wrap-up to avoid config churn mid-HC_Q8 arms. Block 5 remains for the HC_Q8 arms (pairs against V232 445.1/33.2 reference).
+
+Also logged: fill100k walls ~238-242 s (~410 tok/s class at 99k) on v0233.2 — PP holds at depth.
