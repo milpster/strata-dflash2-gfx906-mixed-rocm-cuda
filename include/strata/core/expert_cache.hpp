@@ -219,6 +219,29 @@ public:
     bool fill_slot_queued_parts(int32_t slot, const BlobPart* parts, int n, std::string& err);
     bool sync_queued(std::string& err);
 
+    /// **F6 (plan: boot slot pre-fill, queued batched parallel): one blob of a batched fill** - `bytes` bytes at
+    /// `blob` (0 = the slot's blob, the same convention as `fill_slot`) land in `slot`.
+    struct BatchFill { int32_t slot; const uint8_t* blob; int64_t bytes; };
+
+    /// **THE BATCHED PINNED-STAGED QUEUED FILL THE BOOT PRE-FILL WILL SWITCH TO (no caller yet).**  Each blob
+    /// goes pageable->pinned by `memcpy` into a free half of a per-cache pinned staging ring, then
+    /// `cudaMemcpyAsync` into its slot on a per-cache non-blocking stream, with one event per half so a half is
+    /// overwritten only once its uploads have retired: while one half uploads, the other is being filled.  This
+    /// is `NibbleCache`'s proven discipline (generate.cpp:3229-3289 - one stream, `kBatch` blobs per staging
+    /// buffer) plus the SECOND half and its event: a single reused staging buffer degenerates to a blocking
+    /// copy per blob on HIP, and the event is what makes the overlap safe rather than lucky.  The ring
+    /// (2 x `kBatchStage` blobs), the stream and the events are allocated on first use and freed by `close()`.
+    /// **The caller's pointer is never handed to `cudaMemcpyAsync`** - the HIP pageable-source trap that makes
+    /// `fill_slot_blocking` stage at all.  A refused item fails the whole call BEFORE anything is enqueued, so
+    /// a false return means the stream and the ring carry nothing new.
+    ///
+    /// **Answers only after every copy of the batch has completed** (one stream sync at the end): `verify_slot`
+    /// reads back on the legacy stream, which is NOT ordered against a non-blocking one - the same reason
+    /// `fill_slot_blocking` exists.  So `true` means the slots hold these bytes now, exactly as after a
+    /// `fill_slot_blocking`, and the boot line's `fills_` MB/s math keeps its meaning: one count per blob.
+    /// One thread per cache, as everywhere in this class.
+    bool fill_slots_batched(const BatchFill* items, int n, std::string& err);
+
     /// Reads `slot` back to the host and compares it to `host_blob`, byte for byte.  **THE ONLY THING THAT SAYS
     /// THE CACHE HOLDS THE EXPERT IT CLAIMS TO.**  A slot table that is right about indices and wrong about
     /// bytes produces a plausible token, which is exactly the failure this project has paid for most often.
@@ -257,6 +280,14 @@ private:
     uint8_t* blocking_staging_ = nullptr;
     std::size_t blocking_staging_bytes_ = 0;
 #endif
+    /// F6 (see `fill_slots_batched`): the pinned staging ring - 2 halves x kBatchStage blobs x blob_ bytes,
+    /// null until first use, freed by `close()` - the fill stream, and one event per half.  `void*` rather
+    /// than `cudaStream_t`/`cudaEvent_t`: this header stays free of CUDA headers, as `fill_slot`'s `stream`
+    /// parameter does.
+    static constexpr int kBatchStage = 8;
+    uint8_t* h_stage_ = nullptr;
+    void* fill_stream_ = nullptr;
+    void* fill_ev_[2] = {nullptr, nullptr};
     int64_t slot_end(int64_t n) const { return off_.empty() ? n * blob_ : (int64_t) off_[(size_t) n]; }
     bool open_segmented(uint64_t want, std::string& err);
     void release_segmented();

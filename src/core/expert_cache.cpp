@@ -708,6 +708,15 @@ void ExpertCache::close() {
     blocking_staging_ = nullptr;
     blocking_staging_bytes_ = 0;
 #endif
+    // F6: the batched fill's ring, stream and events (a fill drains its stream before answering, so nothing
+    // can be in flight here).
+    if (fill_ev_[0] != nullptr) (void) cudaEventDestroy((cudaEvent_t) fill_ev_[0]);
+    if (fill_ev_[1] != nullptr) (void) cudaEventDestroy((cudaEvent_t) fill_ev_[1]);
+    fill_ev_[0] = fill_ev_[1] = nullptr;
+    if (fill_stream_ != nullptr) (void) cudaStreamDestroy((cudaStream_t) fill_stream_);
+    fill_stream_ = nullptr;
+    if (h_stage_ != nullptr) (void) cudaFreeHost(h_stage_);
+    h_stage_ = nullptr;
     off_.clear();
     guard_ = 0;
     if (!segs_.empty()) {
@@ -898,6 +907,119 @@ bool ExpertCache::fill_slot_queued_parts(int32_t slot, const BlobPart* parts, in
     }
     ++fills_;
     return true;
+}
+
+// F6 slice 1 (see the header): the batched pinned-staged queued fill.  No caller yet - the boot pre-fill
+// switches to it behind STRATA_BOOT_FILL_QUEUED in the next slice.  Every byte travels pageable->pinned->
+// device: the caller's pointer (the boot fill's mmap) is never handed to cudaMemcpyAsync, the HIP
+// pageable-source trap that makes fill_slot_blocking stage at all (see its comment).
+bool ExpertCache::fill_slots_batched(const BatchFill* items, int n, std::string& err) {
+    if (n <= 0) return true;
+    if (items == nullptr) {
+        err = "ExpertCache::fill_slots_batched: no items";
+        return false;
+    }
+    if (sealed_) sealed_write("fill_slots_batched", items[0].slot);
+
+    // Validate the whole batch before the first enqueue: a bad slot or a null blob half-way would leave
+    // earlier items' work on the stream for a call the caller was told failed.  (device_slot bounds-checks.)
+    for (int i = 0; i < n; ++i) {
+        if (device_slot(items[i].slot) == nullptr) {
+            err = "ExpertCache::fill_slots_batched: slot " + std::to_string(items[i].slot) + " is outside 0.." +
+                  std::to_string(slots_ - 1);
+            return false;
+        }
+        if (items[i].blob == nullptr) {
+            err = "ExpertCache::fill_slots_batched: the host blob of item " + std::to_string(i) + " is null";
+            return false;
+        }
+    }
+
+    // The staging ring, the stream and the two half events, once per open (freed by close()).  A failed
+    // allocation leaves nothing half-built: the ring only exists when its own allocation succeeded, and the
+    // stream and events stay null until theirs does.
+    const size_t half_bytes = (size_t) kBatchStage * (size_t) blob_;
+    if (h_stage_ == nullptr) {
+        void* p = nullptr;
+        const cudaError_t e = cudaHostAlloc(&p, 2 * half_bytes, cudaHostAllocDefault);
+        if (e != cudaSuccess) {
+            err = std::string("ExpertCache::fill_slots_batched: the pinned staging ring: ") + cudaGetErrorString(e);
+            return false;
+        }
+        h_stage_ = static_cast<uint8_t*>(p);
+    }
+    cudaStream_t stream = (cudaStream_t) fill_stream_;
+    if (stream == nullptr) {
+        const cudaError_t e = cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking);
+        if (e != cudaSuccess) {
+            err = std::string("ExpertCache::fill_slots_batched: the fill stream: ") + cudaGetErrorString(e);
+            return false;
+        }
+        fill_stream_ = stream;
+    }
+    cudaEvent_t ev[2] = {(cudaEvent_t) fill_ev_[0], (cudaEvent_t) fill_ev_[1]};
+    for (int h = 0; h < 2; ++h) {
+        if (ev[h] != nullptr) continue;
+        const cudaError_t e = cudaEventCreateWithFlags(&ev[h], cudaEventDisableTiming);
+        if (e != cudaSuccess) {
+            err = std::string("ExpertCache::fill_slots_batched: a staging-half event: ") + cudaGetErrorString(e);
+            return false;
+        }
+        fill_ev_[h] = ev[h];
+    }
+
+    // The pipeline.  Fill the free half (pageable->pinned, at RAM speed), queue its uploads on the one stream,
+    // record the half's event, swap.  With one stream, the event retires exactly when that half's copies have
+    // read the staging bytes - so the half is safe to overwrite, and the wait (cudaEventSynchronize) happens
+    // only when BOTH halves are busy, which is the first time past 2 x kBatchStage blobs in one call.
+    bool failed = false;
+    bool busy[2] = {false, false};
+    int half = 0;
+    for (int at = 0; at < n && !failed; ) {
+        if (busy[half]) {
+            const cudaError_t e = cudaEventSynchronize(ev[half]);
+            if (e != cudaSuccess) {
+                err = std::string("ExpertCache::fill_slots_batched: ") + cudaGetErrorString(e);
+                failed = true;
+                break;
+            }
+            busy[half] = false;
+        }
+        uint8_t* stage = h_stage_ + (size_t) half * half_bytes;
+        const int cnt = std::min(n - at, kBatchStage);
+        for (int i = 0; i < cnt; ++i) {
+            const BatchFill& it = items[at + i];
+            const size_t nb = (size_t) (it.bytes > 0 && it.bytes <= blob_ ? it.bytes : blob_);
+            std::memcpy(stage + (size_t) i * (size_t) blob_, it.blob, nb);
+            const cudaError_t e = cudaMemcpyAsync(device_slot(it.slot), stage + (size_t) i * (size_t) blob_, nb,
+                                                  cudaMemcpyHostToDevice, stream);
+            if (e != cudaSuccess) {
+                err = std::string("ExpertCache::fill_slots_batched: ") + cudaGetErrorString(e);
+                failed = true;
+                break;
+            }
+            ++fills_;
+        }
+        if (failed) break;
+        const cudaError_t e = cudaEventRecord(ev[half], stream);
+        if (e != cudaSuccess) {
+            err = std::string("ExpertCache::fill_slots_batched: ") + cudaGetErrorString(e);
+            failed = true;
+            break;
+        }
+        busy[half] = true;
+        half ^= 1;
+        at += cnt;
+    }
+
+    // Always drain: everything enqueued has landed before this call answers (that is what makes the caller's
+    // legacy-stream `verify_slot` see the bytes, and what leaves the ring's state clean after a failure).
+    const cudaError_t e = cudaStreamSynchronize(stream);
+    if (e != cudaSuccess && !failed) {
+        err = std::string("ExpertCache::fill_slots_batched: ") + cudaGetErrorString(e);
+        return false;
+    }
+    return !failed;
 }
 
 bool ExpertCache::sync_queued(std::string& err) {
