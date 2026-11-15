@@ -3637,3 +3637,10 @@ Mechanism value: with drafting-dependent rounding ruled out, sha divergence aris
 
 Artifacts: `DETMT1-{fill80k,tg80k}.json/`, det_mtmin shell output. Prod restored 20:42:56, smoke `OK`. Next: MMVF_ROWS adoption gate (mmvf_gate.sh — fresh knob-off baseline, stored NIGHT.tsv predates WT HEAD).
 
+## Round 18br — MMVF_ROWS quality gate PASS; adopted into champion (2026-11-15, 20:43–21:10)
+
+Gate (mmvf_gate.sh): fresh knob-off baseline `NIGHT-fresh.tsv` + `STRATA_MMVF_ROWS=1` run `A2G-MMVF_ROWS.tsv`, back-to-back on the same harness engine (stored NIGHT.tsv of 11-14 predates WT HEAD 84fc595dd9 and was not trusted as reference). Compare over all 4995 teacher-forced positions (code/docs/english/multilingual/agent): **KL 0.00000, KL p99 0.0000, top-1 100.00%, PPL 3.924 = 3.924** — the fused 2–8-row BF16 GEMV (bf16_gemv.hpp) is bit-identical on the teacher-forced path; the reduction-order concern is refuted on this corpus.
+
+**ADOPTED on operator instruction** after the gate passed: champion config env gains `"STRATA_MMVF_ROWS": "1"` (one-line diff), canonical relaunch. Honest record of the speed evidence: no mean effect (knob boots 29.8/29.3 vs champion class 26.7–31.0; pp 435 same class) — the 42.2 outlier stays attributed to boot lottery/trajectory. Adoption is quality-neutral and speed-neutral-in-the-mean; the retained rationale is the tail observation (highest-ever box reading, 42.2 with 89.4% acceptance, landed on this knob, 1-in-3 knob boots vs 0-in-many champion boots). Two confirmation KL passes remain queued (qqNIGHT todo) per the ≥3-pass campaign convention.
+
+
