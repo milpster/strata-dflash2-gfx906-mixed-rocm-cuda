@@ -5657,9 +5657,19 @@ int main(int argc, char** argv) {
             return 1;
         }
         if (native_pack) skip.insert("token_embd.weight");
-        // STRATA_HC_Q8=1 (single GPU): the layers' hyper-connection down / up projections live only as Q8_0 (NativeDense
-        // quantizes them from the pack file), so their bf16 copy is not loaded
-        if (!o.native_dense_gguf.empty() && !multi_gpu && strata::core::NativeDense::hc_q8_requested())
+        // STRATA_HC_Q8=1: the layers' hyper-connection down / up projections live only as Q8_0 (NativeDense
+        // quantizes them from the pack file), so their bf16 copy is not loaded.  STRATA_HC_Q8_TRIM (default on,
+        // exact "0" off) extends the swap to a layer split: every stage's NativeDense::load gives each hc down /
+        // up row of the layers it runs a Q8_0 copy (the GGUF's own Q8_0 within its range, the pack-file quantize
+        // for the rest), so a skipped bf16 row keeps its reader on every card - the rows of layers a stage does
+        // not run are absent from its arena either way (add_foreign / load_stage_weights).  A card that ends up
+        // running alone (--split-skip-if-fits) holds the full-range Q8_0 set: the single-GPU state.
+        static const bool hc_q8_trim = [] {
+            const char* v = std::getenv("STRATA_HC_Q8_TRIM");
+            return v == nullptr || std::string(v) != "0";
+        }();
+        if (!o.native_dense_gguf.empty() && (!multi_gpu || hc_q8_trim) &&
+            strata::core::NativeDense::hc_q8_requested())
             strata::core::NativeDense::add_hc_skip(o.pack, skip);
     }
     // Layer split: every GPU holds only the dense weights of ITS layers (the PLE tensors stay everywhere).

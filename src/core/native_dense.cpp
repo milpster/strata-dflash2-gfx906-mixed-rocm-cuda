@@ -427,6 +427,16 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
                 }
                 pending.push_back(Pending{&ref, (int) tensor.type, bytes, std::move(data), std::move(packed)});
             }
+            // STRATA_HC_Q8_TRIM (default on, exact "0" off): a layer split's stage uploads the Q8_0 copies of the hc
+            // matrices of ITS layers only - the same in_range the eligible loop above uses, so the set follows the
+            // arena trim (add_foreign / load_stage_weights pair both to one (lb, le)).  A full set on a trimmed stage
+            // is dead VRAM beside bf16 rows its arena never loaded.  The trim stays consistent with add_hc_skip's
+            // bf16 skip: the pack-file quantize below covers any in-range row left unuploaded here, so a skipped row
+            // always has its Q8_0 copy on the card that reads it; out-of-range rows are read by no stage of this card.
+            static const bool hc_q8_trim = [] {
+                const char* v = std::getenv("STRATA_HC_Q8_TRIM");
+                return v == nullptr || std::strcmp(v, "0") != 0;
+            }();
             if (hc_q8_env())
                 for (const auto& tensor : gguf.tensors()) {
                     // S25: the F32 inject rows hold BF16-exact values: the read takes the pack's BF16 rows unless
@@ -434,6 +444,7 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
                     static const bool q8_inject = [] { const char* v = std::getenv("STRATA_HC_Q8_INJECT"); return v && v[0] == '1'; }();
                     const bool f32_inject = q8_inject && tensor.type == 0 && tensor.name.ends_with("_inject.weight");
                     if ((tensor.type != 8 && !f32_inject) || !hc_q8_name(tensor.name) || tensor.shape.size() != 2) continue;
+                    if (hc_q8_trim && !in_range(tensor.name)) continue;
                     auto found = table.table_.find(tensor.name);
                     if (found == table.table_.end() || found->second.hc_q8 != nullptr) continue;
                     auto& ref = found->second;
