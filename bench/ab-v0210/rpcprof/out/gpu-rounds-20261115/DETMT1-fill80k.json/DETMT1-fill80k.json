@@ -1,0 +1,32 @@
+{
+ "arm": "DETMT1",
+ "leg": "fill80k",
+ "kind": "prefill",
+ "ctx": 442400,
+ "max_tokens": 8,
+ "ts": 1794771505.404,
+ "walls": [
+  185.214
+ ],
+ "wall_s": 185.215,
+ "content_from": "reasoning",
+ "prompt_bytes": 442400,
+ "sha256": "01db7a9d154bb188430b234246589661629c627462db9ec632e33137f49bb45e",
+ "elog": "/mnt/srcds/Strata/logs/engine-prod-ud-iq3xxs-v0233.log",
+ "elog_start": 2311604,
+ "elog_end": 2313894,
+ "hlog": "/mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261115-203216-802947-helper.log",
+ "hlog_start": 1593,
+ "hlog_end": 1593,
+ "mem": {
+  "max_rss_mib": 50226,
+  "min_avail_mib": 17219,
+  "max_swap_used_mib": 7024,
+  "max_vram_mib": {
+   "card3": 16182,
+   "card4": 363,
+   "card2": 16358,
+   "nvidia0": 7448
+  }
+ }
+}

@@ -3628,3 +3628,12 @@ Artifacts: `out/gpu-rounds-20261115/A2<ARM>-{fill80k,tg80k}.json/` ×6, sweep lo
 Triplet on fresh arm labels (same-arm reruns would restore from the conversation disk tier and measure nothing): MMVF2 29.8 (acc 324/514 = 63.0%) · CTRL2 champion control 26.7 (192/309 = 62.1%) · MMVF3 29.3 (349/481 = 72.6%). With the sweep's A2MMVF_ROWS 42.2 (89.4% acc) as sample 1, the knob's repeats sit inside the champion class — the outlier boot paired an unusually high acceptance with its speed, i.e. a lucky trajectory (more accepted drafts per window), not a mechanism. **VERDICT: MMVF_ROWS NO-ADOPT — no measurable effect; the 42.2 is a boot-lottery draw.** No KL gate run: nothing adopted. The A2 sweep is now fully adjudicated: all six knobs NO-ADOPT.
 
 Prod restored 20:23:18, smoke `OK`. Artifacts: `MMVF2/CTRL2/MMVF3-{fill80k,tg80k}.json/` + `-judges.log` under out/gpu-rounds-20261115/, script `mmvf_confirm.sh`. Next queue item: DET (det_mtmin.sh).
+
+## Round 18bq — DET: IQ_MT_MIN buys ZERO determinism; drafting-rounding mechanism dead (2026-11-15, 20:24–20:43)
+
+`STRATA_IQ_MT_MIN=1` (multi-token CPU expert kernels for every group — the one candidate that removes the drafting-dependent rounding, native_expert.cpp:351-368 #152): 3 cold boots + 2 warm repeats, all greedy temp-0, same prompt → **5 distinct shas** (a4caff4c…, 5046c750…, a4d44dee…, d8ff835f…, 60b1e805…) vs baseline's 7-of-8. Not even back-to-back same-boot warm POSTs agree (warm3a ≠ warm3b, 192 vs 131 words — divergent lengths mean the trajectories separated early). Tax: judges fill 438.1 / boundary 242.3 / **warm TG 26.5** — inside the champion band; the upstream −1..3% decode tax is invisible in our noise. **VERDICT: NO-ADOPT — pays a possible cost for zero determinism.**
+
+Mechanism value: with drafting-dependent rounding ruled out, sha divergence arises mid-boot from speculative accept/reject boundary flips (tiny logit diffs → different accepted tokens → different continuations), consistent with 18al's placement-trajectory account. Fixed placement (tier-A rig, shelved) is the only remaining determinism lever.
+
+Artifacts: `DETMT1-{fill80k,tg80k}.json/`, det_mtmin shell output. Prod restored 20:42:56, smoke `OK`. Next: MMVF_ROWS adoption gate (mmvf_gate.sh — fresh knob-off baseline, stored NIGHT.tsv predates WT HEAD).
+
