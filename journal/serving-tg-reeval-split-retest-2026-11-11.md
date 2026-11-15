@@ -3379,3 +3379,17 @@ Campaign totals (judge-class, this box): TG 12.7 (kvcpu, falsified) → 33.9 (fi
 Header parse of the IQ3_XXS shards (new tool: quality/gguf_tensor_types.py; tensors live in shard 2-4, shard 1 is metadata-only) shows every hyper-connection projection — output_hc_*, blk.*.hc_attn_down/up, blk.*.hc_ffn_down/up, [10240,320]/[320,10240] — is ALREADY Q8_0 in the GGUF. This falsifies 18ap/18aq's root-cause claim that INJECT was forced by a bf16 GGUF: the arm set STRATA_HC_Q8_INJECT=1 unnecessarily, and the observed -1.19 GiB / -406 expert slots was the INJECT dual-copy artifact, not a structural property of native HC_Q8.
 
 Corrected model of the mode: OFF = dequant hc projections to bf16 at load (2x VRAM, zero per-use cost); ON-native = keep the GGUF's own Q8_0 bytes (half VRAM -> MORE expert slots) paying per-use dequant — exactly the kernel tuned and proven bit-exact in 18aq. Native arm launched (HC_Q8=1 only, no INJECT, tuned pin 36ecbe98): slots banner + judges + sha 3x + teacher-forced qqHCQ8N vs A/HCQ8/NIGHT. If slots rise and judges hold, HC_Q8=1 becomes the serving default with the tuned kernel load-bearing.
+
+## Round 18as — investigation: HC_Q8 slot cost = multi-GPU swap bug; #267 = known wedge
+
+Explorer (glm5.3) mapped the full hc lifecycle with file:line evidence:
+
+**Slot ledger reconciled.** OFF-mode hc bf16 lives fully resident in per-device pack arenas (CUDA0 untrimmed = all 48 layers, 1212.5 MiB; CUDA1 trimmed to layers 30-47, ~450 MiB). ON-mode ADDS per-device Q8 copies of the FULL 194-matrix set (643.1 MiB each, the upload loop at native_dense.cpp:430-455 has no layer-range filter) because add_hc_skip — the code that drops the redundant bf16 rows — is gated !multi_gpu (generate.cpp:5662) and never runs on our 2-GPU split. Payload delta 1311 MiB ≈ observed −1.19 GiB/−406 slots. INJECT differs from native by 96 inject matrices × 43,520 B = 3.98 MiB/device ≈ 2 slots — explaining the identical 4577/8.48 banners. On SINGLE-GPU the swap works (harness measured the ~0.5 GiB saving) — why upstream defaults ON for single-GPU SKUs.
+
+**#267 stall attribution: known gfx906 lost-completion wedge** (README.md:114, docs/AMD_HIP.md:375, TROUBLESHOOTING.md:344; layer 18 twice on record in serve-suite.txt evidence; "also on old stock", ~1/20 long drives). The dying path reads hc_q8 directly and never touches the scratch/event machinery; native-vs-INJECT differ at runtime by one plain device-read branch; alias/event-deadlock hypotheses ruled out. n=1 coincidence — re-run arm 3x when GPU work resumes to confirm no correlation.
+
+**Fix dispatched (fixer, glm5.3):** multi-GPU skip (bf16 blk.* hc down/up rows dropped when the device's table has hc_q8 coverage; inject + output_hc_* stay) + per-device Q8 range-trim (CUDA1 uploads only layers 30-47), both behind STRATA_HC_Q8_TRIM (default on). Projected: ON flips to net WIN ~+300 slots vs OFF.
+
+**Ticket candidates (not fixed):** decode cls=1 path takes no event wait (native_dense.cpp:577 gates waits to cls 0) — value race, not hang, if decode stream differs from last prompt reader. Prefill Q8-fused T-template extension of gr_down_q8/gr_up_q8 (kill per-use dequant+bf16 scratch; MMQ shape-ineligible K=10240>8192/K=320%256!=0, MMVQ decode-shaped). The recurring slow boundary-read classes likely = --ple-io direct 54 MB/s layer-1 tax (warning at every boot, refs #1425/#1629).
+
+GPU work HELD per operator (reserve64 lane staged unlaunched; native re-run 3x queued).
