@@ -9331,6 +9331,10 @@ int main(int argc, char** argv) {
                          (long long) fill_ahead);
         }
         const auto fill_t0 = std::chrono::steady_clock::now();
+        // F7c per-phase fill-rate fields (log-only): the pack I/O the fill loop WAITS on (read_batch's
+        // inline batch or the ahead-batch's get(), and every blob_stable) vs the H2D sections (the slot
+        // fills' enqueue + sync). The pre-filled line below reports them.
+        double pack_read_ms = 0, h2d_ms = 0;
         uint64_t fill_bytes = 0;
         std::pair<int32_t, int32_t> verified_pair{};   // H6: the first pair THIS run prefilled (profile[0] may be the helper's)
         if (nib::any_on()) {   // STRATA_EXPERT_NIBBLE: the converted layers' pairs go through the 4-bit fill instead
@@ -9343,9 +9347,11 @@ int main(int argc, char** argv) {
         }
         for (int64_t i = 0; i < want; ++i) {
             if (!per_layer && srcp == &src && src.unbuffered() && i % 64 == 0) {
+                const auto io_t0 = std::chrono::steady_clock::now();
                 if (ahead.valid()) ahead.get();
                 else read_batch(i);
                 if (i + 64 < want) ahead = std::async(std::launch::async, [&read_batch](int64_t b) { strata::aux_cpus::pin_current_thread(); read_batch(b); }, i + 64);
+                pack_read_ms += std::chrono::duration<double>(std::chrono::steady_clock::now() - io_t0).count();
             }
             if (fill_ahead > 0 && i + fill_ahead < want) (void) src.advise_pairs(profile.data() + i + fill_ahead, 1);
             const int32_t slot = xcache.admit(profile[(size_t) i].first, profile[(size_t) i].second);
@@ -9353,11 +9359,18 @@ int main(int argc, char** argv) {
                 if (per_layer) continue;
                 break;
             }
+            const auto rd_t0 = std::chrono::steady_clock::now();
             const uint8_t* b = srcp->blob_stable(profile[(size_t) i].first, profile[(size_t) i].second);
+            pack_read_ms += std::chrono::duration<double>(std::chrono::steady_clock::now() - rd_t0).count();
             const bool nib_pair = nib_x.active() && nib::layer(profile[(size_t) i].first).on;   // STRATA_EXPERT_NIBBLE
-            if (b == nullptr || !(nib_pair ? nib_x.add(profile[(size_t) i].first, profile[(size_t) i].second, slot, b, err)
-                                           : xcache.fill_slot_blocking(slot, b, err,
-                    (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(profile[(size_t) i].first)))) {
+            const auto hz_t0 = std::chrono::steady_clock::now();
+            bool slot_ok = b != nullptr;   // a null blob fails the fill exactly as before, without calling it
+            if (slot_ok)
+                slot_ok = nib_pair ? nib_x.add(profile[(size_t) i].first, profile[(size_t) i].second, slot, b, err)
+                                   : xcache.fill_slot_blocking(slot, b, err,
+                                        (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(profile[(size_t) i].first));
+            h2d_ms += std::chrono::duration<double>(std::chrono::steady_clock::now() - hz_t0).count();
+            if (!slot_ok) {
                 std::fprintf(stderr, "strata generate: the profile fill failed at pair %lld: %s\n",
                              (long long) i, err.c_str());
                 return 1;
@@ -9366,9 +9379,14 @@ int main(int argc, char** argv) {
             ++prefilled;
             if (prefilled == 1) verified_pair = profile[(size_t) i];   // H6: profile[0] may be the helper's now
         }
-        if (nib_x.active() && !nib_x.finish(err)) {
-            std::fprintf(stderr, "strata generate: STRATA_EXPERT_NIBBLE: CUDA0: %s\n", err.c_str());
-            return 1;
+        if (nib_x.active()) {
+            const auto hz_t0 = std::chrono::steady_clock::now();
+            const bool fin_ok = nib_x.finish(err);
+            h2d_ms += std::chrono::duration<double>(std::chrono::steady_clock::now() - hz_t0).count();
+            if (!fin_ok) {
+                std::fprintf(stderr, "strata generate: STRATA_EXPERT_NIBBLE: CUDA0: %s\n", err.c_str());
+                return 1;
+            }
         }
         const double fill_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - fill_t0).count();
         // **AND ONE SLOT IS READ BACK AND COMPARED.**  A residency table that is right about indices and wrong
@@ -9403,9 +9421,10 @@ int main(int argc, char** argv) {
         }
         mem_mark("the profile fill");
         std::fprintf(stderr, "strata generate: pre-filled %lld of %lld slots from the profile in %.1f s (%.0f MB/s); "
-                             "slot 0 verified\n",
+                             "slot 0 verified; pack_read_s %.1f h2d_s %.1f pinned_mb %.0f phases=arena:%.1fs lot:%.1fs\n",
                      (long long) prefilled, (long long) (per_layer ? xcache.slots() : want), fill_s,
-                     fill_s > 0 ? (double) fill_bytes / 1e6 / fill_s : 0.0);
+                     fill_s > 0 ? (double) fill_bytes / 1e6 / fill_s : 0.0,
+                     pack_read_ms / 1e3, h2d_ms / 1e3, (double) fill_bytes / 1e6, pack_read_ms / 1e3, h2d_ms / 1e3);
         if (std::getenv("STRATA_VERIFY_COMPLEMENT") != nullptr) {
             // tests: the filled slots' checksum (each slot's blob read back and hashed, then the hashes in slot order)
             std::vector<std::pair<int32_t, int64_t>> sl;   // (slot, blob bytes)
@@ -9516,6 +9535,9 @@ int main(int argc, char** argv) {
             return 1;
         }
         int64_t filled = 0;
+        // F7c per-phase fill-rate fields for this stage (see the CUDA0 pre-filled line for the schema)
+        double stage_pack_ms = 0, stage_h2d_ms = 0;
+        uint64_t stage_bytes = 0;
         NibbleCache& nib_c = nib_st.emplace_back();   // STRATA_EXPERT_NIBBLE: this stage's converted slots
         if (nib::any_on()) {
             int64_t conv = 0;
@@ -9529,19 +9551,32 @@ int main(int argc, char** argv) {
             if (filled >= st.cache.slots()) break;
             const int32_t slot = st.cache.admit(pr.first, pr.second);
             if (slot == strata::core::kNotResident) break;
+            const auto rd_t0 = std::chrono::steady_clock::now();
             const uint8_t* b = srcp->blob_stable(pr.first, pr.second);
+            stage_pack_ms += std::chrono::duration<double>(std::chrono::steady_clock::now() - rd_t0).count();
             const bool nib_pair = nib_c.active() && nib::layer(pr.first).on;   // STRATA_EXPERT_NIBBLE
-            if (b == nullptr || !(nib_pair ? nib_c.add(pr.first, pr.second, slot, b, err)
-                                           : st.cache.fill_slot_blocking(slot, b, err, (int64_t) lay.blob_bytes(pr.first)))) {
+            const auto hz_t0 = std::chrono::steady_clock::now();
+            bool slot_ok = b != nullptr;   // a null blob fails the fill exactly as before, without calling it
+            if (slot_ok)
+                slot_ok = nib_pair ? nib_c.add(pr.first, pr.second, slot, b, err)
+                                   : st.cache.fill_slot_blocking(slot, b, err, (int64_t) lay.blob_bytes(pr.first));
+            stage_h2d_ms += std::chrono::duration<double>(std::chrono::steady_clock::now() - hz_t0).count();
+            if (!slot_ok) {
                 std::fprintf(stderr, "strata generate: layer split, CUDA%d profile fill failed at pair %lld: %s\n",
                              st.dev, (long long) filled, err.c_str());
                 return 1;
             }
+            stage_bytes += lay.blob_bytes(pr.first);
             ++filled;
         }
-        if (nib_c.active() && !nib_c.finish(err)) {
-            std::fprintf(stderr, "strata generate: STRATA_EXPERT_NIBBLE: CUDA%d: %s\n", st.dev, err.c_str());
-            return 1;
+        if (nib_c.active()) {
+            const auto hz_t0 = std::chrono::steady_clock::now();
+            const bool fin_ok = nib_c.finish(err);
+            stage_h2d_ms += std::chrono::duration<double>(std::chrono::steady_clock::now() - hz_t0).count();
+            if (!fin_ok) {
+                std::fprintf(stderr, "strata generate: STRATA_EXPERT_NIBBLE: CUDA%d: %s\n", st.dev, err.c_str());
+                return 1;
+            }
         }
         // (STRATA_EXPERT_NIBBLE: a converted slot holds 4-bit codes, not the blob's bytes - the 4-bit check below is its check)
         if (filled == 0 || (!nib::layer(st.profile[0].first).on &&
@@ -9568,9 +9603,12 @@ int main(int argc, char** argv) {
                          ls.size(), nib_c.seconds, (int) pc.first, (int) pc.second);
         }
         std::fprintf(stderr, "strata generate: layer split: CUDA%d runs layers %lld-%lld, expert cache %lld slots "
-                             "(%.2f GiB), %lld of its %zu profiled pairs; slot 0 verified\n",
+                             "(%.2f GiB), %lld of its %zu profiled pairs; slot 0 verified; "
+                             "pack_read_s %.1f h2d_s %.1f pinned_mb %.0f phases=arena:%.1fs lot:%.1fs\n",
                      st.dev, (long long) st.lb, (long long) (st.le - 1), (long long) st.cache.slots(), st.cache.gib(),
-                     (long long) filled, st.profile.size());
+                     (long long) filled, st.profile.size(),
+                     stage_pack_ms / 1e3, stage_h2d_ms / 1e3, (double) stage_bytes / 1e6,
+                     stage_pack_ms / 1e3, stage_h2d_ms / 1e3);
     }
     if (multi_gpu)
         std::fprintf(stderr, "strata generate: layer split: CUDA0 runs layers 0-%lld\n", (long long) (split_at[0] - 1));
@@ -19100,7 +19138,7 @@ int main(int argc, char** argv) {
             std::array<uint64_t, 3> compact_before{}, full_before{};
             // ms_begin/ms_wait are cumulative since boot; the log line used to print them next to per-request deltas,
             // so the host time read as if it belonged to this request.  Take deltas here like every other column.
-            std::array<double, 3> begin_before{}, wait_before{};
+            std::array<double, 3> begin_before{}, wait_before{}, finish_before{};
             for (int r = 0; r < 3; ++r) if (o.expert_cache_remote[(size_t) r] > 0)
             {
                 remote_before[(size_t) r] = remote_experts[(size_t) r].computed();
@@ -19109,7 +19147,14 @@ int main(int argc, char** argv) {
                 full_before[(size_t) r] = remote_experts[(size_t) r].full_row_bytes();
                 begin_before[(size_t) r] = remote_experts[(size_t) r].ms_begin();
                 wait_before[(size_t) r] = remote_experts[(size_t) r].ms_wait();
+                finish_before[(size_t) r] = remote_experts[(size_t) r].ms_finish();
             }
+            // F7c serve-summary fields (deltas against these, printed on the `tokens = ` line): the
+            // verifier's per-window wait/pool/host split, the helper tier's begin/finish ms, and the
+            // PCIe blob fetch ms (the source's cumulative swap-in time, file->pinned->device).
+            const double vwait0 = ver.ms_wait, vpool0 = ver.ms_pool, vhost0 = ver.ms_host;
+            const int64_t vwin0 = ver.windows;
+            const int64_t swap_ms0 = srcp != nullptr ? srcp->swap_in_ms() : 0;
             cur = ids;
             const Clock::time_point r0 = Clock::now();
             tr("r0");
@@ -23531,12 +23576,25 @@ int main(int argc, char** argv) {
                 std::snprintf(read_txt, sizeof(read_txt), "%lld of %lld", (long long) read_n, (long long) fresh);
             else
                 std::snprintf(read_txt, sizeof(read_txt), "%lld", (long long) fresh);
+            // F7c: this request's window-count-averaged verifier phases and helper begin/finish ms.
+            const long long req_win = (long long) (ver.windows - vwin0);
+            const double win_w = req_win > 0 ? (double) req_win : 1.0;
+            double helper_begin_ms = 0, helper_finish_ms = 0;
+            for (int r = 0; r < 3; ++r) if (o.expert_cache_remote[(size_t) r] > 0) {
+                helper_begin_ms += remote_experts[(size_t) r].ms_begin() - begin_before[(size_t) r];
+                helper_finish_ms += remote_experts[(size_t) r].ms_finish() - finish_before[(size_t) r];
+            }
             std::fprintf(stderr, "strata serve: prompt %lld tokens = %lld reused + %s read in %.0f ms (%.1f tok/s), "
-                                 "%lld generated in %.0f ms (%.1f tok/s), drafts accepted %lld of %lld, %zu checkpoints%s%s\n",
+                                 "%lld generated in %.0f ms (%.1f tok/s), drafts accepted %lld of %lld, %zu checkpoints%s%s"
+                                 " windows %lld ms_wait %.2f ms_pool %.2f ms_host %.2f"
+                                 " helper_begin_ms %.1f helper_finish_ms %.1f pcie_fetch_ms %.1f\n",
                          (long long) n, (long long) resume, read_txt, prompt_ms,
                          prompt_ms > 0 ? 1000.0 * read_n / prompt_ms : 0.0, (long long) produced_n, decode_ms,
                          decode_ms > 0 ? 1000.0 * produced_n / decode_ms : 0.0, (long long) draft_accepted,
-                         (long long) draft_offered, checks.size(), cancelled ? " (cancelled)" : "", helper_txt);
+                         (long long) draft_offered, checks.size(), cancelled ? " (cancelled)" : "", helper_txt,
+                         req_win, (ver.ms_wait - vwait0) / win_w, (ver.ms_pool - vpool0) / win_w,
+                         (ver.ms_host - vhost0) / win_w, helper_begin_ms, helper_finish_ms,
+                         (double) (srcp != nullptr ? srcp->swap_in_ms() - swap_ms0 : 0));
             // STRATA_DF_EVENTS=1: cumulative per-section timing right after each request summary.
             // Both are no-ops unless the env was set at drafter upload - the default path is identical.
             strata::core::df_timing_drain();

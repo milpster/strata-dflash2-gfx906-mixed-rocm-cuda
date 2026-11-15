@@ -174,7 +174,7 @@ void RemoteExperts::close() {
         proxy_resident_bits_.clear();
         proxy_resident_ = 0;
         proxy_bytes_ = 0;
-        proxy_ms_begin_ = proxy_ms_wait_ = 0;
+        proxy_ms_begin_ = proxy_ms_wait_ = proxy_ms_finish_ = 0;
         proxy_claims_.clear();
         proxy_claims_b_.clear();
         claim_stripe_ = false;
@@ -465,7 +465,11 @@ bool RemoteExperts::open_socket(const std::string& path, int64_t slots, int64_t 
     }
     std::vector<std::pair<int32_t, int32_t>> resident;
     int64_t bytes = 0;
+    // F7c: the kFill -> kFillReport round trip (the helper transcodes/loads every ranked pair): its
+    // wall time is reported on the line below next to the mirrored slot counts.
+    const auto helper_fill_t0 = std::chrono::steady_clock::now();
     rc = helper_->fill_report(ranked, -1, resident, bytes);
+    const double helper_fill_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - helper_fill_t0).count();
     if (rc != expert_helper::kOk) {
         err = std::string(tag) + ": fill refused: " + expert_helper::status_name(rc);
         close();
@@ -501,9 +505,10 @@ bool RemoteExperts::open_socket(const std::string& path, int64_t slots, int64_t 
         close();
         return false;
     }
-    std::fprintf(stderr, "expert-helper: %lld rows on %s (mirrored %lld/%lld slots, %.2f GiB, device free at hello %lld MiB)\n",
+    std::fprintf(stderr, "expert-helper: %lld rows on %s (mirrored %lld/%lld slots, %.2f GiB, device free at hello %lld MiB) "
+                         "helper_fill_s %.1f\n",
                  (long long) mirrored, path.c_str(), (long long) mirrored, (long long) slots,
-                 (double) proxy_bytes_ / 1073741824.0, (long long) free_mib);
+                 (double) proxy_bytes_ / 1073741824.0, (long long) free_mib, helper_fill_s);
 
     // ---- The PROMPT tier's own channel (opt-in `path2`, the engine's --expert-helper-socket2) ----
     // Channel A keeps the fill, the window tier and the drafter lane; channel B carries the
@@ -820,8 +825,10 @@ bool RemoteExperts::proxy_finish(float* out, std::string& err) {
     if (proxy_claims_.empty() && proxy_claims_b_.empty()) return true;
     const int32_t rows = (int32_t) proxy_claims_.size();
     int32_t got = 0;
+    const auto fin_t0 = std::chrono::steady_clock::now();
     const int rc = helper_->finish(out, proxy_n_embd_, 0, 10, proxy_claims_, proxy_timeout_ms_, got);
     proxy_ms_wait_ = helper_->ms_wait();
+    proxy_ms_finish_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - fin_t0).count();
     if (rc != expert_helper::kOk) {
         if (proxy_residency_live()) fire_helper_residency_release();   // W1
         healthy_ = false;
@@ -1064,6 +1071,7 @@ bool RemoteExperts::finish(float* out, std::string& err) {
     if (group_id_.empty()) return true;
     DeviceScope scope(device_);
     if (!scope.ok) { err = scope.error(device_); return false; }
+    const auto fin_t0 = std::chrono::steady_clock::now();
     const auto w0 = std::chrono::steady_clock::now();
     // Spin on the stream like PeerExperts::finish instead of the blocking sync: the layer waits for this helper
     // on the CPU pool's critical path, and a blocking sync's wake-up costs more than the helper's small batch
@@ -1087,6 +1095,7 @@ bool RemoteExperts::finish(float* out, std::string& err) {
     if (!check(cudaStreamSynchronize(stream_), "finish", err, device_)) return false;
 #endif
     ms_wait_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - w0).count();
+    ms_finish_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - fin_t0).count();
     if (remote_opt_ && remote_opt_->active()) { remote_opt_->accumulate(*this); return true; }
     for (size_t i = 0; i < original_row_.size(); ++i)
         std::memcpy(out + (size_t) original_row_[i] * H, h_out_ + i * H, (size_t) H * sizeof(float));

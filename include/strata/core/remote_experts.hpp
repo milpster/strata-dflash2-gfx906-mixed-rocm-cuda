@@ -174,6 +174,9 @@ public:
     /// host time spent in begin() (staging + launches) and in finish() (waiting for this GPU), cumulative
     double ms_begin() const { return proxy_ ? proxy_ms_begin_ : ms_begin_; }
     double ms_wait() const { return proxy_ ? proxy_ms_wait_ : ms_wait_; }
+    /// F7c: whole finish() calls as seen by the host (proxy: the kRows round trip + landing; peer: the
+    /// stream wait + scatter), cumulative.  The serve summary line reports the per-request delta.
+    double ms_finish() const { return proxy_ ? proxy_ms_finish_ : ms_finish_; }
 
     /// STRATA_PREFILL_HELPER_SOURCE (opt-in): copy up to `n` cached blobs into the host buffers `dst[i]`
     /// on this helper's own stream and wait.  `hit[i]` is set where this helper held (layer, expert); the
@@ -370,14 +373,14 @@ private:
     /// STRATA_CLAIM_STRIPE, parsed once at open_socket: the stripe only runs with the second
     /// channel live (a rig without --expert-helper-socket2 keeps today's single-channel wire).
     bool claim_stripe_ = false;
-    double proxy_ms_begin_ = 0, proxy_ms_wait_ = 0;
+    double proxy_ms_begin_ = 0, proxy_ms_wait_ = 0, proxy_ms_finish_ = 0;
     int64_t n_expert_ = 0;
     int32_t groups_ = 0;
     int64_t computed_ = 0;
     int64_t launched_layers_ = 0;
     uint64_t returned_bytes_ = 0;
     uint64_t full_row_bytes_ = 0;
-    double ms_begin_ = 0, ms_wait_ = 0;
+    double ms_begin_ = 0, ms_wait_ = 0, ms_finish_ = 0;
     ExpertCache cache_;
     cudaStream_t stream_ = nullptr;
     cudaStream_t read_stream_ = nullptr;   ///< STRATA_PREFILL_HELPER_SOURCE: cache -> host copies
