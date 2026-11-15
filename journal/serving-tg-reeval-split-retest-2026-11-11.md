@@ -3570,3 +3570,23 @@ Memory (MiB, actual driver records): fill RSS peak 46359, minimum available 1323
 Exact warm-path CPU evidence: a conservative ten-second interior slice of the primary warm decode (`perf report` and `perf script --time 3990,4000`, both exit 0) has 684 `Verifier::run` IP samples, ALL on the GPU-sequence wait loop at `0x26a3674`–`0x26a3691`; 586/684 hit its increment/test. This establishes where the host waits during the actual warm benchmark, not why those waits became longer than historical boots. `perf annotate --time` is unsupported in installed perf (exit 129); time-filtered `perf script` is the working evidence path. Reports retained under `shared-profile/H232B1-warm-{report,ips}.txt`.
 
 Canonical `lane_restore.sh` completed at 18:27:16, exit 0, with smoke content `OK` and finish `stop`; no engine/config/binary replacement was made. H233R1 matched current-helper judges are now running with the same 99-Hz user-only sampling. Further causal conclusions wait for that control. A single read-only GLM Flash retry is checking the shared wrapper; no boots or live requests assigned to it.
+
+## Round 18bm — H233R1 control IN BAND (31.0); H232B2 reverse leg IN BAND (29.7) — HELPER EXONERATED, boot bistability is the phenomenon (2026-11-15, 18:27–18:52)
+
+H233R1 (canonical restore, current helper `553f3bf4`, engine `36ecbe98`, identical judges): fresh fill 457.0 (175.0 s), boundary 241.4 (59.9 s, 406 gen / 23.3 tok/s), warm primary 79987+5 reused, **484 gen in 15.610 s = 31.0 tok/s — IN BAND**. Helper reqs 6294/37215 rows, zero timeouts/fallbacks. API walls 80.371/19.020 s. The restore boot's own smoke had read 19.0 tok/s cold — irrelevant to the warm judge.
+
+Operator then ordered an immediate reverse retest. H232B2 (old helper `42358985` booted again at 18:39, engine/config byte-identical, `--arm H232B1` prompts REPLAYED so the bytes match the 15.9 leg exactly; artifacts under `out/gpu-rounds-20261115/h232b2/`): fresh fill 461.4 (173.4 s), boundary 246.4 (58.7 s, 735 gen / 24.6 tok/s), warm primary 79987+5 reused, **515 gen in 17.324 s = 29.7 tok/s — IN BAND**. Helper reqs 7121/50683 rows, zero timeouts. API walls 91.845/36.580 s.
+
+| boot | helper | warm TG | note |
+|---|---|---:|---|
+| H232B1 18:14 | old `42358985` | **15.9** | collapsed |
+| H233R1 18:25 | current `553f3bf4` | **31.0** | in band |
+| H232B2 18:39 | old `42358985` | **29.7** | in band, identical prompts to H232B1 |
+
+VERDICTS: (1) The helper binary is NOT the cause — the same old helper that read 15.9 read 29.7 on its next boot. (2) The "persistent post-16:21 box state" framing is falsified — the band flipped back at 18:25 and held across two further boots (three consecutive in-band boots including the reverse leg). (3) What remains is per-BOOT bistability: ~15–22 vs ~27–31 tok/s classes on byte-identical configs, binaries, prompts, and verified pinning. This is the known boot-lottery phenomenon, now with a clean same-day A/B/A capture. Weak correlate visible in the data: the collapsed boot's fill was also the slowest today (436.6 vs 457.0/461.4) — consistent with the F7 page-cache warmth angle but n=1. Same-prompt warm sha differs across boots (55a8c518… vs f8a8387d…) — the known placement-trajectory nondeterminism (18al), confirming boot-level placement differs even when speed does not.
+
+Raw shas per arm: H232B1 55a8c518…, H232B2 f8a8387d…, H233R1 a4b6ada6… (each vs its own replay; not a gate, recorded for the ledger). Perf captures retained: H232B2-perf.data (111k samples), H233R1-perf.data (100k samples) — both 99 Hz user-only over the full judge legs, available for fast-vs-fast and fast-vs-slow warm-window comparison without new boots.
+
+Next discriminator (pending operator): the bistability must be bisected at boot level — e.g. reboot-loop the SAME config N times scoring warm TG per boot, sampling per-boot placement/fill/page-cache state, to catch a fast-vs-slow boot pair same-config and diff their state at rest. F7c instrumentation (already approved first in the P0 plan) is exactly the tool for the fill-side correlate.
+
+Prod restore to the canonical current-helper stack (H233R2) was launched at ~18:50 and was still in its ready-wait when this entry was drafted; the restore's completion line and smoke result are appended below once observed. No promotion, no config/binary change made at any point in 18bk–18bm.
