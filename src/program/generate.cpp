@@ -29,14 +29,13 @@
 #include "strata/core/remote_expert_opt.hpp"
 #include "strata/core/expert_cache.hpp"
 #include "strata/core/expert_nibble.hpp"
+#include "strata/core/vram_guard.hpp"
 #include "strata/core/conversation_snapshot.hpp"
 #include "strata/core/conversation_stream_state.hpp"
 #include "strata/core/dflash_ring.hpp"
 #include "strata/kernels/bf16_bits.hpp"   // M7 (the drafter lane): the remote draft feed widens the bf16 tap plane host-side
 #include "strata/core/lookup_default.hpp"
-#if defined(STRATA_USE_HIP)
 #include "strata/core/serve_stop_bound.hpp"
-#endif
 #include "strata/core/conversation_file.hpp"
 #include "strata/core/conversation_disk_cache.hpp"
 #include "strata/core/session_save_reclaim.hpp"
@@ -145,6 +144,8 @@ void df_timing_dump();
 #include "strata/program/pipe_probe.hpp"
 #include "strata/kernels/cvec.hpp"
 #include "strata/core/progress.hpp"
+#include "strata/core/stream_watch.hpp"
+#include "strata/core/gpu_pause_time.hpp"
 #include "strata/core/device.hpp"
 #include "strata/core/emulate.hpp"
 #ifndef NOMINMAX
@@ -1995,12 +1996,20 @@ bool launch_blocking() {
 /// #2065: the VRAM free when the current request began (-1 before the first); the stall report prints it, because a
 /// card this full is the one measured cause of a window that never finishes (the driver pages GPU memory).
 std::atomic<int64_t> g_req_vram_free_mib{-1};
-constexpr int64_t kVramSafeMib =
-#ifdef _WIN32
-    1024;   // WDDM pages instead of failing (docs/DETAILS.md, the sysmem fallback): the line #2065 fell below
+/// AMD on Linux: the driver's paused-GPU counter (ms, strata/core/gpu_pause_time.hpp) when the current request began;
+/// -1 before the first request, when not available, and in every other build.  Read once per request, never per step.
+std::atomic<int64_t> g_req_gpu_pause_ms{-1};
+static int64_t gpu_pause_now() {
+#if defined(STRATA_USE_HIP) && defined(__linux__)
+    return strata::core::gpu_pause_ms_self();
 #else
-    512;
+    return -1;
 #endif
+}
+/// The low line itself lives with the per-GPU VRAM guard now (vram_guard::kLowMib; round 18p hoisted
+/// it there so the guard's check and this warning cannot drift apart).  WDDM pages instead of failing
+/// (docs/DETAILS.md, the sysmem fallback), so the line sits higher there.
+constexpr int64_t kVramSafeMib = strata::core::vram_guard::kLowMib;
 
 #if defined(_WIN32)
 // STRATA_STALL_STACKS=1: the call stack of every other thread, in the stall report.  The other threads are suspended while
@@ -2136,11 +2145,23 @@ void stall_report(std::FILE* f, uint64_t layers_during) {
 #if defined(_WIN32)
     if (want_stacks) stall_stacks::print(f);
 #endif
+    int64_t pause_before = -1;   // the GPU pause counter at the first pass, for the change over the 2 s
     for (int pass = 0; pass < 2; ++pass) {
         if (pass == 1) {
             std::this_thread::sleep_for(std::chrono::seconds(2));
             std::fprintf(f, "  2 s later:\n");
         }
+        // #5718 follow-up: the streams a host may be blocked on (the prompt path's), asked without blocking - before the
+        // release below, so "finished" here means the GPU was done and the waiting host was not woken
+        strata::core::stream_watch().report(f, [](void* s, int dev, std::string& why) {
+            const strata::core::OnDevice on(dev);
+            const cudaError_t e = cudaStreamQuery((cudaStream_t) s);
+            if (e == cudaSuccess) return strata::core::StreamState::finished;
+            if (e == cudaErrorNotReady) return strata::core::StreamState::working;
+            why = cudaGetErrorString(e);
+            (void) cudaGetLastError();
+            return strata::core::StreamState::failed;
+        });
         if (auto fn = strata::core::diag_pool_fn().load()) fn(f);
         if (auto fn = strata::core::diag_verify_fn().load()) fn(f);
         if (auto fn = strata::core::diag_pipeline_fn().load()) fn(f);
@@ -2156,6 +2177,12 @@ void stall_report(std::FILE* f, uint64_t layers_during) {
                      "in swap", m.avail_mib, m.faults, "major page faults so far"
 #endif
         );
+        // AMD on Linux: how long the driver kept the GPU work paused (no line where the counter cannot be read)
+        const int64_t pause_now = gpu_pause_now();
+        const std::string pause_line = strata::core::gpu_pause_stall_line(pause_now, g_req_gpu_pause_ms.load(),
+                                                                           pass == 1 ? pause_before : -1);
+        if (!pause_line.empty()) std::fprintf(f, "%s\n", pause_line.c_str());
+        pause_before = pause_now;
         std::fflush(f);
     }
 #if defined(_WIN32)
@@ -8298,6 +8325,28 @@ int main(int argc, char** argv) {
             return 1;
         }
     }
+#if defined(__linux__)
+    // 0.1.43.1: on by default (STRATA_ADAPT_CALLBACK_WARMUP=0 turns it off).  Linux threads inherit the creator's CPU mask, and
+    // the host pins itself to one CPU later; a callback thread the driver creates lazily after that would run on the
+    // host's CPU and fight the host's spin-wait (985 us instead of 4 us per callback, #1964 #1975).  Windows CPU Sets are
+    // per thread and not inherited.
+    //
+    // It runs HERE, before the arena is reserved and registered, and not after the load: launching this warm-up over a
+    // whole-arena (46.84 GiB, THP-backed) PORTABLE registration spins the HIP driver's default-stream sync at 100% of
+    // one core and the boot never reaches the helper handshake (journal 2026-11-13 round 18k; a RAM-relief boot, where
+    // nothing is registered at this point, passes it in seconds).  The current device is unchanged between this point
+    // and the old place, and ExpertPool's pinning is far below: the #1964 affinity rule stays satisfied.
+    if (const char* e = std::getenv("STRATA_ADAPT_CALLBACK_WARMUP"); !(e && e[0] == '0')) {
+        // The driver creates its host-callback thread lazily. Create it before ExpertPool pins this thread.
+        if (cudaLaunchHostFunc(nullptr, [](void*) {}, nullptr) != cudaSuccess ||
+            cudaStreamSynchronize(nullptr) != cudaSuccess) {
+            (void) cudaGetLastError();
+            std::fprintf(stderr, "strata generate: could not warm up the GPU host-callback thread (continuing)\n");
+        } else {
+            std::fprintf(stderr, "strata generate: GPU host-callback thread started before host-core pinning\n");
+        }
+    }
+#endif
     strata::core::ArenaExpertSource arena_src;
     strata::core::ExpertSource* srcp = nullptr;
     // #4846 (owner 11-01): the arena first, and when the RAM is still short after the wait and the give-back, the --mmap-experts source
@@ -8626,22 +8675,6 @@ int main(int argc, char** argv) {
         srcp = &arena_src;
     }
     }   // the arena / file pass loop (#4846)
-#if defined(__linux__)
-    // 0.1.43.1: on by default (STRATA_ADAPT_CALLBACK_WARMUP=0 turns it off).  Linux threads inherit the creator's CPU mask, and
-    // the host pins itself to one CPU later; a callback thread the driver creates lazily after that would run on the
-    // host's CPU and fight the host's spin-wait (985 us instead of 4 us per callback, #1964 #1975).  Windows CPU Sets are
-    // per thread and not inherited.
-    if (const char* e = std::getenv("STRATA_ADAPT_CALLBACK_WARMUP"); !(e && e[0] == '0')) {
-        // The driver creates its host-callback thread lazily. Create it before ExpertPool pins this thread.
-        if (cudaLaunchHostFunc(nullptr, [](void*) {}, nullptr) != cudaSuccess ||
-            cudaStreamSynchronize(nullptr) != cudaSuccess) {
-            (void) cudaGetLastError();
-            std::fprintf(stderr, "strata generate: could not warm up the GPU host-callback thread (continuing)\n");
-        } else {
-            std::fprintf(stderr, "strata generate: GPU host-callback thread started before host-core pinning\n");
-        }
-    }
-#endif
     if (o.pool_measure)
         o.pool_affinity = measure_pool_affinity(srcp, o.pool_workers, !o.no_host_worker, o.pool_tasks);
     strata::kernels::cpu::ExpertPool pool(o.pool_workers, /*pin=*/true, /*host_works=*/!o.no_host_worker,
@@ -8981,6 +9014,26 @@ int main(int argc, char** argv) {
             o.expert_cache = (int) fit;
         }
     }
+    // Round 18p: the per-GPU VRAM guard (vram_guard.hpp, STRATA_VRAM_GUARD=1, off by default) starts
+    // each card's reserve floor at what the boot really kept.  The sizing above has settled
+    // o.vram_reserve_mib on THIS device (the auto path may have lowered it, #496); the split stages
+    // publish theirs in the stage loop below.
+    int vram_guard_dev = -1;
+    if (cudaGetDevice(&vram_guard_dev) == cudaSuccess && vram_guard_dev >= 0)
+        strata::core::vram_guard::set_base_mib(vram_guard_dev, o.vram_reserve_mib);
+    // And the guard's reclaim donor, registered once, before any request can reach a check site.
+    // The engine's real runtime VRAM reclaim is the parked conversations' K/V slots
+    // (STRATA_PARK_VRAM_MIB): conversation_park_vram_release_all joins the park copy in flight and
+    // frees every slot on the card it lives on - the same release the serve path itself uses when
+    // the K/V cannot grow.  It runs OUTSIDE the guard's locks (N1).  Slots are whole 64 MiB-rounded
+    // parked images, so a step usually recalls more than it asked for; the guard logs the real
+    // figure, and 0 (the slots off, or nothing parked) is an honest 0.  On HIP ExpertCache::shrink
+    // refuses (no VMM segments), so this is the donor that actually frees VRAM there.
+    strata::core::vram_guard::set_reclaim([](int device, int64_t want_mib) -> int64_t {
+        (void) device;
+        (void) want_mib;   // the slot pool is engine-wide: every card's slots go, the honest total back
+        return (int64_t) (strata::core::conversation_park_vram_release_all() >> 20);
+    });
     // plan v0.3 P6: a native pack's blobs differ per layer, so the same VRAM holds more experts than slots of
     // the largest blob would. The shared cache below sizes slots in profile order.
     // #369: that list does not match --expert-cache-per-layer. A range is layer * quota + n, so a size cut for
@@ -9416,6 +9469,11 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: layer split, CUDA%d: %.2f GiB free of %.2f, room for experts %.2f GiB\n",
                          st.dev, (double) fb / 1073741824.0, (double) tb / 1073741824.0, (double) room / 1073741824.0);
         }
+        // the VRAM guard's boot floor for this card: the reserve figure the sizing kept here (a later
+        // stage's own --vram-reserve-later-mib when one was given, else the same --vram-reserve-mib;
+        // the walk's kStageLateAllocMib pricing term is not part of the reserve itself)
+        strata::core::vram_guard::set_base_mib(st.dev,
+            o.vram_reserve_later_mib >= 0 ? o.vram_reserve_later_mib : o.vram_reserve_mib);
         std::vector<int64_t> sized;
         int64_t used = 0;
         for (const auto& pr : st.profile) {
@@ -16894,6 +16952,14 @@ int main(int argc, char** argv) {
         }
         strata::core::pin_sim_report("at READY");
         strata::core::pin_reserve_release_hard();   // the load is over: nothing else needs the headroom
+        // register-last (round 18n): the whole-arena pin's registration is the LAST boot step - after
+        // the pools, the cache fills, the warm-ups, the graph captures and the helper handshake,
+        // immediately before the serve loop accepts requests.  Every boot-time driver sync has already
+        // run over an UNREGISTERED arena; on a ROCm box such a sync over a live whole-span registration
+        // spins over the 12.3M pinned 4 KiB pages and hangs the boot (round 18k).  A no-op for every
+        // other pinning (relief registered its complement right after the handshake already).
+        if (arena_src.register_last())
+            arena_src.register_whole();
         std::printf("READY %lld stop\n", (long long) o.max_context);   // "stop": this engine honours STOP
         std::fflush(stdout);
         std::string line;
@@ -18347,6 +18413,7 @@ int main(int argc, char** argv) {
                     strata::core::progress_at("idle");
                 }
             } busy_scope;
+            g_req_gpu_pause_ms.store(gpu_pause_now());   // AMD on Linux: the driver's GPU pause counter, once per request
             {   // #2065: said, never changed - the free VRAM now (the verify windows' captures and the batch layouts
                 // eat into what startup reported), once per 128 MiB lower it gets
                 size_t vf_b = 0, vt_b = 0;
@@ -21462,14 +21529,10 @@ int main(int argc, char** argv) {
             double df_pending_ms = 0;
             int64_t df_windows[8] = {};
             int64_t produced_n = 0, sfx_windows = 0, sfx_drafts = 0, sfx_ok = 0;
-#if defined(STRATA_USE_HIP)
-            // on by default (HIP, where it was measured: 4 x R9700, Qwen3.8-Flash-Next IQ3_S, 0 of 16 continuations fell back to the older
-            // checkpoint against 4 of 16 without it, #4677); STRATA_SERVE_STOP_BOUND=0 turns it off
-            static const bool stop_bound = [] {
-                const char* v = std::getenv("STRATA_SERVE_STOP_BOUND");
-                return v == nullptr || std::strcmp(v, "0") != 0;
-            }();
-#endif
+            // on by default on every backend (measured on HIP: 4 x R9700, Qwen3.8-Flash-Next IQ3_S, 0 of 16 continuations fell back to
+            // the older checkpoint against 4 of 16 without it, #4677; it changes no emitted token, only which accepted rows the
+            // session keeps); STRATA_SERVE_STOP_BOUND=0 turns it off
+            static const bool stop_bound = strata::core::serve_stop_bound_on(std::getenv("STRATA_SERVE_STOP_BOUND"));
             int64_t chain_windows = 0, chain_drafts = 0, chain_ok = 0;   // --lookup-chain's own counts
             int64_t t2_rej[8] = {}, t2_hit[8] = {};   // STRATA_MTP_TOP2: rejections inside the MTP drafts by depth, runner-up hits
             int64_t dp_tested[8] = {}, dp_ok[8] = {};   // STRATA_SPEC_DEPTH=1: MTP drafts tested / accepted by depth
@@ -22033,12 +22096,10 @@ int main(int argc, char** argv) {
                     chain_kind = 0;
                     int a = 0;
                     while (a < A.T - 1 && A.tok[a + 1] == outp[(size_t) a]) ++a;
-#if defined(STRATA_USE_HIP)
                     if (stop_bound)
                         a = strata::core::serve_stop_bound(a + 1, max_new - produced_n, outp.data(), [&](int32_t y) {
                             return std::find(o.eos_ids.begin(), o.eos_ids.end(), (int64_t) y) != o.eos_ids.end();
                         }) - 1;
-#endif
                     if (!V1(A).pl_commit_async(a + 1, err)) return die(err);
                     for (int i = 0; i <= a; ++i) consumed.push_back(A.tok[i]);
                     draft_offered += A.T - 1;
@@ -22572,14 +22633,12 @@ int main(int argc, char** argv) {
                 }
                 int a = merged ? T - 1 : 0;   // a merged window commits every row, as the prompt windows do
                 while (a < T - 1 && window[(size_t) a + 1] == outv[(size_t) a]) ++a;
-#if defined(STRATA_USE_HIP)
                 // A merged window contains prompt rows: every one must still be committed.
                 // Otherwise do not cache accepted rows whose outputs this request cannot emit.
                 if (stop_bound && !merged)
                     a = strata::core::serve_stop_bound(a + 1, max_new - produced_n, outv.data(), [&](int32_t y) {
                         return std::find(o.eos_ids.begin(), o.eos_ids.end(), (int64_t) y) != o.eos_ids.end();
                     }) - 1;
-#endif
                 if (has_dflash && !merged) {
                     // Do not cache accepted rows whose outputs were never emitted.
                     // The last emitted token remains the next request's unconsumed anchor.
@@ -23486,6 +23545,10 @@ int main(int argc, char** argv) {
                                  pressure_context(pc, sizeof pc, (uint64_t) arena_src.unfilled_pairs()));
                 }
             }
+            {   // AMD on Linux: the time the driver kept the GPU paused inside this request, when it is worth a line
+                const std::string pause_line = strata::core::gpu_pause_request_line(g_req_gpu_pause_ms.load(), gpu_pause_now());
+                if (!pause_line.empty()) std::fprintf(stderr, "%s\n", pause_line.c_str());
+            }
             if (serve_adapt_drain_ms >= 1.0)
                 std::fprintf(stderr, "strata serve: the request first waited %.0f ms for the adaptive tier's round in flight\n",
                              serve_adapt_drain_ms);
@@ -23701,6 +23764,11 @@ int main(int argc, char** argv) {
 #endif
         return 0;
     }
+
+    // register-last (round 18n): the one-shot loop's first prefill may DMA from the arena; the
+    // registration is the last boot step here too (the serve block runs it just before its READY).
+    if (arena_src.register_last())
+        arena_src.register_whole();
 
     // ---- plan v0.3 P5: the prompt's conditioning positions [0, n_prompt - 1) in batched chunks.  The token loop
     // then starts at the last prompt position, whose prediction is the first generated token.

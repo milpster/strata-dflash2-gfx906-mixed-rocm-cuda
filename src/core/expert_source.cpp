@@ -16,6 +16,7 @@
 #include "strata/artifact/gguf_reader.hpp"
 
 #include "strata/core/pinned.hpp"
+#include "strata/core/pin_budget.hpp"
 #include "strata/platform/memory.hpp"
 #include "strata/kernels/elementwise.hpp"
 #include "strata/kernels/quantize_act.hpp"
@@ -4109,6 +4110,7 @@ bool FileExpertSource::pin_cache_complement(
                             if (cudaHostGetDevicePointer(&alias, arena, 0) == cudaSuccess && alias != nullptr) {
                                 device = (const uint8_t*) alias;
                                 partial_pin = w;
+                                arena_mlock_span(arena, w);   // STRATA_ARENA_MLOCK: the registered prefix must never move
                             } else {
                                 (void) cudaGetLastError();
                                 (void) cudaHostUnregister(arena);
@@ -4152,6 +4154,7 @@ bool FileExpertSource::pin_cache_complement(
                             if (cudaHostGetDevicePointer(&alias, arena, 0) == cudaSuccess && alias != nullptr) {
                                 device = (const uint8_t*) alias;
                                 partial_pin = w;
+                                arena_mlock_span(arena, w);   // STRATA_ARENA_MLOCK: the registered prefix must never move
                             } else {
                                 (void) cudaGetLastError();
                                 (void) cudaHostUnregister(arena);
@@ -4173,6 +4176,7 @@ bool FileExpertSource::pin_cache_complement(
                                      : strata::platform::LockResult{true, 0, ""};
                 locked = lr.locked_bytes;
                 note += (note.empty() ? "" : "; ") + lr.note;
+                if (partial_pin > 0) arena_mlock_report(bytes - partial_pin);
             }
         }
         host = (const uint8_t*) arena;
@@ -6312,7 +6316,30 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
     // written; nothing else pressures it during boot) and no request has run yet.
     const bool relief_reserve = !by_need && shared_arena_file.empty() &&
                                  (ram_relief_ || std::getenv("STRATA_ARENA_COLLAPSE") != nullptr);
-    PinnedArena* a = relief_reserve ? new PinnedArena(want + (uint64_t) blob, PinnedArena::ReserveOnly{})
+    // register-last (Linux, the whole-arena pin): on a ROCm box, EVERY driver call made while the
+    // whole-span registration is live - the default-stream syncs (the host-callback warm-up, the
+    // cache fills' syncs), spinning over 12.3M pinned 4 KiB pages - hangs at 100% of one core
+    // (journal 2026-11-13 round 18k/18l).  The relief path's shape is the proof: fill unregistered,
+    // register late, serve.  So the boot takes the same shape WITHOUT the drop: reserve unregistered
+    // (resident: the fill writes every byte and the pages stay, nothing evicts during boot), and
+    // register_whole() runs as the LAST boot step - after the pools, the cache fills, the drafter's
+    // warm-ups, the graph captures and the helper handshake - right before the serve loop's READY,
+    // the earliest point where a request's DMA could read the arena.  A capped pin (STRATA_ARENA_PIN_GIB,
+    // the WDDM multi-GPU 8 GiB) keeps the old before-fill registration: its sliced fallback exists
+    // to fill DURING the registration and is not restructurable.  Opt out: STRATA_REGISTER_LAST=0.
+    // Linux-only (the #if below): off-Linux the post-fill registration would walk already-faulted
+    // pages - costlier, may refuse outright (pinned.cu), and a refusal loses the sliced-prefix
+    // fallback - so non-Linux keeps the historical before-fill registration.
+#if defined(__linux__)
+    const bool register_last = !by_need && !relief_reserve && !deferred && max_pinned_bytes == 0 &&
+                               arena_pin_cap_gib() == -1 && shared_arena_file.empty() &&
+                               !arena_no_register() &&
+                               (std::getenv("STRATA_REGISTER_LAST") == nullptr ||
+                                std::string(std::getenv("STRATA_REGISTER_LAST")) != "0");
+#else
+    const bool register_last = false;
+#endif
+    PinnedArena* a = relief_reserve || register_last ? new PinnedArena(want + (uint64_t) blob, PinnedArena::ReserveOnly{})
                     : by_need ? new PinnedArena(arena_bytes + (uint64_t) blob, PinnedArena::ByNeed{}, need_ranges,
                                                 max_pinned_bytes, shared_arena_file, pack_hash)
                    : deferred ? new PinnedArena(want + (uint64_t) blob, bounds, PinnedArena::Deferred{})
@@ -6523,7 +6550,10 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
         // device alias of each registered range's start (device_alias adds the blob's distance from it); one
         // refusal drops the whole table: no PCIe share rather than a wrong pointer
         ranges_ = true;
-        for (const auto& r : a->pin_ranges) {
+        const size_t n_rng = a->pin_ranges.size();
+        const size_t rng_step = n_rng >= 10 ? n_rng / 10 : n_rng;   // one line per ~10%: a slow boot stays visible
+        for (size_t ri = 0; ri < n_rng; ++ri) {
+            const auto& r = a->pin_ranges[ri];
             void* d = nullptr;
             if (cudaHostGetDevicePointer(&d, (void*) (base_ + r.first), 0) != cudaSuccess) {
                 (void) cudaGetLastError();
@@ -6533,6 +6563,9 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
             pin_start_.push_back(r.first);
             pin_end_.push_back(r.first + r.second);
             pin_dev_.push_back((const uint8_t*) d);
+            if (rng_step > 0 && (ri + 1) % rng_step == 0 && ri + 1 < n_rng)
+                std::fprintf(stderr, "strata generate: arena alias tables: %zu of %zu registered ranges\n",
+                             ri + 1, n_rng);
         }
         if (!ranges_) {
             pin_start_.clear(); pin_end_.clear(); pin_dev_.clear();
@@ -6560,6 +6593,15 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
     n_expert_ = n_expert;
     reads_ = 0;
     note_ = a->note;
+    register_last_ = register_last;
+    if (register_last) {
+        // The fill wrote plain pages.  register_whole() - the whole-span cudaHostRegister + the alias
+        // tables - is the LAST boot step, run by the caller right before serve's READY (nothing before
+        // it can DMA from the arena; the relief boot's identical shape is the proof, journal 2026-11-13
+        // round 18l).  The boot's own syncs never see a 12.3M-page registration to spin over.
+        note_ = "registers as the last boot step (register-last; the whole-arena pin runs right before "
+                "the first request) - " + note_;
+    }
     gib_per_s_ = st.gib_per_second();
     load_seconds_ = st.seconds;
     load_read_s_ = st.read_seconds;
@@ -6594,6 +6636,7 @@ void ArenaExpertSource::close() {
     unfilled_.store(0);
     unfilled_bytes_ = 0;
     arena_capacity_ = 0;
+    register_last_ = false;
     shared_backing_ = false;
     std::lock_guard<std::mutex> lk(file_mu_);
     file_.reset();
@@ -6839,7 +6882,10 @@ void ArenaExpertSource::apply_registration() {
     if (!a->by_need) return;
     pin_start_.clear(); pin_end_.clear(); pin_dev_.clear();
     ranges_ = !a->pin_ranges.empty();
-    for (const auto& r : a->pin_ranges) {
+    const size_t n_rng = a->pin_ranges.size();
+    const size_t rng_step = n_rng >= 10 ? n_rng / 10 : n_rng;   // one line per ~10%: a slow boot stays visible
+    for (size_t ri = 0; ri < n_rng; ++ri) {
+        const auto& r = a->pin_ranges[ri];
         void* d = nullptr;
         if (cudaHostGetDevicePointer(&d, (void*) (base_ + r.first), 0) != cudaSuccess) {
             (void) cudaGetLastError();
@@ -6849,6 +6895,9 @@ void ArenaExpertSource::apply_registration() {
         pin_start_.push_back(r.first);
         pin_end_.push_back(r.first + r.second);
         pin_dev_.push_back((const uint8_t*) d);
+        if (rng_step > 0 && (ri + 1) % rng_step == 0 && ri + 1 < n_rng)
+            std::fprintf(stderr, "strata generate: arena alias tables: %zu of %zu registered ranges\n",
+                         ri + 1, n_rng);
     }
     if (!ranges_) {
         pin_start_.clear(); pin_end_.clear(); pin_dev_.clear();
@@ -6875,7 +6924,11 @@ void ArenaExpertSource::register_complement(const std::vector<std::pair<int32_t,
     uint64_t span = 0;
     bool open = false;
     int64_t dropped = 0;
+    const int64_t scan_step = n_layers >= 10 ? n_layers / 10 : 1;   // one line per ~10% of the pairs: the scan is silent for seconds
     for (int64_t l = 0; l < n_layers; ++l) {
+        if (n_layers >= 10 && (l + 1) % scan_step == 0 && l + 1 < n_layers)
+            std::fprintf(stderr, "strata generate: arena complement scan: %lld of %lld layers\n",
+                         (long long) (l + 1), (long long) n_layers);
         for (int64_t e = 0; e < n_expert_; ++e) {
             const size_t i = (size_t) (l * n_expert_ + e);
             const uint64_t off = arena_off(l, e);
@@ -6900,6 +6953,63 @@ void ArenaExpertSource::register_complement(const std::vector<std::pair<int32_t,
     std::fprintf(stderr, "strata generate: --expert-helper-ram-relief: registered what stayed behind the helper's "
                          "%llu pairs (%lld dropped, %zu range(s), %.2f GiB)\n",
                  (unsigned long long) held.size(), (long long) dropped, comp.size(), (double) got / 1073741824.0);
+}
+
+void ArenaExpertSource::register_whole() {
+    // register-last, the LAST boot step (the caller runs this immediately before serve's READY or the
+    // one-shot request loop): the whole span over the ReserveOnly arena - the same register_after_fill +
+    // apply_registration the relief path runs after its drop, with no complement to build because
+    // nothing was dropped - so no boot-time driver sync (a cache fill's, a warm-up's, a capture's) ever
+    // runs over a live whole-span registration: on a ROCm box that sync spins over the 12.3M pinned
+    // 4 KiB pages at 100% of one core and the boot never returns (journal 2026-11-13 rounds 18k/18l).
+    // Round 18s: boot-side was not enough - the FIRST request then wedged the same way (its kernel
+    // submission / stream sync spinning over the live single-call registration), so the registration
+    // itself now takes the relief path's PROVEN range shape (18k measured: 21.5 GiB / 3440 ranges,
+    // ~6.4 MiB each, requests served fine over it indefinitely): register_after_fill range BY range,
+    // so no single cudaHostRegister - and no single lazy GPUVM fault wave - covers the 12.3M pages.
+    // Boot-time, one thread; a no-op unless open() armed the shape, and once only.
+    if (!register_last_ || base_ == nullptr || arena_ == nullptr) return;
+    register_last_ = false;
+    PinnedArena* a = static_cast<PinnedArena*>(arena_);   // stored opaque; the type is complete here
+    const auto t0 = std::chrono::steady_clock::now();
+    std::fprintf(stderr, "strata pin: registering the whole arena (%.1f GiB) as the last boot step ...\n",
+                 (double) arena_capacity_ / 1073741824.0);
+    // The relief shape over the full capacity (register_complement's construction): ranges of
+    // consecutive blobs, closed at blob boundaries, the last one through arena_capacity_ (the spare
+    // blob included - its last-span rule).  Relief's boundaries fall on DROPPED-blob offsets, so a
+    // held blob is never cut; with nothing dropped the close must instead fall on a PAGE-ALIGNED
+    // blob offset (register_after_fill's 4 KiB kPage): the outward rounding hands a shared boundary
+    // page to the earlier range, so a blob starting mid-page in the next range would straddle two
+    // registrations and have no DMA alias - pin_range_of answers one range or none (the V4-r3
+    // lesson).  A span closes once it reaches the complement's measured per-range scale (~6.4 MiB
+    // average, 18k; 8 MiB target), bounding each call's page-table work and each request-time
+    // fault wave.  A layout with no interior page-aligned blob offset keeps the 18n single range.
+    const int64_t n_layers = blobs_ / (n_expert_ > 0 ? n_expert_ : 1);
+    std::vector<std::pair<uint64_t, uint64_t>> whole;
+    if (n_layers > 0 && n_expert_ > 0) {
+        constexpr uint64_t kPage = 4096;              // register_after_fill's kPage
+        constexpr uint64_t kRangeTarget = 8ull << 20; // the relief complement's measured band (18k)
+        uint64_t span = 0;
+        for (int64_t l = 0; l < n_layers; ++l)
+            for (int64_t e = 0; e < n_expert_; ++e) {
+                const uint64_t off = arena_off(l, e);
+                if (off > span && off - span >= kRangeTarget && off % kPage == 0) {
+                    whole.emplace_back(span, off - span);
+                    span = off;
+                }
+            }
+        if (arena_capacity_ > span) whole.emplace_back(span, arena_capacity_ - span);
+    }
+    if (whole.empty()) whole.emplace_back(0, arena_capacity_);   // no aligned interior boundary: the 18n single range
+    // lock_rest = true: on a refusal the arena keeps the working-set lock over the unregistered rest -
+    // resident with no alias, the UMA degrade, non-fatal and loud - while every range registered
+    // before the refusal stays DMA-able (register_after_fill stops at the first, pin-by-need's rule).
+    const uint64_t got = a->register_after_fill(whole, true);
+    apply_registration();
+    std::fprintf(stderr, "strata pin: register-last: whole-arena registration %s in %.1f s (%.1f GiB registered, %zu range(s))\n",
+                 got == arena_capacity_ ? "ok" : "stopped at the driver's refusal",
+                 std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(),
+                 (double) got / 1073741824.0, a->pin_ranges.size());
 }
 
 FileExpertSource* ArenaExpertSource::file_source() const {
@@ -7077,6 +7187,7 @@ bool ArenaExpertSource::refill_pair(int32_t layer, int32_t expert, uint64_t& fil
                 rdp != nullptr) pin_dev_[i] = (const uint8_t*) rdp;
             (void) cudaGetLastError();
             a->registered_bytes += pin_end_[i] - pin_start_[i];
+            arena_mlock_span((uint8_t*) base_ + (size_t) pin_start_[i], (uint64_t) (pin_end_[i] - pin_start_[i]));
         }
     };
     size_t taken = 0;   // pieces [first, first + taken) left the runtime (an exclusive end)
@@ -7125,6 +7236,7 @@ bool ArenaExpertSource::refill_pair(int32_t layer, int32_t expert, uint64_t& fil
     pin_dev_.insert(pin_dev_.begin() + (long) pos, (const uint8_t*) dp);
     a->pin_ranges.insert(a->pin_ranges.begin() + (long) pos, std::make_pair(u.first, u.second - u.first));
     a->registered_bytes += u.second - u.first;
+    arena_mlock_span((uint8_t*) base_ + (size_t) u.first, (uint64_t) (u.second - u.first));
     std::memcpy((uint8_t*) base_ + (size_t) off, stage.data(), (size_t) lay.blob_bytes(layer));
     {   // clear the flag with the same lock blob()/pinned() re-check under (refill_run's rule)
         std::lock_guard<std::mutex> lk(file_mu_);
@@ -7195,6 +7307,7 @@ bool ArenaExpertSource::release_pair(int32_t layer, int32_t expert, uint64_t& fr
         pin_dev_.insert(pin_dev_.begin() + (long) pos, (const uint8_t*) dp);
         a->pin_ranges.insert(a->pin_ranges.begin() + (long) pos, std::make_pair(s, t - s));
         a->registered_bytes += t - s;
+        arena_mlock_span((uint8_t*) base_ + (size_t) s, (uint64_t) (t - s));
         return true;
     };
     if (cudaHostUnregister((uint8_t*) base_ + (size_t) rlo) != cudaSuccess) {
@@ -7469,6 +7582,8 @@ void ArenaExpertSource::warm(int64_t layer, const int64_t* experts, int64_t n) {
 // ---- Foresight swap space (see include/strata/core/foresight_swap.hpp) ------------------------------------------
 namespace strata::core {
 
+static constexpr size_t kStageQueueMax = 16384;   // STRATA_STAGE_OFFTHREAD: pending staging notes cap
+
 bool ForesightSwap::init(int slots_per_layer, int64_t layers, int64_t experts, const std::vector<int>& card_of_layer,
                          const std::vector<int>& devices, std::string& err, const std::vector<int>& slots_per_card) {
     slots = slots_per_layer;
@@ -7543,10 +7658,17 @@ bool ForesightSwap::init(int slots_per_layer, int64_t layers, int64_t experts, c
         ring_used.assign((size_t) ring_n, 0);
     }
     filler_ = std::thread([this] { fill_loop(); });
+    if (stage_offthread && ring_n > 0) stager_ = std::thread([this] { stage_loop(); });
     return true;
 }
 
 ForesightSwap::~ForesightSwap() {
+    {
+        std::lock_guard<std::mutex> lk(stage_mu_);
+        stage_stop_ = true;
+    }
+    stage_cv_.notify_all();
+    if (stager_.joinable()) stager_.join();   // first: the stager may still queue a copy onto the filler
     {
         std::lock_guard<std::mutex> lk(mu_);
         stop_ = true;
@@ -7668,11 +7790,38 @@ void ForesightSwap::note_miss(ExpertSource* src, int64_t layer, int32_t expert) 
     // assign_locked like a pinned blob.  The staging runs OUTSIDE smu_ (a pack read or a helper D2H can
     // take milliseconds; note_miss is called from the begin seam, where the dispatch thread already
     // waits on the helper's RPCs), so the gates are re-checked under the lock before the slot is taken.
+    // STRATA_STAGE_OFFTHREAD=1 moves even that off the seam: the note is queued and a stager thread runs
+    // stage_miss - the seam itself only notes.
+    if (stage_offthread) {
+        {
+            std::lock_guard<std::mutex> lk(stage_mu_);
+            if (stage_queue_.size() >= kStageQueueMax) {   // a dead ring must not grow the queue without bound
+                ++stage_drops;
+                return;
+            }
+            stage_queue_.push_back(StageReq{layer, expert});
+        }
+        stage_cv_.notify_one();
+        return;
+    }
+    stage_miss(layer, expert, false);
+}
+
+// note_miss's helper-shadow body (the comment above it); the inline seam passes `wait_ring` false - the
+// exact old sequence - and the stager thread true.
+void ForesightSwap::stage_miss(int64_t layer, int32_t expert, bool wait_ring) {
     {
         std::lock_guard<std::mutex> smu_lk(smu_);
         if (!gates_pass_locked(layer, expert, false, true)) return;   // admit + budget: no bytes read before they pass
     }
-    const int ri = ring_acquire();
+    int ri = ring_acquire();
+    if (ri < 0 && wait_ring)
+        for (int tries = 0; ri < 0 && tries < 500; ++tries) {   // ~1 s in 2 ms steps: keep staging ahead of the seam
+            std::unique_lock<std::mutex> lk(stage_mu_);
+            if (stage_stop_) return;   // closing: the demand dies with the swap space
+            stage_cv_.wait_for(lk, std::chrono::milliseconds(2));
+            ri = ring_acquire();
+        }
     if (ri < 0) {
         std::lock_guard<std::mutex> smu_lk(smu_);
         ++ring_busy;
@@ -7693,6 +7842,21 @@ void ForesightSwap::note_miss(ExpertSource* src, int64_t layer, int32_t expert) 
         ++no_src;
     }
     if (!assigned) ring_release(ri);
+}
+
+void ForesightSwap::stage_loop() {
+    strata::platform::name_this_thread("strata-stage");
+    for (;;) {
+        StageReq q;
+        {
+            std::unique_lock<std::mutex> lk(stage_mu_);
+            stage_cv_.wait(lk, [&] { return stage_stop_ || !stage_queue_.empty(); });
+            if (stage_stop_) return;
+            q = stage_queue_.front();
+            stage_queue_.pop_front();
+        }
+        stage_miss(q.layer, q.expert, true);
+    }
 }
 
 void ForesightSwap::predict(ExpertSource* src, int64_t layer, int32_t expert) {
@@ -7792,6 +7956,8 @@ std::string ForesightSwap::report() const {
     if (helper_shadow)   // the staging ring's outcomes: staged = fills sourced outside the pinned arena
         r += ", helper shadow: " + std::to_string(staged) + " staged (" + std::to_string(ring_busy) +
              " ring full, " + std::to_string(no_src) + " no source)";
+    if (stage_offthread)   // the stager's own backpressure: notes the queue cap dropped
+        r += ", " + std::to_string(stage_drops.load()) + " staging notes dropped (queue full)";
     if (verify) r += ", verified " + std::to_string(verify_ok) + " ok / " + std::to_string(verify_bad) + " BAD";
     return r;
 }
@@ -7836,6 +8002,7 @@ ForesightSwap* foresight_swap_from_env(int64_t layers, int64_t experts, const st
     f->admit = env_int("STRATA_FS_ADMIT", 1, 1);
     f->depth = env_int("STRATA_FS_DEPTH", 4, 2);
     f->verify = env_int("STRATA_FS_VERIFY", 0, 0) != 0;
+    f->stage_offthread = env_int("STRATA_STAGE_OFFTHREAD", 0, 0) != 0;
     std::string err;
     if (!f->init(all_slots, layers, experts, card_of_layer, devices, err, slots_per_card)) {
         std::fprintf(stderr, "strata serve: foresight swap: %s - swap space off\n", err.c_str());
@@ -7850,10 +8017,12 @@ ForesightSwap* foresight_swap_from_env(int64_t layers, int64_t experts, const st
         slots_note.pop_back();
     }
     std::fprintf(stderr, "strata serve: foresight swap: %s on %zu card(s), up to %d copies per card and "
-                         "window, admit after %d miss(es), reuse after %d windows%s%s\n",
+                         "window, admit after %d miss(es), reuse after %d windows%s%s%s\n",
                  slots_note.c_str(), devices.size(), f->budget, f->admit, f->depth,
                  f->helper_shadow ? ", helper shadow ON (a landed slot serves a helper-held pair)" : "",
-                 f->helper_shadow ? (", " + std::to_string(f->ring_entries()) + "-entry pinned staging ring").c_str() : "");
+                 f->helper_shadow ? (", " + std::to_string(f->ring_entries()) + "-entry pinned staging ring").c_str() : "",
+                 f->stage_offthread && f->ring_entries() > 0
+                     ? ", ring staging off the begin seam (STRATA_STAGE_OFFTHREAD)" : "");
     return f;
 }
 

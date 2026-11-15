@@ -435,6 +435,14 @@ if(STRATA_BUILD_TESTS)
   add_executable(batch_telemetry_test src/core/batch_telemetry_test.cpp)
   target_include_directories(batch_telemetry_test PRIVATE include)
   add_test(NAME batch_telemetry_test COMMAND batch_telemetry_test)
+  # #5718 follow-up: the stall report's list of GPU streams a host may wait on, and its lines (faked queries, no GPU)
+  add_executable(stream_watch_test tests/core/stream_watch_test.cpp)
+  target_include_directories(stream_watch_test PRIVATE include)
+  add_test(NAME stream_watch_test COMMAND stream_watch_test)
+  # AMD on Linux: how long the driver paused this process's GPU work (a fake KFD tree; the stall and request lines)
+  add_executable(gpu_pause_time_test tests/core/gpu_pause_time_test.cpp)
+  target_include_directories(gpu_pause_time_test PRIVATE include)
+  add_test(NAME gpu_pause_time_test COMMAND gpu_pause_time_test)
   add_executable(logit_bias_test src/core/logit_bias_test.cpp)
   target_include_directories(logit_bias_test PRIVATE include)
   add_test(NAME logit_bias_test COMMAND logit_bias_test)
@@ -515,6 +523,11 @@ if(STRATA_BUILD_TESTS)
   target_include_directories(routed_stream_test PRIVATE include)
   target_link_libraries(routed_stream_test PRIVATE Threads::Threads)
   add_test(NAME routed_stream_test COMMAND routed_stream_test)
+
+  # PR #5108: the MMQ row table's over-read margin follows the backend tile bound; every fixup read stays inside (header-only, no GPU)
+  add_executable(mmq_ids_margin_test tests/prefill/mmq_ids_margin_test.cpp)
+  target_include_directories(mmq_ids_margin_test PRIVATE include)
+  add_test(NAME mmq_ids_margin_test COMMAND mmq_ids_margin_test)
 
   # the Windows HIP auto prefill chunk cap (#1630) and the commit-limit verdict (#1607): header-only, no GPU
   add_executable(host_limits_test tests/platform/host_limits_test.cpp)
@@ -840,6 +853,10 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     # its byte-budget arithmetic and the promotion gate, over masks and profile data, with no device call.
     src/core/expert_helper_socket.cpp src/core/expert_helper_fallback.cpp
     src/core/expert_helper_candidates.cpp
+    # v0233 round 18o (per-GPU VRAM guard): the per-card reserve floor the #2065 check sites step
+    # in 64 MiB increments (STRATA_VRAM_GUARD).  CPU-only by construction, like the two helpers
+    # above: no device call, no CUDA include.
+    src/core/vram_guard.cpp
     tools/mixed_gpu/sidecar/helper_frame.cpp)
   # Upstream's drafter, same rule as its kernels above: OFF means the TU is not compiled at all (see the runtime print).
   if(STRATA_HAVE_DFLASH2)
@@ -993,6 +1010,16 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
       target_include_directories(arena_pin_ranges_test PRIVATE include)
       add_test(NAME arena_pin_ranges_test COMMAND arena_pin_ranges_test)
       set_tests_properties(arena_pin_ranges_test PROPERTIES TIMEOUT 60)
+    endif()
+    # v0233 round 18o (per-GPU VRAM guard): STRATA_VRAM_GUARD's state machine - the 64 MiB steps
+    # on the card that ran low, the never-shrink hysteresis, the growth cap, the step window and
+    # the per-card isolation.  CPU-only BY CONSTRUCTION - the TU makes no device call (the check
+    # sites read the card), so the test links its one TU and nothing else.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/vram_guard_test.cpp")
+      add_executable(vram_guard_test tests/core/vram_guard_test.cpp src/core/vram_guard.cpp)
+      target_include_directories(vram_guard_test PRIVATE include)
+      add_test(NAME vram_guard_test COMMAND vram_guard_test)
+      set_tests_properties(vram_guard_test PROPERTIES TIMEOUT 60)
     endif()
     # helper-ipc-diet round 13: the two conversation-cache env knobs - the end-of-generation anchor
     # decision behind STRATA_GEN_ANCHOR and the idle-park debounce arithmetic behind
@@ -2209,7 +2236,10 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   set_tests_properties(pinned_alias_test PROPERTIES SKIP_RETURN_CODE 77)
 
   # #3350 / #3470: the conversation copy streams and events are pooled across short-lived threads (needs a device, else skips)
-  add_executable(conversation_copy_streams_test src/core/conversation_copy_streams_test.cpp)
+  # The header-only conversation_copy.hpp steps the per-GPU VRAM guard (round 18o); vram_guard.cpp is an
+  # engine-owned CPU-only source, so - like memory_guard_test and vram_guard_test - the test compiles it directly
+  # instead of linking strata_engine (which would drag in the kernels).
+  add_executable(conversation_copy_streams_test src/core/conversation_copy_streams_test.cpp src/core/vram_guard.cpp)
   target_include_directories(conversation_copy_streams_test PRIVATE include)
   target_link_libraries(conversation_copy_streams_test PRIVATE strata_core ${_strata_gpu_runtime_target})
   add_test(NAME conversation_copy_streams_test COMMAND conversation_copy_streams_test)

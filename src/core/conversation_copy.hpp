@@ -2,6 +2,7 @@
 
 #include "strata/core/conversation_cache.hpp"
 #include "strata/core/progress.hpp"
+#include "strata/core/vram_guard.hpp"
 #include "strata/platform/aux_cpus.hpp"
 
 #include <cuda_runtime.h>
@@ -141,6 +142,15 @@ inline cudaError_t copy_nonblocking(void* dst, const void* src, size_t bytes, bo
     if (const long at = test_copy_fail_at(); at > 0) {
         static std::atomic<long> copies{0};
         if (++copies == at) return cudaErrorMemoryAllocation;
+    }
+    {   // 18o: the long-context regime that pushes a card under the #2065 low line is exactly when these
+        // copies run (parked K/V comes back), so with the guard on this keeps the card's reserve floor
+        // current before the copy touches it (inert unless STRATA_VRAM_GUARD=1)
+        size_t free_b = 0, total_b = 0;
+        int dev = 0;
+        if (strata::core::vram_guard::enabled() && cudaGetDevice(&dev) == cudaSuccess &&
+            cudaMemGetInfo(&free_b, &total_b) == cudaSuccess)
+            strata::core::vram_guard::check(dev, (int64_t) (free_b >> 20));
     }
     cudaStream_t s = nullptr;
     cudaError_t e = private_stream(s);

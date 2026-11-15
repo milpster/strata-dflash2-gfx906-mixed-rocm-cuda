@@ -20,6 +20,14 @@
 // STRATA_FS_ADMIT (misses within the last 4 windows before an expert is copied, default 1), STRATA_FS_DEPTH,
 // STRATA_FS_HELPER_SHADOW=1 (slots also serve pairs a helper tier holds; default 0), STRATA_FS_VERIFY=1 (test mode:
 // every slot is read back and compared with its source the first time it is used).
+//
+// STRATA_STAGE_OFFTHREAD=1 (needs STRATA_FS_HELPER_SHADOW with its staging ring; default 0 = the begin seam still
+// stages inline, exactly as before): note_miss only queues the (layer, expert) demand and returns at once; a stager
+// thread reads the bytes into the ring (stage_blob) off the request thread, so the begin seam never blocks on a pack
+// read or a helper D2H.  The stager waits out a full ring (about 1 s in 2 ms steps) instead of rejecting, so "ring
+// full" counts sustained exhaustion only, and a demand queue deeper than 16384 drops the note like the inline path's
+// ring-full refusal would.  Outputs never change: a slot either lands in time and serves the same bytes, or the row
+// keeps today's helper/CPU fallback.
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
@@ -57,6 +65,9 @@ struct ForesightSwap {
     bool helper_shadow = false;
     /// STRATA_FS_RING (helper shadow only): entries in the pinned staging ring.  0 = none allocated.
     int ring_want = 0;
+    /// STRATA_STAGE_OFFTHREAD=1 (needs the helper shadow's ring; default 0): the begin seam's note_miss only
+    /// queues the demand; the stager thread runs the ring staging (stage_miss) off the request thread.
+    bool stage_offthread = false;
     /// The helper shadow's blob source, set by the driver before the first window: stage one pair's
     /// blob bytes into `dst` and return true - a helper tier's engine-side cache
     /// (RemoteExperts::copy_cached_blobs) first, else the pack files through the source's batched
@@ -81,6 +92,7 @@ struct ForesightSwap {
     // counters (dispatch thread)
     uint64_t hits = 0, copies = 0, busy = 0, over_budget = 0, pending = 0, predicted = 0;   // (under smu_)
     uint64_t staged = 0, ring_busy = 0, no_src = 0;   ///< helper shadow: ring staging outcomes (under smu_)
+    std::atomic<uint64_t> stage_drops{0};   ///< off-thread stager: notes dropped because the queue was full
     bool verify = false;                     ///< STRATA_FS_VERIFY=1: read every landed slot back and compare (slow, tests)
     uint64_t verify_ok = 0, verify_bad = 0;
     uint64_t dropped = 0;                    ///< slots dropped because an exchange moved their expert's bytes (under smu_)
@@ -131,6 +143,20 @@ private:
     /// so a slot's `ring_idx` is released only when the slot itself is reassigned.
     int ring_acquire();
     void ring_release(int idx);
+    /// STRATA_STAGE_OFFTHREAD: one noted (layer, expert) waiting for the stager thread.
+    struct StageReq {
+        int64_t layer;
+        int32_t expert;
+    };
+    /// note_miss's helper-shadow body: the gates, the ring entry, the bytes read outside every lock, the
+    /// re-checked assign.  `wait_ring` (the stager thread) waits out a full ring instead of refusing it.
+    void stage_miss(int64_t layer, int32_t expert, bool wait_ring);
+    void stage_loop();
+    std::mutex stage_mu_;                     ///< stage_queue_/stage_stop_
+    std::condition_variable stage_cv_;
+    std::deque<StageReq> stage_queue_;
+    bool stage_stop_ = false;
+    std::thread stager_;
     std::mutex smu_;                         ///< slot, where, card_* and the counters: the pool thread and the look-ahead thread
     std::mutex mu_;
     std::mutex ring_mu_;                     ///< ring_used

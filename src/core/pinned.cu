@@ -18,6 +18,7 @@
 #include <map>
 #include <mutex>
 #include <thread>
+#include <chrono>
 
 // Loader fix: `fseek`/`ftell` are 32-bit on Windows by default (and the pack is 42.9 GB), and the 64-bit
 // spelling is not the same on the two platforms the engine builds for.
@@ -733,6 +734,7 @@ cudaError_t register_range(PinnedArena& arena, void* p, uint64_t n) {
 #else
     (void) arena;
 #endif
+    if (e == cudaSuccess) arena_mlock_span(p, n);   // STRATA_ARENA_MLOCK: a registered span must never move (KFD userptr)
     return e;
 }
 }  // namespace
@@ -782,8 +784,18 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds,
             cap_why = "by STRATA_ARENA_PIN_GIB";
         }
         const bool capped = cap > 0 && cap < bytes && bounds.size() >= 2;
-        const cudaError_t e = capped ? cudaSuccess :
-            register_range(*this, base, bytes);
+        cudaError_t e = cudaSuccess;
+        if (!capped) {
+            // boot-progress visibility (journal 2026-11-13 round 18k): this ONE driver call pins the whole arena -
+            // tens of seconds on a 46 GiB THP-backed arena - and ran in silence between the model's boot lines
+            std::fprintf(stderr, "strata pin: registering the whole arena (%.1f GiB) for DMA before the fill ...\n",
+                         (double) bytes / 1073741824.0);
+            const auto t0 = std::chrono::steady_clock::now();
+            e = register_range(*this, base, bytes);
+            std::fprintf(stderr, "strata pin: whole-arena registration %s in %.1f s\n",
+                         e == cudaSuccess ? "ok" : cudaGetErrorString(e),
+                         std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+        }
         if (!capped && e == cudaSuccess) {
             note = "cudaHostRegister PORTABLE ok; " + note;
             registered_bytes = bytes;
@@ -860,6 +872,7 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds,
             }
         }
     }
+    arena_mlock_report(registered_bytes < bytes ? bytes - registered_bytes : 0);
 }
 
 PinnedArena::PinnedArena(uint64_t bytes, ByNeed, const std::vector<std::pair<uint64_t, uint64_t>>& ranges,
@@ -897,7 +910,11 @@ PinnedArena::PinnedArena(uint64_t bytes, ByNeed, const std::vector<std::pair<uin
     int refused = 0;
     bool capped = false;
     const bool none = arena_no_register();   // 153-igpu UMA mode: register no range at all; every byte is a locked "hole" below
+    const size_t n_rng = ranges.size();
+    const size_t rng_step = n_rng >= 10 ? n_rng / 10 : n_rng;   // one line per ~10%: a slow boot stays visible
+    size_t rng_i = 0;
     for (const auto& rg : ranges) {
+        ++rng_i;
         if (none) break;
         if (rg.second == 0 || rg.first >= bytes) continue;
         // INWARD: a registered page holds no byte of an unpinned neighbour blob (a copy that STARTS in a registered page
@@ -921,6 +938,9 @@ PinnedArena::PinnedArena(uint64_t bytes, ByNeed, const std::vector<std::pair<uin
         }
         done[a] = b;
         total += b - a;
+        if (rng_step > 0 && rng_i % rng_step == 0 && rng_i < n_rng)
+            std::fprintf(stderr, "strata pin: pin by need: %zu of %zu ranges registered (%.1f GiB)\n",
+                         rng_i, n_rng, (double) total / 1073741824.0);
     }
     for (const auto& d : done) pin_ranges.emplace_back(d.first, d.second - d.first);
     registered_bytes = total;
@@ -951,6 +971,7 @@ PinnedArena::PinnedArena(uint64_t bytes, ByNeed, const std::vector<std::pair<uin
         // a partial lock is unlocked region by region in the destructor; what it did not reach was never locked
         // (VirtualUnlock/munlock of an unlocked page is harmless), so the list is kept whole
     }
+    arena_mlock_report(hole_bytes);
 }
 
 PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds, Deferred)
@@ -991,6 +1012,7 @@ void PinnedArena::register_slices(std::atomic<int>& ready) {
             note = lr.note + "; " + note;
         }
     }
+    arena_mlock_report(capacity - registered_bytes);
     ready.store(INT_MAX, std::memory_order_release);   // every slice done (or given up on)
 }
 
@@ -1012,9 +1034,14 @@ PinnedArena::PinnedArena(uint64_t bytes, ReserveOnly) : capacity(bytes) {
 uint64_t PinnedArena::register_after_fill(const std::vector<std::pair<uint64_t, uint64_t>>& ranges, bool lock_rest) {
     if (base == nullptr || !by_need) return 0;   // only the ReserveOnly arena registers late
     constexpr uint64_t kPage = 4096;
+    const auto t0 = std::chrono::steady_clock::now();   // the per-~10% progress lines carry elapsed seconds (18t)
     uint64_t total = 0;
     bool refused = false;
+    const size_t n_rng = ranges.size();
+    const size_t rng_step = n_rng >= 10 ? n_rng / 10 : n_rng;   // one line per ~10%: a slow boot stays visible
+    size_t rng_i = 0;
     for (const auto& rg : ranges) {
+        ++rng_i;
         if (rg.second == 0 || rg.first >= capacity) continue;
         // OUTWARD, page-granular: a span's first/last page is shared with a DROPPED blob's tail -
         // that page stays mapped (only wholly-inside pages were given back) and its kept bytes must
@@ -1041,6 +1068,10 @@ uint64_t PinnedArena::register_after_fill(const std::vector<std::pair<uint64_t, 
         registered_bytes += b - a;
         ++registered_slices;
         total += b - a;
+        if (rng_step > 0 && rng_i % rng_step == 0 && rng_i < n_rng)
+            std::fprintf(stderr, "strata pin: registered after the fill: %zu of %zu ranges (%.1f GiB, %.0f s)\n",
+                         rng_i, n_rng, (double) registered_bytes / 1073741824.0,
+                         std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
         if (refused) break;
     }
     note = "registered after the fill: " + std::to_string(pin_ranges.size()) + " ranges (" +
@@ -1070,6 +1101,7 @@ uint64_t PinnedArena::register_after_fill(const std::vector<std::pair<uint64_t, 
             note = lr.note + " (" + std::to_string(hole_bytes >> 20) + " MiB of holes); " + note;
         }
     }
+    arena_mlock_report(capacity - registered_bytes);
     return total;
 }
 

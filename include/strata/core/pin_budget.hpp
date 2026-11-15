@@ -31,6 +31,14 @@
 #include <mutex>
 #include <string>
 
+#if defined(__linux__)
+#include <cerrno>
+#include <chrono>
+#include <cstring>
+#include <sys/mman.h>
+#include <sys/resource.h>
+#endif
+
 namespace strata::core {
 
 namespace pin_detail {
@@ -114,6 +122,85 @@ inline cudaError_t pin_unregister(void* p) {
         pin_detail::sim_uncharge(s, p);
     }
     return cudaHostUnregister(p);
+}
+
+// ---- arena mlock (STRATA_ARENA_MLOCK, opt-in, Linux) -------------------------
+//
+// WHY mlock() right after a successful cudaHostRegister: a registered host range is a KFD userptr mapping,
+// and amdgpu invalidates the GPU queues' view of it whenever the CPU page tables under it change - reclaim,
+// swap and compaction all do.  On gfx906 each invalidation evicts a queue with a dispatch still in a barrier
+// (the eviction storm behind public-project PR #3913, route B): cudaHostRegister keeps the pages DMA-able but
+// leaves them movable, mlock() makes the kernel keep them exactly where they are.  Default OFF; a span
+// mlock() cannot take is logged and left at today's behavior, never fatal.
+namespace arena_mlock_detail {
+struct State {
+    std::mutex mu;
+    uint64_t bytes = 0;
+    uint64_t spans = 0;
+    double ms = 0.0;
+};
+inline State& st() {
+    static State s;
+    return s;
+}
+inline bool on() {
+    static const bool v = std::getenv("STRATA_ARENA_MLOCK") != nullptr;   // presence turns it on, as STRATA_ARENA_COLLAPSE
+    return v;
+}
+}  // namespace arena_mlock_detail
+
+/// STRATA_ARENA_MLOCK=1: mlock() the page-aligned-outward span a cudaHostRegister just pinned.  No-op, not
+/// even a line, when the knob is unset.  Linux only: elsewhere the knob is ignored.
+inline void arena_mlock_span(void* p, uint64_t n) {
+#if defined(__linux__)
+    if (!arena_mlock_detail::on() || n == 0) return;
+    static const bool limit_logged = [] {   // once, at first use
+        struct rlimit rl {};
+        if (getrlimit(RLIMIT_MEMLOCK, &rl) != 0) return true;
+        if (rl.rlim_cur == RLIM_INFINITY)
+            std::fprintf(stderr, "strata pin: arena mlock: RLIMIT_MEMLOCK soft limit: unlimited\n");
+        else
+            std::fprintf(stderr, "strata pin: arena mlock: WARNING: RLIMIT_MEMLOCK soft limit is %llu MiB, not unlimited "
+                                 "- mlock may partially fail\n", (unsigned long long) (rl.rlim_cur >> 20));
+        return true;
+    }();
+    (void) limit_logged;
+    constexpr uint64_t kPage = 4096;   // the pin paths' page size; the registered span is aligned out to it
+    const uintptr_t a = (uintptr_t) p & ~(uintptr_t) (kPage - 1);
+    const uintptr_t b = ((uintptr_t) p + n + kPage - 1) & ~(uintptr_t) (kPage - 1);
+    const auto t0 = std::chrono::steady_clock::now();
+    if (mlock((void*) a, (size_t) (b - a)) != 0) {
+        std::fprintf(stderr, "strata pin: arena mlock: mlock of [%#llx, +%llu MiB) failed (errno %d, %s); that span "
+                             "keeps today's behavior\n",
+                     (unsigned long long) a, (unsigned long long) ((b - a) >> 20), errno, std::strerror(errno));
+        return;
+    }
+    auto& s = arena_mlock_detail::st();
+    std::lock_guard<std::mutex> g(s.mu);
+    s.bytes += (uint64_t) (b - a);
+    ++s.spans;
+    s.ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+#else
+    (void) p;
+    (void) n;
+#endif
+}
+
+/// One banner line with everything arena_mlock_span() has locked so far (`complement_bytes` = the span set's
+/// unregistered rest, named when there is one).  Nothing when the knob is unset.
+inline void arena_mlock_report(uint64_t complement_bytes) {
+#if defined(__linux__)
+    if (!arena_mlock_detail::on()) return;
+    const std::string tail = complement_bytes > 0
+                                 ? " (complement covers " + std::to_string(complement_bytes >> 20) + " MiB)"
+                                 : std::string();
+    auto& s = arena_mlock_detail::st();
+    std::lock_guard<std::mutex> g(s.mu);
+    std::fprintf(stderr, "strata pin: arena mlock: locked %.2f GiB over %llu spans in %.0f ms%s\n",
+                 (double) s.bytes / 1073741824.0, (unsigned long long) s.spans, s.ms, tail.c_str());
+#else
+    (void) complement_bytes;
+#endif
 }
 
 /// Take the reserves (call before the expert arena pins).  Never fails.
