@@ -3,7 +3,7 @@
 set -euo pipefail
 R=/mnt/srcds/Strata
 ARM=${1:?arm}
-OUT=$R/bench/ab-v0210/rpcprof/out/gpu-rounds-20261115
+OUT=${STRATA_LANE_OUT:-$R/bench/ab-v0210/rpcprof/out/gpu-rounds-20261115}
 ELOG=$R/logs/engine-prod-ud-iq3xxs-v0233.log
 START=$(stat -c %s "$ELOG")
 mkdir -p "$OUT"

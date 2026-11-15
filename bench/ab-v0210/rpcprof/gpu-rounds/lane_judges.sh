@@ -5,7 +5,7 @@
 set -u
 R=/mnt/srcds/Strata
 RPC=$R/bench/ab-v0210/rpcprof
-OUT=$RPC/out/gpu-rounds-20261115
+OUT=${STRATA_LANE_OUT:-$RPC/out/gpu-rounds-20261115}
 ELOG=$R/logs/engine-prod-ud-iq3xxs-v0233.log
 ARM=${1:?arm}; NFILL=${2:-1}
 mkdir -p $OUT
