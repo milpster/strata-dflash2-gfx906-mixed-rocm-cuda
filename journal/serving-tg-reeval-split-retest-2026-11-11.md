@@ -3351,3 +3351,11 @@ tg5k round (100k infill, max_tokens 5120 — generations self-terminate ~200-480
 Verdict corrected from 18an's lean: across ALL four direct block comparisons tonight B7 >= B5 (32.4>29.1 sweep1; 28.2/27.4>26.2 nightcap; 29.0>26.2 tg5k) and adaptive (B0) loses every round at both conf thresholds. Acceptance parity (63-65%) means B7's TG edge is steady, not an acceptance fluke. **Decision: --dflash-block 7** (the artifact's trained max), flipped at campaign wrap-up to avoid config churn mid-HC_Q8 arms. Block 5 remains for the HC_Q8 arms (pairs against V232 445.1/33.2 reference).
 
 Also logged: fill100k walls ~238-242 s (~410 tok/s class at 99k) on v0233.2 — PP holds at depth.
+
+## Round 18ap — HC_Q8 on gfx906: quality PASSES, INJECT costs perf; tuned kernel built
+
+Enable arm (v0233.2, block 5, STRATA_HC_Q8=1 + INJECT=1): teacher-forced gate vs NIGHT (same pin, knob off): **KL 0.0191, p99 0.267, top1 agreement 95.5%, PPL 3.898 vs 3.924 (slightly better)**; vs A-ref: top1 86.73%, KL 0.1484, PPL 3.898. Quality verdict: the Q8 hyper-connection projections are quality-neutral-to-better — near-tie divergence only. Greedy sha 3/3 diverged = the known temp-0 placement characterization, unchanged.
+
+Perf verdict (why it stays off by default): INJECT loads a Q8_0 copy BESIDE the GGUF's bf16 originals → dual-copy −1.19 GiB → expert slots 4983→4577 (card0), full-fill PP 391.5 (band floor 434 broken), warm TG 26.8 (mid-band). Structural on a bf16-projection GGUF; upstream wins only where GGUFs ship Q8 natively (gfx12/Strix).
+
+Kernel tuning (operator mandate: complete + enable): glm5.3 fixer wrote 457a7e95d8 on hc-q8-gfx906 — uint2 single-load wide variant (4 thr/block) + ld32 one-thread-per-block variant (uint4 loads) + pair forms, STRATA_HC_Q8_TUNE gate default-ON (exact "0" = upstream path bit-identical), misaligned-global-load safety on gfx906 flat/global reasoned (Vega ISA LSB rule excludes MUBUF; LLVM D145170; GCC r16-4105). Golden build GUARD PASS sha16 5d73caa758fd0493 (rpcw-hip-hcq8tune). Oracle review dispatched (gate) — A/B TUNE=1/0 boots + teacher-forced bit-exactness vs HCQ8.tsv follow on GO.
