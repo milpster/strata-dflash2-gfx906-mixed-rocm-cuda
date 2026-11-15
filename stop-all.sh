@@ -31,6 +31,7 @@ if [ ${#pids[@]} -gt 0 ]; then
 fi
 
 rm -f run/prod-swift15-f16kv-mixed.sock run/prod-swift15-f16kv-mixed2.sock \
+      run/prod-iq3xxs-ud-mixed.sock run/prod-iq3xxs-ud-mixed2.sock \
       run/trial-spill40.sock run/trial-spill40-2.sock
 
 count_strata() { pgrep -f 'launch-prod-|launch-trial-|strata --serve|strata-expert-helper|serve/server[.]py --engine strata' 2>/dev/null | wc -l; }
