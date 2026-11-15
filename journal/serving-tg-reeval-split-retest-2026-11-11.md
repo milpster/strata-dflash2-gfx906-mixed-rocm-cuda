@@ -3552,3 +3552,21 @@ Read-only GLM audit did not run: the first endpoint failed authentication and th
 Offline instruction-level correction: `perf annotate` of the saved cold-probe capture succeeds (exit 0). Of 12,630 `ExpertPool::worker` samples, 15.24% hit `0x29738bb` and 75.75% hit `0x29738be`, the increment/test immediately after `pause` at `0x29738b9`. These are the idle epoch-poll loop (`src/kernels/cpu/pool.cpp:999–1015`), not expert computation; `drain()`'s call site has 0.00%. Of 991 `Verifier::run` samples, 11.20% and 76.59% hit `0x26a3686`/`0x26a368a`, likewise the pause counter in the sequence wait, matching `src/core/verify.cpp:3524–3530` (waiting for the GPU to reach a layer). This disproves the earlier compute-saturation/fallback interpretation, not the regression. No in-band capture exists to establish that these waits changed. Raw capture and full annotations retained under `out/gpu-rounds-20261115/shared-profile/`; binary has no source-line debug info (`addr2line` identifies functions but returns `??:?`).
 
 H232B1 boot completed 18:16:56, generation 1; live engine PID 1144413 verified `36ecbe98`, helper PID 1143452 verified v0232b `42358985`. Config `cmp` equals production. Both helper channels connected, 3703 slots (6.93 GiB), warmup output finite. Smoke returned HTTP 200 in 2.828 s, content `OK`, no API error (22 completion tokens including reasoning). This is a liveness check only, not a quality gate. Standard judges now run unchanged under `perf record -F 99 -e cpu-clock:u`; the restored-current arm will use the same sampling. The existing `qqNIGHT.json` has no helper arguments and cannot by itself certify a helper-binary swap.
+
+## Round 18bl — older-helper arm fails to restore warm TG; canonical helper restored (2026-11-15, 18:18–18:27)
+
+H232B1 judges completed, exit 0, with current engine and old v0232b helper. Engine lines, NOT the last-four-lines shortcut (which includes internal continuation-shaped requests):
+
+| phase | prompt reuse/read | read | generation | acceptance |
+|---|---|---|---|---|
+| fresh fill | 0 + 79992 | 183.210 s / 436.6 tok/s | 6 / 0.382 s | 3/3 |
+| boundary | 65536 + 14456 | 59.791 s / 241.8 tok/s | 513 / 20.743 s / 24.7 tok/s | 342/446 |
+| warm primary | 79987 + 5 | 0.235 s | 512 / 32.134 s / **15.9 tok/s** | 341/438 |
+
+The two benchmark POSTs also generated 164-token and 171-token continuation-shaped engine requests at prompt 80522 (80504/80503 reused plus 18/19 read); API walls were 88.997 s and 47.037 s. These are being traced in the Python wrapper; no concurrency claim is made from extra engine lines. Old helper does not restore the 26–34 band. Both primary decode requests had zero helper timeouts and zero fallbacks. No candidate promoted and no quality-equivalence claim.
+
+Memory (MiB, actual driver records): fill RSS peak 46359, minimum available 13238, maximum swap used 6434; TG RSS peak 49442, minimum available 14816, maximum swap used 7514. VRAM maxima across the arm: card2 16356, card3 16182, NVIDIA helper 7447, iGPU card4 452. Artifacts: `out/gpu-rounds-20261115/H232B1-{fill80k,tg80k}.json/`, `H232B1-engine.log`, `H232B1-smoke.json`, `H232B1-perf.data`.
+
+Exact warm-path CPU evidence: a conservative ten-second interior slice of the primary warm decode (`perf report` and `perf script --time 3990,4000`, both exit 0) has 684 `Verifier::run` IP samples, ALL on the GPU-sequence wait loop at `0x26a3674`–`0x26a3691`; 586/684 hit its increment/test. This establishes where the host waits during the actual warm benchmark, not why those waits became longer than historical boots. `perf annotate --time` is unsupported in installed perf (exit 129); time-filtered `perf script` is the working evidence path. Reports retained under `shared-profile/H232B1-warm-{report,ips}.txt`.
+
+Canonical `lane_restore.sh` completed at 18:27:16, exit 0, with smoke content `OK` and finish `stop`; no engine/config/binary replacement was made. H233R1 matched current-helper judges are now running with the same 99-Hz user-only sampling. Further causal conclusions wait for that control. A single read-only GLM Flash retry is checking the shared wrapper; no boots or live requests assigned to it.
