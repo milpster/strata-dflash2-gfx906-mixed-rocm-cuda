@@ -32,7 +32,7 @@ boot() {
   done
   echo "BOOT FAIL $1"; return 1
 }
-for arm in 'T5AD 0 0.55' 'T5B7 7 -'; do
+for arm in 'T5AD 0 0.55' 'T5B7 7 -' 'T5B5 5 -'; do
   set -- $arm; TAG=$1; B=$2; C=$3
   echo "=== ARM $TAG (block $B conf $C) ($(date +%T)) ==="
   set_cfg "$B" "$C"
