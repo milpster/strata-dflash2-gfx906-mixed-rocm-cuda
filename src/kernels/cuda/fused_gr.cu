@@ -3235,10 +3235,16 @@ __global__ void __launch_bounds__(256) gr_dequant_q8_0_ld32_pair_kernel(const ui
     dequant_q8_0_ld32_item(q8, out, b);
 }
 
-// gfx906 tuning gate, read once: only the exact string "0" disables it; unset or any other value keeps it on.
+// gfx906 tuning gate, read once. Default-on only where misaligned flat/global vector loads are
+// architecturally safe (AMD GCN3+: FLAT/GLOBAL ops are byte-addressed, no alignment trap). Under
+// nvcc a misaligned ld.global.v4 is PTX-level UB, so CUDA builds default OFF and opt in with "1".
 static bool gr_q8_tune_env_on() {
     const char* e = std::getenv("STRATA_HC_Q8_TUNE");
+#if defined(__HIP__)
     return e == nullptr || e[0] != '0' || e[1] != '\0';
+#else
+    return e != nullptr && e[0] == '1' && e[1] == '\0';
+#endif
 }
 static const bool gr_q8_tune = gr_q8_tune_env_on();
 
