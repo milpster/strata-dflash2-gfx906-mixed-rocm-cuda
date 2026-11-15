@@ -3393,3 +3393,14 @@ Explorer (glm5.3) mapped the full hc lifecycle with file:line evidence:
 **Ticket candidates (not fixed):** decode cls=1 path takes no event wait (native_dense.cpp:577 gates waits to cls 0) — value race, not hang, if decode stream differs from last prompt reader. Prefill Q8-fused T-template extension of gr_down_q8/gr_up_q8 (kill per-use dequant+bf16 scratch; MMQ shape-ineligible K=10240>8192/K=320%256!=0, MMVQ decode-shaped). The recurring slow boundary-read classes likely = --ple-io direct 54 MB/s layer-1 tax (warning at every boot, refs #1425/#1629).
 
 GPU work HELD per operator (reserve64 lane staged unlaunched; native re-run 3x queued).
+
+## Round 18at — reserve floor found: ROCm 128 MiB breaks generation (NaN #879); 192 restored
+
+Operator-ordered bisect with live GPU/RAM/read sampling per boot:
+- 192/220 (control): clean — GPU1 pegged 100%, read on pace, RAM ~47 GiB fill-phase staging arena (proven normal: frees on shutdown).
+- 128/220: READ FINE — fastest of the day, 473.7 tok/s / 168.9 s — but GENERATION produced NaN: "503: output became non-finite (NaN) twice in a row (#879); the engine has dropped the model". The request retried (second full 80k read, 452.2 tok/s), NaN'd again, 503. The 12:12 "wedge" (128/156 leg) is now fully explained: same NaN-drop + retry churn, not a read stall; the "reading the prompt: 330 s" tail was the retry's read.
+- Bisect conclusion: the ROCm card reserve cut alone (192->128, 154 MiB free) is the trigger; helper cut exonerated by isolation (220 held constant). Prefill tolerates the tightness; generation does not.
+
+Engineering notes: (1) the engine's below-512-MiB request guard warns but proceeds — and the failure mode is SILENT CORRUPTION (NaNs from presumably failed/uninitialized buffer use), not a clean allocation error. Upstream-worthy bug report: #879's guard catches it late; the alloc path should fail loudly. (2) The rocm64b deeper cut (128->64) was auto-blocked by the lane's cleanliness gate — gate worked as designed. (3) RAM observations: the ~46 GiB anonymous arena during fresh fills is structural staging (prompt-cache-spread + expert staging), freed at shutdown; the transient swap-out storms (peak 415 MB/s) are fill-phase collateral, not pathological.
+
+Serving state after restore: 192/220, 4983 slots / 220 MiB free, generation verified clean (finish=stop). Config committed. The hcq8trim fix binary (b2ca53c0) remains staged-unvalidated for the next window.
