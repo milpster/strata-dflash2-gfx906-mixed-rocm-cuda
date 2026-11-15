@@ -5,7 +5,10 @@ set -u
 R=/mnt/srcds/Strata
 L=${1:?launcher}; TAG=${2:-boot}
 bash $R/stop-all.sh >/dev/null 2>&1; sleep 4
-( cd $R && setsid nohup "$L" > logs/lane-$TAG.log 2>&1 < /dev/null & )
+# setsid --fork: the launcher is orphaned at once (new session, reparented to the subreaper) —
+# never a waitable child of this script. The 15:33 incident: a plain `( ... & )` left the pair
+# supervisor reparented under lane_boot and the script hung in do_wait forever.
+( cd $R && setsid --fork "$L" > logs/lane-$TAG.log 2>&1 < /dev/null )
 RD=""
 for i in $(seq 1 90); do
   S=$(ls -t $R/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-2026111*.log 2>/dev/null | grep -v -- '-helper' | head -1)

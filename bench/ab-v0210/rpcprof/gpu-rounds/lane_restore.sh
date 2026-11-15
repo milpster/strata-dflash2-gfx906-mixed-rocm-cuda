@@ -3,7 +3,7 @@
 set -u
 R=/mnt/srcds/Strata
 bash $R/stop-all.sh >/dev/null 2>&1; sleep 4
-( cd $R && setsid nohup ./launch-prod-ud-iq3xxs-dflash-w4-q4_0-mixed.sh > logs/prod-post-lane.log 2>&1 < /dev/null & )
+( cd $R && setsid --fork ./launch-prod-ud-iq3xxs-dflash-w4-q4_0-mixed.sh > logs/prod-post-lane.log 2>&1 < /dev/null )
 sleep 10
 RD=""
 for i in $(seq 1 90); do
