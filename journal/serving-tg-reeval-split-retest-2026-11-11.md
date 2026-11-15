@@ -3591,4 +3591,17 @@ Next discriminator (pending operator): the bistability must be bisected at boot 
 
 Prod restore to the canonical current-helper stack (H233R2) was launched at ~18:50 and was still in its ready-wait when this entry was drafted; the restore's completion line and smoke result are appended below once observed.
 
-H233R2 restore verified 18:50: ready line present, no-NaN smoke content `OK` finish `stop`, supervisor `attached`, live engine `36ecbe98`, live helper `553f3bf4` (canonical). Production is back on the unchanged champion stack; 18bk–18bm changed no config, no binary, no quality setting. No promotion, no config/binary change made at any point in 18bk–18bm.
+H233R2 restore verified 18:50: ready line present, no-NaN smoke content `OK` finish `stop`, supervisor `attached`, live engine `36ecbe98`, live helper `553f3bf4` (canonical). Production is back on the unchanged champion stack; 18bk–18bm changed no config, no binary, no quality setting.
+
+## Round 18bn — PRODCHECK3 on the canonical boot: 30.3 in band; fill-class/TG-class DECOUPLED (2026-11-15, 18:52–18:58)
+
+PRODCHECK3 (judges on the restored H233R2 boot itself — no restart, the exact stack now serving): fresh fill **366.4** (218.3 s, slowest of the day; its idle disk park also stretched to 12.4 s), boundary 219.9 (65.7 s, 401 gen / 18.0 tok/s), warm primary 79984+5 reused, **457 gen in 15.103 s = 30.3 tok/s — IN BAND**. Helper reqs 5558/35486 rows, zero timeouts. Perf capture PRODCHECK3-perf.data (106k samples, same 99 Hz).
+
+| boot | helper | fill | warm TG |
+|---|---|---:|---:|
+| H232B1 18:14 | old | 436.6 | **15.9** |
+| H233R1 18:25 | current | 457.0 | **31.0** |
+| H232B2 18:39 | old | 461.4 | **29.7** |
+| H233R2 18:50 (PRODCHECK3) | current | **366.4 (slow class)** | **30.3** |
+
+Two conclusions: (1) three consecutive in-band boots — the band flip-back at 18:25 is stable so far; (2) **the fill-speed/TG-class correlate is dead** — PRODCHECK3 pairs the day's slowest fill with an in-band warm TG, counter to H232B1's pairing. Fill bimodality (F7's subject) and the TG boot lottery are separate phenomena. The TG discriminator remains the boot-level bisection (reboot-loop, placement/foresight state sampling). Artifacts: `PRODCHECK3-{fill80k,tg80k}.json/`, `PRODCHECK3-engine.log`, `PRODCHECK3-perf.data`. No promotion, no config/binary change made at any point in 18bk–18bm.
