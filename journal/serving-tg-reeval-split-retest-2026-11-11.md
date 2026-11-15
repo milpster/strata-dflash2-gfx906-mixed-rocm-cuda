@@ -3408,3 +3408,7 @@ Serving state after restore: 192/220, 4983 slots / 220 MiB free, generation veri
 ## Round 18au — helper reserve 156 validated in isolation; +20 helper slots
 
 Helper-only cut (launcher --reserve-mib 220->156, ROCm held at its 192 floor): boot clean (ROCm side unchanged 4983/9.23 GiB/220 MiB), fill GPU-hot normal class, TG leg generated cleanly, explicit no-NaN check passed (finish=stop), NaN/503 scan empty. Helper fill: 3683 -> 3703 slots (+20, ~3.3 MiB/slot — exact arithmetic), 368 MiB free after fill; helper warns 156 < recommended 256. TG judges mid-band (warm 25.8, acc 71.8%; boundary 10.3 = known slow first-gen phase class). Net: helper 156 ADOPTED — the NaN disease was exclusively the ROCm card's 128 (154 MiB free, #879), not the helper's.
+
+## Round 18av — helper 92 falsified (no gain); final reserves 192/156
+
+Second helper cut (156->92, ROCm 192): clean boot/fill/TG/no-NaN — but helper fill identical to 156 (3703 slots, 368 MiB free after). The helper is assignment-bound at 3703 (its full share of the expert split), no longer capacity-bound; the extra 64 MiB bought nothing. Reverted to 156 (the last level that bought slots, +20 vs 220). Final reserve state: ROCm 192 (floor; 128 = NaN #879), helper 156 (assignment floor).
