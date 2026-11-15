@@ -3605,3 +3605,20 @@ PRODCHECK3 (judges on the restored H233R2 boot itself — no restart, the exact 
 | H233R2 18:50 (PRODCHECK3) | current | **366.4 (slow class)** | **30.3** |
 
 Two conclusions: (1) three consecutive in-band boots — the band flip-back at 18:25 is stable so far; (2) **the fill-speed/TG-class correlate is dead** — PRODCHECK3 pairs the day's slowest fill with an in-band warm TG, counter to H232B1's pairing. Fill bimodality (F7's subject) and the TG boot lottery are separate phenomena. The TG discriminator remains the boot-level bisection (reboot-loop, placement/foresight state sampling). Artifacts: `PRODCHECK3-{fill80k,tg80k}.json/`, `PRODCHECK3-engine.log`, `PRODCHECK3-perf.data`. No promotion, no config/binary change made at any point in 18bk–18bm.
+
+## Round 18bo — A2 sweep rerun COMPLETE on a quiet box (2026-11-15, 19:05–19:56)
+
+All 6 remaining arms back-to-back through the standard lane (variant launcher → boot-gate → 1 fresh fill + tg judges), canonical prod restored at 19:56:03 with smoke `OK`. Arms are single-knob env adds over the champion config; every boot verified through lane_boot; no subagents ran during the window (18be's contamination mode).
+
+| arm (env) | fill read | boundary read | warm TG | acceptance | notes |
+|---|---:|---:|---:|---|---|
+| A2Q8_PACKED (`STRATA_Q8_PACKED=1`) | 423.5→414.2 class | 252.5 | **26.9** | 339/480 | boundary first-gen 8.4 (known first-gen thrash, 18ao); 18be's "8.5 warm" reading confirmed as contention poison |
+| A2SH_STREAM (`STRATA_SH_STREAM=1`) | 423.5 | 245.9 | **28.1** | 276/416 | boundary first-gen 11.6 (same artifact class) |
+| A2TSUM (`STRATA_TSUM=1`) | 414.2 | 253.0 | **28.8** | 301/458 | clean |
+| A2LFUSE (`STRATA_LFUSE=1`) | 433.1 | 253.7 | **25.4** | 210/329 | clean |
+| A2PLE_BATCH (`STRATA_PLE_BATCH=1`) | 401.7 | 253.6 | **22.9** | 354/522 | fill-gen 9.7 / boundary-gen 16.6 (first-gen thrash); warm lowest of sweep |
+| A2MMVF_ROWS (`STRATA_MMVF_ROWS=1`) | (fill wall 183.9 s) | 254.0 | **42.2** | 378/423 (89.4%) | 515 gen in 12.217 s — far above the 26–34 band and the day's best champion boot (31.0) |
+
+Readings: five arms cluster 22.9–28.8 (in-band low-mid, one possible collapsed-class at PLE_BATCH); **MMVF_ROWS read 42.2 tok/s with 89.4% acceptance — +36% over the best same-day champion boot**. Records verified from the driver jsons (tg walls 98.6/37.5 s, mem normal-class: RSS 50.3 GiB peak, swap 7.6 GiB, VRAM maxima unchanged). Single-boot attribution discipline (18bb lesson) applies: 42.2 is a candidate, not a result — the boot lottery spans 22.9–31.0 within this very sweep, so the knob effect must be separated by repeat boots: MMVF ×2 + champion ×1 interleaved before any adoption talk, then the teacher-forced KL gate for the knob (it touches the verify rows path; bit-exactness is NOT to be assumed for it).
+
+Artifacts: `out/gpu-rounds-20261115/A2<ARM>-{fill80k,tg80k}.json/` ×6, sweep log in the a2_rest shell output. Prod: canonical champion stack serving since 19:56:03.

@@ -1,0 +1,33 @@
+{
+ "arm": "A2Q8_PACKED",
+ "leg": "tg80k",
+ "kind": "tg",
+ "ctx": 442400,
+ "max_tokens": 1024,
+ "ts": 1794766472.632,
+ "walls": [
+  148.928,
+  42.084
+ ],
+ "wall_s": 191.014,
+ "content_from": "content",
+ "prompt_bytes": 442400,
+ "sha256": "d01815b0cf89aab6f08a5dc02565100c613d4b31a72a3b52f01aeabc93500d71",
+ "elog": "/mnt/srcds/Strata/logs/engine-prod-ud-iq3xxs-v0233.log",
+ "elog_start": 2035491,
+ "elog_end": 2042997,
+ "hlog": "/mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261115-190614-2590398-helper.log",
+ "hlog_start": 1594,
+ "hlog_end": 1594,
+ "mem": {
+  "max_rss_mib": 49439,
+  "min_avail_mib": 15658,
+  "max_swap_used_mib": 9249,
+  "max_vram_mib": {
+   "card3": 16158,
+   "card4": 452,
+   "card2": 16357,
+   "nvidia0": 7447
+  }
+ }
+}
