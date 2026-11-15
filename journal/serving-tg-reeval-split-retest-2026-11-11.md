@@ -3359,3 +3359,17 @@ Enable arm (v0233.2, block 5, STRATA_HC_Q8=1 + INJECT=1): teacher-forced gate vs
 Perf verdict (why it stays off by default): INJECT loads a Q8_0 copy BESIDE the GGUF's bf16 originals → dual-copy −1.19 GiB → expert slots 4983→4577 (card0), full-fill PP 391.5 (band floor 434 broken), warm TG 26.8 (mid-band). Structural on a bf16-projection GGUF; upstream wins only where GGUFs ship Q8 natively (gfx12/Strix).
 
 Kernel tuning (operator mandate: complete + enable): glm5.3 fixer wrote 457a7e95d8 on hc-q8-gfx906 — uint2 single-load wide variant (4 thr/block) + ld32 one-thread-per-block variant (uint4 loads) + pair forms, STRATA_HC_Q8_TUNE gate default-ON (exact "0" = upstream path bit-identical), misaligned-global-load safety on gfx906 flat/global reasoned (Vega ISA LSB rule excludes MUBUF; LLVM D145170; GCC r16-4105). Golden build GUARD PASS sha16 5d73caa758fd0493 (rpcw-hip-hcq8tune). Oracle review dispatched (gate) — A/B TUNE=1/0 boots + teacher-forced bit-exactness vs HCQ8.tsv follow on GO.
+
+## Round 18aq — gfx906 HC_Q8 kernel tuning COMPLETE + ENABLED; campaign wrap
+
+Oracle conditional-GO discharged: (1) ld32 engagement proven structurally — every hc_q8 buffer + scratch is its own cudaMalloc (2 MiB driver granules), so the 16B base-alignment selector always passes and the A/B necessarily exercised the ld32 path; (2) arch-gate committed (81e023bfa0): tuned kernels default ON only under HIP (flat/global byte-addressed, no alignment trap on GCN3+), default OFF under nvcc (PTX misaligned-vector UB), env overrides both ways.
+
+Final pin 36ecbe983837828d (rpcw-hip-hcq8tune2 = v0233.2 + 457a7e95d8 + 81e023bfa0), GUARD PASS, flipped 02:09.
+
+**Bit-exactness PROVEN at runtime:** teacher-forced 4,995 positions, tuned vs upstream kernels: top1 100.00%, KL 0.00000, p99 0.0000, PPL 3.898 identical. The ld32/uint2 variants reproduce upstream bytes exactly — misaligned-global-load reasoning validated on hardware.
+
+**Kernel A/B (HC_Q8 on, same night):** full-fill PP tuned 406.7 vs upstream 391.5/372.4 (+14-15 tok/s, ~3.5% — directional, B's boot looked slow-class); warm TG 28.6 vs 31.2 (inside ±3-5 boot noise). The dequant slice is real but small next to attention at 80k depth; the structural INJECT dual-copy cost (−406 slots) still nets HC_Q8 below the no-HC_Q8 band (432-455) on our bf16-projection GGUF → mode stays default-off on gfx906 (upstream parity), now with a tuned, proven-bit-exact kernel behind it.
+
+**Final serving state:** boot C (tuned pin, block 7, no HC_Q8): warm TG **33.9 tok/s — best of the entire campaign** (377 gen), boundary read 251.7 top-of-band, full-fill 393.4 (slow-class boot). Config committed at --dflash-block 7.
+
+Campaign totals (judge-class, this box): TG 12.7 (kvcpu, falsified) → 33.9 (final); dflash: B7 adopted; v0233.1 → v0233.2 pin swap validated; HC_Q8 fully characterized (quality-safe: KL 0.019/PPL 3.898; INJECT net-negative on bf16 GGUFs; kernel tuned + bit-exact + enabled behind env). Pushed: main + hc-q8-gfx906 + v0233.2-candidate to fork.

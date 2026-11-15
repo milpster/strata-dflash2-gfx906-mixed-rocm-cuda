@@ -50,7 +50,7 @@
     "--dflash",
     "/mnt/srcds/dflash2/artifacts/inco-dflash2-q4_0.gguf",
     "--dflash-block",
-    "5",
+    "7",
     "--suffix-draft",
     "0",
     "--expert-helper-slots",
