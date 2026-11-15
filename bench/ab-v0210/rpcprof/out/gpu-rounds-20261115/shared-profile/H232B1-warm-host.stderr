@@ -1,0 +1,94 @@
+  Error: unknown option `time'
+
+ Usage: perf annotate [<options>]
+
+    -C, --cpu <cpu>       list of cpus to profile
+    -d, --dsos <dso[,dso...]>
+                          only consider symbols in these dsos
+    -D, --dump-raw-trace  dump raw trace in ASCII
+    -f, --force           don't complain, do it
+    -i, --input <file>    input file name
+    -k, --vmlinux <file>  vmlinux pathname
+    -l, --print-line      print matching source lines (may be slow)
+    -M, --disassembler-style <disassembler style>
+                          Specify disassembler style (e.g. -M intel for intel syntax)
+    -m, --modules         load module symbols - WARNING: use only with -k and LIVE kernel
+    -n, --show-nr-samples
+                          Show a column with the number of samples
+    -P, --full-paths      Don't shorten the displayed pathnames
+    -q, --quiet           do now show any warnings or messages
+    -s, --symbol <symbol>
+                          symbol to annotate
+    -v, --verbose         be more verbose (show symbol address, etc)
+        --addr2line <path>
+                          addr2line binary to use for line numbers
+        --asm-raw         Display raw encoding of assembly instructions (default)
+        --data-type[=<name>]
+                          Show data type annotate for the memory accesses
+        --demangle        Enable symbol demangling
+        --demangle-kernel
+                          Enable kernel symbol demangling
+        --group           Show event group information together
+        --ignore-vmlinux  don't load vmlinux even if found
+        --insn-stat       Show instruction stats for the data type annotation
+        --itrace[=<opts>]
+                          Instruction Tracing options
+				i[period]:    		synthesize instructions events
+				y[period]:    		synthesize cycles events (same period as i)
+				b:	    		synthesize branches events
+				c:	    		synthesize branches events (calls only)
+				r:	    		synthesize branches events (returns only)
+				x:	    		synthesize transactions events
+				w:	    		synthesize ptwrite events
+				p:	    		synthesize power events
+				o:			synthesize other events recorded due to the use
+							of aux-output (refer to perf record)
+				I:			synthesize interrupt or similar (asynchronous) events
+							(e.g. Intel PT Event Trace)
+				e[flags]:		synthesize error events
+							each flag must be preceded by + or -
+							error flags are: o (overflow)
+									 l (data lost)
+				d[flags]:		create a debug log
+							each flag must be preceded by + or -
+							log flags are: a (all perf events)
+							               o (output to stdout)
+				f:	    		synthesize first level cache events
+				m:	    		synthesize last level cache events
+				t:	    		synthesize TLB events
+				a:	    		synthesize remote access events
+				g[len]:     		synthesize a call chain (use with i or x)
+				G[len]:			synthesize a call chain on existing event records
+				l[len]:     		synthesize last branch entries (use with i or x)
+				L[len]:			synthesize last branch entries on existing event records
+				sNUMBER:    		skip initial number of events
+				q:			quicker (less detailed) decoding
+				A:			approximate IPC
+				Z:			prefer to ignore timestamps (so-called "timeless" decoding)
+				T:			use the timestamp trace as kernel time
+				PERIOD[ns|us|ms|i|t]:   specify period to sample stream
+				concatenate multiple options. Default is iybxwpe or cewp
+
+        --objdump <path>  objdump binary to use for disassembly and annotations
+        --percent-limit <percent>
+                          Don't show entries under that percent
+        --percent-type <local-period>
+                          Set percent type local/global-period/hits
+        --prefix <prefix>
+                          Add prefix to source file path names in programs (with --prefix-strip)
+        --prefix-strip <N>
+                          Strip first N entries of source file path name in programs (with --prefix)
+        --show-total-period
+                          Show a column with the sum of periods
+        --skip-empty      Do not display empty (or dummy) events in the output
+        --skip-missing    Skip symbols that cannot be annotated
+        --source          Interleave source code with assembly code (default)
+        --stdio           Use the stdio interface
+        --stdio-color <mode>
+                          'always' (default), 'never' or 'auto' only applicable to --stdio mode
+        --stdio2          Use the stdio interface
+        --symfs <directory>
+                          Look for files with symbols relative to this directory
+        --tui             Use the TUI interface
+        --type-stat       Show stats for the data type annotation
+

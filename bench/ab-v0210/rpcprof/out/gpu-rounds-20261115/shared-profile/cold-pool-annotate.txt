@@ -1,0 +1,180 @@
+ Percent |	Source code & Disassembly of strata for cpu-clock:u (12630 samples, percent: local period)
+----------------------------------------------------------------------------------------------------------
+         :
+         :
+         :
+         : 3       Disassembly of section .text:
+         :
+         : 5       00000000029737e0 <strata::kernels::cpu::ExpertPool::worker(int)>:
+    0.00 :   29737e0:        endbr64
+    0.00 :   29737e4:        push   %r15
+    0.00 :   29737e6:        lea    0x4540(%rdi),%rax
+    0.00 :   29737ed:        mov    %rdi,%r15
+    0.00 :   29737f0:        push   %r14
+    0.00 :   29737f2:        push   %r13
+    0.00 :   29737f4:        push   %r12
+    0.00 :   29737f6:        push   %rbp
+    0.00 :   29737f7:        push   %rbx
+    0.00 :   29737f8:        sub    $0x68,%rsp
+    0.00 :   29737fc:        mov    %esi,0x3c(%rsp)
+    0.00 :   2973800:        mov    %fs:0x28,%rcx
+    0.00 :   2973809:        mov    %rcx,0x58(%rsp)
+    0.00 :   297380e:        movslq %esi,%rcx
+    0.00 :   2973811:        mov    0x4708(%rdi),%esi
+    0.00 :   2973817:        mov    %rcx,0x30(%rsp)
+    0.00 :   297381c:        lea    0x0(,%rcx,4),%r14
+    0.00 :   2973824:        test   %esi,%esi
+    0.00 :   2973826:        jle    2973846 <strata::kernels::cpu::ExpertPool::worker(int)+0x66>
+    0.00 :   2973828:        mov    0x4710(%rdi),%rax
+    0.00 :   297382f:        movslq (%rax,%rcx,4),%rax
+    0.00 :   2973833:        lea    (%rax,%rax,4),%rax
+    0.00 :   2973837:        shl    $0x6,%rax
+    0.00 :   297383b:        add    0x4700(%rdi),%rax
+    0.00 :   2973842:        sub    $0xffffffffffffff80,%rax
+    0.00 :   2973846:        lock addl $0x1,(%rax)
+    0.00 :   297384a:        xor    %r12d,%r12d
+    0.00 :   297384d:        lea    0x4608(%r15),%rax
+    0.00 :   2973854:        lea    0x4580(%r15),%r13
+    0.00 :   297385b:        mov    %rax,0x28(%rsp)
+    0.00 :   2973860:        lea    0x40(%rsp),%rax
+    0.00 :   2973865:        mov    %rax,0x18(%rsp)
+    0.00 :   297386a:        call   2f36a50 <std::chrono::_V2::steady_clock::now()@plt>
+    0.00 :   297386f:        mov    %rax,0x20(%rsp)
+    0.00 :   2973874:        movzbl 0x628735(%rip),%eax        # 2f9bfb0 <guard variable for strata::kernels::cpu::(anonymous namespace)::umwait_cycles()::c>
+    0.00 :   297387b:        test   %al,%al
+    0.00 :   297387d:        je     2973aa0 <strata::kernels::cpu::ExpertPool::worker(int)+0x2c0>
+    0.00 :   2973883:        xor    %ebx,%ebx
+    0.00 :   2973885:        lea    0x4600(%r15),%rbp
+    0.00 :   297388c:        nopl   0x0(%rax)
+    0.00 :   2973890:        mov    0x0(%r13),%eax
+    5.21 :   2973894:        cmp    %r12d,%eax
+    1.34 :   2973897:        jne    2973980 <strata::kernels::cpu::ExpertPool::worker(int)+0x1a0>
+    0.00 :   297389d:        lea    0x45c0(%r15),%rax
+    0.00 :   29738a4:        mov    %rax,0x8(%rsp)
+    0.11 :   29738a9:        movzbl 0x45c0(%r15),%eax
+    0.78 :   29738b1:        test   %al,%al
+    0.27 :   29738b3:        jne    2973a78 <strata::kernels::cpu::ExpertPool::worker(int)+0x298>
+    0.00 :   29738b9:        pause
+   15.24 :   29738bb:        add    $0x1,%ebx
+   75.75 :   29738be:        test   $0x3ff,%ebx
+    1.27 :   29738c4:        jne    2973890 <strata::kernels::cpu::ExpertPool::worker(int)+0xb0>
+    0.00 :   29738c6:        call   2f36a50 <std::chrono::_V2::steady_clock::now()@plt>
+    0.00 :   29738cb:        mov    0x20(%rsp),%rcx
+    0.00 :   29738d0:        imul   $0x3e8,0x4660(%r15),%rdx
+    0.02 :   29738db:        sub    %rcx,%rax
+    0.00 :   29738de:        cmp    %rax,%rdx
+    0.00 :   29738e1:        jg     2973890 <strata::kernels::cpu::ExpertPool::worker(int)+0xb0>
+    0.00 :   29738e3:        mov    0x28(%rsp),%rax
+    0.00 :   29738e8:        movb   $0x0,0x48(%rsp)
+    0.00 :   29738ed:        mov    %rax,%rdi
+    0.00 :   29738f0:        mov    %rax,0x40(%rsp)
+    0.00 :   29738f5:        call   2f36ce0 <pthread_mutex_lock@plt>
+    0.00 :   29738fa:        test   %eax,%eax
+    0.00 :   29738fc:        jne    297c438 <strata::kernels::cpu::ExpertPool::worker(int) [clone .cold]>
+    0.00 :   2973902:        mov    0x4498(%r15),%rax
+    0.00 :   2973909:        movb   $0x1,0x48(%rsp)
+    0.00 :   297390e:        movl   $0xfffffffe,(%rax,%r14,1)
+    0.00 :   2973916:        lock addl $0x1,0x0(%rbp)
+    0.00 :   297391b:        lea    0x4630(%r15),%rax
+    0.00 :   2973922:        mov    %rax,0x10(%rsp)
+    0.00 :   2973927:        nopw   0x0(%rax,%rax,1)
+    0.00 :   2973930:        mov    0x0(%r13),%eax
+    0.00 :   2973934:        cmp    %eax,%r12d
+    0.00 :   2973937:        je     2973a50 <strata::kernels::cpu::ExpertPool::worker(int)+0x270>
+    0.00 :   297393d:        lock subl $0x1,0x0(%rbp)
+    0.00 :   2973942:        mov    0x4498(%r15),%rax
+    0.00 :   2973949:        movl   $0xffffffff,(%rax,%r14,1)
+    0.00 :   2973951:        cmpb   $0x0,0x48(%rsp)
+    0.00 :   2973956:        je     2973890 <strata::kernels::cpu::ExpertPool::worker(int)+0xb0>
+    0.00 :   297395c:        mov    0x40(%rsp),%rdi
+    0.00 :   2973961:        test   %rdi,%rdi
+    0.00 :   2973964:        je     2973890 <strata::kernels::cpu::ExpertPool::worker(int)+0xb0>
+    0.00 :   297396a:        call   2f36d00 <pthread_mutex_unlock@plt>
+    0.00 :   297396f:        mov    0x0(%r13),%eax
+    0.00 :   2973973:        cmp    %r12d,%eax
+    0.00 :   2973976:        je     297389d <strata::kernels::cpu::ExpertPool::worker(int)+0xbd>
+    0.00 :   297397c:        nopl   0x0(%rax)
+    0.00 :   2973980:        movzbl 0x45c0(%r15),%eax
+    0.00 :   2973988:        test   %al,%al
+    0.00 :   297398a:        jne    2973a78 <strata::kernels::cpu::ExpertPool::worker(int)+0x298>
+    0.00 :   2973990:        mov    0x0(%r13),%r12d
+    0.00 :   2973994:        lea    0x4540(%r15),%rax
+    0.00 :   297399b:        mov    0x4708(%r15),%ecx
+    0.00 :   29739a2:        test   %ecx,%ecx
+    0.00 :   29739a4:        jle    29739c4 <strata::kernels::cpu::ExpertPool::worker(int)+0x1e4>
+    0.00 :   29739a6:        mov    0x4710(%r15),%rax
+    0.00 :   29739ad:        movslq (%rax,%r14,1),%rax
+    0.00 :   29739b1:        lea    (%rax,%rax,4),%rax
+    0.00 :   29739b5:        shl    $0x6,%rax
+    0.00 :   29739b9:        add    0x4700(%r15),%rax
+    0.00 :   29739c0:        sub    $0xffffffffffffff80,%rax
+    0.00 :   29739c4:        lock subl $0x1,(%rax)
+    0.01 :   29739c8:        mov    0x4498(%r15),%rax
+    0.00 :   29739cf:        movl   $0xfffffffd,(%rax,%r14,1)
+    0.00 :   29739d7:        mov    %r12d,%ecx
+    0.00 :   29739da:        mov    %r15,%rdi
+    0.00 :   29739dd:        mov    0x30(%rsp),%rax
+    0.00 :   29739e2:        mov    0x3c(%rsp),%esi
+    0.00 :   29739e6:        mov    %rax,%rdx
+    0.00 :   29739e9:        shl    $0x4,%rdx
+    0.00 :   29739ed:        add    %rax,%rdx
+    0.00 :   29739f0:        shl    $0xa,%rdx
+    0.00 :   29739f4:        add    0x4680(%r15),%rdx
+    0.00 :   29739fb:        call   2972a30 <strata::kernels::cpu::ExpertPool::drain(int, strata::kernels::cpu::ExpertScratch&, unsigned int)>
+    0.00 :   2973a00:        mov    0x4498(%r15),%rax
+    0.00 :   2973a07:        movl   $0xffffffff,(%rax,%r14,1)
+    0.00 :   2973a0f:        lea    0x4540(%r15),%rax
+    0.00 :   2973a16:        mov    0x4708(%r15),%edx
+    0.00 :   2973a1d:        test   %edx,%edx
+    0.00 :   2973a1f:        jle    2973a3f <strata::kernels::cpu::ExpertPool::worker(int)+0x25f>
+    0.00 :   2973a21:        mov    0x4710(%r15),%rax
+    0.00 :   2973a28:        movslq (%rax,%r14,1),%rax
+    0.00 :   2973a2c:        lea    (%rax,%rax,4),%rax
+    0.00 :   2973a30:        shl    $0x6,%rax
+    0.00 :   2973a34:        add    0x4700(%r15),%rax
+    0.00 :   2973a3b:        sub    $0xffffffffffffff80,%rax
+    0.00 :   2973a3f:        lock addl $0x1,(%rax)
+    0.01 :   2973a43:        jmp    297386a <strata::kernels::cpu::ExpertPool::worker(int)+0x8a>
+    0.00 :   2973a48:        nopl   0x0(%rax,%rax,1)
+    0.00 :   2973a50:        mov    0x8(%rsp),%rax
+    0.00 :   2973a55:        movzbl (%rax),%eax
+    0.00 :   2973a58:        test   %al,%al
+    0.00 :   2973a5a:        jne    297393d <strata::kernels::cpu::ExpertPool::worker(int)+0x15d>
+    0.00 :   2973a60:        mov    0x18(%rsp),%rsi
+    0.00 :   2973a65:        mov    0x10(%rsp),%rdi
+    0.00 :   2973a6a:        call   2f37210 <std::condition_variable::wait(std::unique_lock<std::mutex>&)@plt>
+    0.00 :   2973a6f:        jmp    2973930 <strata::kernels::cpu::ExpertPool::worker(int)+0x150>
+    0.00 :   2973a74:        nopl   0x0(%rax)
+    0.00 :   2973a78:        mov    0x58(%rsp),%rax
+    0.00 :   2973a7d:        sub    %fs:0x28,%rax
+    0.00 :   2973a86:        jne    2973aef <strata::kernels::cpu::ExpertPool::worker(int)+0x30f>
+    0.00 :   2973a88:        add    $0x68,%rsp
+    0.00 :   2973a8c:        pop    %rbx
+    0.00 :   2973a8d:        pop    %rbp
+    0.00 :   2973a8e:        pop    %r12
+    0.00 :   2973a90:        pop    %r13
+    0.00 :   2973a92:        pop    %r14
+    0.00 :   2973a94:        pop    %r15
+    0.00 :   2973a96:        ret
+    0.00 :   2973a97:        nopw   0x0(%rax,%rax,1)
+    0.00 :   2973aa0:        lea    0x628509(%rip),%rbx        # 2f9bfb0 <guard variable for strata::kernels::cpu::(anonymous namespace)::umwait_cycles()::c>
+    0.00 :   2973aa7:        mov    %rbx,%rdi
+    0.00 :   2973aaa:        call   2f36830 <__cxa_guard_acquire@plt>
+    0.00 :   2973aaf:        test   %eax,%eax
+    0.00 :   2973ab1:        je     2973883 <strata::kernels::cpu::ExpertPool::worker(int)+0xa3>
+    0.00 :   2973ab7:        lea    -0x270ec43(%rip),%rdi        # 264e7b <_IO_stdin_used+0x59977>
+    0.00 :   2973abe:        call   2f36810 <getenv@plt>
+    0.00 :   2973ac3:        mov    %rax,%rdi
+    0.00 :   2973ac6:        test   %rax,%rax
+    0.00 :   2973ac9:        je     2973ad7 <strata::kernels::cpu::ExpertPool::worker(int)+0x2f7>
+    0.00 :   2973acb:        mov    $0xa,%edx
+    0.00 :   2973ad0:        xor    %esi,%esi
+    0.00 :   2973ad2:        call   2f369f0 <__isoc23_strtoll@plt>
+    0.00 :   2973ad7:        movq   $0x0,0x6284d6(%rip)        # 2f9bfb8 <strata::kernels::cpu::(anonymous namespace)::umwait_cycles()::c>
+    0.00 :   2973ae2:        mov    %rbx,%rdi
+    0.00 :   2973ae5:        call   2f36840 <__cxa_guard_release@plt>
+    0.00 :   2973aea:        jmp    2973883 <strata::kernels::cpu::ExpertPool::worker(int)+0xa3>
+    0.00 :   2973aef:        call   2f36900 <__stack_chk_fail@plt>
+    0.00 :   2973af4:        endbr64
+    0.00 :   2973af8:        mov    %rax,%rbx
+    0.00 :   2973afb:        jmp    297c454 <strata::kernels::cpu::ExpertPool::worker(int) [clone .cold]+0x1c>

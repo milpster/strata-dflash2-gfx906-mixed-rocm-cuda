@@ -3622,3 +3622,9 @@ All 6 remaining arms back-to-back through the standard lane (variant launcher �
 Readings: five arms cluster 22.9–28.8 (in-band low-mid, one possible collapsed-class at PLE_BATCH); **MMVF_ROWS read 42.2 tok/s with 89.4% acceptance — +36% over the best same-day champion boot**. Records verified from the driver jsons (tg walls 98.6/37.5 s, mem normal-class: RSS 50.3 GiB peak, swap 7.6 GiB, VRAM maxima unchanged). Single-boot attribution discipline (18bb lesson) applies: 42.2 is a candidate, not a result — the boot lottery spans 22.9–31.0 within this very sweep, so the knob effect must be separated by repeat boots: MMVF ×2 + champion ×1 interleaved before any adoption talk, then the teacher-forced KL gate for the knob (it touches the verify rows path; bit-exactness is NOT to be assumed for it).
 
 Artifacts: `out/gpu-rounds-20261115/A2<ARM>-{fill80k,tg80k}.json/` ×6, sweep log in the a2_rest shell output. Prod: canonical champion stack serving since 19:56:03.
+
+## Round 18bp — MMVF_ROWS confirmation: 42.2 does NOT reproduce; knob falsified (2026-11-15, 19:58–20:23)
+
+Triplet on fresh arm labels (same-arm reruns would restore from the conversation disk tier and measure nothing): MMVF2 29.8 (acc 324/514 = 63.0%) · CTRL2 champion control 26.7 (192/309 = 62.1%) · MMVF3 29.3 (349/481 = 72.6%). With the sweep's A2MMVF_ROWS 42.2 (89.4% acc) as sample 1, the knob's repeats sit inside the champion class — the outlier boot paired an unusually high acceptance with its speed, i.e. a lucky trajectory (more accepted drafts per window), not a mechanism. **VERDICT: MMVF_ROWS NO-ADOPT — no measurable effect; the 42.2 is a boot-lottery draw.** No KL gate run: nothing adopted. The A2 sweep is now fully adjudicated: all six knobs NO-ADOPT.
+
+Prod restored 20:23:18, smoke `OK`. Artifacts: `MMVF2/CTRL2/MMVF3-{fill80k,tg80k}.json/` + `-judges.log` under out/gpu-rounds-20261115/, script `mmvf_confirm.sh`. Next queue item: DET (det_mtmin.sh).

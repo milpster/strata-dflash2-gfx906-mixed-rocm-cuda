@@ -1,0 +1,25 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 3K of event 'cpu-clock:u' (time slices: 3990,4000)
+# Event count (approx.): 36525252160
+#
+# Overhead  Command          Shared Object                   Symbol                                                                                                                                                                                                                    
+# ........  ...............  ..............................  ..........................................................................................................................................................................................................................
+#
+    18.92%  strata-host      strata                          [.] strata::core::Verifier::run(int, int const*, long, void (*)(void*, float const*, int const*, long, long, float*, long), void*, int*, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >&)
+     9.43%  strata-pool-4    strata                          [.] strata::kernels::cpu::ExpertPool::worker(int)
+     9.35%  strata-pool-1    strata                          [.] strata::kernels::cpu::ExpertPool::worker(int)
+     9.35%  strata-pool-5    strata                          [.] strata::kernels::cpu::ExpertPool::worker(int)
+     9.32%  strata-pool-2    strata                          [.] strata::kernels::cpu::ExpertPool::worker(int)
+     9.32%  strata-pool-3    strata                          [.] strata::kernels::cpu::ExpertPool::worker(int)
+     9.26%  strata-pool-0    strata                          [.] strata::kernels::cpu::ExpertPool::worker(int)
+     9.21%  strata-pool-6    strata                          [.] strata::kernels::cpu::ExpertPool::worker(int)
+     2.10%  strata-lookahea  strata                          [.] strata::kernels::cpu::bf16_rows_dot_multi(unsigned short const*, int, int, float const*, int, float*)
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#
