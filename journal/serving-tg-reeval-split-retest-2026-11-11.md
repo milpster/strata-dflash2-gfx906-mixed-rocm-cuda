@@ -3589,4 +3589,6 @@ Raw shas per arm: H232B1 55a8c518…, H232B2 f8a8387d…, H233R1 a4b6ada6… (ea
 
 Next discriminator (pending operator): the bistability must be bisected at boot level — e.g. reboot-loop the SAME config N times scoring warm TG per boot, sampling per-boot placement/fill/page-cache state, to catch a fast-vs-slow boot pair same-config and diff their state at rest. F7c instrumentation (already approved first in the P0 plan) is exactly the tool for the fill-side correlate.
 
-Prod restore to the canonical current-helper stack (H233R2) was launched at ~18:50 and was still in its ready-wait when this entry was drafted; the restore's completion line and smoke result are appended below once observed. No promotion, no config/binary change made at any point in 18bk–18bm.
+Prod restore to the canonical current-helper stack (H233R2) was launched at ~18:50 and was still in its ready-wait when this entry was drafted; the restore's completion line and smoke result are appended below once observed.
+
+H233R2 restore verified 18:50: ready line present, no-NaN smoke content `OK` finish `stop`, supervisor `attached`, live engine `36ecbe98`, live helper `553f3bf4` (canonical). Production is back on the unchanged champion stack; 18bk–18bm changed no config, no binary, no quality setting. No promotion, no config/binary change made at any point in 18bk–18bm.
