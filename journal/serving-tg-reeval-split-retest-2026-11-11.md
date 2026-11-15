@@ -3373,3 +3373,9 @@ Final pin 36ecbe983837828d (rpcw-hip-hcq8tune2 = v0233.2 + 457a7e95d8 + 81e023bf
 **Final serving state:** boot C (tuned pin, block 7, no HC_Q8): warm TG **33.9 tok/s — best of the entire campaign** (377 gen), boundary read 251.7 top-of-band, full-fill 393.4 (slow-class boot). Config committed at --dflash-block 7.
 
 Campaign totals (judge-class, this box): TG 12.7 (kvcpu, falsified) → 33.9 (final); dflash: B7 adopted; v0233.1 → v0233.2 pin swap validated; HC_Q8 fully characterized (quality-safe: KL 0.019/PPL 3.898; INJECT net-negative on bf16 GGUFs; kernel tuned + bit-exact + enabled behind env). Pushed: main + hc-q8-gfx906 + v0233.2-candidate to fork.
+
+## Round 18ar — CORRECTION: the GGUF ships Q8_0 hc projections natively; INJECT was unnecessary
+
+Header parse of the IQ3_XXS shards (new tool: quality/gguf_tensor_types.py; tensors live in shard 2-4, shard 1 is metadata-only) shows every hyper-connection projection — output_hc_*, blk.*.hc_attn_down/up, blk.*.hc_ffn_down/up, [10240,320]/[320,10240] — is ALREADY Q8_0 in the GGUF. This falsifies 18ap/18aq's root-cause claim that INJECT was forced by a bf16 GGUF: the arm set STRATA_HC_Q8_INJECT=1 unnecessarily, and the observed -1.19 GiB / -406 expert slots was the INJECT dual-copy artifact, not a structural property of native HC_Q8.
+
+Corrected model of the mode: OFF = dequant hc projections to bf16 at load (2x VRAM, zero per-use cost); ON-native = keep the GGUF's own Q8_0 bytes (half VRAM -> MORE expert slots) paying per-use dequant — exactly the kernel tuned and proven bit-exact in 18aq. Native arm launched (HC_Q8=1 only, no INJECT, tuned pin 36ecbe98): slots banner + judges + sha 3x + teacher-forced qqHCQ8N vs A/HCQ8/NIGHT. If slots rise and judges hold, HC_Q8=1 becomes the serving default with the tuned kernel load-bearing.
