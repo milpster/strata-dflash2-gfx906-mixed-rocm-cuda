@@ -1,0 +1,67 @@
+
+This GDB supports auto-downloading debuginfo from the following URLs:
+  <https://debuginfod.ubuntu.com>
+Enable debuginfod for this session? (y or [n]) [answered N; input not from terminal]
+Debuginfod has been disabled.
+To make this setting permanent, add 'set debuginfod enabled off' to .gdbinit.
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib/x86_64-linux-gnu/libthread_db.so.1".
+process 920101 is executing new program: /usr/bin/env
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib/x86_64-linux-gnu/libthread_db.so.1".
+process 920101 is executing new program: /usr/bin/bash
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib/x86_64-linux-gnu/libthread_db.so.1".
+process 920101 is executing new program: /usr/bin/env
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib/x86_64-linux-gnu/libthread_db.so.1".
+process 920101 is executing new program: /mnt/srcds/Strata/v0236p0/rpcw-hip/strata
+Function(s) ^std::(move|forward|as_const|(__)?addressof) will be skipped when stepping.
+Function(s) ^std::(shared|unique)_ptr<.*>::(get|operator) will be skipped when stepping.
+Function(s) ^std::(basic_string|vector|array|deque|(forward_)?list|(unordered_|flat_)?(multi)?(map|set)|span)<.*>::(c?r?(begin|end)|front|back|data|size|empty) will be skipped when stepping.
+Function(s) ^std::(basic_string|vector|array|deque|span)<.*>::operator.] will be skipped when stepping.
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib/x86_64-linux-gnu/libthread_db.so.1".
+[New Thread 0x7fff441ff6c0 (LWP 920332)]
+[New Thread 0x7fff439fe6c0 (LWP 920333)]
+[Thread 0x7fff439fe6c0 (LWP 920333) exited]
+[New Thread 0x7ffbd99ff6c0 (LWP 921284)]
+[New Thread 0x7ffbd91fe6c0 (LWP 921285)]
+[New Thread 0x7ffbd89fd6c0 (LWP 921286)]
+[New Thread 0x7ffbd81fc6c0 (LWP 921287)]
+[New Thread 0x7ffbd79fb6c0 (LWP 921288)]
+[New Thread 0x7ffbd71fa6c0 (LWP 921289)]
+[New Thread 0x7ffbd69f96c0 (LWP 921290)]
+[New Thread 0x7ffbd61f86c0 (LWP 921291)]
+[New Thread 0x7ffbd59f76c0 (LWP 921292)]
+[New Thread 0x7ffbd51f66c0 (LWP 921293)]
+[New Thread 0x7ffbd49f56c0 (LWP 921294)]
+[New Thread 0x7ffbd41f46c0 (LWP 921295)]
+[New Thread 0x7ffbd39f36c0 (LWP 921296)]
+[New Thread 0x7ffbd31f26c0 (LWP 921297)]
+[New Thread 0x7ffbd29f16c0 (LWP 921298)]
+[New Thread 0x7ffbd21f06c0 (LWP 921299)]
+[New Thread 0x7ffbc6bed6c0 (LWP 921300)]
+[New Thread 0x7ffbc4bff6c0 (LWP 922565)]
+[New Thread 0x7ffb87fff6c0 (LWP 922566)]
+[New Thread 0x7ffb86ffb6c0 (LWP 922567)]
+[New Thread 0x7ffb85ff76c0 (LWP 922568)]
+[New Thread 0x7ffb84ff36c0 (LWP 922569)]
+[Thread 0x7ffb86ffb6c0 (LWP 922567) exited]
+[Thread 0x7ffb84ff36c0 (LWP 922569) exited]
+[Thread 0x7ffb85ff76c0 (LWP 922568) exited]
+[Thread 0x7ffb87fff6c0 (LWP 922566) exited]
+[Thread 0x7ffbc4bff6c0 (LWP 922565) exited]
+[New Thread 0x7ffb84ff36c0 (LWP 927873)]
+[New Thread 0x7ffb85ff76c0 (LWP 927874)]
+[New Thread 0x7ffb86ffb6c0 (LWP 927875)]
+[New Thread 0x7ffb87fff6c0 (LWP 927876)]
+[New Thread 0x7ffbc4bff6c0 (LWP 927877)]
+[New Thread 0x7ffb877fe6c0 (LWP 927878)]
+[New Thread 0x7ffb867fa6c0 (LWP 927879)]
+[New Thread 0x7ffb547ff6c0 (LWP 927986)]
+[New Thread 0x7ffb53ffe6c0 (LWP 927987)]
+[New Thread 0x7ffb537fd6c0 (LWP 927988)]
+[New Thread 0x7ffb52ffc6c0 (LWP 927989)]
+[New Thread 0x7ffb239ff6c0 (LWP 928002)]
+[New Thread 0x7ffb231fe6c0 (LWP 928003)]

@@ -1,0 +1,58 @@
+=== diag267 drive forensics Mon Nov 16 17:19:41 2026 class=request pid=842738 ===
+842738 strata-host state=Z wchan=0
+--- kfd:
+
+--- log tail:
+de48913c0 window 0 step 44 layer 44 aux 1 | seq 45 flag 44 A 45 B 45
+     17299.4 RANG                 v0x7ffde48913c0 window 0 step 45 layer 45 aux 1136 | seq 46 flag 45 A 45 B 45
+     15396.2 SERVED               v0x7ffde48913c0 window 0 step 45 layer 45 aux 1 | seq 46 flag 45 A 46 B 46
+     14254.9 RANG                 v0x7ffde48913c0 window 0 step 46 layer 46 aux 1141 | seq 47 flag 46 A 46 B 46
+     12559.4 SERVED               v0x7ffde48913c0 window 0 step 46 layer 46 aux 1 | seq 47 flag 46 A 47 B 47
+     11225.5 RANG                 v0x7ffde48913c0 window 0 step 47 layer 47 aux 1333 | seq 48 flag 47 A 47 B 47
+      8989.1 SERVED               v0x7ffde48913c0 window 0 step 47 layer 47 aux 2 | seq 48 flag 47 A 48 B 48
+      8988.7 SYNC                 v0x7ffde48913c0 window 0 step -1 layer -1 aux 0 | seq 48 flag 48 A 48 B 48
+      5820.9 SYNCED               v0x7ffde48913c0 window 0 step -1 layer -1 aux 0 | seq 48 flag 48 A 48 B 48
+         0.5 WINDOW               v0x7ffde48913c0 window 1 step -1 layer -1 aux 85 | seq 0 flag 0 A 0 B 0
+         0.3 GATE-ENTER           v0x7ffde48913c0 window 1 step -1 layer -1 aux 0 | seq 0 flag 0 A 0 B 0
+         0.2 GATE-LEFT            v0x7ffde48913c0 window 1 step -1 layer -1 aux 0 | seq 0 flag 0 A 0 B 0
+         0.0 LAUNCH-ENTER         v0x7ffde48913c0 window 1 step -1 layer -1 aux 0 | seq 0 flag 0 A 0 B 0
+strata verify trace: GPU breadcrumbs (us after the window's first), the GPU got as far as layer 0:
+  layer 0 group 0: pre(0)=0.0 hc-read0(1)=243.5 qkv gemv(2)=461.6 conv(3)=473.9 ab(4)=555.2 z(5)=711.0 rec(6)=803.8 out-proj(16)=956.5 router+ring(17)=1273.4 shared(18)=1285.9 (32)=1161.4
+  thread 842738 strata-host: state S, wchan ?
+  thread 842871 strata: state S, wchan kfd_wait_on_events
+  thread 843693 strata: state S, wchan __futex_wait
+  thread 843694 strata: state S, wchan __futex_wait
+  thread 843695 strata: state S, wchan __futex_wait
+  thread 843696 strata: state S, wchan __futex_wait
+  thread 843697 strata: state S, wchan __futex_wait
+  thread 843698 strata: state S, wchan __futex_wait
+  thread 843699 strata: state S, wchan __futex_wait
+  thread 843700 strata: state S, wchan __futex_wait
+  thread 843701 strata: state S, wchan __futex_wait
+  thread 843702 strata: state S, wchan __futex_wait
+  thread 843703 strata: state S, wchan __futex_wait
+  thread 843704 strata: state S, wchan __futex_wait
+  thread 843705 strata: state S, wchan __futex_wait
+  thread 843706 strata: state S, wchan __futex_wait
+  thread 843707 strata: state S, wchan __futex_wait
+  thread 843708 strata: state S, wchan __futex_wait
+  thread 843709 strata: state S, wchan __futex_wait
+  thread 851556 strata-pool-0: state S, wchan __futex_wait
+  thread 851557 strata-pool-1: state S, wchan __futex_wait
+  thread 851558 strata-pool-2: state S, wchan __futex_wait
+  thread 851559 strata-pool-3: state S, wchan __futex_wait
+  thread 851560 strata-pool-4: state S, wchan __futex_wait
+  thread 851561 strata-pool-5: state S, wchan __futex_wait
+  thread 851562 strata-pool-6: state S, wchan __futex_wait
+  thread 851563 strata-stage: state S, wchan __futex_wait
+  thread 851564 strata-stage: state S, wchan __futex_wait
+  thread 851565 strata-stage: state S, wchan __futex_wait
+  thread 851566 strata-stage: state S, wchan __futex_wait
+  thread 851794 strata-stdin: state S, wchan anon_pipe_read
+  thread 851795 strata-watchdog: state R, wchan ?
+  threads waiting on the disk (state D): 0 of 32
+  memory: 48293 MiB resident, 632 MiB in swap, 8549 MiB RAM available; 3784 major page faults so far
+  #267 KFD: evicted_ms unreadable this pass; /sys/class/kfd/kfd/proc/842738: vram_1815 vram_54121 stats_54121 counters_1815 counters_18093 sdma_54121 stats_1815 sdma_1815 pasid queues counters_54121 vram_18093 stats_18093 sdma_18093
+#267 release: cs_ first query 2170 ms (returned done), drain 114 ms
+#267 release: copy_ first query 9 ms (returned done), drain 0 ms
+strata: released the verify window's GPU waits (#267): the GPU finished in 2295 ms

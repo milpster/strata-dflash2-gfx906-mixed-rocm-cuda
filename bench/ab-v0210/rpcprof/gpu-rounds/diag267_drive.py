@@ -9,7 +9,7 @@ import json, os, queue, signal, subprocess, sys, threading, time
 OUT = sys.argv[1]
 os.makedirs(OUT, exist_ok=True)
 CFG = "/mnt/srcds/Strata/bench/ab-v0210/quality/diag267.json"
-IDS = sys.argv[2] if len(sys.argv) > 2 else "/mnt/srcds/Strata/data/wikitext2/set.ids.json"
+IDS = sys.argv[2] if len(sys.argv) > 2 else "/mnt/srcds/Strata/data/quant_quality/wikitext2/set.ids.json"
 DRV = os.path.join(OUT, "driver.log")
 
 def log(m):
