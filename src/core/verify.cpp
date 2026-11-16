@@ -18,6 +18,7 @@
 #include "strata/core/pin_budget.hpp"
 #include "strata/core/penalty_hist_stage.hpp"
 #include "strata/core/sampler_mapped.hpp"
+#include "strata/core/expert_helper_xq_ring.hpp"
 #include "strata/core/vram_guard.hpp"
 #if defined(STRATA_VERIFY_HGL)
 #include "strata/core/host_graph_launch.hpp"
@@ -786,7 +787,7 @@ Verifier::~Verifier() {
     if (hcount_d_) cudaFree(hcount_d_);
     void* hosts[] = {h_tok_, h_step_, h_pos_, h_commit_, h_ple_, h_out_, h_x_, h_ids_, h_w_, h_seq_, h_flag_, h_ymiss_,
                      h_flagA_, h_plan_, h_flagB_, h_plan_err_, h_nf_, herr_h_, hdrop_h_, h_bal_, h_hist_,
-                     h_sp_, h_mode_, h_spec_};
+                     h_sp_, h_mode_, h_spec_, h_xq_, h_xq_seq_};
     for (void* h : hosts)
         if (h) cudaFreeHost(h);
 }
@@ -1000,6 +1001,24 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
               mapped(64, (void**) &h_plan_err_, (void**) &m_plan_err_) &&
               mapped(T * K * N * 4, (void**) &h_ymiss_, (void**) &m_ymiss_);
     if (!ok) { err = "verify: mapped staging allocation failed " + strata::core::pin_exhausted_hint(); return false; }
+    // F2 (STRATA_HELPER_XQ_RING, default OFF): the q8_1 activation image's ring - 2 slots of max_t_
+    // rows (one per step parity) plus one seq word each, published by a tail kernel after the step's
+    // final image write and consumed by the helper's claim frames (proxy_begin) in place of the
+    // per-frame quantize_q8_1_cpu.  N = 2560: 80 blocks x 36 B = 2880 B/row, max_t_ = 8 (kMaxTok)
+    // -> 23,040 B/slot, depth 2 = 46,080 B (~45 KiB) per Verifier; a 2-stage split holds ~90 KiB
+    // pinned total - five orders below the mmap-ready-time-killer class (A1's 50.7 GiB PLE mmap).
+    // Allocated only when the gate reads on AND a window-tier helper is configured, so OFF boots
+    // keep an identical RSS footprint.  Depth-2 by step parity (k & 1): the doorbell protocol's
+    // happens-before (the host reads slot k only between ring k and flagB k; the GPU cannot reach
+    // publish k+1 before flagB k) already makes depth-1 safe - depth-2 is margin for the
+    // waitA/waitB overlap review.
+    xq_ring_on_ = strata::core::helper_xq_ring_enabled() && strata::core::helper_xq_ring_consumer();
+    if (xq_ring_on_) {
+        xq_slot_bytes_ = strata::core::xq_ring_slot_bytes((int64_t) max_t, (int64_t) g.n_embd);
+        ok = mapped((size_t) 2 * (size_t) xq_slot_bytes_, (void**) &h_xq_, (void**) &m_xq_) &&
+             mapped(2 * sizeof(uint32_t), (void**) &h_xq_seq_, (void**) &m_xq_seq_);
+        if (!ok) { err = "verify: the xq ring allocation failed " + strata::core::pin_exhausted_hint(); return false; }
+    }
     // F8 (STRATA_PENALTY_MAPPED): the penalty-history image the window graph copies out at its head, in place of
     // serve's per-window blocking cudaMemcpy.  Sized to the ceiling the engine runs - every window this build can
     // capture (kVerifyLongT rows, the widest a merge window reaches) x serve's penalty_last_n clamp (kHistMax, the
@@ -2433,6 +2452,20 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             }
         } else
             quantize_q8_0_scaled(xm, hit_xq_ + (size_t) tb * (N / 32) * 34, hit_xs_ + (size_t) tb * (N / 32), (int64_t) n * N, cs);
+        // F2 (STRATA_HELPER_XQ_RING): the tail publish, AFTER the final image write above (qdedup-pre,
+        // the folded rewrite or the plain quantize - whichever ran).  Strictly additive: no existing
+        // kernel moves, so the same-36-byte-blocks argument holds with no folded/qdedup case analysis.
+        // For a folded layer the image here is the ROTATED one - the helper never claims folded layers
+        // (expert_helper_candidates skips had_folded) and proxy_begin gates on !had_gu again, so the F2
+        // consumer never sees a folded image.  NOT gated on !q8_ffn: STRATA_QFUSE layers get their image
+        // from the fused GR read (gr_read_group(1, true, ...) above), which the QFUSE parity leg
+        // (gr_parity) pins to native_quantize_q8_1's own bytes - gating on it would void most of F2.
+        // The gate is static per verifier (read at init), so an OFF boot captures the identical graph.
+        if (xq_ring_on_ && strata::kernels::cpu::expert_layout().native && !ar_on())
+            doorbell_xq_publish(nat_xq_ + (size_t) tb * (N / 32) * 36, (int64_t) n * (N / 32) * 36,
+                                m_xq_ + (size_t) (((l - lb_) * G + grp) & 1) * (size_t) xq_slot_bytes_,
+                                m_xq_seq_ + (int) (((l - lb_) * G + grp) & 1),
+                                (uint32_t) ((l - lb_) * G + grp + 1), cs);
         stamp(l, 18, grp);
         return true;
     };
@@ -3278,6 +3311,11 @@ void Verifier::stage_inputs(int T, const int32_t* tokens, int64_t pos0) {
     *(volatile uint32_t*) h_flag_ = 0;
     *(volatile uint32_t*) h_flagA_ = 0;
     *(volatile uint32_t*) h_flagB_ = 0;
+    // F2: the ring's seq words get the SAME per-window reset - ring values restart at 1 every window
+    // ((l-lb_)*G+grp+1 is capture-baked), and without this reset window >= 2's wait passes instantly
+    // on the previous window's stale values and the host reads a STALE image.  Safe: the previous
+    // window's graph is fully synced (cudaStreamSynchronize at the end of run) before this runs.
+    if (h_xq_seq_ != nullptr) strata::core::xq_ring_reset(h_xq_seq_);
     // the overlapped split: the next stage's graph is launched after this, and must see THIS window's raise
     if (hflag_out_h_ != nullptr) *(volatile uint32_t*) hflag_out_h_ = 0;
     if (herr_h_ != nullptr) *(volatile uint32_t*) herr_h_ = 0;
@@ -3726,6 +3764,49 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         cur_layer_ = want - 1;
         set_plan_slot(grp);
         const int tb = gtb[grp], n = gte[grp] - gtb[grp];
+        // F2 (STRATA_HELPER_XQ_RING): bounded wait on the ring's own seq word - the SAME discipline
+        // as the doorbell wait above (strata_cpu_pause, a periodic cudaStreamQuery, kGpuProgressTimeout,
+        // release_gpu_waits on timeout).  The tail publish runs at the step's very end, after the
+        // shared expert and the quantize, so by the time the doorbell rang this is usually already
+        // rung too; a wedge here is diagnosed by the same NEVER-RANG/TIMEOUT trace, not a new class.
+        if (xq_ring_on_) {
+            const Clock::time_point xa = Clock::now();
+            auto xflush = xa;
+            uint32_t xspins = 0;
+            while (!strata::core::xq_ring_ready(h_xq_seq_, (int) (k & 1), want)) {
+                strata_cpu_pause();
+                if ((++xspins & 1023u) != 0) continue;
+                const auto now = Clock::now();
+                if (now - xflush > std::chrono::microseconds(2000)) {
+                    xflush = now;
+                    const cudaError_t q = cudaStreamQuery(cs_);
+                    if (q != cudaErrorNotReady && !strata::core::xq_ring_ready(h_xq_seq_, (int) (k & 1), want)) {
+                        trace_ev("XQ-NEVER-RANG", k, l, (int64_t) q);
+                        trace_dump(stderr);
+                        err = "verify: layer " + std::to_string(l) + "'s xq ring never rang (" +
+                              (q == cudaSuccess ? std::string("graph finished") : std::string(cudaGetErrorString(q))) + ")";
+                        return false;
+                    }
+                }
+                if (now - xa > kGpuProgressTimeout) {
+                    trace_ev("XQ-TIMEOUT", k, l, (int64_t) cudaStreamQuery(cs_));
+                    err = "verify: timed out at layer " + std::to_string(l) + "'s xq ring" +
+                          released_note(release_gpu_waits(5000));
+                    return false;
+                }
+            }
+            (void) xseq;
+            strata_load_fence();   // the image is read after its ring, like the doorbell payload
+            cur_xq_p_ = h_xq_ + (size_t) (k & 1) * (size_t) xq_slot_bytes_;
+            cur_xq_bytes_ = (int64_t) n * ((int64_t) g.n_embd / 32) * 36;
+            cur_xq_valid_ = true;
+        } else
+            cur_xq_valid_ = false;
+        // the win pool path reads this step's image through the plan sink (d.plan): the pool user
+        // itself never sees the Verifier, and the sink is already threaded per stage.
+        sink_.xq_image = cur_xq_valid_ ? cur_xq_p_ : nullptr;
+        sink_.xq_bytes = cur_xq_valid_ ? cur_xq_bytes_ : 0;
+        sink_.xq_valid = cur_xq_valid_;
         progress_at("verify window: the CPU experts of layer", l);
         if (remote_opt_) remote_opt_->begin(h_w_ + (size_t) tb * ss.k, tb, n);
         if (pool != nullptr)
@@ -4889,6 +4970,10 @@ bool Verifier::stage_batch(const int* rows, int S, int hbase, const int32_t* tok
     *(volatile uint32_t*) h_flag_ = 0;
     *(volatile uint32_t*) h_flagA_ = 0;
     *(volatile uint32_t*) h_flagB_ = 0;
+    // F2: the same per-window ring reset as stage_inputs - the slot graphs embed the tail publish too
+    // (record_window is shared), and this path's own service loop never waits on it, so the words
+    // must not carry stale values into whatever window runs next.
+    if (h_xq_seq_ != nullptr) strata::core::xq_ring_reset(h_xq_seq_);
     std::atomic_thread_fence(std::memory_order_seq_cst);
     last_t_ = S;
     for (int t = 0; t < S; ++t) last_rows_[t] = rows[t];

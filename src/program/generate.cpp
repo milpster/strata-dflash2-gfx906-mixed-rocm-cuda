@@ -27,6 +27,7 @@
 #include "strata/core/dma_batch.hpp"
 #include "strata/core/device.hpp"
 #include "strata/core/remote_expert_opt.hpp"
+#include "strata/core/expert_helper_xq_ring.hpp"
 #include "strata/core/expert_cache.hpp"
 #include "strata/core/expert_nibble.hpp"
 #include "strata/core/vram_guard.hpp"
@@ -10703,6 +10704,10 @@ int main(int argc, char** argv) {
         // the in-process tier and the proxy never re-arms - insert at index 0 (or read all tiers) if that
         // combination is ever allowed.
         drive.d.remote[drive.d.remote_count++] = helper_tier_p;
+    // F2 (STRATA_HELPER_XQ_RING): a window-tier helper is configured - the verifiers' publish gate
+    // reads this once at init (publishing the ring with no consumer is pure waste).  Set here, after
+    // the tiers are registered and before any verifier init below.
+    strata::core::helper_xq_ring_consumer() = remote_opt != nullptr || helper_tier_p != nullptr;
     drive.d.peer = peer.valid() ? &peer : nullptr;
     drive.d.hit_cpu_order = o.expert_cache_cpu_order;
     drive.d.split_rows = !o.no_split_rows;

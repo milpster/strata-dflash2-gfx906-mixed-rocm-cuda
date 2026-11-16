@@ -441,6 +441,13 @@ struct GpuPlanSink {
     /// Starts the DMA copies of `n` host blobs (pinned) into staging slots 0..n-1 and signals the GPU when they land.
     void (*fetch)(void* ctx, const uint8_t* const* src, int n, size_t bytes) = nullptr;
     void* ctx = nullptr;
+    /// F2 (STRATA_HELPER_XQ_RING, default OFF): the current step's published q8_1 image - the ring
+    /// slot the Verifier's tail kernel filled, `n_tok` rows of 36 B / 32 values.  Host-written per
+    /// step by the service loop (after its bounded ring wait); the win pool path hands it to the
+    /// helper tiers' begin, whose frame bytes are then the ring's verbatim (no per-frame quantize).
+    const uint8_t* xq_image = nullptr;
+    int64_t xq_bytes = 0;
+    bool xq_valid = false;
     /// Plan v0.3 P6: how a PCIe group reaches the GPU.  0 = the copy engine stages it (DMA, `fetch`); 1 = the grouped
     /// kernel reads the mapped arena directly; 2 = a copy kernel stages it inside the graph.  For 1 and 2 `ptr2`
     /// holds the arena's device alias.

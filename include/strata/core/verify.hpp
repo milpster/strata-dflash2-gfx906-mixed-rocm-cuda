@@ -86,6 +86,12 @@ public:
     Verifier& operator=(const Verifier&) = delete;
     void set_remote_expert_opt(RemoteExpertOpt* opt) { remote_opt_ = opt; } // before init/capture
 
+    /// F2 (STRATA_HELPER_XQ_RING): the current step's published ring image - the host slot the tail
+    /// kernel filled, n rows of q8_1 (36 B / 32 values).  Valid only inside the pool call that
+    /// follows the service loop's ring wait; the win pool path reads it through the plan sink.
+    struct XqImage { const uint8_t* p = nullptr; int64_t bytes = 0; bool valid = false; };
+    XqImage cur_xq() const { return {cur_xq_p_, cur_xq_bytes_, cur_xq_valid_}; }
+
     /// The watchdog's view of the window in flight (issue #31): the layer, the GPU's sequence, the flags.
     void diag(std::FILE* f) const;
     /// #649 (STRATA_VERIFY_TRACE=1, opt-in): the last windows' host-side handshake events and the GPU's breadcrumbs
@@ -741,6 +747,17 @@ private:
     float* h_x_ = nullptr;       float* m_x_ = nullptr;         // doorbell payload: T * n_embd
     int32_t* h_ids_ = nullptr;   int32_t* m_ids_ = nullptr;     // T * k
     float* h_w_ = nullptr;       float* m_w_ = nullptr;         // T * k
+    // F2 (STRATA_HELPER_XQ_RING, default OFF): the q8_1 activation image's mapped ring - 2 slots of
+    // max_t_ rows (one per step parity) + one seq word each, published by a tail kernel after the
+    // step's final image write.  Verifier-owned exactly like m_x_; allocated only when the gate is
+    // on, so OFF boots keep an identical RSS footprint and an identical graph capture.
+    uint8_t* h_xq_ = nullptr;    uint8_t* m_xq_ = nullptr;
+    uint32_t* h_xq_seq_ = nullptr; uint32_t* m_xq_seq_ = nullptr;
+    int64_t xq_slot_bytes_ = 0;
+    bool xq_ring_on_ = false;   // the static gate as read at init (capture and wait agree on it)
+    const uint8_t* cur_xq_p_ = nullptr;   // this step's image, set by the service loop after its wait
+    int64_t cur_xq_bytes_ = 0;
+    bool cur_xq_valid_ = false;
     uint32_t* h_seq_ = nullptr;  uint32_t* m_seq_ = nullptr;
     uint32_t* h_flag_ = nullptr; uint32_t* m_flag_ = nullptr;
     uint32_t* h_flagA_ = nullptr; uint32_t* m_flagA_ = nullptr;  // the GPU plan is in place
