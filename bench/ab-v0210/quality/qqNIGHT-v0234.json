@@ -1,5 +1,5 @@
 {
-  "exe": "/mnt/srcds/Strata/bench/ab-v0210/quality/strata-ldp.sh",
+  "exe": "/mnt/srcds/Strata/bench/ab-v0210/quality/strata-ldp-v0234.sh",
   "args": [
     "--gpu",
     "0,1",
