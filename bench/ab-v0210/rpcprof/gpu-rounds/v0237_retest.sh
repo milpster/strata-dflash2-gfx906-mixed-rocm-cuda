@@ -57,7 +57,8 @@ run_qq () {  # run_qq <label> <env...> -- [extra harness args]; engine-line guar
   for TRY in 1 2; do
     bash $R/stop-all.sh >/dev/null 2>&1; sleep 4
     echo "=== R7 qq $LABEL (try $TRY) ($(date +%T)) ==="
-    env "${ENVV[@]}" $WD python3 tools/quant_quality.py run --config $Q/qqNIGHT-v0237.json --out $TSVF "$@" > "$RUNLOG" 2>&1
+    env "${ENVV[@]}" $WD systemd-run --user --scope --unit=qqleg-$LABEL-try$TRY -p MemoryMin=48G -p MemorySwapMax=0 \
+      python3 tools/quant_quality.py run --config $Q/qqNIGHT-v0237.json --out $TSVF "$@" > "$RUNLOG" 2>&1
     tr -d '\0' < "$RUNLOG" | grep -a '^engine:' | head -1 | cut -c1-100
     tr -d '\0' < "$RUNLOG" | tail -2
     if ! tr -d '\0' < "$RUNLOG" | grep -aq "strata-ldp-v0237.sh"; then
@@ -65,6 +66,7 @@ run_qq () {  # run_qq <label> <env...> -- [extra harness args]; engine-line guar
       bash $R/launch-v0237.sh >/dev/null 2>&1 & exit 9
     fi
     [ -s "$TSVF" ] && break
+    cp -f $Q/out/$LABEL.tsv.stderr.txt $Q/out/$LABEL.try$TRY.stderr.txt 2>/dev/null
     echo "--- $LABEL produced no TSV (death class) — $([ $TRY = 1 ] && echo retrying || echo GIVING UP)"
   done
 }
