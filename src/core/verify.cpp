@@ -610,6 +610,7 @@ const int64_t g_test_drop = [] {
 }  // namespace
 
 bool Verifier::release_gpu_waits(int timeout_ms) {
+    const Clock::time_point t_entry = Clock::now();   // #267: the entry stamp, before the flag stores
     released_.store(true);
     trace_ev("RELEASE", -1, -1, timeout_ms);
     // the words the spin kernels read (wait_flag_ge, wait_flag_ge_or) are mapped host memory, so a store here
@@ -623,13 +624,24 @@ bool Verifier::release_gpu_waits(int timeout_ms) {
     const Clock::time_point t0 = Clock::now();
     for (cudaStream_t s : {cs_, copy_}) {
         if (s == nullptr) continue;
-        while (cudaStreamQuery(s) == cudaErrorNotReady) {
+        // #267 (log-only): the FIRST cudaStreamQuery can itself block inside the driver for seconds (observed 13.9 s),
+        // before any polling begins - its own latency is timed apart from the poll drain that follows
+        const Clock::time_point tq = Clock::now();
+        cudaError_t q = cudaStreamQuery(s);
+        const double first_ms = ms_since(tq);
+        const Clock::time_point td = Clock::now();
+        while (q == cudaErrorNotReady) {
             if (ms_since(t0) > timeout_ms) {
                 trace_ev("RELEASE-NOT-DRAINED", -1, -1, (int64_t) ms_since(t0));
                 return false;
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            q = cudaStreamQuery(s);
         }
+        if (ms_since(t_entry) > 100.0)   // #267: log-only - the release as a whole was slow, from the entry stamp
+            std::fprintf(stderr, "#267 release: %s first query %.0f ms (returned %s), drain %.0f ms\n",
+                         s == cs_ ? "cs_" : "copy_", first_ms,
+                         q == cudaSuccess ? "done" : cudaGetErrorString(q), ms_since(td));
     }
     trace_ev("RELEASE-DRAINED", -1, -1, (int64_t) ms_since(t0));   // aux: ms the GPU took to finish once released
     return true;
@@ -3685,20 +3697,19 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
                 }
             }
             if (now - a > kGpuProgressTimeout) {
-                // #267: the caller ends the engine; no spin kernel may outlive it
+                // #267: the caller ends the engine; no spin kernel may outlive it.  The dump is no longer trace-gated:
+                // the stall is rare, so every occurrence must carry the words and the breadcrumbs.
 #if defined(STRATA_VERIFY_HGL)
-                trace_ev("TIMEOUT", k, l, (int64_t) (launch_o ? launch_o->query() : cudaStreamQuery(cs_)));
+                const cudaError_t qt = launch_o ? launch_o->query() : cudaStreamQuery(cs_);
 #else
-                trace_ev("TIMEOUT", k, l, (int64_t) cudaStreamQuery(cs_));
+                const cudaError_t qt = cudaStreamQuery(cs_);
 #endif
-                if (g_trace) {
-                    diag(stderr);   // the words and the breadcrumbs before the release ...
-                    const bool drained = release_gpu_waits(5000);
-                    trace_dump(stderr);   // ... and after it: did the GPU move once its waits were raised?
-                    err = "verify: timed out at layer " + std::to_string(l) + released_note(drained);
-                    return false;
-                }
-                err = "verify: timed out at layer " + std::to_string(l) + released_note(release_gpu_waits(5000));
+                trace_ev("TIMEOUT", k, l, (int64_t) qt);
+                diag(stderr);   // the words and the breadcrumbs before the release ...
+                const bool drained = release_gpu_waits(5000);
+                if (g_trace) trace_dump(stderr);   // ... and after it: did the GPU move once its waits were raised?
+                err = "verify: timed out at layer " + std::to_string(l) + " (cudaStreamQuery " +
+                      std::to_string((int) qt) + ", " + cudaGetErrorString(qt) + ")" + released_note(drained);
                 return false;
             }
         }
@@ -5545,8 +5556,11 @@ int Verifier::service(PoolMultiFn pool, void* user, std::string& err) {
                 (void) cudaStreamQuery(cs_);
             }
             if (now - fl_since_ms_ > kGpuProgressTimeoutMs) {   // #267: no spin kernel may outlive the engine
-                trace_ev("TIMEOUT", fl_k_, l, 0);
-                err = "verify: timed out at layer " + std::to_string(l) + released_note(release_gpu_waits(5000));
+                const cudaError_t qt = cudaStreamQuery(cs_);   // #267: the raw stream state in the message, diag always
+                trace_ev("TIMEOUT", fl_k_, l, (int64_t) qt);
+                diag(stderr);
+                err = "verify: timed out at layer " + std::to_string(l) + " (cudaStreamQuery " +
+                      std::to_string((int) qt) + ", " + cudaGetErrorString(qt) + ")" + released_note(release_gpu_waits(5000));
                 return -1;
             }
             return 0;
@@ -5593,7 +5607,10 @@ bool Verifier::done(std::string& err) {
         const double now = now_ms();
         if (now - fl_flush_ms_ > 2.0) { fl_flush_ms_ = now; (void) cudaStreamQuery(cs_); }
         if (now - fl_since_ms_ > kGpuProgressTimeoutMs) {   // every layer served, and the graph still runs: #267 as above
-            err = "verify: the window never finished" + released_note(release_gpu_waits(5000));
+            const cudaError_t qt = cudaStreamQuery(cs_);   // #267: the raw stream state in the message, diag always
+            diag(stderr);
+            err = "verify: the window never finished (cudaStreamQuery " + std::to_string((int) qt) + ", " +
+                  cudaGetErrorString(qt) + ")" + released_note(release_gpu_waits(5000));
         }
         return false;
     }

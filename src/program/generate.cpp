@@ -2191,6 +2191,25 @@ void stall_report(std::FILE* f, uint64_t layers_during) {
         const std::string pause_line = strata::core::gpu_pause_stall_line(pause_now, g_req_gpu_pause_ms.load(),
                                                                            pass == 1 ? pause_before : -1);
         if (!pause_line.empty()) std::fprintf(f, "%s\n", pause_line.c_str());
+#if defined(__linux__)
+        if (pause_now < 0) {   // #267: the KFD counter could not be read - say so, and show what the sysfs path holds
+            const std::string dir = std::string(strata::core::kKfdProcRoot) + "/" + std::to_string((long) getpid());
+            std::fprintf(f, "  #267 KFD: evicted_ms unreadable this pass; %s:", dir.c_str());
+            if (DIR* d = opendir(dir.c_str())) {
+                int n = 0;
+                while (const dirent* e = readdir(d)) {
+                    if (e->d_name[0] == '.') continue;   // names only, and not "." / ".."
+                    std::fprintf(f, " %s", e->d_name);
+                    ++n;
+                }
+                closedir(d);
+                if (n == 0) std::fprintf(f, " (empty)");
+            } else {
+                std::fprintf(f, " (cannot open: %s)", std::strerror(errno));
+            }
+            std::fprintf(f, "\n");
+        }
+#endif
         pause_before = pause_now;
         std::fflush(f);
     }
@@ -18668,6 +18687,7 @@ int main(int argc, char** argv) {
                 }
             }
             stop_req.store(false);   // a STOP that arrived between requests is stale
+            strata::core::progress_at("request: setup");   // #267: the first serve request's setup was an invisible stage
             err.clear();
             // Disk sessions: SAVE <path> | RESTORE <path>, between requests (the path runs to the end of the line,
             // UTF-8).  The file holds what a parked conversation holds (conversation_file.hpp).  Answers: SAVED /
@@ -20257,6 +20277,7 @@ int main(int argc, char** argv) {
                 part_at.clear();
                 std::fill(part_next.begin(), part_next.end(), pp_next_check);
             }
+            strata::core::progress_at("request: reuse decided");   // #267: the last stamp before RESUME - bookkeeping done
             std::printf("RESUME %lld\n", (long long) resume);   // before reading: this many prompt tokens are reused
             strata::core::progress_at("reading the prompt, from token", read_from);
             std::fflush(stdout);
