@@ -20,15 +20,15 @@ WIKIIDS=$R/data/quant_quality/wikitext2/set.ids.json
 mkdir -p $OUT
 export LDP="env LD_LIBRARY_PATH=/home/srcds/rocm-gfx906-xnack/lib:/opt/rocm-6.1.0/lib HSA_OVERRIDE_GFX_VERSION=9.0.6"
 
-# --- qq wrapper + config for v0235 (once)
+# --- qq wrapper + config for v0235 (once). NOTE: exe is the engine command (p0_gates bug fix).
 if [ ! -x $Q/strata-ldp-v0235.sh ]; then
   sed 's#/mnt/srcds/Strata/v0234p1/rpcw-hip/strata#'"$BIN"'/rpcw-hip/strata#' \
     $Q/strata-ldp-v0234p1.sh > $Q/strata-ldp-v0235.sh && chmod +x $Q/strata-ldp-v0235.sh
   python3 - << 'PY'
 import json
 q="/mnt/srcds/Strata/bench/ab-v0210/quality"
-c=json.load(open(q+"/qqNIGHT-v0234p1.json"))
-c["args"]=[q+"/strata-ldp-v0235.sh" if a.endswith("strata-ldp-v0234p1.sh") else a for a in c["args"]]
+c=json.load(open(q+"/qqNIGHT.json"))
+c["exe"]=q+"/strata-ldp-v0235.sh"
 json.dump(c,open(q+"/qqNIGHT-v0235.json","w"),indent=2)
 PY
 fi
@@ -41,13 +41,19 @@ $LDP $F2B/gr_parity --selftest 2>&1 | tail -5 | tee $OUT/v5-gr-parity.log
 echo "gr_parity exit: $?"
 
 cd $WT
-run_qq () {  # run_qq <label> <env...> -- [extra harness args]
+run_qq () {  # run_qq <label> <env...> -- [extra harness args]; guards the engine line
   local LABEL=$1; shift
   local -a ENVV=()
-  while [ "$1" != "--" ]; do ENVV+=("$1"); shift; done; shift
+  while [ "${1:-}" != "--" ]; do ENVV+=("$1"); shift; done; shift
   bash $R/stop-all.sh >/dev/null 2>&1; sleep 4
   echo "=== V5 qq $LABEL ($(date +%T)) ==="
-  env "${ENVV[@]}" python3 tools/quant_quality.py run --config $Q/qqNIGHT-v0235.json --out $Q/out/$LABEL.tsv "$@" 2>&1 | tail -2
+  local RUNLOG=$OUT/$LABEL-run.log
+  env "${ENVV[@]}" python3 tools/quant_quality.py run --config $Q/qqNIGHT-v0235.json --out $Q/out/$LABEL.tsv "$@" > "$RUNLOG" 2>&1
+  tr -d '\0' < "$RUNLOG" | grep -a '^engine:' | head -1 | cut -c1-100
+  tr -d '\0' < "$RUNLOG" | tail -2
+  if ! tr -d '\0' < "$RUNLOG" | grep -aq "strata-ldp-v0235.sh"; then
+    echo "FATAL: $LABEL did not run strata-ldp-v0235.sh — aborting (config exe bug)"; bash $GR/lane_restore.sh; exit 9
+  fi
 }
 
 echo "=== V5 phase 2: F2 KL gates x3 ($(date +%T)) ==="
