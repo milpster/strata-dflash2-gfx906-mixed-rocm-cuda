@@ -20,6 +20,7 @@
 //   - `sampler_kernel` (`STRATA_OLD_SAMPLER=1`), the kernel of engine 0.1.20, kept as the reference.
 // The two new ones share `sampled_tail_warp` (top_p / min_p / temperature / draw on one warp).
 #include "strata/kernels/sampler.hpp"
+#include "strata/kernels/verify_kernels.hpp"
 #include "strata/core/coupled_draft.hpp"
 #include "strata/core/spec_prob.hpp"
 #include "strata/core/spec_proposal.hpp"
@@ -479,10 +480,13 @@ __device__ __forceinline__ void warp_first(float& bv, int& bi) {
 /// callers clamp, read `sel_ids[-1]` in the old tail; it reads `sel_ids[0]` here.)
 /// kProb (the coupled draft only): lane 0 also writes the pick's probability under the final distribution to
 /// `*prob_out`.  The sampler's own calls take kProb = false, whose code is the tail above, unchanged.
-template <bool kProb = false>
+/// Shadow (the mapped in-graph sampler's parity test only, F1): lane 0 also writes the row's Philox draw, at
+/// its exact statement position, to `uout[t]`.  The default-false instantiations - every production call -
+/// compile the shadow statement away.
+template <bool kProb = false, bool Shadow = false>
 __device__ void sampled_tail_warp(const int* sel_ids, const float* sel_logit, int k, const SamplerParams& p, int t,
                                   int* __restrict__ out, double* ex, float* prob_out = nullptr,
-                                  const int32_t* __restrict__ sub_to_id = nullptr) {
+                                  const int32_t* __restrict__ sub_to_id = nullptr, float* uout = nullptr) {
     const int lane = (int) (threadIdx.x & 31);
     const float inv_t = p.temperature > 0.0f ? 1.0f / p.temperature : 0.0f;
     int n_keep = k;
@@ -541,6 +545,7 @@ __device__ void sampled_tail_warp(const int* sel_ids, const float* sel_logit, in
             }
         } else {
             const float u = philox_uniform(p.seed, p.counter + (uint64_t) t);
+            if constexpr (Shadow) uout[t] = u;   // the F1 parity tap: the draw, at its statement position
             double cum = 0.0;
             for (int i = 0; i < n_keep; ++i) {
                 cum += ex[i];
@@ -1008,20 +1013,33 @@ spec_draft_merge_kernel(const int2* __restrict__ cand, int n_blocks, int nv, int
 /// < n_q, a point mass otherwise), and write out[t] = d on an accept, the residual sample on a reject (never d), the
 /// plain sample on the window's last row.  The host's `while (window[a+1] == out[a]) ++a` is unchanged.  Rows are
 /// independent: each draws its own uniforms from its position (p.counter + t).  `dtok` holds the T-1 drafts.
-template<bool Augmented>
-__global__ void __launch_bounds__(32)
-spec_verify_merge_kernel(const int2* __restrict__ cand, int n_blocks, int n_vocab, const SamplerParams p, int k, int T,
-                         const int32_t* __restrict__ dtok, const int32_t* __restrict__ qbuf, int n_q,
-                         int* __restrict__ out) {
+///
+/// F1 (the mapped in-graph sampler): the body is callable as a device function with the block lists' row stride
+/// given (`stride` = k for this file's own launches, kSelMax for the mapped kernel, whose part stage keeps the
+/// widest list) and, with Shadow, its three Philox draws tapped to `uout[t*4 + j]` at their statement positions -
+/// the accept draw, the residual draw, the plain draw.  The production instantiations are <Augmented, false>,
+/// whose code is this kernel's, unchanged, and which pass uout = nullptr.  The shared arrays come from the
+/// caller: the mapped merge kernel runs this body beside the sampled tail and the greedy fold out of ONE shared
+/// set, which per-branch statics would not be (LLVM unions only disjoint scopes - doubled, they pass the
+/// shared-memory limit).
+template<bool Augmented, bool Shadow = false>
+__device__ void spec_verify_body(const int2* __restrict__ cand, int stride, int n_blocks, int n_vocab,
+                                 const SamplerParams p, int k, int T,
+                                 const int32_t* __restrict__ dtok, const int32_t* __restrict__ qbuf, int n_q,
+                                 int* __restrict__ out, float* uout,
+                                 int2* lists, int* sel_ids, float* sel_logit, double* ex, double* rw) {
     const int t = blockIdx.x;
     const int lane = (int) threadIdx.x;
-    __shared__ int2 lists[kSplitMaxBlocks * kSelMax];
-    __shared__ int sel_ids[kSelMax];
-    __shared__ float sel_logit[kSelMax];
-    __shared__ double ex[kSelMax];
-    __shared__ double rw[kSelMax];
-    const int2* src = cand + (size_t) t * n_blocks * k;
-    for (int e = lane; e < n_blocks * k; e += 32) lists[e] = src[e];
+    const int2* src = cand + (size_t) t * stride;
+    if (stride == k) {
+        for (int e = lane; e < n_blocks * k; e += 32) lists[e] = src[e];
+    } else {
+        // the mapped kernel's part stage keeps the widest list (stride kSelMax): gather the row's first k
+        for (int e = lane; e < n_blocks * k; e += 32) {
+            const int b = e / k;
+            lists[e] = src[(size_t) b * stride + (e - b * k)];
+        }
+    }
     __syncwarp();
     warp_merge_lists(lists, n_blocks, k, k, n_vocab, [&](int i, float v, int id) {
         if (lane == 0) { sel_ids[i] = id < n_vocab ? id : 0; sel_logit[i] = v; }
@@ -1046,6 +1064,7 @@ spec_verify_merge_kernel(const int2* __restrict__ cand, int n_blocks, int n_voca
                 if (qid[i] == d) { qd = (double) qpr[i]; break; }
         point = qd > 0.0 ? 0 : 1;
         const float u = philox_uniform(p.seed, pos | strata::core::kSpecCtrAccept);
+        if constexpr (Shadow) uout[t * 4] = u;   // the F1 parity tap: the accept draw
         dec = (pd > 0.0 && (point ? (double) u < pd : (double) u * qd < pd)) ? 1 : 2;
         if constexpr (Augmented) {
             // An explicit mu candidate cannot silently become a point proposal.
@@ -1083,6 +1102,7 @@ spec_verify_merge_kernel(const int2* __restrict__ cand, int n_blocks, int n_voca
             tok = strata::core::proposal::kProposalSamplerErrorToken;
         } else if (dec == 0) {   // no draft on this row: the plain sample, the exact-match sampler's own draw
             const float u = philox_uniform(p.seed, pos);
+            if constexpr (Shadow) uout[t * 4 + 2] = u;   // the F1 parity tap: the plain draw
             double cum = 0.0;
             tok = sel_ids[n_keep > 0 ? n_keep - 1 : 0];
             for (int i = 0; i < n_keep; ++i) {
@@ -1103,6 +1123,7 @@ spec_verify_merge_kernel(const int2* __restrict__ cand, int n_blocks, int n_voca
                 }
             } else {
                 const float u = philox_uniform(p.seed, pos | strata::core::kSpecCtrResid);
+                if constexpr (Shadow) uout[t * 4 + 1] = u;   // the F1 parity tap: the residual draw
                 double cum = 0.0;
                 int last = -1;
                 tok = sel_ids[0];
@@ -1118,6 +1139,20 @@ spec_verify_merge_kernel(const int2* __restrict__ cand, int n_blocks, int n_voca
         }
         out[t] = tok;
     }
+}
+
+template<bool Augmented, bool Shadow = false>
+__global__ void __launch_bounds__(32)
+spec_verify_merge_kernel(const int2* __restrict__ cand, int n_blocks, int n_vocab, const SamplerParams p, int k, int T,
+                         const int32_t* __restrict__ dtok, const int32_t* __restrict__ qbuf, int n_q,
+                         int* __restrict__ out) {
+    __shared__ int2 lists[kSplitMaxBlocks * kSelMax];
+    __shared__ int sel_ids[kSelMax];
+    __shared__ float sel_logit[kSelMax];
+    __shared__ double ex[kSelMax];
+    __shared__ double rw[kSelMax];
+    spec_verify_body<Augmented, Shadow>(cand, k, n_blocks, n_vocab, p, k, T, dtok, qbuf, n_q, out, nullptr,
+                                        lists, sel_ids, sel_logit, ex, rw);
 }
 
 // Which sampled path runs, read once: `STRATA_OLD_SAMPLER=1` is `sampler_kernel` (engine 0.1.20),
@@ -1430,6 +1465,257 @@ void spec_draft_sample(float* logits, int nv, const int32_t* sub_to_id, const in
                                              ring, cap, j, out_id, out_prob,
                                              qrows + (size_t) j * strata::core::kSpecQStride, gate_pick, tscale);
     coupled_check("spec_draft merge");
+}
+
+// ---- F1: THE IN-GRAPH HEAD SAMPLER (STRATA_SAMPLER_IN_GRAPH, include/strata/core/sampler_mapped.hpp) ----
+//
+// A sampled, penalized (or spec-judged) request's head sampling today runs on the HOST after the window graph:
+// `run()` launches the sample_tokens family out-of-graph and pays a second cudaStreamSynchronize, because a
+// captured sampler would bake its parameters and replay the same draws forever.  F8's mapped staging removes the
+// reason: the window graph first COPIES this window's SamplerParams, mode word (+n_q) and spec rows out of mapped
+// host memory into device buffers (`sample_stage_mapped_kernel`, the coupled drafter's `coupled_stage_kernel`
+// pattern; the penalty-history rows are already in `hist_d_` from F8's head copy), and ONE mode-selected sampler
+// then runs from THOSE - every per-window value is a replay-time device read, nothing else is baked.  The counter
+// travels inside the staged SamplerParams (the host writes counter = the window's pos0, so replay draws
+// Philox(seed, pos0 + t) - exactly what the host block does, "replay the same draws forever" fixed at its root).
+//
+// THE SAMPLER IS ONE MODE-SELECTED BODY, not a chain of guarded per-mode launches: `sample_mapped_part_kernel`
+// cuts each row into the split sampler's 4,096-logit parts for ANY armed mode (the mode gate read at replay; a
+// mode-0 window's launch arrives and leaves), and `sample_mapped_merge_kernel` per row runs the tail the mode
+// names from the device-read mode word: the sampled tail (`sampled_tail_warp`, the split sampler's own pick),
+// the rejection-sampling verifier (`spec_verify_body`, augmented for the proposal mode), or the penalized-greedy
+// argmax - the block maxima of the same penalized parts, reduced with the sampler's tie rule (the argmax is a
+// function of the row alone, so the split is `sampler_greedy_kernel`'s token by the argument its own header
+// makes for the cluster kernel).  The two launches mirror the split sampler's own stream edge (part then merge),
+// which is also why there is no single-launch variant: one kernel carrying BOTH stages needs the part arrays and
+// the merge's full 64x64 list set live at once - 36 KB of LDS, 2 blocks per CU on gfx906, less than the grid's
+// residency at a device barrier - while split apart they are 2.5 KB and 34 KB, each trivially co-resident.
+//
+// Bit-exactness is by construction: identical inputs, identical operations in identical order (the part stage is
+// `sampler_split_part_kernel`'s body with the params read from device memory and the history rows the host
+// sampler itself reads from `hist_d_`; the merge calls the very functions the production merges call).  The one
+// liberty: the part stage keeps the WIDEST list (kSelMax entries, stride kSelMax), because the request's top_k
+// is only known on the device - and the first k of a union lie in the first k of each part (the argument
+// `coupled_merge_kernel` makes), so cutting there merges the same list.  sampler_mapped_parity pins all of it.
+// The greedy request needs NONE of this: its argmax is captured in the graph already.
+
+/// The window's mapped staging, into the device buffers the sampler reads: `sizeof(SamplerParams)` words
+/// (`*dp` <- `*mp`, then the GUMBEL-MAX flag from the environment exactly as `coupled_stage_kernel` stamps it),
+/// the mode word and n_q, and - for the judged modes - `kVerifyMaxT + n_q * kSpecQStride` spec words: the dtok
+/// region (a fixed kVerifyMaxT words, of which the window's T-1 are read) followed by the drafter's q rows, in
+/// `mspec`'s layout above.  The penalty history is NOT staged here: the armed window's `hist_d_` rows are landed
+/// by F8's head copy earlier in the same replay, and the sampler reads those - the very rows the host sampler
+/// reads.  Each span is gated by the mode word it belongs to, so a mode-0 window (the host sampler runs; today's
+/// path) copies NOTHING and the captured sampler stays inert against the stale device copies.  Reads the mapped
+/// words volatile, as the coupled stage does; the host's own fences order the writes before the graph launch.
+__global__ void sample_stage_mapped_kernel(const volatile SamplerParams* mp, const volatile int32_t* mspec,
+                                           const volatile int32_t* mmode, SamplerParams* dp, int32_t* dspec,
+                                           int32_t* dmode, int gumbel) {
+    const int mode = mmode[0];
+    if (mode == kSampleModeNone) return;   // inert: the host sampler owns this window
+    if (threadIdx.x == 0) dmode[0] = mode;
+    if (threadIdx.x == 1) dmode[1] = mmode[1];
+    const int nq = mode >= kSampleModeSpec ? mmode[1] : 0;
+    const int nwords = (int) (sizeof(SamplerParams) / sizeof(int));
+    const int* s = (const int*) mp;   // NOLINT: word-wise copy, same reason and cast as coupled_stage_kernel
+    int* d = (int*) dp;
+    for (int i = (int) threadIdx.x; i < nwords; i += (int) blockDim.x) d[i] = s[i];
+    __syncthreads();                                   // the word holding `gumbel` was just copied
+    if (threadIdx.x == 0) dp->gumbel = gumbel != 0;    // the environment's flag, as coupled_stage_kernel stamps it
+    const int sw = mode == kSampleModeSpec || mode == kSampleModeProposal
+                       ? strata::kernels::kVerifyMaxT + nq * strata::core::kSpecQStride : 0;
+    for (int i = (int) threadIdx.x; i < sw; i += (int) blockDim.x) dspec[i] = mspec[i];
+}
+
+/// **STAGE 1 OF THE CAPTURED SAMPLER: THE 4,096-LOGIT PARTS, FOR ANY ARMED MODE.**  Grid (blocks per row, rows),
+/// 128 threads - `sampler_split_part_kernel`'s body, block -> block and row -> blockIdx.y, with two differences:
+/// the params are read from the staged device copy, and every part keeps the WIDEST list (kSelMax entries, at
+/// stride kSelMax in `cand`), because the request's top_k is only known on the device - the merge cuts each part
+/// to its k first (the first k of a union lie in the first k of each part, the argument `coupled_merge_kernel`
+/// makes).  The mode-0 window's launch reads the mode word and leaves: `m_out_` keeps the captured greedy
+/// argmax, which is what the host path's replay of this graph has always produced (the host sampler then
+/// overwrites it).  The penalties are the host sampler's own: the same `hist` rows at the same stride the host
+/// launch takes (`hist_d_`, landed by F8's head copy in the same replay), the same bitmap and counts.
+__global__ void __launch_bounds__(kSplitWarps * 32)
+sample_mapped_part_kernel(const float* __restrict__ logits, int n_vocab, int nblocks,
+                          const SamplerParams* __restrict__ dp, const int* __restrict__ hist, int hist_len,
+                          const int32_t* __restrict__ dmode, int2* __restrict__ cand) {
+    if (dmode[0] == kSampleModeNone) return;   // inert: the host sampler owns this window
+    const int t = (int) blockIdx.y;
+    const SamplerParams p = *dp;
+    const float* l = logits + (size_t) t * n_vocab;
+    const int warp = (int) (threadIdx.x >> 5), lane = (int) (threadIdx.x & 31);
+    const int blo = (int) blockIdx.x * kSplitBlockSpan;
+
+    const int* hrow = hist != nullptr ? hist + (size_t) t * hist_len : nullptr;
+    int hlen = 0;
+    if (hrow) {
+        hlen = p.penalty_last_n < hist_len ? p.penalty_last_n : hist_len;
+        if (hlen < 0) hlen = 0;
+        hrow += hist_len - hlen;           // the window is the TAIL
+    }
+    // The membership bitmap of THIS BLOCK'S 4,096 logits, exactly as in `sampler_split_part_kernel` - the greedy
+    // mode needs it too: its fold reduces the PENALIZED block maxima.
+    __shared__ unsigned int bits[kSplitBlockSpan / 32];
+    const bool use_bits = hrow != nullptr && hlen > 0;
+    if (use_bits) {
+        for (int w = threadIdx.x; w < kSplitBlockSpan / 32; w += blockDim.x) bits[w] = 0u;
+        __syncthreads();
+        for (int i = threadIdx.x; i < hlen; i += blockDim.x) {
+            const int h = hrow[i];
+            if (h >= 0 && h < n_vocab && h >= blo && h - blo < kSplitBlockSpan)
+                atomicOr(&bits[(h - blo) >> 5], 1u << ((h - blo) & 31));
+        }
+        __syncthreads();
+    }
+    const int lo = blo + warp * kSplitWarpSpan;
+    float s[kSplitPerLane];
+#pragma unroll
+    for (int j = 0; j < kSplitPerLane; ++j) {
+        const int v = lo + 32 * j + lane;
+        s[j] = v < n_vocab ? (p.logit_bias ? l[v] + p.logit_bias[v] : l[v]) : __int_as_float(0xff800000);
+    }
+    if (use_bits) {
+#pragma unroll
+        for (int j = 0; j < kSplitPerLane; ++j) {
+            const int v = lo + 32 * j + lane, b = v - blo;
+            if (v < n_vocab && (bits[b >> 5] & (1u << (b & 31))))
+                s[j] = apply_penalties(s[j], history_count(hrow, hlen, v), p);
+        }
+    }
+    __shared__ int2 wl[kSplitWarps][kSelMax];
+    float prev_v = __int_as_float(0x7f800000);   // +inf and id -1: round 0 takes every logit
+    int prev_i = -1;
+    int i = 0;
+    const int kpart = kSelMax;
+    for (; i < kpart; ++i) {
+        float b0 = __int_as_float(0xff800000), b1 = __int_as_float(0xff800000);
+        int i0 = n_vocab, i1 = n_vocab;
+#pragma unroll
+        for (int j = 0; j < kSplitPerLane; j += 2) {
+            const int v0 = lo + 32 * j + lane, v1 = v0 + 32;
+            const float x0 = s[j], x1 = s[j + 1];
+            if ((x0 < prev_v || (x0 == prev_v && v0 > prev_i)) && x0 > b0) { b0 = x0; i0 = v0; }
+            if ((x1 < prev_v || (x1 == prev_v && v1 > prev_i)) && x1 > b1) { b1 = x1; i1 = v1; }
+        }
+        take_first(b0, i0, b1, i1);
+        warp_first(b0, i0);
+        if (i0 >= n_vocab) break;                // the same in every lane: nothing left in these 1,024 logits
+        if (lane == 0) wl[warp][i] = make_int2(i0, __float_as_int(b0));
+        prev_v = b0;
+        prev_i = i0;
+    }
+    for (int r = i + lane; r < kpart; r += 32) wl[warp][r] = make_int2(n_vocab, (int) 0xff800000u);   // sentinels
+    __syncthreads();
+    if (warp == 0) {
+        int2* dst = cand + ((size_t) t * nblocks + blockIdx.x) * kpart;
+        warp_merge_lists(&wl[0][0], kSplitWarps, kSelMax, kpart, n_vocab, [&](int r, float v, int id) {
+            if (lane == 0) dst[r] = make_int2(id, __float_as_int(v));
+        });
+    }
+}
+
+/// **STAGE 2 OF THE CAPTURED SAMPLER: ONE WARP PER ROW, THE BODY THE DEVICE-READ MODE WORD NAMES.**  The merge
+/// the split sampler itself does (gather, `warp_merge_lists`, `sampled_tail_warp`), the verifier
+/// (`spec_verify_body`, augmented for the proposal mode) - and the penalized-greedy argmax, which the captured
+/// graph could not carry with penalties: the fold of the parts' entry-0 pairs, ordered by `take_first` like every
+/// other merge in this file (order-free: the largest value, ties to the lower id, exactly `sampler_greedy_kernel`'s
+/// rule, 0 when nothing survives).  The sampled body cuts each part to the request's k while gathering.
+/// `uout`, with a Shadow test call, taps each row's Philox draws at their statement positions: the sampled tail
+/// one float (uout[t]), the verifier three (uout[t*4]: accept, residual, plain - as `spec_verify_body` names
+/// them); the production launch passes the null pointer with Shadow = false.  A mode-0 window's block leaves:
+/// `m_out_` keeps the captured greedy argmax, as on the host path's replay.
+template<bool Shadow>
+__global__ void __launch_bounds__(32)
+sample_mapped_merge_kernel(int n_vocab, int nblocks, const SamplerParams* __restrict__ dp,
+                           const int32_t* __restrict__ spec, const int32_t* __restrict__ dmode,
+                           const int2* __restrict__ cand, int* __restrict__ out, float* uout) {
+    const int mode = dmode[0];
+    if (mode == kSampleModeNone) return;   // inert: the host sampler owns this window
+    const int t = (int) blockIdx.x;
+    const int lane = (int) threadIdx.x;
+    __shared__ int2 lists[kSplitMaxBlocks * kSelMax];
+    __shared__ int sel_ids[kSelMax];
+    __shared__ float sel_logit[kSelMax];
+    __shared__ double ex[kSelMax];
+    __shared__ double rw[kSelMax];
+    const SamplerParams p = *dp;
+    const int2* src = cand + (size_t) t * nblocks * kSelMax;
+    const int nq = dmode[1];
+    if (mode == kSampleModeGreedy) {   // 4: the parts' penalized argmaxes, folded; overwrites the captured
+                                       // argmax in m_out_, as the host sampler's launch used to
+        float bv = __int_as_float(0xff800000);
+        int bi = n_vocab;
+        for (int m = 0; m < 2; ++m) {   // the lane's two lists, as in `warp_merge_lists`' heads
+            const int L = lane + 32 * m;
+            const int2 c = L < nblocks ? src[(size_t) L * kSelMax] : make_int2(n_vocab, (int) 0xff800000u);
+            take_first(bv, bi, __int_as_float(c.y), c.x);
+        }
+        warp_first(bv, bi);
+        if (lane == 0) out[t] = bi < n_vocab ? bi : 0;   // all -inf / NaN answered 0, as sampler_greedy_kernel
+    } else if (mode == kSampleModeSpec || mode == kSampleModeProposal) {
+        const int k = sampled_k(p.top_k, n_vocab);
+        if (mode == kSampleModeSpec)
+            spec_verify_body<false, Shadow>(src, kSelMax, nblocks, n_vocab, p, k, (int) gridDim.x,
+                                            spec, spec + kVerifyMaxT, nq, out, uout, lists, sel_ids, sel_logit, ex, rw);
+        else
+            spec_verify_body<true, Shadow>(src, kSelMax, nblocks, n_vocab, p, k, (int) gridDim.x,
+                                           spec, spec + kVerifyMaxT, nq, out, uout, lists, sel_ids, sel_logit, ex, rw);
+    } else {   // kSampleModeSampled: the split sampler's own tail, as sampler_split_merge_kernel runs it
+        const int k = sampled_k(p.top_k, n_vocab);
+        for (int e = lane; e < nblocks * k; e += 32) {   // cut each part's widest list to the request's k
+            const int bl = e / k;
+            lists[e] = src[(size_t) bl * kSelMax + (e - bl * k)];
+        }
+        __syncwarp();
+        warp_merge_lists(lists, nblocks, k, k, n_vocab, [&](int r, float v, int id) {
+            if (lane == 0) { sel_ids[r] = id < n_vocab ? id : 0; sel_logit[r] = v; }
+        });
+        __syncwarp();
+        sampled_tail_warp<false, Shadow>(sel_ids, sel_logit, k, p, t, out, ex, nullptr, nullptr, uout);
+    }
+}
+
+void sample_stage_mapped(const SamplerParams* mapped_params, const int32_t* mapped_spec, const int32_t* mapped_mode,
+                         SamplerParams* params, int32_t* spec, int32_t* mode, void* stream) {
+    sample_stage_mapped_kernel<<<1, 256, 0, (cudaStream_t) stream>>>(
+        (const volatile SamplerParams*) mapped_params, (const volatile int32_t*) mapped_spec,
+        (const volatile int32_t*) mapped_mode, params, spec, mode, gumbel_env() ? 1 : 0);
+    coupled_check("sample_stage_mapped");
+}
+
+void sample_tokens_mapped(const float* logits, int n_tokens, int n_vocab, const SamplerParams* params,
+                          const int32_t* hist, int hist_len, const int32_t* spec, const int32_t* mode, int2* scratch,
+                          int* out, float* uout, void* stream) {
+    const int nblocks = (n_vocab + kSplitBlockSpan - 1) / kSplitBlockSpan;
+    if (n_tokens <= 0 || n_vocab <= 0 || nblocks > kSplitMaxBlocks) return;   // the caller refuses; never launched
+    const cudaStream_t s = (cudaStream_t) stream;
+    // one mode-selected sampler, recorded exactly as the split sampler records itself: the parts, then the merge
+    sample_mapped_part_kernel<<<dim3((unsigned) nblocks, (unsigned) n_tokens), kSplitWarps * 32, 0, s>>>(
+        logits, n_vocab, nblocks, params, hist, hist_len, mode, scratch);
+    coupled_check("sample_mapped part");
+    if (uout != nullptr)
+        sample_mapped_merge_kernel<true><<<(unsigned) n_tokens, 32, 0, s>>>(n_vocab, nblocks, params, spec, mode,
+                                                                            scratch, out, uout);
+    else
+        sample_mapped_merge_kernel<false><<<(unsigned) n_tokens, 32, 0, s>>>(n_vocab, nblocks, params, spec, mode,
+                                                                             scratch, out, uout);
+    coupled_check("sample_mapped merge");
+}
+
+/// The Philox stream itself (the sampler_mapped_parity test only): `out[i] = philox_uniform(seed, counters[i])`.
+/// The test computes each sampled row's draw POSITIONS on the host (pos0 + t, | kSpecCtrAccept / kSpecCtrResid)
+/// and pins the Shadow taps against this - the same function the sampler calls, from the host's own counters.
+__global__ void philox_probe_kernel(uint64_t seed, const uint64_t* __restrict__ counters, float* __restrict__ out,
+                                    int n) {
+    const int i = (int) (blockIdx.x * blockDim.x + threadIdx.x);
+    if (i < n) out[i] = philox_uniform(seed, counters[i]);
+}
+
+void sample_philox_probe(uint64_t seed, const uint64_t* counters, float* out, int n, void* stream) {
+    if (n <= 0) return;
+    philox_probe_kernel<<<(unsigned) ((n + 255) / 256), 256, 0, (cudaStream_t) stream>>>(seed, counters, out, n);
+    coupled_check("sample_philox_probe");
 }
 
 }  // namespace strata::kernels

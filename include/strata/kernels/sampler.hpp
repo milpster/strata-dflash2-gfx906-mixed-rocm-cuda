@@ -10,6 +10,16 @@
 #include <cstddef>
 #include <cstdint>
 
+// int2, as src/kernels/cuda/sampler.cu's launches take it - the runtime header's, never a local stand-in when
+// the header is reachable: a TU that includes this one and then <cuda_runtime.h> (many do) would otherwise
+// collide with it.  The stand-in is only for pure host TUs of a GPU build (no toolchain headers on the path).
+#if defined(__CUDACC__) || defined(__HIPCC__) || __has_include(<hip/hip_runtime.h>) || \
+    (__has_include(<cuda_runtime.h>) && !defined(STRATA_HIP_GFX906))
+#include <cuda_runtime.h>
+#else
+struct int2 { int x, y; };  // the GPU-less host unit's view of the same vector pair (CUDA's int2, bit for bit)
+#endif
+
 namespace strata::kernels {
 
 struct SamplerParams {
@@ -90,6 +100,64 @@ bool sample_tokens_spec(const float* logits, int n_tokens, int n_vocab, const in
 bool sample_tokens_proposal(const float* logits, int n_tokens, int n_vocab, const int* history, int history_len,
                         const SamplerParams& p, const int32_t* dtok, const int32_t* qbuf, int n_q, int* out,
                         void* stream);
+
+// ---- F1: THE IN-GRAPH HEAD SAMPLER (include/strata/core/sampler_mapped.hpp, STRATA_SAMPLER_IN_GRAPH).  The window
+// graph stages this window's sampling inputs out of mapped host memory into device copies, then ONE mode-selected
+// sampler runs from those: `sample_stage_mapped_kernel`, `sample_mapped_part_kernel` and `sample_mapped_merge_kernel`
+// in src/kernels/cuda/sampler.cu carry the design and the bit-exactness argument.  The mapped_* pointers are mapped
+// host memory (host-visible, device-addressable); every other pointer is device memory.  Capturable; nothing reads
+// the environment between capture and replay.
+//
+// The mode word (mapped_mode[0], staged to the device at each window's launch): 0 none - the launches are inert,
+// the host sampler owns the window (the fallback path); 1 spec - `sample_tokens_spec`'s rejection rule; 2 proposal
+// - `sample_tokens_proposal`'s; 3 sampled - `sample_tokens`' split sampler; 4 penalized greedy - `sample_tokens`'s
+// temperature-0 argmax over the penalties.  mapped_mode[1] is n_q for the judged modes.
+// The spec buffer is the window's draft ids (dtok) in a fixed kVerifyMaxT-word region followed by n_q q rows of
+// kSpecQStride (the drafter's lists, spec_prob.hpp's layout) - the layout sample_tokens_spec's device buffer
+// already uses.  The penalty history is NOT staged: the sampler reads the same `hist_d_` rows the host sampler
+// reads, landed by F8's head copy earlier in the same replay.  SamplerParams.counter travels in the staged struct:
+// the host writes the window's pos0, so a replay draws Philox(seed, pos0 + t) - the same draws the out-of-graph
+// launch takes today.
+inline constexpr int32_t kSampleModeNone = 0;
+inline constexpr int32_t kSampleModeSpec = 1;
+inline constexpr int32_t kSampleModeProposal = 2;
+inline constexpr int32_t kSampleModeSampled = 3;
+inline constexpr int32_t kSampleModeGreedy = 4;
+
+/// The sampler's split geometry (sampler.cu's internal kSplitBlockSpan / kSelMax): the vocabulary's
+/// capture-time block count, 0 when the vocabulary is past the widest capture the split sampler takes.  The
+/// verifier sizes its scratch with this and `sample_tokens_mapped_scratch_entries` before capturing.
+inline constexpr int kSampleSplitBlockSpan = 4096;   // logits per part block, as sampler_split_part_kernel
+inline constexpr int kSampleSelMax = 64;             // the widest shortlist, as sampler_kernel's KMAX
+inline constexpr int kSampleSplitMaxBlocks = 64;     // lists the merge holds: n_vocab <= 262,144
+inline int sample_split_blocks(int n_vocab) {
+    const int nb = (n_vocab + kSampleSplitBlockSpan - 1) / kSampleSplitBlockSpan;
+    return nb > kSampleSplitMaxBlocks ? 0 : nb;
+}
+inline size_t sample_tokens_mapped_scratch_entries(int n_tokens, int n_vocab) {
+    const int nb = sample_split_blocks(n_vocab);
+    return nb == 0 ? 0 : (size_t) n_tokens * (size_t) nb * (size_t) kSampleSelMax;
+}
+
+/// The staging launch, recorded at the head of the sampler's captured tail: params, mode/n_q and (judged modes)
+/// the kVerifyMaxT + n_q * kSpecQStride spec words from mapped into the device copies `sample_tokens_mapped`
+/// reads.  A mode-0 window copies nothing (the mode gate is read at replay).
+void sample_stage_mapped(const SamplerParams* mapped_params, const int32_t* mapped_spec, const int32_t* mapped_mode,
+                         SamplerParams* params, int32_t* spec, int32_t* mode, void* stream);
+/// The mode-selected captured sampler: two launches recorded exactly as the split sampler records itself - the
+/// 4,096-logit parts of every row, then one warp per row running the body the device-read mode word names
+/// (sampler.cu describes the merge's sampled / judged / penalized-greedy tails).  `scratch` holds
+/// kVerifyMaxT x n_blocks x kSelMax int2 (Verifier-owned, never freed while a graph can replay).  `hist`/`hist_len`
+/// are the history rows the host sampler itself takes (`hist_d_`).  `uout` (tests; pass nullptr in the engine)
+/// taps each row's Philox draws - sampled mode one float per row, judged modes three.
+/// No-op for n_vocab past the split sampler's widest capture (the caller then keeps the host path).
+void sample_tokens_mapped(const float* logits, int n_tokens, int n_vocab, const SamplerParams* params,
+                          const int32_t* hist, int hist_len, const int32_t* spec, const int32_t* mode, int2* scratch,
+                          int* out, float* uout, void* stream);
+/// The Philox stream itself (the sampler_mapped_parity test only; nullptr stream = default): out[i] =
+/// philox_uniform(seed, counters[i]) on the device - the same function the sampler calls, so the test can pin
+/// the Shadow taps against draw positions it computes itself on the host. All pointers device memory.
+void sample_philox_probe(uint64_t seed, const uint64_t* counters, float* out, int n, void* stream);
 
 // #4590: which tokens the repeat / frequency / presence penalties count.  By default only the current reply: the
 // tokens the answer has written (the window starts at the last prompt token, the one the first decode step feeds in).
