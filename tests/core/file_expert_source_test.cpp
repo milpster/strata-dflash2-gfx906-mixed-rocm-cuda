@@ -677,6 +677,69 @@ void test_blob_offset_order() {
     source.close();
 }
 
+// F7ab (STRATA_BOOT_FILL_ODIRECT): the byte gate for the boot fill's read-path change.  The pack's
+// unbuffered read (read_blobs_batch, the O_DIRECT windows STRATA_BOOT_FILL_ODIRECT arms through
+// arm_swap_reads) must return the same bytes as the mapped page-cache path - a shuffled batch (the
+// windows read_direct forms, sorted by file offset) and one pair at a time (the F6-off shape), over a
+// synthetic pack, into destinations read_direct's windowing does not have to align.  The pack lives in
+// the working directory, not the temp directory: a tmpfs /tmp has no O_DIRECT, and there the test says
+// so and skips (test_unbuffered_reads' rule).
+void test_odirect_boot_fill_reads() {
+    using namespace strata::core;
+    using namespace strata::kernels::cpu;
+    constexpr int64_t layers = 2;
+    constexpr int64_t experts = 3;
+    const uint64_t layer_bytes = (uint64_t) experts * BLOB;
+    const uint64_t total = (uint64_t) layers * layer_bytes;
+    TempDirectory dir(fs::current_path());
+    std::string err;
+    require(expert_layout_load(dir.path.string(), layers, experts, err), "could not load canonical layout: " + err);
+    std::vector<uint8_t> bytes((size_t) total);
+    uint64_t x = 0x9E3779B97F4A7C15ull;
+    for (uint8_t& b : bytes) {
+        x = x * 6364136223846793005ull + 1442695040888963407ull;
+        b = (uint8_t) (x >> 56);
+    }
+    {
+        std::ofstream out(dir.path / "experts.bin", std::ios::binary | std::ios::trunc);
+        out.write((const char*) bytes.data(), (std::streamsize) bytes.size());
+        require((bool) out, "could not write the synthetic experts.bin");
+    }
+    FileExpertSource source;
+    require(source.open(dir.path.string(), layers, experts, err), "could not map the synthetic pack: " + err);
+    std::string why;
+    if (!source.arm_swap_reads(why)) {   // what STRATA_BOOT_FILL_ODIRECT=1 arms at boot
+        std::cout << "file_expert_source_test: O_DIRECT boot-fill reads skipped (" << why << ")\n";
+        source.close();
+        return;
+    }
+    const auto expect = [&](const std::pair<int32_t, int32_t>& pr, const uint8_t* got) {
+        require(got != nullptr && std::memcmp(got, bytes.data() + (size_t) ((uint64_t) pr.first * layer_bytes +
+                                (uint64_t) pr.second * BLOB), (size_t) BLOB) == 0,
+                "an O_DIRECT boot-fill blob differs from the mapped view");
+    };
+    // the shuffled batch (read_direct reads its windows sorted by file offset), destinations the
+    // windowing does not have to align - and one pair at a time (the F6-off shape)
+    const std::vector<std::pair<int32_t, int32_t>> batch = {{1, 1}, {0, 2}, {1, 0}, {0, 0}, {1, 2}, {0, 1}};
+    std::vector<uint8_t> buf((size_t) total);
+    std::vector<uint8_t*> dst;
+    for (size_t i = 0; i < batch.size(); ++i)
+        dst.push_back(buf.data() + (size_t) (total - (i + 1) * BLOB));
+    std::vector<uint8_t> ok;
+    require(source.read_blobs_batch(batch, dst, ok, err), "the batched O_DIRECT boot-fill read failed: " + err);
+    for (size_t i = 0; i < batch.size(); ++i) {
+        require(ok[i] == 1, "a batched O_DIRECT boot-fill read did not land");
+        expect(batch[i], dst[i]);
+    }
+    std::vector<uint8_t> one((size_t) BLOB);
+    for (const auto& pr : batch) {
+        require(source.read_blobs_batch({pr}, {one.data()}, ok, err) && ok[0] == 1,
+                "a single-pair O_DIRECT boot-fill read failed: " + err);
+        expect(pr, one.data());
+    }
+    source.close();
+}
+
 // #633: the host RAM probe with fake /proc and cgroup trees: v2 (a limit, "max", a missing or malformed limit), v1
 // (a limit, unlimited), and no cgroup line at all.  Elsewhere than Linux it reads the machine's RAM.
 void test_host_memory() {
@@ -1097,6 +1160,7 @@ int main(int argc, char** argv) {
         test_canonical_layout();
         test_unbuffered_reads();
         test_blob_offset_order();
+        test_odirect_boot_fill_reads();
         test_io_prefetch();
 #if defined(STRATA_NATIVE_EXPERTS)
         test_native_variable_layout();

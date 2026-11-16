@@ -26,6 +26,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "strata/core/vmm.hpp"
@@ -220,8 +221,31 @@ public:
     bool sync_queued(std::string& err);
 
     /// **F6 (plan: boot slot pre-fill, queued batched parallel): one blob of a batched fill** - `bytes` bytes at
-    /// `blob` (0 = the slot's blob, the same convention as `fill_slot`) land in `slot`.
-    struct BatchFill { int32_t slot; const uint8_t* blob; int64_t bytes; };
+    /// `blob` (0 = the slot's blob, the same convention as `fill_slot`) land in `slot`.  F7ab
+    /// (STRATA_BOOT_FILL_ODIRECT): an item may instead NAME its pair - `blob` null, `layer`/`expert` set -
+    /// when the cache has a pack reader (`set_pack_reader`): the bytes are then read straight from the
+    /// pack files into the item's pinned staging slot (one unbuffered batch per staging half), not
+    /// memcpy'd from a page-cache pointer.
+    struct BatchFill {
+        int32_t slot;
+        const uint8_t* blob;
+        int64_t bytes;
+        int32_t layer = -1;   ///< F7ab: the pack-read form (blob == nullptr)
+        int32_t expert = -1;
+    };
+
+    /// F7ab (STRATA_BOOT_FILL_ODIRECT): the boot fill's pack reader - `n` (layer, expert) pairs' blobs
+    /// read from the pack files into `dst[i]`, one unbuffered O_DIRECT batch (generate.cpp sets it to
+    /// FileExpertSource::read_blobs_batch, whose own per-pair fallback is the page cache - a read the
+    /// drive refuses lands buffered, and only a refusal of both fails).  Items with a null `blob` (see
+    /// `BatchFill`) are read through it straight into their pinned staging slot.  Null (the default):
+    /// today's caller-pointer fill, byte for byte.
+    typedef bool (*PackReadFn)(void* ctx, const std::pair<int32_t, int32_t>* pairs, uint8_t* const* dst, int n,
+                               std::string& err);
+    void set_pack_reader(PackReadFn fn, void* ctx) {
+        pack_read_ = fn;
+        pack_read_ctx_ = ctx;
+    }
 
     /// **THE BATCHED PINNED-STAGED QUEUED FILL THE BOOT PRE-FILL WILL SWITCH TO (no caller yet).**  Each blob
     /// goes pageable->pinned by `memcpy` into a free half of a per-cache pinned staging ring, then
@@ -288,6 +312,8 @@ private:
     uint8_t* h_stage_ = nullptr;
     void* fill_stream_ = nullptr;
     void* fill_ev_[2] = {nullptr, nullptr};
+    PackReadFn pack_read_ = nullptr;   ///< F7ab: see `set_pack_reader`
+    void* pack_read_ctx_ = nullptr;
     int64_t slot_end(int64_t n) const { return off_.empty() ? n * blob_ : (int64_t) off_[(size_t) n]; }
     bool open_segmented(uint64_t want, std::string& err);
     void release_segmented();

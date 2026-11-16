@@ -2842,6 +2842,8 @@ bool FileExpertSource::map_view(std::string& why) {
 }
 
 bool FileExpertSource::read_direct(const Fill* fills, size_t n) const {
+    if ((direct_.empty() ? pdirect_ : direct_).empty())
+        return false;   // F7ab: no unbuffered fds armed - the caller's page-cache fallback answers
 #if defined(_WIN32)
     // NTFS runs the unbuffered reads of a file one at a time while the file is mapped or cached anywhere (the engine
     // maps the GGUF shards for the token embedding and the PLE table): measured on a PCIe 5 drive, 512 KiB reads at

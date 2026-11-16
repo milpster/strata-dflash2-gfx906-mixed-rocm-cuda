@@ -912,7 +912,9 @@ bool ExpertCache::fill_slot_queued_parts(int32_t slot, const BlobPart* parts, in
 // F6 slice 1 (see the header): the batched pinned-staged queued fill.  No caller yet - the boot pre-fill
 // switches to it behind STRATA_BOOT_FILL_QUEUED in the next slice.  Every byte travels pageable->pinned->
 // device: the caller's pointer (the boot fill's mmap) is never handed to cudaMemcpyAsync, the HIP
-// pageable-source trap that makes fill_slot_blocking stage at all (see its comment).
+// pageable-source trap that makes fill_slot_blocking stage at all (see its comment).  F7ab
+// (STRATA_BOOT_FILL_ODIRECT): an item that names its pair (blob null, a pack reader set) skips the
+// pageable source entirely - the reader puts the pack's bytes straight into the pinned staging slot.
 bool ExpertCache::fill_slots_batched(const BatchFill* items, int n, std::string& err) {
     if (n <= 0) return true;
     if (items == nullptr) {
@@ -930,8 +932,12 @@ bool ExpertCache::fill_slots_batched(const BatchFill* items, int n, std::string&
             return false;
         }
         if (items[i].blob == nullptr) {
-            err = "ExpertCache::fill_slots_batched: the host blob of item " + std::to_string(i) + " is null";
-            return false;
+            // F7ab: the pack-read form - valid only with a reader and an in-geometry pair
+            if (pack_read_ == nullptr || items[i].layer < 0 || items[i].expert < 0 ||
+                items[i].layer >= n_layers_ || items[i].expert >= n_expert_) {
+                err = "ExpertCache::fill_slots_batched: the host blob of item " + std::to_string(i) + " is null";
+                return false;
+            }
         }
     }
 
@@ -987,10 +993,28 @@ bool ExpertCache::fill_slots_batched(const BatchFill* items, int n, std::string&
         }
         uint8_t* stage = h_stage_ + (size_t) half * half_bytes;
         const int cnt = std::min(n - at, kBatchStage);
+        // F7ab (STRATA_BOOT_FILL_ODIRECT): this half's pack-read items first - ONE unbuffered batch
+        // straight into their staging slots, before any enqueue of the half (a refused read then leaves
+        // the stream and the ring carrying nothing new, the property the validation loop above buys).
+        // The reader writes each layer's full blob, the same figure the memcpy path's `it.bytes` is.
+        if (pack_read_ != nullptr) {
+            std::vector<std::pair<int32_t, int32_t>> rd_pairs;
+            std::vector<uint8_t*> rd_dst;
+            for (int i = 0; i < cnt; ++i)
+                if (items[at + i].blob == nullptr) {
+                    rd_pairs.emplace_back(items[at + i].layer, items[at + i].expert);
+                    rd_dst.push_back(stage + (size_t) i * (size_t) blob_);
+                }
+            if (!rd_pairs.empty() && !pack_read_(pack_read_ctx_, rd_pairs.data(), rd_dst.data(),
+                                                 (int) rd_pairs.size(), err)) {
+                failed = true;
+                break;
+            }
+        }
         for (int i = 0; i < cnt; ++i) {
             const BatchFill& it = items[at + i];
             const size_t nb = (size_t) (it.bytes > 0 && it.bytes <= blob_ ? it.bytes : blob_);
-            std::memcpy(stage + (size_t) i * (size_t) blob_, it.blob, nb);
+            if (it.blob != nullptr) std::memcpy(stage + (size_t) i * (size_t) blob_, it.blob, nb);   // F7ab: pack-read items are in place already
             const cudaError_t e = cudaMemcpyAsync(device_slot(it.slot), stage + (size_t) i * (size_t) blob_, nb,
                                                   cudaMemcpyHostToDevice, stream);
             if (e != cudaSuccess) {

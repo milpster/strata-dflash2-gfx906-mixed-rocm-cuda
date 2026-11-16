@@ -328,6 +328,42 @@ static bool boot_fill_sort() {
     return on;
 }
 
+// F7ab (boot I/O determinism): STRATA_BOOT_FILL_ODIRECT — the boot fills read their blob bytes through
+// the pack's unbuffered O_DIRECT windows (`FileExpertSource::read_blobs_batch`, armed by arm_swap_reads:
+// sorted, merged 4 KiB-aligned windows, the page cache stays out) instead of `blob_stable`'s mapped
+// reads.  With the F6 queued fill on, the bytes go straight into the pinned staging halves (the cache's
+// pack reader, ExpertCache::set_pack_reader); without it, into a per-loop buffer.  Default OFF; an arm
+// that fails falls back to today's page-cache reads, with a line naming it (read_blobs_batch's own
+// per-pair fallback is the page cache, so a refused unbuffered read still lands the bytes).
+static bool boot_fill_odirect() {
+    static const bool on = std::getenv("STRATA_BOOT_FILL_ODIRECT") != nullptr;
+    return on;
+}
+
+// F7ab: the pack reader ExpertCache::fill_slots_batched reads null-blob items through (see
+// set_pack_reader).  One ctx per fill loop (CUDA0's and each stage's), so the batched read's wall time
+// lands in that loop's pack-read phase (the F7c field) and the flush's h2d window subtracts it — the
+// read runs inside the flush, and the two phases must not double-count it.
+struct BootPackReader {
+    strata::core::FileExpertSource* src;
+    double* read_ms;     // the loop's pack_read accumulator (F7c pack_read_s)
+    double since_flush;  // read time inside the current flush, subtracted from its h2d window
+};
+
+static bool boot_pack_read(void* ctx, const std::pair<int32_t, int32_t>* pairs, uint8_t* const* dst, int n,
+                           std::string& err) {
+    auto* r = static_cast<BootPackReader*>(ctx);
+    std::vector<std::pair<int32_t, int32_t>> v(pairs, pairs + n);
+    std::vector<uint8_t*> d(dst, dst + n);
+    std::vector<uint8_t> ok;
+    const auto t0 = std::chrono::steady_clock::now();
+    const bool good = r->src->read_blobs_batch(v, d, ok, err);
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    *r->read_ms += ms;
+    r->since_flush += ms;
+    return good;
+}
+
 std::string vram_free_note() {
     (void) cudaGetLastError();
     size_t free_b = 0, total_b = 0;
@@ -9376,6 +9412,7 @@ int main(int argc, char** argv) {
         bool failed = false;   // the fill thread's own failure (its line printed; today's `return 1` point)
     };
     std::vector<StageFillState> stage_fill_state(stages.size());
+    std::vector<BootPackReader> stage_pack_readers(stages.size());   // F7ab: each stage's pack reader ctx (see cuda0's)
     std::vector<std::function<void()>> stage_posts;   // per-stage verify/check/report lambdas, deferred to after the joins (gate ON)
     std::vector<std::thread> fill_threads;
     // CUDA0's fill state, hoisted out of the profile-fill block so the deferred tail reaches it; gate OFF still
@@ -9388,6 +9425,32 @@ int main(int argc, char** argv) {
     uint64_t fill_bytes = 0;
     std::pair<int32_t, int32_t> verified_pair{};   // H6: the first pair THIS run prefilled (profile[0] may be the helper's)
     std::function<void()> cuda0_tail_deferred;   // gate ON: CUDA0's verify/check/report/checksum tail, run after the joins
+    BootPackReader cuda0_pack_reader{&src, &pack_read_ms, 0.0};   // F7ab: the cache's pack reader ctx (set on xcache below)
+    // F7ab (STRATA_BOOT_FILL_ODIRECT): arm the pack's unbuffered read for the boot fills (see
+    // boot_fill_odirect).  Scoped to the file-source boot (--mmap-experts / the RAM fallback) whose
+    // fills read the pack through the page cache - the slow-boot class: the arena boot fills read RAM
+    // (no pack I/O to bypass), and a fully unbuffered tier already reads O_DIRECT (#286's batches).
+    // arming keeps the tier's normal blob() reads mapped (pdirect_, the W1 lever's discipline); an arm
+    // that fails names itself and the fill keeps today's page-cache reads - the explicit fallback.
+    bool odirect_fills = boot_fill_odirect();
+    if (odirect_fills && (srcp != &src || src.unbuffered())) {
+        std::fprintf(stderr, "strata generate: STRATA_BOOT_FILL_ODIRECT: %s; the boot fill keeps %s reads\n",
+                     srcp != &src ? "this boot fills from the RAM arena, not the pack"
+                                  : "the file tier reads unbuffered already (#286)",
+                     srcp != &src ? "arena" : "unbuffered");
+        odirect_fills = false;
+    }
+    if (odirect_fills) {
+        std::string odirect_why;
+        if (!src.arm_swap_reads(odirect_why)) {
+            std::fprintf(stderr, "strata generate: STRATA_BOOT_FILL_ODIRECT: %s; the boot fill keeps the "
+                                 "page-cache reads\n", odirect_why.c_str());
+            odirect_fills = false;
+        } else {
+            std::fprintf(stderr, "strata generate: STRATA_BOOT_FILL_ODIRECT: the pack reads are armed (unbuffered "
+                                 "O_DIRECT windows; the page cache stays out of the boot fill)\n");
+        }
+    }
     if (!profile.empty() && srcp != nullptr) {
 
         // F6c: the CUDA0 fill body.  Gate ON it runs on its own thread, whose lambda establishes the device
@@ -9404,9 +9467,10 @@ int main(int argc, char** argv) {
             // #286: an unbuffered file tier reads the pairs in batches of 64, the next batch while this one is copied
             std::future<void> ahead;
             auto read_batch = [&](int64_t at) { src.prefetch_pairs(profile.data() + at, std::min<int64_t>(64, want - at)); };
-            // mapped reads: advise the next `fill_ahead` pairs so their reads overlap; STRATA_FILL_AHEAD=0 turns it off
+            // mapped reads: advise the next `fill_ahead` pairs so their reads overlap; STRATA_FILL_AHEAD=0 turns it off.
+            // F7ab: no advising under STRATA_BOOT_FILL_ODIRECT - the reads bypass the page cache the advice warms.
             int64_t fill_ahead = 0;
-            if (!per_layer && srcp == &src && !src.unbuffered()) {
+            if (!per_layer && srcp == &src && !src.unbuffered() && !odirect_fills) {
                 const char* v = std::getenv("STRATA_FILL_AHEAD");
                 fill_ahead = v == nullptr ? 256 : std::max(0, std::atoi(v));
                 if (fill_ahead > 0 && !src.advise_pairs(profile.data(), std::min<int64_t>(fill_ahead, want))) fill_ahead = 0;
@@ -9435,10 +9499,19 @@ int main(int argc, char** argv) {
             int64_t bfill_last = -1;   // profile index of the newest queued pair, for the failure line at loop end
             auto flush_bfill = [&]() {   // one batched flush; err set on failure; the queue is always cleared
                 if (bfill.empty()) return true;
+                cuda0_pack_reader.since_flush = 0;   // F7ab: the pack reader's time inside THIS flush is pack read, not h2d
                 const bool ok = xcache.fill_slots_batched(bfill.data(), (int) bfill.size(), fill_err);
+                const double rd = cuda0_pack_reader.since_flush;
                 bfill.clear();
+                cuda0_pack_reader.since_flush = 0;
+                h2d_ms -= rd;   // F7ab: 0 unless the cache read the pack inside the flush (STRATA_BOOT_FILL_ODIRECT)
                 return ok;
             };
+            // F7ab (STRATA_BOOT_FILL_ODIRECT): with the queued fill on, the pinned staging halves read the
+            // pack themselves (the cache's pack reader; items name their pair, blob null).  Without it,
+            // the loop reads unbuffered into its own buffer below - heap, not pinned: fill_slot_blocking
+            // stages pageable sources itself (the HIP rule), exactly as it does blob_stable's mapping.
+            if (odirect_fills && queued_fills) xcache.set_pack_reader(boot_pack_read, &cuda0_pack_reader);
             // F7ab (STRATA_BOOT_FILL_SORT): the offset-sorted read order (see boot_fill_sort).  `fill_slot`
             // tracks each rank's admission — -1 undecided, -2 decided-never (a per-layer skip), >= 0 its
             // slot — and a pair's bytes are read when its offset window holds no undecided pair left, so
@@ -9458,6 +9531,10 @@ int main(int argc, char** argv) {
             const bool sort_fills = !fill_ord.empty();
             std::vector<int32_t> fill_slot(sort_fills ? (size_t) want : 0, -1);
             int64_t fill_wcur = 0;
+            // F7ab: the O_DIRECT staging of the F6-off fill - one blob per rank, or a window of 8 (the
+            // sort gate's read batch); the queued fill needs none (its pinned halves read the pack).
+            const int64_t od_stride = (int64_t) strata::kernels::cpu::expert_layout().max_blob;
+            std::vector<uint8_t> od_buf(odirect_fills && !queued_fills ? (size_t) (sort_fills ? 8 : 1) * (size_t) od_stride : 0);
             // One offset window's reads and fills (<= 8 pairs, one F6 staging half); false — its line
             // printed — fails the fill.  `tail`: the rank loop is over, so the pairs still undecided were
             // never admitted (the capacity break) and their windows emit the decided rest.
@@ -9469,22 +9546,51 @@ int main(int argc, char** argv) {
                         while (ready < win && fill_slot[(size_t) fill_ord[(size_t) (fill_wcur + ready)]] != -1) ++ready;
                         if (ready < win) return true;   // the window waits for its remaining admissions
                     }
+                    // F7ab: the window's reads, in offset order.  O_DIRECT with the F6-off fill: ONE
+                    // batched unbuffered read into the window buffer (this rd window); with F6 on: no
+                    // read here at all - the staging half reads the pack inside the flush (the pack
+                    // reader).  Page cache: per pair below, exactly today's call.
+                    if (odirect_fills && !queued_fills) {
+                        std::vector<std::pair<int32_t, int32_t>> rd;
+                        std::vector<uint8_t*> rd_dst;
+                        for (int64_t k = 0; k < win; ++k) {
+                            const int64_t r0 = fill_ord[(size_t) (fill_wcur + k)];
+                            if (fill_slot[(size_t) r0] >= 0) {
+                                rd.emplace_back(profile[(size_t) r0].first, profile[(size_t) r0].second);
+                                rd_dst.push_back(od_buf.data() + (size_t) k * (size_t) od_stride);
+                            }
+                        }
+                        std::vector<uint8_t> okr;
+                        const auto rd_t0 = std::chrono::steady_clock::now();
+                        const bool rd_ok = src.read_blobs_batch(rd, rd_dst, okr, fill_err) &&
+                                           std::all_of(okr.begin(), okr.end(), [](uint8_t o) { return o == 1; });
+                        pack_read_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - rd_t0).count();
+                        if (!rd_ok) {
+                            std::fprintf(stderr, "strata generate: the profile fill failed at pair %lld: %s\n",
+                                         (long long) fill_ord[(size_t) fill_wcur], fill_err.c_str());
+                            return false;
+                        }
+                    }
                     for (int64_t k = 0; k < win; ++k) {
                         const int64_t r = fill_ord[(size_t) (fill_wcur + k)];
                         const int32_t slot = fill_slot[(size_t) r];
                         if (slot < 0) continue;   // never admitted (a per-layer skip, or past the break)
                         const auto rd_t0 = std::chrono::steady_clock::now();
-                        const uint8_t* b = srcp->blob_stable(profile[(size_t) r].first, profile[(size_t) r].second);
-                        pack_read_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - rd_t0).count();
+                        const uint8_t* b = odirect_fills ? nullptr
+                                                         : srcp->blob_stable(profile[(size_t) r].first, profile[(size_t) r].second);
+                        if (!odirect_fills)
+                            pack_read_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - rd_t0).count();
                         const auto hz_t0 = std::chrono::steady_clock::now();
-                        bool slot_ok = b != nullptr;   // a null blob fails the fill exactly as before, without calling it
+                        bool slot_ok = true;   // F7ab: odirect read the bytes above (or the half will); the page-cache path keeps its null check
+                        if (!odirect_fills && b == nullptr) slot_ok = false;   // a null blob fails the fill exactly as before, without calling it
                         if (slot_ok && queued_fills) {   // the window IS the flush batch (<= 8 = one staging half)
-                            bfill.push_back({slot, b, (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(profile[(size_t) r].first)});
+                            bfill.push_back({slot, b, (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(profile[(size_t) r].first),
+                                             profile[(size_t) r].first, profile[(size_t) r].second});   // F7ab: b null + the pair = the pack-read item
                             bfill_last = r;
                             slot_ok = flush_bfill();
                         } else if (slot_ok)
-                            slot_ok = xcache.fill_slot_blocking(slot, b, fill_err,
-                                 (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(profile[(size_t) r].first));
+                            slot_ok = xcache.fill_slot_blocking(slot, odirect_fills ? od_buf.data() + (size_t) k * (size_t) od_stride : b,
+                                 fill_err, (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(profile[(size_t) r].first));
                         h2d_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - hz_t0).count();
                         if (!slot_ok) {
                             std::fprintf(stderr, "strata generate: the profile fill failed at pair %lld: %s\n",
@@ -9517,20 +9623,31 @@ int main(int argc, char** argv) {
                 if (sort_fills && !nib_rank(i)) {
                     fill_slot[(size_t) i] = slot;   // decided: read when its offset window completes (below)
                 } else {
-                    const auto rd_t0 = std::chrono::steady_clock::now();
-                    const uint8_t* b = srcp->blob_stable(profile[(size_t) i].first, profile[(size_t) i].second);
-                    pack_read_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - rd_t0).count();
                     const bool nib_pair = nib_rank(i);   // STRATA_EXPERT_NIBBLE
+                    const auto rd_t0 = std::chrono::steady_clock::now();
+                    const uint8_t* b = nullptr;
+                    bool slot_ok = true;   // a null blob fails the fill exactly as before, without calling it
+                    if (odirect_fills && !nib_pair) {   // F7ab: one unbuffered read into the loop's buffer (the F6-off shape); nib keeps the mapped bytes it transcodes
+                        std::vector<std::pair<int32_t, int32_t>> one{{profile[(size_t) i].first, profile[(size_t) i].second}};
+                        std::vector<uint8_t*> one_dst{od_buf.data()};
+                        std::vector<uint8_t> okr;
+                        slot_ok = src.read_blobs_batch(one, one_dst, okr, fill_err) && okr[0] == 1;
+                    } else {
+                        b = srcp->blob_stable(profile[(size_t) i].first, profile[(size_t) i].second);
+                        slot_ok = b != nullptr;
+                    }
+                    pack_read_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - rd_t0).count();
                     const auto hz_t0 = std::chrono::steady_clock::now();
-                    bool slot_ok = b != nullptr;   // a null blob fails the fill exactly as before, without calling it
                     if (slot_ok && queued_fills && !nib_pair) {   // F6: queue it; the flush's copy is timed in this h2d window
-                        bfill.push_back({slot, b, (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(profile[(size_t) i].first)});
+                        bfill.push_back({slot, b, (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(profile[(size_t) i].first),
+                                         profile[(size_t) i].first, profile[(size_t) i].second});   // F7ab: b null + the pair = the pack-read item
                         bfill_last = i;
                         if (bfill.size() == 8) slot_ok = flush_bfill();
-                    } else if (slot_ok)
-                        slot_ok = nib_pair ? nib_x.add(profile[(size_t) i].first, profile[(size_t) i].second, slot, b, fill_err)
-                                           : xcache.fill_slot_blocking(slot, b, fill_err,
-                                                (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(profile[(size_t) i].first));
+                    } else if (slot_ok && !nib_pair)
+                        slot_ok = xcache.fill_slot_blocking(slot, odirect_fills ? od_buf.data() : b, fill_err,
+                             (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(profile[(size_t) i].first));
+                    else if (slot_ok)
+                        slot_ok = nib_x.add(profile[(size_t) i].first, profile[(size_t) i].second, slot, b, fill_err);
                     h2d_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - hz_t0).count();
                     if (!slot_ok) {
                         std::fprintf(stderr, "strata generate: the profile fill failed at pair %lld: %s\n",
@@ -9763,6 +9880,8 @@ int main(int argc, char** argv) {
         // device scope (st.dev) explicitly - the OnDevice above covers the parent's passes only, NOT a
         // fresh std::thread; gate OFF it runs INLINE on this thread, exactly today's order.  `err` is
         // shadowed by fill_err (see the CUDA0 fill body).
+        BootPackReader& stage_pack_reader = stage_pack_readers[si];   // F7ab: the element outlives the fill threads (sized above)
+        stage_pack_reader = BootPackReader{&src, &stage_pack_ms, 0.0};
         auto stage_fill = [&]() {
             std::string fill_err;
             // F6 (STRATA_BOOT_FILL_QUEUED): this stage's queued batched fill — same shape as the CUDA0 loop's
@@ -9770,12 +9889,20 @@ int main(int argc, char** argv) {
             const bool stage_queued = boot_fill_queued();
             std::vector<strata::core::ExpertCache::BatchFill> stage_bfill;
             int64_t stage_bfill_last = -1;   // `filled` of the newest queued pair, for the failure line at loop end
+            BootPackReader& pack_reader = stage_pack_reader;   // F7ab: {&src, this stage's pack_ms} (bound in the iteration scope)
             auto flush_stage_bfill = [&]() {   // one batched flush; err set on failure; the queue is always cleared
                 if (stage_bfill.empty()) return true;
+                pack_reader.since_flush = 0;   // F7ab: the pack reader's time inside THIS flush is pack read, not h2d
                 const bool ok = st.cache.fill_slots_batched(stage_bfill.data(), (int) stage_bfill.size(), fill_err);
+                const double rd = pack_reader.since_flush;
                 stage_bfill.clear();
+                pack_reader.since_flush = 0;
+                stage_h2d_ms -= rd;   // F7ab: 0 unless the cache read the pack inside the flush (STRATA_BOOT_FILL_ODIRECT)
                 return ok;
             };
+            // F7ab (STRATA_BOOT_FILL_ODIRECT): with the queued fill on, the pinned staging halves read the
+            // pack themselves; without it, the loop reads unbuffered into its own buffer below.
+            if (odirect_fills && stage_queued) st.cache.set_pack_reader(boot_pack_read, &pack_reader);
             // F7ab (STRATA_BOOT_FILL_SORT): this stage's offset-sorted read order — the same windowed
             // shape as the CUDA0 loop's above (fill_slot: -1 undecided, -2 decided-never, >= 0 the slot).
             const bool nib_on = nib_c.active();
@@ -9792,6 +9919,10 @@ int main(int argc, char** argv) {
             const bool sort_fills = !fill_ord.empty();
             std::vector<int32_t> fill_slot(sort_fills ? st.profile.size() : 0, -1);
             int64_t fill_wcur = 0;
+            // F7ab: the O_DIRECT staging of the F6-off fill - one blob per rank, or a window of 8 (the
+            // sort gate's read batch); the queued fill needs none (its pinned halves read the pack).
+            const int64_t od_stride = (int64_t) lay.max_blob;
+            std::vector<uint8_t> od_buf(odirect_fills && !stage_queued ? (size_t) (sort_fills ? 8 : 1) * (size_t) od_stride : 0);
             auto emit_sorted_fills = [&](bool tail) -> bool {
                 while (fill_wcur < (int64_t) fill_ord.size()) {
                     const int64_t win = std::min<int64_t>(8, (int64_t) fill_ord.size() - fill_wcur);
@@ -9800,22 +9931,47 @@ int main(int argc, char** argv) {
                         while (ready < win && fill_slot[(size_t) fill_ord[(size_t) (fill_wcur + ready)]] != -1) ++ready;
                         if (ready < win) return true;   // the window waits for its remaining admissions
                     }
+                    // F7ab: the window's reads, in offset order (see the CUDA0 loop's emit for the three forms)
+                    if (odirect_fills && !stage_queued) {
+                        std::vector<std::pair<int32_t, int32_t>> rd;
+                        std::vector<uint8_t*> rd_dst;
+                        for (int64_t k = 0; k < win; ++k) {
+                            const int64_t r0 = fill_ord[(size_t) (fill_wcur + k)];
+                            if (fill_slot[(size_t) r0] >= 0) {
+                                rd.emplace_back(st.profile[(size_t) r0].first, st.profile[(size_t) r0].second);
+                                rd_dst.push_back(od_buf.data() + (size_t) k * (size_t) od_stride);
+                            }
+                        }
+                        std::vector<uint8_t> okr;
+                        const auto rd_t0 = std::chrono::steady_clock::now();
+                        const bool rd_ok = src.read_blobs_batch(rd, rd_dst, okr, fill_err) &&
+                                           std::all_of(okr.begin(), okr.end(), [](uint8_t o) { return o == 1; });
+                        stage_pack_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - rd_t0).count();
+                        if (!rd_ok) {
+                            std::fprintf(stderr, "strata generate: layer split, CUDA%d profile fill failed at pair %lld: %s\n",
+                                         st.dev, (long long) fill_ord[(size_t) fill_wcur], fill_err.c_str());
+                            return false;
+                        }
+                    }
                     for (int64_t k = 0; k < win; ++k) {
                         const int64_t r = fill_ord[(size_t) (fill_wcur + k)];
                         const int32_t slot = fill_slot[(size_t) r];
                         if (slot < 0) continue;   // never admitted (past the break)
                         const auto& pr = st.profile[(size_t) r];
                         const auto rd_t0 = std::chrono::steady_clock::now();
-                        const uint8_t* b = srcp->blob_stable(pr.first, pr.second);
-                        stage_pack_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - rd_t0).count();
+                        const uint8_t* b = odirect_fills ? nullptr : srcp->blob_stable(pr.first, pr.second);
+                        if (!odirect_fills)
+                            stage_pack_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - rd_t0).count();
                         const auto hz_t0 = std::chrono::steady_clock::now();
-                        bool slot_ok = b != nullptr;   // a null blob fails the fill exactly as before, without calling it
+                        bool slot_ok = true;   // F7ab: odirect read the bytes above (or the half will); the page-cache path keeps its null check
+                        if (!odirect_fills && b == nullptr) slot_ok = false;   // a null blob fails the fill exactly as before, without calling it
                         if (slot_ok && stage_queued) {   // the window IS the flush batch (<= 8 = one staging half)
-                            stage_bfill.push_back({slot, b, (int64_t) lay.blob_bytes(pr.first)});
+                            stage_bfill.push_back({slot, b, (int64_t) lay.blob_bytes(pr.first), pr.first, pr.second});   // F7ab: b null + the pair = the pack-read item
                             stage_bfill_last = r;
                             slot_ok = flush_stage_bfill();
                         } else if (slot_ok)
-                            slot_ok = st.cache.fill_slot_blocking(slot, b, fill_err, (int64_t) lay.blob_bytes(pr.first));
+                            slot_ok = st.cache.fill_slot_blocking(slot, odirect_fills ? od_buf.data() + (size_t) k * (size_t) od_stride : b,
+                                                                  fill_err, (int64_t) lay.blob_bytes(pr.first));
                         stage_h2d_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - hz_t0).count();
                         if (!slot_ok) {
                             std::fprintf(stderr, "strata generate: layer split, CUDA%d profile fill failed at pair %lld: %s\n",
@@ -9840,19 +9996,30 @@ int main(int argc, char** argv) {
                 if (sort_fills && !nib_rank(i)) {
                     fill_slot[(size_t) i] = slot;   // decided: read when its offset window completes (below)
                 } else {
-                    const auto rd_t0 = std::chrono::steady_clock::now();
-                    const uint8_t* b = srcp->blob_stable(pr.first, pr.second);
-                    stage_pack_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - rd_t0).count();
                     const bool nib_pair = nib_rank(i);   // STRATA_EXPERT_NIBBLE
+                    const auto rd_t0 = std::chrono::steady_clock::now();
+                    const uint8_t* b = nullptr;
+                    bool slot_ok = true;   // a null blob fails the fill exactly as before, without calling it
+                    if (odirect_fills && !nib_pair) {   // F7ab: one unbuffered read into the loop's buffer (the F6-off shape); nib keeps the mapped bytes it transcodes
+                        std::vector<std::pair<int32_t, int32_t>> one{{pr.first, pr.second}};
+                        std::vector<uint8_t*> one_dst{od_buf.data()};
+                        std::vector<uint8_t> okr;
+                        slot_ok = src.read_blobs_batch(one, one_dst, okr, fill_err) && okr[0] == 1;
+                    } else {
+                        b = srcp->blob_stable(pr.first, pr.second);
+                        slot_ok = b != nullptr;
+                    }
+                    stage_pack_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - rd_t0).count();
                     const auto hz_t0 = std::chrono::steady_clock::now();
-                    bool slot_ok = b != nullptr;   // a null blob fails the fill exactly as before, without calling it
                     if (slot_ok && stage_queued && !nib_pair) {   // F6: queue it; the flush's copy is timed in this h2d window
-                        stage_bfill.push_back({slot, b, (int64_t) lay.blob_bytes(pr.first)});
+                        stage_bfill.push_back({slot, b, (int64_t) lay.blob_bytes(pr.first), pr.first, pr.second});   // F7ab: b null + the pair = the pack-read item
                         stage_bfill_last = filled;
                         if (stage_bfill.size() == 8) slot_ok = flush_stage_bfill();
-                    } else if (slot_ok)
-                        slot_ok = nib_pair ? nib_c.add(pr.first, pr.second, slot, b, fill_err)
-                                           : st.cache.fill_slot_blocking(slot, b, fill_err, (int64_t) lay.blob_bytes(pr.first));
+                    } else if (slot_ok && !nib_pair)
+                        slot_ok = st.cache.fill_slot_blocking(slot, odirect_fills ? od_buf.data() : b, fill_err,
+                                                              (int64_t) lay.blob_bytes(pr.first));
+                    else if (slot_ok)
+                        slot_ok = nib_c.add(pr.first, pr.second, slot, b, fill_err);
                     stage_h2d_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - hz_t0).count();
                     if (!slot_ok) {
                         std::fprintf(stderr, "strata generate: layer split, CUDA%d profile fill failed at pair %lld: %s\n",
