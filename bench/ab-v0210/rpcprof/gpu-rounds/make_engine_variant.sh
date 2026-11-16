@@ -11,6 +11,12 @@ T=$1; BIN=$2
 [ -x "$BIN/rpcw-hip/strata" ] || { echo "missing $BIN/rpcw-hip/strata"; exit 1; }
 [ -x "$BIN/rpcw-cuda/strata-expert-helper-patient" ] || { echo "missing helper under $BIN/rpcw-cuda (symlink v0233's)"; exit 1; }
 cp "$R/prod-config-ud-iq3xxs-dflash-w4-q4_0-mixed.json" "$R/prod-config-$T.json"
+python3 - "$T" "$BIN" << 'PY'
+import json,sys
+p=f"/mnt/srcds/Strata/prod-config-{sys.argv[1]}.json"; c=json.load(open(p))
+c["exe"]=sys.argv[2]+"/rpcw-hip/strata"   # config exe wins over launcher BIN for the engine
+json.dump(c,open(p,"w"),indent=2)
+PY
 sed -e "s#^CONFIG=.*#CONFIG=\"$R/prod-config-$T.json\"#" \
     -e "s#^BIN=.*#BIN=\"$BIN\"#" \
     "$R/launch-prod-ud-iq3xxs-dflash-w4-q4_0-mixed.sh" > "$R/launch-$T.sh"

@@ -24,10 +24,12 @@ bash $GR/make_engine_variant.sh b6ctrl "$BIN"
 
 boot_fields () {  # boot_fields <launcher> <tag> <arm>
   local L=$1 TAG=$2 ARM=$3
+  local ELOG=/mnt/srcds/Strata/logs/engine-prod-ud-iq3xxs-v0233.log  # config "log": append-only
+  local OFF0=$(stat -c%s "$ELOG" 2>/dev/null || echo 0)
   echo "=== B6 boot $ARM $TAG ($(date +%T)) ==="
   bash $GR/lane_boot.sh "$L" "$TAG" || { echo -e "$TAG\t$ARM\tBOOT-FAIL\t-\t-\t-" >> $TSV; return 1; }
-  local ELOG=$(ls -t $R/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-2026*.log 2>/dev/null | grep -v -- '-helper' | head -1)
-  local F=$(tr -d '\0' < "$ELOG" | grep -a 'pre-filled .* slots' | tail -1 | \
+  tail -c +"$OFF0" "$ELOG" | tr -d '\0' > "$OUT/$TAG-elog.txt"
+  local F=$(grep -a 'pre-filled .* slots' "$OUT/$TAG-elog.txt" | tail -1 | \
     grep -oE 'pack_read_s [0-9.]+|h2d_s [0-9.]+|pinned_mb [0-9]+|\([0-9.]+ MB/s\)' | tr '\n' ' ')
   local PR=$(echo "$F" | grep -oE 'pack_read_s [0-9.]+' | awk '{print $2}')
   local H2=$(echo "$F" | grep -oE 'h2d_s [0-9.]+' | awk '{print $2}')

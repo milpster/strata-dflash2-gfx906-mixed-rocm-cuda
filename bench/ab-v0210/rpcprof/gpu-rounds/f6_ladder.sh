@@ -24,10 +24,11 @@ PY
 
 boot_capture () {  # boot_capture <launcher> <tag> <gate-label>
   local L=$1 TAG=$2 G=$3
+  local ELOG=/mnt/srcds/Strata/logs/engine-prod-ud-iq3xxs-v0233.log  # config "log": append-only, all boots
+  local OFF0=$(stat -c%s "$ELOG" 2>/dev/null || echo 0)
   echo "=== F6 boot $G ($TAG) ($(date +%T)) ==="
   bash $GR/lane_boot.sh "$L" "$TAG" || { echo -e "$TAG\t$G\tBOOT-FAIL\t-\t-\t-\t-"; return 1; }
-  local ELOG=$(ls -t $R/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-2026*.log 2>/dev/null | grep -v -- '-helper' | head -1)
-  tr -d '\0' < "$ELOG" > "$OUT/$TAG-elog.txt"
+  tail -c +"$OFF0" "$ELOG" | tr -d '\0' > "$OUT/$TAG-elog.txt"
   local F=$(grep -a 'pre-filled .* slots' "$OUT/$TAG-elog.txt" | tail -1 | \
     grep -oE 'pack_read_s [0-9.]+|h2d_s [0-9.]+|pinned_mb [0-9]+|\([0-9.]+ MB/s\)' | tr '\n' ' ')
   local PR H2 PM MB
