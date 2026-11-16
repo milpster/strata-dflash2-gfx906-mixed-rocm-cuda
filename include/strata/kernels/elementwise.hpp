@@ -142,6 +142,11 @@ void doorbell_publish(const float* x, const int32_t* ids, const float* weights, 
 void doorbell_publish_value(const float* x, const int32_t* ids, const float* weights, int64_t n, int64_t k,
                             float* x_out, int32_t* ids_out, float* weights_out, uint32_t* d_seq, uint32_t value,
                             void* stream);
+/// F2 (STRATA_HELPER_XQ_RING, default OFF): the q8_1 activation image's mapped-ring publish - `bytes` bytes of
+/// `xq` into the mapped slot, then the step's own `value` stored to `seq` (doorbell_publish_value's discipline).
+/// Issued as a tail kernel after the step's final image write; with the gate off no kernel is added at all.
+void doorbell_xq_publish(const uint8_t* xq, int64_t bytes, uint8_t* m_xq_slot, uint32_t* m_xq_seq,
+                         uint32_t value, void* stream);
 void doorbell_publish_res(const float* x, const int32_t* ids, const int32_t* d_res, int n_expert, int64_t n, int64_t k,
                           float* x_out, int32_t* ids_out, uint32_t* d_seq, void* stream);
 /// SYCL: publishes launched or recorded while `on` store the payload with plain stores instead of uncached ones, for

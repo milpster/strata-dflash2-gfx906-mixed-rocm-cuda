@@ -443,6 +443,28 @@ void doorbell_publish_value(const float* x, const int32_t* ids, const float* wei
                                                                           ids_out, weights_out, d_seq, value);
 }
 
+// F2 (STRATA_HELPER_XQ_RING, default OFF): the q8_1 activation image's mapped-ring publish, issued as a TAIL kernel
+// after the step's final image write (end of record_window's mid()).  Copies `bytes` q8_1 blocks into the mapped
+// ring slot and stores the step's own ring value - doorbell_publish_value's store discipline (one store, no
+// read-modify-write of host memory), so the host's bounded wait on the ring reuses the doorbell's ordering contract.
+__global__ void doorbell_xq_publish_kernel(const uint8_t* __restrict__ xq, int64_t bytes,
+                                           uint8_t* __restrict__ xq_out, uint32_t* __restrict__ seq, uint32_t value) {
+    for (int64_t i = threadIdx.x; i < bytes; i += blockDim.x) xq_out[i] = xq[i];
+    __threadfence_system();
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        __threadfence_system();
+        *(volatile uint32_t*) seq = value;
+        __threadfence_system();
+    }
+}
+
+void doorbell_xq_publish(const uint8_t* xq, int64_t bytes, uint8_t* m_xq_slot, uint32_t* m_xq_seq,
+                         uint32_t value, void* stream) {
+    doorbell_xq_publish_kernel<<<1, 1024, 0, (cudaStream_t) stream>>>(xq, bytes, m_xq_slot, m_xq_seq, value);
+    check_launch("doorbell_xq_publish");
+}
+
 void doorbell_publish(const float* x, const int32_t* ids, const float* weights, int64_t n, int64_t k, float* x_out,
                       int32_t* ids_out, float* weights_out, uint32_t* d_seq, void* stream) {
     if (k > 1024) { std::fprintf(stderr, "doorbell_publish: k too large\n"); std::exit(1); }
