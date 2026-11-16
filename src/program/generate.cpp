@@ -3830,18 +3830,15 @@ static void exit_if_gpu_fatal(const std::string& err) {
     }
 }
 
-// The full-device quiesce before the whole-arena KFD registration: quiesce so no in-flight SDMA touches arena
-// folios while the KFD SVM registration walks them (today's D-state svm_range_set_attr wedge).  On the ROCm/
-// hip-compat build cudaDeviceSynchronize maps via strata_hip.h; per visible device, the current one restored.
+// The pre-registration quiesce: drain the boot's in-flight SDMA (the fills, the warm-ups, the helper
+// handshake) so nothing touches arena folios while the KFD SVM registration walks them (the D-state
+// svm_range_set_attr wedge).  The CURRENT device only: a cudaSetDevice fan-out over every visible device
+// creates the process's first context on GPUs the engine never initialized, and every following
+// cudaHostRegister(Portable)/cudaHostGetDevicePointer of the walk then also covers that context - v0237's
+// registration ran ~5x slower and the first verify window wedged with the stream never ready (the round-18s
+// class), so the fan-out is gone.  On the ROCm/hip-compat build cudaDeviceSynchronize maps via strata_hip.h.
 static void quiesce_devices_for_registration() {
-    int count = 0, prev = 0;
-    if (cudaGetDeviceCount(&count) != cudaSuccess) { (void) cudaGetLastError(); return; }
-    if (cudaGetDevice(&prev) != cudaSuccess) { (void) cudaGetLastError(); prev = 0; }
-    for (int d = 0; d < count; ++d) {
-        if (cudaSetDevice(d) != cudaSuccess) { (void) cudaGetLastError(); continue; }   // no context fits there either
-        cudaDeviceSynchronize();
-    }
-    if (prev >= 0 && prev < count) (void) cudaSetDevice(prev);
+    cudaDeviceSynchronize();
     (void) cudaGetLastError();
 }
 

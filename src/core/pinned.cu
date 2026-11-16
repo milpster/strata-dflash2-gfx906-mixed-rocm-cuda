@@ -1052,8 +1052,11 @@ uint64_t PinnedArena::register_after_fill(const std::vector<std::pair<uint64_t, 
     std::thread wd([&] {
         size_t stuck = 0;
         auto since = std::chrono::steady_clock::now();
+        auto line = since;   // the done-check wakes every second, the progress line keeps its 30 s cadence: the join
+                             // after a finished walk returns in ~1 s, not at the next 30 s tick (v0237's boot read
+                             // "registration ok in 30.0 s" for a walk that ended at 10 s)
         for (;;) {
-            std::this_thread::sleep_for(std::chrono::seconds(30));
+            std::this_thread::sleep_for(std::chrono::seconds(1));
             if (wd_done.load(std::memory_order_acquire)) return;
             const size_t at = wd_at.load(std::memory_order_acquire);
             const auto now = std::chrono::steady_clock::now();
@@ -1067,6 +1070,8 @@ uint64_t PinnedArena::register_after_fill(const std::vector<std::pair<uint64_t, 
                 std::fflush(stderr);
                 std::abort();   // acceptable here: the harness restarts engines, a wedged boot never frees itself
             }
+            if (now - line < std::chrono::seconds(30)) continue;
+            line = now;
             std::fprintf(stderr, "strata pin: registered after the fill: at range %zu of %zu, %.1f GiB, %.0f s elapsed\n",
                          at, n_rng, (double) wd_bytes.load(std::memory_order_acquire) / 1073741824.0,
                          std::chrono::duration<double>(now - t0).count());
