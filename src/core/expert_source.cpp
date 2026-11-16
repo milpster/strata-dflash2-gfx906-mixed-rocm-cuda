@@ -5311,7 +5311,12 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
         if (fs_feed) fs_fed.assign((size_t) d.n_expert, 0);
         for (int r = 0; r < d.remote_count; ++r) {
             std::vector<int32_t> claimed_rows;
-            if (!d.remote[r]->begin(d.layers, x_f, ids, n_tok, k, kind, d.host_res, remote_error, claimed_rows)) {
+            // F2: the win pool path hands the verifier ring's current q8_1 image (the plan sink the
+            // service loop published) to the tier's begin; a per-layer miss or an OFF gate falls back
+            // inside proxy_begin to the per-frame CPU quantize, byte for byte.
+            if (!d.remote[r]->begin(d.layers, x_f, ids, n_tok, k, kind, d.host_res, remote_error, claimed_rows,
+                                    d.plan != nullptr && d.plan->xq_valid ? d.plan->xq_image : nullptr,
+                                    d.plan != nullptr && d.plan->xq_valid ? d.plan->xq_bytes : 0)) {
                 d.failed = true; d.fail = remote_error.c_str(); d.fail_layer = d.layers; return;
             }
             for (int64_t i = 0; i < n; ++i) if (d.remote[r]->owns(i)) kind[i] = 2;

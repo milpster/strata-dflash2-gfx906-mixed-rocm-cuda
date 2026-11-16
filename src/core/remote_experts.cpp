@@ -2,6 +2,7 @@
 #include "strata/core/device.hpp"   // primary_device() (STRATA_PRIMARY_DEVICE)
 #include "strata/core/remote_expert_opt.hpp"
 #include "strata/core/expert_helper_socket.hpp"
+#include "strata/core/expert_helper_xq_ring.hpp"
 
 #include "ggml.h"   // GGML_TYPE_Q8_K (the Q8_K wire's per-layer pack-format gate)
 
@@ -623,7 +624,7 @@ void RemoteExperts::note_fallback() { if (helper_ != nullptr) helper_->note_fall
 
 bool RemoteExperts::proxy_begin(int64_t layer, const float* x, const int32_t* ids, int64_t n_tok, int64_t k,
                                 const int32_t* kind, const int32_t* primary_res, std::string& err,
-                                std::vector<int32_t>& claimed_out) {
+                                std::vector<int32_t>& claimed_out, const uint8_t* xq_image, int64_t xq_bytes) {
     claimed_out.clear();
     proxy_claims_.clear();
     proxy_claims_b_.clear();
@@ -747,13 +748,31 @@ bool RemoteExperts::proxy_begin(int64_t layer, const float* x, const int32_t* id
         return true;
     }
     const int64_t q8_blocks = n_tok * (proxy_n_embd_ / 32);
-    thread_local std::vector<uint8_t> q8;
-    // W3.3 (STRATA_HELPER_WIN_FAST, default OFF): resize-once reuse instead of the per-frame
-    // zero-fill - quantize_q8_1_cpu writes every output byte (36 per block: 4 of ds + 32 of qs),
-    // so the fill guards nothing.  Default keeps today's assign, byte for byte.
-    if (helper_win_fast_enabled()) q8.resize((size_t) q8_blocks * 36u);
-    else q8.assign((size_t) q8_blocks * 36u, 0);
-    quantize_q8_1_cpu(x, n_tok * proxy_n_embd_, q8.data());
+    // F2 (STRATA_HELPER_XQ_RING, default OFF): the ring image replaces the per-frame CPU quantize when
+    // it is valid for THIS layer.  The kBegin wire is always q8_1 blocks (36 B / 32 elems), and the ring
+    // holds the GPU's quantize_q8_1_rows image of the unrotated rows - the same bytes quantize_q8_1_cpu
+    // writes from x (the parity chain's own contract), so the frame is byte-identical: build_window_payload
+    // memcpys whatever image it is given.  Per-layer misses: a folded layer's ring image is of the ROTATED
+    // rows (the helper never claims folded layers, and the candidates gate already skipped them), and a
+    // Q8_K-activation layer's helper wire is the Q8_K arm's own image - both fall through to today's
+    // quantize verbatim, as does every other miss (gate off, ring stale, byte-count mismatch).
+    const auto& lay = strata::kernels::cpu::expert_layout();
+    const bool xq_ring = helper_xq_ring_enabled() && xq_image != nullptr && xq_bytes == q8_blocks * 36 &&
+                         (size_t) layer < lay.fmt.size() && !lay.fmt[(size_t) layer].had_gu &&
+                         lay.fmt[(size_t) layer].gu_act != (int) GGML_TYPE_Q8_K;
+    const uint8_t* img = xq_image;
+    size_t img_bytes = (size_t) xq_bytes;
+    if (!xq_ring) {
+        thread_local std::vector<uint8_t> q8;
+        // W3.3 (STRATA_HELPER_WIN_FAST, default OFF): resize-once reuse instead of the per-frame
+        // zero-fill - quantize_q8_1_cpu writes every output byte (36 per block: 4 of ds + 32 of qs),
+        // so the fill guards nothing.  Default keeps today's assign, byte for byte.
+        if (helper_win_fast_enabled()) q8.resize((size_t) q8_blocks * 36u);
+        else q8.assign((size_t) q8_blocks * 36u, 0);
+        quantize_q8_1_cpu(x, n_tok * proxy_n_embd_, q8.data());
+        img = q8.data();
+        img_bytes = q8.size();
+    }   // the ring path never touches the staging vector: the bytes go straight into the payload builder
     // C4a: the stripe arm.  Channel B's gate is re-read per layer: a mid-request B death (its own
     // latch, or a prompt-claim left in flight) drops the stripe for the rest of the request with a
     // whole-claim kBegin, exactly the wire the tier always sent.  Both channels get foresight's
@@ -772,7 +791,7 @@ bool RemoteExperts::proxy_begin(int64_t layer, const float* x, const int32_t* id
         proxy_claims_ = half_a;
         proxy_claims_b_ = half_b;
         const int rc_a = helper_->begin((int32_t) layer, (int32_t) n_tok, ids_a.data(), claim_res,
-                                        q8.data(), q8.size(), proxy_timeout_ms_);
+                                        img, img_bytes, proxy_timeout_ms_);
         if (rc_a != expert_helper::kOk) {
             if (proxy_residency_live()) fire_helper_residency_release();   // W1
             healthy_ = false;
@@ -783,7 +802,7 @@ bool RemoteExperts::proxy_begin(int64_t layer, const float* x, const int32_t* id
             return true;   // the window is fully CPU-served; nothing failed
         }
         const int rc_b = helper2_->begin_stripe((int32_t) layer, (int32_t) n_tok, ids, claim_res,
-                                                proxy_claims_b_, q8.data(), q8.size(), proxy_timeout_ms_);
+                                                proxy_claims_b_, img, img_bytes, proxy_timeout_ms_);
         if (rc_b != expert_helper::kOk) {
             // B's own latch, the prompt tier's arm of note_prompt_failure: the WINDOW tier keeps
             // serving on A.  The B-half's rows were never claimed - the dispatch's kind[] leaves
@@ -800,8 +819,8 @@ bool RemoteExperts::proxy_begin(int64_t layer, const float* x, const int32_t* id
         proxy_ms_begin_ = helper_->ms_begin();
         return true;
     }
-    const int rc = helper_->begin((int32_t) layer, (int32_t) n_tok, ids, claim_res, q8.data(),
-                                  q8.size(), proxy_timeout_ms_);
+    const int rc = helper_->begin((int32_t) layer, (int32_t) n_tok, ids, claim_res, img,
+                                  img_bytes, proxy_timeout_ms_);
     if (rc != expert_helper::kOk) {
         // The channel is closed by the client; the tier is out for this request.  Claimed_out
         // stays EMPTY for the caller's begin contract: the dispatch's kind[] keeps these entries
@@ -954,8 +973,9 @@ int RemoteExperts::draft_round(const float* rows, int64_t n_new, int64_t pos0, i
 
 bool RemoteExperts::begin(int64_t layer, const float* x, const int32_t* ids, int64_t n_tok,
                           int64_t k, const int32_t* kind, const int32_t* primary_res,
-                          std::string& err, std::vector<int32_t>& claimed_out) {
-    if (proxy_) return proxy_begin(layer, x, ids, n_tok, k, kind, primary_res, err, claimed_out);
+                          std::string& err, std::vector<int32_t>& claimed_out, const uint8_t* xq_image,
+                          int64_t xq_bytes) {
+    if (proxy_) return proxy_begin(layer, x, ids, n_tok, k, kind, primary_res, err, claimed_out, xq_image, xq_bytes);
     claimed_out.clear();   // an in-process tier's claims are read through owns() by the dispatch
     const bool ok = begin(layer, x, ids, n_tok, k, kind, primary_res, err);
     if (ok && device_ >= 0) {

@@ -135,9 +135,13 @@ public:
     /// `kind`: entries the dispatch served from a Foresight slot (kind 0, not primary-resident) are
     /// masked resident in the copy of `primary_res` the kBegin frame carries, so the helper skips
     /// them and `claimed_out` lists exactly the rows the helper answers.
+    /// F2 (STRATA_HELPER_XQ_RING): `xq_image`/`xq_bytes` are the verifier ring's current q8_1 image
+    /// (the win pool path passes them from the plan sink); null/0 or any per-layer miss keeps the
+    /// per-frame quantize_q8_1_cpu verbatim.
     bool begin(int64_t layer, const float* x, const int32_t* ids, int64_t n_tok,
                int64_t k, const int32_t* kind, const int32_t* primary_res, std::string& err,
-               std::vector<int32_t>& claimed_out);
+               std::vector<int32_t>& claimed_out, const uint8_t* xq_image = nullptr,
+               int64_t xq_bytes = 0);
     /// The (token,k) entries this tier's outstanding begin() took.  In-process tiers answer from
     /// their packed `owned_` bitmap; the proxy answers from its outstanding claims (H9: `owned_`
     /// is never allocated in proxy mode - reading it null-derefed the engine at the dispatch's
@@ -309,7 +313,8 @@ private:
     /// expert is not primary-resident were served from a Foresight slot and are masked out of the
     /// kBegin frame's residency bitmap (see begin above).
     bool proxy_begin(int64_t layer, const float* x, const int32_t* ids, int64_t n_tok, int64_t k,
-                     const int32_t* kind, const int32_t* primary_res, std::string& err, std::vector<int32_t>& claimed_out);
+                     const int32_t* kind, const int32_t* primary_res, std::string& err, std::vector<int32_t>& claimed_out,
+                     const uint8_t* xq_image = nullptr, int64_t xq_bytes = 0);
     bool proxy_finish(float* out, std::string& err);
     /// The channel the PROMPT tier serves on right now: channel B when the split is live and pinned
     /// for this request (see prompt_usable()), channel A - today's single channel - otherwise.  The
