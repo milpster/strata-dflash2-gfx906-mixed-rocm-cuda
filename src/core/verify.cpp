@@ -17,6 +17,7 @@
 #include "strata/core/expert_nibble.hpp"
 #include "strata/core/pin_budget.hpp"
 #include "strata/core/penalty_hist_stage.hpp"
+#include "strata/core/sampler_mapped.hpp"
 #include "strata/core/vram_guard.hpp"
 #if defined(STRATA_VERIFY_HGL)
 #include "strata/core/host_graph_launch.hpp"
@@ -747,6 +748,10 @@ Verifier::~Verifier() {
     if (logit_bias_device_) cudaFree(logit_bias_device_);
     for (float* b : slot_bias_dev_) if (b) cudaFree(b);
     if (slot_hist_d_) cudaFree(slot_hist_d_);
+    cudaFree(d_sm_ctl_);
+    cudaFree(d_sm_sp_);
+    cudaFree(d_sm_spec_);
+    cudaFree(sm_scratch_);
     if (cs_ && cs_ != ext_stream_) cudaStreamDestroy(cs_);   // set_stream: the stage's stream, shared, not ours
     if (sh_cs_) cudaStreamDestroy(sh_cs_);
     if (copy_) { cudaStreamSynchronize(copy_); cudaStreamDestroy(copy_); }
@@ -768,7 +773,8 @@ Verifier::~Verifier() {
     if (arena_) cudaFree(arena_);
     if (hcount_d_) cudaFree(hcount_d_);
     void* hosts[] = {h_tok_, h_step_, h_pos_, h_commit_, h_ple_, h_out_, h_x_, h_ids_, h_w_, h_seq_, h_flag_, h_ymiss_,
-                     h_flagA_, h_plan_, h_flagB_, h_plan_err_, h_nf_, herr_h_, hdrop_h_, h_bal_, h_hist_};
+                     h_flagA_, h_plan_, h_flagB_, h_plan_err_, h_nf_, herr_h_, hdrop_h_, h_bal_, h_hist_,
+                     h_sp_, h_mode_, h_spec_};
     for (void* h : hosts)
         if (h) cudaFreeHost(h);
 }
@@ -996,6 +1002,42 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
             m_hist_ctl_ = m_hist_ + hist_cap_;
         }
         if (!ok) { err = "verify: the penalty-history staging allocation failed " + strata::core::pin_exhausted_hint(); return false; }
+    }
+    // F1 (STRATA_SAMPLER_IN_GRAPH): the mapped staging the in-graph head sampler reads at replay - this window's
+    // SamplerParams image, the mode/n_q words, and the spec rows (the window's dtok line, then q rows of
+    // kSpecQStride: the layout sample_tokens_spec's device buffer already uses).  Allocated only with the gate
+    // on, and OFF this verifier allocates exactly what it allocated before; the device twins and the sampler's
+    // block-list scratch follow below, sized for the graph's captured T x n_blocks grid.  A window that
+    // does not arm writes mode 0 and the captured staging + sampler move nothing (see record_window's tail).
+    if (strata::core::sampler_in_graph()) {
+        ok = mapped(sizeof(strata::kernels::SamplerParams) + 64, (void**) &h_sp_, (void**) &m_sp_) &&
+             mapped(64, (void**) &h_mode_, (void**) &m_mode_) &&
+             mapped((size_t) strata::kernels::kVerifyMaxT * (1 + strata::core::kSpecQStride) * 4 + 64,
+                    (void**) &h_spec_, (void**) &m_spec_);
+        if (!ok) { err = "verify: the sampler staging allocation failed " + strata::core::pin_exhausted_hint(); return false; }
+    }
+    // F1 (STRATA_SAMPLER_IN_GRAPH): the device twins of the sampler staging.  d_sm_ctl_ is the mode word ([0]),
+    // n_q ([1]) and, from word 8, an inert history image a penalty-less window points the sampler at; sm_scratch_
+    // holds the sampler's block lists for the widest grid it can be captured with (kVerifyMaxT rows).
+    // sm_nblocks_ == 0 (or any allocation refused) means the tail is never captured and no window arms: the host
+    // sampler, as today.  (A vocabulary past the split sampler's 64-block capture ceiling takes this path too.)
+    if (strata::core::sampler_in_graph() && next_ == nullptr && !batch_rec_) {
+        const size_t scratch_entries =
+            strata::kernels::sample_tokens_mapped_scratch_entries(strata::kernels::kVerifyMaxT, (int) n_vocab_);
+        bool ok12 = scratch_entries != 0 &&
+                    cudaMalloc((void**) &d_sm_ctl_, 64) == cudaSuccess && cudaMemset(d_sm_ctl_, 0, 64) == cudaSuccess &&
+                    cudaMalloc((void**) &d_sm_sp_, sizeof(strata::kernels::SamplerParams)) == cudaSuccess &&
+                    cudaMalloc((void**) &d_sm_spec_, (size_t) strata::kernels::kVerifyMaxT * (1 + strata::core::kSpecQStride) * 4) ==
+                        cudaSuccess;
+        if (ok12) ok12 = cudaMalloc((void**) &sm_scratch_, scratch_entries * sizeof(int2)) == cudaSuccess;
+        if (ok12) sm_nblocks_ = strata::kernels::sample_split_blocks((int) n_vocab_);   // 0 past the capture ceiling
+        else {
+            (void) cudaGetLastError();
+            cudaFree(d_sm_ctl_); d_sm_ctl_ = nullptr;
+            cudaFree(d_sm_sp_); d_sm_sp_ = nullptr;
+            cudaFree(d_sm_spec_); d_sm_spec_ = nullptr;
+            cudaFree(sm_scratch_); sm_scratch_ = nullptr;
+        }
     }
     // DFlash2 taps: set_taps (the drafter) or STRATA_TAP_FILE (the research dump); off, and nothing is allocated or captured, otherwise
     const char* tap_path = std::getenv("STRATA_TAP_FILE");
@@ -2678,7 +2720,9 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
       }   // the head's column chunks
         // Greedy, the default, is recorded here as before (no extra launch or sync per window). A request that
         // samples or penalizes is sampled again host-side after the replay (run()) with its own parameters and a
-        // fresh draw counter: a captured sampler would bake them in and replay the same draws forever.
+        // fresh draw counter: a captured kernel would bake them in and replay the same draws forever - unless
+        // F1 (STRATA_SAMPLER_IN_GRAPH, recorded just below) owns the window, where the mapped staging supplies
+        // exactly those per-window values at replay time.
         if (argmax_rows_wanted()) {   // sm_80 to sm_89 (sm_7x opt-in): the pick over many blocks a row (bitwise the one-block kernel's)
             argmax_rows(head_logits_, T, (int) n_vocab_, arg_scratch_, m_out_, cs);
         } else {
@@ -2689,6 +2733,23 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         }
         // #879: whether each row's logits are all finite, beside the pick (read after the window's own sync)
         if (nan_guard_on()) strata::kernels::logits_nonfinite_rows(head_logits_, T, (int) n_vocab_, m_nf_, cs);
+        // F1 (STRATA_SAMPLER_IN_GRAPH): the in-graph head sampler - the window's sampling inputs staged out of
+        // mapped memory into the device copies, then the mode-selected sampler, all recorded at the tail
+        // (head_logits_ complete, beside the greedy argmax above).  Everything per-window is a replay-time read:
+        // the params (their counter the window's pos0, so the draws are Philox(seed, pos0 + t) as the host
+        // launch's), the mode word naming the body, n_q, and the spec rows; the history rows are hist_d_'s, which
+        // F8's head copy has already landed above this in the same replay.  A window the host path owns carries
+        // mode 0 and ALL THREE launches are inert.  Captured only for the graph `run()` replays (no layer split,
+        // no batch) and only up to kVerifyMaxT rows - the scratch and the spec image's bound.
+        // sample_tokens_mapped is a no-op past the 64-block vocabulary, and the host sampler reads back the
+        // captured argmax then, unchanged.
+        if (strata::core::sampler_in_graph() && sm_nblocks_ != 0 && next_ == nullptr && !batch_rec_ &&
+            T <= strata::kernels::kVerifyMaxT) {
+            const int32_t* hdev = hist_d_ != nullptr ? hist_d_ : d_sm_ctl_ + 8;
+            strata::kernels::sample_stage_mapped(m_sp_, m_spec_, m_mode_, d_sm_sp_, d_sm_spec_, d_sm_ctl_, cs);
+            strata::kernels::sample_tokens_mapped(head_logits_, T, (int) n_vocab_, d_sm_sp_, hdev, hist_len_,
+                                                  d_sm_spec_, d_sm_ctl_, sm_scratch_, m_out_, nullptr, cs);
+        }
     }
     stamp(g.n_layers, 1, 0);
     if (tap_on_ && !batch_rec_ && tap_file_ != nullptr) copy_from_mapped(m_tap_, tap_dev_, (int64_t) T * (int64_t) tap_layers_.size() * N, cs);
@@ -2868,6 +2929,9 @@ void Verifier::trim_stale_family() {
 bool Verifier::stage_hist(const int32_t* rows, int T, int hist_n) {
     const bool own = h_hist_ != nullptr &&
                      strata::core::hist_stage_write(h_hist_, h_hist_ctl_, hist_cap_, rows, T, hist_n);
+    // F1: the head stage's own answer is what run() consults before arming its in-graph sampler - the fallback's
+    // blocking copy left the device rows correct either way, but the captured copy must not be read as staged.
+    if (next_ == nullptr && !batch_rec_) hist_stage_ok_ = own;
     // A layer split hands the same device buffer to every stage (set_history forwards), and the head stage's
     // graph is the one that copies it out: forward, so the stage that owns the captured copy is filled too.
     // Every stage refused or staged together (they all carry the same capacity), so the caller's fallback is
@@ -3414,6 +3478,43 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     const Clock::time_point t0 = Clock::now();
     if (!pre && !staged_) stage_inputs(T, tokens, pos0);
     staged_ = false;
+    // ---- F1 (STRATA_SAMPLER_IN_GRAPH): arm this window's in-graph sampler, or leave the mode word at 0 so the
+    // captured staging and generic sampler (record_window's tail) move nothing and the host block below runs
+    // today's path byte for byte.  Every write here must precede the graph launch a few lines down - which is
+    // itself a condition: a window an earlier stage pre-launched cannot receive them any more.
+    //
+    // Arming includes the PENALIZED-GREEDY request (hist_d_ set, temperature 0): the mode word covers it and a
+    // temperature-0 argmax is deterministic.  Plain greedy (hist_d_ == nullptr) never arms - the captured argmax
+    // already serves it.  The history must be in F8's image (the graph's head copy, above the sampler in the
+    // same replay) whenever the window carries one; the measure legs stay on the host path by design (the
+    // diagnostic's error-token rule).  logit_bias and the gumbel-stamped pick remain host-side.
+    bool sampler_graph_ = false;
+    if (!pre && strata::core::sampler_in_graph() && sm_nblocks_ != 0 && next_ == nullptr && !batch_rec_ &&
+        le_ == g.n_layers && T <= kVerifyMaxT && head_sampling_ &&
+        sampling_.logit_bias == nullptr && !sampling_.gumbel && !measure) {
+        const bool sampled_t = !sampling_.greedy && sampling_.temperature > 0.0f;
+        const bool hist_ready = hist_d_ == nullptr || (strata::core::penalty_hist_mapped() && hist_stage_ok_);
+        const int nq = sampled_t && T > 1 && spec_q_ != nullptr && spec_nq_ > 0 ? std::min(spec_nq_, T - 1) : 0;
+        int mode = 0;
+        if (sampled_t) mode = nq > 0 ? strata::kernels::kSampleModeSpec : strata::kernels::kSampleModeSampled;
+        else if (hist_d_ != nullptr) mode = strata::kernels::kSampleModeGreedy;
+        if (mode != 0 && hist_ready) {
+            SamplerParams sp = sampling_;
+            sp.counter = (uint64_t) pos0;   // the kernel reads pos0 from the staged counter: Philox(seed, pos0 + t)
+            std::memcpy(h_sp_, &sp, sizeof sp);
+            std::memcpy(h_spec_, tokens + 1, (size_t) (T - 1) * sizeof(int32_t));   // the judged modes' dtok line
+            if (nq > 0)
+                std::memcpy(h_spec_ + kVerifyMaxT, spec_q_, (size_t) nq * strata::core::kSpecQStride * sizeof(int32_t));
+            h_mode_[0] = mode;
+            h_mode_[1] = nq;
+            std::atomic_thread_fence(std::memory_order_seq_cst);
+            sampler_graph_ = true;
+        }
+    }
+    if (!sampler_graph_ && !pre && strata::core::sampler_in_graph() && sm_nblocks_ != 0) {
+        *(volatile int32_t*) h_mode_ = 0;   // the tail is inert for this window; the host path below owns it
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+    }
     const bool do_ple = ss.ple.ready() && ple_stage();
     uint32_t ple_rows[kVerifyLongT * PLE_N_HEADS];
     if (do_ple) {
@@ -3717,15 +3818,23 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     if (h_bal_ != nullptr && !all_resident_ && !bal_paused_) pcie_balance_window(steps, G);
     if (prof_on_ && G == 1) collect_profile();   // the window's GPU stage stamps
     // ---- a sampled or penalized request: the head's sampling again, host-side so its parameters are this call's
-    // own (a captured kernel would replay the same draws forever).  Row t's draw is Philox(seed, pos0 + t): tied to
-    // the POSITION it samples, not to how the text was cut into windows, so a seed replays the same text whatever
-    // the drafts were. Exact: a rejected row's draw is discarded, and no kept decision depends on a reused draw.
+    // own (a captured kernel would replay the same draws forever - unless F1's mapped staging owns the window,
+    // the branch above: the staged counter makes the captured draws this window's own).  Row t's draw is
+    // Philox(seed, pos0 + t): tied to the POSITION it samples, not to how the text was cut into windows, so a
+    // seed replays the same text whatever the drafts were. Exact: a rejected row's draw is discarded, and no
+    // kept decision depends on a reused draw.
     if (le_ < g.n_layers) {   // a layer split's earlier stage: the hand-off is written (synced above)
         ++windows;
         return next_ == nullptr || next_->run(T, tokens, pos0, pool, next_user_, out, err);
     }
     const bool sampled = !sampling_.greedy && sampling_.temperature > 0.0f;
-    if (head_sampling_ && (sampled || hist_d_ != nullptr || sampling_.logit_bias != nullptr)) {
+    if (sampler_graph_) {   // F1: the window graph's tail already wrote m_out_ (its sync is the one above); the
+                            // launch and the second sync below belong to the host path this window skipped
+        spec_q_ = nullptr;
+        spec_nq_ = 0;
+        if (h_mode_[0] == strata::kernels::kSampleModeSpec || h_mode_[0] == strata::kernels::kSampleModeProposal)
+            ++spec_windows;   // the judged counters the host path keeps for its report
+    } else if (head_sampling_ && (sampled || hist_d_ != nullptr || sampling_.logit_bias != nullptr)) {
         SamplerParams sp = sampling_;
         sp.counter = (uint64_t) pos0;
         // STRATA_SPEC_PROB: the drafter's q lists for this window, judged by rejection sampling (spec_prob.hpp)

@@ -700,6 +700,23 @@ private:
     int32_t* h_hist_ = nullptr;    int32_t* m_hist_ = nullptr;      // kVerifyLongT * kHistMax words of rows
     int32_t* h_hist_ctl_ = nullptr; int32_t* m_hist_ctl_ = nullptr;  // ctl[0]: the words to copy at replay
     int64_t hist_cap_ = 0;         // the rows' capacity in words
+    // F1 (STRATA_SAMPLER_IN_GRAPH): the mapped staging the in-graph head sampler reads at replay - this window's
+    // SamplerParams image (its counter the window's pos0), the mode/n_q words, and the spec rows (a fixed
+    // kVerifyMaxT-word dtok region, then n_q rows of kSpecQStride: the layout sample_tokens_spec's device buffer
+    // uses).  Allocated only with the gate on; the device twins (d_sm_*) and the sampler's block-list scratch
+    // (sm_scratch_, kVerifyMaxT x n_blocks x kSelMax int2) follow in init().  sm_nblocks_ == 0 - gate off, a
+    // stage, or a vocabulary past the split sampler's capture ceiling - means the tail is never captured and no
+    // window arms: the host sampler, as before.  A window that does not arm writes mode 0 and all three captured
+    // launches move nothing.  See record_window's tail and run()'s arming block.
+    strata::kernels::SamplerParams* h_sp_ = nullptr;   strata::kernels::SamplerParams* m_sp_ = nullptr;
+    int32_t* h_mode_ = nullptr;    int32_t* m_mode_ = nullptr;      // [0] mode, [1] n_q
+    int32_t* h_spec_ = nullptr;    int32_t* m_spec_ = nullptr;
+    int32_t* d_sm_ctl_ = nullptr;  // device [0] mode, [1] n_q; from word 8, an inert history image for a penalty-less window
+    strata::kernels::SamplerParams* d_sm_sp_ = nullptr;   // device SamplerParams image
+    int32_t* d_sm_spec_ = nullptr; // device spec image
+    int2* sm_scratch_ = nullptr;   // the sampler's block lists (never freed while a graph can replay)
+    int sm_nblocks_ = 0;           // the vocabulary's 4,096-logit parts (sampler.hpp's geometry); 0: the path is not fitted
+    bool hist_stage_ok_ = false;   // this window's hist rows are in F8's image (stage_hist, the head stage's own answer)
     // STRATA_TAP_FILE (off by default; nothing is allocated or captured without it): the DFlash2 experiment's hook.
     // After each layer in STRATA_TAP_LAYERS (default 5,15,25,35,45) the window copies the layer's completed output
     // (the residual with its pending FFN write applied, the mean of the hc streams) per row; run() appends
