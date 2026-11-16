@@ -3795,7 +3795,6 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
                     return false;
                 }
             }
-            (void) xseq;
             strata_load_fence();   // the image is read after its ring, like the doorbell payload
             cur_xq_p_ = h_xq_ + (size_t) (k & 1) * (size_t) xq_slot_bytes_;
             cur_xq_bytes_ = (int64_t) n * ((int64_t) g.n_embd / 32) * 36;

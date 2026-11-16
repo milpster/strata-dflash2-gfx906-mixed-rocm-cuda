@@ -76,10 +76,10 @@ int main() {
             k::quantize_q8_1_rows(dx, t, N, d_rows_g, s);
             ck(cudaStreamEndCapture(s, &g));
             ck(cudaGraphInstantiate(&gx, g, nullptr, nullptr, 0));
-            ck(cudaGraphLaunch(qx, s));
-            ck(cudaGraphLaunch(qx, s));   // replayed twice: the second must rewrite the same bytes
+            ck(cudaGraphLaunch(gx, s));
+            ck(cudaGraphLaunch(gx, s));   // replayed twice: the second must rewrite the same bytes
             ck(cudaStreamSynchronize(s));
-            cudaGraphExecDestroy(qx);
+            cudaGraphExecDestroy(gx);
             cudaGraphDestroy(g);
             std::vector<uint8_t> rows(bytes), rows_g(bytes), nat(bytes);
             ck(cudaMemcpy(rows.data(), d_rows, bytes, cudaMemcpyDeviceToHost));
