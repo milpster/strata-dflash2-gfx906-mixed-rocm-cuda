@@ -1,0 +1,472 @@
+[New LWP 330635]
+[New LWP 330402]
+[New LWP 330401]
+[New LWP 330400]
+[New LWP 330399]
+[New LWP 330391]
+[New LWP 330390]
+[New LWP 330389]
+[New LWP 330388]
+[New LWP 330387]
+[New LWP 330386]
+[New LWP 330385]
+[New LWP 324885]
+[New LWP 324884]
+[New LWP 324883]
+[New LWP 324882]
+[New LWP 324881]
+[New LWP 324880]
+[New LWP 324879]
+[New LWP 324878]
+[New LWP 324877]
+[New LWP 324876]
+[New LWP 324875]
+[New LWP 324874]
+[New LWP 324873]
+[New LWP 324872]
+[New LWP 324871]
+[New LWP 324870]
+[New LWP 324869]
+[New LWP 323911]
+
+This GDB supports auto-downloading debuginfo from the following URLs:
+  <https://debuginfod.ubuntu.com>
+Enable debuginfod for this session? (y or [n]) [answered N; input not from terminal]
+Debuginfod has been disabled.
+To make this setting permanent, add 'set debuginfod enabled off' to .gdbinit.
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib/x86_64-linux-gnu/libthread_db.so.1".
+0x00007fc43c518e1b in __GI_sched_yield () at ../sysdeps/unix/syscall-template.S:120
+
+warning: 120	../sysdeps/unix/syscall-template.S: No such file or directory
+Function(s) ^std::(move|forward|as_const|(__)?addressof) will be skipped when stepping.
+Function(s) ^std::(shared|unique)_ptr<.*>::(get|operator) will be skipped when stepping.
+Function(s) ^std::(basic_string|vector|array|deque|(forward_)?list|(unordered_|flat_)?(multi)?(map|set)|span)<.*>::(c?r?(begin|end)|front|back|data|size|empty) will be skipped when stepping.
+Function(s) ^std::(basic_string|vector|array|deque|span)<.*>::operator.] will be skipped when stepping.
+  Id   Target Id                                            Frame 
+* 1    Thread 0x7fc43c70b780 (LWP 323893) "strata-host"     0x00007fc43c518e1b in __GI_sched_yield () at ../sysdeps/unix/syscall-template.S:120
+  2    Thread 0x7fbf63dff6c0 (LWP 330635) "strata-watchdog" __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+  3    Thread 0x7fbf9a5fc6c0 (LWP 330402) "strata-stage"    __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+  4    Thread 0x7fbf9adfd6c0 (LWP 330401) "strata-stage"    __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+  5    Thread 0x7fbf9b5fe6c0 (LWP 330400) "strata-stage"    __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+  6    Thread 0x7fbf9bdff6c0 (LWP 330399) "strata-stage"    __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+  7    Thread 0x7fbfcd9fd6c0 (LWP 330391) "strata-pool-6"   __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+  8    Thread 0x7fbfce1fe6c0 (LWP 330390) "strata-pool-5"   __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+  9    Thread 0x7fc00d1ec6c0 (LWP 330389) "strata-pool-4"   __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+  10   Thread 0x7fc00c9eb6c0 (LWP 330388) "strata-pool-3"   __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+  11   Thread 0x7fbfce9ff6c0 (LWP 330387) "strata-pool-2"   __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+  12   Thread 0x7fbfcd1f86c0 (LWP 330386) "strata-pool-1"   __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+  13   Thread 0x7fbfbddff6c0 (LWP 330385) "strata-pool-0"   __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+  14   Thread 0x7fc00d9ed6c0 (LWP 324885) "strata"          __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+  15   Thread 0x7fc018ff06c0 (LWP 324884) "strata"          __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+  16   Thread 0x7fc0197f16c0 (LWP 324883) "strata"          __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+  17   Thread 0x7fc019ff26c0 (LWP 324882) "strata"          __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+  18   Thread 0x7fc01a7f36c0 (LWP 324881) "strata"          __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+  19   Thread 0x7fc01aff46c0 (LWP 324880) "strata"          __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+  20   Thread 0x7fc01b7f56c0 (LWP 324879) "strata"          __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+  21   Thread 0x7fc01bff66c0 (LWP 324878) "strata"          __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+  22   Thread 0x7fc01c7f76c0 (LWP 324877) "strata"          __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+  23   Thread 0x7fc01cff86c0 (LWP 324876) "strata"          __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+  24   Thread 0x7fc01d7f96c0 (LWP 324875) "strata"          __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+  25   Thread 0x7fc01dffa6c0 (LWP 324874) "strata"          __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+  26   Thread 0x7fc01e7fb6c0 (LWP 324873) "strata"          __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+  27   Thread 0x7fc01effc6c0 (LWP 324872) "strata"          __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+  28   Thread 0x7fc01f7fd6c0 (LWP 324871) "strata"          __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+  29   Thread 0x7fc01fffe6c0 (LWP 324870) "strata"          __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+  30   Thread 0x7fc0207ff6c0 (LWP 324869) "strata"          __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+  31   Thread 0x7fc38a9ff6c0 (LWP 323911) "strata"          __GI___ioctl (fd=3, request=3222817548) at ../sysdeps/unix/sysv/linux/ioctl.c:36
+
+Thread 31 (Thread 0x7fc38a9ff6c0 (LWP 323911) "strata"):
+#0  __GI___ioctl (fd=3, request=3222817548) at ../sysdeps/unix/sysv/linux/ioctl.c:36
+#1  0x00007fc3dc31a500 in ?? () from /opt/rocm-6.1.0/lib/libhsa-runtime64.so.1
+#2  0x00007fc3dc3132d0 in ?? () from /opt/rocm-6.1.0/lib/libhsa-runtime64.so.1
+#3  0x00007fc3dc29c6ac in ?? () from /opt/rocm-6.1.0/lib/libhsa-runtime64.so.1
+#4  0x00007fc3dc261396 in ?? () from /opt/rocm-6.1.0/lib/libhsa-runtime64.so.1
+#5  0x00007fc3dc279a6a in ?? () from /opt/rocm-6.1.0/lib/libhsa-runtime64.so.1
+#6  0x00007fc3dc22a84b in ?? () from /opt/rocm-6.1.0/lib/libhsa-runtime64.so.1
+#7  0x00007fc43c4a27f1 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:448
+#8  0x00007fc43c533b5c in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 30 (Thread 0x7fc0207ff6c0 (LWP 324869) "strata"):
+#0  __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+#1  0x00007fc43c49eae3 in __internal_syscall_cancel (a1=a1@entry=741872168, a2=<optimized out>, a3=a3@entry=0, a4=a4@entry=0, a5=a5@entry=0, a6=a6@entry=4294967295, nr=202) at ./nptl/cancellation.c:49
+#2  0x00007fc43c49f237 in __futex_abstimed_wait_common64 (private=0, futex_word=0x2c381228, expected=0, op=393, abstime=0x0, cancel=true) at ./nptl/futex-internal.c:57
+#3  __futex_abstimed_wait_common (futex_word=0x2c381228, expected=0, clockid=0, abstime=0x0, private=0, cancel=true) at ./nptl/futex-internal.c:87
+#4  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0x2c381228, expected=expected@entry=1344, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at ./nptl/futex-internal.c:139
+#5  0x00007fc43c4a1b17 in __pthread_cond_wait_common (cond=<optimized out>, mutex=0x2c3811e0, clockid=0, abstime=0x0) at ./nptl/pthread_cond_wait.c:426
+#6  ___pthread_cond_wait (cond=<optimized out>, mutex=0x2c3811e0) at ./nptl/pthread_cond_wait.c:458
+#7  0x000000000295619b in std::thread::_State_impl<std::thread::_Invoker<std::tuple<strata::platform::DirectFile::open(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >&)::{lambda()#1}> > >::_M_run() ()
+#8  0x00007fc43c8f2324 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007fc43c4a27f1 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:448
+#10 0x00007fc43c533b5c in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 29 (Thread 0x7fc01fffe6c0 (LWP 324870) "strata"):
+#0  __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+#1  0x00007fc43c49eae3 in __internal_syscall_cancel (a1=a1@entry=741872168, a2=<optimized out>, a3=a3@entry=0, a4=a4@entry=0, a5=a5@entry=0, a6=a6@entry=4294967295, nr=202) at ./nptl/cancellation.c:49
+#2  0x00007fc43c49f237 in __futex_abstimed_wait_common64 (private=0, futex_word=0x2c381228, expected=0, op=393, abstime=0x0, cancel=true) at ./nptl/futex-internal.c:57
+#3  __futex_abstimed_wait_common (futex_word=0x2c381228, expected=0, clockid=0, abstime=0x0, private=0, cancel=true) at ./nptl/futex-internal.c:87
+#4  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0x2c381228, expected=expected@entry=1344, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at ./nptl/futex-internal.c:139
+#5  0x00007fc43c4a1b17 in __pthread_cond_wait_common (cond=<optimized out>, mutex=0x2c3811e0, clockid=0, abstime=0x0) at ./nptl/pthread_cond_wait.c:426
+#6  ___pthread_cond_wait (cond=<optimized out>, mutex=0x2c3811e0) at ./nptl/pthread_cond_wait.c:458
+#7  0x000000000295619b in std::thread::_State_impl<std::thread::_Invoker<std::tuple<strata::platform::DirectFile::open(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >&)::{lambda()#1}> > >::_M_run() ()
+#8  0x00007fc43c8f2324 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007fc43c4a27f1 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:448
+#10 0x00007fc43c533b5c in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 28 (Thread 0x7fc01f7fd6c0 (LWP 324871) "strata"):
+#0  __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+#1  0x00007fc43c49eae3 in __internal_syscall_cancel (a1=a1@entry=741872172, a2=<optimized out>, a3=a3@entry=0, a4=a4@entry=0, a5=a5@entry=0, a6=a6@entry=4294967295, nr=202) at ./nptl/cancellation.c:49
+#2  0x00007fc43c49f237 in __futex_abstimed_wait_common64 (private=0, futex_word=0x2c38122c, expected=0, op=393, abstime=0x0, cancel=true) at ./nptl/futex-internal.c:57
+#3  __futex_abstimed_wait_common (futex_word=0x2c38122c, expected=0, clockid=0, abstime=0x0, private=0, cancel=true) at ./nptl/futex-internal.c:87
+#4  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0x2c38122c, expected=expected@entry=1328, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at ./nptl/futex-internal.c:139
+#5  0x00007fc43c4a1b17 in __pthread_cond_wait_common (cond=<optimized out>, mutex=0x2c3811e0, clockid=0, abstime=0x0) at ./nptl/pthread_cond_wait.c:426
+#6  ___pthread_cond_wait (cond=<optimized out>, mutex=0x2c3811e0) at ./nptl/pthread_cond_wait.c:458
+#7  0x000000000295619b in std::thread::_State_impl<std::thread::_Invoker<std::tuple<strata::platform::DirectFile::open(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >&)::{lambda()#1}> > >::_M_run() ()
+#8  0x00007fc43c8f2324 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007fc43c4a27f1 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:448
+#10 0x00007fc43c533b5c in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 27 (Thread 0x7fc01effc6c0 (LWP 324872) "strata"):
+#0  __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+#1  0x00007fc43c49eae3 in __internal_syscall_cancel (a1=a1@entry=741872172, a2=<optimized out>, a3=a3@entry=135168, a4=a4@entry=0, a5=a5@entry=0, a6=a6@entry=4294967295, nr=202) at ./nptl/cancellation.c:49
+#2  0x00007fc43c49f237 in __futex_abstimed_wait_common64 (private=0, futex_word=0x2c38122c, expected=135168, op=393, abstime=0x0, cancel=true) at ./nptl/futex-internal.c:57
+#3  __futex_abstimed_wait_common (futex_word=0x2c38122c, expected=135168, clockid=0, abstime=0x0, private=0, cancel=true) at ./nptl/futex-internal.c:87
+#4  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0x2c38122c, expected=expected@entry=1328, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at ./nptl/futex-internal.c:139
+#5  0x00007fc43c4a1b17 in __pthread_cond_wait_common (cond=<optimized out>, mutex=0x2c3811e0, clockid=0, abstime=0x0) at ./nptl/pthread_cond_wait.c:426
+#6  ___pthread_cond_wait (cond=<optimized out>, mutex=0x2c3811e0) at ./nptl/pthread_cond_wait.c:458
+#7  0x000000000295619b in std::thread::_State_impl<std::thread::_Invoker<std::tuple<strata::platform::DirectFile::open(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >&)::{lambda()#1}> > >::_M_run() ()
+#8  0x00007fc43c8f2324 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007fc43c4a27f1 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:448
+#10 0x00007fc43c533b5c in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 26 (Thread 0x7fc01e7fb6c0 (LWP 324873) "strata"):
+#0  __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+#1  0x00007fc43c49eae3 in __internal_syscall_cancel (a1=a1@entry=741872168, a2=<optimized out>, a3=a3@entry=135168, a4=a4@entry=0, a5=a5@entry=0, a6=a6@entry=4294967295, nr=202) at ./nptl/cancellation.c:49
+#2  0x00007fc43c49f237 in __futex_abstimed_wait_common64 (private=0, futex_word=0x2c381228, expected=135168, op=393, abstime=0x0, cancel=true) at ./nptl/futex-internal.c:57
+#3  __futex_abstimed_wait_common (futex_word=0x2c381228, expected=135168, clockid=0, abstime=0x0, private=0, cancel=true) at ./nptl/futex-internal.c:87
+#4  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0x2c381228, expected=expected@entry=1344, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at ./nptl/futex-internal.c:139
+#5  0x00007fc43c4a1b17 in __pthread_cond_wait_common (cond=<optimized out>, mutex=0x2c3811e0, clockid=0, abstime=0x0) at ./nptl/pthread_cond_wait.c:426
+#6  ___pthread_cond_wait (cond=<optimized out>, mutex=0x2c3811e0) at ./nptl/pthread_cond_wait.c:458
+#7  0x000000000295619b in std::thread::_State_impl<std::thread::_Invoker<std::tuple<strata::platform::DirectFile::open(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >&)::{lambda()#1}> > >::_M_run() ()
+#8  0x00007fc43c8f2324 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007fc43c4a27f1 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:448
+#10 0x00007fc43c533b5c in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 25 (Thread 0x7fc01dffa6c0 (LWP 324874) "strata"):
+#0  __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+#1  0x00007fc43c49eae3 in __internal_syscall_cancel (a1=a1@entry=741872172, a2=<optimized out>, a3=a3@entry=0, a4=a4@entry=0, a5=a5@entry=0, a6=a6@entry=4294967295, nr=202) at ./nptl/cancellation.c:49
+#2  0x00007fc43c49f237 in __futex_abstimed_wait_common64 (private=0, futex_word=0x2c38122c, expected=0, op=393, abstime=0x0, cancel=true) at ./nptl/futex-internal.c:57
+#3  __futex_abstimed_wait_common (futex_word=0x2c38122c, expected=0, clockid=0, abstime=0x0, private=0, cancel=true) at ./nptl/futex-internal.c:87
+#4  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0x2c38122c, expected=expected@entry=1328, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at ./nptl/futex-internal.c:139
+#5  0x00007fc43c4a1b17 in __pthread_cond_wait_common (cond=<optimized out>, mutex=0x2c3811e0, clockid=0, abstime=0x0) at ./nptl/pthread_cond_wait.c:426
+#6  ___pthread_cond_wait (cond=<optimized out>, mutex=0x2c3811e0) at ./nptl/pthread_cond_wait.c:458
+#7  0x000000000295619b in std::thread::_State_impl<std::thread::_Invoker<std::tuple<strata::platform::DirectFile::open(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >&)::{lambda()#1}> > >::_M_run() ()
+#8  0x00007fc43c8f2324 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007fc43c4a27f1 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:448
+#10 0x00007fc43c533b5c in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 24 (Thread 0x7fc01d7f96c0 (LWP 324875) "strata"):
+#0  __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+#1  0x00007fc43c49eae3 in __internal_syscall_cancel (a1=a1@entry=741872172, a2=<optimized out>, a3=a3@entry=135168, a4=a4@entry=0, a5=a5@entry=0, a6=a6@entry=4294967295, nr=202) at ./nptl/cancellation.c:49
+#2  0x00007fc43c49f237 in __futex_abstimed_wait_common64 (private=0, futex_word=0x2c38122c, expected=135168, op=393, abstime=0x0, cancel=true) at ./nptl/futex-internal.c:57
+#3  __futex_abstimed_wait_common (futex_word=0x2c38122c, expected=135168, clockid=0, abstime=0x0, private=0, cancel=true) at ./nptl/futex-internal.c:87
+#4  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0x2c38122c, expected=expected@entry=1328, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at ./nptl/futex-internal.c:139
+#5  0x00007fc43c4a1b17 in __pthread_cond_wait_common (cond=<optimized out>, mutex=0x2c3811e0, clockid=0, abstime=0x0) at ./nptl/pthread_cond_wait.c:426
+#6  ___pthread_cond_wait (cond=<optimized out>, mutex=0x2c3811e0) at ./nptl/pthread_cond_wait.c:458
+#7  0x000000000295619b in std::thread::_State_impl<std::thread::_Invoker<std::tuple<strata::platform::DirectFile::open(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >&)::{lambda()#1}> > >::_M_run() ()
+#8  0x00007fc43c8f2324 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007fc43c4a27f1 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:448
+#10 0x00007fc43c533b5c in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 23 (Thread 0x7fc01cff86c0 (LWP 324876) "strata"):
+#0  __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+#1  0x00007fc43c49eae3 in __internal_syscall_cancel (a1=a1@entry=741872168, a2=<optimized out>, a3=a3@entry=135168, a4=a4@entry=0, a5=a5@entry=0, a6=a6@entry=4294967295, nr=202) at ./nptl/cancellation.c:49
+#2  0x00007fc43c49f237 in __futex_abstimed_wait_common64 (private=0, futex_word=0x2c381228, expected=135168, op=393, abstime=0x0, cancel=true) at ./nptl/futex-internal.c:57
+#3  __futex_abstimed_wait_common (futex_word=0x2c381228, expected=135168, clockid=0, abstime=0x0, private=0, cancel=true) at ./nptl/futex-internal.c:87
+#4  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0x2c381228, expected=expected@entry=1344, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at ./nptl/futex-internal.c:139
+#5  0x00007fc43c4a1b17 in __pthread_cond_wait_common (cond=<optimized out>, mutex=0x2c3811e0, clockid=0, abstime=0x0) at ./nptl/pthread_cond_wait.c:426
+#6  ___pthread_cond_wait (cond=<optimized out>, mutex=0x2c3811e0) at ./nptl/pthread_cond_wait.c:458
+#7  0x000000000295619b in std::thread::_State_impl<std::thread::_Invoker<std::tuple<strata::platform::DirectFile::open(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >&)::{lambda()#1}> > >::_M_run() ()
+#8  0x00007fc43c8f2324 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007fc43c4a27f1 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:448
+#10 0x00007fc43c533b5c in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 22 (Thread 0x7fc01c7f76c0 (LWP 324877) "strata"):
+#0  __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+#1  0x00007fc43c49eae3 in __internal_syscall_cancel (a1=a1@entry=741872168, a2=<optimized out>, a3=a3@entry=135168, a4=a4@entry=0, a5=a5@entry=0, a6=a6@entry=4294967295, nr=202) at ./nptl/cancellation.c:49
+#2  0x00007fc43c49f237 in __futex_abstimed_wait_common64 (private=0, futex_word=0x2c381228, expected=135168, op=393, abstime=0x0, cancel=true) at ./nptl/futex-internal.c:57
+#3  __futex_abstimed_wait_common (futex_word=0x2c381228, expected=135168, clockid=0, abstime=0x0, private=0, cancel=true) at ./nptl/futex-internal.c:87
+#4  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0x2c381228, expected=expected@entry=1344, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at ./nptl/futex-internal.c:139
+#5  0x00007fc43c4a1b17 in __pthread_cond_wait_common (cond=<optimized out>, mutex=0x2c3811e0, clockid=0, abstime=0x0) at ./nptl/pthread_cond_wait.c:426
+#6  ___pthread_cond_wait (cond=<optimized out>, mutex=0x2c3811e0) at ./nptl/pthread_cond_wait.c:458
+#7  0x000000000295619b in std::thread::_State_impl<std::thread::_Invoker<std::tuple<strata::platform::DirectFile::open(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >&)::{lambda()#1}> > >::_M_run() ()
+#8  0x00007fc43c8f2324 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007fc43c4a27f1 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:448
+#10 0x00007fc43c533b5c in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 21 (Thread 0x7fc01bff66c0 (LWP 324878) "strata"):
+#0  __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+#1  0x00007fc43c49eae3 in __internal_syscall_cancel (a1=a1@entry=741872168, a2=<optimized out>, a3=a3@entry=135168, a4=a4@entry=0, a5=a5@entry=0, a6=a6@entry=4294967295, nr=202) at ./nptl/cancellation.c:49
+#2  0x00007fc43c49f237 in __futex_abstimed_wait_common64 (private=0, futex_word=0x2c381228, expected=135168, op=393, abstime=0x0, cancel=true) at ./nptl/futex-internal.c:57
+#3  __futex_abstimed_wait_common (futex_word=0x2c381228, expected=135168, clockid=0, abstime=0x0, private=0, cancel=true) at ./nptl/futex-internal.c:87
+#4  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0x2c381228, expected=expected@entry=1344, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at ./nptl/futex-internal.c:139
+#5  0x00007fc43c4a1b17 in __pthread_cond_wait_common (cond=<optimized out>, mutex=0x2c3811e0, clockid=0, abstime=0x0) at ./nptl/pthread_cond_wait.c:426
+#6  ___pthread_cond_wait (cond=<optimized out>, mutex=0x2c3811e0) at ./nptl/pthread_cond_wait.c:458
+#7  0x000000000295619b in std::thread::_State_impl<std::thread::_Invoker<std::tuple<strata::platform::DirectFile::open(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >&)::{lambda()#1}> > >::_M_run() ()
+#8  0x00007fc43c8f2324 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007fc43c4a27f1 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:448
+#10 0x00007fc43c533b5c in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 20 (Thread 0x7fc01b7f56c0 (LWP 324879) "strata"):
+#0  __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+#1  0x00007fc43c49eae3 in __internal_syscall_cancel (a1=a1@entry=741872172, a2=<optimized out>, a3=a3@entry=135168, a4=a4@entry=0, a5=a5@entry=0, a6=a6@entry=4294967295, nr=202) at ./nptl/cancellation.c:49
+#2  0x00007fc43c49f237 in __futex_abstimed_wait_common64 (private=0, futex_word=0x2c38122c, expected=135168, op=393, abstime=0x0, cancel=true) at ./nptl/futex-internal.c:57
+#3  __futex_abstimed_wait_common (futex_word=0x2c38122c, expected=135168, clockid=0, abstime=0x0, private=0, cancel=true) at ./nptl/futex-internal.c:87
+#4  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0x2c38122c, expected=expected@entry=1328, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at ./nptl/futex-internal.c:139
+#5  0x00007fc43c4a1b17 in __pthread_cond_wait_common (cond=<optimized out>, mutex=0x2c3811e0, clockid=0, abstime=0x0) at ./nptl/pthread_cond_wait.c:426
+#6  ___pthread_cond_wait (cond=<optimized out>, mutex=0x2c3811e0) at ./nptl/pthread_cond_wait.c:458
+#7  0x000000000295619b in std::thread::_State_impl<std::thread::_Invoker<std::tuple<strata::platform::DirectFile::open(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >&)::{lambda()#1}> > >::_M_run() ()
+#8  0x00007fc43c8f2324 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007fc43c4a27f1 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:448
+#10 0x00007fc43c533b5c in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 19 (Thread 0x7fc01aff46c0 (LWP 324880) "strata"):
+#0  __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+#1  0x00007fc43c49eae3 in __internal_syscall_cancel (a1=a1@entry=741872168, a2=<optimized out>, a3=a3@entry=0, a4=a4@entry=0, a5=a5@entry=0, a6=a6@entry=4294967295, nr=202) at ./nptl/cancellation.c:49
+#2  0x00007fc43c49f237 in __futex_abstimed_wait_common64 (private=0, futex_word=0x2c381228, expected=0, op=393, abstime=0x0, cancel=true) at ./nptl/futex-internal.c:57
+#3  __futex_abstimed_wait_common (futex_word=0x2c381228, expected=0, clockid=0, abstime=0x0, private=0, cancel=true) at ./nptl/futex-internal.c:87
+#4  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0x2c381228, expected=expected@entry=1344, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at ./nptl/futex-internal.c:139
+#5  0x00007fc43c4a1b17 in __pthread_cond_wait_common (cond=<optimized out>, mutex=0x2c3811e0, clockid=0, abstime=0x0) at ./nptl/pthread_cond_wait.c:426
+#6  ___pthread_cond_wait (cond=<optimized out>, mutex=0x2c3811e0) at ./nptl/pthread_cond_wait.c:458
+#7  0x000000000295619b in std::thread::_State_impl<std::thread::_Invoker<std::tuple<strata::platform::DirectFile::open(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >&)::{lambda()#1}> > >::_M_run() ()
+#8  0x00007fc43c8f2324 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007fc43c4a27f1 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:448
+#10 0x00007fc43c533b5c in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 18 (Thread 0x7fc01a7f36c0 (LWP 324881) "strata"):
+#0  __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+#1  0x00007fc43c49eae3 in __internal_syscall_cancel (a1=a1@entry=741872168, a2=<optimized out>, a3=a3@entry=0, a4=a4@entry=0, a5=a5@entry=0, a6=a6@entry=4294967295, nr=202) at ./nptl/cancellation.c:49
+#2  0x00007fc43c49f237 in __futex_abstimed_wait_common64 (private=0, futex_word=0x2c381228, expected=0, op=393, abstime=0x0, cancel=true) at ./nptl/futex-internal.c:57
+#3  __futex_abstimed_wait_common (futex_word=0x2c381228, expected=0, clockid=0, abstime=0x0, private=0, cancel=true) at ./nptl/futex-internal.c:87
+#4  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0x2c381228, expected=expected@entry=1344, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at ./nptl/futex-internal.c:139
+#5  0x00007fc43c4a1b17 in __pthread_cond_wait_common (cond=<optimized out>, mutex=0x2c3811e0, clockid=0, abstime=0x0) at ./nptl/pthread_cond_wait.c:426
+#6  ___pthread_cond_wait (cond=<optimized out>, mutex=0x2c3811e0) at ./nptl/pthread_cond_wait.c:458
+#7  0x000000000295619b in std::thread::_State_impl<std::thread::_Invoker<std::tuple<strata::platform::DirectFile::open(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >&)::{lambda()#1}> > >::_M_run() ()
+#8  0x00007fc43c8f2324 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007fc43c4a27f1 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:448
+#10 0x00007fc43c533b5c in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 17 (Thread 0x7fc019ff26c0 (LWP 324882) "strata"):
+#0  __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+#1  0x00007fc43c49eae3 in __internal_syscall_cancel (a1=a1@entry=741872168, a2=<optimized out>, a3=a3@entry=0, a4=a4@entry=0, a5=a5@entry=0, a6=a6@entry=4294967295, nr=202) at ./nptl/cancellation.c:49
+#2  0x00007fc43c49f237 in __futex_abstimed_wait_common64 (private=0, futex_word=0x2c381228, expected=0, op=393, abstime=0x0, cancel=true) at ./nptl/futex-internal.c:57
+#3  __futex_abstimed_wait_common (futex_word=0x2c381228, expected=0, clockid=0, abstime=0x0, private=0, cancel=true) at ./nptl/futex-internal.c:87
+#4  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0x2c381228, expected=expected@entry=1344, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at ./nptl/futex-internal.c:139
+#5  0x00007fc43c4a1b17 in __pthread_cond_wait_common (cond=<optimized out>, mutex=0x2c3811e0, clockid=0, abstime=0x0) at ./nptl/pthread_cond_wait.c:426
+#6  ___pthread_cond_wait (cond=<optimized out>, mutex=0x2c3811e0) at ./nptl/pthread_cond_wait.c:458
+#7  0x000000000295619b in std::thread::_State_impl<std::thread::_Invoker<std::tuple<strata::platform::DirectFile::open(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >&)::{lambda()#1}> > >::_M_run() ()
+#8  0x00007fc43c8f2324 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007fc43c4a27f1 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:448
+#10 0x00007fc43c533b5c in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 16 (Thread 0x7fc0197f16c0 (LWP 324883) "strata"):
+#0  __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+#1  0x00007fc43c49eae3 in __internal_syscall_cancel (a1=a1@entry=741872172, a2=<optimized out>, a3=a3@entry=0, a4=a4@entry=0, a5=a5@entry=0, a6=a6@entry=4294967295, nr=202) at ./nptl/cancellation.c:49
+#2  0x00007fc43c49f237 in __futex_abstimed_wait_common64 (private=0, futex_word=0x2c38122c, expected=0, op=393, abstime=0x0, cancel=true) at ./nptl/futex-internal.c:57
+#3  __futex_abstimed_wait_common (futex_word=0x2c38122c, expected=0, clockid=0, abstime=0x0, private=0, cancel=true) at ./nptl/futex-internal.c:87
+#4  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0x2c38122c, expected=expected@entry=1328, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at ./nptl/futex-internal.c:139
+#5  0x00007fc43c4a1b17 in __pthread_cond_wait_common (cond=<optimized out>, mutex=0x2c3811e0, clockid=0, abstime=0x0) at ./nptl/pthread_cond_wait.c:426
+#6  ___pthread_cond_wait (cond=<optimized out>, mutex=0x2c3811e0) at ./nptl/pthread_cond_wait.c:458
+#7  0x000000000295619b in std::thread::_State_impl<std::thread::_Invoker<std::tuple<strata::platform::DirectFile::open(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >&)::{lambda()#1}> > >::_M_run() ()
+#8  0x00007fc43c8f2324 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007fc43c4a27f1 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:448
+#10 0x00007fc43c533b5c in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 15 (Thread 0x7fc018ff06c0 (LWP 324884) "strata"):
+#0  __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+#1  0x00007fc43c49eae3 in __internal_syscall_cancel (a1=a1@entry=741872172, a2=<optimized out>, a3=a3@entry=0, a4=a4@entry=0, a5=a5@entry=0, a6=a6@entry=4294967295, nr=202) at ./nptl/cancellation.c:49
+#2  0x00007fc43c49f237 in __futex_abstimed_wait_common64 (private=0, futex_word=0x2c38122c, expected=0, op=393, abstime=0x0, cancel=true) at ./nptl/futex-internal.c:57
+#3  __futex_abstimed_wait_common (futex_word=0x2c38122c, expected=0, clockid=0, abstime=0x0, private=0, cancel=true) at ./nptl/futex-internal.c:87
+#4  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0x2c38122c, expected=expected@entry=1328, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at ./nptl/futex-internal.c:139
+#5  0x00007fc43c4a1b17 in __pthread_cond_wait_common (cond=<optimized out>, mutex=0x2c3811e0, clockid=0, abstime=0x0) at ./nptl/pthread_cond_wait.c:426
+#6  ___pthread_cond_wait (cond=<optimized out>, mutex=0x2c3811e0) at ./nptl/pthread_cond_wait.c:458
+#7  0x000000000295619b in std::thread::_State_impl<std::thread::_Invoker<std::tuple<strata::platform::DirectFile::open(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >&)::{lambda()#1}> > >::_M_run() ()
+#8  0x00007fc43c8f2324 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007fc43c4a27f1 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:448
+#10 0x00007fc43c533b5c in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 14 (Thread 0x7fc00d9ed6c0 (LWP 324885) "strata"):
+#0  __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+#1  0x00007fc43c49eae3 in __internal_syscall_cancel (a1=a1@entry=748255624, a2=<optimized out>, a3=a3@entry=0, a4=a4@entry=0, a5=a5@entry=0, a6=a6@entry=4294967295, nr=202) at ./nptl/cancellation.c:49
+#2  0x00007fc43c49f237 in __futex_abstimed_wait_common64 (private=0, futex_word=0x2c997988, expected=0, op=393, abstime=0x0, cancel=true) at ./nptl/futex-internal.c:57
+#3  __futex_abstimed_wait_common (futex_word=0x2c997988, expected=0, clockid=0, abstime=0x0, private=0, cancel=true) at ./nptl/futex-internal.c:87
+#4  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0x2c997988, expected=expected@entry=62, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at ./nptl/futex-internal.c:139
+#5  0x00007fc43c4a1b17 in __pthread_cond_wait_common (cond=<optimized out>, mutex=0x2c997940, clockid=0, abstime=0x0) at ./nptl/pthread_cond_wait.c:426
+#6  ___pthread_cond_wait (cond=<optimized out>, mutex=0x2c997940) at ./nptl/pthread_cond_wait.c:458
+#7  0x0000000002953e4b in strata::ngram::PleReader::Impl::worker_loop() ()
+#8  0x00007fc43c8f2324 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007fc43c4a27f1 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:448
+#10 0x00007fc43c533b5c in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 13 (Thread 0x7fbfbddff6c0 (LWP 330385) "strata-pool-0"):
+#0  __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+#1  0x00007fc43c49eae3 in __internal_syscall_cancel (a1=a1@entry=140726595723280, a2=<optimized out>, a3=a3@entry=1992117568, a4=a4@entry=0, a5=a5@entry=0, a6=a6@entry=4294967295, nr=202) at ./nptl/cancellation.c:49
+#2  0x00007fc43c49f237 in __futex_abstimed_wait_common64 (private=0, futex_word=0x7ffd76bfa010, expected=1992117568, op=393, abstime=0x0, cancel=true) at ./nptl/futex-internal.c:57
+#3  __futex_abstimed_wait_common (futex_word=0x7ffd76bfa010, expected=1992117568, clockid=0, abstime=0x0, private=0, cancel=true) at ./nptl/futex-internal.c:87
+#4  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0x7ffd76bfa010, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at ./nptl/futex-internal.c:139
+#5  0x00007fc43c4a1b17 in __pthread_cond_wait_common (cond=<optimized out>, mutex=0x7ffd76bf9fc8, clockid=0, abstime=0x0) at ./nptl/pthread_cond_wait.c:426
+#6  ___pthread_cond_wait (cond=<optimized out>, mutex=0x7ffd76bf9fc8) at ./nptl/pthread_cond_wait.c:458
+#7  0x000000000299a9ef in strata::kernels::cpu::ExpertPool::worker(int) ()
+#8  0x00007fc43c8f2324 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007fc43c4a27f1 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:448
+#10 0x00007fc43c533b5c in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 12 (Thread 0x7fbfcd1f86c0 (LWP 330386) "strata-pool-1"):
+#0  __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+#1  0x00007fc43c49eae3 in __internal_syscall_cancel (a1=a1@entry=140726595723280, a2=<optimized out>, a3=a3@entry=1992117568, a4=a4@entry=0, a5=a5@entry=0, a6=a6@entry=4294967295, nr=202) at ./nptl/cancellation.c:49
+#2  0x00007fc43c49f237 in __futex_abstimed_wait_common64 (private=0, futex_word=0x7ffd76bfa010, expected=1992117568, op=393, abstime=0x0, cancel=true) at ./nptl/futex-internal.c:57
+#3  __futex_abstimed_wait_common (futex_word=0x7ffd76bfa010, expected=1992117568, clockid=0, abstime=0x0, private=0, cancel=true) at ./nptl/futex-internal.c:87
+#4  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0x7ffd76bfa010, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at ./nptl/futex-internal.c:139
+#5  0x00007fc43c4a1b17 in __pthread_cond_wait_common (cond=<optimized out>, mutex=0x7ffd76bf9fc8, clockid=0, abstime=0x0) at ./nptl/pthread_cond_wait.c:426
+#6  ___pthread_cond_wait (cond=<optimized out>, mutex=0x7ffd76bf9fc8) at ./nptl/pthread_cond_wait.c:458
+#7  0x000000000299a9ef in strata::kernels::cpu::ExpertPool::worker(int) ()
+#8  0x00007fc43c8f2324 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007fc43c4a27f1 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:448
+#10 0x00007fc43c533b5c in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 11 (Thread 0x7fbfce9ff6c0 (LWP 330387) "strata-pool-2"):
+#0  __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+#1  0x00007fc43c49eae3 in __internal_syscall_cancel (a1=a1@entry=140726595723280, a2=<optimized out>, a3=a3@entry=1992117568, a4=a4@entry=0, a5=a5@entry=0, a6=a6@entry=4294967295, nr=202) at ./nptl/cancellation.c:49
+#2  0x00007fc43c49f237 in __futex_abstimed_wait_common64 (private=0, futex_word=0x7ffd76bfa010, expected=1992117568, op=393, abstime=0x0, cancel=true) at ./nptl/futex-internal.c:57
+#3  __futex_abstimed_wait_common (futex_word=0x7ffd76bfa010, expected=1992117568, clockid=0, abstime=0x0, private=0, cancel=true) at ./nptl/futex-internal.c:87
+#4  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0x7ffd76bfa010, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at ./nptl/futex-internal.c:139
+#5  0x00007fc43c4a1b17 in __pthread_cond_wait_common (cond=<optimized out>, mutex=0x7ffd76bf9fc8, clockid=0, abstime=0x0) at ./nptl/pthread_cond_wait.c:426
+#6  ___pthread_cond_wait (cond=<optimized out>, mutex=0x7ffd76bf9fc8) at ./nptl/pthread_cond_wait.c:458
+#7  0x000000000299a9ef in strata::kernels::cpu::ExpertPool::worker(int) ()
+#8  0x00007fc43c8f2324 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007fc43c4a27f1 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:448
+#10 0x00007fc43c533b5c in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 10 (Thread 0x7fc00c9eb6c0 (LWP 330388) "strata-pool-3"):
+#0  __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+#1  0x00007fc43c49eae3 in __internal_syscall_cancel (a1=a1@entry=140726595723280, a2=<optimized out>, a3=a3@entry=1992117568, a4=a4@entry=0, a5=a5@entry=0, a6=a6@entry=4294967295, nr=202) at ./nptl/cancellation.c:49
+#2  0x00007fc43c49f237 in __futex_abstimed_wait_common64 (private=0, futex_word=0x7ffd76bfa010, expected=1992117568, op=393, abstime=0x0, cancel=true) at ./nptl/futex-internal.c:57
+#3  __futex_abstimed_wait_common (futex_word=0x7ffd76bfa010, expected=1992117568, clockid=0, abstime=0x0, private=0, cancel=true) at ./nptl/futex-internal.c:87
+#4  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0x7ffd76bfa010, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at ./nptl/futex-internal.c:139
+#5  0x00007fc43c4a1b17 in __pthread_cond_wait_common (cond=<optimized out>, mutex=0x7ffd76bf9fc8, clockid=0, abstime=0x0) at ./nptl/pthread_cond_wait.c:426
+#6  ___pthread_cond_wait (cond=<optimized out>, mutex=0x7ffd76bf9fc8) at ./nptl/pthread_cond_wait.c:458
+#7  0x000000000299a9ef in strata::kernels::cpu::ExpertPool::worker(int) ()
+#8  0x00007fc43c8f2324 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007fc43c4a27f1 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:448
+#10 0x00007fc43c533b5c in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 9 (Thread 0x7fc00d1ec6c0 (LWP 330389) "strata-pool-4"):
+#0  __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+#1  0x00007fc43c49eae3 in __internal_syscall_cancel (a1=a1@entry=140726595723280, a2=<optimized out>, a3=a3@entry=1992117568, a4=a4@entry=0, a5=a5@entry=0, a6=a6@entry=4294967295, nr=202) at ./nptl/cancellation.c:49
+#2  0x00007fc43c49f237 in __futex_abstimed_wait_common64 (private=0, futex_word=0x7ffd76bfa010, expected=1992117568, op=393, abstime=0x0, cancel=true) at ./nptl/futex-internal.c:57
+#3  __futex_abstimed_wait_common (futex_word=0x7ffd76bfa010, expected=1992117568, clockid=0, abstime=0x0, private=0, cancel=true) at ./nptl/futex-internal.c:87
+#4  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0x7ffd76bfa010, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at ./nptl/futex-internal.c:139
+#5  0x00007fc43c4a1b17 in __pthread_cond_wait_common (cond=<optimized out>, mutex=0x7ffd76bf9fc8, clockid=0, abstime=0x0) at ./nptl/pthread_cond_wait.c:426
+#6  ___pthread_cond_wait (cond=<optimized out>, mutex=0x7ffd76bf9fc8) at ./nptl/pthread_cond_wait.c:458
+#7  0x000000000299a9ef in strata::kernels::cpu::ExpertPool::worker(int) ()
+#8  0x00007fc43c8f2324 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007fc43c4a27f1 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:448
+#10 0x00007fc43c533b5c in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 8 (Thread 0x7fbfce1fe6c0 (LWP 330390) "strata-pool-5"):
+#0  __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+#1  0x00007fc43c49eae3 in __internal_syscall_cancel (a1=a1@entry=140726595723280, a2=<optimized out>, a3=a3@entry=1984456960, a4=a4@entry=0, a5=a5@entry=0, a6=a6@entry=4294967295, nr=202) at ./nptl/cancellation.c:49
+#2  0x00007fc43c49f237 in __futex_abstimed_wait_common64 (private=0, futex_word=0x7ffd76bfa010, expected=1984456960, op=393, abstime=0x0, cancel=true) at ./nptl/futex-internal.c:57
+#3  __futex_abstimed_wait_common (futex_word=0x7ffd76bfa010, expected=1984456960, clockid=0, abstime=0x0, private=0, cancel=true) at ./nptl/futex-internal.c:87
+#4  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0x7ffd76bfa010, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at ./nptl/futex-internal.c:139
+#5  0x00007fc43c4a1b17 in __pthread_cond_wait_common (cond=<optimized out>, mutex=0x7ffd76bf9fc8, clockid=0, abstime=0x0) at ./nptl/pthread_cond_wait.c:426
+#6  ___pthread_cond_wait (cond=<optimized out>, mutex=0x7ffd76bf9fc8) at ./nptl/pthread_cond_wait.c:458
+#7  0x000000000299a9ef in strata::kernels::cpu::ExpertPool::worker(int) ()
+#8  0x00007fc43c8f2324 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007fc43c4a27f1 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:448
+#10 0x00007fc43c533b5c in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 7 (Thread 0x7fbfcd9fd6c0 (LWP 330391) "strata-pool-6"):
+#0  __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+#1  0x00007fc43c49eae3 in __internal_syscall_cancel (a1=a1@entry=140726595723280, a2=<optimized out>, a3=a3@entry=1984456960, a4=a4@entry=0, a5=a5@entry=0, a6=a6@entry=4294967295, nr=202) at ./nptl/cancellation.c:49
+#2  0x00007fc43c49f237 in __futex_abstimed_wait_common64 (private=0, futex_word=0x7ffd76bfa010, expected=1984456960, op=393, abstime=0x0, cancel=true) at ./nptl/futex-internal.c:57
+#3  __futex_abstimed_wait_common (futex_word=0x7ffd76bfa010, expected=1984456960, clockid=0, abstime=0x0, private=0, cancel=true) at ./nptl/futex-internal.c:87
+#4  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0x7ffd76bfa010, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at ./nptl/futex-internal.c:139
+#5  0x00007fc43c4a1b17 in __pthread_cond_wait_common (cond=<optimized out>, mutex=0x7ffd76bf9fc8, clockid=0, abstime=0x0) at ./nptl/pthread_cond_wait.c:426
+#6  ___pthread_cond_wait (cond=<optimized out>, mutex=0x7ffd76bf9fc8) at ./nptl/pthread_cond_wait.c:458
+#7  0x000000000299a9ef in strata::kernels::cpu::ExpertPool::worker(int) ()
+#8  0x00007fc43c8f2324 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007fc43c4a27f1 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:448
+#10 0x00007fc43c533b5c in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 6 (Thread 0x7fbf9bdff6c0 (LWP 330399) "strata-stage"):
+#0  __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+#1  0x00007fc43c49eae3 in __internal_syscall_cancel (a1=a1@entry=747942328, a2=<optimized out>, a3=a3@entry=0, a4=a4@entry=0, a5=a5@entry=0, a6=a6@entry=4294967295, nr=202) at ./nptl/cancellation.c:49
+#2  0x00007fc43c49f237 in __futex_abstimed_wait_common64 (private=0, futex_word=0x2c94b1b8, expected=0, op=393, abstime=0x0, cancel=true) at ./nptl/futex-internal.c:57
+#3  __futex_abstimed_wait_common (futex_word=0x2c94b1b8, expected=0, clockid=0, abstime=0x0, private=0, cancel=true) at ./nptl/futex-internal.c:87
+#4  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0x2c94b1b8, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at ./nptl/futex-internal.c:139
+#5  0x00007fc43c4a1b17 in __pthread_cond_wait_common (cond=<optimized out>, mutex=0x2c94b170, clockid=0, abstime=0x0) at ./nptl/pthread_cond_wait.c:426
+#6  ___pthread_cond_wait (cond=<optimized out>, mutex=0x2c94b170) at ./nptl/pthread_cond_wait.c:458
+#7  0x00000000028031da in strata::prefill::Stager::work() ()
+#8  0x00007fc43c8f2324 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007fc43c4a27f1 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:448
+#10 0x00007fc43c533b5c in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 5 (Thread 0x7fbf9b5fe6c0 (LWP 330400) "strata-stage"):
+#0  __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+#1  0x00007fc43c49eae3 in __internal_syscall_cancel (a1=a1@entry=747942328, a2=<optimized out>, a3=a3@entry=0, a4=a4@entry=0, a5=a5@entry=0, a6=a6@entry=4294967295, nr=202) at ./nptl/cancellation.c:49
+#2  0x00007fc43c49f237 in __futex_abstimed_wait_common64 (private=0, futex_word=0x2c94b1b8, expected=0, op=393, abstime=0x0, cancel=true) at ./nptl/futex-internal.c:57
+#3  __futex_abstimed_wait_common (futex_word=0x2c94b1b8, expected=0, clockid=0, abstime=0x0, private=0, cancel=true) at ./nptl/futex-internal.c:87
+#4  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0x2c94b1b8, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at ./nptl/futex-internal.c:139
+#5  0x00007fc43c4a1b17 in __pthread_cond_wait_common (cond=<optimized out>, mutex=0x2c94b170, clockid=0, abstime=0x0) at ./nptl/pthread_cond_wait.c:426
+#6  ___pthread_cond_wait (cond=<optimized out>, mutex=0x2c94b170) at ./nptl/pthread_cond_wait.c:458
+#7  0x00000000028031da in strata::prefill::Stager::work() ()
+#8  0x00007fc43c8f2324 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007fc43c4a27f1 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:448
+#10 0x00007fc43c533b5c in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 4 (Thread 0x7fbf9adfd6c0 (LWP 330401) "strata-stage"):
+#0  __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+#1  0x00007fc43c49eae3 in __internal_syscall_cancel (a1=a1@entry=747942328, a2=<optimized out>, a3=a3@entry=0, a4=a4@entry=0, a5=a5@entry=0, a6=a6@entry=4294967295, nr=202) at ./nptl/cancellation.c:49
+#2  0x00007fc43c49f237 in __futex_abstimed_wait_common64 (private=0, futex_word=0x2c94b1b8, expected=0, op=393, abstime=0x0, cancel=true) at ./nptl/futex-internal.c:57
+#3  __futex_abstimed_wait_common (futex_word=0x2c94b1b8, expected=0, clockid=0, abstime=0x0, private=0, cancel=true) at ./nptl/futex-internal.c:87
+#4  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0x2c94b1b8, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at ./nptl/futex-internal.c:139
+#5  0x00007fc43c4a1b17 in __pthread_cond_wait_common (cond=<optimized out>, mutex=0x2c94b170, clockid=0, abstime=0x0) at ./nptl/pthread_cond_wait.c:426
+#6  ___pthread_cond_wait (cond=<optimized out>, mutex=0x2c94b170) at ./nptl/pthread_cond_wait.c:458
+#7  0x00000000028031da in strata::prefill::Stager::work() ()
+#8  0x00007fc43c8f2324 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007fc43c4a27f1 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:448
+#10 0x00007fc43c533b5c in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 3 (Thread 0x7fbf9a5fc6c0 (LWP 330402) "strata-stage"):
+#0  __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+#1  0x00007fc43c49eae3 in __internal_syscall_cancel (a1=a1@entry=747942328, a2=<optimized out>, a3=a3@entry=0, a4=a4@entry=0, a5=a5@entry=0, a6=a6@entry=4294967295, nr=202) at ./nptl/cancellation.c:49
+#2  0x00007fc43c49f237 in __futex_abstimed_wait_common64 (private=0, futex_word=0x2c94b1b8, expected=0, op=393, abstime=0x0, cancel=true) at ./nptl/futex-internal.c:57
+#3  __futex_abstimed_wait_common (futex_word=0x2c94b1b8, expected=0, clockid=0, abstime=0x0, private=0, cancel=true) at ./nptl/futex-internal.c:87
+#4  __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0x2c94b1b8, expected=expected@entry=0, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=0) at ./nptl/futex-internal.c:139
+#5  0x00007fc43c4a1b17 in __pthread_cond_wait_common (cond=<optimized out>, mutex=0x2c94b170, clockid=0, abstime=0x0) at ./nptl/pthread_cond_wait.c:426
+#6  ___pthread_cond_wait (cond=<optimized out>, mutex=0x2c94b170) at ./nptl/pthread_cond_wait.c:458
+#7  0x00000000028031da in strata::prefill::Stager::work() ()
+#8  0x00007fc43c8f2324 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007fc43c4a27f1 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:448
+#10 0x00007fc43c533b5c in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 2 (Thread 0x7fbf63dff6c0 (LWP 330635) "strata-watchdog"):
+#0  __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+#1  0x00007fc43c49eae3 in __internal_syscall_cancel (a1=a1@entry=0, a2=a2@entry=0, a3=<optimized out>, a4=<optimized out>, a5=a5@entry=0, a6=a6@entry=0, nr=230) at ./nptl/cancellation.c:49
+#2  0x00007fc43c4f4932 in __GI___clock_nanosleep (clock_id=<optimized out>, clock_id@entry=0, flags=flags@entry=0, req=<optimized out>, rem=<optimized out>) at ../sysdeps/unix/sysv/linux/clock_nanosleep.c:48
+#3  0x00007fc43c502657 in __GI___nanosleep (req=<optimized out>, rem=<optimized out>) at ../sysdeps/unix/sysv/linux/nanosleep.c:25
+#4  0x0000000002500421 in std::thread::_State_impl<std::thread::_Invoker<std::tuple<main::{lambda()#76}> > >::_M_run() ()
+#5  0x00007fc43c8f2324 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#6  0x00007fc43c4a27f1 in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:448
+#7  0x00007fc43c533b5c in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 1 (Thread 0x7fc43c70b780 (LWP 323893) "strata-host"):
+#0  0x00007fc43c518e1b in __GI_sched_yield () at ../sysdeps/unix/syscall-template.S:120
+#1  0x00007fc43cf18625 in ?? () from /opt/rocm-6.1.0/lib/libamdhip64.so.6
+#2  0x00007fc43cf1d021 in ?? () from /opt/rocm-6.1.0/lib/libamdhip64.so.6
+#3  0x00007fc43cf2e136 in ?? () from /opt/rocm-6.1.0/lib/libamdhip64.so.6
+#4  0x00007fc43ce592bc in ?? () from /opt/rocm-6.1.0/lib/libamdhip64.so.6
+#5  0x00000000026923b2 in strata::core::Verifier::~Verifier() ()
+#6  0x0000000002594b68 in main ()
+[Inferior 1 (process 323893) detached]

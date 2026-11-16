@@ -1,0 +1,50 @@
+=== diag267 forensics Mon Nov 16 05:03:20 PM CET 2026 class=boot-registration pid=650283 ===
+--- threads: tid comm state wchan syscall
+*  state= wchan= syscall=
+--- kfd sysfs:
+--- dmesg tail:
+dmesg: read kernel buffer failed: Operation not permitted
+--- engine trace tail:
+ore; host on 0)
+strata aux cpus: threads that are neither pool workers nor the host go to CPUs 1 (off at start; a request's aux_cpus=1 turns it on)
+strata generate: expert cache 1 slots, 0.00 GiB of VRAM; policy is
+strata generate: the GPU computes the experts in the cache; it rounds differently from the CPU,
+                 so a reply can differ slightly from a run without the cache (same quality:
+                 bench/results/2026-09-27-cache-parity).
+                 PROFILE, ranked by routing frequency, no eviction.
+strata generate: pre-filled 1 of 1 slots from the profile in 0.0 s (2744 MB/s); slot 0 verified; pack_read_s 0.0 h2d_s 0.0 pinned_mb 2 phases=arena:0.0s lot:0.0s
+strata generate: R4 hit path ON - resident experts are computed on the GPU
+strata generate: 7 expert-pool workers + the host thread
+strata generate: session is up (engine 0.1.57)
+strata generate: token graph hit path: 1 resident experts, decided on the device
+prefill mmq: off (env=0) [built=1]
+strata serve: the prompt path allocates its own buffers (too few cache slots to borrow)
+strata hc: CUDA0: the hyper-connection read runs as staged (the norm per token and stream, the down projection's activations staged ahead by cp.async); checked bit for bit against the plain read on this card (STRATA_HC_SPLIT=1 or 0 for the earlier ones)
+strata verify trace (#649): on
+strata verify: window up to 5 tokens, 68.7 MiB of device buffers
+strata serve: STRATA_ROUTE_TAIL_SKIP=7 is ON (default): a missed expert that every token of a verify window routes at rank 7 or lower is skipped (+10..20% decode on 12-16 GB cards that miss experts, answers differ slightly from 0.1.41); STRATA_ROUTE_TAIL_SKIP=0 turns it off
+strata serve: adaptive overlap: off (STRATA_ADAPT_OVERLAP=1 turns it on)
+strata serve: adaptive tier: blocking, and the asynchronous tier is tried once the session shows the swaps hold the windows up (--adapt-async 0 or STRATA_ADAPT_ASYNC=0: never)
+strata serve: 10950 MiB of VRAM free with everything loaded
+INFO logit_bias=1 context=1512 kv=fp16 kv_resident=0 expert_slots=1 expert_cache_mib=2 expert_slots_primary=1 expert_cache_primary_mib=2 spec=5 mtp_max=0 lookup=0 vram_free_mib=10950 cvec=0 arena_mib=47962 pool_workers=7 pcie_frac=0.00 spec_min_p=0.50 dflash_block=0 dflash_max=0 conversation_cache_mib=0 conversation_cache_slots=4 conversation_cache_min_free_mib=2560 conversation_cache_min_tokens=0 tail_role_token=-1 vram_elastic=0 prefill_cap=512 prefill_stages=1 stream_all_min=1024 prefill_pipe=0 engine=0.1.57
+strata pin: registering the whole arena (46.8 GiB) as the last boot step ...
+strata pin: registered after the fill: 448 of 4480 ranges (6.6 GiB, 1 s)
+strata pin: registered after the fill: 896 of 4480 ranges (12.5 GiB, 1 s)
+strata pin: registered after the fill: 1344 of 4480 ranges (16.6 GiB, 2 s)
+strata pin: registered after the fill: 1792 of 4480 ranges (21.0 GiB, 2 s)
+strata pin: registered after the fill: 2240 of 4480 ranges (25.9 GiB, 3 s)
+strata pin: registered after the fill: 2688 of 4480 ranges (29.6 GiB, 3 s)
+strata pin: registered after the fill: 3136 of 4480 ranges (34.0 GiB, 3 s)
+strata pin: registered after the fill: 3584 of 4480 ranges (38.5 GiB, 3 s)
+strata pin: registered after the fill: 4032 of 4480 ranges (42.6 GiB, 4 s)
+strata generate: arena alias tables: 448 of 4480 registered ranges
+strata generate: arena alias tables: 896 of 4480 registered ranges
+strata generate: arena alias tables: 1344 of 4480 registered ranges
+strata generate: arena alias tables: 1792 of 4480 registered ranges
+strata generate: arena alias tables: 2240 of 4480 registered ranges
+strata generate: arena alias tables: 2688 of 4480 registered ranges
+strata generate: arena alias tables: 3136 of 4480 registered ranges
+strata generate: arena alias tables: 3584 of 4480 registered ranges
+strata generate: arena alias tables: 4032 of 4480 registered ranges
+strata pin: register-last: whole-arena registration ok in 3.9 s (46.8 GiB registered, 4480 range(s))
+READY 1512 stop

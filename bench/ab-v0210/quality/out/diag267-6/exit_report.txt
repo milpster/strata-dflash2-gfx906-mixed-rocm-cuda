@@ -1,0 +1,7 @@
+exit=137 elapsed=92s date=Mon Nov 16 05:05:52 PM CET 2026
+0 ranges (16.6 GiB, 2 s)
+strata pin: registered after the fill: 1792 of 4480 ranges (21.0 GiB, 2 s)
+strata pin: registered after the fill: 2240 of 4480 ranges (25.9 GiB, 3 s)
+strata pin: registered after the fill: 2688 of 4480 ranges (29.6 GiB, 3 s)
+strata pin: registered after the fill: 3136 of 4480 ranges (34.0 GiB, 3 s)
+strata pin: registered after the fill: 3584 of 4480 ranges (38.5 GiB, 3 s)

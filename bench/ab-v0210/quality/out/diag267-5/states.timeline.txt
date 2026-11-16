@@ -1,0 +1,31 @@
+== 17:02:45
+650283 strata state=D wchan=folio_wait_bit_common
+== 17:03:00
+650283 strata state=R wchan=folio_wait_bit_common
+650301 strata state=S wchan=kfd_wait_on_events
+651276 strata state=S wchan=__futex_wait
+651277 strata state=S wchan=__futex_wait
+651278 strata state=S wchan=__futex_wait
+651279 strata state=S wchan=__futex_wait
+651280 strata state=S wchan=__futex_wait
+651281 strata state=S wchan=__futex_wait
+651282 strata state=S wchan=__futex_wait
+651283 strata state=S wchan=__futex_wait
+651284 strata state=S wchan=__futex_wait
+651285 strata state=S wchan=__futex_wait
+651286 strata state=S wchan=__futex_wait
+651287 strata state=S wchan=__futex_wait
+651288 strata state=S wchan=__futex_wait
+651289 strata state=S wchan=__futex_wait
+651290 strata state=S wchan=__futex_wait
+651291 strata state=S wchan=__futex_wait
+651292 strata state=S wchan=__futex_wait
+651522 strata state=D wchan=folio_wait_bit_common
+651523 strata state=D wchan=folio_wait_bit_common
+651524 strata state=D wchan=0
+651525 strata state=R wchan=folio_wait_bit_common
+651526 strata state=D wchan=folio_wait_bit_common
+== 17:03:15
+650283 strata-host state=R wchan=0
+650301 strata state=S wchan=kfd_wait_on_events
+656202 strata-watchdog state=S wchan=hrtimer_nanosleep
