@@ -92,6 +92,11 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <fstream>
+#if defined(__linux__)
+#include <sys/syscall.h>   // SYS_gettid: the tdr-probe's /proc reads name the LAUNCHING thread
+#include <unistd.h>
+#endif
 #include "strata/platform/cpu_relax.hpp"
 
 #if defined(STRATA_GPU_METAL)
@@ -3466,6 +3471,55 @@ bool Verifier::prelaunch(int T, const int32_t* tokens, int64_t pos0, std::string
     return true;
 }
 
+#if !defined(STRATA_VERIFY_HGL)
+// #267 (log-only): the plain launch's STRATA_LAUNCH_PROBE companion - the HGL branch's probe watches a
+// HostGraphLaunch; this one brackets the bare cudaGraphLaunch.  While the call is out, every few seconds it
+// prints the kernel's view of the LAUNCHING thread itself: its scheduler state (/proc/<tid>/stat) and its wait
+// channel (wchan, "?" when unreadable), plus the elapsed since LAUNCH-ENTER - a wedge inside the driver call is
+// then self-describing (D in a driver wait vs R spinning).  Off (the default) the struct is two inert members
+// and the thread never exists.
+struct LaunchProbe {
+    Clock::time_point t0;
+    std::atomic<bool> done{false};
+    std::thread th;
+    void start(int idx, int T) {
+        t0 = Clock::now();
+#if defined(__linux__)
+        const long tid = (long) ::syscall(SYS_gettid);   // the LAUNCHING thread, named from itself
+#else
+        const long tid = 0;
+#endif
+        th = std::thread([this, idx, T, tid] {
+            static const double marks[] = {50, 250, 500, 1000, 2000, 3000, 5000, 10000, 30000};
+            size_t mi = 0;
+            while (!done.load(std::memory_order_acquire) && mi < sizeof marks / sizeof marks[0]) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                if (ms_since(t0) < marks[mi]) continue;
+                char state = '?';
+                std::string wchan = "?";
+#if defined(__linux__)
+                const std::string task = "/proc/self/task/" + std::to_string(tid) + "/";
+                std::string line;
+                std::getline(std::ifstream(task + "stat"), line);   // state: the field after the comm parenthetical
+                const size_t rp = line.rfind(')');
+                if (rp != std::string::npos && rp + 2 < line.size()) state = line[rp + 2];
+                std::string wc;
+                std::getline(std::ifstream(task + "wchan"), wc);
+                if (!wc.empty() && wc != "0") wchan = wc;
+#endif
+                std::fprintf(stderr, "strata tdr-probe: window %d T=%d: the launch call has not returned after %.0f ms; "
+                                     "the launching thread is %c in %s\n", idx, T, marks[mi], state, wchan.c_str());
+                ++mi;
+            }
+        });
+    }
+    void stop() {
+        done.store(true, std::memory_order_release);
+        if (th.joinable()) th.join();
+    }
+};
+#endif
+
 bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool, void* user, int32_t* out,
                    std::string& err) {
     const bool measure = spec_measure_;
@@ -3607,8 +3661,10 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         if (h_bal_ != nullptr) std::memset(h_bal_, 0, (size_t) bal_p_.size() * 4 * 8);   // this window's stamps only
         if (ar_on() && h_plan_err_ != nullptr) *(volatile uint32_t*) h_plan_err_ = 0;
         // 0.1.43: with the all-resident graph the host serves no layer, so nothing can hold a layer back: every copy first
+        trace_ev("GATE-ENTER", -1, -1, 0);
         if (adapt_gate_ != nullptr && adapt_gate_->active.load(std::memory_order_acquire) && ar_on() &&
             !adapt_gate_wait((int32_t) g.n_layers, err)) return false;
+        trace_ev("GATE-LEFT", -1, -1, 0);
 #if defined(STRATA_VERIFY_HGL)
         // A blocking instrumented launch cannot also serve the graph's CPU doorbells.
         static const bool threaded_launch = [] {
@@ -3652,7 +3708,12 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         }
 #else
         strata::dispatch::Stats::get().graph_launch(T, ar_on() ? 0 : 1);
+        trace_ev("LAUNCH-ENTER", -1, -1, 0);
+        LaunchProbe probe;   // #267: runs nothing unless STRATA_LAUNCH_PROBE - the struct above run()
+        if (probe_this) probe.start(probe_idx, T);
         const cudaError_t le = cudaGraphLaunch(ar_off_ ? exec_nr_[sel_long_][T] : exec_[sel_long_][T], cs_);
+        if (probe_this) probe.stop();
+        trace_ev("LAUNCH-LEFT", -1, -1, 0);
 #endif
         trace_ev("LAUNCHED", -1, -1, (int64_t) le);
         graph_launched = true;

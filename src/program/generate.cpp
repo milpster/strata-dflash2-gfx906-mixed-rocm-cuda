@@ -1968,22 +1968,32 @@ int on_rotational_disk(const std::string& path, std::string& dev) {
 
 // #605: the engine's threads in uninterruptible sleep (state D - almost always waiting for the disk), and where
 // (wchan): 16 threads in blk_io_schedule is a disk that cannot keep up, not a deadlock in the engine
+// #267: one line per thread - its name, state and wchan - so a wedged thread says what it was doing
 void disk_wait_threads(std::FILE* f) {
     std::map<std::string, int> where;
     int waiting = 0, threads = 0;
     std::error_code ec;
     for (const auto& e : std::filesystem::directory_iterator("/proc/self/task", ec)) {
         ++threads;
+        const std::string tid = e.path().filename().string();
         std::ifstream st(e.path() / "stat");
         std::string line;
         std::getline(st, line);
         const size_t rp = line.rfind(')');
-        if (rp == std::string::npos || rp + 2 >= line.size() || line[rp + 2] != 'D') continue;
-        ++waiting;
+        if (rp == std::string::npos || rp + 2 >= line.size()) continue;
+        const char state = line[rp + 2];
+        std::ifstream cm(e.path() / "comm");
+        std::string name;
+        std::getline(cm, name);
         std::ifstream w(e.path() / "wchan");
         std::string wc;
         std::getline(w, wc);
-        ++where[wc.empty() || wc == "0" ? "?" : wc];
+        if (wc.empty() || wc == "0") wc = "?";
+        std::fprintf(f, "  thread %s %s: state %c, wchan %s\n", tid.c_str(), name.empty() ? "?" : name.c_str(), state,
+                     wc.c_str());
+        if (state != 'D') continue;
+        ++waiting;
+        ++where[wc];
     }
     if (threads == 0) return;
     std::string list;

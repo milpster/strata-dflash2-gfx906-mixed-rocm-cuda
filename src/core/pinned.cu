@@ -1059,7 +1059,13 @@ uint64_t PinnedArena::register_after_fill(const std::vector<std::pair<uint64_t, 
             if (a < last_end) a = last_end;
         }
         if (a >= b) continue;
-        if (register_range(*this, (uint8_t*) base + a, b - a) != cudaSuccess) {
+        const auto tr = std::chrono::steady_clock::now();   // #267: one range stuck in the driver for seconds is the boot freeze's signature
+        const bool ok = register_range(*this, (uint8_t*) base + a, b - a) == cudaSuccess;
+        const double reg_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - tr).count();
+        if (reg_s > 1.0)
+            std::fprintf(stderr, "strata pin: registered after the fill: range %zu of %zu took %.1f s (%.1f GiB so far)\n",
+                         rng_i, n_rng, reg_s, (double) registered_bytes / 1073741824.0);
+        if (!ok) {
             (void) cudaGetLastError();
             refused = true;
             break;   // pin-by-need's rule: the first refusal ends the registration
