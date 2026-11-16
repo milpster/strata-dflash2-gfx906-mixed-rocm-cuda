@@ -1,0 +1,40 @@
+SPD SPD-BASE-1 seg code: 999 positions, 48.0 s
+SPD SPD-BASE-1 seg docs: 999 positions, 50.4 s
+SPD SPD-BASE-1 seg english: 999 positions, 44.6 s
+SPD SPD-BASE-1 seg multilingual: 999 positions, 39.2 s
+SPD SPD-BASE-1 seg agent: 999 positions, 42.3 s
+SPD SPD-BASE-1 judge strata serve: prompt 1000 tokens = 0 reused + 1000 read in 47949 ms (20.9 tok/s), 1 generated in 89 ms (11.2 tok/s), drafts accepted 0 of 0, 0 checkpoints windows 201 ms_wait 97.94 ms_pool 122.25 ms_host 0.22 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 0.0
+SPD SPD-BASE-1 judge strata serve: prompt 1000 tokens = 0 reused + 1000 read in 50326 ms (19.9 tok/s), 1 generated in 77 ms (12.9 tok/s), drafts accepted 0 of 0, 0 checkpoints windows 201 ms_wait 106.79 ms_pool 125.78 ms_host 0.05 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 0.0
+SPD SPD-BASE-1 judge strata serve: prompt 1000 tokens = 0 reused + 1000 read in 44535 ms (22.5 tok/s), 1 generated in 79 ms (12.7 tok/s), drafts accepted 0 of 0, 0 checkpoints windows 201 ms_wait 84.30 ms_pool 118.67 ms_host 0.10 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 0.0
+SPD SPD-BASE-1 judge strata serve: prompt 1000 tokens = 0 reused + 1000 read in 39099 ms (25.6 tok/s), 1 generated in 74 ms (13.6 tok/s), drafts accepted 0 of 0, 0 checkpoints windows 201 ms_wait 55.23 ms_pool 121.32 ms_host 0.07 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 0.0
+SPD SPD-BASE-1 judge strata serve: prompt 1000 tokens = 0 reused + 1000 read in 42245 ms (23.7 tok/s), 1 generated in 74 ms (13.5 tok/s), drafts accepted 0 of 0, 0 checkpoints windows 201 ms_wait 65.51 ms_pool 126.50 ms_host 0.06 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 0.0
+SPD SPD-RING-1 seg code: 999 positions, 39.2 s
+SPD SPD-RING-1 seg docs: 999 positions, 39.8 s
+SPD SPD-RING-1 seg english: 999 positions, 38.3 s
+SPD SPD-RING-1 seg multilingual: 999 positions, 39.4 s
+SPD SPD-RING-1 seg agent: 999 positions, 40.0 s
+SPD SPD-RING-1 judge strata serve: prompt 1000 tokens = 0 reused + 1000 read in 39066 ms (25.6 tok/s), 1 generated in 89 ms (11.2 tok/s), drafts accepted 0 of 0, 0 checkpoints windows 201 ms_wait 55.23 ms_pool 120.87 ms_host 0.05 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 0.0
+SPD SPD-RING-1 judge strata serve: prompt 1000 tokens = 0 reused + 1000 read in 39698 ms (25.2 tok/s), 1 generated in 72 ms (13.8 tok/s), drafts accepted 0 of 0, 0 checkpoints windows 201 ms_wait 55.18 ms_pool 124.58 ms_host 0.06 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 0.0
+SPD SPD-RING-1 judge strata serve: prompt 1000 tokens = 0 reused + 1000 read in 38229 ms (26.2 tok/s), 1 generated in 74 ms (13.5 tok/s), drafts accepted 0 of 0, 0 checkpoints windows 201 ms_wait 55.24 ms_pool 117.24 ms_host 0.05 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 0.0
+SPD SPD-RING-1 judge strata serve: prompt 1000 tokens = 0 reused + 1000 read in 39354 ms (25.4 tok/s), 1 generated in 79 ms (12.7 tok/s), drafts accepted 0 of 0, 0 checkpoints windows 201 ms_wait 55.24 ms_pool 122.94 ms_host 0.05 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 0.0
+SPD SPD-RING-1 judge strata serve: prompt 1000 tokens = 0 reused + 1000 read in 39903 ms (25.1 tok/s), 1 generated in 77 ms (13.0 tok/s), drafts accepted 0 of 0, 0 checkpoints windows 201 ms_wait 55.19 ms_pool 125.44 ms_host 0.04 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 0.0
+SPD SPD-BASE-2 seg code: 999 positions, 38.7 s
+SPD SPD-BASE-2 seg docs: 999 positions, 39.6 s
+SPD SPD-BASE-2 seg english: 999 positions, 38.2 s
+SPD SPD-BASE-2 seg multilingual: 999 positions, 39.6 s
+SPD SPD-BASE-2 seg agent: 999 positions, 39.6 s
+SPD SPD-BASE-2 judge strata serve: prompt 1000 tokens = 0 reused + 1000 read in 38611 ms (25.9 tok/s), 1 generated in 89 ms (11.2 tok/s), drafts accepted 0 of 0, 0 checkpoints windows 201 ms_wait 55.11 ms_pool 118.84 ms_host 0.05 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 0.0
+SPD SPD-BASE-2 judge strata serve: prompt 1000 tokens = 0 reused + 1000 read in 39550 ms (25.3 tok/s), 1 generated in 72 ms (13.9 tok/s), drafts accepted 0 of 0, 0 checkpoints windows 201 ms_wait 55.18 ms_pool 123.48 ms_host 0.06 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 0.0
+SPD SPD-BASE-2 judge strata serve: prompt 1000 tokens = 0 reused + 1000 read in 38157 ms (26.2 tok/s), 1 generated in 74 ms (13.5 tok/s), drafts accepted 0 of 0, 0 checkpoints windows 201 ms_wait 55.26 ms_pool 116.59 ms_host 0.05 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 0.0
+SPD SPD-BASE-2 judge strata serve: prompt 1000 tokens = 0 reused + 1000 read in 39533 ms (25.3 tok/s), 1 generated in 74 ms (13.6 tok/s), drafts accepted 0 of 0, 0 checkpoints windows 201 ms_wait 55.27 ms_pool 123.34 ms_host 0.04 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 0.0
+SPD SPD-BASE-2 judge strata serve: prompt 1000 tokens = 0 reused + 1000 read in 39497 ms (25.3 tok/s), 1 generated in 79 ms (12.7 tok/s), drafts accepted 0 of 0, 0 checkpoints windows 201 ms_wait 55.22 ms_pool 123.17 ms_host 0.05 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 0.0
+SPD SPD-RING-2 seg code: 999 positions, 37.2 s
+SPD SPD-RING-2 seg docs: 999 positions, 45.2 s
+SPD SPD-RING-2 seg english: 999 positions, 37.7 s
+SPD SPD-RING-2 seg multilingual: 999 positions, 37.3 s
+SPD SPD-RING-2 seg agent: 999 positions, 37.9 s
+SPD SPD-RING-2 judge strata serve: prompt 1000 tokens = 0 reused + 1000 read in 37085 ms (27.0 tok/s), 1 generated in 92 ms (10.8 tok/s), drafts accepted 0 of 0, 0 checkpoints windows 201 ms_wait 55.15 ms_pool 111.28 ms_host 0.05 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 0.0
+SPD SPD-RING-2 judge strata serve: prompt 1000 tokens = 0 reused + 1000 read in 45106 ms (22.2 tok/s), 1 generated in 69 ms (14.5 tok/s), drafts accepted 0 of 0, 0 checkpoints windows 201 ms_wait 86.89 ms_pool 119.05 ms_host 0.06 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 0.0
+SPD SPD-RING-2 judge strata serve: prompt 1000 tokens = 0 reused + 1000 read in 37579 ms (26.6 tok/s), 1 generated in 71 ms (14.1 tok/s), drafts accepted 0 of 0, 0 checkpoints windows 201 ms_wait 57.68 ms_pool 111.65 ms_host 0.05 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 0.0
+SPD SPD-RING-2 judge strata serve: prompt 1000 tokens = 0 reused + 1000 read in 37260 ms (26.8 tok/s), 1 generated in 69 ms (14.5 tok/s), drafts accepted 0 of 0, 0 checkpoints windows 201 ms_wait 55.21 ms_pool 112.69 ms_host 0.05 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 0.0
+SPD SPD-RING-2 judge strata serve: prompt 1000 tokens = 0 reused + 1000 read in 37842 ms (26.4 tok/s), 1 generated in 69 ms (14.4 tok/s), drafts accepted 0 of 0, 0 checkpoints windows 201 ms_wait 56.33 ms_pool 114.28 ms_host 0.05 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 0.0

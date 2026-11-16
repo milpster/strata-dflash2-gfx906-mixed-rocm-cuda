@@ -14,19 +14,19 @@ PROMPT="Summarize the following. $(head -c 2200 /mnt/srcds/Strata/bench/ab-v0210
 for i in $(seq 1 "$N"); do
   curl -s -m 120 http://127.0.0.1:8009/v1/chat/completions \
     -H 'Content-Type: application/json' \
-    -d "{\"model\":\"default\",\"messages\":[{\"role\":\"user\",\"content\":$(python3 -c "import json,sys;print(json.dumps(sys.argv[1]))" "$PROMPT")}],\"max_tokens\":220}" \
+    -d "{\"model\":\"ud-iq3_xxs\",\"messages\":[{\"role\":\"user\",\"content\":$(python3 -c "import json,sys;print(json.dumps(sys.argv[1]))" "$PROMPT")}],\"max_tokens\":500}" \
     -o /dev/null
   sleep 1
 done
 
 sleep 2
-tr -d '\0' < "$LOG" | grep -a 'tokens =' | tail -"$N" | python3 -c "
+tr -d '\0' < "$LOG" | grep -a '\[strata\] done:' | tail -"$N" | python3 -c "
 import sys, re, csv
 label = '$LABEL'
 w = csv.writer(open('$OUT/spd-prod-judge.csv', 'a'), lineterminator='\n')
 for line in sys.stdin:
-    m = re.search(r'prompt (\d+) tokens = (\d+) reused \+ (\d+) read in (\d+) ms \(([\d.]+) tok/s\), (\d+) generated in (\d+) ms \(([\d.]+) tok/s\)(?:, drafts accepted (\d+) of (\d+))?', line)
+    m = re.search(r'done: (\d+) tokens in ([\d.]+) s \(([\d.]+) tok/s\).*?expert cache ([\d.]+)% hit', line)
     if m:
-        w.writerow([label, m.group(3), m.group(5), m.group(6), m.group(8), f'{m.group(9)}/{m.group(10)}' if m.group(9) else '-'])
-        print(f'{label}: prefill {m.group(5)} tok/s, decode {m.group(8)} tok/s, drafts {m.group(9) or 0}/{m.group(10) or 0}')
+        w.writerow([label, m.group(1), m.group(3), m.group(4)])
+        print(f'{label}: {m.group(1)} tokens, decode {m.group(3)} tok/s, expert cache {m.group(4)}% hit')
 "
