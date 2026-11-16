@@ -22810,9 +22810,22 @@ int main(int argc, char** argv) {
                     // was staged, and the drafted rows read unwritten slots.)
                     strata::kernels::penalty_rows(consumed.data() + pen_gen0, (int64_t) (consumed.size() - pen_gen0), window.data(), T,
                                                   hist_n, hist_stage.data());
-                    const strata::core::OnDevice on_h(hist_dev);
-                    cudaMemcpy(d_hist, hist_stage.data(), (size_t) T * (size_t) hist_n * sizeof(int32_t),
-                               cudaMemcpyHostToDevice);
+                    // F8 (STRATA_PENALTY_MAPPED): the same bytes, one stage earlier.  The build point cannot move
+                    // (these rows need THIS window's draft, and this is the first point after it), so what moves is
+                    // the copy: the rows land in the verifier's mapped image and the window graph copies them to
+                    // d_hist - the same destination, the same words - as its own first node, instead of this
+                    // thread's blocking cudaMemcpy sitting between the draft and the launch.  ver_b stages the same
+                    // rows when --pipeline-windows is on, because the odd windows share this very buffer (the
+                    // set_history above hands it to both).  Gate OFF both calls say no at their first line and the
+                    // memcpy below runs exactly as it did; a refusal says no for every verifier at once (they all
+                    // carry the same capacity), so there is no half-staged window either way.
+                    bool hist_staged = ver.stage_hist(hist_stage.data(), T, hist_n);
+                    if (pipe) hist_staged = ver_b.stage_hist(hist_stage.data(), T, hist_n) && hist_staged;
+                    if (!hist_staged) {
+                        const strata::core::OnDevice on_h(hist_dev);
+                        cudaMemcpy(d_hist, hist_stage.data(), (size_t) T * (size_t) hist_n * sizeof(int32_t),
+                                   cudaMemcpyHostToDevice);
+                    }
                 }
                 // the elastic K/V: the window's cells and the drafter's beyond them
                 if (kvg.on && p + T + 64 > kvg.cells &&
