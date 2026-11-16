@@ -4790,6 +4790,34 @@ const uint8_t* FileExpertSource::blob_stable(int64_t layer, int64_t expert) {
     return blob(layer, expert);
 }
 
+// F7ab (STRATA_BOOT_FILL_SORT): the blob's first byte in its pack file - the boot fill's offset-sort key.
+// experts.bin: the blob is one contiguous range (the same arithmetic read_direct reads); a GGUF read in
+// place: the first role's offset in that role's file (the blob is the three roles concatenated, and the
+// first role's file position orders the reads just as well as any other part of it would).
+int64_t FileExpertSource::blob_offset(int64_t layer, int64_t expert) const {
+    if (base_ == nullptr || layer < 0 || expert < 0 || layer >= n_layers_ || expert >= n_expert_) return -1;
+    if (role_ptr_.empty())
+        return (int64_t) (layer_offsets_[(size_t) layer] + (uint64_t) expert * layer_blob_bytes_[(size_t) layer]);
+    const size_t i = (size_t) (3 * layer);
+    const Map& m = maps_[(size_t) role_file_[i]];
+    return (int64_t) ((uint64_t) (role_ptr_[i] - m.base) + (uint64_t) expert * role_bytes_[i]);
+}
+
+// F7ab: see the header.  Keys once; a stable sort keeps equal offsets (and a source that answers the
+// same offset for several files' roles) in rank order.
+std::vector<int64_t> pack_offset_order(const ExpertSource& src, const std::pair<int32_t, int32_t>* pairs, int64_t n) {
+    std::vector<int64_t> ord;
+    if (pairs == nullptr || n <= 0) return ord;
+    std::vector<int64_t> key((size_t) n);
+    for (int64_t i = 0; i < n; ++i) {
+        key[(size_t) i] = src.blob_offset(pairs[(size_t) i].first, pairs[(size_t) i].second);
+        if (key[(size_t) i] < 0) return {};   // a source that cannot order one pair cannot order the fill
+        ord.push_back(i);
+    }
+    std::stable_sort(ord.begin(), ord.end(), [&](int64_t a, int64_t b) { return key[(size_t) a] < key[(size_t) b]; });
+    return ord;
+}
+
 int FileExpertSource::blob_parts(int64_t layer, int64_t expert, BlobPart* out) {
     // the GGUF mapped in place only (three tensors per expert); the RAM copy, an exchange override, the unbuffered
     // reads, a closed mapping and the I/O prefetch (STRATA_IO_PREFETCH: it preads the ranges the page cache lacks, which a copy out

@@ -633,6 +633,50 @@ void test_unbuffered_reads() {
     source.close();
 }
 
+// F7ab (STRATA_BOOT_FILL_SORT): blob_offset - the pack file offset of each blob, the boot fill's
+// offset-sort key - and pack_offset_order, the offset-sorted read order the fill loops consume (ties
+// keep rank order; a source that cannot answer one offset orders nothing).
+namespace {
+class UnorderedSource final : public strata::core::ExpertSource {   // the RAM arena's shape: no offsets
+public:
+    const uint8_t* blob(int64_t, int64_t) override { return nullptr; }
+};
+}  // namespace
+
+void test_blob_offset_order() {
+    using namespace strata::core;
+    using namespace strata::kernels::cpu;
+    constexpr int64_t layers = 2;
+    constexpr int64_t experts = 3;
+    const uint64_t layer_bytes = (uint64_t) experts * BLOB;
+    TempDirectory dir(fs::current_path());   // like test_unbuffered_reads: not the temp dir (a tmpfs pack is fine here, but keep the fixture shape)
+    std::string err;
+    require(expert_layout_load(dir.path.string(), layers, experts, err), "could not load canonical layout: " + err);
+    create_pack(dir.path, (uint64_t) layers * layer_bytes);
+    FileExpertSource source;
+    require(source.open(dir.path.string(), layers, experts, err), "could not map the synthetic pack: " + err);
+    for (int64_t l = 0; l < layers; ++l)
+        for (int64_t e = 0; e < experts; ++e)
+            require(source.blob_offset(l, e) == (int64_t) ((uint64_t) l * layer_bytes + (uint64_t) e * BLOB),
+                    "blob_offset is not the blob's file offset");
+    require(source.blob_offset(-1, 0) < 0 && source.blob_offset(0, -1) < 0 &&
+                source.blob_offset(layers, 0) < 0 && source.blob_offset(0, experts) < 0,
+            "blob_offset answered an out-of-range pair");
+    // a rank order that is NOT the file order: the permutation must hand the pairs back by offset
+    const std::pair<int32_t, int32_t> ranked[] = {{1, 0}, {0, 2}, {0, 0}, {1, 2}, {0, 1}, {1, 1}};
+    const std::vector<int64_t> ord = pack_offset_order(source, ranked, 6);
+    const std::pair<int32_t, int32_t> want[] = {{0, 0}, {0, 1}, {0, 2}, {1, 0}, {1, 1}, {1, 2}};
+    require(ord.size() == 6, "pack_offset_order lost pairs");
+    for (size_t i = 0; i < 6; ++i)
+        require(ranked[(size_t) ord[i]] == want[i], "pack_offset_order did not sort by pack offset");
+    // a source that cannot answer offsets (the RAM arena) orders nothing; so do empty lists
+    UnorderedSource arena_like;
+    require(pack_offset_order(arena_like, ranked, 6).empty(), "pack_offset_order ordered a source without offsets");
+    require(pack_offset_order(source, nullptr, 6).empty() && pack_offset_order(source, ranked, 0).empty(),
+            "pack_offset_order answered an empty list with pairs");
+    source.close();
+}
+
 // #633: the host RAM probe with fake /proc and cgroup trees: v2 (a limit, "max", a missing or malformed limit), v1
 // (a limit, unlimited), and no cgroup line at all.  Elsewhere than Linux it reads the machine's RAM.
 void test_host_memory() {
@@ -1052,6 +1096,7 @@ int main(int argc, char** argv) {
         test_host_memory();
         test_canonical_layout();
         test_unbuffered_reads();
+        test_blob_offset_order();
         test_io_prefetch();
 #if defined(STRATA_NATIVE_EXPERTS)
         test_native_variable_layout();

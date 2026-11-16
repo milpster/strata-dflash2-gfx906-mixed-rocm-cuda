@@ -200,6 +200,15 @@ public:
     /// A blob pointer that stays valid (not recycled) for as long as the source is open: for a copy that runs
     /// asynchronously long after the call (the adaptive tier's swap-ins).  Defaults to `blob`.
     virtual const uint8_t* blob_stable(int64_t layer, int64_t expert) { return blob(layer, expert); }
+    /// F7ab (STRATA_BOOT_FILL_SORT): the offset of `(layer, expert)`'s first blob byte in its pack file -
+    /// the boot fill's offset-sort key - or -1 when this source cannot tell (the pair then keeps its rank
+    /// order).  A source reading several files answers the first role's offset in that role's file; ties
+    /// across files keep the rank order (read_direct re-sorts every batch's windows internally anyway).
+    /// The RAM arena answers -1: its fill reads RAM, and there is no pack order to exploit.
+    virtual int64_t blob_offset(int64_t layer, int64_t expert) const {
+        (void) layer; (void) expert;
+        return -1;
+    }
     /// W1 lever (the relief's swap-ins): read a BATCH of blobs straight from the pack files into
     /// `dst[i]`, one unbuffered read batch (sorted, merged windows - the page cache stays out, so
     /// the host copies the relief gave back do not re-materialize).  `ok[i]` answers per pair;
@@ -336,6 +345,12 @@ protected:
                        const strata::kernels::cpu::ExpertLayout& lay, bool from_gguf);
     std::vector<std::pair<std::string, std::string>> inputs_;
 };
+
+/// F7ab (STRATA_BOOT_FILL_SORT): the offset-sorted read order of a boot fill's pairs - a permutation of
+/// [0, n) sorting `pairs` by `blob_offset`, ties keeping rank order.  Empty when any pair's offset is
+/// unknown (-1): a source that cannot order one pair cannot order the fill, and the caller keeps today's
+/// rank order.  Read order only - the bytes and the slots they land in are the caller's, unchanged.
+std::vector<int64_t> pack_offset_order(const ExpertSource& src, const std::pair<int32_t, int32_t>* pairs, int64_t n);
 
 /// CS-T, routing-aware prefetch of the file tier: when the CPU pool starts layer `l`, a worker thread applies layer
 /// l+1's router (BF16, host copy) to layer l's MoE input - the residual stream changes little from one layer to the
@@ -1018,6 +1033,9 @@ public:
     const uint8_t* blob(int64_t layer, int64_t expert) override;
     /// With io prefetch in the experts.bin tier, the mapping itself (blob() may hand out a recycled staging buffer).
     const uint8_t* blob_stable(int64_t layer, int64_t expert) override;
+    /// F7ab (STRATA_BOOT_FILL_SORT): experts.bin - the blob's contiguous range; a GGUF read in place -
+    /// the first role's offset in that role's file (see ExpertSource::blob_offset).
+    int64_t blob_offset(int64_t layer, int64_t expert) const override;
     int blob_parts(int64_t layer, int64_t expert, BlobPart* out) override;
     void note_async_read(const uint8_t* blob, void* stream) override;
     /// Windows, opt-in with STRATA_FILE_RELEASE=1: trim the file mapping's full pages after their expert reaches
