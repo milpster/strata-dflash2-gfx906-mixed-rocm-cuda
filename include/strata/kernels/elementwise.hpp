@@ -166,6 +166,11 @@ bool doorbell_wait_payload(const uint32_t* h_seq, const float* h_x, int64_t n, c
 /// Plan v0.3 P3: copy `n` int32 from mapped pinned host memory into device memory with a kernel (the QSA
 /// per-token step and positions), instead of a host-to-device memcpy node in the middle of a layer.
 void copy_i32_from_mapped(int32_t* dst, const int32_t* src, int64_t n, void* stream);
+/// F8 (STRATA_PENALTY_MAPPED): the same, but the word count is read from mapped (`ctl`, the staging's control
+/// word) at REPLAY and bounded by `cap`, the mapped image's capacity.  Used for the penalty-history rows,
+/// whose length belongs to the request and not to the graph the request replays: one graph serves windows of
+/// different penalty_last_n.  ctl == 0 copies nothing.  Graph-capturable.
+void copy_i32_hist_from_mapped(int32_t* dst, const int32_t* src, const int32_t* ctl, int64_t cap, void* stream);
 /// Up to 8 copies from mapped host memory in one launch: `words` 4-byte words each (16 bytes a load where both
 /// ends are 16-byte aligned and the count a multiple of 4).  Graph-capturable.
 struct MappedCopy {

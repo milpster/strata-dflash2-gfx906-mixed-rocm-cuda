@@ -1074,6 +1074,15 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
       add_test(NAME read_once_test COMMAND read_once_test)
       set_tests_properties(read_once_test PROPERTIES TIMEOUT 60)
     endif()
+    # F8 (the mapped penalty-history staging): the byte image stage_hist writes into the mapped buffer, the
+    # control word's count, the refusals that leave the in-graph copy inert.  CPU-only BY CONSTRUCTION -
+    # header arithmetic and RAM, the test links NO library at all and makes no device call.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/penalty_hist_stage_test.cpp")
+      add_executable(penalty_hist_stage_test tests/core/penalty_hist_stage_test.cpp)
+      target_include_directories(penalty_hist_stage_test PRIVATE include)
+      add_test(NAME penalty_hist_stage_test COMMAND penalty_hist_stage_test)
+      set_tests_properties(penalty_hist_stage_test PROPERTIES TIMEOUT 60)
+    endif()
     # M1 (capacity, parent correction 2): the helper proxy's RESIDENCY lifecycle - registered fill,
     # mid-request disable (residency KEPT, the gate must still consult), per-request re-arm, channel
     # death (residency RELEASED, the gate must recover).  Proxy mode makes no device call (the

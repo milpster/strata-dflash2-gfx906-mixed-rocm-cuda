@@ -16,6 +16,7 @@
 #include "strata/core/window_evict.hpp"
 #include "strata/core/expert_nibble.hpp"
 #include "strata/core/pin_budget.hpp"
+#include "strata/core/penalty_hist_stage.hpp"
 #include "strata/core/vram_guard.hpp"
 #if defined(STRATA_VERIFY_HGL)
 #include "strata/core/host_graph_launch.hpp"
@@ -767,7 +768,7 @@ Verifier::~Verifier() {
     if (arena_) cudaFree(arena_);
     if (hcount_d_) cudaFree(hcount_d_);
     void* hosts[] = {h_tok_, h_step_, h_pos_, h_commit_, h_ple_, h_out_, h_x_, h_ids_, h_w_, h_seq_, h_flag_, h_ymiss_,
-                     h_flagA_, h_plan_, h_flagB_, h_plan_err_, h_nf_, herr_h_, hdrop_h_, h_bal_};
+                     h_flagA_, h_plan_, h_flagB_, h_plan_err_, h_nf_, herr_h_, hdrop_h_, h_bal_, h_hist_};
     for (void* h : hosts)
         if (h) cudaFreeHost(h);
 }
@@ -981,6 +982,21 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
               mapped(64, (void**) &h_plan_err_, (void**) &m_plan_err_) &&
               mapped(T * K * N * 4, (void**) &h_ymiss_, (void**) &m_ymiss_);
     if (!ok) { err = "verify: mapped staging allocation failed " + strata::core::pin_exhausted_hint(); return false; }
+    // F8 (STRATA_PENALTY_MAPPED): the penalty-history image the window graph copies out at its head, in place of
+    // serve's per-window blocking cudaMemcpy.  Sized to the ceiling the engine runs - every window this build can
+    // capture (kVerifyLongT rows, the widest a merge window reaches) x serve's penalty_last_n clamp (kHistMax, the
+    // same clamp that sizes the caller's device row buffer) - so a staged window always fits the graph's captured
+    // copy bound and a window that somehow does not is refused by stage_hist (which leaves today's copy in place).
+    // Allocated only with the gate on: OFF, this verifier allocates exactly what it allocated before.
+    if (strata::core::penalty_hist_mapped()) {
+        hist_cap_ = (int64_t) strata::kernels::kVerifyLongT * strata::core::kHistMax;
+        ok = mapped((size_t) hist_cap_ * 4 + strata::core::kHistCtlWords * 4, (void**) &h_hist_, (void**) &m_hist_);
+        if (ok) {
+            h_hist_ctl_ = h_hist_ + hist_cap_;
+            m_hist_ctl_ = m_hist_ + hist_cap_;
+        }
+        if (!ok) { err = "verify: the penalty-history staging allocation failed " + strata::core::pin_exhausted_hint(); return false; }
+    }
     // DFlash2 taps: set_taps (the drafter) or STRATA_TAP_FILE (the research dump); off, and nothing is allocated or captured, otherwise
     const char* tap_path = std::getenv("STRATA_TAP_FILE");
     if (tap_path != nullptr && tap_path[0] == '\0') tap_path = nullptr;
@@ -1437,6 +1453,14 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
     // per-ROW positions of the K rows [t][NKV] and the indexer query rows [t][IQ] (for batched RoPE)
     const int32_t* pos_k = pos_ + MT * NH;
     const int32_t* pos_i = pos_ + MT * (NH + NKV);
+    // F8 (STRATA_PENALTY_MAPPED): this window's penalty-history rows, out of mapped and into the buffer
+    // set_history handed us - the destination the blocking cudaMemcpy used to write, before this launch.  The
+    // count comes from the mapped control word at REPLAY, not from the capture: one graph of a window size
+    // serves requests whose penalty_last_n differ, and the rows are staged (or the count left at 0, when the
+    // caller staged with today's blocking copy) between the window's draft and this launch.  Only the head
+    // stage captures it: the rows are read by the sampler, which runs after the graph, in that stage.
+    if (strata::core::penalty_hist_mapped() && m_hist_ != nullptr && hist_d_ != nullptr && next_ == nullptr && !batch_rec_)
+        copy_i32_hist_from_mapped(const_cast<int32_t*>(hist_d_), m_hist_, m_hist_ctl_, hist_cap_, cs);
 
     // ---- the embeddings, broadcast to the hc streams - or, in a later stage of a layer split, the previous stage's
     // residual, pending write and inject (see set_stage)
@@ -2833,6 +2857,23 @@ void Verifier::trim_stale_family() {
         (void) cudaGetLastError();
     std::fprintf(stderr, "strata verify: freed the %s window graph family (%d exec pools%s); a residency flip back captures it again\n",
                  ar_off_ ? "all-resident" : "doorbell", pools, delta);
+}
+
+// F8 (STRATA_PENALTY_MAPPED): this window's penalty-history rows, into the mapped image the window graph
+// copies out at its head (see record_window).  `rows` is the [T][hist_n] image penalty_rows built - the same
+// bytes serve's pageable vector + blocking cudaMemcpy used to stage - so the only change is the copy's
+// mechanism: same bytes, same device destination, earlier (inside the launch rather than before it).
+// False, with the image's count left at 0 so the captured copy moves nothing: the gate is off, there are no
+// rows, or they do not fit the image - in every case the caller stages with today's blocking copy.
+bool Verifier::stage_hist(const int32_t* rows, int T, int hist_n) {
+    const bool own = h_hist_ != nullptr &&
+                     strata::core::hist_stage_write(h_hist_, h_hist_ctl_, hist_cap_, rows, T, hist_n);
+    // A layer split hands the same device buffer to every stage (set_history forwards), and the head stage's
+    // graph is the one that copies it out: forward, so the stage that owns the captured copy is filled too.
+    // Every stage refused or staged together (they all carry the same capacity), so the caller's fallback is
+    // all-or-nothing, and a refusal leaves every image's count at 0 - all the copies inert.
+    const bool down = next_ == nullptr || next_->stage_hist(rows, T, hist_n);
+    return own && down;
 }
 
 bool Verifier::capture(int T, std::string& err) {

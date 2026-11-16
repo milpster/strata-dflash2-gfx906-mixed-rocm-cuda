@@ -151,6 +151,15 @@ public:
         hist_len_ = history_len;
         if (next_) next_->set_history(history, history_len);
     }
+    /// F8 (STRATA_PENALTY_MAPPED, default OFF): stage this window's penalty-history rows - the [T][hist_n]
+    /// image `penalty_rows` built, the same bytes set_history's device buffer takes - into the mapped image
+    /// the window graph copies out at its head, which is what removes serve's per-window blocking cudaMemcpy
+    /// from between the draft and the launch.  Call it after this window's draft and before run().  False
+    /// means the gate is off (or these rows do not fit the image): the graph's copy stays inert and the
+    /// caller stages with today's blocking copy, byte for byte as before.  Forwards to the next stage as
+    /// set_history does, so the head stage of a layer split - the one whose graph copies the rows out - gets
+    /// them too.
+    bool stage_hist(const int32_t* rows, int T, int hist_n);
     /// PROBABILISTIC DRAFT ACCEPTANCE (core/spec_prob.hpp, STRATA_SPEC_PROB=1): for the NEXT run() only, judge the
     /// window's first `n_q` drafts against the drafter's distributions `q` (host memory, n_q rows of kSpecQStride
     /// int32: ids, -1 terminated, then probabilities as float bits) with rejection sampling instead of exact match; the
@@ -685,6 +694,12 @@ private:
     int32_t* h_commit_ = nullptr; int32_t* m_commit_ = nullptr; // [n_keep, n_keep-1, pos_0 .. pos_{T-1}]
     float* h_ple_ = nullptr;     float* m_ple_ = nullptr;       // T * n_embd
     int32_t* h_out_ = nullptr;   int32_t* m_out_ = nullptr;     // T argmax ids
+    // F8 (STRATA_PENALTY_MAPPED): the penalty-history rows the window graph stages at its head - mapped, so the
+    // graph copies them to the device itself and serve needs no blocking cudaMemcpy per window.  Allocated only
+    // when the gate is on.  Rows then kHistCtlWords of control; ctl[0] is the word count the copy moves.
+    int32_t* h_hist_ = nullptr;    int32_t* m_hist_ = nullptr;      // kVerifyLongT * kHistMax words of rows
+    int32_t* h_hist_ctl_ = nullptr; int32_t* m_hist_ctl_ = nullptr;  // ctl[0]: the words to copy at replay
+    int64_t hist_cap_ = 0;         // the rows' capacity in words
     // STRATA_TAP_FILE (off by default; nothing is allocated or captured without it): the DFlash2 experiment's hook.
     // After each layer in STRATA_TAP_LAYERS (default 5,15,25,35,45) the window copies the layer's completed output
     // (the residual with its pending FFN write applied, the mean of the hc streams) per row; run() appends

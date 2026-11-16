@@ -489,6 +489,32 @@ void copy_i32_from_mapped(int32_t* dst, const int32_t* src, int64_t n, void* str
     check_launch("copy_i32_from_mapped");
 }
 
+// F8 (STRATA_PENALTY_MAPPED): the penalty-history rows out of mapped, with the WORD COUNT read from mapped
+// at replay.  A captured length is impossible here: the window graph is cached per window size and shared by
+// requests whose penalty_last_n differ, so a length baked into the graph would stage another request's row
+// width.  `cap` is the mapped image's capacity - the capture-time bound, so the launch's shape never varies.
+// Blocks whose share lies past the current count exit; the destination beyond the count keeps its previous
+// bytes, which is fine because the sampler reads only the window's hist_len_ and a count of 0 (nothing
+// staged, the caller used today's blocking copy) moves nothing at all.
+__global__ void copy_i32_hist_from_mapped_kernel(int32_t* __restrict__ dst, const volatile int32_t* src,
+                                                 const volatile int32_t* ctl, int64_t cap) {
+    __shared__ int64_t s_n;
+    if (threadIdx.x == 0) s_n = *ctl;
+    __syncthreads();
+    const int64_t n = s_n < cap ? s_n : cap;
+    for (int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x; i < n;
+         i += (int64_t) gridDim.x * blockDim.x)
+        dst[i] = src[i];
+}
+
+void copy_i32_hist_from_mapped(int32_t* dst, const int32_t* src, const int32_t* ctl, int64_t cap, void* stream) {
+    if (cap <= 0) return;
+    const unsigned bx = (unsigned) ((cap + 127) / 128 < 64 ? (cap + 127) / 128 : 64);
+    copy_i32_hist_from_mapped_kernel<<<bx < 1 ? 1 : bx, 128, 0, (cudaStream_t) stream>>>(
+        dst, (const volatile int32_t*) src, (const volatile int32_t*) ctl, cap);
+    check_launch("copy_i32_hist_from_mapped");
+}
+
 void copy_from_mapped_multi(const MappedCopy* copies, int n, void* stream) {
     if (n <= 0) return;
     if (n > 8) { std::fprintf(stderr, "copy_from_mapped_multi: at most 8 copies\n"); std::exit(1); }
