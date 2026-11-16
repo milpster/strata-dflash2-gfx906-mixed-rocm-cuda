@@ -54,6 +54,7 @@
     "STRATA_VERIFY_TRACE": "1",
     "STRATA_STALL_STACKS": "1",
     "STRATA_LAUNCH_PROBE": "1",
-    "STRATA_ARENA_PIN_GIB": "none"
+    "STRATA_ARENA_PIN_GIB": "none",
+    "LD_PRELOAD": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/gpu-rounds/crashrec.so"
   }
 }
