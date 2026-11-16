@@ -3728,3 +3728,15 @@ Read-only forensics lane (GLM explorer) over the three artifacts + source. Findi
 - **Discriminators**: (a) make `evicted_ms` readable / print KFD proc sysfs; (b) one gates arm with `HSA_USERPTR_FOR_PAGED_MEM=0` (community workaround for exactly this class); (c) `STRATA_VERIFY_TRACE=1` env in a gates arm (ring dump + GPU breadcrumbs); (d) release-path first-query latency logging.
 
 **Action**: log-only instrumentation lane dispatched on hc-q8-gfx906 (5 patches: release first-query timing, stall-report KFD counter/sysfs, unconditional diag on 40 s timeout, `request: setup` progress beat, VERIFY_TRACE doc) — next gates window carries the discriminators. Plan the H1 A/B arm (`HSA_USERPTR_FOR_PAGED_MEM=0`) into the next boot matrix.
+## Round 18bz — F2 + F7ab + #267-instr all landed on hc-q8-gfx906 (2026-11-16, 12:1x–12:5x)
+
+Three parallel GLM lanes delivered, reviewed, rebased clean, merged, pushed (through `4dc021c68a`):
+
+| lane | commits | host validation | deviations (accepted) |
+|---|---|---|---|
+| #267 instrumentation | `234780d8dd` | golden build exit 0, 5 log strings verified in binary, zero behavior change | patch 5 skipped (no debug-env registry exists); noted same timeout pattern at verify.cpp:4982/:5254/:5277 (verify-batch) left untouched |
+| F7ab SORT | `dd0c0299cb` | file_expert_source_test PASS ×2 incl. offset-order + O_DIRECT-vs-mmap byte gate (exercised, not skipped); 6 guards PASS | ODIRECT scoped to file-source boots (arena reads RAM — gate logs inactive); pread via read_direct's existing windowing (plan's own mitigation); unaligned-fds refusal guard |
+| F7ab ODIRECT | `8f1ad4adb1` | (same build) | (same) |
+| F2 xq ring | `528b51ee…4dc021c68` (6) | expert_helper_xq_ring_test PASS (27 checks incl. whole-frame byte identity, folded poison-proof, multi-window stale-seq); 9 adjacent host tests PASS; guards PASS | consumer gate via helper_tier_p (plan's remote_opt_ never sees the socket tier — plan bug, correct fix); plumbing via d.plan sink (already the verifier's GpuPlanSink); stage_batch second reset site; QFUSE leg deferred to GPU step c |
+
+All gates default OFF (env-unset = today's byte-identical path); OFF-path graph capture identical (F2), F7c timing spans preserved (F7ab). Engine-gate step c for both lanes + the #267 discriminator arms packaged in `v0235_gates.sh`: F2 parity binaries on GPU, F2 KL ×3 + helper reqs/frame, F7ab 8-boot interleaved distribution (ctrl/sort/odirect/sortodi) + deciding judges, HSA_USERPTR_FOR_PAGED_MEM=0 arm + VERIFY_TRACE leg, wikitext continuity leg. Runs after the p1 window closes on a fresh golden pin at the merged HEAD.
