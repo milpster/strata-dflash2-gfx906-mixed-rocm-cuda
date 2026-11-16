@@ -1874,6 +1874,17 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_include_directories(native_grouped_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(native_grouped_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME native_grouped_parity COMMAND native_grouped_parity)
+  # F1: the in-graph head sampler (STRATA_SAMPLER_IN_GRAPH) vs the host-driven sample_tokens family - token and
+  # Philox-draw identity over random windows, through the captured graph (the gate is not needed here: the test
+  # calls the mapped launchers directly).  GPU-only by nature (capture and replay); SKIPs (77) without a device.
+  add_executable(sampler_mapped_parity tests/cuda/sampler_mapped_parity.cu)
+  if(STRATA_HIP_GFX906)   # a HIP-only build has no CUDA language: the .cu is a HIP source here
+    set_source_files_properties(tests/cuda/sampler_mapped_parity.cu PROPERTIES LANGUAGE HIP)
+  endif()
+  target_include_directories(sampler_mapped_parity PRIVATE ${_strata_gpu_include_directories})
+  target_link_libraries(sampler_mapped_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+  add_test(NAME sampler_mapped_parity COMMAND sampler_mapped_parity)
+  set_tests_properties(sampler_mapped_parity PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 600)
   add_executable(mmvf_rows_parity src/kernels/mmvf_rows_parity.cpp)
   target_include_directories(mmvf_rows_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(mmvf_rows_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
