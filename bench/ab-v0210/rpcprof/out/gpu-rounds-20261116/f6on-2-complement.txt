@@ -1,0 +1,11 @@
+strata generate: arena complement scan: 12 of 48 layers
+strata generate: arena complement scan: 16 of 48 layers
+strata generate: arena complement scan: 20 of 48 layers
+strata generate: arena complement scan: 24 of 48 layers
+strata generate: arena complement scan: 28 of 48 layers
+strata generate: arena complement scan: 32 of 48 layers
+strata generate: arena complement scan: 36 of 48 layers
+strata generate: arena complement scan: 40 of 48 layers
+strata generate: arena complement scan: 44 of 48 layers
+strata generate: arena complement scan: 4 of 48 layers
+strata generate: arena complement scan: 8 of 48 layers

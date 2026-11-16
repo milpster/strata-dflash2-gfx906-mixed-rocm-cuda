@@ -3661,4 +3661,24 @@ Ten commits on `hc-q8-gfx906` (Strata-wt-integ), every gate default-OFF, compile
 
 Engine assembled for Phase B: `/mnt/srcds/Strata/v0234p0/` — rpcw-hip/strata = b6 pin (sha256 471209e0…, `strata 0.1.57` version-probes clean), rpcw-cuda = symlink to v0233's helper (protocol untouched by any P0 item, helper binary identical to champion's 553f3bf4). Phase B begins: F6 ladder → F8/F1 KL gates → qqNIGHT MMVF ×2 → A3 → B6 priming A/B → restore.
 
+## Round 18bt — F6 LADDER PASS on v0234p0: byte gate clean, boot fills ~6× (2026-11-16, 09:06–09:30)
+
+First ladder attempt (08:42) ran 5 boots on the WRONG engine — the variant generator swapped the launcher's `BIN=` but the config json's `"exe"` field is what resolves the engine (launcher BIN only feeds the helper path + preflight). All knobs silently dead on the v0233 binary; data void. Fixed (`make_engine_variant.sh` rewrites config exe, commit 11b69ac; ladders/B6 now read the config's append-only engine log by offset segment — boot lines live there, not in the launcher logs).
+
+Real ladder (5 boots + judges + restore, prod down, zero agents):
+
+| boot | gate | boot-fill wall | MB/s | VERIFY_COMPLEMENT sha16 |
+|---|---|---:|---:|---|
+| f6off-base | OFF | 19.6 s | 507 | 5543a2520f55aaca |
+| f6on-1 | ON | ~3.2 s | 3051 | 5543a2520f55aaca |
+| f6on-2 | ON | ~3.0 s | 3264 | 5543a2520f55aaca |
+| f6on-3 | ON | ~3.0 s | 3263 | 5543a2520f55aaca |
+
+**Verdict: F6 PASSES its byte and speed gates** — all-slots checksums identical gate-on vs gate-off (non-vacuous: real per-slot lines captured from the v0234 engine), boot pre-fill ~6× faster gate-on (DoD asked ≥2×), 3 consecutive ON boots at the box's fast-class ceiling. Judges on the new binary: F6OFF1 fresh fill 445.4 / boundary 253.0 / warm 28.5; F6ON1 boundary 254.1 / warm 35.6 (fill leg in json) — warm spread is boot-lottery class, not attributable to F6 (fill-only change). Restore clean, no-NaN OK.
+
+**Defect logged**: F7c phase fields print `pack_read_s 0.0 h2d_s 0.0` in BOTH modes — the Clock accumulators never accumulate (9.9 GB pinned cannot move in 0 s). F7c's own DoD (attribute a known-slow phase) FAILS as-is; fix lane queued for the next code window. F6's verdict stands on walls + complement. Caveat on the 6×: single OFF boot was slow-class (507); ON boots sit at the fast-class ceiling — gate effect and class are partially confounded at n=1 OFF; the B6 interleaved run adds class statistics.
+
+Artifacts: `out/gpu-rounds-20261116/f6-ladder.tsv`, `f6{off-base,on-1..3}-elog.txt`, `F6ON1/F6OFF1-{fill80k,tg80k}.json/`. Next: p0_gates.sh (ctests + NIGHT-v0234 baseline + F8/F1/F6/MMVF×2 KL gates).
+
+
 

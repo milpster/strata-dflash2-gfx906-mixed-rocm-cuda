@@ -1,0 +1,5 @@
+boot	gate	pack_read_s	h2d_s	pinned_mb	mbs	complement_sha
+f6off-base	OFF	0.0	0.0	9914	507	5543a2520f55aaca
+f6on-1	ON	0.0	0.0	9914	3051	5543a2520f55aaca
+f6on-2	ON	0.0	0.0	9914	3264	5543a2520f55aaca
+f6on-3	ON	0.0	0.0	9914	3263	5543a2520f55aaca
