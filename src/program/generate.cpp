@@ -3533,7 +3533,7 @@ static double ple_direct_rows_per_s(strata::kernels::PleTable& t) {
     return el > 0 ? (double) done / el : -1.0;
 }
 
-#if defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
+#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)
 // The R9700 / RX 9000 "bimodal prompt speed" (0.2.0 known limit).  The runtime opens the process's hardware queues
 // lazily, as the first stream of each kind is used, and the kernel's scheduler (MES) puts a queue on one of the
 // card's compute pipes when the queue first gets work.  The loader threads reach their streams in a different order
@@ -3546,9 +3546,20 @@ static double ple_direct_rows_per_s(strata::kernels::PleTable& t) {
 //   decode 2 to 3.6% and two expert slots, four normal ones did not even fix the starts.
 //   STRATA_HIP_QUEUE_PRIME unset: gfx1200 / gfx1201 on Linux only, "nn" (not when GPU_MAX_HW_QUEUES is 1 or 2, #3480); "0": off; any other string is a spec
 //   ('n' = a stream at the default priority, 'h' = at the highest) for experiments on other cards.
+//   The gfx906 build (MI50) is a different card and an unmeasured queue layout: there it has NO default and the gate
+//   must name a spec, so an unset gate leaves this path as unreachable as the build-time exclusion it replaces.
 static void prime_hw_queues() {
+    // Read once, before anything here touches a device (an unset gate must not even enumerate them).
+    static const bool requested = [] {
+        const char* v = std::getenv("STRATA_HIP_QUEUE_PRIME");
+#ifdef STRATA_HIP_GFX906
+        return v != nullptr && v[0] != 0 && std::strcmp(v, "0") != 0;
+#else
+        return v == nullptr || std::strcmp(v, "0") != 0;
+#endif
+    }();
+    if (!requested) return;
     const char* env = std::getenv("STRATA_HIP_QUEUE_PRIME");
-    if (env != nullptr && std::strcmp(env, "0") == 0) return;
     const char* pv = std::getenv("STRATA_PRIMARY_DEVICE");
     const int dev = pv != nullptr && std::atoi(pv) > 0 ? std::atoi(pv) : 0;
     int n_dev = 0;
@@ -3848,7 +3859,7 @@ int main(int argc, char** argv) {
         break;
     }
 #endif
-#if defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
+#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)
     prime_hw_queues();
 #endif
     Options o;
