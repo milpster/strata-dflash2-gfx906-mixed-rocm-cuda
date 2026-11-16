@@ -3697,6 +3697,11 @@ Harness variant: `strata-ldp-v0234.sh` + `qqNIGHT-v0234.json` (same teacher-forc
 
 Prod restored 10:06:30, no-NaN OK. Artifacts: `out/{NIGHT-v0234,F8G-PENALTY,F1G-SAMPLER,F6G-BOOTFILL,MMVF2,MMVF3,F8G-RE,F6G-RE}.tsv(+.stderr.txt)` under quality/out/, `p0-ctests{,-env}.log`. A3 rerun + B6 priming A/B follow in this window.
 
+## Round 18bv — A3 (--ple-row-cache 2M): NO-ADOPT (2026-11-16, 10:07–10:17)
+
+Single arm on the champion binary (fresh boot, standard judges): fresh fill 447.1 (fast class), boundary re-read **185.0 tok/s** (78.1 s — worse than the ~250 typical class), boundary first-gen 14.4 (known thrash), warm TG 28.3 (in band). Doubling the PLE row cache to 2,097,152 rows (+90 MB host) buys nothing measurable on any leg. **VERDICT: NO-ADOPT.** (Single-boot caveat per discipline; the boundary reading is class-confounded, but nothing here argues for a repeat.) Prod restored 10:17:06, no-NaN OK. Next in window: B6 queue-prime A/B on v0234p0.
+
+
 
 
 
