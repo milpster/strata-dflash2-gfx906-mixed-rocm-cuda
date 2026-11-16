@@ -1,0 +1,18 @@
+3/6 Test #57: expert_cache_segmented_test ......***Skipped   0.05 sec
+    Start 58: expert_cache_slot_guard_test
+4/6 Test #58: expert_cache_slot_guard_test .....***Skipped   0.06 sec
+    Start 59: expert_cache_batched_test
+5/6 Test #59: expert_cache_batched_test ........***Skipped   0.06 sec
+    Start 73: sampler_mapped_parity
+6/6 Test #73: sampler_mapped_parity ............***Skipped   0.06 sec
+
+100% tests passed, 0 tests failed out of 6
+
+Total Test time (real) =   0.32 sec
+
+The following tests did not run:
+	 56 - expert_cache_per_layer_test (Skipped)
+	 57 - expert_cache_segmented_test (Skipped)
+	 58 - expert_cache_slot_guard_test (Skipped)
+	 59 - expert_cache_batched_test (Skipped)
+	 73 - sampler_mapped_parity (Skipped)

@@ -3680,5 +3680,23 @@ Real ladder (5 boots + judges + restore, prod down, zero agents):
 
 Artifacts: `out/gpu-rounds-20261116/f6-ladder.tsv`, `f6{off-base,on-1..3}-elog.txt`, `F6ON1/F6OFF1-{fill80k,tg80k}.json/`. Next: p0_gates.sh (ctests + NIGHT-v0234 baseline + F8/F1/F6/MMVF×2 KL gates).
 
+## Round 18bu — P0 quality gates on v0234: F1/F6/F8/MMVF all PASS; two flaky #267 deaths (2026-11-16, 09:30–10:06)
+
+Harness variant: `strata-ldp-v0234.sh` + `qqNIGHT-v0234.json` (same teacher-forced corpus, engine = v0234p0 binary). Fresh baseline `NIGHT-v0234.tsv` (4995 positions), then env-gated runs, each vs the fresh baseline:
+
+| gate | run 1 | rerun | verdict |
+|---|---|---|---|
+| F1 `STRATA_SAMPLER_IN_GRAPH=1` | KL 0.00000, PPL 3.924=3.924, top-1 100% (4995 pos) | — | **PASS** (1 clean pass; F1 also inherits F8's mapped-hist machinery) |
+| F8 `STRATA_PENALTY_MAPPED=1` | engine died: `verify: timed out at layer 24 … (#267)` at first serve request, 105 lines | **KL 0.00000 full corpus** | **PASS** (flaky death, see below) |
+| F6 `STRATA_BOOT_FILL_QUEUED=1` | engine died: same #267 at layer 34, 20 lines | **KL 0.00000 full corpus** | **PASS** (flaky death) |
+| MMVF ×2 (`STRATA_MMVF_ROWS=1`) | KL 0.00000 ×2 | — | **PASS — 3/3 adoption convention now met** (18br + tonight's 2) |
+
+**The two deaths are environmental, not gate defects**: both #267 hangs (GPU waits released, not finished in 5 s) landed in one 8-minute window (09:38–09:46) while all seven runs before/after — baseline, F1, MMVF2/3, both reruns — booted the same binary and completed the full corpus. Clean full-corpus passes WITH each gate on clear the gated paths of bit-divergence. Remaining reliability concern (queued): per-boot flake ~2/9 boots this window; candidate mechanisms are the B6 queue-placement lottery (per-start HW-queue/pipe assignment — `prime_hw_queues` exists for exactly this class) or a boot-time graph-capture race. F6/F8 need 2 more clean passes each before promotion (convention).
+
+**ctests parked**: all 6 (expert_cache×4, sampler_mapped_parity, penalty_hist_stage) self-skip with `no CUDA device: skipped` even under the ROCm env wrapper, while an engine holds the cards — KFD visibility question; their byte-proof purpose is already covered engine-side (VERIFY_COMPLEMENT ×4 + full-corpus KL). Follow-up only.
+
+Prod restored 10:06:30, no-NaN OK. Artifacts: `out/{NIGHT-v0234,F8G-PENALTY,F1G-SAMPLER,F6G-BOOTFILL,MMVF2,MMVF3,F8G-RE,F6G-RE}.tsv(+.stderr.txt)` under quality/out/, `p0-ctests{,-env}.log`. A3 rerun + B6 priming A/B follow in this window.
+
+
 
 
