@@ -119,7 +119,7 @@ env -u CUDA_VISIBLE_DEVICES -u STRATA_ARENA_MMAP -u GPU_PINNED_MIN_XFER_SIZE \
   HSA_OVERRIDE_GFX_VERSION=9.0.6 GPU_MAX_ALLOC_PERCENT=100 STRATA_WATCHDOG_S=120 \
   STRATA_ENGINE_READY_S=2400 \
   LD_LIBRARY_PATH=${STRATA_ROCM_ROOT:-/home/srcds/rocm-gfx906-xnack}/lib:/opt/rocm-6.1.0/lib \
-  systemd-run --user --scope --unit=prod-engine-memprot -p MemoryMin=48G -p MemorySwapMax=0 -p OOMScoreAdjust=-1000 \
+  systemd-run --user --scope -p MemoryMin=48G -p MemorySwapMax=0 \
   "$PY" "$WORK/serve/server.py" --engine strata --config "$CONFIG" --port 8009 \
   >>"$LOG" 2>&1 < /dev/null &
 server_pid=$!
