@@ -1095,6 +1095,19 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
       add_test(NAME expert_helper_ownership_test COMMAND expert_helper_ownership_test)
       set_tests_properties(expert_helper_ownership_test PROPERTIES TIMEOUT 120)
     endif()
+    # F2 (STRATA_HELPER_XQ_RING, default OFF): the mapped q8_1 ring's claim-path legs - the knob, the
+    # default-off equivalence, the ring frame's byte identity, every fallback (gate off, ring invalid,
+    # byte-count mismatch, a FOLDED layer) and the multi-window stale-seq discipline of the per-window
+    # reset.  The same CPU-only construction as expert_helper_ownership_test above: proxy mode makes
+    # no device call, the native layout is a v5 fixture pack the test writes itself, and the fake
+    # AF_UNIX helper answers hello/fill and records the kBegin frames.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/expert_helper_xq_ring_test.cpp"
+       AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+      add_executable(expert_helper_xq_ring_test tests/core/expert_helper_xq_ring_test.cpp)
+      target_link_libraries(expert_helper_xq_ring_test PRIVATE strata_engine)
+      add_test(NAME expert_helper_xq_ring_test COMMAND expert_helper_xq_ring_test)
+      set_tests_properties(expert_helper_xq_ring_test PROPERTIES TIMEOUT 120)
+    endif()
     # The resident RAM mode with a layer split: the copy keeps each stage's lend region, and the experts the
     # prompt path borrows are served from RAM (the file source reads none of them).  The device calls are
     # wrapped - conversation_transfer_test's pattern - and `pin = false` keeps the copy pageable, so this
@@ -1945,6 +1958,16 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_include_directories(gr_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(gr_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME gr_parity COMMAND gr_parity --selftest)
+  # F2 (STRATA_HELPER_XQ_RING): the q8_1 image's triple parity - quantize_q8_1_rows (the record_window
+  # producer, incl. a captured-graph replay) == native_quantize_q8_1 == quantize_q8_1_cpu on plain and
+  # Hadamard-rotated rows, T 1..8.  The QFUSE leg (the fused GR read's own image) is gr_parity's own
+  # assertion above, so the same ctest window gives QFUSE == native == rows == cpu.  Exits 77 without
+  # a device, so a host-only ctest run skips it (the lane's engine gates run it on the GPUs).
+  add_executable(xq_triple_parity src/kernels/xq_triple_parity.cpp)
+  target_include_directories(xq_triple_parity PRIVATE ${_strata_gpu_include_directories})
+  target_link_libraries(xq_triple_parity PRIVATE strata_kernels strata_engine ${_strata_gpu_runtime_target})
+  add_test(NAME xq_triple_parity COMMAND xq_triple_parity)
+  set_tests_properties(xq_triple_parity PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
 
   if(STRATA_ENABLE_DFLASH2)
     # Our runtime, renamed dflash_inco (src/kernels/cuda/dflash_inco.cu, include/strata/kernels/dflash_inco.hpp),
