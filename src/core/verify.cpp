@@ -676,6 +676,7 @@ void Verifier::reset_poisoned(int T) {
     released_.store(false);
     std::fprintf(stderr, "strata: #267 recovery: window T=%d reset; the next request re-captures it\n", T);
     std::fflush(stderr);
+    recovery_epoch_counter().fetch_add(1, std::memory_order_release);   // the serve watchdog holds its abort while this moves
 }
 
 void Verifier::clear_poisoned(int T) {
@@ -686,6 +687,7 @@ void Verifier::clear_poisoned(int T) {
     std::fprintf(stderr, "strata: #267 recovery: window T=%d unpoisoned (its graphs stay); the next request proceeds\n", T);
     released_.store(false);
     std::fflush(stderr);
+    recovery_epoch_counter().fetch_add(1, std::memory_order_release);   // as reset_poisoned's bump
 }
 
 bool Verifier::refuse_or_recover(int T, bool keep_graphs, std::string& err) {

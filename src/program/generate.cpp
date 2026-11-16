@@ -17511,6 +17511,7 @@ int main(int argc, char** argv) {
                     strata::aux_cpus::pin_current_thread();
                     strata::core::Progress& p = strata::core::progress();
                     uint64_t last = p.beats.load(), ticks_at = p.ticks.load();
+                    uint64_t held_epoch = strata::core::recovery_epoch();
                     auto since = std::chrono::steady_clock::now();
                     auto io_since = since;
                     uint64_t io_last = file_tier_activity();
@@ -17542,6 +17543,20 @@ int main(int argc, char** argv) {
                         }
                         // a blocking step's explicit allowance (session files): still within it, not yet stuck
                         if (strata::core::progress_now_ms() < p.allow_until_ms.load()) continue;
+                        // #267: the stall may be the late-window wedge a recovery is resolving right now - the
+                        // ~63 s ROCm launch stall completes, the late-window path drains and resets the window,
+                        // and no beat ever moves, because the request thread was inside the driver call the whole
+                        // time.  A recovery that advanced since this watchdog's last look re-arms the stall clock
+                        // (one full interval per advance); abort only a stall recovery is not resolving.
+                        const uint64_t epoch = strata::core::recovery_epoch();
+                        if (epoch != held_epoch) {
+                            held_epoch = epoch;
+                            since = now;
+                            ticks_at = p.ticks.load();
+                            std::fprintf(stderr, "strata: #267: the stalled request is recovering (epoch %llu); watchdog holds\n",
+                                         (unsigned long long) epoch);
+                            continue;
+                        }
                         std::fprintf(stderr, "strata serve: no progress for %d s during a request (%s) - stopping "
                                              "the engine so the server starts it again (issue #29)%s\n",
                                      limit, stage_text().c_str(),

@@ -42,6 +42,12 @@ inline std::atomic<DiagFn>& release_gpu_fn() { static std::atomic<DiagFn> f{null
 inline void release_gpu_waits(std::FILE* f) {
     if (auto fn = release_gpu_fn().load()) fn(f);
 }
+/// #267 recovery epoch: bumped once per successful recovery (verify.cpp's reset_poisoned / clear_poisoned, which
+/// every recovery path ends in).  The serve watchdog reads it before aborting a stalled request: a stall the
+/// recovery machinery is actively resolving - a late window whose release drained, all while the request thread
+/// sits inside the driver call so no beat moves - gets its stall clock re-armed instead of the abort.
+inline std::atomic<uint64_t>& recovery_epoch_counter() { static std::atomic<uint64_t> e{0}; return e; }
+inline uint64_t recovery_epoch() { return recovery_epoch_counter().load(std::memory_order_acquire); }
 /// --pipeline-windows: the pipelined loop's windows and the drafter's chain (set while that loop runs)
 inline std::atomic<DiagFn>& diag_pipeline_fn() { static std::atomic<DiagFn> f{nullptr}; return f; }
 
