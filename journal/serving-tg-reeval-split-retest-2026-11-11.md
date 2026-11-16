@@ -3858,3 +3858,12 @@ The bisect verdict (18ck) resolved to a precise mechanism: the recovery commits'
 Fix (42cb41b314 on hc-q8-gfx906, verified + pushed): quiesce syncs the CURRENT device only (drains the boot's own in-flight SDMA, creates no context); the registration watchdog ticks 1 s (progress cadence and 5-min abort semantics unchanged). Validation recipe for the next GPU window: rebuild, one NIGHT leg — PASS = registration back to ~2-3 s AND the first window streams past layer 0; a wedge at ~2-3-s registration would instead indicate the environmental KFD class.
 
 Agents parked by operator: gr_parity rebuild + xq env recipe (Strata-wt-f2), F7ab file-source harness. Prod on v0236 (booting untouched). Gates/parity/F7ab all queued behind the fix validation.
+## Round 18cm — GATES GREEN on v0238: F2 KL 3/3 bit-exact; wikitext continuity proven; prod on v0238 (2026-11-16, 21:4x–22:1x)
+
+Validation: v0238 (wedge fix 42cb41b314, binary b0ec0109…) — registration 6.0 s (30 s broken / 2.4 s v0236), first window streams, 5/5 segments, 0 deaths. Gates window (v0238_gates.sh, all legs first-try, no retries, 8 consecutive clean boots tonight):
+- **F2 KL gates: 3/3 PASS, first legitimate passes ever.** F2G-P1/P2/P3 (STRATA_HELPER_XQ_RING=1) vs NIGHT-v0238: top1 100.00%, KL 0.00000, KL p99 0.0000, PPL 3.924=3.924 — the F2 xq ring is quality-clean.
+- **Wikitext continuity: bit-exact on overlap.** The old champions were partial (#267-era deaths: WIKI-233 at row 1543/4990, WIKI-234P1V at 450/4990); cmp finds zero differing bytes before their EOF, and WIKI-233V7/WIKI-234V7 complete all 4990 rows on v0238. Same numerics, finished corpus.
+- Parity binaries: exit 77 cured (empty CUDA_VISIBLE_DEVICES + ROCm 6.4.4 runtime — they link 6.4.4, not 6.1.0), but both exit 1 with "invalid device function" = kernels compiled for a non-gfx906 arch by the 6.4.4 default. Follow-up: rebuild f2-tests with gfx906 target. Quality gates unaffected.
+- Compare-tool crash on wiki legs (missing .seg.json sidecars from old harness version) — bypassed with direct TSV comparison.
+
+PROD: restored on v0238 (champion config + MemoryMin scope + STRATA_MEMORY_LIMIT_MIB=51200 + STRATA_WATCHDOG_S=120 + recovery + wedge fix). The #267 stack now deployed: in-process recovery for self-resolving stalls, 120-s abort + server.py restart for forever-class, boot watchdog, memory coexistence.
