@@ -17,7 +17,7 @@ F2B=/mnt/srcds/Strata-wt-f2/build-mixed-gpu/f2-tests
 OUT=$R/bench/ab-v0210/rpcprof/out/gpu-rounds-20261116
 WIKIIDS=$R/data/quant_quality/wikitext2/set.ids.json
 mkdir -p $OUT
-export LDP="env LD_LIBRARY_PATH=/home/srcds/rocm-gfx906-xnack/lib:/opt/rocm-6.1.0/lib HSA_OVERRIDE_GFX_VERSION=9.0.6"
+export LDP="env -u CUDA_VISIBLE_DEVICES -u HIP_VISIBLE_DEVICES LD_LIBRARY_PATH=/home/srcds/rocm-gfx906-xnack/lib:/opt/rocm-6.4.4/lib HSA_OVERRIDE_GFX_VERSION=9.0.6"
 WD="STRATA_WATCHDOG_S=120 STRATA_MEMORY_LIMIT_MIB=51200"
 
 # --- qq wrapper + config for v0238 (exe = the engine command; p0_gates lesson)
