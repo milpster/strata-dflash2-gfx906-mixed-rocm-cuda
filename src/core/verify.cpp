@@ -678,6 +678,31 @@ void Verifier::reset_poisoned(int T) {
     std::fflush(stderr);
 }
 
+void Verifier::clear_poisoned(int T) {
+    // the keep-graphs half of the #267 recovery, for the families whose graphs are not keyed by window size:
+    // the batch layouts (exec_bm_) are keyed by row layout and the pipelined windows' pool is captured once
+    // (capture_all, latched per process).  The drained window's exec object is intact - a late submission
+    // never touched it - so only the refusal is cleared.
+    std::fprintf(stderr, "strata: #267 recovery: window T=%d unpoisoned (its graphs stay); the next request proceeds\n", T);
+    released_.store(false);
+    std::fflush(stderr);
+}
+
+bool Verifier::refuse_or_recover(int T, bool keep_graphs, std::string& err) {
+    // the late-window #267 path: the launch call stalls inside the driver for a minute, then completes on its
+    // own - some bounded wait releases meanwhile, and the NEXT window meets the poison although the GPU has
+    // long finished.  End the waits once more: a quiet GPU drains in milliseconds and the window is then reset
+    // for a fresh capture (the plain family: its graphs destroyed; the batch/pipelined families: unpoisoned
+    // only, their graphs are not size-keyed).  Only a GPU that still cannot finish keeps the refusal, whose
+    // words the server treats as "restart this engine".  Always false: THIS window does not run - the next one
+    // can, which the recovery above made sure of.
+    if (!release_gpu_waits(5000)) { err = "verify: an earlier window never finished on the GPU (#267); restart the engine"; return false; }
+    if (keep_graphs) clear_poisoned(T);
+    else reset_poisoned(T);
+    err = "verify: the late GPU window was reset (#267); retry the request";
+    return false;
+}
+
 void Verifier::trace_ev(const char* what, int64_t step, int64_t layer, int64_t aux) const {
     if (!g_trace) return;
     auto rd = [](const uint32_t* p) { return p ? *(const volatile uint32_t*) p : 0u; };
@@ -3420,7 +3445,7 @@ void Verifier::accumulate_profile_inner(const unsigned long long* stamps) {
 
 // 0.1.43 (STRATA_ADAPT_OVERLAP): hold the host until the adaptive tier's copies up to `layer` have landed.  The wait
 // is a spin on an atomic the copy stream's host functions raise (no driver call here); it shares the window's 40 s limit.
-bool Verifier::adapt_gate_wait(int32_t layer, std::string& err) {
+bool Verifier::adapt_gate_wait(int32_t layer, int T, std::string& err) {
     const Clock::time_point t0 = Clock::now();
     uint32_t spins = 0;
     bool announced = false;   // the watchdog's label is set only once the wait really starts: no cost when the copies landed
@@ -3442,8 +3467,10 @@ bool Verifier::adapt_gate_wait(int32_t layer, std::string& err) {
                                  "(atomic %d, copy signal %d) - the tier's copy stream was not drained by the release\n",
                          (long long) ms_since(t0), (int) layer, (int) reach, (int) land, (int) hl);
             if (g_trace) trace_dump(stderr);
+            const bool drained = release_gpu_waits(5000);
+            if (drained) reset_poisoned(T);   // #267 recovery (late-window path): the release drained - unpoison for the next request
             err = "verify: the adaptive tier's copies for layer " + std::to_string(layer) + " never landed" +
-                  released_note(release_gpu_waits(5000)) +
+                  released_note(drained) +
                   " (the copy stream itself is not drained: reached " + std::to_string(reach) + " of " +
                   std::to_string(layer) + ", STRATA_VERIFY_TRACE=1 prints where the stream stopped)";
             std::fflush(stderr);
@@ -3474,7 +3501,7 @@ bool Verifier::prelaunch(int T, const int32_t* tokens, int64_t pos0, std::string
     sel_long_ = select_long_on() && pos0 + T >= select_long_at() ? 1 : 0;   // the variant the previous stage captured
     cudaGraphExec_t exec_t = ar_off_ ? exec_nr_[sel_long_][T] : exec_[sel_long_][T];   // #871: the variant the previous stage refreshed
     if (T < 1 || T > max_t_ || exec_t == nullptr) { err = "verify: prelaunch before the window was captured"; return false; }
-    if (released_.load()) { err = "verify: an earlier window never finished on the GPU (#267); restart the engine"; return false; }
+    if (released_.load()) return refuse_or_recover(T, false, err);   // #267: the late-window path may be stale
     if (pos0 + T > ss_->qsa_states[ss_->qsa_primary()].max_cells) { err = "verify: the window runs past the context"; return false; }
     const Clock::time_point t0 = Clock::now();
     stage_inputs(T, tokens, pos0);
@@ -3486,7 +3513,7 @@ bool Verifier::prelaunch(int T, const int32_t* tokens, int64_t pos0, std::string
     if (ar_on() && h_plan_err_ != nullptr) *(volatile uint32_t*) h_plan_err_ = 0;
     // 0.1.43: the same gate run() applies before it launches (the adaptive tier's copies land first)
     if (adapt_gate_ != nullptr && adapt_gate_->active.load(std::memory_order_acquire) && ar_on() &&
-        !adapt_gate_wait((int32_t) g_->n_layers, err)) return false;
+        !adapt_gate_wait((int32_t) g_->n_layers, T, err)) return false;
     strata::dispatch::Stats::get().graph_launch(T, ar_on() ? 0 : 1);
     const cudaError_t le = cudaGraphLaunch(exec_t, cs_);
     trace_ev("LAUNCHED", -1, -1, (int64_t) le);
@@ -3583,7 +3610,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     if (T < 1 || T > max_t_) { err = "verify: window size out of range"; return false; }
     // a layer split's hand-off buffers hold kVerifyMaxT rows
     if (T > kVerifyMaxT && (next_ != nullptr || lb_ > 0)) { err = "verify: windows past 8 tokens need one stage"; return false; }
-    if (released_.load()) { err = "verify: an earlier window never finished on the GPU (#267); restart the engine"; return false; }
+    if (released_.load()) return refuse_or_recover(T, false, err);   // #267: the late-window path may be stale
     const ModelGeometry& g = *g_;
     SessionState& ss = *ss_;
     if (pos0 + T > ss.qsa_states[ss.qsa_primary()].max_cells) { err = "verify: the window runs past the context"; return false; }
@@ -3688,7 +3715,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         // 0.1.43: with the all-resident graph the host serves no layer, so nothing can hold a layer back: every copy first
         trace_ev("GATE-ENTER", -1, -1, 0);
         if (adapt_gate_ != nullptr && adapt_gate_->active.load(std::memory_order_acquire) && ar_on() &&
-            !adapt_gate_wait((int32_t) g.n_layers, err)) return false;
+            !adapt_gate_wait((int32_t) g.n_layers, T, err)) return false;
         trace_ev("GATE-LEFT", -1, -1, 0);
 #if defined(STRATA_VERIFY_HGL)
         // A blocking instrumented launch cannot also serve the graph's CPU doorbells.
@@ -3853,7 +3880,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         VDBG("layer %lld rang\n", (long long) l);
         if (adapt_gate_ != nullptr && adapt_gate_->active.load(std::memory_order_acquire) && l >= 0 &&
             (size_t) l < adapt_gate_->has.size() && adapt_gate_->has[(size_t) l] != 0 &&
-            !adapt_gate_wait((int32_t) l, err)) return false;
+            !adapt_gate_wait((int32_t) l, T, err)) return false;
         cur_layer_ = want - 1;
         set_plan_slot(grp);
         const int tb = gtb[grp], n = gte[grp] - gtb[grp];
@@ -5004,7 +5031,7 @@ bool Verifier::stage_batch(const int* rows, int S, int hbase, const int32_t* tok
         err = why;
         return false;
     }
-    if (released_.load()) { err = "verify: an earlier window never finished on the GPU (#267); restart the engine"; return false; }
+    if (released_.load()) return refuse_or_recover(S, true, err);   // #267: the late-window path may be stale
     const ModelGeometry& g = *g_;
     for (int t = 0; t < S; ++t)
         if (pos[t] < 0 || pos[t] + 1 > slots_[(size_t) rows[t]]->max_cells) {
@@ -5169,7 +5196,9 @@ bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, cons
                 }
             }
             if (now - a > kGpuProgressTimeout) {
-                err = "verify batch: timed out at layer " + std::to_string(l) + released_note(release_gpu_waits(5000));
+                const bool drained = release_gpu_waits(5000);
+                if (drained) clear_poisoned(S);   // #267 recovery (late-window path): the release drained - unpoison for the next request
+                err = "verify batch: timed out at layer " + std::to_string(l) + released_note(drained);
                 return false;
             }
         }
@@ -5441,8 +5470,9 @@ int Verifier::batch_poll(PoolMultiFn pool, void* user, std::string& err) {
                 return -1;
             }
             if (now - last_ring() > kGpuProgressTimeout) {
-                err = "verify batch: timed out at layer " + std::to_string(lb_ + k) +
-                      released_note(release_gpu_waits(5000));
+                const bool drained = release_gpu_waits(5000);
+                if (drained) clear_poisoned(last_t_);   // #267 recovery (late-window path): the release drained - unpoison
+                err = "verify batch: timed out at layer " + std::to_string(lb_ + k) + released_note(drained);
                 b_running_ = false;
                 return -1;
             }
@@ -5464,8 +5494,9 @@ int Verifier::batch_poll(PoolMultiFn pool, void* user, std::string& err) {
                 return -1;
             }
             if (now - last_ring() > kGpuProgressTimeout) {
-                err = "verify batch: timed out at layer " + std::to_string(lb_ + b_k_) +
-                      released_note(release_gpu_waits(5000));
+                const bool drained = release_gpu_waits(5000);
+                if (drained) clear_poisoned(last_t_);   // #267 recovery (late-window path): the release drained - unpoison
+                err = "verify batch: timed out at layer " + std::to_string(lb_ + b_k_) + released_note(drained);
                 b_running_ = false;
                 return -1;
             }
@@ -5578,7 +5609,15 @@ bool Verifier::capture_all(std::string& err) {
     const OnDevice on_device(device_);
     if (g_ == nullptr) { err = "verify: capture_all before init"; return false; }
     if (remote_opt_ != nullptr) { err = "verify: pipelined windows do not serve --remote-expert-opt"; return false; }
-    if (released_.load()) { err = "verify: an earlier window never finished on the GPU (#267); restart the engine"; return false; }
+    if (released_.load()) {
+        // #267 (the late-window path): the poison may be stale - the stall's release drained long ago.  End the
+        // waits once more; a quiet GPU drains in milliseconds and every size is then reset (the next pl_prepare
+        // re-captures what this freed), and only a GPU that still cannot finish keeps the refusal.
+        if (!release_gpu_waits(5000)) { err = "verify: an earlier window never finished on the GPU (#267); restart the engine"; return false; }
+        for (int t = 1; t <= max_t_; ++t) reset_poisoned(t);
+        err = "verify: the late GPU window was reset (#267); retry the request";
+        return false;
+    }
     struct NoEvict {   // every size is wanted at once here: a capture must not free another size's graph
         bool& f;
         explicit NoEvict(bool& flag) : f(flag) { f = true; }
@@ -5642,7 +5681,7 @@ bool Verifier::prestage(int T, const int32_t* tokens, int64_t pos0, const int32_
 bool Verifier::pl_launch(int T, const int32_t* tokens, int64_t pos0, std::string& err) {
     const OnDevice on_device(device_);
     if (fl_active_) { err = "verify: a window is already in flight on this verifier"; return false; }
-    if (released_.load()) { err = "verify: an earlier window never finished on the GPU (#267); restart the engine"; return false; }
+    if (released_.load()) return refuse_or_recover(T, true, err);   // #267: the late-window path may be stale
     if (T < 1 || T > max_t_ || T > strata::kernels::kVerifyMaxT) { err = "verify: window size out of range"; return false; }
     SessionState& ss = *ss_;
     if (pos0 + T > ss.qsa_states[ss.qsa_primary()].max_cells) { err = "verify: the window runs past the context"; return false; }
@@ -5737,8 +5776,10 @@ int Verifier::service(PoolMultiFn pool, void* user, std::string& err) {
                 const cudaError_t qt = cudaStreamQuery(cs_);   // #267: the raw stream state in the message, diag always
                 trace_ev("TIMEOUT", fl_k_, l, (int64_t) qt);
                 diag(stderr);
+                const bool drained = release_gpu_waits(5000);
+                if (drained) clear_poisoned(T);   // #267 recovery (late-window path): the release drained - unpoison
                 err = "verify: timed out at layer " + std::to_string(l) + " (cudaStreamQuery " +
-                      std::to_string((int) qt) + ", " + cudaGetErrorString(qt) + ")" + released_note(release_gpu_waits(5000));
+                      std::to_string((int) qt) + ", " + cudaGetErrorString(qt) + ")" + released_note(drained);
                 return -1;
             }
             return 0;
@@ -5787,8 +5828,10 @@ bool Verifier::done(std::string& err) {
         if (now - fl_since_ms_ > kGpuProgressTimeoutMs) {   // every layer served, and the graph still runs: #267 as above
             const cudaError_t qt = cudaStreamQuery(cs_);   // #267: the raw stream state in the message, diag always
             diag(stderr);
+            const bool drained = release_gpu_waits(5000);
+            if (drained) clear_poisoned(fl_T_);   // #267 recovery (late-window path): the release drained - unpoison
             err = "verify: the window never finished (cudaStreamQuery " + std::to_string((int) qt) + ", " +
-                  cudaGetErrorString(qt) + ")" + released_note(release_gpu_waits(5000));
+                  cudaGetErrorString(qt) + ")" + released_note(drained);
         }
         return false;
     }

@@ -109,6 +109,15 @@ public:
     /// Streams, events and every other graph stay; only the window execs of size `T` are suspect.  Idempotent;
     /// call it post-drain, when no launch of these execs can be in flight.
     void reset_poisoned(int T);
+    /// #267 recovery, keep-graphs half: the families whose graphs are not keyed by window size - the batch
+    /// layouts (exec_bm_) are keyed by row layout, the pipelined windows' pool is captured once (capture_all) -
+    /// clear only the refusal.  The drained window's exec object is intact; a late submission never touched it.
+    void clear_poisoned(int T);
+    /// The refusal with recovery (the late-window #267 path): end the stalled window's waits once more - a
+    /// quiet GPU drains in milliseconds and `T` is then reset for a fresh capture (`keep_graphs`: unpoisoned
+    /// only) - and only a GPU that still cannot finish keeps the "restart the engine" refusal.  Always false
+    /// with `err` set: this window does not run, the next one can.
+    bool refuse_or_recover(int T, bool keep_graphs, std::string& err);
 
     /// `max_t` <= kVerifyLongT (past kVerifyMaxT: one-conversation windows only).  `head` may be null (the canonical head is then run per token).
     bool init(const WeightTable& wt, const ModelGeometry& g, SessionState& ss, const VerifyHits& hits,
@@ -559,7 +568,7 @@ private:
     // pipelined windows (pl_launch ...)
     cudaStream_t ext_stream_ = nullptr;   ///< set_stream: the stage's shared stream (not destroyed here)
     bool always_publish_ = false;
-    bool adapt_gate_wait(int32_t layer, std::string& err);
+    bool adapt_gate_wait(int32_t layer, int T, std::string& err);
     AdaptGate* adapt_gate_ = nullptr;     ///< 0.1.43: STRATA_ADAPT_OVERLAP's gate (null: off)
     void pl_stage(int T, const int32_t* tokens, int64_t pos0, const int32_t ple_prev[2]);
     cudaEvent_t ev_done_ = nullptr, ev_commit_ = nullptr;
