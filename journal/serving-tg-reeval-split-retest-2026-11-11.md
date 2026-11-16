@@ -3643,4 +3643,22 @@ Gate (mmvf_gate.sh): fresh knob-off baseline `NIGHT-fresh.tsv` + `STRATA_MMVF_RO
 
 **ADOPTED on operator instruction** after the gate passed: champion config env gains `"STRATA_MMVF_ROWS": "1"` (one-line diff), canonical relaunch. Honest record of the speed evidence: no mean effect (knob boots 29.8/29.3 vs champion class 26.7–31.0; pp 435 same class) — the 42.2 outlier stays attributed to boot lottery/trajectory. Adoption is quality-neutral and speed-neutral-in-the-mean; the retained rationale is the tail observation (highest-ever box reading, 42.2 with 89.4% acceptance, landed on this knob, 1-in-3 knob boots vs 0-in-many champion boots). Two confirmation KL passes remain queued (qqNIGHT todo) per the ≥3-pass campaign convention.
 
+## Round 18bs — PHASE A COMPLETE: all P0 code items + B6 enablement landed (2026-11-16, 00:30–08:40)
+
+Ten commits on `hc-q8-gfx906` (Strata-wt-integ), every gate default-OFF, compile-only validated (`build_pin_j4` GUARD PASS ×4, tests build green, zero ctest/GPU/boots), all pushed to fork:
+
+| item | commits | gate | key deviations (accepted) |
+|---|---|---|---|
+| F7c fill instrumentation | 3b23b40c7e | — (always-on log fields, append-only) | helper_fill_s on the expert-helper line (kFill lives in remote_experts.cpp) |
+| F6a batched fill API | d26b0aee3e | — (unused API) | stream drained on return (verify_slot ordering contract) |
+| F6b boot-fill pipeline | afc2ad38ff | STRATA_BOOT_FILL_QUEUED | kFill sent AFTER both loops (open_socket at generate.cpp:10091) — recorded |
+| F6c per-card parallel fills | e9593357b0 | same gate | helper-overlap SKIPPED: frame hranked is filtered against howned from admit() inside the loops — early send cannot be byte-identical (plan's assumption wrong; correct fallback) |
+| F8 mapped penalty staging | 14bdd32520, bc99fbb889 | STRATA_PENALTY_MAPPED | kHistMax=4096 (not 64 — plan's 2 KiB image would be 256 KiB): mapped-count-read-at-replay copy (plan's own alternative), host-only test 27/27 |
+| F1 in-graph sampler | cfd0e25d37, 945e68a27e, 41a98fc977 | STRATA_SAMPLER_IN_GRAPH | ONE generic kernel infeasible on gfx906 (36,864 B LDS → residency deadlock, measured): one mode-selected sampler as two launches (part+merge); parity test registered (ctest #73) NOT executed; penalized-greedy armed by design |
+| B6 queue-prime enablement | b9f58186a4 | STRATA_HIP_QUEUE_PRIME | env contract pre-existed (spec strings); gfx906 gate: unset/0=off, named spec (e.g. "nnnh")=on |
+
+**B6 lane's finding (high value for the shelved bistability)**: `prime_hw_queues()` (generate.cpp:3536) exists to work around a per-START hardware-queue pipe-assignment lottery — ROCm MES assigns HW queues to compute pipes lazily; in ~half of starts two busy queues (compute + expert staging) land on the SAME pipe → ~30k prompt hand-offs wait a pipe switch → 4K prompts 13% slower upstream (R9700). A per-boot ~50/50 queue-placement lottery is a live candidate mechanism for our boot bistability; B6's interleaved boots + F7c phase fields (queue placement ⇒ H2D-phase shift with identical pack-read; page cache ⇒ pack-read shift) can discriminate (plan §F7c B6-interaction).
+
+Engine assembled for Phase B: `/mnt/srcds/Strata/v0234p0/` — rpcw-hip/strata = b6 pin (sha256 471209e0…, `strata 0.1.57` version-probes clean), rpcw-cuda = symlink to v0233's helper (protocol untouched by any P0 item, helper binary identical to champion's 553f3bf4). Phase B begins: F6 ladder → F8/F1 KL gates → qqNIGHT MMVF ×2 → A3 → B6 priming A/B → restore.
+
 
