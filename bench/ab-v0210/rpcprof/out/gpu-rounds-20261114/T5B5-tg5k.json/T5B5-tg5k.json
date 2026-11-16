@@ -1,0 +1,33 @@
+{
+ "arm": "T5B5",
+ "leg": "tg5k",
+ "kind": "tg",
+ "ctx": 550000,
+ "max_tokens": 5120,
+ "ts": 1794703061.423,
+ "walls": [
+  148.165,
+  13.74
+ ],
+ "wall_s": 161.909,
+ "content_from": "content",
+ "prompt_bytes": 550000,
+ "sha256": "4195b40d66c0021c1df1afd838306ede221cb9f06ab9eae6b689cb6fcc2e864d",
+ "elog": "/mnt/srcds/Strata/logs/engine-prod-ud-iq3xxs-v0233.log",
+ "elog_start": 1245281,
+ "elog_end": 1250041,
+ "hlog": "/mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261115-012844-1824297-helper.log",
+ "hlog_start": 1591,
+ "hlog_end": 1591,
+ "mem": {
+  "max_rss_mib": 51423,
+  "min_avail_mib": 16021,
+  "max_swap_used_mib": 6703,
+  "max_vram_mib": {
+   "card3": 16158,
+   "card4": 451,
+   "card2": 16357,
+   "nvidia0": 7436
+  }
+ }
+}
