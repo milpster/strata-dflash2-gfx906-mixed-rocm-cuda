@@ -1040,8 +1040,41 @@ uint64_t PinnedArena::register_after_fill(const std::vector<std::pair<uint64_t, 
     const size_t n_rng = ranges.size();
     const size_t rng_step = n_rng >= 10 ? n_rng / 10 : n_rng;   // one line per ~10%: a slow boot stays visible
     size_t rng_i = 0;
+    // The boot-phase registration watchdog (the #267 family's boot wedge): a range can sit in the kernel's KFD
+    // wait (svm_range_set_attr, D state) for good while the boot holds the whole arena; this thread gives it the
+    // request watchdog's self-limiting behavior - a progress line every 30 s, and a boot-phase abort when the
+    // SAME range has not finished for 5 minutes, so the harness restarts the engine instead of the wedge holding
+    // the 46.8 GiB forever.  `at` is stored at the range's entry, so the stalled index the abort names is the
+    // one inside the driver call.
+    std::atomic<size_t> wd_at{0};
+    std::atomic<uint64_t> wd_bytes{0};
+    std::atomic<bool> wd_done{false};
+    std::thread wd([&] {
+        size_t stuck = 0;
+        auto since = std::chrono::steady_clock::now();
+        for (;;) {
+            std::this_thread::sleep_for(std::chrono::seconds(30));
+            if (wd_done.load(std::memory_order_acquire)) return;
+            const size_t at = wd_at.load(std::memory_order_acquire);
+            const auto now = std::chrono::steady_clock::now();
+            if (at != stuck) {
+                stuck = at;
+                since = now;
+            }
+            if (now - since > std::chrono::minutes(5)) {
+                std::fprintf(stderr, "strata pin: registration stalled %.0f s at range %zu of %zu - kernel KFD wait; aborting the boot\n",
+                             std::chrono::duration<double>(now - since).count(), at, n_rng);
+                std::fflush(stderr);
+                std::abort();   // acceptable here: the harness restarts engines, a wedged boot never frees itself
+            }
+            std::fprintf(stderr, "strata pin: registered after the fill: at range %zu of %zu, %.1f GiB, %.0f s elapsed\n",
+                         at, n_rng, (double) wd_bytes.load(std::memory_order_acquire) / 1073741824.0,
+                         std::chrono::duration<double>(now - t0).count());
+        }
+    });
     for (const auto& rg : ranges) {
         ++rng_i;
+        wd_at.store(rng_i, std::memory_order_release);
         if (rg.second == 0 || rg.first >= capacity) continue;
         // OUTWARD, page-granular: a span's first/last page is shared with a DROPPED blob's tail -
         // that page stays mapped (only wholly-inside pages were given back) and its kept bytes must
@@ -1072,6 +1105,7 @@ uint64_t PinnedArena::register_after_fill(const std::vector<std::pair<uint64_t, 
         }
         pin_ranges.emplace_back(a, b - a);
         registered_bytes += b - a;
+        wd_bytes.store(registered_bytes, std::memory_order_release);
         ++registered_slices;
         total += b - a;
         if (rng_step > 0 && rng_i % rng_step == 0 && rng_i < n_rng)
@@ -1080,6 +1114,8 @@ uint64_t PinnedArena::register_after_fill(const std::vector<std::pair<uint64_t, 
                          std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
         if (refused) break;
     }
+    wd_done.store(true, std::memory_order_release);
+    wd.join();
     note = "registered after the fill: " + std::to_string(pin_ranges.size()) + " ranges (" +
            std::to_string(registered_bytes >> 20) + " MiB)" +
            (refused ? ", the driver refused the next one" : "") + "; " + note;

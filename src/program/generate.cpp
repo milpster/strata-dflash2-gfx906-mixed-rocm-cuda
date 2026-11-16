@@ -3830,6 +3830,21 @@ static void exit_if_gpu_fatal(const std::string& err) {
     }
 }
 
+// The full-device quiesce before the whole-arena KFD registration: quiesce so no in-flight SDMA touches arena
+// folios while the KFD SVM registration walks them (today's D-state svm_range_set_attr wedge).  On the ROCm/
+// hip-compat build cudaDeviceSynchronize maps via strata_hip.h; per visible device, the current one restored.
+static void quiesce_devices_for_registration() {
+    int count = 0, prev = 0;
+    if (cudaGetDeviceCount(&count) != cudaSuccess) { (void) cudaGetLastError(); return; }
+    if (cudaGetDevice(&prev) != cudaSuccess) { (void) cudaGetLastError(); prev = 0; }
+    for (int d = 0; d < count; ++d) {
+        if (cudaSetDevice(d) != cudaSuccess) { (void) cudaGetLastError(); continue; }   // no context fits there either
+        cudaDeviceSynchronize();
+    }
+    if (prev >= 0 && prev < count) (void) cudaSetDevice(prev);
+    (void) cudaGetLastError();
+}
+
 #if defined(STRATA_USE_HIP) && defined(_WIN32)
 static int engine_main(int argc, char** argv) {   // main() is at the end of this file (#3431)
 #else
@@ -17547,8 +17562,10 @@ int main(int argc, char** argv) {
         // run over an UNREGISTERED arena; on a ROCm box such a sync over a live whole-span registration
         // spins over the 12.3M pinned 4 KiB pages and hangs the boot (round 18k).  A no-op for every
         // other pinning (relief registered its complement right after the handshake already).
-        if (arena_src.register_last())
+        if (arena_src.register_last()) {
+            quiesce_devices_for_registration();
             arena_src.register_whole();
+        }
         std::printf("READY %lld stop\n", (long long) o.max_context);   // "stop": this engine honours STOP
         std::fflush(stdout);
         std::string line;
@@ -24391,8 +24408,10 @@ int main(int argc, char** argv) {
 
     // register-last (round 18n): the one-shot loop's first prefill may DMA from the arena; the
     // registration is the last boot step here too (the serve block runs it just before its READY).
-    if (arena_src.register_last())
+    if (arena_src.register_last()) {
+        quiesce_devices_for_registration();
         arena_src.register_whole();
+    }
 
     // ---- plan v0.3 P5: the prompt's conditioning positions [0, n_prompt - 1) in batched chunks.  The token loop
     // then starts at the last prompt position, whose prediction is the first generated token.

@@ -653,6 +653,31 @@ bool Verifier::release_gpu_waits(int timeout_ms) {
     return true;
 }
 
+void Verifier::reset_poisoned(int T) {
+    // #267 recovery: the release drained, so the GPU finished the stalled window - what is left is a refusal flag
+    // and graph execs the wedged submission path may have half-touched.  Destroy this size's execs (both select
+    // families, both doorbell variants, as trim_stale_family frees a whole family) and clear the refusal; the next
+    // request's capture (run's capture(T) / prepare) rebuilds them.  Streams, events, the commit graph and the
+    // batch maps stay: only the window execs of this size are suspect.  Destroy errors are printed, not fatal -
+    // a failed destroy only leaves a leak behind, and the refusal is cleared either way.
+    std::fprintf(stderr, "strata: #267 recovery: destroying the poisoned window's graphs (T=%d) for re-capture\n", T);
+    const OnDevice on_device(device_);
+    for (int sl = 0; sl < 2; ++sl) {
+        for (cudaGraphExec_t* e : {&exec_[sl][T], &exec_nr_[sl][T]}) {
+            if (*e == nullptr) continue;
+            const cudaError_t de = cudaGraphExecDestroy(*e);
+            if (de != cudaSuccess)
+                std::fprintf(stderr, "strata: #267 recovery: T=%d graph exec destroy: %s\n", T, cudaGetErrorString(de));
+            *e = nullptr;
+        }
+        launched_[sl][T] = false;   // a re-captured graph of this size is a cold first launch again
+        launched_nr_[sl][T] = false;
+    }
+    released_.store(false);
+    std::fprintf(stderr, "strata: #267 recovery: window T=%d reset; the next request re-captures it\n", T);
+    std::fflush(stderr);
+}
+
 void Verifier::trace_ev(const char* what, int64_t step, int64_t layer, int64_t aux) const {
     if (!g_trace) return;
     auto rd = [](const uint32_t* p) { return p ? *(const volatile uint32_t*) p : 0u; };
@@ -3731,6 +3756,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     // waits so no spin kernel outlives the window (#267).
     struct NextLaunch {
         Verifier* next = nullptr;
+        int T = 0;
         std::thread th;
         bool ok = true;
         bool handed = false;
@@ -3742,11 +3768,14 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         }
         ~NextLaunch() {
             if (th.joinable()) th.join();
-            if (next != nullptr && !handed) (void) next->release_gpu_waits(5000);
+            // #267 recovery: post-join (its launch call is out) and post-drain (the release finished the GPU's
+            // work), so the next stage's execs can be destroyed for a fresh capture, as this stage's timeout does
+            if (next != nullptr && !handed && next->release_gpu_waits(5000)) next->reset_poisoned(T);
         }
     } nl;
     if (chain) {
         nl.next = next_;
+        nl.T = T;
         nl.th = std::thread([&nl, T, tokens, pos0] { nl.ok = nl.next->prelaunch(T, tokens, pos0, nl.err); });
     }
     volatile uint32_t* const seq = h_seq_;
@@ -3806,6 +3835,9 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
                 trace_ev("TIMEOUT", k, l, (int64_t) qt);
                 diag(stderr);   // the words and the breadcrumbs before the release ...
                 const bool drained = release_gpu_waits(5000);
+                // #267 recovery: the release drained the GPU - reset the window instead of poisoning every later
+                // request ("restart the engine" was the next answer, and the watchdog's abort the one after)
+                if (drained) reset_poisoned(T);
                 if (g_trace) trace_dump(stderr);   // ... and after it: did the GPU move once its waits were raised?
                 err = "verify: timed out at layer " + std::to_string(l) + " (cudaStreamQuery " +
                       std::to_string((int) qt) + ", " + cudaGetErrorString(qt) + ")" + released_note(drained);
@@ -3851,8 +3883,9 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
                 }
                 if (now - xa > kGpuProgressTimeout) {
                     trace_ev("XQ-TIMEOUT", k, l, (int64_t) cudaStreamQuery(cs_));
-                    err = "verify: timed out at layer " + std::to_string(l) + "'s xq ring" +
-                          released_note(release_gpu_waits(5000));
+                    const bool drained = release_gpu_waits(5000);
+                    if (drained) reset_poisoned(T);   // #267 recovery, as the doorbell wait above
+                    err = "verify: timed out at layer " + std::to_string(l) + "'s xq ring" + released_note(drained);
                     return false;
                 }
             }

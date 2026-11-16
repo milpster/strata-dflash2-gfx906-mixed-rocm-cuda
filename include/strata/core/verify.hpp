@@ -103,6 +103,12 @@ public:
     /// paths that give up on the engine (a timed-out window, the serve watchdog): the window then ran on whatever
     /// the flags guarded, so this verifier refuses every later window.  True when the streams finished.
     bool release_gpu_waits(int timeout_ms);
+    /// #267 recovery: after release_gpu_waits DRAINED (the GPU finished the stalled window), destroy this size's
+    /// window graph execs - both select families, both doorbell variants - and clear the refusal, so the next
+    /// request captures them fresh instead of answering "restart the engine" until the watchdog kills the process.
+    /// Streams, events and every other graph stay; only the window execs of size `T` are suspect.  Idempotent;
+    /// call it post-drain, when no launch of these execs can be in flight.
+    void reset_poisoned(int T);
 
     /// `max_t` <= kVerifyLongT (past kVerifyMaxT: one-conversation windows only).  `head` may be null (the canonical head is then run per token).
     bool init(const WeightTable& wt, const ModelGeometry& g, SessionState& ss, const VerifyHits& hits,
