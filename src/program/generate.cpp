@@ -9321,183 +9321,241 @@ int main(int argc, char** argv) {
     NibbleCache nib_x;
     std::vector<NibbleCache> nib_st;
     nib_st.reserve(stages.size());
+
+    // F6c (the thread split behind STRATA_BOOT_FILL_QUEUED): the CUDA0 boot-fill loop and every stage's fill
+    // loop run on their own std::thread, so the cards fill concurrently.  cudaSetDevice/hipSetDevice is
+    // PER-THREAD state: every thread below establishes its own device scope explicitly when it starts (the
+    // OnDevice guards on the parent cover only the parent); nothing inherits it.  The two verify_slot checks
+    // run ONCE each, unchanged, after ALL threads are joined.  Gate OFF: nothing spawns; every deferred piece
+    // runs inline at the exact statement position it has today.
+    struct StageFillState {   // per-stage fill bookkeeping, alive across the open+fill / verify+report split
+        int64_t filled = 0;
+        double pack_ms = 0, h2d_ms = 0;
+        uint64_t bytes = 0;
+        bool failed = false;   // the fill thread's own failure (its line printed; today's `return 1` point)
+    };
+    std::vector<StageFillState> stage_fill_state(stages.size());
+    std::vector<std::function<void()>> stage_posts;   // per-stage verify/check/report lambdas, deferred to after the joins (gate ON)
+    std::vector<std::thread> fill_threads;
+    // CUDA0's fill state, hoisted out of the profile-fill block so the deferred tail reaches it; gate OFF still
+    // assigns and reads each one at its original point.
+    bool cuda0_fill_failed = false;
+    double fill_s = 0;
+    bool per_layer = false;
+    int64_t want = 0;
+    double pack_read_ms = 0, h2d_ms = 0;
+    uint64_t fill_bytes = 0;
+    std::pair<int32_t, int32_t> verified_pair{};   // H6: the first pair THIS run prefilled (profile[0] may be the helper's)
+    std::function<void()> cuda0_tail_deferred;   // gate ON: CUDA0's verify/check/report/checksum tail, run after the joins
     if (!profile.empty() && srcp != nullptr) {
-        // #369 (dag08): per layer, a full layer skips only its own pairs - each layer takes its hottest experts until
-        // its range is full (one full layer used to end the whole fill, leaving most layers empty)
-        const bool per_layer = xcache.per_layer_admission();
-        const int64_t want = per_layer ? (int64_t) profile.size()
-                                       : std::min<int64_t>((int64_t) profile.size(), xcache.slots());
-        // #286: an unbuffered file tier reads the pairs in batches of 64, the next batch while this one is copied
-        std::future<void> ahead;
-        auto read_batch = [&](int64_t at) { src.prefetch_pairs(profile.data() + at, std::min<int64_t>(64, want - at)); };
-        // mapped reads: advise the next `fill_ahead` pairs so their reads overlap; STRATA_FILL_AHEAD=0 turns it off
-        int64_t fill_ahead = 0;
-        if (!per_layer && srcp == &src && !src.unbuffered()) {
-            const char* v = std::getenv("STRATA_FILL_AHEAD");
-            fill_ahead = v == nullptr ? 256 : std::max(0, std::atoi(v));
-            if (fill_ahead > 0 && !src.advise_pairs(profile.data(), std::min<int64_t>(fill_ahead, want))) fill_ahead = 0;
-            std::fprintf(stderr, "strata generate: the profile fill asks for %lld pairs ahead (STRATA_FILL_AHEAD)\n",
-                         (long long) fill_ahead);
-        }
-        const auto fill_t0 = std::chrono::steady_clock::now();
-        // F7c per-phase fill-rate fields (log-only): the pack I/O the fill loop WAITS on (read_batch's
-        // inline batch or the ahead-batch's get(), and every blob_stable) vs the H2D sections (the slot
-        // fills' enqueue + sync). The pre-filled line below reports them.
-        double pack_read_ms = 0, h2d_ms = 0;
-        uint64_t fill_bytes = 0;
-        std::pair<int32_t, int32_t> verified_pair{};   // H6: the first pair THIS run prefilled (profile[0] may be the helper's)
-        if (nib::any_on()) {   // STRATA_EXPERT_NIBBLE: the converted layers' pairs go through the 4-bit fill instead
-            int64_t conv = 0;
-            for (int64_t i = 0; i < want; ++i) conv += nib::layer(profile[(size_t) i].first).on ? 1 : 0;
-            if (conv > 0 && !nib_x.begin(xcache, conv, err)) {
-                std::fprintf(stderr, "strata generate: STRATA_EXPERT_NIBBLE: %s\n", err.c_str());
-                return 1;
+
+        // F6c: the CUDA0 fill body.  Gate ON it runs on its own thread, whose lambda establishes the device
+        // scope (primary_device) explicitly; gate OFF it runs INLINE on this thread, exactly today's order.
+        // `err` is shadowed by fill_err: gate ON runs this body off the parent and the parent's error string
+        // must not be shared.
+        auto cuda0_fill = [&]() {
+            std::string fill_err;
+            // #369 (dag08): per layer, a full layer skips only its own pairs - each layer takes its hottest experts until
+            // its range is full (one full layer used to end the whole fill, leaving most layers empty)
+            per_layer = xcache.per_layer_admission();
+            want = per_layer ? (int64_t) profile.size()
+                             : std::min<int64_t>((int64_t) profile.size(), xcache.slots());
+            // #286: an unbuffered file tier reads the pairs in batches of 64, the next batch while this one is copied
+            std::future<void> ahead;
+            auto read_batch = [&](int64_t at) { src.prefetch_pairs(profile.data() + at, std::min<int64_t>(64, want - at)); };
+            // mapped reads: advise the next `fill_ahead` pairs so their reads overlap; STRATA_FILL_AHEAD=0 turns it off
+            int64_t fill_ahead = 0;
+            if (!per_layer && srcp == &src && !src.unbuffered()) {
+                const char* v = std::getenv("STRATA_FILL_AHEAD");
+                fill_ahead = v == nullptr ? 256 : std::max(0, std::atoi(v));
+                if (fill_ahead > 0 && !src.advise_pairs(profile.data(), std::min<int64_t>(fill_ahead, want))) fill_ahead = 0;
+                std::fprintf(stderr, "strata generate: the profile fill asks for %lld pairs ahead (STRATA_FILL_AHEAD)\n",
+                             (long long) fill_ahead);
             }
-        }
-        // F6 (STRATA_BOOT_FILL_QUEUED): the queued batched fill - admitted, non-converted pairs queue here and
-        // go to the cache's pinned double-buffered pipeline in flushes of 8 (its staging half's size) and at
-        // loop end.  `fill_slots_batched` answers only once every copy has landed, so the verify_slot after
-        // this loop reads back slots that were flushed before it.  OFF: this queue stays empty and untouched.
-        const bool queued_fills = boot_fill_queued();
-        std::vector<strata::core::ExpertCache::BatchFill> bfill;
-        int64_t bfill_last = -1;   // profile index of the newest queued pair, for the failure line at loop end
-        auto flush_bfill = [&]() {   // one batched flush; err set on failure; the queue is always cleared
-            if (bfill.empty()) return true;
-            const bool ok = xcache.fill_slots_batched(bfill.data(), (int) bfill.size(), err);
-            bfill.clear();
-            return ok;
-        };
-        for (int64_t i = 0; i < want; ++i) {
-            if (!per_layer && srcp == &src && src.unbuffered() && i % 64 == 0) {
-                const auto io_t0 = std::chrono::steady_clock::now();
-                if (ahead.valid()) ahead.get();
-                else read_batch(i);
-                if (i + 64 < want) ahead = std::async(std::launch::async, [&read_batch](int64_t b) { strata::aux_cpus::pin_current_thread(); read_batch(b); }, i + 64);
-                pack_read_ms += std::chrono::duration<double>(std::chrono::steady_clock::now() - io_t0).count();
-            }
-            if (fill_ahead > 0 && i + fill_ahead < want) (void) src.advise_pairs(profile.data() + i + fill_ahead, 1);
-            const int32_t slot = xcache.admit(profile[(size_t) i].first, profile[(size_t) i].second);
-            if (slot == strata::core::kNotResident) {
-                if (per_layer) continue;
-                break;
-            }
-            const auto rd_t0 = std::chrono::steady_clock::now();
-            const uint8_t* b = srcp->blob_stable(profile[(size_t) i].first, profile[(size_t) i].second);
-            pack_read_ms += std::chrono::duration<double>(std::chrono::steady_clock::now() - rd_t0).count();
-            const bool nib_pair = nib_x.active() && nib::layer(profile[(size_t) i].first).on;   // STRATA_EXPERT_NIBBLE
-            const auto hz_t0 = std::chrono::steady_clock::now();
-            bool slot_ok = b != nullptr;   // a null blob fails the fill exactly as before, without calling it
-            if (slot_ok && queued_fills && !nib_pair) {   // F6: queue it; the flush's copy is timed in this h2d window
-                bfill.push_back({slot, b, (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(profile[(size_t) i].first)});
-                bfill_last = i;
-                if (bfill.size() == 8) slot_ok = flush_bfill();
-            } else if (slot_ok)
-                slot_ok = nib_pair ? nib_x.add(profile[(size_t) i].first, profile[(size_t) i].second, slot, b, err)
-                                   : xcache.fill_slot_blocking(slot, b, err,
-                                        (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(profile[(size_t) i].first));
-            h2d_ms += std::chrono::duration<double>(std::chrono::steady_clock::now() - hz_t0).count();
-            if (!slot_ok) {
-                std::fprintf(stderr, "strata generate: the profile fill failed at pair %lld: %s\n",
-                             (long long) i, err.c_str());
-                return 1;
-            }
-            fill_bytes += strata::kernels::cpu::expert_layout().blob_bytes(profile[(size_t) i].first);
-            ++prefilled;
-            if (prefilled == 1) verified_pair = profile[(size_t) i];   // H6: profile[0] may be the helper's now
-        }
-        if (queued_fills) {   // F6: the last flush — every queued fill has landed before the nibble finish and the verify_slot
-            const auto hz_t0 = std::chrono::steady_clock::now();
-            const bool flushed = flush_bfill();
-            h2d_ms += std::chrono::duration<double>(std::chrono::steady_clock::now() - hz_t0).count();
-            if (!flushed) {
-                std::fprintf(stderr, "strata generate: the profile fill failed at pair %lld: %s\n",
-                             (long long) bfill_last, err.c_str());
-                return 1;
-            }
-        }
-        if (nib_x.active()) {
-            const auto hz_t0 = std::chrono::steady_clock::now();
-            const bool fin_ok = nib_x.finish(err);
-            h2d_ms += std::chrono::duration<double>(std::chrono::steady_clock::now() - hz_t0).count();
-            if (!fin_ok) {
-                std::fprintf(stderr, "strata generate: STRATA_EXPERT_NIBBLE: CUDA0: %s\n", err.c_str());
-                return 1;
-            }
-        }
-        const double fill_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - fill_t0).count();
-        // **AND ONE SLOT IS READ BACK AND COMPARED.**  A residency table that is right about indices and wrong
-        // about bytes produces a plausible token, which is this project's most expensive failure mode; the
-        // cache's own `verify_slot` is the check and it costs one 1.38 MB D2H at startup.
-        // (STRATA_EXPERT_NIBBLE: a converted slot holds 4-bit codes, not the blob's bytes - the 4-bit check below is its check)
-        // (merged: one check, both semantics - the nibble layers take their own path, and verified_pair is the
-        //  first pair THIS run prefilled, not profile[0] which may be the helper's now)
-        if (prefilled > 0 && !nib::layer(verified_pair.first).on &&
-            !xcache.verify_slot(xcache.slot_of(verified_pair.first, verified_pair.second),
-                                srcp->blob_stable(verified_pair.first, verified_pair.second), err,
-                                (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(verified_pair.first))) {
-            std::fprintf(stderr, "strata generate: %s\n", err.c_str());
-            return 1;
-        }
-        if (nib_x.active() && nib_x.n > 0) {
-            // STRATA_EXPERT_NIBBLE: the hottest converted pair read back (its hash, its down rows); every item and every
-            // rebuilt GGUF block of every converted slot was already checked on the device
-            size_t c = 0;
-            while (c < (size_t) want && !nib::layer(profile[c].first).on) ++c;
-            if (!nib_x.check(profile[c].first, profile[c].second, srcp->blob_stable(profile[c].first, profile[c].second),
-                             err)) {
-                std::fprintf(stderr, "strata generate: STRATA_EXPERT_NIBBLE: CUDA0: %s\n", err.c_str());
-                return 1;
-            }
-            std::set<int32_t> ls;
-            for (const auto& pr : nib_x.pairs) ls.insert(pr.first);
-            std::fprintf(stderr, "strata generate: STRATA_EXPERT_NIBBLE: CUDA0: %lld slots of %zu layers transcoded to 4-bit "
-                                 "codes (%.2f s; every item round-tripped, every slot's GGUF blocks rebuilt and compared, "
-                                 "slot hashes recorded); layer %d expert %d read back\n", (long long) nib_x.n, ls.size(),
-                         nib_x.seconds, (int) profile[c].first, (int) profile[c].second);
-        }
-        mem_mark("the profile fill");
-        std::fprintf(stderr, "strata generate: pre-filled %lld of %lld slots from the profile in %.1f s (%.0f MB/s); "
-                             "slot 0 verified; pack_read_s %.1f h2d_s %.1f pinned_mb %.0f phases=arena:%.1fs lot:%.1fs\n",
-                     (long long) prefilled, (long long) (per_layer ? xcache.slots() : want), fill_s,
-                     fill_s > 0 ? (double) fill_bytes / 1e6 / fill_s : 0.0,
-                     pack_read_ms / 1e3, h2d_ms / 1e3, (double) fill_bytes / 1e6, pack_read_ms / 1e3, h2d_ms / 1e3);
-        if (std::getenv("STRATA_VERIFY_COMPLEMENT") != nullptr) {
-            // tests: the filled slots' checksum (each slot's blob read back and hashed, then the hashes in slot order)
-            std::vector<std::pair<int32_t, int64_t>> sl;   // (slot, blob bytes)
-            for (int64_t l = 0; l < g.n_layers; ++l)
-                for (int64_t e = 0; e < g.n_expert; ++e)
-                    if (const int32_t s = xcache.slot_of(l, e); s >= 0)
-                        sl.emplace_back(s, (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(l));
-            std::sort(sl.begin(), sl.end());
-            std::vector<uint64_t> sh(sl.size(), 0);
-            std::atomic<size_t> next_slot{0};
-            std::atomic<bool> copy_ok{true};
-            auto hash_work = [&] {
-                std::vector<uint8_t> hb;
-                for (size_t i; (i = next_slot.fetch_add(1)) < sl.size();) {
-                    hb.resize((size_t) sl[i].second);
-                    if (cudaMemcpy(hb.data(), xcache.device_slot(sl[i].first), hb.size(), cudaMemcpyDeviceToHost) !=
-                        cudaSuccess) copy_ok = false;
-                    sh[i] = strata::core::fnv1a64(hb.data(), (uint64_t) hb.size());
+            const auto fill_t0 = std::chrono::steady_clock::now();
+            // F7c per-phase fill-rate fields (log-only): the pack I/O the fill loop WAITS on (read_batch's
+            // inline batch or the ahead-batch's get(), and every blob_stable) vs the H2D sections (the slot
+            // fills' enqueue + sync). The pre-filled line below reports them.
+            if (nib::any_on()) {   // STRATA_EXPERT_NIBBLE: the converted layers' pairs go through the 4-bit fill instead
+                int64_t conv = 0;
+                for (int64_t i = 0; i < want; ++i) conv += nib::layer(profile[(size_t) i].first).on ? 1 : 0;
+                if (conv > 0 && !nib_x.begin(xcache, conv, fill_err)) {
+                    std::fprintf(stderr, "strata generate: STRATA_EXPERT_NIBBLE: %s\n", fill_err.c_str());
+                    cuda0_fill_failed = true;
+                    return;
                 }
-            };
-            std::vector<std::thread> hth;
-            for (int t = 1; t < 8; ++t) hth.emplace_back(hash_work);
-            hash_work();
-            for (auto& t : hth) t.join();
-            uint64_t h = strata::core::fnv1a64(nullptr, 0);
-            for (size_t i = 0; i < sl.size(); ++i) {   // field by field: a pair's padding is not part of it
-                const int64_t v[2] = {(int64_t) sl[i].first, sl[i].second};
-                h = strata::core::fnv1a64((const uint8_t*) v, sizeof v, h);
-                h = strata::core::fnv1a64((const uint8_t*) &sh[i], sizeof sh[i], h);
             }
-            std::fprintf(stderr, "strata generate: expert cache checksum %016llx (%zu slots%s)\n", (unsigned long long) h,
-                         sl.size(), copy_ok ? "" : ", A READ-BACK FAILED");
+            // F6 (STRATA_BOOT_FILL_QUEUED): the queued batched fill - admitted, non-converted pairs queue here and
+            // go to the cache's pinned double-buffered pipeline in flushes of 8 (its staging half's size) and at
+            // loop end.  `fill_slots_batched` answers only once every copy has landed, so the verify_slot after
+            // this loop reads back slots that were flushed before it.  OFF: this queue stays empty and untouched.
+            const bool queued_fills = boot_fill_queued();
+            std::vector<strata::core::ExpertCache::BatchFill> bfill;
+            int64_t bfill_last = -1;   // profile index of the newest queued pair, for the failure line at loop end
+            auto flush_bfill = [&]() {   // one batched flush; err set on failure; the queue is always cleared
+                if (bfill.empty()) return true;
+                const bool ok = xcache.fill_slots_batched(bfill.data(), (int) bfill.size(), fill_err);
+                bfill.clear();
+                return ok;
+            };
+            for (int64_t i = 0; i < want; ++i) {
+                if (!per_layer && srcp == &src && src.unbuffered() && i % 64 == 0) {
+                    const auto io_t0 = std::chrono::steady_clock::now();
+                    if (ahead.valid()) ahead.get();
+                    else read_batch(i);
+                    if (i + 64 < want) ahead = std::async(std::launch::async, [&read_batch](int64_t b) { strata::aux_cpus::pin_current_thread(); read_batch(b); }, i + 64);
+                    pack_read_ms += std::chrono::duration<double>(std::chrono::steady_clock::now() - io_t0).count();
+                }
+                if (fill_ahead > 0 && i + fill_ahead < want) (void) src.advise_pairs(profile.data() + i + fill_ahead, 1);
+                const int32_t slot = xcache.admit(profile[(size_t) i].first, profile[(size_t) i].second);
+                if (slot == strata::core::kNotResident) {
+                    if (per_layer) continue;
+                    break;
+                }
+                const auto rd_t0 = std::chrono::steady_clock::now();
+                const uint8_t* b = srcp->blob_stable(profile[(size_t) i].first, profile[(size_t) i].second);
+                pack_read_ms += std::chrono::duration<double>(std::chrono::steady_clock::now() - rd_t0).count();
+                const bool nib_pair = nib_x.active() && nib::layer(profile[(size_t) i].first).on;   // STRATA_EXPERT_NIBBLE
+                const auto hz_t0 = std::chrono::steady_clock::now();
+                bool slot_ok = b != nullptr;   // a null blob fails the fill exactly as before, without calling it
+                if (slot_ok && queued_fills && !nib_pair) {   // F6: queue it; the flush's copy is timed in this h2d window
+                    bfill.push_back({slot, b, (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(profile[(size_t) i].first)});
+                    bfill_last = i;
+                    if (bfill.size() == 8) slot_ok = flush_bfill();
+                } else if (slot_ok)
+                    slot_ok = nib_pair ? nib_x.add(profile[(size_t) i].first, profile[(size_t) i].second, slot, b, fill_err)
+                                       : xcache.fill_slot_blocking(slot, b, fill_err,
+                                            (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(profile[(size_t) i].first));
+                h2d_ms += std::chrono::duration<double>(std::chrono::steady_clock::now() - hz_t0).count();
+                if (!slot_ok) {
+                    std::fprintf(stderr, "strata generate: the profile fill failed at pair %lld: %s\n",
+                                 (long long) i, fill_err.c_str());
+                    cuda0_fill_failed = true;
+                    return;
+                }
+                fill_bytes += strata::kernels::cpu::expert_layout().blob_bytes(profile[(size_t) i].first);
+                ++prefilled;
+                if (prefilled == 1) verified_pair = profile[(size_t) i];   // H6: profile[0] may be the helper's now
+            }
+            if (queued_fills) {   // F6: the last flush — every queued fill has landed before the nibble finish and the verify_slot
+                const auto hz_t0 = std::chrono::steady_clock::now();
+                const bool flushed = flush_bfill();
+                h2d_ms += std::chrono::duration<double>(std::chrono::steady_clock::now() - hz_t0).count();
+                if (!flushed) {
+                    std::fprintf(stderr, "strata generate: the profile fill failed at pair %lld: %s\n",
+                                 (long long) bfill_last, fill_err.c_str());
+                    cuda0_fill_failed = true;
+                    return;
+                }
+            }
+            if (nib_x.active()) {
+                const auto hz_t0 = std::chrono::steady_clock::now();
+                const bool fin_ok = nib_x.finish(fill_err);
+                h2d_ms += std::chrono::duration<double>(std::chrono::steady_clock::now() - hz_t0).count();
+                if (!fin_ok) {
+                    std::fprintf(stderr, "strata generate: STRATA_EXPERT_NIBBLE: CUDA0: %s\n", fill_err.c_str());
+                    cuda0_fill_failed = true;
+                    return;
+                }
+            }
+            fill_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - fill_t0).count();
+
+        };
+        // CUDA0's tail: the one-slot verify_slot, the nibble read-back, the pre-filled line, the
+        // STRATA_VERIFY_COMPLEMENT checksum - statements unchanged, run ONCE.  Gate OFF: right here inline.
+        // Gate ON: after every fill thread (CUDA0's and every stage's) has been joined, so the read-back
+        // never races a fill.
+        auto cuda0_tail = [&]() {
+            // **AND ONE SLOT IS READ BACK AND COMPARED.**  A residency table that is right about indices and wrong
+            // about bytes produces a plausible token, which is this project's most expensive failure mode; the
+            // cache's own `verify_slot` is the check and it costs one 1.38 MB D2H at startup.
+            // (STRATA_EXPERT_NIBBLE: a converted slot holds 4-bit codes, not the blob's bytes - the 4-bit check below is its check)
+            // (merged: one check, both semantics - the nibble layers take their own path, and verified_pair is the
+            //  first pair THIS run prefilled, not profile[0] which may be the helper's now)
+            if (prefilled > 0 && !nib::layer(verified_pair.first).on &&
+                !xcache.verify_slot(xcache.slot_of(verified_pair.first, verified_pair.second),
+                                    srcp->blob_stable(verified_pair.first, verified_pair.second), err,
+                                    (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(verified_pair.first))) {
+                std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+                cuda0_fill_failed = true;
+                return;
+            }
+            if (nib_x.active() && nib_x.n > 0) {
+                // STRATA_EXPERT_NIBBLE: the hottest converted pair read back (its hash, its down rows); every item and every
+                // rebuilt GGUF block of every converted slot was already checked on the device
+                size_t c = 0;
+                while (c < (size_t) want && !nib::layer(profile[c].first).on) ++c;
+                if (!nib_x.check(profile[c].first, profile[c].second, srcp->blob_stable(profile[c].first, profile[c].second),
+                                 err)) {
+                    std::fprintf(stderr, "strata generate: STRATA_EXPERT_NIBBLE: CUDA0: %s\n", err.c_str());
+                    cuda0_fill_failed = true;
+                    return;
+                }
+                std::set<int32_t> ls;
+                for (const auto& pr : nib_x.pairs) ls.insert(pr.first);
+                std::fprintf(stderr, "strata generate: STRATA_EXPERT_NIBBLE: CUDA0: %lld slots of %zu layers transcoded to 4-bit "
+                                     "codes (%.2f s; every item round-tripped, every slot's GGUF blocks rebuilt and compared, "
+                                     "slot hashes recorded); layer %d expert %d read back\n", (long long) nib_x.n, ls.size(),
+                             nib_x.seconds, (int) profile[c].first, (int) profile[c].second);
+            }
+            mem_mark("the profile fill");
+            std::fprintf(stderr, "strata generate: pre-filled %lld of %lld slots from the profile in %.1f s (%.0f MB/s); "
+                                 "slot 0 verified; pack_read_s %.1f h2d_s %.1f pinned_mb %.0f phases=arena:%.1fs lot:%.1fs\n",
+                         (long long) prefilled, (long long) (per_layer ? xcache.slots() : want), fill_s,
+                         fill_s > 0 ? (double) fill_bytes / 1e6 / fill_s : 0.0,
+                         pack_read_ms / 1e3, h2d_ms / 1e3, (double) fill_bytes / 1e6, pack_read_ms / 1e3, h2d_ms / 1e3);
+            if (std::getenv("STRATA_VERIFY_COMPLEMENT") != nullptr) {
+                // tests: the filled slots' checksum (each slot's blob read back and hashed, then the hashes in slot order)
+                std::vector<std::pair<int32_t, int64_t>> sl;   // (slot, blob bytes)
+                for (int64_t l = 0; l < g.n_layers; ++l)
+                    for (int64_t e = 0; e < g.n_expert; ++e)
+                        if (const int32_t s = xcache.slot_of(l, e); s >= 0)
+                            sl.emplace_back(s, (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(l));
+                std::sort(sl.begin(), sl.end());
+                std::vector<uint64_t> sh(sl.size(), 0);
+                std::atomic<size_t> next_slot{0};
+                std::atomic<bool> copy_ok{true};
+                auto hash_work = [&] {
+                    std::vector<uint8_t> hb;
+                    for (size_t i; (i = next_slot.fetch_add(1)) < sl.size();) {
+                        hb.resize((size_t) sl[i].second);
+                        if (cudaMemcpy(hb.data(), xcache.device_slot(sl[i].first), hb.size(), cudaMemcpyDeviceToHost) !=
+                            cudaSuccess) copy_ok = false;
+                        sh[i] = strata::core::fnv1a64(hb.data(), (uint64_t) hb.size());
+                    }
+                };
+                std::vector<std::thread> hth;
+                for (int t = 1; t < 8; ++t) hth.emplace_back(hash_work);
+                hash_work();
+                for (auto& t : hth) t.join();
+                uint64_t h = strata::core::fnv1a64(nullptr, 0);
+                for (size_t i = 0; i < sl.size(); ++i) {   // field by field: a pair's padding is not part of it
+                    const int64_t v[2] = {(int64_t) sl[i].first, sl[i].second};
+                    h = strata::core::fnv1a64((const uint8_t*) v, sizeof v, h);
+                    h = strata::core::fnv1a64((const uint8_t*) &sh[i], sizeof sh[i], h);
+                }
+                std::fprintf(stderr, "strata generate: expert cache checksum %016llx (%zu slots%s)\n", (unsigned long long) h,
+                             sl.size(), copy_ok ? "" : ", A READ-BACK FAILED");
+            }
+
+        };
+        if (boot_fill_queued()) {   // F6c gate ON: the fill on CUDA0's own device thread; the tail runs after the joins
+            fill_threads.emplace_back([cuda0_fill, dev = primary_device] {
+                const strata::core::OnDevice on(dev);   // per-thread device scope, established here
+                cuda0_fill();
+            });
+            cuda0_tail_deferred = cuda0_tail;
+        } else {
+            cuda0_fill();
+            if (cuda0_fill_failed) return 1;
+            cuda0_tail();
+            if (cuda0_fill_failed) return 1;
         }
     }
 
-    for (auto& stp : stages) {
-        GpuStage& st = *stp;
+    for (size_t si = 0; si < stages.size(); ++si) {
+        GpuStage& st = *stages[si];
+        StageFillState& sfs = stage_fill_state[si];
         const auto& lay = strata::kernels::cpu::expert_layout();
         // the drafter and the head are already allocated by now (they load above, before this), so what is left
         // to hold back is the windows - and `free_b` has already lost the drafter.
@@ -9570,10 +9628,13 @@ int main(int argc, char** argv) {
                          sized.empty() ? "no room" : err.c_str());
             return 1;
         }
-        int64_t filled = 0;
-        // F7c per-phase fill-rate fields for this stage (see the CUDA0 pre-filled line for the schema)
-        double stage_pack_ms = 0, stage_h2d_ms = 0;
-        uint64_t stage_bytes = 0;
+        // F7c per-phase fill-rate fields for this stage (see the CUDA0 pre-filled line for the schema).
+        // F6c: the fill bookkeeping lives in stage_fill_state[si] now, so the deferred checks (gate ON)
+        // read it after the joins; gate OFF reaches it through these references, exactly as the old locals.
+        int64_t& filled = sfs.filled;
+        double& stage_pack_ms = sfs.pack_ms;
+        double& stage_h2d_ms = sfs.h2d_ms;
+        uint64_t& stage_bytes = sfs.bytes;
         NibbleCache& nib_c = nib_st.emplace_back();   // STRATA_EXPERT_NIBBLE: this stage's converted slots
         if (nib::any_on()) {
             int64_t conv = 0;
@@ -9583,93 +9644,147 @@ int main(int argc, char** argv) {
                 return 1;
             }
         }
-        // F6 (STRATA_BOOT_FILL_QUEUED): this stage's queued batched fill — same shape as the CUDA0 loop's
-        // above: flushes of 8 and one at loop end, before this stage's verify_slot.  OFF: queue untouched.
-        const bool stage_queued = boot_fill_queued();
-        std::vector<strata::core::ExpertCache::BatchFill> stage_bfill;
-        int64_t stage_bfill_last = -1;   // `filled` of the newest queued pair, for the failure line at loop end
-        auto flush_stage_bfill = [&]() {   // one batched flush; err set on failure; the queue is always cleared
-            if (stage_bfill.empty()) return true;
-            const bool ok = st.cache.fill_slots_batched(stage_bfill.data(), (int) stage_bfill.size(), err);
-            stage_bfill.clear();
-            return ok;
+
+        // F6c: this stage's fill body.  Gate ON it runs on its own thread, whose lambda establishes the
+        // device scope (st.dev) explicitly - the OnDevice above covers the parent's passes only, NOT a
+        // fresh std::thread; gate OFF it runs INLINE on this thread, exactly today's order.  `err` is
+        // shadowed by fill_err (see the CUDA0 fill body).
+        auto stage_fill = [&]() {
+            std::string fill_err;
+            // F6 (STRATA_BOOT_FILL_QUEUED): this stage's queued batched fill — same shape as the CUDA0 loop's
+            // above: flushes of 8 and one at loop end, before this stage's verify_slot.  OFF: queue untouched.
+            const bool stage_queued = boot_fill_queued();
+            std::vector<strata::core::ExpertCache::BatchFill> stage_bfill;
+            int64_t stage_bfill_last = -1;   // `filled` of the newest queued pair, for the failure line at loop end
+            auto flush_stage_bfill = [&]() {   // one batched flush; err set on failure; the queue is always cleared
+                if (stage_bfill.empty()) return true;
+                const bool ok = st.cache.fill_slots_batched(stage_bfill.data(), (int) stage_bfill.size(), fill_err);
+                stage_bfill.clear();
+                return ok;
+            };
+            for (const auto& pr : st.profile) {
+                if (filled >= st.cache.slots()) break;
+                const int32_t slot = st.cache.admit(pr.first, pr.second);
+                if (slot == strata::core::kNotResident) break;
+                const auto rd_t0 = std::chrono::steady_clock::now();
+                const uint8_t* b = srcp->blob_stable(pr.first, pr.second);
+                stage_pack_ms += std::chrono::duration<double>(std::chrono::steady_clock::now() - rd_t0).count();
+                const bool nib_pair = nib_c.active() && nib::layer(pr.first).on;   // STRATA_EXPERT_NIBBLE
+                const auto hz_t0 = std::chrono::steady_clock::now();
+                bool slot_ok = b != nullptr;   // a null blob fails the fill exactly as before, without calling it
+                if (slot_ok && stage_queued && !nib_pair) {   // F6: queue it; the flush's copy is timed in this h2d window
+                    stage_bfill.push_back({slot, b, (int64_t) lay.blob_bytes(pr.first)});
+                    stage_bfill_last = filled;
+                    if (stage_bfill.size() == 8) slot_ok = flush_stage_bfill();
+                } else if (slot_ok)
+                    slot_ok = nib_pair ? nib_c.add(pr.first, pr.second, slot, b, fill_err)
+                                       : st.cache.fill_slot_blocking(slot, b, fill_err, (int64_t) lay.blob_bytes(pr.first));
+                stage_h2d_ms += std::chrono::duration<double>(std::chrono::steady_clock::now() - hz_t0).count();
+                if (!slot_ok) {
+                    std::fprintf(stderr, "strata generate: layer split, CUDA%d profile fill failed at pair %lld: %s\n",
+                                 st.dev, (long long) filled, fill_err.c_str());
+                    sfs.failed = true;
+                    return;
+                }
+                stage_bytes += lay.blob_bytes(pr.first);
+                ++filled;
+            }
+            if (stage_queued) {   // F6: the stage's last flush — every queued fill has landed before its verify_slot
+                const auto hz_t0 = std::chrono::steady_clock::now();
+                const bool flushed = flush_stage_bfill();
+                stage_h2d_ms += std::chrono::duration<double>(std::chrono::steady_clock::now() - hz_t0).count();
+                if (!flushed) {
+                    std::fprintf(stderr, "strata generate: layer split, CUDA%d profile fill failed at pair %lld: %s\n",
+                                 st.dev, (long long) stage_bfill_last, fill_err.c_str());
+                    sfs.failed = true;
+                    return;
+                }
+            }
+            if (nib_c.active()) {
+                const auto hz_t0 = std::chrono::steady_clock::now();
+                const bool fin_ok = nib_c.finish(fill_err);
+                stage_h2d_ms += std::chrono::duration<double>(std::chrono::steady_clock::now() - hz_t0).count();
+                if (!fin_ok) {
+                    std::fprintf(stderr, "strata generate: STRATA_EXPERT_NIBBLE: CUDA%d: %s\n", st.dev, fill_err.c_str());
+                    sfs.failed = true;
+                    return;
+                }
+            }
+
         };
-        for (const auto& pr : st.profile) {
-            if (filled >= st.cache.slots()) break;
-            const int32_t slot = st.cache.admit(pr.first, pr.second);
-            if (slot == strata::core::kNotResident) break;
-            const auto rd_t0 = std::chrono::steady_clock::now();
-            const uint8_t* b = srcp->blob_stable(pr.first, pr.second);
-            stage_pack_ms += std::chrono::duration<double>(std::chrono::steady_clock::now() - rd_t0).count();
-            const bool nib_pair = nib_c.active() && nib::layer(pr.first).on;   // STRATA_EXPERT_NIBBLE
-            const auto hz_t0 = std::chrono::steady_clock::now();
-            bool slot_ok = b != nullptr;   // a null blob fails the fill exactly as before, without calling it
-            if (slot_ok && stage_queued && !nib_pair) {   // F6: queue it; the flush's copy is timed in this h2d window
-                stage_bfill.push_back({slot, b, (int64_t) lay.blob_bytes(pr.first)});
-                stage_bfill_last = filled;
-                if (stage_bfill.size() == 8) slot_ok = flush_stage_bfill();
-            } else if (slot_ok)
-                slot_ok = nib_pair ? nib_c.add(pr.first, pr.second, slot, b, err)
-                                   : st.cache.fill_slot_blocking(slot, b, err, (int64_t) lay.blob_bytes(pr.first));
-            stage_h2d_ms += std::chrono::duration<double>(std::chrono::steady_clock::now() - hz_t0).count();
-            if (!slot_ok) {
-                std::fprintf(stderr, "strata generate: layer split, CUDA%d profile fill failed at pair %lld: %s\n",
-                             st.dev, (long long) filled, err.c_str());
-                return 1;
+        // This stage's post: the verify_slot check, the nibble read-back, the stage's report line -
+        // statements unchanged, run ONCE.  Gate OFF: right here inline.  Gate ON: in the pass below the
+        // joins, under this stage's device scope, exactly as the OnDevice above covered it today.
+        auto stage_post = [&]() {
+            // (STRATA_EXPERT_NIBBLE: a converted slot holds 4-bit codes, not the blob's bytes - the 4-bit check below is its check)
+            if (filled == 0 || (!nib::layer(st.profile[0].first).on &&
+                                !st.cache.verify_slot(st.cache.slot_of(st.profile[0].first, st.profile[0].second),
+                                                      srcp->blob_stable(st.profile[0].first, st.profile[0].second), err,
+                                                      (int64_t) lay.blob_bytes(st.profile[0].first)))) {
+                std::fprintf(stderr, "strata generate: layer split, CUDA%d expert cache: %s\n", st.dev,
+                             filled == 0 ? "nothing filled" : err.c_str());
+                sfs.failed = true;
+                return;
             }
-            stage_bytes += lay.blob_bytes(pr.first);
-            ++filled;
-        }
-        if (stage_queued) {   // F6: the stage's last flush — every queued fill has landed before its verify_slot
-            const auto hz_t0 = std::chrono::steady_clock::now();
-            const bool flushed = flush_stage_bfill();
-            stage_h2d_ms += std::chrono::duration<double>(std::chrono::steady_clock::now() - hz_t0).count();
-            if (!flushed) {
-                std::fprintf(stderr, "strata generate: layer split, CUDA%d profile fill failed at pair %lld: %s\n",
-                             st.dev, (long long) stage_bfill_last, err.c_str());
-                return 1;
+            if (nib_c.active() && nib_c.n > 0) {   // STRATA_EXPERT_NIBBLE: as CUDA0's above
+                size_t c = 0;
+                while (c < st.profile.size() && !nib::layer(st.profile[c].first).on) ++c;
+                const auto& pc = st.profile[c];
+                if (!nib_c.check(pc.first, pc.second, srcp->blob_stable(pc.first, pc.second), err)) {
+                    std::fprintf(stderr, "strata generate: STRATA_EXPERT_NIBBLE: CUDA%d: %s\n", st.dev, err.c_str());
+                    sfs.failed = true;
+                    return;
+                }
+                std::set<int32_t> ls;
+                for (const auto& pr : nib_c.pairs) ls.insert(pr.first);
+                std::fprintf(stderr, "strata generate: STRATA_EXPERT_NIBBLE: CUDA%d: %lld slots of %zu layers transcoded to 4-bit "
+                                     "codes (%.2f s; every item round-tripped, every slot's GGUF blocks rebuilt and compared, "
+                                     "slot hashes recorded); layer %d expert %d read back\n", st.dev, (long long) nib_c.n,
+                             ls.size(), nib_c.seconds, (int) pc.first, (int) pc.second);
             }
+            std::fprintf(stderr, "strata generate: layer split: CUDA%d runs layers %lld-%lld, expert cache %lld slots "
+                                 "(%.2f GiB), %lld of its %zu profiled pairs; slot 0 verified; "
+                                 "pack_read_s %.1f h2d_s %.1f pinned_mb %.0f phases=arena:%.1fs lot:%.1fs\n",
+                         st.dev, (long long) st.lb, (long long) (st.le - 1), (long long) st.cache.slots(), st.cache.gib(),
+                         (long long) filled, st.profile.size(),
+                         stage_pack_ms / 1e3, stage_h2d_ms / 1e3, (double) stage_bytes / 1e6,
+                         stage_pack_ms / 1e3, stage_h2d_ms / 1e3);
+
+        };
+        if (boot_fill_queued()) {   // F6c gate ON: the fill on this stage's own device thread; the post runs after the joins
+            fill_threads.emplace_back([stage_fill, dev = st.dev] {
+                const strata::core::OnDevice on(dev);   // per-thread device scope, established here
+                stage_fill();
+            });
+            stage_posts.push_back(stage_post);
+        } else {
+            stage_fill();
+            if (sfs.failed) return 1;
+            stage_post();
+            if (sfs.failed) return 1;
         }
-        if (nib_c.active()) {
-            const auto hz_t0 = std::chrono::steady_clock::now();
-            const bool fin_ok = nib_c.finish(err);
-            stage_h2d_ms += std::chrono::duration<double>(std::chrono::steady_clock::now() - hz_t0).count();
-            if (!fin_ok) {
-                std::fprintf(stderr, "strata generate: STRATA_EXPERT_NIBBLE: CUDA%d: %s\n", st.dev, err.c_str());
-                return 1;
-            }
+    }
+
+    // F6c (gate ON): join EVERY fill thread - CUDA0's and each stage's - before the two verify_slot checks,
+    // then run the deferred checks and report lines ONCE each, in today's order: CUDA0's tail (slot check,
+    // nibble check, pre-filled line, STRATA_VERIFY_COMPLEMENT), then each stage's post (slot check, nibble
+    // check, report line) under that stage's device scope.  A fill thread that failed printed its line
+    // already; the exit lands here, where the original code returned 1 (after the other cards' fills finished
+    // - the gate-ON-only difference today's immediate abort did not have).
+    if (boot_fill_queued()) {
+        for (auto& t : fill_threads) t.join();
+        fill_threads.clear();
+        if (cuda0_fill_failed) return 1;
+        if (cuda0_tail_deferred) {
+            cuda0_tail_deferred();
+            if (cuda0_fill_failed) return 1;
         }
-        // (STRATA_EXPERT_NIBBLE: a converted slot holds 4-bit codes, not the blob's bytes - the 4-bit check below is its check)
-        if (filled == 0 || (!nib::layer(st.profile[0].first).on &&
-                            !st.cache.verify_slot(st.cache.slot_of(st.profile[0].first, st.profile[0].second),
-                                                  srcp->blob_stable(st.profile[0].first, st.profile[0].second), err,
-                                                  (int64_t) lay.blob_bytes(st.profile[0].first)))) {
-            std::fprintf(stderr, "strata generate: layer split, CUDA%d expert cache: %s\n", st.dev,
-                         filled == 0 ? "nothing filled" : err.c_str());
-            return 1;
+        for (size_t si = 0; si < stages.size(); ++si) {
+            if (stage_fill_state[si].failed) return 1;
+            const strata::core::OnDevice on(stages[si]->dev);
+            stage_posts[si]();
+            if (stage_fill_state[si].failed) return 1;
         }
-        if (nib_c.active() && nib_c.n > 0) {   // STRATA_EXPERT_NIBBLE: as CUDA0's above
-            size_t c = 0;
-            while (c < st.profile.size() && !nib::layer(st.profile[c].first).on) ++c;
-            const auto& pc = st.profile[c];
-            if (!nib_c.check(pc.first, pc.second, srcp->blob_stable(pc.first, pc.second), err)) {
-                std::fprintf(stderr, "strata generate: STRATA_EXPERT_NIBBLE: CUDA%d: %s\n", st.dev, err.c_str());
-                return 1;
-            }
-            std::set<int32_t> ls;
-            for (const auto& pr : nib_c.pairs) ls.insert(pr.first);
-            std::fprintf(stderr, "strata generate: STRATA_EXPERT_NIBBLE: CUDA%d: %lld slots of %zu layers transcoded to 4-bit "
-                                 "codes (%.2f s; every item round-tripped, every slot's GGUF blocks rebuilt and compared, "
-                                 "slot hashes recorded); layer %d expert %d read back\n", st.dev, (long long) nib_c.n,
-                         ls.size(), nib_c.seconds, (int) pc.first, (int) pc.second);
-        }
-        std::fprintf(stderr, "strata generate: layer split: CUDA%d runs layers %lld-%lld, expert cache %lld slots "
-                             "(%.2f GiB), %lld of its %zu profiled pairs; slot 0 verified; "
-                             "pack_read_s %.1f h2d_s %.1f pinned_mb %.0f phases=arena:%.1fs lot:%.1fs\n",
-                     st.dev, (long long) st.lb, (long long) (st.le - 1), (long long) st.cache.slots(), st.cache.gib(),
-                     (long long) filled, st.profile.size(),
-                     stage_pack_ms / 1e3, stage_h2d_ms / 1e3, (double) stage_bytes / 1e6,
-                     stage_pack_ms / 1e3, stage_h2d_ms / 1e3);
     }
     if (multi_gpu)
         std::fprintf(stderr, "strata generate: layer split: CUDA0 runs layers 0-%lld\n", (long long) (split_at[0] - 1));
