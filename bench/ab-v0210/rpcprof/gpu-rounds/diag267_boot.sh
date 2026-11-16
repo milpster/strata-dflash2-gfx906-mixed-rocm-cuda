@@ -21,7 +21,7 @@ ts() { date +%H:%M:%S; }
 log() { echo "[$(ts)] $*" >> "$DRV"; }
 
 resolve_epid() {
-  pgrep -n -x strata-host || pgrep -n -f 'v0235p0' || echo "$BOOTPID"
+  pgrep -n -x strata-host || pgrep -n -f 'v023[0-9]p0' || echo "$BOOTPID"
 }
 
 dump_kfd() { # $1 = outfile
@@ -52,7 +52,7 @@ BOOTPID=$!
 # --- periodic per-thread state sampler (re-resolves the pid; runs until engine death)
 (
   while :; do
-    P=$(pgrep -n -x strata-host || pgrep -n -f 'v0235p0' || echo "$BOOTPID")
+    P=$(pgrep -n -x strata-host || pgrep -n -f 'v023[0-9]p0' || echo "$BOOTPID")
     kill -0 "$P" 2>/dev/null || break
     echo "== $(date +%H:%M:%S)" >> "$OUT/states.timeline.txt"
     for t in /proc/$P/task/*; do
@@ -126,7 +126,7 @@ dump_kfd "$OUT/kfd.wedge"
 # --- cleanup watchdog: final KFD snapshot + kill at +300 s
 (
   sleep 300
-  P=$(pgrep -n -x strata-host || pgrep -n -f 'v0235p0' || true)
+  P=$(pgrep -n -x strata-host || pgrep -n -f 'v023[0-9]p0' || true)
   [ -n "$P" ] && { kill -9 "$P" 2>/dev/null; pkill -9 -P "$P" 2>/dev/null; }
   kill -9 "$BOOTPID" 2>/dev/null; kill "$SAMP" 2>/dev/null
   echo "[$(ts)] watchdog: engine killed" >> "$DRV"

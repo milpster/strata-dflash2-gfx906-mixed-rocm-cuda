@@ -1,0 +1,51 @@
+=== manual wedge snapshot Mon Nov 16 04:33:30 PM CET 2026 pid 142733 ===
+142733 strata-host state=D wchan=folio_wait_bit_common
+142751 strata state=S wchan=kfd_wait_on_events
+143675 strata state=S wchan=__futex_wait
+143676 strata state=S wchan=__futex_wait
+143677 strata state=S wchan=__futex_wait
+143678 strata state=S wchan=__futex_wait
+143679 strata state=S wchan=__futex_wait
+143680 strata state=S wchan=__futex_wait
+143681 strata state=S wchan=__futex_wait
+143682 strata state=S wchan=__futex_wait
+143683 strata state=S wchan=__futex_wait
+143684 strata state=S wchan=__futex_wait
+143685 strata state=S wchan=__futex_wait
+143686 strata state=S wchan=__futex_wait
+143687 strata state=S wchan=__futex_wait
+143688 strata state=S wchan=__futex_wait
+143689 strata state=S wchan=__futex_wait
+143690 strata state=S wchan=__futex_wait
+143691 strata state=S wchan=__futex_wait
+149165 strata-pool-0 state=S wchan=__futex_wait
+149166 strata-pool-1 state=S wchan=__futex_wait
+149167 strata-pool-2 state=S wchan=__futex_wait
+149168 strata-pool-3 state=S wchan=__futex_wait
+149169 strata-pool-4 state=S wchan=__futex_wait
+149170 strata-pool-5 state=S wchan=__futex_wait
+149171 strata-pool-6 state=S wchan=__futex_wait
+149204 strata-stage state=S wchan=__futex_wait
+149205 strata-stage state=S wchan=__futex_wait
+149206 strata-stage state=S wchan=__futex_wait
+149207 strata-stage state=S wchan=__futex_wait
+149218 strata-watchdog state=S wchan=hrtimer_nanosleep
+=== kfd proc entries (stale = contamination):
+142733
+=== kfd counters for 142733:
+counters_18093: 
+counters_1815: 
+counters_54121: 
+pasid: 0
+queues: 
+sdma_18093: 0
+sdma_1815: 0
+sdma_54121: 0
+stats_18093: 
+stats_1815: 
+stats_54121: 
+vram_18093: 0
+vram_1815: 0
+vram_54121: 5767753728
+=== dmesg tail:
+dmesg: read kernel buffer failed: Operation not permitted
