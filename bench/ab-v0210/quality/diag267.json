@@ -1,5 +1,5 @@
 {
-  "exe": "/mnt/srcds/Strata/bench/ab-v0210/quality/strata-ldp-v0236.sh",
+  "exe": "/mnt/srcds/Strata/bench/ab-v0210/quality/strata-ldp-v0237.sh",
   "args": [
     "--serve",
     "--gpu",
@@ -54,7 +54,7 @@
     "STRATA_VERIFY_TRACE": "1",
     "STRATA_STALL_STACKS": "1",
     "STRATA_LAUNCH_PROBE": "1",
-    "STRATA_ARENA_PIN_GIB": "none",
-    "LD_PRELOAD": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/gpu-rounds/crashrec.so"
+    "LD_PRELOAD": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/gpu-rounds/crashrec.so",
+    "STRATA_WATCHDOG_S": "120"
   }
 }

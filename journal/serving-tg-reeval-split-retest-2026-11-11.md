@@ -3817,3 +3817,14 @@ Prod down since ~16:39; restore queued behind this result. diag artifacts: out/d
 - v0237p1 (7ff296cbdb, refuse_or_recover at ALL five refusal sites + six sibling timeouts): diag267-13 = **recovery works end-to-end** — req#1 answered "the late GPU window was reset (#267); retry the request"; req#2's OWN 62847-ms stall also released (drained, GPU idle) + T=5 graphs destroyed + reset + answer emitted — but the request watchdog (lambda #76, abort site strata+0x2500794) still fired: its ~60-s no-progress threshold is SHORTER than the ~63-s ROCm launch-block. Recovery machinery vs watchdog race — the watchdog won by a second.
 - Consistent constant: the launch block is ~62.5–62.9 s across four independent runs (62751/62549/62847 + the first) — a ~60-s driver-side timeout/backoff, launching thread S in hrtimer_nanosleep inside hipGraphLaunch, then it completes on its own. The engine-side recovery is the right fix regardless of the upstream cause.
 - Amendment 2 in flight: recovery-epoch atomic bumped by every recovery; watchdog holds (resets its stall timer) when recovery advanced since its last look; aborts only on a stall recovery is not resolving.
+## Round 18ci — FIX VALIDATED per sub-class; v0237p2 is the adoption candidate (2026-11-16, 19:0x–19:2x)
+
+Validation runs (diag267-12..15, protocol driver, crashrec armed):
+- 12 (hooks v1): recovery never fired — wrong sites (doorbell timeouts can't cover a BLOCKED launch call).
+- 13 (v2, refuse_or_recover at all refusal sites): recovery works end-to-end on the ~62.8-s self-resolving stall (graphs destroyed, reset, retryable answer emitted) — but the 60-s watchdog aborted first (race).
+- 14 (v3, epoch-hold): race went the other way — abort check at 60 s precedes any possible recovery (launch still blocked).
+- 15 (WATCHDOG_S=120, no rebuild — env knob): the stall was the FOREVER sub-class this time — no recovery possible in-process; clean abort at 120 s, no zombie, no D-state. Correct behavior: that abort is designed for server.py to restart the engine.
+
+**The two request-stall sub-classes, both handled by v0237p2 (+STRATA_WATCHDOG_S=120):** (1) self-resolving ~63-s driver stall → in-process window reset, request retries, engine lives (proven 13); (2) forever stall (the #649 signature) → clean 120-s abort → server.py restart loop (prod's existing design). Boot wedge → 5-min registration watchdog abort + retry (Part 2). The consistent ~62.5–62.9-s constant across four runs = a ~60-s ROCm/driver-side timeout inside hipGraphLaunch (thread S in hrtimer_nanosleep) — upstream cause open, engine-side handling complete.
+
+Adoption candidate: /mnt/srcds/Strata/v0237p0/rpcw-hip/strata sha bb4e20110af3… (engine hc-q8-gfx906 @ e262fc7bed: recovery + epoch-hold + quiesce-before-register + boot-registration watchdog; f9027b451c instrumentation included). Env for this box: STRATA_WATCHDOG_S=120.
