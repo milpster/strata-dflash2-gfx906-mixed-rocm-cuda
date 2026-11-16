@@ -9415,7 +9415,7 @@ int main(int argc, char** argv) {
                     if (ahead.valid()) ahead.get();
                     else read_batch(i);
                     if (i + 64 < want) ahead = std::async(std::launch::async, [&read_batch](int64_t b) { strata::aux_cpus::pin_current_thread(); read_batch(b); }, i + 64);
-                    pack_read_ms += std::chrono::duration<double>(std::chrono::steady_clock::now() - io_t0).count();
+                    pack_read_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - io_t0).count();
                 }
                 if (fill_ahead > 0 && i + fill_ahead < want) (void) src.advise_pairs(profile.data() + i + fill_ahead, 1);
                 const int32_t slot = xcache.admit(profile[(size_t) i].first, profile[(size_t) i].second);
@@ -9425,7 +9425,7 @@ int main(int argc, char** argv) {
                 }
                 const auto rd_t0 = std::chrono::steady_clock::now();
                 const uint8_t* b = srcp->blob_stable(profile[(size_t) i].first, profile[(size_t) i].second);
-                pack_read_ms += std::chrono::duration<double>(std::chrono::steady_clock::now() - rd_t0).count();
+                pack_read_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - rd_t0).count();
                 const bool nib_pair = nib_x.active() && nib::layer(profile[(size_t) i].first).on;   // STRATA_EXPERT_NIBBLE
                 const auto hz_t0 = std::chrono::steady_clock::now();
                 bool slot_ok = b != nullptr;   // a null blob fails the fill exactly as before, without calling it
@@ -9437,7 +9437,7 @@ int main(int argc, char** argv) {
                     slot_ok = nib_pair ? nib_x.add(profile[(size_t) i].first, profile[(size_t) i].second, slot, b, fill_err)
                                        : xcache.fill_slot_blocking(slot, b, fill_err,
                                             (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(profile[(size_t) i].first));
-                h2d_ms += std::chrono::duration<double>(std::chrono::steady_clock::now() - hz_t0).count();
+                h2d_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - hz_t0).count();
                 if (!slot_ok) {
                     std::fprintf(stderr, "strata generate: the profile fill failed at pair %lld: %s\n",
                                  (long long) i, fill_err.c_str());
@@ -9451,7 +9451,7 @@ int main(int argc, char** argv) {
             if (queued_fills) {   // F6: the last flush — every queued fill has landed before the nibble finish and the verify_slot
                 const auto hz_t0 = std::chrono::steady_clock::now();
                 const bool flushed = flush_bfill();
-                h2d_ms += std::chrono::duration<double>(std::chrono::steady_clock::now() - hz_t0).count();
+                h2d_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - hz_t0).count();
                 if (!flushed) {
                     std::fprintf(stderr, "strata generate: the profile fill failed at pair %lld: %s\n",
                                  (long long) bfill_last, fill_err.c_str());
@@ -9462,7 +9462,7 @@ int main(int argc, char** argv) {
             if (nib_x.active()) {
                 const auto hz_t0 = std::chrono::steady_clock::now();
                 const bool fin_ok = nib_x.finish(fill_err);
-                h2d_ms += std::chrono::duration<double>(std::chrono::steady_clock::now() - hz_t0).count();
+                h2d_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - hz_t0).count();
                 if (!fin_ok) {
                     std::fprintf(stderr, "strata generate: STRATA_EXPERT_NIBBLE: CUDA0: %s\n", fill_err.c_str());
                     cuda0_fill_failed = true;
@@ -9679,7 +9679,7 @@ int main(int argc, char** argv) {
                 if (slot == strata::core::kNotResident) break;
                 const auto rd_t0 = std::chrono::steady_clock::now();
                 const uint8_t* b = srcp->blob_stable(pr.first, pr.second);
-                stage_pack_ms += std::chrono::duration<double>(std::chrono::steady_clock::now() - rd_t0).count();
+                stage_pack_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - rd_t0).count();
                 const bool nib_pair = nib_c.active() && nib::layer(pr.first).on;   // STRATA_EXPERT_NIBBLE
                 const auto hz_t0 = std::chrono::steady_clock::now();
                 bool slot_ok = b != nullptr;   // a null blob fails the fill exactly as before, without calling it
@@ -9690,7 +9690,7 @@ int main(int argc, char** argv) {
                 } else if (slot_ok)
                     slot_ok = nib_pair ? nib_c.add(pr.first, pr.second, slot, b, fill_err)
                                        : st.cache.fill_slot_blocking(slot, b, fill_err, (int64_t) lay.blob_bytes(pr.first));
-                stage_h2d_ms += std::chrono::duration<double>(std::chrono::steady_clock::now() - hz_t0).count();
+                stage_h2d_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - hz_t0).count();
                 if (!slot_ok) {
                     std::fprintf(stderr, "strata generate: layer split, CUDA%d profile fill failed at pair %lld: %s\n",
                                  st.dev, (long long) filled, fill_err.c_str());
@@ -9703,7 +9703,7 @@ int main(int argc, char** argv) {
             if (stage_queued) {   // F6: the stage's last flush — every queued fill has landed before its verify_slot
                 const auto hz_t0 = std::chrono::steady_clock::now();
                 const bool flushed = flush_stage_bfill();
-                stage_h2d_ms += std::chrono::duration<double>(std::chrono::steady_clock::now() - hz_t0).count();
+                stage_h2d_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - hz_t0).count();
                 if (!flushed) {
                     std::fprintf(stderr, "strata generate: layer split, CUDA%d profile fill failed at pair %lld: %s\n",
                                  st.dev, (long long) stage_bfill_last, fill_err.c_str());
@@ -9714,7 +9714,7 @@ int main(int argc, char** argv) {
             if (nib_c.active()) {
                 const auto hz_t0 = std::chrono::steady_clock::now();
                 const bool fin_ok = nib_c.finish(fill_err);
-                stage_h2d_ms += std::chrono::duration<double>(std::chrono::steady_clock::now() - hz_t0).count();
+                stage_h2d_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - hz_t0).count();
                 if (!fin_ok) {
                     std::fprintf(stderr, "strata generate: STRATA_EXPERT_NIBBLE: CUDA%d: %s\n", st.dev, fill_err.c_str());
                     sfs.failed = true;
