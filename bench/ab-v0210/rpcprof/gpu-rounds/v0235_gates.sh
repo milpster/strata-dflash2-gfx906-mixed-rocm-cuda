@@ -57,9 +57,13 @@ run_qq () {  # run_qq <label> <env...> -- [extra harness args]; guards the engin
 }
 
 echo "=== V5 phase 2: F2 KL gates x3 ($(date +%T)) ==="
-run_qq NIGHT-v0235 X=1 --
+# NOTE: qq boots died ~90% with #267 first-request stalls on 13-11-16 (small-config shape +
+# cold page cache; H1 reclaim hypothesis). HSA_USERPTR_FOR_PAGED_MEM=0 is the community
+# workaround for exactly that class — applied EQUALLY to baseline and gated runs, so KL
+# comparisons stay valid. The lane-boot A/B in phase 4 measures it explicitly.
+run_qq NIGHT-v0235 X=1 HSA_USERPTR_FOR_PAGED_MEM=0 --
 for P in 1 2 3; do
-  run_qq F2G-P$P STRATA_HELPER_XQ_RING=1 --
+  run_qq F2G-P$P STRATA_HELPER_XQ_RING=1 HSA_USERPTR_FOR_PAGED_MEM=0 --
   echo "--- NIGHT-v0235 vs F2G-P$P:"
   python3 tools/quant_quality.py compare $Q/out/NIGHT-v0235.tsv $Q/out/F2G-P$P.tsv 2>&1 | tail -4
 done
