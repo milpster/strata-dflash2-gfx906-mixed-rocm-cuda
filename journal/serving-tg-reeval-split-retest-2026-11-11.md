@@ -3705,3 +3705,10 @@ Single arm on the champion binary (fresh boot, standard judges): fresh fill 447.
 
 
 
+## Round 18bw — B6 queue-prime: NO-ADOPT; #267 occurrence #3; wikitext-2 standard staged (2026-11-16, 10:17–11:14)
+
+**B6 A/B (b6_prime.sh, v0234p0, 8 interleaved boots + deciding judge pair)**: priming the HW queues at START does NOT pin the boot-fill class. CTRL fill rates 307/318/493/2588 MB/s, PRIME 314/338/876/1785 — both arms bimodal, medians ~400 vs ~600 (noise). Deciding judges: B6CTRL fresh fill 253.0 (re-read) / warm TG 30.3 (in band); B6PRIME warm TG **18.8 (collapsed class)** plus a 0.9 tok/s stall during the fill leg's generation — n=1 and TG-lottery-confounded, but nothing argues for the knob. **VERDICT: NO-ADOPT** (`STRATA_PRIME_HW_QUEUES` stays unset; gate commit b9f58186a4 remains default-off). Bistability mechanism NOT convicted: the MES pipe-assignment hypothesis stays open but this priming shape doesn't move it. #267 did not recur across B6's 10 boots. F7c phase fields printed 0.0 in all 10 boots (fix lane running). Artifacts: `out/gpu-rounds-20261116/b6-prime.tsv` + per-boot elogs.
+
+**Convention passes interrupted (GPU parked by operator)**: F8G-P2 booted, drew the slow class (pin registration 4480 ranges / 42.6 GiB / 324 s), then **#267 occurrence #3** on the first serve request — `released the verify window's GPU waits (#267): the GPU finished in 13883 ms`, request answered None, no TSV. Occurrences: 2 yesterday, 1 today; pattern is consistently *first request after boot*. F8/F6 remain 1/3 each; reruns + wikitext PPL legs queued for the next GPU window. Prod restored 11:13:47, no-NaN OK.
+
+**wikitext-2 absolute-PPL standard staged** (for future PPL measurements, operator-approved): wikitext-2-raw test split (Salesforce parquet → wiki.test.raw, 1,287,656 bytes / 4,358 rows) split into the harness's 5 canonical segments × 999 teacher-forced positions, tokenized with the pack tokenizer (`data/quant_quality/wikitext2/set.ids.json`, commit fa73247). Runs use `quant_quality.py run --ids …/wikitext2/set.ids.json`; WIKI-233/WIKI-234 baseline legs queued for the next window.

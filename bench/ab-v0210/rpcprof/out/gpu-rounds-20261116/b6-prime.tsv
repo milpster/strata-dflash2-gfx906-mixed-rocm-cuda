@@ -1,0 +1,9 @@
+boot	arm	pack_read_s	h2d_s	pinned_mb	mbs
+b6ctrl-1	CTRL	0.0	0.0	9914	318
+b6prime-1	PRIME	0.0	0.0	9914	338
+b6ctrl-2	CTRL	0.0	0.0	9914	307
+b6prime-2	PRIME	0.0	0.0	9914	876
+b6ctrl-3	CTRL	0.0	0.0	9914	493
+b6prime-3	PRIME	0.0	0.0	9914	314
+b6ctrl-4	CTRL	0.0	0.0	9914	2588
+b6prime-4	PRIME	0.0	0.0	9914	1785
