@@ -18,7 +18,7 @@ OUT=$R/bench/ab-v0210/rpcprof/out/gpu-rounds-20261116
 WIKIIDS=$R/data/quant_quality/wikitext2/set.ids.json
 mkdir -p $OUT
 export LDP="env LD_LIBRARY_PATH=/home/srcds/rocm-gfx906-xnack/lib:/opt/rocm-6.1.0/lib HSA_OVERRIDE_GFX_VERSION=9.0.6"
-WD=STRATA_WATCHDOG_S=120
+WD="STRATA_WATCHDOG_S=120 STRATA_MEMORY_LIMIT_MIB=51200"
 
 # --- qq wrapper + config for v0237 (exe = the engine command; p0_gates lesson)
 if [ ! -x $Q/strata-ldp-v0237.sh ]; then
