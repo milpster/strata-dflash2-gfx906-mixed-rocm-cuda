@@ -3901,3 +3901,18 @@ Verified warm re-pair (12v12, sequential 500-tok judge, expert cache 92-96% thro
 **Verdict: performance-null (−0.4% median, −1.7% warm-state — within noise, no win).** The ring's saved CPU quantize is evidently not on the decode critical path in this shape. NOT adopted: launcher reverted to champion (ring default OFF); the F2 code stays proven-correct (18co) and dormant — zero risk surface. Caveat carried to the perf phase: single-stream sequential judging; a concurrency benefit (engine threads contended) is untested.
 
 Measurement lesson banked: within-arm drift 20.5→28.8 across 12 requests (residual relief-band warming) — steady-state comparisons must use last-N medians, not full-arm means, or cold tails bias arms downward unevenly.
+## Round 18cq — perf phase opens: stack identity corrected; prefill A/B harness; P1+P3 measured REGRESSION, reverted (2026-11-17, 03:1x–04:0x)
+
+Perf analysis (explorer, read-only) corrected the working map: live server is `/mnt/srcds/Strata/v0215/serve/server.py` (config `prod-config-v0238.json`), engine timings live in `engine-prod-ud-iq3xxs-v0233.log` (`serve: prompt` lines) — the prod-swift log carries only server narration. **Prefill is memory-hierarchy bound, not GEMM bound**: `prompt_ms = 1338 + 3.74 × pcie_fetch_ms` (R²=0.969, n=200); effective prefill 36 tok/s (live-turn median, huge contexts) vs marginal 155; server queueing ≈0.3 s; TTFT ≈ 98% prompt_ms. Operator's real turns: 120k-token contexts, 394–1174 new tokens read in 13–19 s, fetch 2.9–4.4 s.
+
+Env precedence discovered: the config's `env` map (server applies to engine child) OVERRIDES the launcher env block for keys in both (proved: SWAPIN_DEPTH launcher-128 → engine saw config-64). Single-source rule: env knobs live in the config map.
+
+Round A (P1 `STRATA_PREFILL_WARM=1` + P3 `STRATA_SWAPIN_DEPTH 64→128`), prefill_judge.sh ×8 varied ~10.3k-token wikitext-derived prompts (fresh routing; parser filters `read≥1000`):
+
+| arm | read tok/s median | prompt_ms | pcie_fetch_ms |
+|---|---|---|---|
+| PRE-A (champion) | 223 | 45.5–48.7 s | 12.16–12.29 |
+| POST-A (WARM=1, DEPTH=128) | **182 (−19%)** | 56.6–64.7 s | 12.22–12.37 |
+| CONFIRM (reverted) | 228 (post first-req re-warm) | ~45.3 s | ~12.3 |
+
+**Verdict: REGRESSION — both reverted.** Mechanism read: warm-ahead reads compete with demand reads on the same NVMe instead of hiding them (the extra ~11 s sits OUTSIDE pcie_fetch_ms, i.e. extra layer waits); DEPTH=128 left the fetch term exactly unchanged (12.25 s both arms) → 64 was never the demand-read limiter. Champion restored and verified (environ clean, 228 tok/s). The 12.2-s fetch floor on a fresh 10.3k-token prompt stands as the binding constraint for code-level follow-up (overlap without competition — stager-level pipelining, not per-layer warm-ahead).

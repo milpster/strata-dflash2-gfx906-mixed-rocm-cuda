@@ -57,7 +57,7 @@
     "4600",
     "--expert-helper-ram-relief",
     "--conversation-cache-dir",
-    "/mnt/srcds/Strata-wt-helper-ipc/run/diet-soak-cache",
+    "/home/srcds/strata-conv-cache",
     "--conversation-cache-disk-mib",
     "24576",
     "--conversation-cache-disk-ram-mib",
