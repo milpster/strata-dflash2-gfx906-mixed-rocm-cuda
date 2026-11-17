@@ -1,0 +1,371 @@
+=== crashrec: fatal-signal recorder armed ====== crashrec: fatal-signal recorder armed ====== crashrec: fatal-signal recorder armed ====== crashrec: fatal-signal recorder armed ===strata: a model with K-quant experts (Unsloth UD-Q4/Q5/Q6_K_XL) reads its prompt on llama.cpp's MMQ kernels (STRATA_MMQ_KQ=0 or STRATA_NV_KQ_DEFAULT=0 turns it off)
+strata generate: memory guard: limit 62.2 GiB (source: meminfo), current 7.2 GiB, reclaimable cache credited 0.0 GiB; available 55.0 GiB (MemAvailable 55.0 GiB), floor 2560 MiB
+strata generate: this CPU has no AVX-512: the expert kernels run on AVX-2 (multi-token for the i-quant gate/up rows)
+strata generate: native pack: /mnt/srcds/ai/iq3xxs-ud experts (largest blob 2.66 MB), token embedding Q6_K in mapped host memory (497 MiB, 0.3 s)
+strata generate: 1416 MiB of weights loaded from /mnt/srcds/ai/iq3xxs-ud in 1.7 s (303 canonical tensors skipped: served natively)
+strata generate: 301 native projection matrices, 2331.54 MiB of weights, in 1.9 s
+strata generate: PLE direct read probe: 73710 rows/s (fine)
+strata generate: the SSD is kept awake while rows are read: one page of the table after 100 ms without a read, until 60 s after the last request (STRATA_SSD_KEEPALIVE=0 turns it off)
+strata generate: profile /mnt/srcds/Strata/data/expert-profile.bin: 24576 ranked pairs, built for 24576 slots
+strata generate: PLE on, table 320001536 rows of /mnt/srcds/ai/Qwen3.8-Flash-Next-PLE-Q8_0.gguf
+strata generate: experimental native Q6_K head, 521472000 bytes, in 0.3 s
+strata generate: GPU 0: AMD Radeon VII, compute capability 9.0
+strata generate: GPU host-callback thread started before host-core pinning
+strata generate: expert arena read through the file cache (buffered (not Windows))
+strata generate: expert arena: NOT registered with the GPU driver (integrated GPU, UMA mode; STRATA_ARENA_PIN_GIB=0 registers it); mlock; MAP_HUGETLB unavailable (needed 23983 2 MiB pages, vm.nr_hugepages=0); transparent huge pages are on for every mapping (THP always): MADV_HUGEPAGE not requested
+strata generate: loaded 46.84 GiB at 1.91 GiB/s
+strata generate: CPU pool tasks/phase: 24 (automatic), participating threads: 8
+strata generate: CPU pool: 7 workers by default (8 physical cores, 16 logical processors; bounded by every physical core but the host's)
+strata generate: 7 pool workers on logical processors 2,4,6,8,10,12,14, the host thread on 0 (draining too) (--host-core first)
+strata generate: CPU workers on logical processors 2,4,...,14 (7 workers, one per physical core; host on 0)
+strata aux cpus: threads that are neither pool workers nor the host go to CPUs 1 (off at start; a request's aux_cpus=1 turns it on)
+strata generate: expert cache 1 slots, 0.00 GiB of VRAM; policy is
+strata generate: the GPU computes the experts in the cache; it rounds differently from the CPU,
+                 so a reply can differ slightly from a run without the cache (same quality:
+                 bench/results/2026-09-27-cache-parity).
+                 PROFILE, ranked by routing frequency, no eviction.
+strata generate: pre-filled 1 of 1 slots from the profile in 0.0 s (902 MB/s); slot 0 verified; pack_read_s 0.0 h2d_s 0.0 pinned_mb 2 phases=arena:0.0s lot:0.0s
+strata generate: R4 hit path ON - resident experts are computed on the GPU
+strata generate: 7 expert-pool workers + the host thread
+strata generate: session is up (engine 0.1.57)
+strata generate: token graph hit path: 1 resident experts, decided on the device
+prefill mmq: off (env=0) [built=1]
+strata serve: the prompt path allocates its own buffers (too few cache slots to borrow)
+strata hc: CUDA0: the hyper-connection read runs as staged (the norm per token and stream, the down projection's activations staged ahead by cp.async); checked bit for bit against the plain read on this card (STRATA_HC_SPLIT=1 or 0 for the earlier ones)
+strata verify trace (#649): on
+strata verify: window up to 5 tokens, 68.7 MiB of device buffers
+strata serve: STRATA_ROUTE_TAIL_SKIP=7 is ON (default): a missed expert that every token of a verify window routes at rank 7 or lower is skipped (+10..20% decode on 12-16 GB cards that miss experts, answers differ slightly from 0.1.41); STRATA_ROUTE_TAIL_SKIP=0 turns it off
+strata serve: adaptive overlap: off (STRATA_ADAPT_OVERLAP=1 turns it on)
+strata serve: adaptive tier: blocking, and the asynchronous tier is tried once the session shows the swaps hold the windows up (--adapt-async 0 or STRATA_ADAPT_ASYNC=0: never)
+strata serve: 10950 MiB of VRAM free with everything loaded
+strata verify: capturing the 5-token window (10950 MiB of VRAM free)
+strata verify: captured the 5-token window (upload no error, sync no error) in 90.5 ms
+strata tdr-probe: window 0 T=5: the first doorbell (layer 0) seen 6.92 ms after the launch began
+strata tdr-probe: window 1 T=5: the launch call has not returned after 50 ms; the launching thread is S in ?
+strata tdr-probe: window 1 T=5: the launch call has not returned after 250 ms; the launching thread is S in ?
+strata tdr-probe: window 1 T=5: the launch call has not returned after 500 ms; the launching thread is R in ?
+strata tdr-probe: window 1 T=5: the launch call has not returned after 1000 ms; the launching thread is S in ?
+strata tdr-probe: window 1 T=5: the launch call has not returned after 2000 ms; the launching thread is S in ?
+strata tdr-probe: window 1 T=5: the launch call has not returned after 3000 ms; the launching thread is S in ?
+strata tdr-probe: window 1 T=5: the launch call has not returned after 5000 ms; the launching thread is S in ?
+strata tdr-probe: window 1 T=5: the launch call has not returned after 10000 ms; the launching thread is S in ?
+strata tdr-probe: window 1 T=5: the launch call has not returned after 30000 ms; the launching thread is R in ?
+strata serve: no progress for 60 s during a request (decode -1) - stopping the engine so the server starts it again (issue #29)
+strata serve: stall report (engine 0.1.57): stage "decode -1" for 60 s; 0 layers served since the last finished step (0 = stopped, more = slow)
+  VRAM free when this request began: 10950 MiB
+  expert pool: epoch 96, batch epoch 96: 24 of 24 jobs claimed, 24 done; 7 of 7 workers parked, 7 sleeping; mode 0
+  expert pool threads: w0=sleeping w1=sleeping w2=sleeping w3=sleeping w4=sleeping w5=sleeping w6=sleeping; host idle for 60749 ms
+  verify window (last window, not the current stage): 5 tokens at position 5, host at layer step 48; the GPU rang 1; flags: served 0, plan (A) 0, copies (B) 0
+strata verify trace (#649): the last 108 handshake events (host clock, us before the last; words: seq = GPU rang, flag = CPU served, A = plan, B = copies)
+    144942.9 WINDOW               v0x7ffc8b0326c0 window 0 step -1 layer -1 aux 5 | seq 0 flag 0 A 0 B 0
+    144942.8 GATE-ENTER           v0x7ffc8b0326c0 window 0 step -1 layer -1 aux 0 | seq 0 flag 0 A 0 B 0
+    144942.7 GATE-LEFT            v0x7ffc8b0326c0 window 0 step -1 layer -1 aux 0 | seq 0 flag 0 A 0 B 0
+    144942.4 LAUNCH-ENTER         v0x7ffc8b0326c0 window 0 step -1 layer -1 aux 0 | seq 0 flag 0 A 0 B 0
+    138030.8 LAUNCH-LEFT          v0x7ffc8b0326c0 window 0 step -1 layer -1 aux 0 | seq 1 flag 0 A 0 B 0
+    138030.5 LAUNCHED             v0x7ffc8b0326c0 window 0 step -1 layer -1 aux 0 | seq 1 flag 0 A 0 B 0
+    138013.1 RANG                 v0x7ffc8b0326c0 window 0 step 0 layer 0 aux 0 | seq 1 flag 0 A 0 B 0
+    135048.7 SERVED               v0x7ffc8b0326c0 window 0 step 0 layer 0 aux 2 | seq 1 flag 0 A 1 B 1
+    132822.7 RANG                 v0x7ffc8b0326c0 window 0 step 1 layer 1 aux 2219 | seq 2 flag 1 A 1 B 1
+    131152.5 SERVED               v0x7ffc8b0326c0 window 0 step 1 layer 1 aux 1 | seq 2 flag 1 A 2 B 2
+    130061.2 RANG                 v0x7ffc8b0326c0 window 0 step 2 layer 2 aux 1090 | seq 3 flag 2 A 2 B 2
+    128525.7 SERVED               v0x7ffc8b0326c0 window 0 step 2 layer 2 aux 1 | seq 3 flag 2 A 3 B 3
+    126371.6 RANG                 v0x7ffc8b0326c0 window 0 step 3 layer 3 aux 2153 | seq 4 flag 3 A 3 B 3
+    124969.1 SERVED               v0x7ffc8b0326c0 window 0 step 3 layer 3 aux 1 | seq 4 flag 3 A 4 B 4
+    123826.2 RANG                 v0x7ffc8b0326c0 window 0 step 4 layer 4 aux 1142 | seq 5 flag 4 A 4 B 4
+    122394.8 SERVED               v0x7ffc8b0326c0 window 0 step 4 layer 4 aux 1 | seq 5 flag 4 A 5 B 5
+    121290.0 RANG                 v0x7ffc8b0326c0 window 0 step 5 layer 5 aux 1104 | seq 6 flag 5 A 5 B 5
+    119686.4 SERVED               v0x7ffc8b0326c0 window 0 step 5 layer 5 aux 1 | seq 6 flag 5 A 6 B 6
+    118581.3 RANG                 v0x7ffc8b0326c0 window 0 step 6 layer 6 aux 1104 | seq 7 flag 6 A 6 B 6
+    117114.6 SERVED               v0x7ffc8b0326c0 window 0 step 6 layer 6 aux 1 | seq 7 flag 6 A 7 B 7
+    115807.9 RANG                 v0x7ffc8b0326c0 window 0 step 7 layer 7 aux 1306 | seq 8 flag 7 A 7 B 7
+    114500.2 SERVED               v0x7ffc8b0326c0 window 0 step 7 layer 7 aux 1 | seq 8 flag 7 A 8 B 8
+    113358.6 RANG                 v0x7ffc8b0326c0 window 0 step 8 layer 8 aux 1141 | seq 9 flag 8 A 8 B 8
+    112087.1 SERVED               v0x7ffc8b0326c0 window 0 step 8 layer 8 aux 1 | seq 9 flag 8 A 9 B 9
+    110956.4 RANG                 v0x7ffc8b0326c0 window 0 step 9 layer 9 aux 1130 | seq 10 flag 9 A 9 B 9
+    109691.2 SERVED               v0x7ffc8b0326c0 window 0 step 9 layer 9 aux 1 | seq 10 flag 9 A 10 B 10
+    108582.8 RANG                 v0x7ffc8b0326c0 window 0 step 10 layer 10 aux 1107 | seq 11 flag 10 A 10 B 10
+    107475.0 SERVED               v0x7ffc8b0326c0 window 0 step 10 layer 10 aux 1 | seq 11 flag 10 A 11 B 11
+    106150.1 RANG                 v0x7ffc8b0326c0 window 0 step 11 layer 11 aux 1324 | seq 12 flag 11 A 11 B 11
+    104772.7 SERVED               v0x7ffc8b0326c0 window 0 step 11 layer 11 aux 1 | seq 12 flag 11 A 12 B 12
+    103665.5 RANG                 v0x7ffc8b0326c0 window 0 step 12 layer 12 aux 1106 | seq 13 flag 12 A 12 B 12
+    102413.9 SERVED               v0x7ffc8b0326c0 window 0 step 12 layer 12 aux 1 | seq 13 flag 12 A 13 B 13
+    101278.6 RANG                 v0x7ffc8b0326c0 window 0 step 13 layer 13 aux 1134 | seq 14 flag 13 A 13 B 13
+    100129.9 SERVED               v0x7ffc8b0326c0 window 0 step 13 layer 13 aux 1 | seq 14 flag 13 A 14 B 14
+     98976.1 RANG                 v0x7ffc8b0326c0 window 0 step 14 layer 14 aux 1153 | seq 15 flag 14 A 14 B 14
+     96982.6 SERVED               v0x7ffc8b0326c0 window 0 step 14 layer 14 aux 1 | seq 15 flag 14 A 15 B 15
+     95642.9 RANG                 v0x7ffc8b0326c0 window 0 step 15 layer 15 aux 1339 | seq 16 flag 15 A 15 B 15
+     93943.5 SERVED               v0x7ffc8b0326c0 window 0 step 15 layer 15 aux 1 | seq 16 flag 15 A 16 B 16
+     92812.1 RANG                 v0x7ffc8b0326c0 window 0 step 16 layer 16 aux 1131 | seq 17 flag 16 A 16 B 16
+     91267.6 SERVED               v0x7ffc8b0326c0 window 0 step 16 layer 16 aux 1 | seq 17 flag 16 A 17 B 17
+     90125.9 RANG                 v0x7ffc8b0326c0 window 0 step 17 layer 17 aux 1141 | seq 18 flag 17 A 17 B 17
+     88708.3 SERVED               v0x7ffc8b0326c0 window 0 step 17 layer 17 aux 1 | seq 18 flag 17 A 18 B 18
+     87595.0 RANG                 v0x7ffc8b0326c0 window 0 step 18 layer 18 aux 1113 | seq 19 flag 18 A 18 B 18
+     85963.6 SERVED               v0x7ffc8b0326c0 window 0 step 18 layer 18 aux 1 | seq 19 flag 18 A 19 B 19
+     84642.6 RANG                 v0x7ffc8b0326c0 window 0 step 19 layer 19 aux 1320 | seq 20 flag 19 A 19 B 19
+     83264.7 SERVED               v0x7ffc8b0326c0 window 0 step 19 layer 19 aux 1 | seq 20 flag 19 A 20 B 20
+     82121.4 RANG                 v0x7ffc8b0326c0 window 0 step 20 layer 20 aux 1142 | seq 21 flag 20 A 20 B 20
+     80318.7 SERVED               v0x7ffc8b0326c0 window 0 step 20 layer 20 aux 1 | seq 21 flag 20 A 21 B 21
+     79199.5 RANG                 v0x7ffc8b0326c0 window 0 step 21 layer 21 aux 1118 | seq 22 flag 21 A 21 B 21
+     77750.1 SERVED               v0x7ffc8b0326c0 window 0 step 21 layer 21 aux 1 | seq 22 flag 21 A 22 B 22
+     76645.5 RANG                 v0x7ffc8b0326c0 window 0 step 22 layer 22 aux 1104 | seq 23 flag 22 A 22 B 22
+     74929.4 SERVED               v0x7ffc8b0326c0 window 0 step 22 layer 22 aux 1 | seq 23 flag 22 A 23 B 23
+     73608.0 RANG                 v0x7ffc8b0326c0 window 0 step 23 layer 23 aux 1320 | seq 24 flag 23 A 23 B 23
+     72067.4 SERVED               v0x7ffc8b0326c0 window 0 step 23 layer 23 aux 1 | seq 24 flag 23 A 24 B 24
+     70931.7 RANG                 v0x7ffc8b0326c0 window 0 step 24 layer 24 aux 1135 | seq 25 flag 24 A 24 B 24
+     69511.1 SERVED               v0x7ffc8b0326c0 window 0 step 24 layer 24 aux 1 | seq 25 flag 24 A 25 B 25
+     68401.0 RANG                 v0x7ffc8b0326c0 window 0 step 25 layer 25 aux 1109 | seq 26 flag 25 A 25 B 25
+     66729.0 SERVED               v0x7ffc8b0326c0 window 0 step 25 layer 25 aux 1 | seq 26 flag 25 A 26 B 26
+     65582.0 RANG                 v0x7ffc8b0326c0 window 0 step 26 layer 26 aux 1146 | seq 27 flag 26 A 26 B 26
+     64513.2 SERVED               v0x7ffc8b0326c0 window 0 step 26 layer 26 aux 1 | seq 27 flag 26 A 27 B 27
+     63193.7 RANG                 v0x7ffc8b0326c0 window 0 step 27 layer 27 aux 1319 | seq 28 flag 27 A 27 B 27
+     61786.7 SERVED               v0x7ffc8b0326c0 window 0 step 27 layer 27 aux 1 | seq 28 flag 27 A 28 B 28
+     60666.9 RANG                 v0x7ffc8b0326c0 window 0 step 28 layer 28 aux 1119 | seq 29 flag 28 A 28 B 28
+     59042.5 SERVED               v0x7ffc8b0326c0 window 0 step 28 layer 28 aux 1 | seq 29 flag 28 A 29 B 29
+     57918.0 RANG                 v0x7ffc8b0326c0 window 0 step 29 layer 29 aux 1124 | seq 30 flag 29 A 29 B 29
+     56391.7 SERVED               v0x7ffc8b0326c0 window 0 step 29 layer 29 aux 1 | seq 30 flag 29 A 30 B 30
+     55246.5 RANG                 v0x7ffc8b0326c0 window 0 step 30 layer 30 aux 1144 | seq 31 flag 30 A 30 B 30
+     53358.4 SERVED               v0x7ffc8b0326c0 window 0 step 30 layer 30 aux 1 | seq 31 flag 30 A 31 B 31
+     52042.1 RANG                 v0x7ffc8b0326c0 window 0 step 31 layer 31 aux 1315 | seq 32 flag 31 A 31 B 31
+     50377.8 SERVED               v0x7ffc8b0326c0 window 0 step 31 layer 31 aux 1 | seq 32 flag 31 A 32 B 32
+     49222.9 RANG                 v0x7ffc8b0326c0 window 0 step 32 layer 32 aux 1144 | seq 33 flag 32 A 32 B 32
+     48082.9 SERVED               v0x7ffc8b0326c0 window 0 step 32 layer 32 aux 1 | seq 33 flag 32 A 33 B 33
+     46970.1 RANG                 v0x7ffc8b0326c0 window 0 step 33 layer 33 aux 1112 | seq 34 flag 33 A 33 B 33
+     45557.0 SERVED               v0x7ffc8b0326c0 window 0 step 33 layer 33 aux 1 | seq 34 flag 33 A 34 B 34
+     44449.9 RANG                 v0x7ffc8b0326c0 window 0 step 34 layer 34 aux 1106 | seq 35 flag 34 A 34 B 34
+     43165.9 SERVED               v0x7ffc8b0326c0 window 0 step 34 layer 34 aux 1 | seq 35 flag 34 A 35 B 35
+     41829.5 RANG                 v0x7ffc8b0326c0 window 0 step 35 layer 35 aux 1336 | seq 36 flag 35 A 35 B 35
+     40360.9 SERVED               v0x7ffc8b0326c0 window 0 step 35 layer 35 aux 1 | seq 36 flag 35 A 36 B 36
+     39216.0 RANG                 v0x7ffc8b0326c0 window 0 step 36 layer 36 aux 1144 | seq 37 flag 36 A 36 B 36
+     37750.9 SERVED               v0x7ffc8b0326c0 window 0 step 36 layer 36 aux 1 | seq 37 flag 36 A 37 B 37
+     36619.0 RANG                 v0x7ffc8b0326c0 window 0 step 37 layer 37 aux 1131 | seq 38 flag 37 A 37 B 37
+     34989.8 SERVED               v0x7ffc8b0326c0 window 0 step 37 layer 37 aux 1 | seq 38 flag 37 A 38 B 38
+     33852.4 RANG                 v0x7ffc8b0326c0 window 0 step 38 layer 38 aux 1137 | seq 39 flag 38 A 38 B 38
+     32057.1 SERVED               v0x7ffc8b0326c0 window 0 step 38 layer 38 aux 1 | seq 39 flag 38 A 39 B 39
+     30737.9 RANG                 v0x7ffc8b0326c0 window 0 step 39 layer 39 aux 1318 | seq 40 flag 39 A 39 B 39
+     29394.3 SERVED               v0x7ffc8b0326c0 window 0 step 39 layer 39 aux 1 | seq 40 flag 39 A 40 B 40
+     28268.9 RANG                 v0x7ffc8b0326c0 window 0 step 40 layer 40 aux 1125 | seq 41 flag 40 A 40 B 40
+     26664.1 SERVED               v0x7ffc8b0326c0 window 0 step 40 layer 40 aux 1 | seq 41 flag 40 A 41 B 41
+     25524.7 RANG                 v0x7ffc8b0326c0 window 0 step 41 layer 41 aux 1139 | seq 42 flag 41 A 41 B 41
+     23737.6 SERVED               v0x7ffc8b0326c0 window 0 step 41 layer 41 aux 1 | seq 42 flag 41 A 42 B 42
+     22628.7 RANG                 v0x7ffc8b0326c0 window 0 step 42 layer 42 aux 1108 | seq 43 flag 42 A 42 B 42
+     21158.0 SERVED               v0x7ffc8b0326c0 window 0 step 42 layer 42 aux 1 | seq 43 flag 42 A 43 B 43
+     19807.2 RANG                 v0x7ffc8b0326c0 window 0 step 43 layer 43 aux 1350 | seq 44 flag 43 A 43 B 43
+     18483.3 SERVED               v0x7ffc8b0326c0 window 0 step 43 layer 43 aux 1 | seq 44 flag 43 A 44 B 44
+     17354.2 RANG                 v0x7ffc8b0326c0 window 0 step 44 layer 44 aux 1128 | seq 45 flag 44 A 44 B 44
+     15823.1 SERVED               v0x7ffc8b0326c0 window 0 step 44 layer 44 aux 1 | seq 45 flag 44 A 45 B 45
+     14683.7 RANG                 v0x7ffc8b0326c0 window 0 step 45 layer 45 aux 1139 | seq 46 flag 45 A 45 B 45
+     12874.2 SERVED               v0x7ffc8b0326c0 window 0 step 45 layer 45 aux 1 | seq 46 flag 45 A 46 B 46
+     11762.3 RANG                 v0x7ffc8b0326c0 window 0 step 46 layer 46 aux 1111 | seq 47 flag 46 A 46 B 46
+     10160.9 SERVED               v0x7ffc8b0326c0 window 0 step 46 layer 46 aux 1 | seq 47 flag 46 A 47 B 47
+      8844.5 RANG                 v0x7ffc8b0326c0 window 0 step 47 layer 47 aux 1316 | seq 48 flag 47 A 47 B 47
+      6725.9 SERVED               v0x7ffc8b0326c0 window 0 step 47 layer 47 aux 2 | seq 48 flag 47 A 48 B 48
+      6725.5 SYNC                 v0x7ffc8b0326c0 window 0 step -1 layer -1 aux 0 | seq 48 flag 48 A 48 B 48
+      3533.9 SYNCED               v0x7ffc8b0326c0 window 0 step -1 layer -1 aux 0 | seq 48 flag 48 A 48 B 48
+         0.4 WINDOW               v0x7ffc8b0326c0 window 1 step -1 layer -1 aux 85 | seq 0 flag 0 A 0 B 0
+         0.3 GATE-ENTER           v0x7ffc8b0326c0 window 1 step -1 layer -1 aux 0 | seq 0 flag 0 A 0 B 0
+         0.2 GATE-LEFT            v0x7ffc8b0326c0 window 1 step -1 layer -1 aux 0 | seq 0 flag 0 A 0 B 0
+         0.0 LAUNCH-ENTER         v0x7ffc8b0326c0 window 1 step -1 layer -1 aux 0 | seq 0 flag 0 A 0 B 0
+strata verify trace: GPU breadcrumbs (us after the window's first), the GPU got as far as layer 0:
+  layer 0 group 0: pre(0)=0.0 hc-read0(1)=254.2 qkv gemv(2)=487.5 conv(3)=495.0 ab(4)=566.4 z(5)=679.5 rec(6)=702.6 out-proj(16)=810.2 router+ring(17)=1068.8 shared(18)=1127.0 (32)=967.0
+  thread 1662443 strata-host: state R, wchan ?
+  thread 1662468 strata: state S, wchan kfd_wait_on_events
+  thread 1663613 strata: state S, wchan __futex_wait
+  thread 1663614 strata: state S, wchan __futex_wait
+  thread 1663615 strata: state S, wchan __futex_wait
+  thread 1663616 strata: state S, wchan __futex_wait
+  thread 1663617 strata: state S, wchan __futex_wait
+  thread 1663618 strata: state S, wchan __futex_wait
+  thread 1663619 strata: state S, wchan __futex_wait
+  thread 1663620 strata: state S, wchan __futex_wait
+  thread 1663621 strata: state S, wchan __futex_wait
+  thread 1663622 strata: state S, wchan __futex_wait
+  thread 1663623 strata: state S, wchan __futex_wait
+  thread 1663624 strata: state S, wchan __futex_wait
+  thread 1663625 strata: state S, wchan __futex_wait
+  thread 1663626 strata: state S, wchan __futex_wait
+  thread 1663627 strata: state S, wchan __futex_wait
+  thread 1663628 strata: state S, wchan __futex_wait
+  thread 1663637 strata: state S, wchan __futex_wait
+  thread 1670568 strata-pool-0: state S, wchan __futex_wait
+  thread 1670569 strata-pool-1: state S, wchan __futex_wait
+  thread 1670570 strata-pool-2: state S, wchan __futex_wait
+  thread 1670571 strata-pool-3: state S, wchan __futex_wait
+  thread 1670572 strata-pool-4: state S, wchan __futex_wait
+  thread 1670573 strata-pool-5: state S, wchan __futex_wait
+  thread 1670574 strata-pool-6: state S, wchan __futex_wait
+  thread 1670575 strata-stage: state S, wchan __futex_wait
+  thread 1670576 strata-stage: state S, wchan __futex_wait
+  thread 1670577 strata-stage: state S, wchan __futex_wait
+  thread 1670578 strata-stage: state S, wchan __futex_wait
+  thread 1670808 strata-stdin: state S, wchan anon_pipe_read
+  thread 1670809 strata-watchdog: state R, wchan ?
+  threads waiting on the disk (state D): 0 of 32
+  memory: 48738 MiB resident, 194 MiB in swap, 8089 MiB RAM available; 5040 major page faults so far
+  #267 KFD: evicted_ms unreadable this pass; /sys/class/kfd/kfd/proc/1662443: vram_1815 vram_54121 stats_54121 counters_1815 counters_18093 sdma_54121 stats_1815 sdma_1815 pasid queues counters_54121 vram_18093 stats_18093 sdma_18093
+  2 s later:
+  expert pool: epoch 96, batch epoch 96: 24 of 24 jobs claimed, 24 done; 7 of 7 workers parked, 7 sleeping; mode 0
+  expert pool threads: w0=sleeping w1=sleeping w2=sleeping w3=sleeping w4=sleeping w5=sleeping w6=sleeping; host idle for 62752 ms
+  verify window (last window, not the current stage): 5 tokens at position 5, host at layer step 48; the GPU rang 1; flags: served 0, plan (A) 0, copies (B) 0
+strata verify trace (#649): the last 108 handshake events (host clock, us before the last; words: seq = GPU rang, flag = CPU served, A = plan, B = copies)
+    144942.9 WINDOW               v0x7ffc8b0326c0 window 0 step -1 layer -1 aux 5 | seq 0 flag 0 A 0 B 0
+    144942.8 GATE-ENTER           v0x7ffc8b0326c0 window 0 step -1 layer -1 aux 0 | seq 0 flag 0 A 0 B 0
+    144942.7 GATE-LEFT            v0x7ffc8b0326c0 window 0 step -1 layer -1 aux 0 | seq 0 flag 0 A 0 B 0
+    144942.4 LAUNCH-ENTER         v0x7ffc8b0326c0 window 0 step -1 layer -1 aux 0 | seq 0 flag 0 A 0 B 0
+    138030.8 LAUNCH-LEFT          v0x7ffc8b0326c0 window 0 step -1 layer -1 aux 0 | seq 1 flag 0 A 0 B 0
+    138030.5 LAUNCHED             v0x7ffc8b0326c0 window 0 step -1 layer -1 aux 0 | seq 1 flag 0 A 0 B 0
+    138013.1 RANG                 v0x7ffc8b0326c0 window 0 step 0 layer 0 aux 0 | seq 1 flag 0 A 0 B 0
+    135048.7 SERVED               v0x7ffc8b0326c0 window 0 step 0 layer 0 aux 2 | seq 1 flag 0 A 1 B 1
+    132822.7 RANG                 v0x7ffc8b0326c0 window 0 step 1 layer 1 aux 2219 | seq 2 flag 1 A 1 B 1
+    131152.5 SERVED               v0x7ffc8b0326c0 window 0 step 1 layer 1 aux 1 | seq 2 flag 1 A 2 B 2
+    130061.2 RANG                 v0x7ffc8b0326c0 window 0 step 2 layer 2 aux 1090 | seq 3 flag 2 A 2 B 2
+    128525.7 SERVED               v0x7ffc8b0326c0 window 0 step 2 layer 2 aux 1 | seq 3 flag 2 A 3 B 3
+    126371.6 RANG                 v0x7ffc8b0326c0 window 0 step 3 layer 3 aux 2153 | seq 4 flag 3 A 3 B 3
+    124969.1 SERVED               v0x7ffc8b0326c0 window 0 step 3 layer 3 aux 1 | seq 4 flag 3 A 4 B 4
+    123826.2 RANG                 v0x7ffc8b0326c0 window 0 step 4 layer 4 aux 1142 | seq 5 flag 4 A 4 B 4
+    122394.8 SERVED               v0x7ffc8b0326c0 window 0 step 4 layer 4 aux 1 | seq 5 flag 4 A 5 B 5
+    121290.0 RANG                 v0x7ffc8b0326c0 window 0 step 5 layer 5 aux 1104 | seq 6 flag 5 A 5 B 5
+    119686.4 SERVED               v0x7ffc8b0326c0 window 0 step 5 layer 5 aux 1 | seq 6 flag 5 A 6 B 6
+    118581.3 RANG                 v0x7ffc8b0326c0 window 0 step 6 layer 6 aux 1104 | seq 7 flag 6 A 6 B 6
+    117114.6 SERVED               v0x7ffc8b0326c0 window 0 step 6 layer 6 aux 1 | seq 7 flag 6 A 7 B 7
+    115807.9 RANG                 v0x7ffc8b0326c0 window 0 step 7 layer 7 aux 1306 | seq 8 flag 7 A 7 B 7
+    114500.2 SERVED               v0x7ffc8b0326c0 window 0 step 7 layer 7 aux 1 | seq 8 flag 7 A 8 B 8
+    113358.6 RANG                 v0x7ffc8b0326c0 window 0 step 8 layer 8 aux 1141 | seq 9 flag 8 A 8 B 8
+    112087.1 SERVED               v0x7ffc8b0326c0 window 0 step 8 layer 8 aux 1 | seq 9 flag 8 A 9 B 9
+    110956.4 RANG                 v0x7ffc8b0326c0 window 0 step 9 layer 9 aux 1130 | seq 10 flag 9 A 9 B 9
+    109691.2 SERVED               v0x7ffc8b0326c0 window 0 step 9 layer 9 aux 1 | seq 10 flag 9 A 10 B 10
+    108582.8 RANG                 v0x7ffc8b0326c0 window 0 step 10 layer 10 aux 1107 | seq 11 flag 10 A 10 B 10
+    107475.0 SERVED               v0x7ffc8b0326c0 window 0 step 10 layer 10 aux 1 | seq 11 flag 10 A 11 B 11
+    106150.1 RANG                 v0x7ffc8b0326c0 window 0 step 11 layer 11 aux 1324 | seq 12 flag 11 A 11 B 11
+    104772.7 SERVED               v0x7ffc8b0326c0 window 0 step 11 layer 11 aux 1 | seq 12 flag 11 A 12 B 12
+    103665.5 RANG                 v0x7ffc8b0326c0 window 0 step 12 layer 12 aux 1106 | seq 13 flag 12 A 12 B 12
+    102413.9 SERVED               v0x7ffc8b0326c0 window 0 step 12 layer 12 aux 1 | seq 13 flag 12 A 13 B 13
+    101278.6 RANG                 v0x7ffc8b0326c0 window 0 step 13 layer 13 aux 1134 | seq 14 flag 13 A 13 B 13
+    100129.9 SERVED               v0x7ffc8b0326c0 window 0 step 13 layer 13 aux 1 | seq 14 flag 13 A 14 B 14
+     98976.1 RANG                 v0x7ffc8b0326c0 window 0 step 14 layer 14 aux 1153 | seq 15 flag 14 A 14 B 14
+     96982.6 SERVED               v0x7ffc8b0326c0 window 0 step 14 layer 14 aux 1 | seq 15 flag 14 A 15 B 15
+     95642.9 RANG                 v0x7ffc8b0326c0 window 0 step 15 layer 15 aux 1339 | seq 16 flag 15 A 15 B 15
+     93943.5 SERVED               v0x7ffc8b0326c0 window 0 step 15 layer 15 aux 1 | seq 16 flag 15 A 16 B 16
+     92812.1 RANG                 v0x7ffc8b0326c0 window 0 step 16 layer 16 aux 1131 | seq 17 flag 16 A 16 B 16
+     91267.6 SERVED               v0x7ffc8b0326c0 window 0 step 16 layer 16 aux 1 | seq 17 flag 16 A 17 B 17
+     90125.9 RANG                 v0x7ffc8b0326c0 window 0 step 17 layer 17 aux 1141 | seq 18 flag 17 A 17 B 17
+     88708.3 SERVED               v0x7ffc8b0326c0 window 0 step 17 layer 17 aux 1 | seq 18 flag 17 A 18 B 18
+     87595.0 RANG                 v0x7ffc8b0326c0 window 0 step 18 layer 18 aux 1113 | seq 19 flag 18 A 18 B 18
+     85963.6 SERVED               v0x7ffc8b0326c0 window 0 step 18 layer 18 aux 1 | seq 19 flag 18 A 19 B 19
+     84642.6 RANG                 v0x7ffc8b0326c0 window 0 step 19 layer 19 aux 1320 | seq 20 flag 19 A 19 B 19
+     83264.7 SERVED               v0x7ffc8b0326c0 window 0 step 19 layer 19 aux 1 | seq 20 flag 19 A 20 B 20
+     82121.4 RANG                 v0x7ffc8b0326c0 window 0 step 20 layer 20 aux 1142 | seq 21 flag 20 A 20 B 20
+     80318.7 SERVED               v0x7ffc8b0326c0 window 0 step 20 layer 20 aux 1 | seq 21 flag 20 A 21 B 21
+     79199.5 RANG                 v0x7ffc8b0326c0 window 0 step 21 layer 21 aux 1118 | seq 22 flag 21 A 21 B 21
+     77750.1 SERVED               v0x7ffc8b0326c0 window 0 step 21 layer 21 aux 1 | seq 22 flag 21 A 22 B 22
+     76645.5 RANG                 v0x7ffc8b0326c0 window 0 step 22 layer 22 aux 1104 | seq 23 flag 22 A 22 B 22
+     74929.4 SERVED               v0x7ffc8b0326c0 window 0 step 22 layer 22 aux 1 | seq 23 flag 22 A 23 B 23
+     73608.0 RANG                 v0x7ffc8b0326c0 window 0 step 23 layer 23 aux 1320 | seq 24 flag 23 A 23 B 23
+     72067.4 SERVED               v0x7ffc8b0326c0 window 0 step 23 layer 23 aux 1 | seq 24 flag 23 A 24 B 24
+     70931.7 RANG                 v0x7ffc8b0326c0 window 0 step 24 layer 24 aux 1135 | seq 25 flag 24 A 24 B 24
+     69511.1 SERVED               v0x7ffc8b0326c0 window 0 step 24 layer 24 aux 1 | seq 25 flag 24 A 25 B 25
+     68401.0 RANG                 v0x7ffc8b0326c0 window 0 step 25 layer 25 aux 1109 | seq 26 flag 25 A 25 B 25
+     66729.0 SERVED               v0x7ffc8b0326c0 window 0 step 25 layer 25 aux 1 | seq 26 flag 25 A 26 B 26
+     65582.0 RANG                 v0x7ffc8b0326c0 window 0 step 26 layer 26 aux 1146 | seq 27 flag 26 A 26 B 26
+     64513.2 SERVED               v0x7ffc8b0326c0 window 0 step 26 layer 26 aux 1 | seq 27 flag 26 A 27 B 27
+     63193.7 RANG                 v0x7ffc8b0326c0 window 0 step 27 layer 27 aux 1319 | seq 28 flag 27 A 27 B 27
+     61786.7 SERVED               v0x7ffc8b0326c0 window 0 step 27 layer 27 aux 1 | seq 28 flag 27 A 28 B 28
+     60666.9 RANG                 v0x7ffc8b0326c0 window 0 step 28 layer 28 aux 1119 | seq 29 flag 28 A 28 B 28
+     59042.5 SERVED               v0x7ffc8b0326c0 window 0 step 28 layer 28 aux 1 | seq 29 flag 28 A 29 B 29
+     57918.0 RANG                 v0x7ffc8b0326c0 window 0 step 29 layer 29 aux 1124 | seq 30 flag 29 A 29 B 29
+     56391.7 SERVED               v0x7ffc8b0326c0 window 0 step 29 layer 29 aux 1 | seq 30 flag 29 A 30 B 30
+     55246.5 RANG                 v0x7ffc8b0326c0 window 0 step 30 layer 30 aux 1144 | seq 31 flag 30 A 30 B 30
+     53358.4 SERVED               v0x7ffc8b0326c0 window 0 step 30 layer 30 aux 1 | seq 31 flag 30 A 31 B 31
+     52042.1 RANG                 v0x7ffc8b0326c0 window 0 step 31 layer 31 aux 1315 | seq 32 flag 31 A 31 B 31
+     50377.8 SERVED               v0x7ffc8b0326c0 window 0 step 31 layer 31 aux 1 | seq 32 flag 31 A 32 B 32
+     49222.9 RANG                 v0x7ffc8b0326c0 window 0 step 32 layer 32 aux 1144 | seq 33 flag 32 A 32 B 32
+     48082.9 SERVED               v0x7ffc8b0326c0 window 0 step 32 layer 32 aux 1 | seq 33 flag 32 A 33 B 33
+     46970.1 RANG                 v0x7ffc8b0326c0 window 0 step 33 layer 33 aux 1112 | seq 34 flag 33 A 33 B 33
+     45557.0 SERVED               v0x7ffc8b0326c0 window 0 step 33 layer 33 aux 1 | seq 34 flag 33 A 34 B 34
+     44449.9 RANG                 v0x7ffc8b0326c0 window 0 step 34 layer 34 aux 1106 | seq 35 flag 34 A 34 B 34
+     43165.9 SERVED               v0x7ffc8b0326c0 window 0 step 34 layer 34 aux 1 | seq 35 flag 34 A 35 B 35
+     41829.5 RANG                 v0x7ffc8b0326c0 window 0 step 35 layer 35 aux 1336 | seq 36 flag 35 A 35 B 35
+     40360.9 SERVED               v0x7ffc8b0326c0 window 0 step 35 layer 35 aux 1 | seq 36 flag 35 A 36 B 36
+     39216.0 RANG                 v0x7ffc8b0326c0 window 0 step 36 layer 36 aux 1144 | seq 37 flag 36 A 36 B 36
+     37750.9 SERVED               v0x7ffc8b0326c0 window 0 step 36 layer 36 aux 1 | seq 37 flag 36 A 37 B 37
+     36619.0 RANG                 v0x7ffc8b0326c0 window 0 step 37 layer 37 aux 1131 | seq 38 flag 37 A 37 B 37
+     34989.8 SERVED               v0x7ffc8b0326c0 window 0 step 37 layer 37 aux 1 | seq 38 flag 37 A 38 B 38
+     33852.4 RANG                 v0x7ffc8b0326c0 window 0 step 38 layer 38 aux 1137 | seq 39 flag 38 A 38 B 38
+     32057.1 SERVED               v0x7ffc8b0326c0 window 0 step 38 layer 38 aux 1 | seq 39 flag 38 A 39 B 39
+     30737.9 RANG                 v0x7ffc8b0326c0 window 0 step 39 layer 39 aux 1318 | seq 40 flag 39 A 39 B 39
+     29394.3 SERVED               v0x7ffc8b0326c0 window 0 step 39 layer 39 aux 1 | seq 40 flag 39 A 40 B 40
+     28268.9 RANG                 v0x7ffc8b0326c0 window 0 step 40 layer 40 aux 1125 | seq 41 flag 40 A 40 B 40
+     26664.1 SERVED               v0x7ffc8b0326c0 window 0 step 40 layer 40 aux 1 | seq 41 flag 40 A 41 B 41
+     25524.7 RANG                 v0x7ffc8b0326c0 window 0 step 41 layer 41 aux 1139 | seq 42 flag 41 A 41 B 41
+     23737.6 SERVED               v0x7ffc8b0326c0 window 0 step 41 layer 41 aux 1 | seq 42 flag 41 A 42 B 42
+     22628.7 RANG                 v0x7ffc8b0326c0 window 0 step 42 layer 42 aux 1108 | seq 43 flag 42 A 42 B 42
+     21158.0 SERVED               v0x7ffc8b0326c0 window 0 step 42 layer 42 aux 1 | seq 43 flag 42 A 43 B 43
+     19807.2 RANG                 v0x7ffc8b0326c0 window 0 step 43 layer 43 aux 1350 | seq 44 flag 43 A 43 B 43
+     18483.3 SERVED               v0x7ffc8b0326c0 window 0 step 43 layer 43 aux 1 | seq 44 flag 43 A 44 B 44
+     17354.2 RANG                 v0x7ffc8b0326c0 window 0 step 44 layer 44 aux 1128 | seq 45 flag 44 A 44 B 44
+     15823.1 SERVED               v0x7ffc8b0326c0 window 0 step 44 layer 44 aux 1 | seq 45 flag 44 A 45 B 45
+     14683.7 RANG                 v0x7ffc8b0326c0 window 0 step 45 layer 45 aux 1139 | seq 46 flag 45 A 45 B 45
+     12874.2 SERVED               v0x7ffc8b0326c0 window 0 step 45 layer 45 aux 1 | seq 46 flag 45 A 46 B 46
+     11762.3 RANG                 v0x7ffc8b0326c0 window 0 step 46 layer 46 aux 1111 | seq 47 flag 46 A 46 B 46
+     10160.9 SERVED               v0x7ffc8b0326c0 window 0 step 46 layer 46 aux 1 | seq 47 flag 46 A 47 B 47
+      8844.5 RANG                 v0x7ffc8b0326c0 window 0 step 47 layer 47 aux 1316 | seq 48 flag 47 A 47 B 47
+      6725.9 SERVED               v0x7ffc8b0326c0 window 0 step 47 layer 47 aux 2 | seq 48 flag 47 A 48 B 48
+      6725.5 SYNC                 v0x7ffc8b0326c0 window 0 step -1 layer -1 aux 0 | seq 48 flag 48 A 48 B 48
+      3533.9 SYNCED               v0x7ffc8b0326c0 window 0 step -1 layer -1 aux 0 | seq 48 flag 48 A 48 B 48
+         0.4 WINDOW               v0x7ffc8b0326c0 window 1 step -1 layer -1 aux 85 | seq 0 flag 0 A 0 B 0
+         0.3 GATE-ENTER           v0x7ffc8b0326c0 window 1 step -1 layer -1 aux 0 | seq 0 flag 0 A 0 B 0
+         0.2 GATE-LEFT            v0x7ffc8b0326c0 window 1 step -1 layer -1 aux 0 | seq 0 flag 0 A 0 B 0
+         0.0 LAUNCH-ENTER         v0x7ffc8b0326c0 window 1 step -1 layer -1 aux 0 | seq 0 flag 0 A 0 B 0
+strata verify trace: GPU breadcrumbs (us after the window's first), the GPU got as far as layer 0:
+  layer 0 group 0: pre(0)=0.0 hc-read0(1)=254.2 qkv gemv(2)=487.5 conv(3)=495.0 ab(4)=566.4 z(5)=679.5 rec(6)=702.6 out-proj(16)=810.2 router+ring(17)=1068.8 shared(18)=1127.0 (32)=967.0
+  thread 1662443 strata-host: state R, wchan ?
+  thread 1662468 strata: state S, wchan kfd_wait_on_events
+  thread 1663613 strata: state S, wchan __futex_wait
+  thread 1663614 strata: state S, wchan __futex_wait
+  thread 1663615 strata: state S, wchan __futex_wait
+  thread 1663616 strata: state S, wchan __futex_wait
+  thread 1663617 strata: state S, wchan __futex_wait
+  thread 1663618 strata: state S, wchan __futex_wait
+  thread 1663619 strata: state S, wchan __futex_wait
+  thread 1663620 strata: state S, wchan __futex_wait
+  thread 1663621 strata: state S, wchan __futex_wait
+  thread 1663622 strata: state S, wchan __futex_wait
+  thread 1663623 strata: state S, wchan __futex_wait
+  thread 1663624 strata: state S, wchan __futex_wait
+  thread 1663625 strata: state S, wchan __futex_wait
+  thread 1663626 strata: state S, wchan __futex_wait
+  thread 1663627 strata: state S, wchan __futex_wait
+  thread 1663628 strata: state S, wchan __futex_wait
+  thread 1663637 strata: state S, wchan __futex_wait
+  thread 1670568 strata-pool-0: state S, wchan __futex_wait
+  thread 1670569 strata-pool-1: state S, wchan __futex_wait
+  thread 1670570 strata-pool-2: state S, wchan __futex_wait
+  thread 1670571 strata-pool-3: state S, wchan __futex_wait
+  thread 1670572 strata-pool-4: state S, wchan __futex_wait
+  thread 1670573 strata-pool-5: state S, wchan __futex_wait
+  thread 1670574 strata-pool-6: state S, wchan __futex_wait
+  thread 1670575 strata-stage: state S, wchan __futex_wait
+  thread 1670576 strata-stage: state S, wchan __futex_wait
+  thread 1670577 strata-stage: state S, wchan __futex_wait
+  thread 1670578 strata-stage: state S, wchan __futex_wait
+  thread 1670808 strata-stdin: state S, wchan anon_pipe_read
+  thread 1670809 strata-watchdog: state R, wchan ?
+  threads waiting on the disk (state D): 0 of 32
+  memory: 48738 MiB resident, 194 MiB in swap, 8073 MiB RAM available; 5041 major page faults so far
+  #267 KFD: evicted_ms unreadable this pass; /sys/class/kfd/kfd/proc/1662443: vram_1815 vram_54121 stats_54121 counters_1815 counters_18093 sdma_54121 stats_1815 sdma_1815 pasid queues counters_54121 vram_18093 stats_18093 sdma_18093
+strata tdr-probe: window 1 T=5: the first doorbell (layer 0) seen 62751.81 ms after the launch began
+strata serve: verify: an earlier window never finished on the GPU (#267); restart the engine
+#267 release: cs_ first query 5 ms (returned done), drain 123 ms
+#267 release: copy_ first query 0 ms (returned done), drain 0 ms
+strata: released the verify window's GPU waits (#267): the GPU finished in 128 ms
+
+=== crashrec: fatal signal 06 at ~ ===
+/mnt/srcds/Strata/bench/ab-v0210/rpcprof/gpu-rounds/crashrec.so(+0x131b) [0x7fa5e611f31b]
+/lib/x86_64-linux-gnu/libc.so.6(+0x458d0) [0x7fa5e3c458d0]
+/lib/x86_64-linux-gnu/libc.so.6(pthread_kill+0x11c) [0x7fa5e3ca49bc]
+/lib/x86_64-linux-gnu/libc.so.6(gsignal+0x1e) [0x7fa5e3c4579e]
+/lib/x86_64-linux-gnu/libc.so.6(abort+0x2c) [0x7fa5e3c288cd]
+/mnt/srcds/Strata/v0236p0/rpcw-hip/strata() [0x2500554]
+/lib/x86_64-linux-gnu/libstdc++.so.6(+0xf2324) [0x7fa5e40f2324]
+/lib/x86_64-linux-gnu/libc.so.6(+0xa27f1) [0x7fa5e3ca27f1]
+/lib/x86_64-linux-gnu/libc.so.6(+0x133b5c) [0x7fa5e3d33b5c]
+=== crashrec: end ===

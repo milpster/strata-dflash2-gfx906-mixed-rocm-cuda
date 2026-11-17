@@ -1,0 +1,13 @@
+strata: a model with K-quant experts (Unsloth UD-Q4/Q5/Q6_K_XL) reads its prompt on llama.cpp's MMQ kernels (STRATA_MMQ_KQ=0 or STRATA_NV_KQ_DEFAULT=0 turns it off)
+strata generate: memory guard: limit 62.2 GiB (source: meminfo), current 7.8 GiB, reclaimable cache credited 0.0 GiB; available 54.4 GiB (MemAvailable 54.4 GiB), floor 2560 MiB
+strata generate: this CPU has no AVX-512: the expert kernels run on AVX-2 (multi-token for the i-quant gate/up rows)
+strata generate: native pack: /mnt/srcds/ai/iq3xxs-ud experts (largest blob 2.66 MB), token embedding Q6_K in mapped host memory (497 MiB, 0.3 s)
+strata generate: 1416 MiB of weights loaded from /mnt/srcds/ai/iq3xxs-ud in 1.2 s (303 canonical tensors skipped: served natively)
+strata generate: 301 native projection matrices, 2331.54 MiB of weights, in 1.9 s
+strata generate: PLE direct read probe: 61411 rows/s (fine)
+strata generate: the SSD is kept awake while rows are read: one page of the table after 100 ms without a read, until 60 s after the last request (STRATA_SSD_KEEPALIVE=0 turns it off)
+strata generate: profile /mnt/srcds/Strata/data/expert-profile.bin: 24576 ranked pairs, built for 24576 slots
+strata generate: PLE on, table 320001536 rows of /mnt/srcds/ai/Qwen3.8-Flash-Next-PLE-Q8_0.gguf
+strata generate: experimental native Q6_K head, 521472000 bytes, in 0.3 s
+strata generate: GPU 0: AMD Radeon VII, compute capability 9.0
+strata generate: GPU host-callback thread started before host-core pinning

@@ -1,0 +1,63 @@
+=== diag267 drive forensics Mon Nov 16 19:17:58 2026 class=request pid=2491684 ===
+2491684 strata-host state=Z wchan=0
+--- kfd:
+
+--- log tail:
+7fffc16bd3c0 window 0 step 47 layer 47 aux 1334 | seq 48 flag 47 A 47 B 47
+      4709.8 SERVED               v0x7fffc16bd3c0 window 0 step 47 layer 47 aux 2 | seq 48 flag 47 A 48 B 48
+      4709.5 SYNC                 v0x7fffc16bd3c0 window 0 step -1 layer -1 aux 0 | seq 48 flag 48 A 48 B 48
+      1545.0 SYNCED               v0x7fffc16bd3c0 window 0 step -1 layer -1 aux 0 | seq 48 flag 48 A 48 B 48
+         0.3 WINDOW               v0x7fffc16bd3c0 window 1 step -1 layer -1 aux 85 | seq 0 flag 0 A 0 B 0
+         0.2 GATE-ENTER           v0x7fffc16bd3c0 window 1 step -1 layer -1 aux 0 | seq 0 flag 0 A 0 B 0
+         0.1 GATE-LEFT            v0x7fffc16bd3c0 window 1 step -1 layer -1 aux 0 | seq 0 flag 0 A 0 B 0
+         0.0 LAUNCH-ENTER         v0x7fffc16bd3c0 window 1 step -1 layer -1 aux 0 | seq 0 flag 0 A 0 B 0
+strata verify trace: GPU breadcrumbs (us after the window's first), the GPU got as far as layer 0:
+  layer 0 group 0: pre(0)=0.0 hc-read0(1)=242.1 qkv gemv(2)=451.4 conv(3)=463.7 ab(4)=531.0 z(5)=671.4 rec(6)=751.4 out-proj(16)=890.4 router+ring(17)=1154.9 shared(18)=1218.4 (32)=1054.6
+  thread 2491684 strata-host: state R, wchan ?
+  thread 2491705 strata: state S, wchan kfd_wait_on_events
+  thread 2492645 strata: state S, wchan __futex_wait
+  thread 2492646 strata: state S, wchan __futex_wait
+  thread 2492647 strata: state S, wchan __futex_wait
+  thread 2492648 strata: state S, wchan __futex_wait
+  thread 2492649 strata: state S, wchan __futex_wait
+  thread 2492650 strata: state S, wchan __futex_wait
+  thread 2492651 strata: state S, wchan __futex_wait
+  thread 2492652 strata: state S, wchan __futex_wait
+  thread 2492653 strata: state S, wchan __futex_wait
+  thread 2492654 strata: state S, wchan __futex_wait
+  thread 2492655 strata: state S, wchan __futex_wait
+  thread 2492656 strata: state S, wchan __futex_wait
+  thread 2492657 strata: state S, wchan __futex_wait
+  thread 2492658 strata: state S, wchan __futex_wait
+  thread 2492659 strata: state S, wchan __futex_wait
+  thread 2492660 strata: state S, wchan __futex_wait
+  thread 2492661 strata: state S, wchan __futex_wait
+  thread 2497279 strata-pool-0: state S, wchan __futex_wait
+  thread 2497280 strata-pool-1: state S, wchan __futex_wait
+  thread 2497281 strata-pool-2: state S, wchan __futex_wait
+  thread 2497282 strata-pool-3: state S, wchan __futex_wait
+  thread 2497283 strata-pool-4: state S, wchan __futex_wait
+  thread 2497284 strata-pool-5: state S, wchan __futex_wait
+  thread 2497285 strata-pool-6: state S, wchan __futex_wait
+  thread 2497286 strata-stage: state S, wchan __futex_wait
+  thread 2497287 strata-stage: state S, wchan __futex_wait
+  thread 2497288 strata-stage: state S, wchan __futex_wait
+  thread 2497289 strata-stage: state S, wchan __futex_wait
+  thread 2497406 strata-stdin: state S, wchan anon_pipe_read
+  thread 2497409 strata-watchdog: state R, wchan ?
+  threads waiting on the disk (state D): 0 of 32
+  memory: 48761 MiB resident, 311 MiB in swap, 7658 MiB RAM available; 471 major page faults so far
+  #267 KFD: evicted_ms unreadable this pass; /sys/class/kfd/kfd/proc/2491684: vram_1815 vram_54121 stats_54121 counters_1815 counters_18093 sdma_54121 stats_1815 sdma_1815 pasid queues counters_54121 vram_18093 stats_18093 sdma_18093
+strata: released the verify window's GPU waits (#267): the GPU did not finish within 5 s
+
+=== crashrec: fatal signal 06 at ~ ===
+/mnt/srcds/Strata/bench/ab-v0210/rpcprof/gpu-rounds/crashrec.so(+0x131b) [0x7fc82ffcf31b]
+/lib/x86_64-linux-gnu/libc.so.6(+0x458d0) [0x7fc82dc458d0]
+/lib/x86_64-linux-gnu/libc.so.6(pthread_kill+0x11c) [0x7fc82dca49bc]
+/lib/x86_64-linux-gnu/libc.so.6(gsignal+0x1e) [0x7fc82dc4579e]
+/lib/x86_64-linux-gnu/libc.so.6(abort+0x2c) [0x7fc82dc288cd]
+/mnt/srcds/Strata/v0237p0/rpcw-hip/strata() [0x2500845]
+/lib/x86_64-linux-gnu/libstdc++.so.6(+0xf2324) [0x7fc82e0f2324]
+/lib/x86_64-linux-gnu/libc.so.6(+0xa27f1) [0x7fc82dca27f1]
+/lib/x86_64-linux-gnu/libc.so.6(+0x133b5c) [0x7fc82dd33b5c]
+=== crashrec: end ===

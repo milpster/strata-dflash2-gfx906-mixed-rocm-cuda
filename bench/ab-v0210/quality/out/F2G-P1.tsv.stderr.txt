@@ -1,10 +1,10 @@
 strata: a model with K-quant experts (Unsloth UD-Q4/Q5/Q6_K_XL) reads its prompt on llama.cpp's MMQ kernels (STRATA_MMQ_KQ=0 or STRATA_NV_KQ_DEFAULT=0 turns it off)
-strata generate: memory guard: limit 62.2 GiB (source: meminfo), current 7.7 GiB, reclaimable cache credited 0.0 GiB; available 54.4 GiB (MemAvailable 54.4 GiB), floor 2560 MiB
+strata generate: memory guard: limit 50.0 GiB (source: flag), current 6.8 GiB, reclaimable cache credited 0.0 GiB; available 43.2 GiB (MemAvailable 55.3 GiB, --memory-limit-mib 51200), floor 2560 MiB
 strata generate: this CPU has no AVX-512: the expert kernels run on AVX-2 (multi-token for the i-quant gate/up rows)
 strata generate: native pack: /mnt/srcds/ai/iq3xxs-ud experts (largest blob 2.66 MB), token embedding Q6_K in mapped host memory (497 MiB, 0.3 s)
 strata generate: 1416 MiB of weights loaded from /mnt/srcds/ai/iq3xxs-ud in 1.3 s (303 canonical tensors skipped: served natively)
 strata generate: 301 native projection matrices, 2331.54 MiB of weights, in 1.9 s
-strata generate: PLE direct read probe: 73721 rows/s (fine)
+strata generate: PLE direct read probe: 62819 rows/s (fine)
 strata generate: the SSD is kept awake while rows are read: one page of the table after 100 ms without a read, until 60 s after the last request (STRATA_SSD_KEEPALIVE=0 turns it off)
 strata generate: profile /mnt/srcds/Strata/data/expert-profile.bin: 24576 ranked pairs, built for 24576 slots
 strata generate: PLE on, table 320001536 rows of /mnt/srcds/ai/Qwen3.8-Flash-Next-PLE-Q8_0.gguf
@@ -13,7 +13,7 @@ strata generate: GPU 0: AMD Radeon VII, compute capability 9.0
 strata generate: GPU host-callback thread started before host-core pinning
 strata generate: expert arena read through the file cache (buffered (not Windows))
 strata generate: expert arena: registers as the last boot step (register-last; the whole-arena pin runs right before the first request) - reserve only (nothing registered, nothing locked yet); MAP_HUGETLB unavailable (needed 23983 2 MiB pages, vm.nr_hugepages=0); transparent huge pages are on for every mapping (THP always): MADV_HUGEPAGE not requested
-strata generate: loaded 46.84 GiB at 2.43 GiB/s
+strata generate: loaded 46.84 GiB at 2.37 GiB/s
 strata generate: CPU pool tasks/phase: 24 (automatic), participating threads: 8
 strata generate: CPU pool: 7 workers by default (8 physical cores, 16 logical processors; bounded by every physical core but the host's)
 strata generate: 7 pool workers on logical processors 2,4,6,8,10,12,14, the host thread on 0 (draining too) (--host-core first)
@@ -24,7 +24,7 @@ strata generate: the GPU computes the experts in the cache; it rounds differentl
                  so a reply can differ slightly from a run without the cache (same quality:
                  bench/results/2026-09-27-cache-parity).
                  PROFILE, ranked by routing frequency, no eviction.
-strata generate: pre-filled 1 of 1 slots from the profile in 0.0 s (1995 MB/s); slot 0 verified; pack_read_s 0.0 h2d_s 0.0 pinned_mb 2 phases=arena:0.0s lot:0.0s
+strata generate: pre-filled 1 of 1 slots from the profile in 0.0 s (2483 MB/s); slot 0 verified; pack_read_s 0.0 h2d_s 0.0 pinned_mb 2 phases=arena:0.0s lot:0.0s
 strata generate: R4 hit path ON - resident experts are computed on the GPU
 strata generate: 7 expert-pool workers + the host thread
 strata generate: session is up (engine 0.1.57)
@@ -42,10 +42,10 @@ strata pin: registered after the fill: 896 of 4480 ranges (12.5 GiB, 2 s)
 strata pin: registered after the fill: 1344 of 4480 ranges (16.6 GiB, 2 s)
 strata pin: registered after the fill: 1792 of 4480 ranges (21.0 GiB, 3 s)
 strata pin: registered after the fill: 2240 of 4480 ranges (25.9 GiB, 3 s)
-strata pin: registered after the fill: 2688 of 4480 ranges (29.6 GiB, 81 s)
-strata pin: registered after the fill: 3136 of 4480 ranges (34.0 GiB, 96 s)
-strata pin: registered after the fill: 3584 of 4480 ranges (38.5 GiB, 108 s)
-strata pin: registered after the fill: 4032 of 4480 ranges (42.6 GiB, 119 s)
+strata pin: registered after the fill: 2688 of 4480 ranges (29.6 GiB, 4 s)
+strata pin: registered after the fill: 3136 of 4480 ranges (34.0 GiB, 4 s)
+strata pin: registered after the fill: 3584 of 4480 ranges (38.5 GiB, 4 s)
+strata pin: registered after the fill: 4032 of 4480 ranges (42.6 GiB, 5 s)
 strata generate: arena alias tables: 448 of 4480 registered ranges
 strata generate: arena alias tables: 896 of 4480 registered ranges
 strata generate: arena alias tables: 1344 of 4480 registered ranges
@@ -55,21 +55,20 @@ strata generate: arena alias tables: 2688 of 4480 registered ranges
 strata generate: arena alias tables: 3136 of 4480 registered ranges
 strata generate: arena alias tables: 3584 of 4480 registered ranges
 strata generate: arena alias tables: 4032 of 4480 registered ranges
-strata pin: register-last: whole-arena registration ok in 842.3 s (46.8 GiB registered, 4480 range(s))
-strata serve: no progress for 60 s during a request (request: setup -1) - stopping the engine so the server starts it again (issue #29)
-strata serve: stall report (engine 0.1.57): stage "request: setup -1" for 62 s; 0 layers served since the last finished step (0 = stopped, more = slow)
-  VRAM free when this request began: 10950 MiB
-  expert pool: epoch 0, batch epoch 0: 0 of 0 jobs claimed, 0 done; 7 of 7 workers parked, 7 sleeping; mode 0
-  expert pool threads: w0=sleeping w1=sleeping w2=sleeping w3=sleeping w4=sleeping w5=sleeping w6=sleeping; host idle for 924740 ms
-  verify window (last window, not the current stage): 0 tokens at position 0, host at layer step 1; the GPU rang 0; flags: served 0, plan (A) 0, copies (B) 0
-  threads waiting on the disk (state D): 0 of 32
-  memory: 47356 MiB resident, 1106 MiB in swap, 8008 MiB RAM available; 323969 major page faults so far
-  #267 KFD: evicted_ms unreadable this pass; /sys/class/kfd/kfd/proc/2273158: vram_1815 vram_54121 stats_54121 counters_1815 counters_18093 sdma_54121 stats_1815 sdma_1815 pasid queues counters_54121 vram_18093 stats_18093 sdma_18093
-  2 s later:
-  expert pool: epoch 0, batch epoch 0: 0 of 0 jobs claimed, 0 done; 7 of 7 workers parked, 7 sleeping; mode 0
-  expert pool threads: w0=sleeping w1=sleeping w2=sleeping w3=sleeping w4=sleeping w5=sleeping w6=sleeping; host idle for 926742 ms
-  verify window (last window, not the current stage): 0 tokens at position 0, host at layer step 1; the GPU rang 0; flags: served 0, plan (A) 0, copies (B) 0
-  threads waiting on the disk (state D): 0 of 32
-  memory: 47027 MiB resident, 1435 MiB in swap, 8438 MiB RAM available; 323969 major page faults so far
-  #267 KFD: evicted_ms unreadable this pass; /sys/class/kfd/kfd/proc/2273158: vram_1815 vram_54121 stats_54121 counters_1815 counters_18093 sdma_54121 stats_1815 sdma_1815 pasid queues counters_54121 vram_18093 stats_18093 sdma_18093
-strata: released the verify window's GPU waits (#267): the GPU finished in 34 ms
+strata pin: register-last: whole-arena registration ok in 5.0 s (46.8 GiB registered, 4480 range(s))
+strata verify: capturing the 5-token window (10950 MiB of VRAM free)
+strata verify: captured the 5-token window (upload no error, sync no error) in 78.2 ms
+strata verify: capturing the 4-token window (10845 MiB of VRAM free)
+strata verify: captured the 4-token window (upload no error, sync no error) in 14.0 ms
+strata verify: capturing the 1-token window (10845 MiB of VRAM free)
+strata verify: captured the 1-token window (upload no error, sync no error) in 18.3 ms
+strata serve: prompt 1000 tokens = 0 reused + 1000 read in 37986 ms (26.3 tok/s), 1 generated in 93 ms (10.7 tok/s), drafts accepted 0 of 0, 0 checkpoints windows 201 ms_wait 55.02 ms_pool 116.38 ms_host 0.05 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 0.0
+strata serve: decode expert cache hit rate: 0.0% (0 hits / 480 lookups)
+strata serve: prompt 1000 tokens = 0 reused + 1000 read in 37598 ms (26.6 tok/s), 1 generated in 69 ms (14.4 tok/s), drafts accepted 0 of 0, 0 checkpoints windows 201 ms_wait 55.03 ms_pool 114.86 ms_host 0.05 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 0.0
+strata serve: decode expert cache hit rate: 0.0% (0 hits / 480 lookups)
+strata serve: prompt 1000 tokens = 0 reused + 1000 read in 35395 ms (28.3 tok/s), 1 generated in 69 ms (14.5 tok/s), drafts accepted 0 of 0, 0 checkpoints windows 201 ms_wait 55.03 ms_pool 103.89 ms_host 0.05 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 0.0
+strata serve: decode expert cache hit rate: 0.0% (0 hits / 480 lookups)
+strata serve: prompt 1000 tokens = 0 reused + 1000 read in 36396 ms (27.5 tok/s), 1 generated in 69 ms (14.4 tok/s), drafts accepted 0 of 0, 0 checkpoints windows 201 ms_wait 55.20 ms_pool 108.87 ms_host 0.04 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 0.0
+strata serve: decode expert cache hit rate: 0.0% (0 hits / 480 lookups)
+strata serve: prompt 1000 tokens = 0 reused + 1000 read in 36905 ms (27.1 tok/s), 1 generated in 69 ms (14.4 tok/s), drafts accepted 0 of 0, 0 checkpoints windows 201 ms_wait 55.12 ms_pool 111.49 ms_host 0.04 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 0.0
+strata serve: decode expert cache hit rate: 0.0% (0 hits / 480 lookups)
