@@ -3887,3 +3887,17 @@ Probe verdict (fixer, resumed session): **test-harness artifact — no kernel bu
 Test fixed (commit 7b3da65233, Strata-wt-f2 branch f2-xq-ring): per-field `compare_leg()` — byte-exact on `d`+`qs`, sum field vs data-derived bound `62·eps32·Σ|x| + one fp16 spacing` (validated: 195k/200k near-cancelling flips, 0 exceedances), plus a **zero-tolerance `rows == rows_g == nat` assert** — the invariance the ring actually rests on. GPU re-run (canonical env): **16/16, exit 0, worst drift 0.56× bound.** gr_parity unaffected (pins QFUSE→native bytes only).
 
 Consequence: the F2 ring's engaged path (direct + graph replay + native pool) is proven self-consistent on gfx906; combined with the dormant-shape KL gates this closes the quality question to the standard bar. Adoption now rests on the warm speed re-pair (RING first at a warmth disadvantage, BASE second warmer — conservative for the challenger). Follow-up noted for the engine repo: any future test comparing a GPU image to `quantize_q8_1_cpu` byte-wise hits the same sum-field wall — needs a repo-wide look.
+## Round 18cp — ring A/B closed: PERFORMANCE-NULL, not adopted; earlier +4% unmasked as drift on placebo arms (2026-11-17, 02:4x–03:0x)
+
+**Placebo trap found first**: `STRATA_HELPER_XQ_RING=1 bash launch-v0238.sh` does NOT reach the engine — the launcher execs `pair_supervisor.py`, which re-runs the launcher with a sanitized child env; the engine's environment comes only from the launcher's own `env` block (launch-v0238.sh:117-122). Proven live by `/proc/<engine-pid>/environ`: prefix boot → `XQ_RING ABSENT`; launcher-edit boot → `STRATA_HELPER_XQ_RING=1` present. **The earlier RING/RING2 arms (the provisional +4%) used the prefix method — they ran ring-OFF; the +4% was warmth drift.**
+
+Verified warm re-pair (12v12, sequential 500-tok judge, expert cache 92-96% throughout):
+
+| Arm | median | warm-state (last-6 median) | range |
+|---|---|---|---|
+| BASE3 (environ-verified OFF) | 25.65 tok/s | 26.7 | 20.5–28.8 |
+| RING3 (environ-verified ON) | 25.55 tok/s | 26.25 | 19.6–28.7 |
+
+**Verdict: performance-null (−0.4% median, −1.7% warm-state — within noise, no win).** The ring's saved CPU quantize is evidently not on the decode critical path in this shape. NOT adopted: launcher reverted to champion (ring default OFF); the F2 code stays proven-correct (18co) and dormant — zero risk surface. Caveat carried to the perf phase: single-stream sequential judging; a concurrency benefit (engine threads contended) is untested.
+
+Measurement lesson banked: within-arm drift 20.5→28.8 across 12 requests (residual relief-band warming) — steady-state comparisons must use last-N medians, not full-arm means, or cold tails bias arms downward unevenly.
