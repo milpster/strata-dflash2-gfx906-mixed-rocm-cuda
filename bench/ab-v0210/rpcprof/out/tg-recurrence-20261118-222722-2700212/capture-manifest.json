@@ -1,0 +1,99 @@
+{
+  "purpose": "Preserve a further operator-reported slowdown and inspect GPU residency before the separately requested restart",
+  "operator_reports": [
+    "that might be part of the engine slowdown signature. because its slowed down again",
+    "restart the engine and re-send the agent otherwise itll never finsih",
+    "can you find out if any of the drivers of the gpus started swapping vram to ram?"
+  ],
+  "capture_kind": "Passive snapshots; the operator requested restart before any interval collectors were started",
+  "report_is_not_an_exact_onset_timestamp": true,
+  "start_snapshot_time": "2026-11-18T22:27:23+01:00",
+  "driver_snapshot_time": "2026-11-18T22:28:37+01:00",
+  "start_snapshot_exit_code": 0,
+  "driver_snapshot_exit_code": 0,
+  "supervisor_pid": 3131096,
+  "generation": 1,
+  "engine_pid": 3132535,
+  "engine_start_ticks": "863425",
+  "engine_sha256": "b0ec0109ebc50c982512c371d81b2c15a8f72c70edf8a461a4ff10337da52f02",
+  "config_sha256": "0d9fb58b7d1dd46df002702f2d67756be6efefc101c24de469ebf9e5a1609811",
+  "shared_engine_log": "/mnt/srcds/Strata/logs/engine-prod-ud-iq3xxs-v0233.log",
+  "saved_engine_prefix_bytes": 4422877,
+  "engine_drm_clients": [
+    {
+      "card": "card2",
+      "pci": "0000:04:00.0",
+      "driver": "amdgpu",
+      "client_id": 605,
+      "requested_vram_kib": 16743428,
+      "resident_vram_kib": 15291396,
+      "amd_evicted_vram_kib": 1452032,
+      "resident_gtt_kib": 1454148,
+      "device_free_vram_bytes": 1493852160
+    },
+    {
+      "card": "card3",
+      "pci": "0000:09:00.0",
+      "driver": "amdgpu",
+      "client_id": 606,
+      "requested_vram_kib": 16463320,
+      "resident_vram_kib": 16463320,
+      "amd_evicted_vram_kib": 0,
+      "resident_gtt_kib": 2116,
+      "device_free_vram_bytes": 188825600
+    }
+  ],
+  "kernel_log_access": {
+    "dmesg_exit_code": 1,
+    "dmesg_error": "Operation not permitted",
+    "debugfs": "Permission denied",
+    "journal_exit_code": 0,
+    "journal_since": "2026-11-18 20:20:00"
+  },
+  "paused_specialist": "ses_e0fa9abbcffeL15aq5Oiy3C4W9",
+  "specialist_cancel_acknowledged_before_restart": true,
+  "restart": {
+    "purpose": "Operator-requested recovery, not GPU acceptance or a restart solely to test the checker",
+    "command": "bash bench/ab-v0210/rpcprof/gpu-rounds/champions_restore.sh --health --poll 5 --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/tg-recurrence-20261118-222722-2700212/restart",
+    "shell_id": "sh_1f091177d001bTPeWfWrTmCzyX",
+    "exit_code": 0,
+    "completed_at": "2026-11-18T22:32:29+01:00",
+    "stop_verdict": "ALL STOPPED",
+    "generation": 1,
+    "engine_pid": 2789182,
+    "health_reply": "OK",
+    "health_finish_reason": "stop",
+    "health_completion_tokens_including_reasoning": 28,
+    "health_predicted_tokens_per_second": 20.1
+  },
+  "post_restart_snapshot": {
+    "time": "2026-11-18T22:33:16+01:00",
+    "exit_code": 0,
+    "supervisor_pid": 2788001,
+    "generation": 1,
+    "engine_pid": 2789182,
+    "engine_start_ticks": "1624418",
+    "identity_unchanged_around_snapshot": true,
+    "live_engine_and_config_hashes_matched": true,
+    "engine_rss_kib": 38444052,
+    "engine_swap_kib": 19468,
+    "engine_drm_clients": [
+      {"card": "card2", "pci": "0000:04:00.0", "client_id": 752, "requested_vram_kib": 16603836, "resident_vram_kib": 16603836, "amd_evicted_vram_kib": 0, "resident_gtt_kib": 2116, "device_free_vram_bytes": 45035520},
+      {"card": "card3", "pci": "0000:09:00.0", "client_id": 753, "requested_vram_kib": 16314920, "resident_vram_kib": 16314920, "amd_evicted_vram_kib": 0, "resident_gtt_kib": 2116, "device_free_vram_bytes": 340787200}
+    ]
+  },
+  "specialist_resumed_only_after_real_serving_and_post_restart_identity_checks": true,
+  "mutable_unsealed_files": ["restart/logs/restore-20261118-223003-2774354.out"],
+  "immutable_launcher_copy": "restart-launcher-snapshot.log",
+  "limits": [
+    "No endpoint request, restart or driver write occurred during the initial passive snapshots",
+    "The later restart was separately authorized and starts only after specialist cancellation acknowledgement",
+    "Driver eviction is observed at snapshot time; onset, movement rate and causal responsibility are not established",
+    "Aggregate GTT alone was not treated as proof of VRAM eviction",
+    "The post-restart small completion and zero-eviction snapshot do not establish sustained performance recovery or that eviction caused the slowdown",
+    "Live launcher stdout is excluded from sealing; an immutable captured copy is used instead",
+    "The shared engine log includes earlier engine lifetimes; untimestamped rows require boot/offset attribution",
+    "Latest completed-request summaries do not quantify an unfinished request or the reported recurrence onset",
+    "No candidate deployment, quality change or promotion is authorized"
+  ]
+}

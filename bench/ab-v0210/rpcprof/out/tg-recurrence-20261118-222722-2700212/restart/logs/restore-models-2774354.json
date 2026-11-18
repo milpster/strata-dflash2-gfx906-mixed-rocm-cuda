@@ -1,0 +1,1 @@
+{"object": "list", "data": [{"id": "ud-iq3_xxs", "object": "model", "status": {"value": "loaded"}, "meta": {"n_ctx": 262144}, "architecture": {"input_modalities": ["text", "image"], "output_modalities": ["text"]}}]}

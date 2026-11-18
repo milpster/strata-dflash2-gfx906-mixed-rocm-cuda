@@ -1,0 +1,5 @@
+stop-all: supervisors first (state files)
+  TERM run/prod-swift15-f16kv-mixed-supervisor.json supervisor 3131096
+stop-all: launcher/engine/helper/wrapper sweep (patterns live in this file)
+stop-all: verifying 20s of quiet
+stop-all: before=0 after=0 — ALL STOPPED

@@ -1,0 +1,206 @@
+2026-11-18T22:33:16+01:00
+true
+/proc/2789182/exe: OK
+prod-config-v0238.json: OK
+true
+{
+  "usage": {
+    "prompt_tokens": 57,
+    "completion_tokens": 28,
+    "total_tokens": 85,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    }
+  },
+  "timings": {
+    "cache_n": 0,
+    "prompt_n": 57,
+    "prompt_ms": 2211.8,
+    "prompt_per_token_ms": 38.804,
+    "prompt_per_second": 25.8,
+    "predicted_n": 28,
+    "predicted_ms": 1390.3,
+    "predicted_per_token_ms": 49.654,
+    "predicted_per_second": 20.1,
+    "draft_n": 22,
+    "draft_n_accepted": 20
+  }
+}
+
+=== post-restart GPU residency ===
+
+/sys/class/drm/card2/device pci=/sys/devices/pci0000:00/0000:00:01.2/0000:02:00.0/0000:03:00.0/0000:04:00.0
+mem_info_vram_total=17163091968
+mem_info_vram_used=17118056448
+mem_info_gtt_used=13762560
+gpu_busy_percent=0
+
+/sys/class/drm/card3/device pci=/sys/devices/pci0000:00/0000:00:02.2/0000:07:00.0/0000:08:00.0/0000:09:00.0
+mem_info_vram_total=17163091968
+mem_info_vram_used=16822304768
+mem_info_gtt_used=13606912
+gpu_busy_percent=0
+
+/sys/class/drm/card4/device pci=/sys/devices/pci0000:00/0000:00:08.1/0000:0a:00.0
+mem_info_vram_total=536870912
+mem_info_vram_used=464826368
+mem_info_gtt_used=166981632
+gpu_busy_percent=5
+
+=== post-restart engine DRM fdinfo ===
+
+/proc/2789182/fdinfo/7
+pos:	0
+flags:	02100002
+mnt_id:	30
+ino:	1659
+drm-driver:	amdgpu
+drm-client-id:	752
+drm-pdev:	0000:04:00.0
+pasid:	553
+drm-total-cpu:	3955516 KiB
+drm-shared-cpu:	0
+drm-resident-cpu:	0
+drm-purgeable-cpu:	0
+drm-total-gtt:	75872 KiB
+drm-shared-gtt:	0
+drm-resident-gtt:	2116 KiB
+drm-purgeable-gtt:	0
+drm-total-vram:	16603836 KiB
+drm-shared-vram:	72 MiB
+drm-resident-vram:	16603836 KiB
+drm-purgeable-vram:	0
+drm-total-gds:	0
+drm-shared-gds:	0
+drm-resident-gds:	0
+drm-purgeable-gds:	0
+drm-total-gws:	0
+drm-shared-gws:	0
+drm-resident-gws:	0
+drm-purgeable-gws:	0
+drm-total-oa:	0
+drm-shared-oa:	0
+drm-resident-oa:	0
+drm-purgeable-oa:	0
+drm-total-doorbell:	0
+drm-shared-doorbell:	0
+drm-resident-doorbell:	0
+drm-purgeable-doorbell:	0
+drm-total-mmioremap:	0
+drm-shared-mmioremap:	0
+drm-resident-mmioremap:	0
+drm-purgeable-mmioremap:	0
+drm-memory-vram:	16603836 KiB
+drm-memory-gtt: 	2116 KiB
+drm-memory-cpu: 	0 KiB
+amd-evicted-vram:	0 KiB
+amd-requested-vram:	16603836 KiB
+amd-requested-gtt:	75872 KiB
+
+/proc/2789182/fdinfo/8
+pos:	0
+flags:	02100002
+mnt_id:	30
+ino:	1696
+drm-driver:	amdgpu
+drm-client-id:	753
+drm-pdev:	0000:09:00.0
+pasid:	554
+drm-total-cpu:	3955516 KiB
+drm-shared-cpu:	0
+drm-resident-cpu:	0
+drm-purgeable-cpu:	0
+drm-total-gtt:	75872 KiB
+drm-shared-gtt:	0
+drm-resident-gtt:	2116 KiB
+drm-purgeable-gtt:	0
+drm-total-vram:	16314920 KiB
+drm-shared-vram:	72 MiB
+drm-resident-vram:	16314920 KiB
+drm-purgeable-vram:	0
+drm-total-gds:	0
+drm-shared-gds:	0
+drm-resident-gds:	0
+drm-purgeable-gds:	0
+drm-total-gws:	0
+drm-shared-gws:	0
+drm-resident-gws:	0
+drm-purgeable-gws:	0
+drm-total-oa:	0
+drm-shared-oa:	0
+drm-resident-oa:	0
+drm-purgeable-oa:	0
+drm-total-doorbell:	0
+drm-shared-doorbell:	0
+drm-resident-doorbell:	0
+drm-purgeable-doorbell:	0
+drm-total-mmioremap:	0
+drm-shared-mmioremap:	0
+drm-resident-mmioremap:	0
+drm-purgeable-mmioremap:	0
+drm-memory-vram:	16314920 KiB
+drm-memory-gtt: 	2116 KiB
+drm-memory-cpu: 	0 KiB
+amd-evicted-vram:	0 KiB
+amd-requested-vram:	16314920 KiB
+amd-requested-gtt:	75872 KiB
+
+/proc/2789182/fdinfo/9
+pos:	0
+flags:	02100002
+mnt_id:	30
+ino:	1733
+drm-driver:	amdgpu
+drm-client-id:	754
+drm-pdev:	0000:0a:00.0
+pasid:	555
+drm-total-cpu:	43048 KiB
+drm-shared-cpu:	0
+drm-resident-cpu:	0
+drm-purgeable-cpu:	0
+drm-total-gtt:	2116 KiB
+drm-shared-gtt:	0
+drm-resident-gtt:	2088 KiB
+drm-purgeable-gtt:	0
+drm-total-vram:	248 KiB
+drm-shared-vram:	0
+drm-resident-vram:	248 KiB
+drm-purgeable-vram:	0
+drm-total-gds:	0
+drm-shared-gds:	0
+drm-resident-gds:	0
+drm-purgeable-gds:	0
+drm-total-gws:	0
+drm-shared-gws:	0
+drm-resident-gws:	0
+drm-purgeable-gws:	0
+drm-total-oa:	0
+drm-shared-oa:	0
+drm-resident-oa:	0
+drm-purgeable-oa:	0
+drm-total-doorbell:	0
+drm-shared-doorbell:	0
+drm-resident-doorbell:	0
+drm-purgeable-doorbell:	0
+drm-total-mmioremap:	0
+drm-shared-mmioremap:	0
+drm-resident-mmioremap:	0
+drm-purgeable-mmioremap:	0
+drm-memory-vram:	248 KiB
+drm-memory-gtt: 	2088 KiB
+drm-memory-cpu: 	0 KiB
+amd-evicted-vram:	0 KiB
+amd-requested-vram:	248 KiB
+amd-requested-gtt:	2116 KiB
+
+=== host/process ===
+Name:	strata-host
+State:	S (sleeping)
+VmRSS:	38444052 kB
+VmSwap:	   19468 kB
+               total        used        free      shared  buff/cache   available
+Mem:           63644       42971        2545         108       21562       20672
+Swap:         196607        7079      189528
+
+post_restart_snapshot_exit=0
+2026-11-18T22:33:16+01:00

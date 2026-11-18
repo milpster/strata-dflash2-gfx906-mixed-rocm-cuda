@@ -1,0 +1,11 @@
+2026-11-18T20:23:53+01:00 GUAM cpu-load-governor: HIGH -> LOW (load 2.09 below 3 for 60s)
+2026-11-18T20:24:33+01:00 GUAM cpu-load-governor: LOW -> HIGH (load 3.97 above 3 for 30s)
+2026-11-18T20:27:03+01:00 GUAM kernel: NOHZ tick-stop error: local softirq work is pending, handler #10!!!
+2026-11-18T21:00:06+01:00 GUAM kernel: NOHZ tick-stop error: local softirq work is pending, handler #10!!!
+2026-11-18T21:17:54+01:00 GUAM cpu-load-governor: HIGH -> LOW (load 1.98 below 3 for 60s)
+2026-11-18T21:22:44+01:00 GUAM cpu-load-governor: LOW -> HIGH (load 3.16 above 3 for 30s)
+2026-11-18T21:24:54+01:00 GUAM cpu-load-governor: HIGH -> LOW (load 2.29 below 3 for 60s)
+2026-11-18T21:26:35+01:00 GUAM cpu-load-governor: LOW -> HIGH (load 4.28 above 3 for 30s)
+2026-11-18T22:15:38+01:00 GUAM kernel: logitech-hidpp-device 0003:046D:4074.000B: HID++ 4.2 device connected.
+2026-11-18T22:20:06+01:00 GUAM cpu-load-governor: HIGH -> LOW (load 2.28 below 3 for 60s)
+2026-11-18T22:24:36+01:00 GUAM cpu-load-governor: LOW -> HIGH (load 6.16 above 3 for 30s)

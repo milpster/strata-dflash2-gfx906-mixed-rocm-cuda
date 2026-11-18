@@ -1,0 +1,198 @@
+2026-11-18T22:28:37+01:00
+agent_cancel_acknowledged=ses_e0fa9abbcffeL15aq5Oiy3C4W9
+no_driver_writes=TRUE
+
+=== GPU residency and migration snapshots ===
+
+/sys/class/drm/card2/device driver=/sys/bus/pci/drivers/amdgpu pci=/sys/devices/pci0000:00/0000:00:01.2/0000:02:00.0/0000:03:00.0/0000:04:00.0
+mem_info_vram_total=17163091968
+mem_info_vram_used=15669239808
+mem_info_vis_vram_used=15669239808
+mem_info_gtt_total=33368055808
+mem_info_gtt_used=1500643328
+gpu_busy_percent=0
+mem_busy_percent=0
+num_bytes_moved=unavailable
+
+/sys/class/drm/card3/device driver=/sys/bus/pci/drivers/amdgpu pci=/sys/devices/pci0000:00/0000:00:02.2/0000:07:00.0/0000:08:00.0/0000:09:00.0
+mem_info_vram_total=17163091968
+mem_info_vram_used=16974266368
+mem_info_vis_vram_used=16974266368
+mem_info_gtt_total=33368055808
+mem_info_gtt_used=13606912
+gpu_busy_percent=0
+mem_busy_percent=0
+num_bytes_moved=unavailable
+
+/sys/class/drm/card4/device driver=/sys/bus/pci/drivers/amdgpu pci=/sys/devices/pci0000:00/0000:00:08.1/0000:0a:00.0
+mem_info_vram_total=536870912
+mem_info_vram_used=460283904
+mem_info_vis_vram_used=460283904
+mem_info_gtt_total=33368055808
+mem_info_gtt_used=172957696
+gpu_busy_percent=5
+mem_busy_percent=unavailable
+num_bytes_moved=unavailable
+
+=== engine/helper DRM fdinfo ===
+
+process=3132535
+
+/proc/3132535/fdinfo/7
+pos:	0
+flags:	02100002
+mnt_id:	30
+ino:	1659
+drm-driver:	amdgpu
+drm-client-id:	605
+drm-pdev:	0000:04:00.0
+pasid:	423
+drm-total-cpu:	4482508 KiB
+drm-shared-cpu:	0
+drm-resident-cpu:	0
+drm-purgeable-cpu:	0
+drm-total-gtt:	75872 KiB
+drm-shared-gtt:	0
+drm-resident-gtt:	1454148 KiB
+drm-purgeable-gtt:	0
+drm-total-vram:	16743428 KiB
+drm-shared-vram:	72 MiB
+drm-resident-vram:	15291396 KiB
+drm-purgeable-vram:	0
+drm-total-gds:	0
+drm-shared-gds:	0
+drm-resident-gds:	0
+drm-purgeable-gds:	0
+drm-total-gws:	0
+drm-shared-gws:	0
+drm-resident-gws:	0
+drm-purgeable-gws:	0
+drm-total-oa:	0
+drm-shared-oa:	0
+drm-resident-oa:	0
+drm-purgeable-oa:	0
+drm-total-doorbell:	0
+drm-shared-doorbell:	0
+drm-resident-doorbell:	0
+drm-purgeable-doorbell:	0
+drm-total-mmioremap:	0
+drm-shared-mmioremap:	0
+drm-resident-mmioremap:	0
+drm-purgeable-mmioremap:	0
+drm-memory-vram:	15291396 KiB
+drm-memory-gtt: 	1454148 KiB
+drm-memory-cpu: 	0 KiB
+amd-evicted-vram:	1452032 KiB
+amd-requested-vram:	16743428 KiB
+amd-requested-gtt:	75872 KiB
+
+/proc/3132535/fdinfo/8
+pos:	0
+flags:	02100002
+mnt_id:	30
+ino:	1696
+drm-driver:	amdgpu
+drm-client-id:	606
+drm-pdev:	0000:09:00.0
+pasid:	424
+drm-total-cpu:	4482508 KiB
+drm-shared-cpu:	0
+drm-resident-cpu:	0
+drm-purgeable-cpu:	0
+drm-total-gtt:	75872 KiB
+drm-shared-gtt:	0
+drm-resident-gtt:	2116 KiB
+drm-purgeable-gtt:	0
+drm-total-vram:	16463320 KiB
+drm-shared-vram:	72 MiB
+drm-resident-vram:	16463320 KiB
+drm-purgeable-vram:	0
+drm-total-gds:	0
+drm-shared-gds:	0
+drm-resident-gds:	0
+drm-purgeable-gds:	0
+drm-total-gws:	0
+drm-shared-gws:	0
+drm-resident-gws:	0
+drm-purgeable-gws:	0
+drm-total-oa:	0
+drm-shared-oa:	0
+drm-resident-oa:	0
+drm-purgeable-oa:	0
+drm-total-doorbell:	0
+drm-shared-doorbell:	0
+drm-resident-doorbell:	0
+drm-purgeable-doorbell:	0
+drm-total-mmioremap:	0
+drm-shared-mmioremap:	0
+drm-resident-mmioremap:	0
+drm-purgeable-mmioremap:	0
+drm-memory-vram:	16463320 KiB
+drm-memory-gtt: 	2116 KiB
+drm-memory-cpu: 	0 KiB
+amd-evicted-vram:	0 KiB
+amd-requested-vram:	16463320 KiB
+amd-requested-gtt:	75872 KiB
+
+/proc/3132535/fdinfo/9
+pos:	0
+flags:	02100002
+mnt_id:	30
+ino:	1733
+drm-driver:	amdgpu
+drm-client-id:	607
+drm-pdev:	0000:0a:00.0
+pasid:	425
+drm-total-cpu:	211280 KiB
+drm-shared-cpu:	0
+drm-resident-cpu:	0
+drm-purgeable-cpu:	0
+drm-total-gtt:	2116 KiB
+drm-shared-gtt:	0
+drm-resident-gtt:	2088 KiB
+drm-purgeable-gtt:	0
+drm-total-vram:	624 KiB
+drm-shared-vram:	0
+drm-resident-vram:	624 KiB
+drm-purgeable-vram:	0
+drm-total-gds:	0
+drm-shared-gds:	0
+drm-resident-gds:	0
+drm-purgeable-gds:	0
+drm-total-gws:	0
+drm-shared-gws:	0
+drm-resident-gws:	0
+drm-purgeable-gws:	0
+drm-total-oa:	0
+drm-shared-oa:	0
+drm-resident-oa:	0
+drm-purgeable-oa:	0
+drm-total-doorbell:	0
+drm-shared-doorbell:	0
+drm-resident-doorbell:	0
+drm-purgeable-doorbell:	0
+drm-total-mmioremap:	0
+drm-shared-mmioremap:	0
+drm-resident-mmioremap:	0
+drm-purgeable-mmioremap:	0
+drm-memory-vram:	624 KiB
+drm-memory-gtt: 	2088 KiB
+drm-memory-cpu: 	0 KiB
+amd-evicted-vram:	0 KiB
+amd-requested-vram:	624 KiB
+amd-requested-gtt:	2116 KiB
+
+process=3131127
+
+=== debugfs accessibility ===
+ls: cannot access '/sys/kernel/debug/dri': Permission denied
+drwx------ 62 root root 0 Nov 18 17:59 /sys/kernel/debug
+
+=== kernel log access ===
+dmesg_exit=1
+dmesg: read kernel buffer failed: Operation not permitted
+
+=== journal kernel log access ===
+kernel_journal_exit=0
+
+driver_snapshot_exit=0
