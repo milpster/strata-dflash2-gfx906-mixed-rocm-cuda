@@ -1,0 +1,27 @@
+{
+  "status": "parked_by_operator",
+  "operator_instruction": "park for later, resume an agent to work on our open things",
+  "parked_verification_time": "2026-11-18T17:09:17+01:00",
+  "confirmed_game_launch_or_exit": false,
+  "production_verified_before_specialist": {
+    "engine_pid": 1707851,
+    "engine_sha256": "b0ec0109ebc50c982512c371d81b2c15a8f72c70edf8a461a4ff10337da52f02",
+    "response_file": "pre-agent-response.json",
+    "response_text": "OK",
+    "completion_tokens": 2,
+    "finish_reason": "stop"
+  },
+  "legacy_checker_result": {
+    "exit_code": 1,
+    "finished_at": "2026-11-18T17:02:23+01:00",
+    "meaning": "Timed out watching the failed generation-1 log; not a current production-down verdict"
+  },
+  "passive_collectors": "Existing bounded collectors may continue until approximately 17:46:58 CET; their remaining output includes observer/specialist inference, not a confirmed game comparison",
+  "resumed_specialist": {
+    "session_id": "ses_e11015949ffeBT4ejQcEbCrLxy",
+    "scope": "Read-only source-backed RAM GPU acceptance fixture and manifest preparation",
+    "output": "bench/ab-v0210/rpcprof/gpu-rounds/ram-parking-gpu-fixtures.md",
+    "gpu_execution_or_production_changes": false
+  },
+  "evidence_sealing": "The earlier static-evidence.sha256 remains unchanged; this later deferral and verification are separate evidence"
+}

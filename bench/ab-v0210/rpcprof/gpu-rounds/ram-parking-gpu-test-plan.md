@@ -1,6 +1,6 @@
 # Conversation parking/loading — bounded GPU acceptance window
 
-Status: preparation only; GPU execution is paused for the operator-requested post-game slowdown investigation and next-game capture. The operator subsequently authorized a diagnostic generation and canonical backend restart; pre-restart evidence is preserved in `journal/game-exit-slowdown-2026-11-18.md`, but the original slow process no longer exists. The restart did not establish normal performance recovery. Operator separately requested this GPU test after the whole-plan oracle finished. No promotion is authorized. Reuse the existing runners and cache scenarios; do not build another window framework.
+Status: preparation resumed after the operator parked the next-game experiment and slowdown investigation. One harness specialist is finalizing source-backed fixture/manifest gaps; GPU execution still waits for reconciliation, frozen matched settings and zero active specialists. The operator previously authorized a diagnostic generation and canonical backend restart; pre-restart evidence is preserved in `journal/game-exit-slowdown-2026-11-18.md`, but the original slow process no longer exists. The restart did not establish normal performance recovery. Operator separately requested this GPU test after the whole-plan oracle finished. No promotion is authorized. Reuse the existing runners and cache scenarios; do not build another window framework.
 
 ## Frozen candidates and authority
 
