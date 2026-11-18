@@ -149,3 +149,17 @@ The all-node scan reports **20 unavailable counters** on other/virtual DRM nodes
 No synthetic prompts, API probes, restart, driver or configuration changes were added. Ordinary workload must supply useful active observations; idle/no-eviction samples alone cannot test the slowdown hypothesis. Live capture/console files remain unsealed until completion. The static validation/launch record can be sealed separately. Root cause, RAM acceptance prerequisites and the parked game experiment are unchanged.
 
 Operator then requested **“delegate”**. Parent assigned sole read-only explorer `ses_e0f18fb21ffelV0KX92IJwaEky` a bounded collector/interim-evidence review; it must not edit the running collector, rerun valid tests, send probes or wait/poll for the hour's completion. Parent owns reconciliation and closeout. The old fixer unexpectedly reopened after its patch had already been delivered; lifecycle inspection reported it running, so parent cancelled that obsolete run with acknowledgement to restore the one-specialist constraint. No production stop/restart accompanied cancellation. Any inference work from that unexpected reactivation is not independently quantified and must not be presented as a controlled workload.
+
+## Delegated interim review reconciled
+
+The explorer completed a bounded read-only review and found no material collector safety or data-binding defect. Parent preserved and independently checked the first **34** complete samples and their matching raw increment prefix in `out/gpu-watch-interim-20261119-001913-1838289/`. These are immutable copies, not the still-live capture files. The interval is **23:58:41–00:15:11 CET**, **990 seconds** between endpoints (not the specialist's approximate 1020 seconds).
+
+| Interim observation | Verified result |
+| --- | --- |
+| Selected supervisor / generation / engine / start | **2788001 / 1 / 2789182 / 1624418**, all **34** samples valid |
+| Radeon PCI `0000:04:00.0` and `0000:09:00.0` | **Zero evicted bytes** throughout sampled observations; each **2116 KiB** resident GTT |
+| Existing request completions newly captured | **8**, reported decode **12.7–20.8 tokens/s**, prompts **18645–39427** tokens |
+| Raw increment and JSONL capture ranges | **12791 bytes**, contiguous source/capture offsets, no reset or backlog |
+| Read errors | No DRM-client errors; the same **20** unavailable other-node counters, not Radeon faults |
+
+The prefix has active request data, not merely idle samples, but it does not reproduce or explain the earlier severe slowdown. Zero instantaneous gauges at 30-second observations cannot exclude brief between-sample moves, and request-row observation times are not exact execution timestamps. These ordinary requests are not a matched benchmark. Parent's prefix consistency check exited **0**; no new inference request or production operation accompanied review. Final count, terminal outcome and the rest of the approved hour remain for closeout after collector completion. No live file has been sealed early.

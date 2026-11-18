@@ -1,0 +1,79 @@
+2026-11-19T00:19:13+01:00
+true
+interim_prefix_validation_exit=0
+{
+  "samples": 34,
+  "first_observed": "2026-11-18T23:58:41+01:00",
+  "last_observed": "2026-11-19T00:15:11+01:00",
+  "last_elapsed_s": 990.0,
+  "identities": [
+    [
+      2788001,
+      1,
+      2789182,
+      "1624418",
+      true
+    ]
+  ],
+  "invalid_samples": 0,
+  "clients": [
+    {
+      "pci": "0000:04:00.0",
+      "client_ids": [
+        "752"
+      ],
+      "evicted_values_bytes": [
+        0
+      ],
+      "resident_gtt_values_bytes": [
+        2166784
+      ]
+    },
+    {
+      "pci": "0000:09:00.0",
+      "client_ids": [
+        "753"
+      ],
+      "evicted_values_bytes": [
+        0
+      ],
+      "resident_gtt_values_bytes": [
+        2166784
+      ]
+    },
+    {
+      "pci": "0000:0a:00.0",
+      "client_ids": [
+        "754"
+      ],
+      "evicted_values_bytes": [
+        0
+      ],
+      "resident_gtt_values_bytes": [
+        2138112
+      ]
+    }
+  ],
+  "drm_errors": [],
+  "gpu_error_counts": [
+    20
+  ],
+  "new_bytes": 12791,
+  "capture_to": 12791,
+  "backlog_max": 0,
+  "resets": [
+    null
+  ],
+  "prompt_lines": [
+    "strata serve: prompt 18645 tokens = 0 reused + 18645 read in 117958 ms (158.1 tok/s), 217 generated in 17078 ms (12.7 tok/s), drafts accepted 149 of 208, 3 checkpoints helper=reqs=2644 rows=18551 bytes=189962240 timeouts=0 fallbacks=0 windows 69 ms_wait 58.92 ms_pool 26.60 ms_host 0.04 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 29496.0",
+    "strata serve: prompt 20568 tokens = 16384 reused + 4184 read in 32731 ms (127.8 tok/s), 321 generated in 16455 ms (19.5 tok/s), drafts accepted 230 of 313, 2 checkpoints helper=reqs=3759 rows=33954 bytes=347688960 timeouts=0 fallbacks=0 windows 92 ms_wait 22.21 ms_pool 20.98 ms_host 0.04 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 11105.0",
+    "strata serve: prompt 21206 tokens = 20888 reused + 318 read in 12954 ms (24.5 tok/s), 456 generated in 22272 ms (20.5 tok/s), drafts accepted 311 of 470, 3 checkpoints helper=reqs=5847 rows=49083 bytes=502609920 timeouts=0 fallbacks=0 windows 146 ms_wait 21.38 ms_pool 19.81 ms_host 0.04 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 2941.0",
+    "strata serve: prompt 23583 tokens = 21661 reused + 1922 read in 25450 ms (75.5 tok/s), 473 generated in 24585 ms (19.2 tok/s), drafts accepted 287 of 471, 4 checkpoints helper=reqs=6375 rows=36552 bytes=374292480 timeouts=0 fallbacks=0 windows 187 ms_wait 19.77 ms_pool 19.45 ms_host 0.04 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 6758.0",
+    "strata serve: prompt 29153 tokens = 24055 reused + 5098 read in 33678 ms (151.4 tok/s), 2908 generated in 150653 ms (19.3 tok/s), drafts accepted 1532 of 2928, 5 checkpoints helper=reqs=47412 rows=259350 bytes=2655744000 timeouts=0 fallbacks=0 windows 1377 ms_wait 19.20 ms_pool 17.86 ms_host 0.04 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 11274.0",
+    "strata serve: prompt 33340 tokens = 32060 reused + 1280 read in 20752 ms (61.7 tok/s), 1229 generated in 59005 ms (20.8 tok/s), drafts accepted 737 of 1300, 6 checkpoints helper=reqs=18256 rows=117864 bytes=1206927360 timeouts=0 fallbacks=0 windows 493 ms_wait 20.17 ms_pool 17.53 ms_host 0.04 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 5094.0",
+    "strata serve: prompt 38510 tokens = 34568 reused + 3942 read in 30781 ms (128.1 tok/s), 721 generated in 37199 ms (19.4 tok/s), drafts accepted 421 of 752, 6 checkpoints helper=reqs=11963 rows=86299 bytes=883701760 timeouts=0 fallbacks=0 windows 301 ms_wait 19.62 ms_pool 20.12 ms_host 0.03 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 10950.0",
+    "strata serve: prompt 39427 tokens = 38505 reused + 922 read in 17243 ms (53.5 tok/s), 653 generated in 31580 ms (20.7 tok/s), drafts accepted 395 of 661, 6 checkpoints helper=reqs=9984 rows=67452 bytes=690708480 timeouts=0 fallbacks=0 windows 259 ms_wait 19.88 ms_pool 22.21 ms_host 0.04 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 3568.0"
+  ],
+  "capture_contiguous": true,
+  "source_contiguous": true
+}
