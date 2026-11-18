@@ -3948,3 +3948,20 @@ Harness commits `d9f86bbf97` and `f0bbacc5b8`; parent inspected request streamin
 Parent started only CURRENT at 04:23 via `gpu-rounds/champions_panel.py --run --arm current`, backgrounded with live NUL-stripped logs and no specialist active. Stop reported exit-success/ALL STOPPED. At 04:25 the actual engine resolved to the approved worktree binary. **Observed boot policy: restore headroom 677 MiB; restore host ask is the limiter; candidate terms file 4219 MiB, cache quarter 1024 MiB, chain 677 MiB, ceiling 1024 MiB.** This is a measured boot value, replacing prior estimated ranges. The automatic `boot.json` collector currently looks in the wrapper log and warns that the line is absent there; the policy line is present in `out/champions-20261118/logs/panel-current.log` and the arm's engine log. Do not mistake a collector warning for a disabled policy.
 
 No completed-arm comparison or speed/quality claim yet. Early logs show material timing variation and existing low-VRAM warnings; final reports must retain spread and memory evidence. The low-RAM recovery and restart-depth acceptance gates remain open: observing the policy boot line is only one part. Canonical production slot/config remain untouched; the panel restores them at exit. SSH publication was blocked on the earlier push attempt; commits remain local until authentication is restored.
+
+## Round 18cv — latest arm complete; restore checker repaired; Nov-16 started (2026-11-18)
+
+CURRENT completed **9/9 planned pairs** at 04:47:47. Source artifacts inspected: `out/champions-20261118/summary/current.summary.csv` plus the streamed engine timing lines. These are fresh-input PP and cached main-call TG, not end-to-end generation including server continuation calls.
+
+| Shape / actual input tokens | PP median (range width), tok/s | TG median (range width), tok/s | Measured pairs | Peak engine RSS / minimum host MemAvailable, MiB |
+|---|---|---|---|---|
+| short / 16008 | 266.3 (15.3) | 19.7 (25.1) | 3 | 51121 / 16214 |
+| long / 79986 | 465.3 (48.0) | 32.6 (1.3) | 3 | 53117 / 15250 |
+
+Fresh reuse was 0; cached reuse 16003/79981; all selected main-call helper timeout/fallback counts were 0. Wide short TG dispersion is retained, not discarded. These isolated results do not establish a winner or quality equivalence.
+
+The panel process exited **1 despite complete measurements**, because the restore script's log-path parser included the launcher's trailing `;` and waited against a nonexistent filename until 05:18. The canonical stack actually booted: parent checked its exact fresh ready log, `/proc/3172797/exe` and SHA (`b0ec0109...`), `/v1/models`, then a real completion returning `OK` with 28 generated tokens. No extra restart was needed to repair serving. A one-line delimiter fix and a regression executing the real shell assignment now cover this failure.
+
+Before rerunning tests, parent found that mutable CPU fixtures used the real benchmark output root and could erase completed evidence. No such test was rerun until fixed. Commit `cea984827c` isolates them in project-local scratch directories; before/after stat+SHA inventories prove CURRENT's artifacts unchanged. Parent inspected fixture paths and reran **34 CPU tests: passed**, pin verification: passed, compile/shell syntax: passed. Evidence: `out/champions-cpu-validation-20261118.log`; no GPU or endpoint traffic from these checks.
+
+Nov-16 was then started as the sole background measurement lane with the same frozen corpus, shapes, exclusion rule and config snapshot. No specialist is active. SSH was rechecked through the desktop agent: its socket is reachable but the agent refuses signing, so neither branch has been published by this attempt. RAM-pressure recovery/restart-depth acceptance remains unproven.
