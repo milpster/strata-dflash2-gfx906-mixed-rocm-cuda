@@ -49,3 +49,9 @@ At **20:26:35 CET**, independent parent verification exited **0**: supervisor **
 Only after those checks did parent resume the same retained fixer on its original bounded offline scope. No second specialist was launched. The snapshot and seal exclude `launcher.log`, which remains the active supervisor's stdout sink; `launcher-snapshot.log` preserves its captured contents without pretending a live file is immutable. Earlier no-game and game-era evidence remains unchanged. Slowdown investigation and GPU-acceptance prerequisites are still open.
 
 From the restart evidence directory, `sha256sum --check final-evidence.sha256` exited **0**, with all **20** static files `OK`; a separate check confirmed the mutable launcher file is excluded. Raw diagnostic logs retain their original whitespace and are not subject to prose whitespace cleanup.
+
+## Read-only investigation dispatched after the repair
+
+Restore-checker repair `95b99a7` passed parent review and the 53-test CPU file; no live restore was used to test it. Before assigning another specialist, parent freshly verified canonical serving at **21:25:06–21:25:09 CET**: live engine/config hashes, current ready log, real HTTP **200** completion **OK** / stop / **28 tokens including reasoning**, **3.369719 s** total, unchanged supervisor **3131096**, generation **1**, engine **3132535**, start **863425**. Command exit **0**; evidence is `out/slowdown-investigation-20261118-212506-865959/`. This check is not a sustained-speed benchmark.
+
+The sole explorer `ses_e0fa9abbcffeL15aq5Oiy3C4W9` is examining saved evidence and canonical source only. No file writes, probes, tests, workloads, process operations or policy changes are allowed. Its output must separate observations, source-backed mechanisms and hypotheses, then identify the smallest missing discriminator. Parent owns reconciliation and any subsequent authorization. Game testing remains parked and GPU acceptance paused.

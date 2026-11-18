@@ -1,0 +1,23 @@
+{
+  "purpose": "Fresh parent serving verification before one read-only slowdown investigator",
+  "specialist_session": "ses_e0fa9abbcffeL15aq5Oiy3C4W9",
+  "specialist_role": "explorer",
+  "specialist_scope": "Read-only saved evidence and canonical source; no endpoints, experiments, process operations or file writes",
+  "validation_owner": "parent",
+  "serving_verified_at": "2026-11-18T21:25:09+01:00",
+  "probe_exit_code": 0,
+  "http_status": 200,
+  "completion_text": "OK",
+  "finish_reason": "stop",
+  "completion_tokens_including_reasoning": 28,
+  "total_seconds": 3.369719,
+  "supervisor_pid": 3131096,
+  "generation": 1,
+  "engine_pid": 3132535,
+  "engine_start_ticks": "863425",
+  "generation_identity_unchanged_around_request": true,
+  "live_engine_sha256": "b0ec0109ebc50c982512c371d81b2c15a8f72c70edf8a461a4ff10337da52f02",
+  "config_sha256": "0d9fb58b7d1dd46df002702f2d67756be6efefc101c24de469ebf9e5a1609811",
+  "request_body_source": "bench/ab-v0210/rpcprof/out/operator-restart-20261118-202211-3089242/completion-request.json",
+  "limits": "Availability check only; no sustained performance recovery or slowdown cause established"
+}

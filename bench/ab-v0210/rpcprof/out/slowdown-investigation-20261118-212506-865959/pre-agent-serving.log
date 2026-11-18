@@ -1,0 +1,23 @@
+2026-11-18T21:25:06+01:00
+{
+  "supervisor_pid": 3131096,
+  "generation": 1,
+  "engine_pid": 3132535,
+  "engine_start": "863425",
+  "engine_log": "/mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261118-202342-3131120.log"
+}
+/proc/3132535/exe: OK
+prod-config-v0238.json: OK
+ready: http://127.0.0.1:8009/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, context 262144 tokens, images on)
+http_code=200 total_seconds=3.369719
+true
+{
+  "reply": "OK",
+  "finish_reason": "stop",
+  "completion_tokens": 28
+}
+Name:	strata-host
+VmRSS:	55404944 kB
+VmSwap:	 1155748 kB
+pre_agent_serving_exit=0
+2026-11-18T21:25:09+01:00
