@@ -6,8 +6,17 @@ context (8000 / 80000), a unique per-leg tag line so no cache reuse is possible 
 judge line must read "N reused = 0". Requests: temperature 0, thinking off
 (enable_thinking false) so the parity gate compares byte-identical completions.
 
+The tag sits at the TAIL, which does NOT force a fresh prefill: the leading tokens still
+match, so a "prefill" leg can be served from the conversation cache. Callers that need a
+genuinely cold prompt pass --prompt-file, whose bytes were built with the identity tag at
+the HEAD (see champions_prepare.build_paired_prompt). With --prompt-file the prompt is read
+from disk, must match --ctx byte for byte and, when given, --prompt-sha256; the digest goes
+into the record so the arms can be proven to have read identical input.
+
 Records byte offsets in the engine log and helper log around the request; the collector
-reads ONLY that slice (no cross-leg contamination). Emits one JSON per leg to --out:
+reads ONLY that slice (no cross-leg contamination). Every request of a multi-request leg
+keeps its own window, wall and response digest — a leg is more than "the last of two".
+Emits one JSON per leg to --out:
   <out>/<arm>-<leg>.json with walls, completion sha256, log slice offsets.
 
 kinds:
@@ -20,6 +29,7 @@ import glob
 import hashlib
 import json
 import os
+import pathlib
 import random
 import subprocess
 import threading
@@ -176,9 +186,17 @@ def main() -> int:
     ap.add_argument("--elog", required=True)
     ap.add_argument("--hlog", required=True)
     ap.add_argument("--url", default=URL)
+    ap.add_argument("--prompt-file", help="read the prompt from this file instead of build_prompt()")
+    ap.add_argument("--prompt-sha256", help="reject the run unless the prompt digest matches")
+    ap.add_argument("--champs-shape", help="champions panel: workload shape name")
+    ap.add_argument("--champs-pair", type=int, help="champions panel: pair index within the shape")
+    ap.add_argument("--champs-measured", action="store_true",
+                    help="champions panel: this pair counts toward the medians")
+    ap.add_argument("--champs-retry", type=int, default=0,
+                    help="champions panel: bounded retry number of this pair (0 = first attempt)")
     a = ap.parse_args()
 
-    prompt = build_prompt(a.arm, a.leg, a.ctx)
+    prompt, prompt_sha = load_prompt(a)
     max_tokens = 64 if a.kind == "warm" else a.max_tokens
     runs = 2 if a.kind == "tg" else 1
     e0, h0 = size(a.elog), size(a.hlog)
@@ -186,11 +204,19 @@ def main() -> int:
     sampler.start()
     t0 = time.time()
     walls: list[float] = []
+    requests: list[dict] = []
     content = ""
     content_from = "empty"
-    for _ in range(runs):
+    for i in range(runs):
+        start_e, start_h = size(a.elog), size(a.hlog)
         wall, content, content_from = post(a.url, prompt, max_tokens, timeout=1800 if a.ctx >= 80000 else 900)
         walls.append(round(wall, 3))
+        requests.append({
+            "index": i, "wall_s": round(wall, 3), "content_from": content_from,
+            "response_sha256": hashlib.sha256(content.encode()).hexdigest(),
+            "elog_start": start_e, "elog_end": size(a.elog),
+            "hlog_start": start_h, "hlog_end": size(a.hlog),
+        })
     wall = round(time.time() - t0, 3)
     sampler.stop_evt.set()
     sampler.join()
@@ -200,7 +226,8 @@ def main() -> int:
         "arm": a.arm, "leg": a.leg, "kind": a.kind, "ctx": a.ctx,
         "max_tokens": max_tokens, "ts": round(time.time(), 3),
         "walls": walls, "wall_s": wall, "content_from": content_from,
-        "prompt_bytes": len(prompt.encode()),
+        "prompt_bytes": len(prompt.encode()), "prompt_sha256": prompt_sha,
+        "requests": requests,
         "sha256": hashlib.sha256(content.encode()).hexdigest(),
         "elog": a.elog, "elog_start": e0, "elog_end": e1,
         "hlog": a.hlog, "hlog_start": h0, "hlog_end": h1,
@@ -211,12 +238,35 @@ def main() -> int:
             "max_vram_mib": sampler.max_vram_mib,
         },
     }
+    if a.champs_shape and a.champs_pair is None:
+        raise SystemExit("--champs-shape requires --champs-pair")
+    if a.champs_shape:
+        rec["champs"] = {"shape": a.champs_shape, "pair": a.champs_pair,
+                         "measured": a.champs_measured, "retries": a.champs_retry}
     os.makedirs(a.out, exist_ok=True)
     path = os.path.join(a.out, f"{a.arm}-{a.leg}.json")
     with open(path, "w") as f:
         json.dump(rec, f, indent=1)
     print(json.dumps(rec))
     return 0
+
+
+def load_prompt(a) -> tuple[str, str]:
+    """--prompt-file wins; the legacy seeded builder is the default and is unchanged.
+
+    A file prompt is byte-authoritative: it must match --ctx exactly and, when the
+    caller pins it, --prompt-sha256. A length mismatch is a harness bug and fails closed.
+    """
+    if not a.prompt_file:
+        prompt = build_prompt(a.arm, a.leg, a.ctx)
+        return prompt, hashlib.sha256(prompt.encode()).hexdigest()
+    blob = pathlib.Path(a.prompt_file).read_bytes()
+    if len(blob) != a.ctx:
+        raise SystemExit(f"prompt-file length {len(blob)} != --ctx {a.ctx}: {a.prompt_file}")
+    digest = hashlib.sha256(blob).hexdigest()
+    if a.prompt_sha256 and digest != a.prompt_sha256:
+        raise SystemExit(f"prompt-file sha256 {digest} != pinned {a.prompt_sha256}")
+    return blob.decode("utf-8"), digest
 
 
 if __name__ == "__main__":

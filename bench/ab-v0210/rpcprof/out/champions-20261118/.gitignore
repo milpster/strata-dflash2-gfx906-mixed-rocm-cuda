@@ -1,0 +1,6 @@
+# Regenerated deterministically by champions_prepare.py --prepare.
+# manifest.json pins every hash here, so these stay out of git on purpose.
+corpus/
+logs/
+arms/
+slots/
