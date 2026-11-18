@@ -3,7 +3,7 @@
 Reviewed by independent oracle (ses_e15829d7effe). All review claims spot-verified at source.
 Supersedes v1. Lanes parked by operator until unparked; nothing here executes before then.
 
-Current ordering and constraints are in `serving-plan-current.md`. The operator requires zero quality sacrifice; the relaxed numerical-adoption threshold previously written below is revoked.
+**Historical component, not the current execution plan.** The complete PP + TG + turnaround program is consolidated in [serving-plan-current.md](serving-plan-current.md), which supersedes this file's ordering, estimates, fixed throughput floor and contract-only gate shortcuts. The operator requires zero quality sacrifice; the relaxed numerical-adoption threshold previously written below is revoked. Keep the original text below as design history, not competing instructions.
 
 ## Facts (measured/settled)
 - prompt_ms = 1338 + 3.74×pcie_fetch (R²=0.969) — COMMON CAUSE (slots drive both), not overlap debt.
