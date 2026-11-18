@@ -7,9 +7,11 @@
 from __future__ import annotations
 
 import json
+import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import unittest
 import urllib.request
 from pathlib import Path
@@ -277,6 +279,250 @@ class FrozenArtifacts(unittest.TestCase):
             self.assertEqual(arm["quality_identity"]["--max-context"], "262144")
             self.assertEqual(arm["quality_identity"]["--kv"], "int8")
             self.assertEqual(arm["quality_identity"]["--conversation-cache-disk-mib"], "24576")
+
+
+class PanelExecution(unittest.TestCase):
+    """Drives the real run_pair/run_arm/collect code against fake children.
+
+    No engine, no endpoint, no process control: Popen, the launcher boot and stop-all
+    are the only things substituted.
+    """
+
+    def setUp(self):
+        self.arm = "current"
+        self.panel = PANEL.Panel(OUT, health=False)
+        self.shape = next(s for s in self.panel.manifest["shapes"] if s["name"] == "short16k")
+        self.spec = self.panel.manifest["arms"][self.arm]
+        self.spec["helper_log"] = str(OUT / "logs" / "fake-helper.log")
+        self.panel.boot = lambda arm: {"arm": arm}          # type: ignore[assignment]
+        self.panel.unlink_sockets = lambda arm: None        # type: ignore[assignment]
+        self.engine_log = Path(self.spec["engine_log"])
+        self.engine_log.parent.mkdir(parents=True, exist_ok=True)
+        self.engine_log.unlink(missing_ok=True)
+
+    def tearDown(self):
+        shutil.rmtree(OUT / "arms" / self.arm, ignore_errors=True)
+        shutil.rmtree(OUT / "archive", ignore_errors=True)
+        shutil.rmtree(OUT / "summary", ignore_errors=True)
+        self.engine_log.unlink(missing_ok=True)
+
+    # -- helpers ------------------------------------------------------------------
+    def _fakes(self, results: list[dict]) -> dict:
+        """Fake Popen that replays scripted outcomes for successive run_pair calls."""
+        calls: list[list[str]] = []
+        state = {"index": -1}
+
+        class FakeProcess:
+            def __init__(self, cmd):
+                state["index"] += 1
+                self.script = results[state["index"] % len(results)]
+                self.cmd = [str(part) for part in cmd]
+                calls.append(self.cmd)
+                self.polls = self.script.get("polls", 0)
+                self.done = False
+
+            def poll(self):
+                if self.polls > 0:
+                    self.polls -= 1
+                    if self.script.get("on_poll"):
+                        self.script["on_poll"]()
+                    return None
+                if not self.done:
+                    self.done = True
+                    if self.script.get("writer"):
+                        self.script["writer"](self.cmd)
+                    return None
+                return self.script.get("exit", 0)
+
+            def kill(self):
+                pass
+
+            def wait(self):
+                return self.script.get("exit", 0)
+
+        real = subprocess.Popen
+        subprocess.Popen = lambda cmd, **_k: FakeProcess(cmd)
+        self.addCleanup(setattr, subprocess, "Popen", real)
+        return {"calls": calls}
+
+    def _write_pair(self, cmd: list[str], *, reuse_fresh: bool = False) -> None:
+        """Emit an engine log and driver record that the real parser will read back."""
+        leg = cmd[cmd.index("--leg") + 1]
+        arm = cmd[cmd.index("--arm") + 1]
+        out = Path(cmd[cmd.index("--out") + 1])
+        out.mkdir(parents=True, exist_ok=True)
+        ctx = int(cmd[cmd.index("--ctx") + 1])
+        shape = cmd[cmd.index("--champs-shape") + 1]
+        pair = int(cmd[cmd.index("--champs-pair") + 1])
+        fresh = MAIN.format(r=16000 if reuse_fresh else 0, k=0 if reuse_fresh else 16000,
+                            ms=90000)
+        first = f"{fresh}\n{CONT}\n".encode()
+        second = f"{CONT}\n{MAIN.format(r=16000, k=0, ms=21000)}\n".encode()
+        start = self.engine_log.stat().st_size if self.engine_log.exists() else 0
+        with self.engine_log.open("ab") as sink:
+            sink.write(first + second)
+        mid, end = start + len(first), start + len(first) + len(second)
+        record = {
+            "arm": arm, "leg": leg, "kind": "tg", "ctx": ctx, "max_tokens": 512,
+            "walls": [10.0, 4.0], "content_from": "content", "prompt_bytes": ctx,
+            "prompt_sha256": next(c["sha256"] for c in self.panel.manifest["corpus"]
+                                  if c["shape"] == shape and c["pair"] == pair),
+            "requests": [
+                {"index": 0, "wall_s": 10.0, "content_from": "content", "response_sha256": "a",
+                 "elog_start": start, "elog_end": mid},
+                {"index": 1, "wall_s": 4.0, "content_from": "content", "response_sha256": "b",
+                 "elog_start": mid, "elog_end": end},
+            ],
+            "elog": str(self.engine_log), "elog_start": start, "elog_end": end,
+            "mem": {}, "champs": {"shape": shape, "pair": pair, "measured": pair >= 1,
+                                  "retries": 0},
+        }
+        (out / f"{arm}-{leg}.json").write_text(json.dumps(record))
+
+    def _sandbox_restore(self, sandbox: Path, stop_exit: int, verdict: str) -> Path:
+        """Rewrite the real restore script onto sandbox paths with a stub stop wrapper."""
+        script = (RPC / "gpu-rounds" / "champions_restore.sh").read_text()
+        rewritten = script.replace('R=/mnt/srcds/Strata', f'R={sandbox / "strata"}')
+        rewritten = rewritten.replace(
+            'OUT=$R/bench/ab-v0210/rpcprof/out/champions-20261118', f'OUT={sandbox / "out"}')
+        bin_dir = sandbox / "bin"
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        (sandbox / "strata").mkdir(parents=True, exist_ok=True)
+        restore = bin_dir / "champions_restore.sh"
+        restore.write_text(rewritten)
+        (bin_dir / "champions_stop.sh").write_text(
+            f"#!/usr/bin/env bash\necho 'stop-all: {verdict}'\nexit {stop_exit}\n")
+        (sandbox / "strata" / "launch-v0238.sh").write_text(
+            f"#!/usr/bin/env bash\ntouch {sandbox / 'LAUNCHED'}\n")
+        for path in (restore, bin_dir / "champions_stop.sh",
+                     sandbox / "strata" / "launch-v0238.sh"):
+            path.chmod(0o755)
+        return restore
+
+    # -- gap 1: live output while the child runs ----------------------------------
+    def test_engine_log_is_streamed_while_the_driver_runs(self):
+        pumped: list[int] = []
+        real_pump = PANEL.Panel._pump_all
+        PANEL.Panel._pump_all = lambda self: (pumped.append(1), real_pump(self))[1]
+        self.addCleanup(setattr, PANEL.Panel, "_pump_all", real_pump)
+
+        def on_poll():
+            with self.engine_log.open("a") as sink:
+                sink.write("strata serve: prompt 16000 tokens = 0 reused + 16000 read in "
+                           "100 ms (160.0 tok/s), 8 generated in 100 ms (80.0 tok/s)\n")
+
+        self._fakes([{"exit": 0, "polls": 3, "on_poll": on_poll}])
+        original = PANEL.PUMP_S
+        PANEL.PUMP_S = 0
+        self.addCleanup(setattr, PANEL, "PUMP_S", original)
+        self.panel.run_pair(self.arm, self.shape, 0)
+        self.assertGreaterEqual(len(pumped), 3, "no live pumping during the request")
+
+    # -- gap 2: anomalies abort rather than fake success, and never retry ----------
+    def test_driver_nonzero_aborts_the_arm_without_retrying(self):
+        fakes = self._fakes([{"exit": 3}])
+        self.assertIsNone(self.panel.run_pair(self.arm, self.shape, 0))
+        self.assertEqual(len(fakes["calls"]), 1, "a failed pair must not be retried")
+
+    def test_timeout_kills_and_never_relaunches(self):
+        fakes = self._fakes([{"polls": 10_000}])
+        shape = dict(self.shape, request_timeout_s=0)
+        self.assertIsNone(self.panel.run_pair(self.arm, shape, 0))
+        self.assertEqual(len(fakes["calls"]), 1,
+                         "relaunching while server-side work is still in flight would "
+                         "overlap benchmark requests")
+
+    def test_run_arm_stops_at_the_first_unusable_pair(self):
+        self._fakes([{"exit": 0, "writer": lambda cmd: self._write_pair(cmd, reuse_fresh=True)}])
+        self.panel.stop_all = lambda: True                  # type: ignore[assignment]
+        self.assertFalse(self.panel.run_arm(self.arm))
+        legs = (OUT / "arms" / self.arm / "legs.jsonl").read_text().splitlines()
+        self.assertEqual(len(legs), 1, "the arm must stop at the first bad pair")
+
+    def test_zero_samples_cannot_report_success(self):
+        self._fakes([{"exit": 1}])
+        self.panel.stop_all = lambda: True                  # type: ignore[assignment]
+        self.assertFalse(self.panel.run_arm(self.arm))
+        summary = json.loads((OUT / "summary" / f"{self.arm}.summary.json").read_text())
+        self.assertFalse(summary["complete"])
+        self.assertEqual(summary["pairs_complete"], 0)
+        self.assertEqual(summary["pairs_planned"], self.panel.planned_pairs())
+        for shape in summary["shapes"].values():
+            self.assertEqual(shape["pp_tok_s"]["n"], 0)
+            self.assertEqual(shape["tg_tok_s"]["n"], 0)
+
+    def test_good_pair_is_complete_and_counted(self):
+        self._fakes([{"exit": 0, "writer": self._write_pair}])
+        result = self.panel.run_pair(self.arm, self.shape, 0)
+        self.assertIsNotNone(result)
+        self.assertTrue(result.complete, result.reasons)
+        self.assertEqual(result.context_tokens, 16000)
+        self.assertEqual(result.intended_bytes, self.shape["ctx_bytes"])
+
+    # -- gap 3: a failed stop never leads to a launch ------------------------------
+    def test_stop_all_requires_zero_exit_as_well_as_the_verdict(self):
+        real = subprocess.run
+        subprocess.run = lambda *_a, **_k: subprocess.CompletedProcess(
+            [], returncode=1, stdout="stop-all: before=3 after=3 ALL STOPPED", stderr="")
+        self.addCleanup(setattr, subprocess, "run", real)
+        self.assertFalse(self.panel.stop_all())
+
+    def test_failed_stop_prevents_any_boot(self):
+        self.panel.stop_all = lambda: False                 # type: ignore[assignment]
+        booted: list[str] = []
+        self.panel.boot = lambda arm: booted.append(arm)    # type: ignore[assignment]
+        self.assertFalse(self.panel.run_arm(self.arm))
+        self.assertEqual(booted, [], "a busy box must not get a second pair")
+
+    def test_restore_script_refuses_to_launch_after_a_failed_stop(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            restore = self._sandbox_restore(root, stop_exit=1, verdict="before=2 after=2 "
+                                                                       "STILL ALIVE")
+            result = subprocess.run(["bash", str(restore)], capture_output=True, text=True,
+                                    timeout=120)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("RESTORE-FAIL: stop-all was not clean", result.stdout)
+            self.assertFalse((root / "LAUNCHED").exists(),
+                             "restore launched a pair despite an unclean stop")
+
+    def test_restore_script_proceeds_when_the_stop_is_clean(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            restore = self._sandbox_restore(root, stop_exit=0, verdict="before=0 after=0 - "
+                                                                        "ALL STOPPED")
+            result = subprocess.run(["bash", str(restore), "--timeout", "3"],
+                                    capture_output=True, text=True, timeout=120)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertNotIn("stop-all was not clean", result.stdout)
+            self.assertTrue((root / "LAUNCHED").exists(), "a clean stop did not proceed")
+            self.assertIn("RESTORE-FAIL", result.stdout)
+
+    # -- gap 4: a rerun cannot inherit earlier evidence ----------------------------
+    def test_stale_supervisor_output_and_old_legs_are_not_counted(self):
+        directory = OUT / "arms" / self.arm
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "supervisor.out").write_text(
+            "Starting mixed backend on 127.0.0.1:8009; log: /old/engine.log; "
+            "helper: /old/helper.log\n")
+        (directory / "legs.jsonl").write_text(json.dumps(_blank_leg("stale").to_dict()) + "\n")
+        self.engine_log.write_text("strata serve: prompt 1 tokens = 0 reused + 1 read in 1 ms "
+                                   "(1.0 tok/s), 1 generated in 1 ms (1.0 tok/s)\n")
+
+        self.panel.fresh_run_dir(self.arm)
+
+        self.assertFalse((directory / "supervisor.out").exists(),
+                         "a stale announce line must not be able to satisfy the boot gate")
+        self.assertFalse((directory / "legs.jsonl").exists(), "stale legs must not survive")
+        self.assertFalse(self.engine_log.exists())
+        archived = list((OUT / "archive").rglob("supervisor.out"))
+        self.assertTrue(archived, "prior evidence must be preserved, not deleted")
+        self.assertIn("Starting mixed backend", archived[0].read_text())
+        self.assertTrue(list((OUT / "archive").rglob(self.engine_log.name)))
+
+    def test_collect_on_a_fresh_dir_is_incomplete(self):
+        self.panel.fresh_run_dir(self.arm)
+        self.assertFalse(self.panel.collect(self.arm))
 
 
 if __name__ == "__main__":

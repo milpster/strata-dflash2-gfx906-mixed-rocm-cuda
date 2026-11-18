@@ -57,7 +57,7 @@ Prepare (CPU only, re-runnable, idempotent):
 cd /mnt/srcds/Strata/bench/ab-v0210/rpcprof
 python3 champions_prepare.py --prepare
 python3 gpu-rounds/champions_panel.py            # default dry-run, exit 0 = fit to run
-python3 tests/test_champions_cpu.py              # 19 CPU tests
+python3 tests/test_champions_cpu.py              # 31 CPU tests
 ```
 
 Run — **parent only**, one arm at a time, in a terminal it can watch:
@@ -72,41 +72,78 @@ python3 gpu-rounds/champions_panel.py --run --arm nov15    2>&1 | tee out/champi
 `--run` re-verifies every pinned hash and refuses to start an engine on drift.
 Omit `--arm` for a single background session over all three.
 
-Progress format: `[HH:MM:SS] arm leg: fresh read N @ X tok/s; cached reused M @ Y tok/s;
-walls [...]`, interleaved with NUL-stripped engine lines matching boot/serve/error
-patterns. An arm whose timing window contains more than one plausible line prints
-`unmatched timing line(s)` and the leg is dropped, never guessed.
+Progress format: `[HH:MM:SS] arm leg: ctx N tok, fresh read N @ X tok/s; cached reused M @
+Y tok/s; walls [...]`, with the engine, boot, helper and supervisor logs streamed
+continuously **during** each request (NUL-stripped, filtered to boot/timing/DONE/error
+patterns), not only during boot. Generated text is never matched, so completions cannot
+spew; numeric checks read engine counters only, never reply text. An arm whose window
+holds more than one plausible line prints the count of continuation-shaped lines excluded,
+and the main pair is matched by context and reuse counts, never by last grep hit.
+
+Driver stdout/stderr for every attempt goes to `arms/<arm>/driver/<leg>.out` and is
+printed on a non-zero exit.
+
+Completeness is enforced, not implied. A pair is complete only if both timing lines
+matched, every number is finite, the fresh and cached legs agree on context tokens, the
+prompt digest matches the corpus, and both responses carried text. The first incomplete
+pair ends the arm: exact reasons are printed, partial evidence is summarised, and the run
+reports failure. `summary/<arm>.summary.json` carries `complete`, `pairs_complete` and
+`pairs_planned`; zero or missing samples can never read as success and no fallback number
+is invented.
+
+**No retry exists.** Killing the client does not cancel work the server already accepted,
+so a second attempt while the first is still executing would overlap benchmark traffic and
+corrupt the number being measured. Any timeout, non-zero exit, missing record or unusable
+pair aborts the arm, then a controlled stop and restore.
 
 Output per arm, written as soon as it finishes:
 `out/champions-20261118/summary/<arm>.summary.{json,csv}` (PP/TG medians + spread + n,
-actual read/reused/generated, max RSS/VRAM, min MemAvailable, timeouts/fallbacks, every
-dropped leg with its reason) and `arms/<arm>/{boot.json,legs.jsonl,records/}`.
+actual context tokens, read/reused/generated, max RSS/VRAM, min MemAvailable,
+timeouts/fallbacks, every dropped leg with its reason) and
+`arms/<arm>/{boot.json,legs.jsonl,records/,driver/}`.
+
+Evidence is never reused or destroyed. A rerun renames the previous `arms/<arm>`, engine
+log and summary into `out/champions-20261118/archive/…`, writes `supervisor.out` fresh
+(truncate, not append) so a stale announce line cannot satisfy the boot gate, and starts
+`legs.jsonl` empty so old samples cannot inflate `n`. The per-arm conversation cache stays
+isolated and is never deleted, so a rerun may reuse it — `boot.json` records the cache dir
+in use.
 
 ## Safety and restore
 
 - `stop-all.sh` is invoked only from `gpu-rounds/champions_stop.sh`; no generated file is
   named `launch-prod-*` / `launch-trial-*` / `*strata-expert-helper*`, so the sweep cannot
   match the harness that triggers it.
+- A start needs stop-all to be **clean**: zero exit *and* the `ALL STOPPED` verdict. Either
+  alone passing is not enough to boot another pair.
 - Each arm boots through the **canonical shared** supervisor `--state` / `--lock` paths, so
   the existing `stop-all.sh` still reaches the pair.
 - Only the two per-arm socket paths under `out/champions-20261118/run/` are unlinked.
 - Boot gate: fresh `ready: http://` line **plus** `/proc/<pid>/exe` resolving to the
   arm's frozen engine **plus** both per-arm sockets present. No date-prefix log glob.
-- Restore is in `finally` and on SIGINT/SIGTERM: `gpu-rounds/champions_restore.sh` boots
-  `/mnt/srcds/Strata/launch-v0238.sh` — original `prod-config-v0238.json` plus the
-  `b0ec` engine — then gates on a ready line and engine identity. A failed restore exits
-  non-zero and prints `RESTORE-FAIL`; the panel then appends
-  `RESTORE FAILED — production may still be down` to its outcome. It never prints
-  `RESTORED` without a verified ready line. `--health` adds the finite-output check.
-- Bounded retries: one retry of a pair, and only while the engine is still alive; a dead
-  engine aborts the arm and restores rather than poking the OS.
+- Restore runs in `finally` and on SIGINT/SIGTERM. `gpu-rounds/champions_restore.sh` first
+  requires a clean stop (same zero-exit **and** `ALL STOPPED` rule) and refuses to launch
+  another pair otherwise. It then boots `/mnt/srcds/Strata/launch-v0238.sh` — original
+  `prod-config-v0238.json` plus the `b0ec` engine, never an old launcher — gates on a ready
+  line, a `/v1/models` answer, and engine identity. With `--health` it also requires a
+  non-empty finite generation (text present, `finish_reason` present, completion tokens > 0)
+  **before** printing `RESTORED`; without that it prints `RESTORE-FAIL` and exits non-zero.
+  It never prints `RESTORED` on a ready line alone.
+- Bounded deadlines only: boot 1500 s, per-shape request deadlines as tabled. No OS or GPU
+  reset attempts.
 - Historical note: `nov15` predates the #267 wedge fix, so a watchdog abort there is a
   plausible outcome, not a surprise. A hard kernel hang still needs an operator.
 
 ## CPU-only validation status
 
-`--prepare`, `--dry-run` and the 19 CPU tests pass. Nothing in this section has been
-executed against a GPU: no boot, no request, no production change. The RAM-policy live
-acceptance for `current` is still open — the panel captures any headroom-band/limiter
-lines into `arms/current/boot.json` as `changed_path_evidence`, which is evidence to read,
-not a claim.
+`--prepare`, `--verify`, `--dry-run` and the 31 CPU tests in
+`tests/test_champions_cpu.py` pass. The execution tests drive the real
+`run_pair` / `run_arm` / `collect` / `stop_all` code with fake children and a sandboxed
+copy of the restore script, and they assert: driver failure propagates and is not retried,
+a timeout kills without relaunching, the first unusable pair aborts the arm, zero samples
+cannot report success, a failed stop prevents any boot, stale announce output and old legs
+are archived rather than counted, and the engine log is pumped while a child is in flight.
+Nothing here has been executed against a GPU: no boot, no request, no production change.
+The RAM-policy live acceptance for `current` is still open — the panel captures any
+headroom-band/limiter lines into `arms/current/boot.json` as `changed_path_evidence`,
+which is evidence to read, not a claim.

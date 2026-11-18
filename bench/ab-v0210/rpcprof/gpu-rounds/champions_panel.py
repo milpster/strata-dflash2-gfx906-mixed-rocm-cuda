@@ -43,16 +43,20 @@ STOP = HERE / "champions_stop.sh"
 SUPERVISOR_STATE = "run/prod-swift15-f16kv-mixed-supervisor.json"
 BOOT_TIMEOUT_S = 1500
 POLL_S = 15
+PUMP_S = 2
 READY = re.compile(r"ready: http://")
 # The launcher's own stdout names the two files it just opened. Take them from there,
 # never from a date-prefix glob over logs/ that would happily match yesterday's log.
 LAUNCHER_ANNOUNCE = re.compile(r"^Starting mixed backend on .*log: (\S+); helper: (\S+)$",
                                re.MULTILINE)
 # Live progress: boot milestones, the band/limiter line the CURRENT arm is expected to
-# log, timing lines, and anything that smells like trouble.
+# log, engine timing/DONE lines, and anything that smells like trouble. Generated text is
+# never matched, so completions cannot spew into the terminal; numeric checks elsewhere
+# read engine counters only, never this text (the word "inf" in a reply is not a number).
 INTEREST = re.compile(
     r"ready:|serve: prompt|listening|staging|stage |headroom|band|limiter|advis|reclaim|"
-    r"ERROR|rror:|fail|fallback|timeout|watchdog|abort|REFUSING|exited", re.IGNORECASE)
+    r"\bdone\b|tok/s|tokens/s|prefill|decode|resident|ERROR|rror:|fail|fallback|timeout|"
+    r"watchdog|abort|REFUSING|exited", re.IGNORECASE)
 RAM_POLICY = re.compile(r"headroom|band|limiter", re.IGNORECASE)
 
 
@@ -77,21 +81,66 @@ class Panel:
         self.manifest = json.loads((out / "manifest.json").read_text())
         self.restored = False
         self.offsets: dict[str, int] = {}
+        self.live: list[Path] = []
 
     def arm_dir(self, arm: str) -> Path:
         return self.out / "arms" / arm
 
     # ---------- stop / start / restore -------------------------------------------
     def stop_all(self) -> bool:
-        """Delegate to the box's own stop-all through the wrapper (see its header)."""
+        """Delegate to the box's own stop-all through the wrapper (see its header).
+
+        Both conditions are required: a zero exit AND the ALL STOPPED verdict. Either
+        alone can pass while a pair is still resident, and starting a second pair on a
+        62 GiB box is the failure we are most careful about.
+        """
         result = subprocess.run(["bash", str(STOP)], capture_output=True, text=True, timeout=900)
         for line in result.stdout.splitlines():
             if line.startswith("stop-all:"):
                 progress(f"stop-all: {line.split(':', 1)[1].strip()}")
-        if "ALL STOPPED" not in result.stdout:
-            progress("stop-all did not report ALL STOPPED — refusing to start a second stack")
+        if result.returncode != 0 or "ALL STOPPED" not in result.stdout:
+            progress(f"stop-all not clean (exit {result.returncode}) — refusing to start a "
+                     "second stack")
             return False
         return True
+
+    def fresh_run_dir(self, arm: str) -> Path:
+        """Start each arm from an empty evidence dir; never delete a previous measurement.
+
+        Appending to yesterday's supervisor.out or legs.jsonl would let a stale announce
+        line satisfy the boot gate and old samples inflate n. Prior evidence is renamed
+        aside inside out/, so it stays inspectable.
+        """
+        directory = self.arm_dir(arm)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        archived = []
+        if directory.exists() and any(directory.iterdir()):
+            target = self.out / "archive" / f"{arm}-{stamp}"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            while target.exists():
+                target = target.with_name(target.name + "x")
+            directory.rename(target)
+            archived.append(str(target))
+        directory.mkdir(parents=True, exist_ok=True)
+
+        # The raw engine log sits outside the arm dir: move it aside rather than unlinking
+        # it, so a rerun starts clean without destroying the earlier raw record.
+        engine_log = Path(self.manifest["arms"][arm]["engine_log"])
+        if engine_log.exists():
+            stash = self.out / "archive" / "logs" / f"{stamp}"
+            stash.mkdir(parents=True, exist_ok=True)
+            engine_log.rename(stash / engine_log.name)
+            archived.append(str(stash / engine_log.name))
+        summary = self.out / "summary" / f"{arm}.summary.json"
+        if summary.exists():
+            stash = self.out / "archive" / "summary" / f"{stamp}"
+            stash.mkdir(parents=True, exist_ok=True)
+            for prior in (self.out / "summary").glob(f"{arm}.summary.*"):
+                prior.rename(stash / prior.name)
+            archived.append(str(stash))
+        if archived:
+            progress(f"{arm}: previous evidence preserved at {', '.join(archived)}")
+        return directory
 
     def unlink_sockets(self, arm: str) -> None:
         """Remove exactly the two socket paths this panel owns. No globs, ever."""
@@ -112,31 +161,33 @@ class Panel:
         # setsid --fork orphans the launcher into its own session. A plain backgrounded
         # child left the pair supervisor reparented under the caller, which then hung in
         # do_wait forever — the incident lane_boot.sh records.
-        with supervisor_out.open("ab") as sink:
+        # "wb", not "ab": a truncated file cannot hand this gate yesterday's announce line.
+        with supervisor_out.open("wb") as sink:
             subprocess.run(["setsid", "--fork", "bash", str(launcher)], cwd=str(PREP.ROOT),
                            stdout=sink, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, check=True)
         progress(f"booting {arm} via {launcher.name}")
 
         deadline = time.monotonic() + BOOT_TIMEOUT_S
-        self.offsets = {str(supervisor_out): 0, spec["engine_log"]: 0}
+        self.live = [supervisor_out, Path(spec["engine_log"])]
+        self.offsets = {str(p): 0 for p in self.live}
         announce = None
         while time.monotonic() < deadline and not announce:
             announce = self._announce(supervisor_out)
-            self._pump(supervisor_out)
+            self._pump_all()
             if not announce:
                 time.sleep(5)
         if not announce:
             raise BootFailed(f"{arm}: launcher never announced its log paths "
                              f"within {BOOT_TIMEOUT_S} s, see {supervisor_out}")
         boot_log, helper_log = announce
-        self.offsets[boot_log] = 0
+        self.live.extend([Path(boot_log), Path(helper_log)])
+        self.offsets.update({str(p): 0 for p in self.live})
         spec["helper_log"] = helper_log
         progress(f"{arm}: boot log {Path(boot_log).name}, helper log {Path(helper_log).name}")
 
         ready = ""
         while time.monotonic() < deadline:
-            self._pump(Path(boot_log))
-            self._pump(Path(spec["engine_log"]))
+            self._pump_all()
             text = Path(boot_log).read_bytes().replace(b"\0", b"").decode("utf-8", "replace")
             hit = READY.search(text)
             if hit:
@@ -193,22 +244,36 @@ class Panel:
                 return {"pid": int(entry), "exe": exe}
         return None
 
-    def _pump(self, path: Path) -> None:
+    def _pump_all(self) -> list[str]:
+        """Stream every live log forward to the terminal, NUL-stripped and filtered.
+
+        Called during boot AND while a driver request is in flight, so the terminal is
+        never silent until the pair returns. Returns the lines it printed.
+        """
+        shown: list[str] = []
+        for path in self.live:
+            shown.extend(self._pump(path))
+        return shown
+
+    def _pump(self, path: Path) -> list[str]:
         """Stream one file forward to the terminal, NUL-stripped, filtered."""
         key = str(path)
         if not path.is_file():
-            return
+            return []
         start, size = self.offsets.get(key, 0), path.stat().st_size
         if size <= start:
             self.offsets[key] = size
-            return
+            return []
         with path.open("rb") as f:
             f.seek(start)
             blob = f.read(size - start).replace(b"\0", b"")
         self.offsets[key] = size
+        shown = []
         for line in blob.decode("utf-8", "replace").splitlines():
             if INTEREST.search(line):
                 print(f"    | {line[:400]}", flush=True)
+                shown.append(line)
+        return shown
 
     @staticmethod
     def _changed_path_evidence(boot_log: Path) -> list[str]:
@@ -239,57 +304,83 @@ class Panel:
         return code == 0
 
     # ---------- measurement -------------------------------------------------------
-    def run_pair(self, arm: str, shape: dict, pair: int, retry: int) -> LOG.LegResult | None:
+    def run_pair(self, arm: str, shape: dict, pair: int) -> LOG.LegResult | None:
+        """Run one fresh+cached pair, streaming the engine logs the whole time.
+
+        There is deliberately no retry. Killing the client does not cancel the work the
+        server already accepted, so launching a second attempt while the first is still
+        executing would overlap benchmark requests and corrupt the very number being
+        measured. Any anomaly ends the arm; the evidence collected so far is kept.
+        """
         spec = self.manifest["arms"][arm]
         entry = next(c for c in self.manifest["corpus"]
                      if c["shape"] == shape["name"] and c["pair"] == pair)
-        leg = f"{shape['name']}-p{pair}" + (f"r{retry}" if retry else "")
+        leg = f"{shape['name']}-p{pair}"
         record_path = self.arm_dir(arm) / "records" / f"{arm}-{leg}.json"
-        record_path.unlink(missing_ok=True)  # never read a stale attempt as this one's result
+        driver_out = self.arm_dir(arm) / "driver" / f"{leg}.out"
+        driver_out.parent.mkdir(parents=True, exist_ok=True)
         cmd = [sys.executable, str(DRIVER), "--arm", arm, "--leg", leg, "--kind", "tg",
                "--ctx", str(entry["bytes"]), "--max-tokens", str(shape["max_tokens"]),
                "--prompt-file", entry["path"], "--prompt-sha256", entry["sha256"],
                "--out", str(self.arm_dir(arm) / "records"),
                "--elog", spec["engine_log"], "--hlog", spec["helper_log"],
-               "--champs-shape", shape["name"], "--champs-pair", str(pair),
-               "--champs-retry", str(retry)]
+               "--champs-shape", shape["name"], "--champs-pair", str(pair)]
         if pair >= shape["warmup_pairs"]:
             cmd.append("--champs-measured")
         progress(f"{arm} {leg}: {entry['bytes']} B, max_tokens {shape['max_tokens']}, "
                  "fresh then cached")
-        try:
-            subprocess.run(cmd, capture_output=True, text=True, timeout=shape["request_timeout_s"])
-        except subprocess.TimeoutExpired:
-            progress(f"{arm} {leg}: driver exceeded its {shape['request_timeout_s']} s deadline")
+        deadline = time.monotonic() + shape["request_timeout_s"]
+        with driver_out.open("wb") as sink:
+            process = subprocess.Popen(cmd, stdout=sink, stderr=subprocess.STDOUT)
+            timed_out = False
+            while process.poll() is None:
+                if time.monotonic() >= deadline:
+                    timed_out = True
+                    process.kill()
+                    break
+                self._pump_all()          # live output for the whole request, not just boot
+                time.sleep(PUMP_S)
+            returncode = process.wait()
+        self._pump_all()                  # flush whatever printed on the way out
+
+        if timed_out:
+            progress(f"{arm} {leg}: driver exceeded its {shape['request_timeout_s']} s deadline "
+                     "and was killed; aborting the arm — server-side work from this request may "
+                     "still be running, so retrying now would overlap benchmark traffic")
+            return None
+        if returncode != 0:
+            tail = "\n".join(driver_out.read_text(errors="replace").splitlines()[-8:])
+            progress(f"{arm} {leg}: driver exited {returncode}: {tail}")
             return None
         if not record_path.is_file():
-            progress(f"{arm} {leg}: driver produced no record")
+            progress(f"{arm} {leg}: driver exited 0 but produced no record")
             return None
+
         record = json.loads(record_path.read_text())
+        if record.get("prompt_sha256") != entry["sha256"]:
+            progress(f"{arm} {leg}: driver read a different prompt than the corpus pins")
+            return None
         result = LOG.leg_from_record(record, LOG.read_windows(record))
+        result.intended_bytes = entry["bytes"]
         if result.unmatched:
-            progress(f"{arm} {leg}: {len(result.unmatched)} unmatched timing line(s) in the "
-                     "window — not guessed at")
-        if result.fresh and result.cached:
-            progress(f"{arm} {leg}: fresh read {result.fresh.read} @{result.fresh.pp_tps} tok/s; "
-                     f"cached reused {result.cached.reused} @{result.cached.tg_tps} tok/s; "
-                     f"walls {result.walls}")
+            progress(f"{arm} {leg}: {len(result.unmatched)} continuation-shaped timing line(s) "
+                     "in the window — excluded, the main pair was matched by counts")
+        if result.complete:
+            progress(f"{arm} {leg}: ctx {result.context_tokens} tok, fresh read "
+                     f"{result.fresh.read} @{result.fresh.pp_tps} tok/s; cached reused "
+                     f"{result.cached.reused} @{result.cached.tg_tps} tok/s; walls {result.walls}")
         else:
-            progress(f"{arm} {leg}: NO usable timing pair "
-                     f"({result.fresh_reason} / {result.cached_reason})")
+            progress(f"{arm} {leg}: UNUSABLE — {', '.join(result.reasons)}")
         with (self.arm_dir(arm) / "legs.jsonl").open("a") as sink:
             sink.write(json.dumps(result.to_dict(), sort_keys=True) + "\n")
         return result
 
     def run_arm(self, arm: str) -> bool:
         spec = self.manifest["arms"][arm]
-        (self.arm_dir(arm) / "records").mkdir(parents=True, exist_ok=True)
+        self.fresh_run_dir(arm)
         if not self.stop_all():
             return False
         self.unlink_sockets(arm)
-        engine_log = Path(spec["engine_log"])
-        if engine_log.exists():
-            engine_log.unlink()  # a leg's byte window must never span a previous boot
         try:
             self.boot(arm)
         except BootFailed as failure:
@@ -299,34 +390,43 @@ class Panel:
 
         for shape in self.manifest["shapes"]:
             for pair in range(shape["pairs"]):
-                result = self.run_pair(arm, shape, pair, retry=0)
-                if result is None:
-                    # Retry only while the engine is still there. If it died this is wedge
-                    # territory: record it, restore, and leave the OS alone.
-                    if self.engine_identity() is None:
-                        progress(f"{arm}: engine is gone — arm aborted, no further retries")
-                        self.collect(arm)
-                        return False
-                    progress(f"{arm}: retrying this pair ONCE (bounded, recorded)")
-                    if self.run_pair(arm, shape, pair, retry=1) is None:
-                        progress(f"{arm}: retry also failed — arm aborted")
-                        self.collect(arm)
-                        return False
-        self.collect(arm)
-        return True
+                result = self.run_pair(arm, shape, pair)
+                if result is None or not result.complete:
+                    reasons = ", ".join(result.reasons) if result else "no usable record"
+                    progress(f"{arm} {shape['name']}-p{pair}: unusable — {reasons}")
+                    progress(f"{arm}: aborting the arm; partial evidence retained, no retry")
+                    self.collect(arm)
+                    return False
+        complete = self.collect(arm)
+        if not complete:
+            progress(f"{arm}: planned pairs are not all present — arm incomplete")
+        return complete
 
-    def collect(self, arm: str) -> None:
-        """Summarise whatever exists and write it out immediately, per arm."""
+    def planned_pairs(self) -> int:
+        return sum(shape["pairs"] for shape in self.manifest["shapes"])
+
+    def collect(self, arm: str) -> bool:
+        """Summarise whatever exists, write it out at once, and report completeness.
+
+        Completeness is planned pairs vs complete pairs. Zero or missing samples can never
+        read as success, and no fallback number is invented for a gap.
+        """
         path = self.arm_dir(arm) / "legs.jsonl"
         legs = [LOG.LegResult.from_dict(json.loads(line)) for line in path.read_text().splitlines()] \
             if path.is_file() else []
+        complete = [leg for leg in legs if leg.complete]
         summary = LOG.summarise(legs)
         summary["arm"] = arm
+        summary["pairs_planned"] = self.planned_pairs()
+        summary["pairs_complete"] = len(complete)
+        summary["complete"] = len(complete) >= self.planned_pairs()
         boot = self.arm_dir(arm) / "boot.json"
         summary["boot"] = json.loads(boot.read_text()) if boot.is_file() else None
         LOG.write_summary(arm, summary, self.out / "summary")
         LOG.print_summary(arm, summary)
-        progress(f"{arm}: summary written to {self.out / 'summary' / (arm + '.summary.csv')}")
+        progress(f"{arm}: {len(complete)}/{self.planned_pairs()} planned pairs complete; "
+                 f"summary at {self.out / 'summary' / (arm + '.summary.csv')}")
+        return summary["complete"]
 
 
 def selftest(out: Path) -> None:

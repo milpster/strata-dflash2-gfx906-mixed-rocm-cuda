@@ -581,7 +581,7 @@
    "server": "b6463e7b99a0d74cb5bee783e41e401bb5728abccf8870fea13f5c44951c1182"
   }
  },
- "git_head_at_prepare": "27728dc1ffc615300e2d9fbe173c4e03e85932cd",
+ "git_head_at_prepare": "d9f86bbf97f6c389c72f19c9cae1eca0fcc7fb79",
  "plan": "Three-stack TG/PP champion comparison, requested 2026-11-17",
  "plan_document": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/gpu-rounds/serving-plan-current.md",
  "quality_key_deltas": {},

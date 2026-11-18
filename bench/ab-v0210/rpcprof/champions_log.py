@@ -81,6 +81,8 @@ class LegResult:
     pair: int
     measured: bool
     max_tokens: int
+    prompt_bytes: int = 0
+    intended_bytes: int = 0
     fresh: EnginePass | None = None
     cached: EnginePass | None = None
     fresh_reason: str = "ok"
@@ -103,6 +105,40 @@ class LegResult:
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+    @property
+    def finite(self) -> bool:
+        """Engine counters only. Completion TEXT is never inspected: the word "inf" in a
+        reply is ordinary prose, not an arithmetic fault."""
+        return finite_values([self])
+
+    @property
+    def context_tokens(self) -> int:
+        return self.fresh.tokens if self.fresh else 0
+
+    @property
+    def reasons(self) -> list[str]:
+        """Exact, human-readable cause for every way this pair is unusable."""
+        reasons = list(self.problems)
+        if self.fresh_reason != "ok":
+            reasons.append(self.fresh_reason)
+        if self.cached_reason != "ok":
+            reasons.append(self.cached_reason)
+        if self.fresh and self.cached and self.fresh.tokens != self.cached.tokens:
+            reasons.append(f"context-mismatch-{self.fresh.tokens}-vs-{self.cached.tokens}")
+        if self.fresh and self.context_tokens <= 0:
+            reasons.append("zero-context-tokens")
+        if not self.finite:
+            reasons.append("non-finite-timing")
+        if self.intended_bytes and self.prompt_bytes != self.intended_bytes:
+            reasons.append(f"prompt-{self.prompt_bytes}B-vs-intended-{self.intended_bytes}B")
+        return reasons
+
+    @property
+    def complete(self) -> bool:
+        """Usable fresh AND cached timing, finite numbers, consistent context, no bad
+        request. Anything less fails the arm rather than padding a median."""
+        return not self.reasons
 
     @classmethod
     def from_dict(cls, data: dict) -> LegResult:
@@ -170,6 +206,7 @@ def leg_from_record(record: dict, windows: list[bytes]) -> LegResult:
         arm=record["arm"], leg=record["leg"], shape=record["champs"]["shape"],
         pair=record["champs"]["pair"], measured=record["champs"]["measured"],
         max_tokens=record["max_tokens"], unmatched=unmatched,
+        prompt_bytes=record.get("prompt_bytes", 0),
         walls=[r["wall_s"] for r in requests],
         prompt_sha256=record.get("prompt_sha256", ""),
         content_sha256=[r["response_sha256"] for r in requests],
@@ -178,7 +215,15 @@ def leg_from_record(record: dict, windows: list[bytes]) -> LegResult:
     )
     if len(windows) != 2:
         leg.problems.append(f"expected 2 request windows, got {len(windows)}")
-    if unmatched:
+    if len(requests) != 2:
+        leg.problems.append(f"expected 2 requests, got {len(requests)}")
+    # A 200 response with no text is a failed measurement, not a slow one.
+    for index, request in enumerate(requests):
+        if request.get("content_from") == "empty" or not request.get("wall_s"):
+            leg.problems.append(f"request {index} returned no usable response")
+    # `unmatched` continuation-shaped lines are expected and stay on the record as
+    # information; they are only a fault when the main pair itself failed to match.
+    if fresh is None or cached is None:
         leg.problems.append(f"unmatched-timing-lines={len(unmatched)}")
     return classify(leg, fresh, cached)
 
@@ -232,6 +277,7 @@ def summarise(legs: list[LegResult]) -> dict:
             "tg_tok_s": stats([p.tg_tps for p in cached]),
             "cold_tg_tok_s": stats([p.tg_tps for p in fresh]),
             "fresh_read": stats([p.read for p in fresh]),
+            "context_tokens": sorted({p.tokens for p in fresh}),
             "fresh_reused": sorted({leg.fresh.reused for leg in measured if leg.fresh}),
             "cached_reused": sorted({leg.cached.reused for leg in measured if leg.cached}),
             "generated": stats([p.generated for p in cached]),
@@ -282,23 +328,29 @@ def write_summary(arm: str, summary: dict, out: Path) -> None:
     """Per-arm JSON + CSV, written as soon as that arm finishes."""
     out.mkdir(parents=True, exist_ok=True)
     (out / f"{arm}.summary.json").write_text(json.dumps(summary, indent=1, sort_keys=True) + "\n")
-    rows = ["arm,shape,pairs_measured,pairs_accepted,pp_median,pp_spread,pp_n,"
-            "tg_median,tg_spread,tg_n,cold_tg_median,fresh_read_median,cached_reused,"
-            "max_rss_mib,min_mem_available_mib,timeouts,fallbacks"]
+    rows = ["arm,complete,pairs_complete,pairs_planned,shape,pairs_measured,pairs_accepted,"
+            "pp_median,pp_spread,pp_n,tg_median,tg_spread,tg_n,cold_tg_median,"
+            "context_tokens,fresh_read_median,cached_reused,max_rss_mib,"
+            "min_mem_available_mib,timeouts,fallbacks"]
     for shape, s in summary["shapes"].items():
         pp, tg, cold = s["pp_tok_s"], s["tg_tok_s"], s["cold_tg_tok_s"]
         reused = "|".join(str(r) for r in s["cached_reused"])
-        rows.append(f"{arm},{shape},{s['pairs_measured']},{s['pairs_accepted']},"
+        contexts = "|".join(str(t) for t in s["context_tokens"])
+        rows.append(f"{arm},{summary.get('complete', False)},"
+                    f"{summary.get('pairs_complete', 0)},{summary.get('pairs_planned', 0)},"
+                    f"{shape},{s['pairs_measured']},{s['pairs_accepted']},"
                     f"{pp.get('median', '')},{pp.get('spread', '')},{pp.get('n', 0)},"
                     f"{tg.get('median', '')},{tg.get('spread', '')},{tg.get('n', 0)},"
-                    f"{cold.get('median', '')},{s['fresh_read'].get('median', '')},{reused},"
-                    f"{s['max_rss_mib'] or ''},{s['min_mem_available_mib'] or ''},"
+                    f"{cold.get('median', '')},{contexts},{s['fresh_read'].get('median', '')},"
+                    f"{reused},{s['max_rss_mib'] or ''},{s['min_mem_available_mib'] or ''},"
                     f"{s['timeouts']},{s['fallbacks']}")
     (out / f"{arm}.summary.csv").write_text("\n".join(rows) + "\n")
 
 
 def print_summary(arm: str, summary: dict) -> None:
-    print(f"== {arm}")
+    complete = "COMPLETE" if summary.get("complete") else "INCOMPLETE"
+    print(f"== {arm} [{complete} {summary.get('pairs_complete', 0)}/"
+          f"{summary.get('pairs_planned', 0)} planned pairs]")
     for shape, s in summary["shapes"].items():
         pp, tg = s["pp_tok_s"], s["tg_tok_s"]
         pp_txt = (f"{pp['median']} tok/s (spread {pp['spread']}, n {pp['n']})"

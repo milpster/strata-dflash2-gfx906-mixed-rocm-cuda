@@ -31,9 +31,16 @@ done
 mkdir -p "$OUT/logs"
 BOOT=$OUT/logs/restore-$(date +%Y%m%d-%H%M%S)-$$.out
 
-# stop through the wrapper so this script's own argv never carries a swept pattern
+# stop through the wrapper so this script's own argv never carries a swept pattern.
+# BOTH conditions are required: a zero exit and the ALL STOPPED verdict. Booting another
+# 60 GiB pair onto a box that still holds one is the failure mode to avoid hardest.
 bash "$HERE/champions_stop.sh" >"$OUT/logs/restore-stop-$$.log" 2>&1
-tail -1 "$OUT/logs/restore-stop-$$.log"
+STOP_CODE=$?
+tail -2 "$OUT/logs/restore-stop-$$.log"
+if [ "$STOP_CODE" -ne 0 ] || ! grep -q 'ALL STOPPED' "$OUT/logs/restore-stop-$$.log"; then
+  echo "RESTORE-FAIL: stop-all was not clean (exit $STOP_CODE); refusing to launch another pair"
+  exit 1
+fi
 
 echo "restore: config sha $(sha256sum "$R/prod-config-v0238.json" | cut -c1-64)"
 [ "$(sha256sum "$R/prod-config-v0238.json" | cut -c1-64)" = "$FROZEN_CONFIG_SHA" ] \
@@ -68,6 +75,15 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 done
 if [ -z "$READY" ]; then echo "RESTORE-FAIL: no ready line before the deadline ($(date +%T)); see $LOG"; exit 1; fi
 
+# the port must actually answer, not just have printed a ready line once
+MODELS=""
+for i in $(seq 1 12); do
+  MODELS=$(curl -s -m 10 http://127.0.0.1:8009/v1/models 2>/dev/null | head -c 400)
+  [ -n "$MODELS" ] && break
+  sleep 5
+done
+if [ -z "$MODELS" ]; then echo "RESTORE-FAIL: ready line printed but /v1/models never answered ($(date +%T))"; exit 1; fi
+
 # boot identity: the running engine must BE the adopted production binary
 IDENT=$(python3 - "$R/v0238p0/rpcw-hip/strata" <<'PY'
 import os, sys
@@ -90,12 +106,33 @@ else:
     print(f"NO-ENGINE exe=none want={want}")
 PY
 )
+# RESTORED is printed only after everything asked of this restore has actually succeeded,
+# including the generation check when --health was requested.
 if [ "${IDENT%% *}" != "OK" ]; then echo "RESTORE-FAIL: engine identity $IDENT"; exit 1; fi
-echo "RESTORED: $READY ($(date +%T)) $IDENT"
-
 if [ "$HEALTH" = 1 ]; then
-  curl -s -m 180 http://127.0.0.1:8009/v1/chat/completions -H 'Content-Type: application/json' \
-    -d '{"model":"ud-iq3_xxs","messages":[{"role":"user","content":"Reply with exactly: OK"}],"max_tokens":64,"temperature":0}' \
-    | python3 -c "import json,sys;d=json.load(sys.stdin);m=d['choices'][0]['message'];t=m.get('content') or m.get('reasoning_content') or '';print('restore health:', repr(t[:24]), d['choices'][0].get('finish_reason'))" \
-    || { echo "RESTORE-FAIL: ready but the health generation did not return"; exit 1; }
+  HEALTH=$(curl -s -m 240 http://127.0.0.1:8009/v1/chat/completions -H 'Content-Type: application/json' \
+    -d '{"model":"ud-iq3_xxs","messages":[{"role":"user","content":"Reply with exactly: OK"}],"max_tokens":64,"temperature":0}')
+  if ! echo "$HEALTH" | python3 -c '
+import json, sys
+try:
+    body = json.load(sys.stdin)
+    choice = body["choices"][0]
+    message = choice["message"]
+    text = (message.get("content") or message.get("reasoning_content") or "").strip()
+    finish = choice.get("finish_reason")
+    tokens = int((body.get("usage") or {}).get("completion_tokens", 0))
+except Exception as error:
+    raise SystemExit(f"unparseable health response: {error}")
+if not text:
+    raise SystemExit("health generation returned no text")
+if not finish:
+    raise SystemExit("health generation has no finish_reason")
+if tokens <= 0:
+    raise SystemExit(f"health generation reported {tokens} completion tokens")
+print(f"restore health: {text[:24]!r} finish={finish} completion_tokens={tokens}")
+'; then
+    echo "RESTORE-FAIL: ready, but the health generation was not a valid finite response ($(date +%T))"
+    exit 1
+  fi
 fi
+echo "RESTORED: $READY ($(date +%T)) $IDENT"
