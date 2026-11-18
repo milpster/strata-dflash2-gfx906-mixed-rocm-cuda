@@ -1,6 +1,6 @@
 # Conversation parking/loading — bounded GPU acceptance window
 
-Status: preparation only. Operator separately requested this GPU test after the whole-plan oracle finished. No promotion is authorized. Reuse the existing runners and cache scenarios; do not build another window framework.
+Status: preparation only; GPU execution is paused for the operator-requested passive investigation of persistent slowdown after the iGPU game exits. Preserve that state until the investigation is reconciled. Operator separately requested this GPU test after the whole-plan oracle finished. No promotion is authorized. Reuse the existing runners and cache scenarios; do not build another window framework.
 
 ## Frozen candidates and authority
 
@@ -30,7 +30,10 @@ This is **cap-adjusted pressure on the real GPU serving path**. It is not a repr
 
 ## Reuse inventory and remaining preparation
 
-- Prefer the corrected champion runner/stop/restore machinery for lifecycle, identity, logs and immutable evidence. Its exact reusable entrypoints are under a focused read-only check; old fix5/legacy restore defaults are not authoritative.
+- Reuse `gpu-rounds/champions_panel.py:Panel.boot`, `stop_all`, `_pump_all`/`_pump` and the stop/restore machinery for lifecycle, identity and NUL-stripped live logs. Reuse `ab9_driver.py:MemSampler` for memory and `champions_log.py:parse_window` for actual reused/read tokens. Do not inherit the champion fresh/cached pair loop, fixed shapes or speed-winner summary as RAM acceptance assertions.
+- Parent inspected the implementation after the focused harness review. `Panel.boot` currently collects `changed_path_evidence` from the **wrapper** boot log (`champions_panel.py:214`), while the actual RAM-policy line is in the engine log. A RAM runner must explicitly read its own engine log; the existing empty collector is not a missing-feature verdict. `fresh_run_dir` archives prior per-arm/raw-log evidence, so a restart must keep unambiguous pre-/post-boot artifact references and preserve the same isolated cache.
+- Reuse `champions_prepare.py` hashing/retarget primitives, but not its frozen champion manifest/`prepare`/`verify` verbatim for changed test knobs: they deliberately enforce the original champion configs. Acceptance needs a separate run-specific manifest, equal effective environments and explicit pressure/floor/cache pins. Its `quality_keys` list does not independently watch the 2560 MiB floor; preserve and assert that value explicitly.
+- `champions_stop.sh` already requires the canonical supervisor-aware stop path; `champions_restore.sh` already gates fresh readiness, live executable path, models and optional real completion. Its output root is currently hardcoded to the old champion run, and it prints rather than independently enforces the expected binary SHA. Preserve its logic, but route future RAM-window evidence to the new run and enforce pinned hashes through the acceptance preflight/identity checks. Do not mutate the frozen comparison to accommodate a new run.
 - Existing `tools/conversation_disk_cache_check.py:s5` already drives disposable-pair restart; its default lifecycle/helper handling is not safe to reuse blindly for this mixed-GPU deployment. Reuse scenario semantics under the verified lifecycle.
 - Existing `tools/conversation_cache_soak.py` already drives at least 30 fixed known-answer cache cycles with exact state/output checks; `conversation_cache_parity.py` already has pressure and admission assertions. Their cache-budget pressure and cache-disabled reference are not automatically the RAM-guard/baseline-binary comparison required here.
 - Add only missing turn orchestration, fix-specific log assertions and a non-vacuous published-depth assertion where existing facilities cannot provide them. Keep CPU tests isolated from real benchmark/cache artifacts; do not modify engine arithmetic or add a production diagnostic API for the test.
