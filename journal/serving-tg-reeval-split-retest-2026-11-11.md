@@ -4081,3 +4081,22 @@ The no-game report makes a game-only explanation insufficient; a common underlyi
 Operator: “restart the engine and restore agent”. Parent paused the sole fixer by cancelling its retained session, received terminal acknowledgement, verified the canonical pins and live identities, then stopped the old pair through the existing champion stop wrapper. Stop exit **0**, **ALL STOPPED**, old process absence and free port 8009 were verified at **20:23:05 CET**. A separate unchanged canonical launcher invocation detached at **20:23:42 CET**. Evidence: `out/operator-restart-20261118-202211-3089242/`; detailed chronology is in `journal/recurring-tg-slowdown-2026-11-18.md`.
 
 Current-generation startup monitoring exited **0** at **20:25:30 CET**. Independent parent serving verification exited **0** at **20:26:35 CET**: canonical live path/SHA, supervisor **3131096**, generation **1**, engine **3132535**, start **863425**, current ready log, models HTTP **200** and completion HTTP **200** with **OK**, stop, **28 tokens including reasoning**, **3.994894 s** total; identity was unchanged around the request. Only then did parent resume the same retained fixer on its original offline scope. Its unfinished repair was not used to carry out this restart. No candidate deployment or GPU gate occurred; a short availability check does not establish sustained speed recovery. The evidence seal excludes active supervisor stdout `launcher.log` and uses a static `launcher-snapshot.log` instead.
+
+## Round 18dl — restore-checker repair reviewed and checked offline (2026-11-18)
+
+The resumed fixer completed its bounded three-file scope without production operations or commits. Parent inspected the actual script, verifier and fixture code. The ready-wait now re-resolves supervisor-selected generation/PID/start/log, hashes the live `/proc/<pid>/exe`, and rejects changes around models and the optional completion. HTTP success and completed curl transport are required alongside valid response bodies. A trailing value-taking option exits 2 before stop/launch instead of spinning on a failed `shift 2`. `--out` separates new restore evidence from measurements.
+
+Parent's final checks, completed **21:19:48 CET**, are recorded in `out/restore-repair-20261118-211839-684001/`:
+
+| Command | Working directory | Result |
+| --- | --- | --- |
+| `bash -n bench/ab-v0210/rpcprof/gpu-rounds/champions_restore.sh` | `/mnt/srcds/Strata` | Exit **0** |
+| `python3 -m py_compile bench/ab-v0210/rpcprof/gpu-rounds/champions_restore_verify.py bench/ab-v0210/rpcprof/tests/test_champions_cpu.py` | `/mnt/srcds/Strata` | Exit **0** |
+| `python3 bench/ab-v0210/rpcprof/tests/test_champions_cpu.py` | `/mnt/srcds/Strata` | Exit **0**, **53 tests**, **69.005 s**, `OK` |
+| `sha256sum --check out/champions-20261118/final-evidence.sha256` | `bench/ab-v0210/rpcprof` | Exit **0**, all **9** sealed files `OK` |
+
+The added restore cases cover synthetic supervisor retries, stale readiness, selected executable/path/SHA/start identity, mixed generations, invalid or failed HTTP results, finite completion and output isolation. The existing evidence-inventory guard also passed. The three source hashes matched before and after the parent's checks. Helper LSP diagnostics were clean; the test LSP could not resolve four modules inserted through runtime `sys.path`, while compilation and the executable suite passed. No full repository suite or live restore was run, and fixture success is not a hardware result.
+
+The five validation artifacts passed their separate SHA256 seal. An unrestricted staged whitespace check exited **2** on two trailing spaces emitted by the existing driver's diagnostic output in the sealed `parent-checks.log`; raw logs were preserved, and source/prose whitespace checks exclude those diagnostic files.
+
+Operational caveat: the legacy default still points at `out/champions-20261118`; `champions_panel.py` invokes the restore with only `--health`. Do not rerun that old panel into sealed evidence. Any future authorized restore must explicitly use a fresh `--out` directory. The separate RAM GPU manifest still needs exact transport, measured finite pressure rungs and restart-boundary predicates; no quality setting, 2560 MiB floor or promotion decision changed. Next priority is a single read-only investigation of the saved no-game slowdown evidence, after a fresh parent serving check before dispatch.

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import socket
 import subprocess
@@ -23,6 +24,7 @@ sys.path.insert(0, str(RPC / "gpu-rounds"))
 import champions_log as LOG  # noqa: E402
 import champions_panel as PANEL  # noqa: E402
 import champions_prepare as PREP  # noqa: E402
+import champions_restore_verify as RESTORE  # noqa: E402
 
 OUT = PREP.DEFAULT_OUT
 
@@ -440,23 +442,8 @@ class PanelExecution(unittest.TestCase):
 
     def _sandbox_restore(self, sandbox: Path, stop_exit: int, verdict: str) -> Path:
         """Rewrite the real restore script onto sandbox paths with a stub stop wrapper."""
-        script = (RPC / "gpu-rounds" / "champions_restore.sh").read_text()
-        rewritten = script.replace('R=/mnt/srcds/Strata', f'R={sandbox / "strata"}')
-        rewritten = rewritten.replace(
-            'OUT=$R/bench/ab-v0210/rpcprof/out/champions-20261118', f'OUT={sandbox / "out"}')
-        bin_dir = sandbox / "bin"
-        bin_dir.mkdir(parents=True, exist_ok=True)
-        (sandbox / "strata").mkdir(parents=True, exist_ok=True)
-        restore = bin_dir / "champions_restore.sh"
-        restore.write_text(rewritten)
-        (bin_dir / "champions_stop.sh").write_text(
-            f"#!/usr/bin/env bash\necho 'stop-all: {verdict}'\nexit {stop_exit}\n")
-        (sandbox / "strata" / "launch-v0238.sh").write_text(
-            f"#!/usr/bin/env bash\ntouch {sandbox / 'LAUNCHED'}\n")
-        for path in (restore, bin_dir / "champions_stop.sh",
-                     sandbox / "strata" / "launch-v0238.sh"):
-            path.chmod(0o755)
-        return restore
+        return restore_copy(sandbox, f"#!/usr/bin/env bash\ntouch {sandbox / 'LAUNCHED'}\n",
+                            stop_exit=stop_exit, verdict=verdict)
 
     # -- gap 1: live output while the child runs ----------------------------------
     def test_engine_log_is_streamed_while_the_driver_runs(self):
@@ -601,6 +588,500 @@ class PanelExecution(unittest.TestCase):
     def test_collect_on_a_fresh_dir_is_incomplete(self):
         self.panel.fresh_run_dir(self.arm)
         self.assertFalse(self.panel.collect(self.arm))
+
+
+def restore_copy(sandbox: Path, launcher: str, *, stop_exit: int = 0,
+                 verdict: str = "before=0 after=0 - ALL STOPPED",
+                 script: str | None = None) -> Path:
+    """The real restore script on sandbox paths, with a stub stop wrapper and stub launcher.
+
+    These two rewrites are the whole sandbox contract: R and OUT move under `sandbox`, so
+    every file the script reads or writes — its own logs, the supervisor state it consults,
+    the engine whose image it hashes — sits inside the scratch tree. The stop stub records
+    that it ran, so a test can prove the script checked its arguments before it could harm
+    anything. `script` overrides the text so the pre-fix behaviour can be re-run for a
+    reproduction; production tests leave it unset and get the file on disk.
+    """
+    text = (RPC / "gpu-rounds" / "champions_restore.sh").read_text() if script is None else script
+    rewritten = text.replace('R=/mnt/srcds/Strata', f'R={sandbox / "strata"}')
+    rewritten = rewritten.replace(
+        'OUT=$R/bench/ab-v0210/rpcprof/out/champions-20261118', f'OUT={sandbox / "out"}')
+    bin_dir = sandbox / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    (sandbox / "strata").mkdir(parents=True, exist_ok=True)
+    restore = bin_dir / "champions_restore.sh"
+    restore.write_text(rewritten)
+    # the verifier is found through the script's own directory, so the sandbox gets the
+    # same byte-identical copy it would use in production
+    shutil.copy(RPC / "gpu-rounds" / "champions_restore_verify.py",
+                bin_dir / "champions_restore_verify.py")
+    (bin_dir / "champions_stop.sh").write_text(
+        "#!/usr/bin/env bash\n"
+        f"touch '{sandbox / 'STOPPED'}'\necho 'stop-all: {verdict}'\nexit {stop_exit}\n")
+    (sandbox / "strata" / "launch-v0238.sh").write_text(launcher)
+    for path in (restore, bin_dir / "champions_stop.sh", sandbox / "strata" / "launch-v0238.sh"):
+        path.chmod(0o755)
+    return restore
+
+
+READY_LINE = ("strata serve: ready: http://127.0.0.1:8009/v1  (OpenAI: /v1/chat/completions, "
+              "Anthropic: /v1/messages, context 262144 tokens, images on)")
+MODELS_BODY = json.dumps({"object": "list", "data": [{"id": "ud-iq3_xxs", "object": "model"}]})
+HEALTH_BODY = json.dumps({"choices": [{"finish_reason": "stop", "message": {"content": "OK"}}],
+                          "usage": {"completion_tokens": 2}})
+
+# curl stand-in for the CPU suite. Answers the fixture's spec, records nothing it must not
+# touch, and above all never opens a socket: these tests must not be able to put a request
+# on the production backend, so curl is replaced rather than permitted.
+FAKE_CURL = r"""#!/usr/bin/env python3
+import json
+import pathlib
+import sys
+
+argv = sys.argv[1:]
+
+
+def option(name):
+    return argv[argv.index(name) + 1] if name in argv else None
+
+
+spec = json.loads(pathlib.Path("__SPEC__").read_text())
+url = next((arg for arg in argv if "://" in arg), "")
+models = "/v1/models" in url
+broken = int(spec["models_curl_exit" if models else "health_curl_exit"])
+if broken:
+    # a transport failure: nothing lands on disk and no status is printed, as with curl
+    sys.exit(broken)
+pathlib.Path(option("-o") or "/dev/null").write_text(
+    spec["models_body"] if models else spec["health_body"])
+if models and spec.get("flips"):
+    # the supervisor retries a generation while a request is in flight
+    state = spec["flips"].pop(0) if len(spec["flips"]) > 1 else spec["flips"][0]
+    pathlib.Path(spec["state_path"]).write_text(json.dumps(state) + "\n")
+    pathlib.Path("__SPEC__").write_text(json.dumps(spec))
+if "-w" in argv:
+    sys.stdout.write(str(spec["models_status"] if models else spec["health_status"]))
+"""
+
+
+class RestoreFixture:
+    """One sandboxed champions restore: fake launcher, fake supervisor state, fake /proc.
+
+    These are the only inputs champions_restore.sh reads, so a test drives the real
+    acceptance logic without an engine, an endpoint or process control. `curl` is placed in
+    the scratch bin and that bin goes first on the PATH the restore inherits, which makes a
+    real request structurally impossible; run() asserts the shadow is in place first.
+    """
+
+    PINNED_IMAGE = b"the adopted v0238p0 production engine, simulated for the CPU suite"
+
+    def __init__(self, case: unittest.TestCase, root: Path) -> None:
+        self.case = case
+        self.root = root
+        self.strata = root / "strata"
+        self.bin = root / "bin"
+        self.logs = self.strata / "logs"
+        self.proc = root / "proc"
+        self.engine = self.strata / "v0238p0" / "rpcw-hip" / "strata"
+        self.state_path = self.strata / "run" / "prod-swift15-f16kv-mixed-supervisor.json"
+        self.sha = hashlib.sha256(self.PINNED_IMAGE).hexdigest()
+        self.gen1_log = self.logs / "production-generation-1.log"
+        self.gen2_log = self.logs / "production-generation-2.log"
+        self.spec_path = self.bin / "curl-spec.json"
+        self.spec: dict[str, object] = self._default_spec()
+        for directory in (self.bin, self.logs, self.state_path.parent, self.engine.parent):
+            directory.mkdir(parents=True, exist_ok=True)
+        self.engine.write_bytes(self.PINNED_IMAGE)
+        (self.strata / "prod-config-v0238.json").write_text("{}\n")
+        (self.bin / "curl").write_text(FAKE_CURL.replace("__SPEC__", str(self.spec_path)))
+        (self.bin / "curl").chmod(0o755)
+        self.write_spec()
+        self.restore = self.bin / "champions_restore.sh"
+
+    # -- the supervisor's side of the world ----------------------------------------
+    def _default_spec(self) -> dict[str, object]:
+        """A healthy endpoint: 200s with valid bodies and no transport failure."""
+        return {"models_status": 200, "models_body": MODELS_BODY,
+                "health_status": 200, "health_body": HEALTH_BODY,
+                "models_curl_exit": 0, "health_curl_exit": 0,
+                "flips": [], "state_path": str(self.state_path)}
+
+    def reset_spec(self) -> None:
+        """A fresh endpoint spec. One mutation per case, with nothing inherited."""
+        self.spec = self._default_spec()
+        self.write_spec()
+
+    def write_spec(self) -> None:
+        self.spec_path.write_text(json.dumps(self.spec))
+
+    def write_state(self, state: dict[str, object]) -> None:
+        """What the pair supervisor currently declares: this generation's engine and log."""
+        self.state_path.write_text(json.dumps(state) + "\n")
+
+    @staticmethod
+    def announce(engine_log: Path) -> str:
+        """Exactly the launcher's own announcement line."""
+        helper = engine_log.with_name(engine_log.stem + "-helper.log")
+        return (f"Starting mixed backend on 127.0.0.1:8009; log: {engine_log}; "
+                f"helper: {helper}")
+
+    def running_engine(self, pid: int, start: str, *, image: Path | None = None,
+                       state: str = "S") -> Path:
+        """A /proc entry for the engine the supervisor selected: start identity and image.
+
+        The stat line is shaped like the kernel's: the bracketed comm may hold spaces, so
+        everything that matters comes after the last ')'.
+        """
+        entry = self.proc / str(pid)
+        entry.mkdir(parents=True, exist_ok=True)
+        (entry / "stat").write_text(
+            f"(strata) {state} " + " ".join(["1"] * 18 + [start]) + "\n")
+        link = entry / "exe"
+        if link.is_symlink():
+            link.unlink()
+        link.symlink_to(image or self.engine)
+        return entry
+
+    def other_binary(self) -> Path:
+        """A different engine build: right name, wrong bytes, wrong everything."""
+        other = self.root / "candidate" / "rpcw-hip" / "strata"
+        other.parent.mkdir(parents=True, exist_ok=True)
+        other.write_bytes(b"a candidate engine that must never be accepted as production")
+        return other
+
+    # -- scenarios ------------------------------------------------------------------
+    def scenario_serving(self, *, generation: int = 2, pid: int = 42016, start: str = "19625",
+                         ready: bool = True, engine_pid: int | None = None,
+                         declared_start: str | None = None, log: Path | None = None,
+                         run_engine: bool = True) -> dict[str, object]:
+        """One announced generation the supervisor has attached to, then nothing else."""
+        chosen = log or self.gen2_log
+        chosen.write_text(READY_LINE + "\n" if ready
+                          else "strata serve: loading layers, no ready line here\n")
+        state = {"generation": generation, "engine_pid": pid if engine_pid is None else 0,
+                 "engine_start": declared_start or start, "engine_log": str(chosen)}
+        self.write_state(state)
+        if run_engine:
+            self.running_engine(pid, start)
+        launcher = (f"#!/usr/bin/env bash\ntouch '{self.root / 'LAUNCHED'}'\n"
+                    f"echo '{self.announce(chosen)}'\n")
+        self.restore = restore_copy(self.root, launcher)
+        return state
+
+    def scenario_generation_retry(self) -> None:
+        """The 2026-11-18 sequence: generation 1 is announced and never boots, and the
+        supervisor retries into a generation 2 that does."""
+        self.gen1_log.write_text("strata serve: loading layers, generation 1 died here\n")
+        self.gen2_log.write_text(READY_LINE + "\n")
+        self.running_engine(42016, "19625")
+        failed = {"generation": 1, "engine_pid": 0, "engine_start": "",
+                  "engine_log": str(self.gen1_log)}
+        serving = {"generation": 2, "engine_pid": 42016, "engine_start": "19625",
+                   "engine_log": str(self.gen2_log)}
+        launcher = (f"#!/usr/bin/env bash\n"
+                    f"echo '{self.announce(self.gen1_log)}'\n"
+                    f"printf '%s\\n' '{json.dumps(failed)}' > '{self.state_path}'\n"
+                    f"sleep 1\n"
+                    f"echo '{self.announce(self.gen2_log)}'\n"
+                    f"printf '%s\\n' '{json.dumps(serving)}' > '{self.state_path}'\n")
+        self.restore = restore_copy(self.root, launcher)
+
+    # -- running it -----------------------------------------------------------------
+    def run(self, *args: str, timeout: int = 30) -> subprocess.CompletedProcess[str]:
+        curl = self.bin / "curl"
+        self.case.assertTrue(curl.is_file() and os.access(curl, os.X_OK),
+                             "curl is not shadowed here; refusing to run a restore that "
+                             "could put a real request on port 8009")
+        env = {**os.environ, "PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}",
+               "PROC_ROOT": str(self.proc)}
+        self.case.assertEqual(os.path.realpath(shutil.which("curl", path=env["PATH"]) or ""),
+                              os.path.realpath(curl),
+                              "the sandbox curl is not the one the restore would resolve")
+        # the sandbox pins its own simulated image: the acceptance rule runs unchanged, and
+        # a caller-supplied --engine-sha comes later, so the script's last one wins
+        return subprocess.run(
+            ["bash", str(self.restore), "--timeout", str(timeout), "--poll", "1",
+             "--engine-sha", self.sha, *args],
+            capture_output=True, text=True, timeout=timeout + 60, env=env)
+
+
+class RestoreAcceptance(unittest.TestCase):
+    """champions_restore.sh against a fake launcher, supervisor, /proc and curl.
+
+    Every claim the script makes about a serving pair is decided by what the supervisor
+    currently declares, so that is what these tests move.
+    """
+
+    def setUp(self):
+        self.scratch = fresh_scratch(self)
+        self.fixture = RestoreFixture(self, self.scratch)
+
+    def test_restore_follows_the_supervisor_retry_into_a_fresh_generation(self):
+        """The regression, end to end.
+
+        Generation 1 is announced first and never serves. Reading that one announcement
+        once and then waiting on that one file is what timed out at 17:02 on 2026-11-18
+        while the retry's generation 2 was already serving and independently verified.
+        """
+        self.fixture.scenario_generation_retry()
+        result = self.fixture.run()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("following generation 2", result.stdout)
+        self.assertIn("RESTORED:", result.stdout)
+        self.assertIn("gen 2", result.stdout)
+
+    def test_restore_never_reads_a_ready_line_from_a_retired_generation(self):
+        """A stale ready log must not pass, and must not even be consulted.
+
+        The retired generation's log sits in the same log directory, ready and untouched:
+        only the log this generation actually runs is ever opened.
+        """
+        self.fixture.gen1_log.write_text(READY_LINE + "\n")
+        self.fixture.scenario_serving(ready=False, log=self.fixture.gen2_log)
+        result = self.fixture.run(timeout=3)
+        self.assertNotIn("RESTORED", result.stdout)
+        self.assertIn("RESTORE-FAIL", result.stdout)
+        self.assertIn("no ready line yet", result.stdout)
+
+    def test_restore_rejects_a_process_that_is_not_the_production_engine(self):
+        """The supervisor selected this PID; it is running some other build."""
+        self.fixture.scenario_serving(run_engine=False)
+        self.fixture.running_engine(42016, "19625", image=self.fixture.other_binary())
+        result = self.fixture.run()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("RESTORED", result.stdout)
+        self.assertIn("not the production engine", result.stdout)
+
+    def test_restore_rejects_a_serving_image_that_is_not_the_pinned_one(self):
+        """Right path, wrong bytes: the pinned hash is what is accepted, not the filename.
+
+        --engine-sha is also the argument a future run would pass to accept a different
+        pinned build, so this covers the flag's validation and its use.
+        """
+        self.fixture.scenario_serving()
+        result = self.fixture.run("--engine-sha", "0" * 64)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("RESTORED", result.stdout)
+        self.assertIn("not the pinned", result.stdout)
+
+    def test_restore_rejects_a_recycled_pid_with_a_different_start_identity(self):
+        """A PID is only the engine if it started when the supervisor says it did."""
+        self.fixture.scenario_serving(run_engine=False)
+        self.fixture.running_engine(42016, "99999")
+        result = self.fixture.run(timeout=3)
+        self.assertNotIn("RESTORED", result.stdout)
+        self.assertIn("start identity changed", result.stdout)
+
+    def test_restore_refuses_until_the_supervisor_has_selected_an_engine(self):
+        """An announced pair with no attached engine is not a serving pair."""
+        self.fixture.scenario_serving(engine_pid=0)
+        result = self.fixture.run(timeout=3)
+        self.assertNotIn("RESTORED", result.stdout)
+        self.assertIn("has not selected an engine", result.stdout)
+
+    def test_restore_does_not_call_an_error_page_a_serving_engine(self):
+        """A non-empty body is not the backend answering.
+
+        The old gate accepted any bytes at all, so a gateway page or an error document
+        counted towards RESTORED.
+        """
+        for label, status, body in (("gateway page", "502", "<html>502 Bad Gateway</html>"),
+                                    ("error document", "200",
+                                     json.dumps({"error": {"message": "engine is not up"}})),
+                                    ("empty list", "200", '{"object": "list", "data": []}')):
+            with self.subTest(label):
+                self.fixture.scenario_serving()
+                self.fixture.reset_spec()
+                self.fixture.spec.update({"models_status": status, "models_body": body})
+                self.fixture.write_spec()
+                result = self.fixture.run(timeout=3)
+                self.assertNotIn("RESTORED", result.stdout)
+                self.assertIn("RESTORE-FAIL", result.stdout)
+
+    def test_restore_never_reports_restored_across_two_generations(self):
+        """A models answer from one generation and an identity from another is not evidence.
+
+        Here the pair changes generation while every request is in flight, so no single
+        generation can be accepted and the restore must exhaust its budget rather than
+        assemble a pass out of two generations.
+        """
+        state = self.fixture.scenario_serving()
+        self.fixture.running_engine(52016, "20625")
+        self.fixture.running_engine(62016, "30625")
+        flips = [dict(state, generation=3, engine_pid=52016, engine_start="20625"),
+                 dict(state, generation=4, engine_pid=62016, engine_start="30625")] * 6
+        self.fixture.spec.update({"flips": flips})
+        self.fixture.write_spec()
+        result = self.fixture.run(timeout=4)
+        self.assertNotIn("RESTORED", result.stdout)
+        self.assertIn("RESTORE-FAIL", result.stdout)
+        self.assertIn("generation changed under us", result.stdout)
+
+    def test_restore_with_health_gates_on_the_completion_it_actually_received(self):
+        """A file left on disk is not a completion: transport, HTTP status and body count.
+
+        Reading the saved response alone used to be enough, so a request that never
+        completed, a 5xx page, or a 200 wrapping an error or a truncated reply could all
+        vouch for the pair. Each row must be refused for the reason it deserves.
+        """
+        truncated = '{"choices": [{"message": {"content": "ok"}}'
+        cases = (
+            ("connection refused", {"health_curl_exit": 7},
+             "completion request did not complete (curl exit 7)"),
+            ("gateway carrying a valid body", {"health_status": 502},
+             "the completion request answered HTTP 502"),
+            ("empty body", {"health_body": ""}, "returned an empty body"),
+            ("truncated reply", {"health_body": truncated}, "unparseable health response"),
+            ("error document", {"health_body": json.dumps({"error": {"message": "overheated"}})},
+             "reported an error"),
+            ("no finish reason",
+             {"health_body": json.dumps({"choices": [{"message": {"content": "OK"}}],
+                                         "usage": {"completion_tokens": 2}})},
+             "no finish_reason"),
+            ("zero completion tokens",
+             {"health_body": json.dumps({"choices": [{"finish_reason": "stop",
+                                                      "message": {"content": "OK"}}],
+                                         "usage": {"completion_tokens": 0}})},
+             "0 completion tokens"),
+        )
+        for label, mutation, reason in cases:
+            with self.subTest(label):
+                self.fixture.scenario_serving()
+                self.fixture.reset_spec()
+                self.fixture.spec.update(mutation)
+                self.fixture.write_spec()
+                result = self.fixture.run("--health", timeout=4)
+                self.assertNotIn("RESTORED", result.stdout)
+                self.assertIn("RESTORE-FAIL", result.stdout)
+                self.assertIn(reason, result.stdout)
+
+    def test_restore_refuses_a_models_request_that_never_completed(self):
+        """The same transport rule guards /v1/models: no curl exit, no acceptance."""
+        self.fixture.scenario_serving()
+        self.fixture.spec.update({"models_curl_exit": 7})
+        self.fixture.write_spec()
+        result = self.fixture.run(timeout=4)
+        self.assertNotIn("RESTORED", result.stdout)
+        self.assertIn("models request did not complete (curl exit 7)", result.stdout)
+
+    def test_restore_with_health_accepts_a_real_completion(self):
+        """The success path stays available: --health passes when the completion is real."""
+        self.fixture.scenario_serving()
+        result = self.fixture.run("--health")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("health:", result.stdout)
+        self.assertIn("RESTORED:", result.stdout)
+
+    def test_restore_output_override_keeps_its_evidence_off_the_default_tree(self):
+        """A rerun must not be able to land in frozen measurement evidence."""
+        self.fixture.scenario_serving()
+        evidence = self.scratch / "evidence"
+        result = self.fixture.run("--out", str(evidence))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        captured = [path.name for path in (evidence / "logs").iterdir()]
+        self.assertTrue(any(name.startswith("restore-") for name in captured), captured)
+        self.assertIn("restore-models", " ".join(captured))
+        self.assertFalse((self.scratch / "out" / "logs").exists(),
+                         "--out did not move the restore's own evidence")
+
+    def test_restore_checks_its_arguments_before_it_can_touch_the_pair(self):
+        """A bad flag must fail before the stop runs, let alone a launch."""
+        for label, args in (("bad sha", ["--engine-sha", "not-hex"]),
+                            ("short sha", ["--engine-sha", "abc"]),
+                            ("negative timeout", ["--timeout", "-5"]),
+                            ("zero poll", ["--poll", "0"]),
+                            ("unknown option", ["--recover"])):
+            with self.subTest(label):
+                self.fixture.scenario_serving()
+                result = self.fixture.run(*args)
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertFalse((self.scratch / "STOPPED").exists(),
+                                 "a bad flag still stopped the pair")
+                self.assertFalse((self.scratch / "LAUNCHED").exists())
+
+    def test_restore_refuses_an_option_missing_its_value(self):
+        """A trailing flag with no value must report, not spin.
+
+        `shift 2` past the end of the arguments does not shift at all, so an unguarded
+        parse would loop in the argument loop forever with errexit off — a restore that
+        never stops, never boots and never says why.
+        """
+        for option in ("--timeout", "--poll", "--engine-sha", "--out"):
+            with self.subTest(option):
+                self.fixture.scenario_serving()
+                result = self.fixture.run(option)
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn("wants a value", result.stderr)
+                self.assertFalse((self.scratch / "STOPPED").exists(),
+                                 f"{option} without a value still stopped the pair")
+                self.assertFalse((self.scratch / "LAUNCHED").exists())
+
+
+class RestoreVerdicts(unittest.TestCase):
+    """The acceptance rules themselves, off the shell: what may and may not pass."""
+
+    def setUp(self):
+        self.scratch = fresh_scratch(self)
+
+    def test_models_page_must_be_an_http_success_with_a_real_list(self):
+        cases = [("gateway status", "502", MODELS_BODY),
+                 ("not JSON at all", "200", "engine is not ready"),
+                 ("error document", "200", json.dumps({"error": {"message": "no model"}})),
+                 ("empty model list", "200", '{"object": "list", "data": []}'),
+                 ("models with no id", "200", '{"data": [{"object": "model"}]}'),
+                 ("status is not a number", "nope", MODELS_BODY)]
+        for label, status, body in cases:
+            with self.subTest(label):
+                with self.assertRaises(RESTORE.Rejected):
+                    RESTORE.check_models(status, body)
+        verdict = RESTORE.check_models("200", MODELS_BODY)
+        self.assertEqual(verdict.fields["model_ids"], "ud-iq3_xxs")
+
+    def test_health_completion_must_be_an_http_success_and_a_real_finite_generation(self):
+        truncated = '{"choices": [{"message": {"content": "ok"}}'
+        cases = [("gateway status", "502", HEALTH_BODY),
+                 ("non-numeric status", "nope", HEALTH_BODY),
+                 ("empty response", "200", ""),
+                 ("truncated reply", "200", truncated),
+                 ("not JSON", "200", "overheated"),
+                 ("no choices", "200", "{}"),
+                 ("error document", "200", json.dumps({"error": {"message": "boom"}})),
+                 ("no finish reason",
+                  "200", json.dumps({"choices": [{"message": {"content": "OK"}}],
+                                     "usage": {"completion_tokens": 2}})),
+                 ("no completion tokens",
+                  "200", json.dumps({"choices": [{"finish_reason": "stop",
+                                                  "message": {"content": "OK"}}],
+                                     "usage": {"completion_tokens": 0}}))]
+        for label, status, body in cases:
+            with self.subTest(label):
+                with self.assertRaises(RESTORE.Rejected):
+                    RESTORE.check_health(status, body)
+        self.assertEqual(RESTORE.check_health("200", HEALTH_BODY).fields["finish"], "stop")
+
+    def test_only_a_2xx_counts_as_an_answer(self):
+        """Shared by both endpoints: the transport verdict has one definition."""
+        self.assertEqual(RESTORE.http_problem("200"), "")
+        self.assertEqual(RESTORE.http_problem("204"), "")
+        for status in ("", "0", "nope", "301", "404", "500", "503"):
+            with self.subTest(status):
+                self.assertTrue(RESTORE.http_problem(status))
+
+    def test_the_announcement_gate_tracks_the_newest_generation(self):
+        """Two announcements in one stdout means a retry: the newest one is the pair."""
+        boot = self.scratch / "launcher.out"
+        boot.write_text("")
+        self.assertEqual(RESTORE.announce_log(boot), "")
+        boot.write_text(f"{RestoreFixture.announce(Path('/logs/old.log'))}\n"
+                        f"{RestoreFixture.announce(Path('/logs/new.log'))}\n")
+        self.assertEqual(RESTORE.announce_log(boot), "/logs/new.log")
+
+    def test_a_zombie_engine_is_not_a_serving_engine(self):
+        entry = self.scratch / "proc" / "777"
+        entry.mkdir(parents=True)
+        (entry / "stat").write_text("(strata) Z " + " ".join(["1"] * 18 + ["4242"]) + "\n")
+        with self.assertRaises(RESTORE.Rejected):
+            RESTORE.proc_start(self.scratch / "proc", "777")
 
 
 class SuiteLeavesBenchmarkDataUntouched(unittest.TestCase):

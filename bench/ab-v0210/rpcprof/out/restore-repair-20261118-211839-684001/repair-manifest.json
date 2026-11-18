@@ -1,0 +1,24 @@
+{
+  "purpose": "Parent review and offline validation of the canonical restore-checker repair",
+  "specialist_session": "ses_e1040f2f0ffejvpXUnixEx6qC8",
+  "validation_owner": "parent",
+  "completed_at": "2026-11-18T21:19:48+01:00",
+  "files": {
+    "bench/ab-v0210/rpcprof/gpu-rounds/champions_restore.sh": "779fb4b0c67045865bc2348870eb37673c43a9e69106c81f121ce4b806d37a76",
+    "bench/ab-v0210/rpcprof/gpu-rounds/champions_restore_verify.py": "1878425ddd4332d661d68525929d6705736736c496441f46ce21fb8e8c4b23e1",
+    "bench/ab-v0210/rpcprof/tests/test_champions_cpu.py": "20df2f2cbb3416bfa8966207e97c6be7d2e02f123a5859676e7bdf5d83e48362"
+  },
+  "checks": [
+    {"command": "bash -n bench/ab-v0210/rpcprof/gpu-rounds/champions_restore.sh", "cwd": "/mnt/srcds/Strata", "exit_code": 0},
+    {"command": "python3 -m py_compile bench/ab-v0210/rpcprof/gpu-rounds/champions_restore_verify.py bench/ab-v0210/rpcprof/tests/test_champions_cpu.py", "cwd": "/mnt/srcds/Strata", "exit_code": 0},
+    {"command": "python3 bench/ab-v0210/rpcprof/tests/test_champions_cpu.py", "cwd": "/mnt/srcds/Strata", "exit_code": 0, "tests": 53, "seconds": 69.005},
+    {"command": "sha256sum --check out/champions-20261118/final-evidence.sha256", "cwd": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof", "exit_code": 0, "sealed_files_ok": 9}
+  ],
+  "limits": [
+    "No live restore, production request, restart or GPU acceptance test was used to validate this repair",
+    "Tests use a scratch supervisor state, fake proc tree, stub stop/launcher and PATH-shadowed curl; they do not establish real hardware performance",
+    "The legacy default output directory remains the frozen champion tree; future authorized restores must pass a fresh --out directory",
+    "The test language server reports unresolved runtime-added module paths; compilation and all runtime tests pass",
+    "No candidate deployment or promotion is authorized; the remaining RAM transport, pressure and exact restart-fixture blockers are unchanged"
+  ]
+}

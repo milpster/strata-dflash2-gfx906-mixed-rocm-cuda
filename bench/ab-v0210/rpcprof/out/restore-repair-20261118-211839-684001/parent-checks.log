@@ -1,0 +1,163 @@
+2026-11-18T21:18:39+01:00
+validation_owner=parent
+evidence_dir=bench/ab-v0210/rpcprof/out/restore-repair-20261118-211839-684001
+ .../rpcprof/gpu-rounds/champions_restore.sh        | 254 ++++++----
+ bench/ab-v0210/rpcprof/tests/test_champions_cpu.py | 515 ++++++++++++++++++++-
+ 2 files changed, 674 insertions(+), 95 deletions(-)
+779fb4b0c67045865bc2348870eb37673c43a9e69106c81f121ce4b806d37a76  bench/ab-v0210/rpcprof/gpu-rounds/champions_restore.sh
+1878425ddd4332d661d68525929d6705736736c496441f46ce21fb8e8c4b23e1  bench/ab-v0210/rpcprof/gpu-rounds/champions_restore_verify.py
+20df2f2cbb3416bfa8966207e97c6be7d2e02f123a5859676e7bdf5d83e48362  bench/ab-v0210/rpcprof/tests/test_champions_cpu.py
+
+COMMAND: bash -n bench/ab-v0210/rpcprof/gpu-rounds/champions_restore.sh
+bash_syntax_exit=0
+
+COMMAND: python3 -m py_compile bench/ab-v0210/rpcprof/gpu-rounds/champions_restore_verify.py bench/ab-v0210/rpcprof/tests/test_champions_cpu.py
+python_compile_exit=0
+
+COMMAND: python3 bench/ab-v0210/rpcprof/tests/test_champions_cpu.py
+test_distinct_early_prefix_per_repeat (__main__.Corpus.test_distinct_early_prefix_per_repeat)
+The identity tag is at the HEAD: that is what actually defeats prefix reuse. ... ok
+test_exact_bytes_and_determinism (__main__.Corpus.test_exact_bytes_and_determinism) ... ok
+test_no_arm_name_inside_prompt (__main__.Corpus.test_no_arm_name_inside_prompt) ... ok
+test_prompt_identical_across_arms (__main__.Corpus.test_prompt_identical_across_arms)
+Arms must read byte-identical input: the corpus is not arm-parameterised. ... ok
+test_bad_prompt_length_rejected_before_any_socket (__main__.Driver.test_bad_prompt_length_rejected_before_any_socket)
+A --prompt-file whose size disagrees with --ctx must fail closed, no request. ... ok
+test_legacy_builder_stable (__main__.Driver.test_legacy_builder_stable) ... ok
+test_pinned_prompt_sha_enforced (__main__.Driver.test_pinned_prompt_sha_enforced) ... ok
+test_config_quality_keys_identical_and_capacity_frozen (__main__.FrozenArtifacts.test_config_quality_keys_identical_and_capacity_frozen) ... ok
+test_dry_run_never_touches_network_or_process_control (__main__.FrozenArtifacts.test_dry_run_never_touches_network_or_process_control)
+The default path must not request, not kill, and not start anything. ... ok
+test_launcher_names_avoid_the_sweep (__main__.FrozenArtifacts.test_launcher_names_avoid_the_sweep) ... ok
+test_launcher_retarget_is_minimal_and_canonical_state_kept (__main__.FrozenArtifacts.test_launcher_retarget_is_minimal_and_canonical_state_kept) ... ok
+test_restore_target_is_the_canonical_production_launcher (__main__.FrozenArtifacts.test_restore_target_is_the_canonical_production_launcher) ... ok
+test_slots_point_at_the_era_binaries (__main__.FrozenArtifacts.test_slots_point_at_the_era_binaries) ... ok
+test_fresh_and_cached_are_never_swapped (__main__.LogParser.test_fresh_and_cached_are_never_swapped)
+A reused first leg is not fresh PP; a zero-read first leg is not a prefill. ... ok
+test_ignores_internal_continuation_lines (__main__.LogParser.test_ignores_internal_continuation_lines) ... ok
+test_leg_round_trips_through_jsonl (__main__.LogParser.test_leg_round_trips_through_jsonl) ... ok
+test_medians_ignore_outliers_rather_than_mean_them (__main__.LogParser.test_medians_ignore_outliers_rather_than_mean_them) ... ok
+test_refuses_ambiguous_window (__main__.LogParser.test_refuses_ambiguous_window) ... ok
+test_summary_drops_missing_and_reused_pp (__main__.LogParser.test_summary_drops_missing_and_reused_pp) ... ok
+test_collect_on_a_fresh_dir_is_incomplete (__main__.PanelExecution.test_collect_on_a_fresh_dir_is_incomplete) ... champions panel plan (out=/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/champions-20261118)
+  arms in order: current -> nov16 -> nov15
+  per shape: pair 0 warm-up (excluded), then measured pairs; each pair = fresh leg + cached leg
+    warm512   ctx=512     max_tokens=64    pairs=1 (measured 0) timeout=600s
+    short16k  ctx=88400   max_tokens=512   pairs=4 (measured 3) timeout=2400s
+    long80k   ctx=442400  max_tokens=1024  pairs=4 (measured 3) timeout=5400s
+  driver calls per arm: 9; requests per arm: 18; arms: 3
+  current: engine /mnt/srcds/Strata-wt-integ/build-mixed-gpu/rpcw-hip/strata
+    sha256 8f19baaf150237e5d8085c12c842a4b5728d10bd00ce315ab0ed52ff9bd819ed  source af1e64a5cb4b617d52c0f9b416af76d28c42bc4f
+    config snapshot 27728dc1ff:prod-config-v0238.json blob 82dbd3adc5028791815d8f5f057e1319ec8ea548
+    launcher snapshot 27728dc1ff:launch-v0238.sh blob 34f45a8f5a3eea89996662973f1e62efe2d06ab2
+    frozen launcher /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/champions-20261118/bin/champs-current.sh
+  nov16: engine /mnt/srcds/Strata/v0238p0/rpcw-hip/strata
+    sha256 b0ec0109ebc50c982512c371d81b2c15a8f72c70edf8a461a4ff10337da52f02  source 42cb41b314
+    config snapshot d2e94b9b08:prod-config-v0238.json blob 35117683a0ee9eb30819087dd61b230d48101680
+    launcher snapshot d2e94b9b08:launch-v0238.sh blob 34f45a8f5a3eea89996662973f1e62efe2d06ab2
+    frozen launcher /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/champions-20261118/bin/champs-nov16.sh
+  nov15: engine /mnt/srcds/Strata/v0233/build-mixed-gpu/rpcw-hip/strata
+    sha256 36ecbe983837828dd38a9f8d452cda519338369d7f42d8ad87b2830b494784b4  source 81e023bfa0
+    config snapshot fcd1b55325:prod-config-ud-iq3xxs-dflash-w4-q4_0-mixed.json blob 1b6d2497acce8ccdb18455f68de9e3f81f55c00a
+    launcher snapshot fcd1b55325:launch-prod-ud-iq3xxs-dflash-w4-q4_0-mixed.sh blob d46a0d13e4201f7c4e9bddef7a32542abf2b2e14
+    frozen launcher /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/champions-20261118/bin/champs-nov15.sh
+  what actually differs between the arms:
+    configs are identical in every quality-bearing key (precision, capacity, cache budgets, env, model paths); only the engine binary differs
+    engine current: 8f19baaf150237e5 source af1e64a5cb4b617d52c0f9b416af76d28c42bc4f
+    engine nov16: b0ec0109ebc50c98 source 42cb41b314
+    engine nov15: 36ecbe983837828d source 81e023bfa0
+    shared: helper 553f3bf48219c992 server b6463e7b99a0d74c (identical across all three arms)
+  restore target: /mnt/srcds/Strata/launch-v0238.sh with /mnt/srcds/Strata/prod-config-v0238.json
+dry-run self-test: parser matched through continuation lines, refused an ambiguous window, refused a zero-read 'fresh' leg, corpus reproducible byte for byte
+dry-run: zero endpoint requests, zero health probes, zero stop-all, zero engines started
+== current [INCOMPLETE 0/9 planned pairs]
+[21:18:40] current: 0/9 planned pairs complete; summary at /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/tests-tmp/tmpx5gt53pq/champions-20261118/summary/current.summary.csv
+ok
+test_driver_nonzero_aborts_the_arm_without_retrying (__main__.PanelExecution.test_driver_nonzero_aborts_the_arm_without_retrying) ... [21:18:40] current short16k-p0: 88400 B, max_tokens 512, fresh then cached
+[21:18:42] current short16k-p0: driver exited 3: 
+ok
+test_engine_log_is_streamed_while_the_driver_runs (__main__.PanelExecution.test_engine_log_is_streamed_while_the_driver_runs) ... [21:18:42] current short16k-p0: 88400 B, max_tokens 512, fresh then cached
+[21:18:42] current short16k-p0: driver exited 0 but produced no record
+ok
+test_failed_stop_prevents_any_boot (__main__.PanelExecution.test_failed_stop_prevents_any_boot) ... ok
+test_good_pair_is_complete_and_counted (__main__.PanelExecution.test_good_pair_is_complete_and_counted) ... [21:18:42] current short16k-p0: 88400 B, max_tokens 512, fresh then cached
+[21:18:44] current short16k-p0: 2 continuation-shaped timing line(s) in the window — excluded, the main pair was matched by counts
+[21:18:44] current short16k-p0: ctx 16000 tok, fresh read 16000 @177.8 tok/s; cached reused 16000 @24.4 tok/s; walls [10.0, 4.0]
+ok
+test_restore_log_path_excludes_launcher_separator (__main__.PanelExecution.test_restore_log_path_excludes_launcher_separator)
+The launcher separates the two paths with ';', so the parse must not keep it. ... ok
+test_restore_script_proceeds_when_the_stop_is_clean (__main__.PanelExecution.test_restore_script_proceeds_when_the_stop_is_clean) ... ok
+test_restore_script_refuses_to_launch_after_a_failed_stop (__main__.PanelExecution.test_restore_script_refuses_to_launch_after_a_failed_stop) ... ok
+test_run_arm_stops_at_the_first_unusable_pair (__main__.PanelExecution.test_run_arm_stops_at_the_first_unusable_pair) ... [21:18:49] current warm512-p0: 512 B, max_tokens 64, fresh then cached
+[21:18:51] current warm512-p0: 4 continuation-shaped timing line(s) in the window — excluded, the main pair was matched by counts
+[21:18:51] current warm512-p0: UNUSABLE — unmatched-timing-lines=4, unmatched-timing-lines, unmatched-timing-lines
+[21:18:51] current warm512-p0: unusable — unmatched-timing-lines=4, unmatched-timing-lines, unmatched-timing-lines
+[21:18:51] current: aborting the arm; partial evidence retained, no retry
+== current [INCOMPLETE 0/9 planned pairs]
+  warm512   PP NO USABLE PP                           TG NO USABLE TG
+              read - tok  fresh reused []  cached reused []  gen -  RSS - MiB  minAvail - MiB  t/o 0 fb 0
+[21:18:51] current: 0/9 planned pairs complete; summary at /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/tests-tmp/tmp8x5brxim/champions-20261118/summary/current.summary.csv
+ok
+test_stale_supervisor_output_and_old_legs_are_not_counted (__main__.PanelExecution.test_stale_supervisor_output_and_old_legs_are_not_counted) ... [21:18:51] current: previous evidence preserved at /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/tests-tmp/tmph25iw228/champions-20261118/archive/current-20261118-211851, /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/tests-tmp/tmph25iw228/champions-20261118/archive/logs/20261118-211851/current.engine.log
+ok
+test_stop_all_requires_zero_exit_as_well_as_the_verdict (__main__.PanelExecution.test_stop_all_requires_zero_exit_as_well_as_the_verdict) ... [21:18:51] stop-all: before=3 after=3 ALL STOPPED
+[21:18:51] stop-all not clean (exit 1) — refusing to start a second stack
+ok
+test_timeout_kills_and_never_relaunches (__main__.PanelExecution.test_timeout_kills_and_never_relaunches) ... [21:18:51] current short16k-p0: 88400 B, max_tokens 512, fresh then cached
+[21:18:51] current short16k-p0: driver exceeded its 0 s deadline and was killed; aborting the arm — server-side work from this request may still be running, so retrying now would overlap benchmark traffic
+ok
+test_zero_samples_cannot_report_success (__main__.PanelExecution.test_zero_samples_cannot_report_success) ... [21:18:51] current warm512-p0: 512 B, max_tokens 64, fresh then cached
+[21:18:53] current warm512-p0: driver exited 1: 
+[21:18:53] current warm512-p0: unusable — no usable record
+[21:18:53] current: aborting the arm; partial evidence retained, no retry
+== current [INCOMPLETE 0/9 planned pairs]
+[21:18:53] current: 0/9 planned pairs complete; summary at /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/tests-tmp/tmpbrs__xc_/champions-20261118/summary/current.summary.csv
+ok
+test_restore_checks_its_arguments_before_it_can_touch_the_pair (__main__.RestoreAcceptance.test_restore_checks_its_arguments_before_it_can_touch_the_pair)
+A bad flag must fail before the stop runs, let alone a launch. ... ok
+test_restore_does_not_call_an_error_page_a_serving_engine (__main__.RestoreAcceptance.test_restore_does_not_call_an_error_page_a_serving_engine)
+A non-empty body is not the backend answering. ... ok
+test_restore_follows_the_supervisor_retry_into_a_fresh_generation (__main__.RestoreAcceptance.test_restore_follows_the_supervisor_retry_into_a_fresh_generation)
+The regression, end to end. ... ok
+test_restore_never_reads_a_ready_line_from_a_retired_generation (__main__.RestoreAcceptance.test_restore_never_reads_a_ready_line_from_a_retired_generation)
+A stale ready log must not pass, and must not even be consulted. ... ok
+test_restore_never_reports_restored_across_two_generations (__main__.RestoreAcceptance.test_restore_never_reports_restored_across_two_generations)
+A models answer from one generation and an identity from another is not evidence. ... ok
+test_restore_output_override_keeps_its_evidence_off_the_default_tree (__main__.RestoreAcceptance.test_restore_output_override_keeps_its_evidence_off_the_default_tree)
+A rerun must not be able to land in frozen measurement evidence. ... ok
+test_restore_refuses_a_models_request_that_never_completed (__main__.RestoreAcceptance.test_restore_refuses_a_models_request_that_never_completed)
+The same transport rule guards /v1/models: no curl exit, no acceptance. ... ok
+test_restore_refuses_an_option_missing_its_value (__main__.RestoreAcceptance.test_restore_refuses_an_option_missing_its_value)
+A trailing flag with no value must report, not spin. ... ok
+test_restore_refuses_until_the_supervisor_has_selected_an_engine (__main__.RestoreAcceptance.test_restore_refuses_until_the_supervisor_has_selected_an_engine)
+An announced pair with no attached engine is not a serving pair. ... ok
+test_restore_rejects_a_process_that_is_not_the_production_engine (__main__.RestoreAcceptance.test_restore_rejects_a_process_that_is_not_the_production_engine)
+The supervisor selected this PID; it is running some other build. ... ok
+test_restore_rejects_a_recycled_pid_with_a_different_start_identity (__main__.RestoreAcceptance.test_restore_rejects_a_recycled_pid_with_a_different_start_identity)
+A PID is only the engine if it started when the supervisor says it did. ... ok
+test_restore_rejects_a_serving_image_that_is_not_the_pinned_one (__main__.RestoreAcceptance.test_restore_rejects_a_serving_image_that_is_not_the_pinned_one)
+Right path, wrong bytes: the pinned hash is what is accepted, not the filename. ... ok
+test_restore_with_health_accepts_a_real_completion (__main__.RestoreAcceptance.test_restore_with_health_accepts_a_real_completion)
+The success path stays available: --health passes when the completion is real. ... ok
+test_restore_with_health_gates_on_the_completion_it_actually_received (__main__.RestoreAcceptance.test_restore_with_health_gates_on_the_completion_it_actually_received)
+A file left on disk is not a completion: transport, HTTP status and body count. ... ok
+test_a_zombie_engine_is_not_a_serving_engine (__main__.RestoreVerdicts.test_a_zombie_engine_is_not_a_serving_engine) ... ok
+test_health_completion_must_be_an_http_success_and_a_real_finite_generation (__main__.RestoreVerdicts.test_health_completion_must_be_an_http_success_and_a_real_finite_generation) ... ok
+test_models_page_must_be_an_http_success_with_a_real_list (__main__.RestoreVerdicts.test_models_page_must_be_an_http_success_with_a_real_list) ... ok
+test_only_a_2xx_counts_as_an_answer (__main__.RestoreVerdicts.test_only_a_2xx_counts_as_an_answer)
+Shared by both endpoints: the transport verdict has one definition. ... ok
+test_the_announcement_gate_tracks_the_newest_generation (__main__.RestoreVerdicts.test_the_announcement_gate_tracks_the_newest_generation)
+Two announcements in one stdout means a retry: the newest one is the pair. ... ok
+test_no_real_evidence_file_was_written_renamed_or_deleted (__main__.SuiteLeavesBenchmarkDataUntouched.test_no_real_evidence_file_was_written_renamed_or_deleted) ... ok
+test_snapshot_actually_covers_a_completed_arm (__main__.SuiteLeavesBenchmarkDataUntouched.test_snapshot_actually_covers_a_completed_arm)
+A guard that inventories nothing proves nothing; assert it saw the evidence. ... ok
+
+----------------------------------------------------------------------
+Ran 53 tests in 69.005s
+
+OK
+champions_cpu_exit=0
+779fb4b0c67045865bc2348870eb37673c43a9e69106c81f121ce4b806d37a76  bench/ab-v0210/rpcprof/gpu-rounds/champions_restore.sh
+1878425ddd4332d661d68525929d6705736736c496441f46ce21fb8e8c4b23e1  bench/ab-v0210/rpcprof/gpu-rounds/champions_restore_verify.py
+20df2f2cbb3416bfa8966207e97c6be7d2e02f123a5859676e7bdf5d83e48362  bench/ab-v0210/rpcprof/tests/test_champions_cpu.py
+2026-11-18T21:19:48+01:00

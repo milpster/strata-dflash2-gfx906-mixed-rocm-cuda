@@ -1,0 +1,19 @@
+COMMAND: sha256sum --check out/champions-20261118/final-evidence.sha256
+out/champions-20261118/summary/current.summary.csv: OK
+out/champions-20261118/summary/current.summary.json: OK
+out/champions-20261118/summary/nov16.summary.csv: OK
+out/champions-20261118/summary/nov16.summary.json: OK
+out/champions-20261118/summary/nov15.summary.csv: OK
+out/champions-20261118/summary/nov15.summary.json: OK
+out/champions-20261118/logs/current.engine.log: OK
+out/champions-20261118/logs/nov16.engine.log: OK
+out/champions-20261118/logs/nov15.engine.log: OK
+champion_evidence_seal_exit=0
+
+COMMAND: git diff --check -- gpu-rounds/champions_restore.sh tests/test_champions_cpu.py
+tracked_source_whitespace_exit=0
+
+COMMAND: git status --short -- gpu-rounds/champions_restore.sh gpu-rounds/champions_restore_verify.py tests/test_champions_cpu.py
+ M gpu-rounds/champions_restore.sh
+ M tests/test_champions_cpu.py
+?? gpu-rounds/champions_restore_verify.py

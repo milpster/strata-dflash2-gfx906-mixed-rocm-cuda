@@ -17,7 +17,7 @@ Parent read this revision and independently checked the disk `best()` implementa
 - The cap formula is a calibration mechanism, not a frozen finite ladder: remove the ellipsis, choose exact measured units/rungs and physical safety bounds, and account for a fresh boot per attempt before execution.
 - The two divergent generations in §4c are not two simultaneously compatible alternatives for `DiskCache::best`. Inside-manifest checkpoints and generation selection are different checks. The approximate rewind expectation in step 5 is not an acceptance assertion; exact compatible published/checkpoint depths and a shallower-result rejection still need a concrete fixture.
 
-The next implementation is limited to the independently confirmed restore-checker defect. No GPU run or further report-only iteration is implied by accepting these research notes.
+The independently confirmed restore-checker defect is now repaired and parent-checked with 53 offline CPU tests; no live restore was used to test it. Future authorized restores must use a fresh `--out` directory. The transport, pressure and restart-fixture gaps above remain open; accepting these research notes does not authorize a GPU run or promotion.
 
 ---
 
