@@ -1,0 +1,7 @@
+2026-11-18T18:39:38+01:00
+purpose=verify_serving_before_offline_fixer
+evidence_dir=bench/ab-v0210/rpcprof/out/restore-checker-20261118-183938-625197
+engine_pid=42016
+/mnt/srcds/Strata/v0238p0/rpcw-hip/strata
+/proc/42016/exe: OK
+ready: http://127.0.0.1:8009/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, context 262144 tokens, images on)
