@@ -57,7 +57,7 @@ Prepare (CPU only, re-runnable, idempotent):
 cd /mnt/srcds/Strata/bench/ab-v0210/rpcprof
 python3 champions_prepare.py --prepare
 python3 gpu-rounds/champions_panel.py            # default dry-run, exit 0 = fit to run
-python3 tests/test_champions_cpu.py              # 31 CPU tests
+python3 tests/test_champions_cpu.py              # 34 CPU tests
 ```
 
 Run — **parent only**, one arm at a time, in a terminal it can watch:
@@ -136,13 +136,26 @@ in use.
 
 ## CPU-only validation status
 
-`--prepare`, `--verify`, `--dry-run` and the 31 CPU tests in
+`--prepare`, `--verify`, `--dry-run` and the 34 CPU tests in
 `tests/test_champions_cpu.py` pass. The execution tests drive the real
 `run_pair` / `run_arm` / `collect` / `stop_all` code with fake children and a sandboxed
 copy of the restore script, and they assert: driver failure propagates and is not retried,
 a timeout kills without relaunching, the first unusable pair aborts the arm, zero samples
 cannot report success, a failed stop prevents any boot, stale announce output and old legs
-are archived rather than counted, and the engine log is pumped while a child is in flight.
+are archived rather than counted, the engine log is pumped while a child is in flight, and
+the restore log-path parse stops at the launcher's `;` separator.
+
+**Test isolation contract — read this before editing the tests.** Once an arm has run,
+`out/champions-20261118/` holds the only copy of those measurements, so the suite is not
+allowed to write there. Every mutable fixture lives under `out/tests-tmp/` (git-ignored,
+removed per test): the panel gets a scratch manifest whose `engine_log` points inside the
+scratch tree, so its `arms/`, `summary/` and `archive/` land there too. Read-only inputs
+(corpus bytes, frozen launchers and configs, `--verify`) may be opened from the real tree.
+`SuiteLeavesBenchmarkDataUntouched` snapshots stat + SHA256 of the real evidence at import
+and re-checks it last, so a test that writes, renames or deletes a finished arm fails.
+An earlier version of this file constructed its panel on the real tree and would have
+destroyed a completed arm on rerun — that is what the guard exists for.
+
 Nothing here has been executed against a GPU: no boot, no request, no production change.
 The RAM-policy live acceptance for `current` is still open — the panel captures any
 headroom-band/limiter lines into `arms/current/boot.json` as `changed_path_evidence`,

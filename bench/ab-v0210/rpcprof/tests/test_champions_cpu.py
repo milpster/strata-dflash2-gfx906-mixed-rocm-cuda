@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import socket
@@ -24,6 +25,56 @@ import champions_panel as PANEL  # noqa: E402
 import champions_prepare as PREP  # noqa: E402
 
 OUT = PREP.DEFAULT_OUT
+
+# Nothing a test creates, rewrites, renames or deletes may live in the real measurement
+# tree. OUT now holds completed benchmark evidence (arms/current, summary/, logs/*.engine.log),
+# so every mutable fixture goes under here instead: project-local, git-ignored, and removed
+# when the test that made it ends.
+SCRATCH = RPC / "out" / "tests-tmp"
+
+# Read-only trees a test may open but must never modify.
+EVIDENCE_DIRS = ("arms", "summary", "logs", "run", "archive")
+EVIDENCE_FILES = ("manifest.json", "manifest.sha256")
+
+
+def fresh_scratch(case: unittest.TestCase) -> Path:
+    """Per-test scratch root, removed on teardown. Never the real benchmark tree."""
+    SCRATCH.mkdir(parents=True, exist_ok=True)
+    root = Path(tempfile.mkdtemp(dir=SCRATCH))
+    case.addCleanup(shutil.rmtree, root, True)
+    return root
+
+
+def _stamp(path: Path) -> str:
+    stat_ = path.stat()
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    return f"size={stat_.st_size} mtime={int(stat_.st_mtime)} sha256={digest}"
+
+
+def evidence_snapshot() -> dict[str, str]:
+    """Inventory of the real benchmark evidence: stat + sha256, read-only by construction.
+
+    Taken at import time, before any test can run, and compared again afterwards, so a
+    test that writes into, renames or deletes measurement data fails loudly instead of
+    quietly invalidating a completed arm.
+    """
+    snapshot: dict[str, str] = {}
+    for name in EVIDENCE_DIRS:
+        root = OUT / name
+        if not root.is_dir():
+            snapshot[f"{name}/"] = "absent"
+            continue
+        for path in sorted(root.rglob("*")):
+            if path.is_file():
+                snapshot[str(path.relative_to(OUT))] = _stamp(path)
+    for name in EVIDENCE_FILES:
+        path = OUT / name
+        if path.is_file():
+            snapshot[name] = _stamp(path)
+    return snapshot
+
+
+EVIDENCE_BEFORE = evidence_snapshot()
 MAIN = ("serve: prompt 16000 tokens = {r} reused + {k} read in {ms} ms (177.8 tok/s), "
         "512 generated in 21000 ms (24.4 tok/s), timeouts=0 fallbacks=0")
 CONT = ("serve: prompt 1200 tokens = 0 reused + 1200 read in 100 ms (12.0 tok/s), "
@@ -98,7 +149,7 @@ class Driver(unittest.TestCase):
             [sys.executable, str(RPC / "ab9_driver.py"), "--arm", "x", "--leg", "l",
              "--kind", "tg", "--ctx", "99", "--prompt-file", str(corpus),
              "--url", "http://127.0.0.1:1/v1/chat/completions",
-             "--out", str(RPC / "out" / "champions-20261118" / "logs"),
+             "--out", str(fresh_scratch(self)),
              "--elog", "/nonexistent.elog", "--hlog", "/nonexistent.hlog"],
             capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)
@@ -111,7 +162,7 @@ class Driver(unittest.TestCase):
              "--kind", "tg", "--ctx", str(corpus.stat().st_size), "--prompt-file", str(corpus),
              "--prompt-sha256", "0" * 64,
              "--url", "http://127.0.0.1:1/v1/chat/completions",
-             "--out", str(RPC / "out" / "champions-20261118" / "logs"),
+             "--out", str(fresh_scratch(self)),
              "--elog", "/nonexistent", "--hlog", "/nonexistent"],
             capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)
@@ -286,24 +337,32 @@ class PanelExecution(unittest.TestCase):
 
     No engine, no endpoint, no process control: Popen, the launcher boot and stop-all
     are the only things substituted.
+
+    Every mutable path here is sandboxed. The panel takes a scratch copy of the manifest
+    whose engine log points into the scratch tree, so its arms/, summary/ and archive/
+    land there too; read-only inputs (corpus bytes, frozen launchers and configs) stay
+    real and are never written. Running these tests must not be able to disturb a
+    completed arm — SuiteLeavesBenchmarkDataUntouched below proves that.
     """
 
     def setUp(self):
+        self.scratch = fresh_scratch(self)
+        self.out = self.scratch / "champions-20261118"
+        self.out.mkdir()
+        manifest = json.loads((OUT / "manifest.json").read_text())
+        for spec in manifest["arms"].values():
+            spec["engine_log"] = str(self.out / "logs" / Path(spec["engine_log"]).name)
+        (self.out / "manifest.json").write_text(json.dumps(manifest))
+
         self.arm = "current"
-        self.panel = PANEL.Panel(OUT, health=False)
+        self.panel = PANEL.Panel(self.out, health=False)
         self.shape = next(s for s in self.panel.manifest["shapes"] if s["name"] == "short16k")
         self.spec = self.panel.manifest["arms"][self.arm]
-        self.spec["helper_log"] = str(OUT / "logs" / "fake-helper.log")
+        self.spec["helper_log"] = str(self.scratch / "helper.log")
         self.panel.boot = lambda arm: {"arm": arm}          # type: ignore[assignment]
         self.panel.unlink_sockets = lambda arm: None        # type: ignore[assignment]
         self.engine_log = Path(self.spec["engine_log"])
         self.engine_log.parent.mkdir(parents=True, exist_ok=True)
-        self.engine_log.unlink(missing_ok=True)
-
-    def tearDown(self):
-        shutil.rmtree(OUT / "arms" / self.arm, ignore_errors=True)
-        shutil.rmtree(OUT / "archive", ignore_errors=True)
-        shutil.rmtree(OUT / "summary", ignore_errors=True)
         self.engine_log.unlink(missing_ok=True)
 
     # -- helpers ------------------------------------------------------------------
@@ -436,14 +495,14 @@ class PanelExecution(unittest.TestCase):
         self._fakes([{"exit": 0, "writer": lambda cmd: self._write_pair(cmd, reuse_fresh=True)}])
         self.panel.stop_all = lambda: True                  # type: ignore[assignment]
         self.assertFalse(self.panel.run_arm(self.arm))
-        legs = (OUT / "arms" / self.arm / "legs.jsonl").read_text().splitlines()
+        legs = (self.panel.arm_dir(self.arm) / "legs.jsonl").read_text().splitlines()
         self.assertEqual(len(legs), 1, "the arm must stop at the first bad pair")
 
     def test_zero_samples_cannot_report_success(self):
         self._fakes([{"exit": 1}])
         self.panel.stop_all = lambda: True                  # type: ignore[assignment]
         self.assertFalse(self.panel.run_arm(self.arm))
-        summary = json.loads((OUT / "summary" / f"{self.arm}.summary.json").read_text())
+        summary = json.loads((self.out / "summary" / f"{self.arm}.summary.json").read_text())
         self.assertFalse(summary["complete"])
         self.assertEqual(summary["pairs_complete"], 0)
         self.assertEqual(summary["pairs_planned"], self.panel.planned_pairs())
@@ -475,32 +534,51 @@ class PanelExecution(unittest.TestCase):
         self.assertEqual(booted, [], "a busy box must not get a second pair")
 
     def test_restore_script_refuses_to_launch_after_a_failed_stop(self):
-        with tempfile.TemporaryDirectory() as raw:
-            root = Path(raw)
-            restore = self._sandbox_restore(root, stop_exit=1, verdict="before=2 after=2 "
-                                                                       "STILL ALIVE")
-            result = subprocess.run(["bash", str(restore)], capture_output=True, text=True,
-                                    timeout=120)
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("RESTORE-FAIL: stop-all was not clean", result.stdout)
-            self.assertFalse((root / "LAUNCHED").exists(),
-                             "restore launched a pair despite an unclean stop")
+        root = self.scratch / "restore"
+        restore = self._sandbox_restore(root, stop_exit=1, verdict="before=2 after=2 "
+                                                                   "STILL ALIVE")
+        result = subprocess.run(["bash", str(restore)], capture_output=True, text=True,
+                                timeout=120)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("RESTORE-FAIL: stop-all was not clean", result.stdout)
+        self.assertFalse((root / "LAUNCHED").exists(),
+                         "restore launched a pair despite an unclean stop")
+
+    def test_restore_log_path_excludes_launcher_separator(self):
+        """The launcher separates the two paths with ';', so the parse must not keep it.
+
+        Exercises the real assignment line lifted out of champions_restore.sh, parsed by
+        a real bash, against an announcement shaped exactly like the launcher's output.
+        """
+        script = (RPC / "gpu-rounds" / "champions_restore.sh").read_text()
+        assignment = next(line for line in script.splitlines()
+                          if line.strip().startswith("LOG=$(sed"))
+        raw = str(self.scratch)
+        boot = Path(raw) / "launcher.out"
+        expected = str(Path(raw) / "production.log")
+        boot.write_text(f"Starting mixed backend on 8009; log: {expected}; "
+                        f"helper: /path/helper.log (recover)\n")
+        result = subprocess.run(
+            ["bash", "-c", 'BOOT=$1\n' + assignment + '\nprintf "%s" "$LOG"', "_", str(boot)],
+            capture_output=True, text=True, check=True,
+        )
+        self.assertEqual(result.stdout, expected)
 
     def test_restore_script_proceeds_when_the_stop_is_clean(self):
-        with tempfile.TemporaryDirectory() as raw:
-            root = Path(raw)
-            restore = self._sandbox_restore(root, stop_exit=0, verdict="before=0 after=0 - "
-                                                                        "ALL STOPPED")
-            result = subprocess.run(["bash", str(restore), "--timeout", "3"],
-                                    capture_output=True, text=True, timeout=120)
-            self.assertNotEqual(result.returncode, 0)
-            self.assertNotIn("stop-all was not clean", result.stdout)
-            self.assertTrue((root / "LAUNCHED").exists(), "a clean stop did not proceed")
-            self.assertIn("RESTORE-FAIL", result.stdout)
+        root = self.scratch / "restore"
+        restore = self._sandbox_restore(root, stop_exit=0, verdict="before=0 after=0 - "
+                                                                    "ALL STOPPED")
+        result = subprocess.run(["bash", str(restore), "--timeout", "3"],
+                                capture_output=True, text=True, timeout=120)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("stop-all was not clean", result.stdout)
+        self.assertTrue((root / "LAUNCHED").exists(), "a clean stop did not proceed")
+        self.assertIn("RESTORE-FAIL", result.stdout)
 
     # -- gap 4: a rerun cannot inherit earlier evidence ----------------------------
     def test_stale_supervisor_output_and_old_legs_are_not_counted(self):
-        directory = OUT / "arms" / self.arm
+        directory = self.panel.arm_dir(self.arm)
+        self.assertNotEqual(directory.parent.parent, OUT, "the sandbox must not be the real tree")
         directory.mkdir(parents=True, exist_ok=True)
         (directory / "supervisor.out").write_text(
             "Starting mixed backend on 127.0.0.1:8009; log: /old/engine.log; "
@@ -515,14 +593,44 @@ class PanelExecution(unittest.TestCase):
                          "a stale announce line must not be able to satisfy the boot gate")
         self.assertFalse((directory / "legs.jsonl").exists(), "stale legs must not survive")
         self.assertFalse(self.engine_log.exists())
-        archived = list((OUT / "archive").rglob("supervisor.out"))
+        archived = list((self.out / "archive").rglob("supervisor.out"))
         self.assertTrue(archived, "prior evidence must be preserved, not deleted")
         self.assertIn("Starting mixed backend", archived[0].read_text())
-        self.assertTrue(list((OUT / "archive").rglob(self.engine_log.name)))
+        self.assertTrue(list((self.out / "archive").rglob(self.engine_log.name)))
 
     def test_collect_on_a_fresh_dir_is_incomplete(self):
         self.panel.fresh_run_dir(self.arm)
         self.assertFalse(self.panel.collect(self.arm))
+
+
+class SuiteLeavesBenchmarkDataUntouched(unittest.TestCase):
+    """Regression guard against this very file destroying a completed arm.
+
+    PanelExecution used to construct its Panel on the real out/ tree: setUp unlinked the
+    real engine log, fresh_run_dir renamed the real arms/<arm> and summary into archive,
+    and collect overwrote the real summary. A rerun of a single test would therefore have
+    deleted finished measurements.
+
+    The snapshot is taken at import, before any test runs; unittest loads classes in
+    alphabetical order, so this one (S after P, L, D, C) asserts after every destructive
+    test has had its chance.
+    """
+
+    def test_no_real_evidence_file_was_written_renamed_or_deleted(self):
+        after = evidence_snapshot()
+        missing = sorted(set(EVIDENCE_BEFORE) - set(after))
+        changed = {path: (EVIDENCE_BEFORE[path], stamp)
+                   for path, stamp in after.items()
+                   if path in EVIDENCE_BEFORE and EVIDENCE_BEFORE[path] != stamp}
+        self.assertEqual(missing, [], "a test deleted real measurement evidence")
+        self.assertEqual(changed, {}, "a test rewrote real measurement evidence")
+
+    def test_snapshot_actually_covers_a_completed_arm(self):
+        """A guard that inventories nothing proves nothing; assert it saw the evidence."""
+        covered = [path for path in EVIDENCE_BEFORE if path.startswith("arms/current/")]
+        self.assertTrue(any(path.endswith("legs.jsonl") for path in covered),
+                        f"guard is not watching the arm records: {covered}")
+        self.assertTrue(any(path.endswith("engine.log") for path in EVIDENCE_BEFORE))
 
 
 if __name__ == "__main__":

@@ -53,7 +53,7 @@ echo "restore: engine sha $(sha256sum "$R/v0238p0/rpcw-hip/strata" | cut -c1-64)
 LOG=""
 DEADLINE=$(( $(date +%s) + TIMEOUT ))
 while [ "$(date +%s)" -lt "$DEADLINE" ]; do
-  LOG=$(sed -n 's/^Starting mixed backend on .*log: \([^ ]*\) .*/\1/p' "$BOOT" 2>/dev/null | tail -1)
+  LOG=$(sed -n 's/^Starting mixed backend on .*log: \([^;[:space:]]*\); helper:.*/\1/p' "$BOOT" 2>/dev/null | tail -1)
   [ -n "$LOG" ] && break
   # the launcher refuses loudly; do not sit on the full budget when it already did
   if grep -qa 'REFUSING\|Missing executable\|readiness timed out\|Usage:' "$BOOT" 2>/dev/null; then
