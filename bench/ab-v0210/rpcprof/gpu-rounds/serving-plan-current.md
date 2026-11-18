@@ -1,8 +1,8 @@
 # Consolidated serving-performance plan — 2026-11-18
 
-**Integrated review: PENDING.** This is the single current plan for **prompt processing (PP), token generation (TG), and total response turnaround**, including cache/restore and boot/recovery costs. It consolidates the earlier prefill program, F1–F8 roadmap, approved TG research chapter and RAM policy work. It supersedes their conflicting sequencing, stale estimates and acceptance wording; the earlier files remain evidence, not competing execution instructions.
+**Integrated review: APPROVED for whole-plan research readiness only, no blockers.** Oracle `ses_e12771b3bffev76LmVooHz0NnX` reviewed the complete substantive artifact at `eab11571e48957d2bb54c188e3ca523c30fd64b9`; see [integrated review](serving-plan-integrated-review.md). This is the single current plan for **prompt processing (PP), token generation (TG), and total response turnaround**, including cache/restore and boot/recovery costs. It consolidates the earlier prefill program, F1–F8 roadmap, approved TG research chapter and RAM policy work. It supersedes their conflicting sequencing, stale estimates and acceptance wording; the earlier files remain evidence, not competing execution instructions.
 
-The TG chapter and RAM source/CPU readiness have separate approvals. **Neither approves this combined plan.** Consolidating and reviewing it does not authorize implementation, benchmark traffic, a production-down window or promotion. No new speed gain is promised.
+The TG chapter and RAM source/CPU readiness retain their separate approvals. The whole-plan verdict above is independent; it does not extend candidate-validation claims. Consolidating, reviewing or approving this plan does not authorize implementation, benchmark traffic, a production-down window or promotion. No new speed gain is promised.
 
 ## Hard constraints and order
 
@@ -10,7 +10,7 @@ The TG chapter and RAM source/CPU readiness have separate approvals. **Neither a
 - This document supersedes speed-plan-v2.md's relaxed numerical-adoption threshold. That threshold is not authorized.
 - Exactly one specialist or GPU measurement lane at a time. The parent waits while a specialist uses the shared inference backend. No benchmark traffic during specialist inference.
 - Only the parent stops/starts prod, between specialist turns. Preparation agents must finish before any operation that could interrupt their backend.
-- Completed order: RAM source repair/review → plan saved → three-champion comparison → fresh history/upstream TG analysis → independent TG chapter approval. Next is integrated review of this whole file, not an optimization run.
+- Completed order: RAM source repair/review → plan saved → three-champion comparison → fresh history/upstream TG analysis → independent TG chapter approval → independent whole-plan approval. Subsequent work remains governed by §6 and separate operator authorization, not by the review verdict.
 - The earlier comparison authorization was consumed by that completed panel. New profiling, pressure reproductions and candidate runs need separately authorized, bounded parent-owned windows. Unrelated sweeps remain parked.
 - Preserve canonical production: `/mnt/srcds/Strata/launch-v0238.sh`, original `prod-config-v0238.json`, engine `b0ec0109...`. Research source anchors use `af1e64a5cb4b`; that candidate has not been promoted. Freeze an explicit matched source/control for each future experiment rather than mix RAM and performance changes between arms.
 - Keep config `env` as the single source for shared knobs: it overrides launcher settings. Verify effective engine environment and `/proc/<pid>/exe` identity; a shell-prefix env or a launcher `BIN` edit alone is not engagement evidence.
@@ -94,7 +94,7 @@ Inspect relevant upstream PRs and commits read-only; record URLs, SHAs, status, 
 
 Use the three-stack results plus actual TG source paths to rank quality-preserving opportunities. Distinguish measured costs from source-backed hypotheses: the earlier regression fit and subtraction-derived per-slot GPU costs are not a profiler decomposition. Each proposal needs a mechanism, prior-work/upstream provenance, potential bottleneck evidence, implementation scope, equivalence gate, benchmark recipe, rollback path, and adoption rule. No quantization/precision/context shortcuts or relaxed quality tolerances.
 
-The independent chapter review is complete. Its approved substance is incorporated below; its source/upstream ledger and [review notes](tg-optimization-review.md) remain supporting evidence. This combined plan must receive its own explicit verdict.
+The independent chapter review is complete. Its approved substance is incorporated below; its source/upstream ledger and [review notes](tg-optimization-review.md) remain supporting evidence. This combined plan has now received its own explicit verdict, recorded above.
 
 | Item | Action and prerequisite | Evidence/quality rule | Close or rollback rule |
 |---|---|---|---|
@@ -159,7 +159,7 @@ Historical 18cq observations (large contexts, small new reads, prompt-dominated 
 
 ## 6. Dependency order and execution ownership
 
-1. **Now: integrated read-only review.** Review the whole file, including older PP and turnaround work, then repair concrete blockers and repeat until an explicit whole-plan verdict. Do not extend the TG-only approval by implication.
+1. **Complete: integrated read-only review.** Oracle explicitly approved the whole artifact at `eab11571`, including older PP and turnaround work, with no blockers. This is a separate verdict, not the TG-only approval extended by implication. Remaining candidate and live-validation gates are unchanged.
 2. **Later, only when authorized: offline preparation.** Inspect native trace-tool ports, test hardware requirements, PP/TG timing ownership, eligibility and resource math. Prepare narrow default-off code/instrumentation and real tests only within the approved implementation scope. G0/G1 and P0 share a control/attribution foundation; they are not competing independent GPU sweeps. Build modestly with bounded jobs and the repository's pinned toolchain; ROCm 6.1.0 runtime/linkage for gfx906, never ROCm 7.x. All touched backend builds need explicit evidence or an explicit unresolved gate.
 3. **Close live RAM acceptance in its own authorized window before declaring cache/recovery readiness.** At least 20 pressure-relevant turns, skip-count comparison and deepest-published-checkpoint restart. Ordinary low-pressure benchmarks do not substitute. Re-establish the declared performance state after pressure testing.
 4. **Establish a current matched baseline and timelines.** Frozen source/config/effective env/corpus, same-build A/A controls, per-boot identities, current memory and warm-state evidence. Run PP timing and TG attribution controls before numerical candidates. Do not silently inherit historical warm bands or refresh a baseline to hide a regression.
@@ -202,8 +202,9 @@ Before any authorized window, freeze the runnable manifest with exact commands, 
 
 - [Three-champion results](CHAMPIONS-RESULTS-20261118.md), frozen manifest/summaries under `../out/champions-20261118/`, and `final-evidence.sha256`.
 - [TG chapter](tg-optimization-chapter.md) and [its independent component review](tg-optimization-review.md): approved research component at `d649e5b`, verdict recorded in `97ea0b0`, not this whole plan's approval.
+- [Integrated oracle review](serving-plan-integrated-review.md): explicit whole-plan APPROVE, no blockers, for the complete substantive artifact at `eab11571`; subsequent changes here record approval status only.
 - [Earlier PP program](speed-plan-v2.md): source of P0–P4; its historical inferred GPU bucket, contract-only quality shortcut and stale thresholds do not override this file.
 - `../../notes/perf-roadmap-2026-11-15.md`, `../../notes/code-opt-analysis.md`, `../../notes/code-opt-plan.md` and `../../notes/code-opt-plan-review.md`: historical candidate/design lineage, amended designs and old component approvals. Their stale pending/adopted labels are reconciled above.
 - `/mnt/srcds/Strata/journal/serving-tg-reeval-split-retest-2026-11-11.md`: adoption/rejection history through the comparison and TG review; engine RAM evidence paths in §1.
 
-**Integrated oracle verdict: pending.** Require an explicit review of this full consolidated artifact. SSH signing/publication is an administrative blocker, not permission to skip source, quality or execution gates.
+**Integrated oracle verdict: APPROVE — whole-plan research readiness only, no blockers.** Candidate correctness/performance, live RAM pressure/restart acceptance and execution/promotion authority remain separate. SSH signing/publication is an administrative blocker, not permission to skip source, quality or execution gates.
