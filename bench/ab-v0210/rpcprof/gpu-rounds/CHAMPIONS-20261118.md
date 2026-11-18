@@ -1,6 +1,6 @@
 # Champions TG/PP comparison — 2026-11-18
 
-Three daily champion stacks, same model, same corpus, one variable. Requested
+Three daily champion stacks, same model and corpus. Requested
 2026-11-17; the approved latest candidate finished after midnight, so "today" is the
 2026-11-18 build and the historical window stays 2026-11-16 / 2026-11-15.
 
@@ -19,12 +19,13 @@ Shared by all three, verified by hash at prepare time: expert helper
 `553f3bf48219c992…` (`v0238p0/rpcw-cuda/strata-expert-helper-patient`), serving server
 `b6463e7b99a0d74c…` (`v0215/serve/server.py`), model/pack paths, all cache budgets.
 
-**Measured, not assumed:** the three adopted configs differ in *no* quality-bearing key.
-Byte-level comparison of the frozen configs shows the only differences are the five
-harness retargets (`exe`, two helper sockets, engine log, conversation-cache dir). So the
-panel isolates the **engine binary and its lineage** — a TG/PP delta between arms is not
-confounded by a config, precision, capacity or cache-budget change. `manifest.json`
-records `config_identical_across_arms: true` plus every quality key that was compared.
+The three adopted config files differ only in five harness retargets (`exe`, two helper
+sockets, engine log, conversation-cache dir); `manifest.json` records
+`config_identical_across_arms: true` for those config-file comparisons. **This does not
+mean the launch environments match.** Actual boots showed a 50.0 GiB guard limit for
+latest/Nov-16 versus 62.2 GiB for Nov-15; the older launcher lacks the newer memory-limit
+and watchdog exports. Treat this as a champion-stack comparison, not an engine-only
+A/B. Completed results and limitations are in `CHAMPIONS-RESULTS-20261118.md`.
 
 Historical configs are `git show` snapshots of the adoption commits, not the mutated
 on-disk files: the on-disk `prod-config-v0238.json` had already moved the

@@ -43,6 +43,8 @@ Trade-offs: more disk instead of RAM hits; a refused intermediate checkpoint is 
 
 ## 2. Three-stack TG/PP comparison
 
+Status 2026-11-18: **completed**, 9/9 pairs per arm. Results, observed runtime-environment differences, memory cost and restore evidence are in `CHAMPIONS-RESULTS-20261118.md`. No build was promoted. The next lane is the fresh TG analysis below, not another optimization sweep.
+
 ### Freeze provenance before measurements
 
 The original comparison request was made on 2026-11-17; the approved latest candidate finished after midnight. Preserve that distinction in the manifest: CURRENT is the latest approved build above, with the historical champions from the two preceding request-relative days (2026-11-16 and 2026-11-15). Inspect journals, release/build manifests, saved configs, and git history to identify the actual pairs. If the available evidence implies a different daily boundary, record it explicitly before running, rather than inventing three distinct versions.

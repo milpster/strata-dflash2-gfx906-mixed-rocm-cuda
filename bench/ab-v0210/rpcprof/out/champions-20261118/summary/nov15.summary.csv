@@ -1,0 +1,4 @@
+arm,complete,pairs_complete,pairs_planned,shape,pairs_measured,pairs_accepted,pp_median,pp_spread,pp_n,tg_median,tg_spread,tg_n,cold_tg_median,context_tokens,fresh_read_median,cached_reused,max_rss_mib,min_mem_available_mib,timeouts,fallbacks
+nov15,True,9,9,long80k,3,3,466.1,1.6,3,34.4,8.4,3,31.8,79986,79986,79981,52995,14527,0,0
+nov15,True,9,9,short16k,3,3,270.5,6.3,3,34.0,22.9,3,32.5,16008,16008,16003,51493,16043,0,0
+nov15,True,9,9,warm512,0,0,,,0,,,0,,,,,,,0,0
