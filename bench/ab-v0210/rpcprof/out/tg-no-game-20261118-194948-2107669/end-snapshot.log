@@ -1,0 +1,206 @@
+2026-11-18T19:52:59+01:00
+phase=post_interval_passive_snapshot; no request or process operation was performed
+               total        used        free      shared  buff/cache   available
+Mem:           63644       46750        1658         112       18656       16894
+Swap:         196607       11436      185171
+MemAvailable:   17299536 kB
+Cached:         18834836 kB
+SwapCached:       394700 kB
+Dirty:               516 kB
+Writeback:             0 kB
+workingset_refault_anon 30626016
+workingset_refault_file 422812743
+pgsteal_kswapd 477257428
+pgsteal_direct 1415246
+pgsteal_khugepaged 0
+pgsteal_proactive 0
+pgsteal_anon 35014231
+pgsteal_file 443658443
+pgscan_kswapd 589717688
+pgscan_direct 628394749
+pgscan_khugepaged 0
+pgscan_proactive 0
+pgscan_anon 129706820
+pgscan_file 1088405617
+pswpin 22570073
+pswpout 27672479
+allocstall_dma 0
+allocstall_dma32 0
+allocstall_normal 405
+allocstall_movable 5915
+allocstall_device 0
+pgmajfault 5470145
+pgscan_direct_throttle 0
+
+=== process 42016 ===
+/mnt/srcds/Strata/v0238p0/rpcw-hip/strata
+Name:	strata-host
+State:	R (running)
+VmHWM:	57188040 kB
+VmRSS:	53307376 kB
+RssAnon:	38578392 kB
+RssFile:	14728984 kB
+VmSwap:	 4529456 kB
+Cpus_allowed_list:	0
+
+/proc/42016/stat
+42016 (strata-host) R 41774 42016 41478 0 -1 4194304 12293092 0 641042 0 3205809 180712 0 0 21 1 94 0 19625 181685854208 13326993 18446744073709551615 38306560 50184560 140737399533776 0 0 0 0 6 0 0 0 0 17 0 0 0 0 0 0 50217536 50233040 303915008 140737399541771 140737399543441 140737399543441 140737399549902 0
+
+/proc/42016/io
+rchar: 68132815822
+wchar: 41808065697
+syscr: 2610262
+syscw: 86162
+read_bytes: 2867605016576
+write_bytes: 41802153984
+cancelled_write_bytes: 0
+
+/proc/42016/cgroup
+1:net_cls:/
+0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-p41774-i40632.scope
+
+=== process 41533 ===
+/mnt/srcds/Strata/v0233/build-mixed-gpu/rpcw-cuda/strata-expert-helper-patient
+Name:	strata-expert-h
+State:	S (sleeping)
+VmHWM:	 8095684 kB
+VmRSS:	  116116 kB
+RssAnon:	   10960 kB
+RssFile:	   72804 kB
+VmSwap:	  108032 kB
+Cpus_allowed_list:	0-15
+
+/proc/41533/stat
+41533 (strata-expert-h) S 41478 41478 41478 0 -1 4194304 237642 0 24903 0 39067 5015 0 0 21 1 6 0 19366 67944357888 29340 18446744073709551615 94006370631680 94006377078721 140734749259936 0 0 0 0 4100 16386 0 0 0 17 3 0 0 0 0 0 94006420548080 94006420571848 94007183278080 140734749268694 140734749269077 140734749269077 140734749269943 0
+
+/proc/41533/io
+rchar: 9603647
+wchar: 9540198
+syscr: 1192241
+syscw: 1192342
+read_bytes: 6790934528
+write_bytes: 8192
+cancelled_write_bytes: 0
+
+/proc/41533/cgroup
+1:net_cls:/
+0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-b03ccd14-4d20-4ea6-8e4c-c5e30a9ac945.scope
+
+=== process 41774 ===
+/home/srcds/.pyenv/versions/3.11.9/bin/python3.11
+Name:	python
+State:	S (sleeping)
+VmHWM:	  228172 kB
+VmRSS:	   23980 kB
+RssAnon:	   11072 kB
+RssFile:	   12908 kB
+VmSwap:	  227176 kB
+Cpus_allowed_list:	0-15
+
+/proc/41774/stat
+41774 (python) S 41478 41478 41478 0 -1 4194304 121291 2448 60553 11 2978 1038 0 1 21 1 20 0 19471 1759404032 6220 18446744073709551615 93946559778816 93946559779177 140726414028176 0 0 0 0 16781318 16385 0 0 0 17 7 0 0 0 0 0 93946559790488 93946559791120 93947160264704 140726414035055 140726414035208 140726414035208 140726414041045 0
+
+/proc/41774/io
+rchar: 90192579
+wchar: 15204344
+syscr: 473843
+syscw: 8426
+read_bytes: 383365120
+write_bytes: 1269760
+cancelled_write_bytes: 0
+
+/proc/41774/cgroup
+1:net_cls:/
+0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-p41774-i40632.scope
+
+/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/run-p41774-i40632.scope/memory.current
+56316620800
+
+/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/run-p41774-i40632.scope/memory.swap.current
+6634803200
+
+/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/run-p41774-i40632.scope/memory.stat
+anon 39515643904
+file 16547827712
+kernel 251777024
+kernel_stack 2768896
+pagetables 174514176
+sec_pagetables 0
+percpu 1728
+sock 0
+vmalloc 0
+shmem 0
+zswap 0
+zswapped 0
+zswap_incomp 0
+file_mapped 13246169088
+file_dirty 16384
+file_writeback 0
+swapcached 206913536
+anon_thp 1484783616
+file_thp 0
+shmem_thp 0
+inactive_anon 36864
+active_anon 39243108352
+inactive_file 8261337088
+active_file 8286490624
+unevictable 167772160
+slab_reclaimable 71790408
+slab_unreclaimable 2633600
+slab 74424008
+workingset_refault_anon 28446659
+workingset_refault_file 418446075
+workingset_activate_anon 25253694
+workingset_activate_file 1688014
+workingset_restore_anon 25253694
+workingset_restore_file 4015606
+workingset_nodereclaim 0
+pgdemote_kswapd 0
+pgdemote_direct 0
+pgdemote_khugepaged 0
+pgdemote_proactive 0
+pgsteal_kswapd 449440607
+pgsteal_direct 237818
+pgsteal_khugepaged 0
+pgsteal_proactive 0
+pgscan_kswapd 546888229
+pgscan_direct 745462
+pgscan_khugepaged 0
+pgscan_proactive 0
+pgrefill 213553843
+pgpromote_success 0
+pgscan 547633691
+pgsteal 449678425
+pswpin 20407803
+pswpout 23757680
+pgfault 97214947
+pgmajfault 4479056
+pgactivate 65154867
+pgdeactivate 1
+pglazyfree 0
+pglazyfreed 0
+swpin_zero 8038856
+swpout_zero 8044492
+zswpin 0
+zswpout 0
+zswpwb 0
+thp_fault_alloc 62695
+thp_collapse_alloc 0
+thp_swpout 0
+thp_swpout_fallback 14348
+numa_pages_migrated 0
+numa_pte_updates 0
+numa_hint_faults 0
+
+/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/run-p41774-i40632.scope/memory.events
+low 0
+high 0
+max 0
+oom 0
+oom_kill 0
+oom_group_kill 0
+sock_throttled 216
+
+=== current executable SHA ===
+b0ec0109ebc50c982512c371d81b2c15a8f72c70edf8a461a4ff10337da52f02  /proc/42016/exe
+2026-11-18T19:52:59+01:00

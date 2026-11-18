@@ -77,3 +77,7 @@ All three bounded collectors finished. Their window includes ordinary/specialist
 | Bounded NUL-stripped engine tail | Exit 124 from the intended `timeout 3600`, not an engine failure. The initial 20-line historical prelude remains explicitly excluded from game evidence. |
 
 At 18:07:48, parent checked both prior SHA256 seals, exact sample counts and final timestamps; the focused validation command exited 0 (`passive-capture-validation.log`). These checks establish completeness of the saved samples, not their causal attribution. No requests or production operations were repeated. A future game run needs fresh collectors and explicit phase markers; investigation remains parked while the sole specialist amends the separate RAM acceptance contract.
+
+## Later no-game recurrence
+
+Operator subsequently reported the generation-speed crash active again **without gaming**. Parent reopened the recurring-slowdown investigation, kept the sole restore-checker fixer running and preserved the live process with passive observations only. See `journal/recurring-tg-slowdown-2026-11-18.md` and main journal Round 18dj. The future game experiment itself remains parked; its earlier evidence is not relabelled as a controlled no-game comparison.

@@ -1,0 +1,17 @@
+2026-11-18T19:59:05+01:00
+true
+supervisor_identity_match=PASS
+vmstat_rows=31 (one since-boot row plus 30 intervals)
+pidstat_engine_samples=30
+pidstat_helper_samples=30
+sample=30 time=2026-11-18T19:51:38+01:00
+vmstat_exit=0
+pidstat_exit=0
+gpu_sampler_exit=0
+engine_tail_exit=124 (124 is the intended observation deadline, not an engine status)
+interval-engine-result.log:engine_log_end=4263837
+extended-window-metadata.log:engine_log_end=4263837
+start-snapshot.log:b0ec0109ebc50c982512c371d81b2c15a8f72c70edf8a461a4ff10337da52f02  /proc/42016/exe
+end-snapshot.log:b0ec0109ebc50c982512c371d81b2c15a8f72c70edf8a461a4ff10337da52f02  /proc/42016/exe
+0d9fb58b7d1dd46df002702f2d67756be6efefc101c24de469ebf9e5a1609811  prod-config-v0238.json
+capture_validation_exit=0

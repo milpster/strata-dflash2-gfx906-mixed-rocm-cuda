@@ -1,0 +1,714 @@
+Read-only AMD clocks/busy/VRAM/GTT samples; card2/card3 are serving GPUs, card4 is the iGPU in the starting snapshot.
+
+sample=0 time=2026-11-18T19:50:37+01:00
+/sys/class/drm/card2/device
+gpu_busy_percent=100
+mem_info_vram_used=15674298368
+mem_info_vram_total=17163091968
+mem_info_gtt_used=1500643328
+pp_dpm_sclk active: 8: 1800Mhz *
+pp_dpm_mclk active: 1: 800Mhz *
+/sys/class/drm/card3/device
+gpu_busy_percent=0
+mem_info_vram_used=16945815552
+mem_info_vram_total=17163091968
+mem_info_gtt_used=13606912
+pp_dpm_sclk active: 0: 700Mhz *
+pp_dpm_mclk active: 0: 350Mhz *
+/sys/class/drm/card4/device
+gpu_busy_percent=5
+mem_info_vram_used=464769024
+mem_info_vram_total=536870912
+mem_info_gtt_used=180072448
+pp_dpm_sclk active: 1: 400Mhz *
+pp_dpm_mclk active: 3: 1600Mhz *
+
+sample=1 time=2026-11-18T19:50:39+01:00
+/sys/class/drm/card2/device
+gpu_busy_percent=100
+mem_info_vram_used=15674298368
+mem_info_vram_total=17163091968
+mem_info_gtt_used=1500643328
+pp_dpm_sclk active: 8: 1800Mhz *
+pp_dpm_mclk active: 1: 800Mhz *
+/sys/class/drm/card3/device
+gpu_busy_percent=0
+mem_info_vram_used=16945815552
+mem_info_vram_total=17163091968
+mem_info_gtt_used=13606912
+pp_dpm_sclk active: 0: 700Mhz *
+pp_dpm_mclk active: 0: 350Mhz *
+/sys/class/drm/card4/device
+gpu_busy_percent=6
+mem_info_vram_used=464769024
+mem_info_vram_total=536870912
+mem_info_gtt_used=180072448
+pp_dpm_sclk active: 1: 400Mhz *
+pp_dpm_mclk active: 3: 1600Mhz *
+
+sample=2 time=2026-11-18T19:50:41+01:00
+/sys/class/drm/card2/device
+gpu_busy_percent=100
+mem_info_vram_used=15674298368
+mem_info_vram_total=17163091968
+mem_info_gtt_used=1500643328
+pp_dpm_sclk active: 8: 1800Mhz *
+pp_dpm_mclk active: 1: 800Mhz *
+/sys/class/drm/card3/device
+gpu_busy_percent=0
+mem_info_vram_used=16945823744
+mem_info_vram_total=17163091968
+mem_info_gtt_used=13606912
+pp_dpm_sclk active: 0: 700Mhz *
+pp_dpm_mclk active: 0: 350Mhz *
+/sys/class/drm/card4/device
+gpu_busy_percent=6
+mem_info_vram_used=454283264
+mem_info_vram_total=536870912
+mem_info_gtt_used=159100928
+pp_dpm_sclk active: 2: 2100Mhz *
+pp_dpm_mclk active: 3: 1600Mhz *
+
+sample=3 time=2026-11-18T19:50:43+01:00
+/sys/class/drm/card2/device
+gpu_busy_percent=62
+mem_info_vram_used=15674298368
+mem_info_vram_total=17163091968
+mem_info_gtt_used=1500643328
+pp_dpm_sclk active: 4: 1545Mhz *
+pp_dpm_mclk active: 1: 800Mhz *
+/sys/class/drm/card3/device
+gpu_busy_percent=1
+mem_info_vram_used=16945823744
+mem_info_vram_total=17163091968
+mem_info_gtt_used=13606912
+pp_dpm_sclk active: 0: 700Mhz *
+pp_dpm_mclk active: 0: 350Mhz *
+/sys/class/drm/card4/device
+gpu_busy_percent=5
+mem_info_vram_used=454283264
+mem_info_vram_total=536870912
+mem_info_gtt_used=159100928
+pp_dpm_sclk active: 1: 400Mhz *
+pp_dpm_mclk active: 3: 1600Mhz *
+
+sample=4 time=2026-11-18T19:50:45+01:00
+/sys/class/drm/card2/device
+gpu_busy_percent=100
+mem_info_vram_used=15674298368
+mem_info_vram_total=17163091968
+mem_info_gtt_used=1500643328
+pp_dpm_sclk active: 8: 1800Mhz *
+pp_dpm_mclk active: 1: 800Mhz *
+/sys/class/drm/card3/device
+gpu_busy_percent=0
+mem_info_vram_used=16945823744
+mem_info_vram_total=17163091968
+mem_info_gtt_used=13606912
+pp_dpm_sclk active: 0: 700Mhz *
+pp_dpm_mclk active: 0: 350Mhz *
+/sys/class/drm/card4/device
+gpu_busy_percent=5
+mem_info_vram_used=454283264
+mem_info_vram_total=536870912
+mem_info_gtt_used=159100928
+pp_dpm_sclk active: 1: 400Mhz *
+pp_dpm_mclk active: 3: 1600Mhz *
+
+sample=5 time=2026-11-18T19:50:47+01:00
+/sys/class/drm/card2/device
+gpu_busy_percent=0
+mem_info_vram_used=15674298368
+mem_info_vram_total=17163091968
+mem_info_gtt_used=1500643328
+pp_dpm_sclk active: 0: 700Mhz *
+pp_dpm_mclk active: 1: 800Mhz *
+/sys/class/drm/card3/device
+gpu_busy_percent=0
+mem_info_vram_used=16945815552
+mem_info_vram_total=17163091968
+mem_info_gtt_used=13606912
+pp_dpm_sclk active: 0: 700Mhz *
+pp_dpm_mclk active: 1: 800Mhz *
+/sys/class/drm/card4/device
+gpu_busy_percent=6
+mem_info_vram_used=454283264
+mem_info_vram_total=536870912
+mem_info_gtt_used=159100928
+pp_dpm_sclk active: 1: 400Mhz *
+pp_dpm_mclk active: 3: 1600Mhz *
+
+sample=6 time=2026-11-18T19:50:49+01:00
+/sys/class/drm/card2/device
+gpu_busy_percent=100
+mem_info_vram_used=15674298368
+mem_info_vram_total=17163091968
+mem_info_gtt_used=1500643328
+pp_dpm_sclk active: 8: 1800Mhz *
+pp_dpm_mclk active: 1: 800Mhz *
+/sys/class/drm/card3/device
+gpu_busy_percent=0
+mem_info_vram_used=16945819648
+mem_info_vram_total=17163091968
+mem_info_gtt_used=13606912
+pp_dpm_sclk active: 0: 700Mhz *
+pp_dpm_mclk active: 0: 350Mhz *
+/sys/class/drm/card4/device
+gpu_busy_percent=5
+mem_info_vram_used=454283264
+mem_info_vram_total=536870912
+mem_info_gtt_used=157003776
+pp_dpm_sclk active: 1: 400Mhz *
+pp_dpm_mclk active: 3: 1600Mhz *
+
+sample=7 time=2026-11-18T19:50:51+01:00
+/sys/class/drm/card2/device
+gpu_busy_percent=100
+mem_info_vram_used=15674298368
+mem_info_vram_total=17163091968
+mem_info_gtt_used=1500643328
+pp_dpm_sclk active: 8: 1800Mhz *
+pp_dpm_mclk active: 1: 800Mhz *
+/sys/class/drm/card3/device
+gpu_busy_percent=0
+mem_info_vram_used=16945819648
+mem_info_vram_total=17163091968
+mem_info_gtt_used=13606912
+pp_dpm_sclk active: 0: 700Mhz *
+pp_dpm_mclk active: 0: 350Mhz *
+/sys/class/drm/card4/device
+gpu_busy_percent=6
+mem_info_vram_used=454283264
+mem_info_vram_total=536870912
+mem_info_gtt_used=157003776
+pp_dpm_sclk active: 1: 400Mhz *
+pp_dpm_mclk active: 3: 1600Mhz *
+
+sample=8 time=2026-11-18T19:50:53+01:00
+/sys/class/drm/card2/device
+gpu_busy_percent=100
+mem_info_vram_used=15674298368
+mem_info_vram_total=17163091968
+mem_info_gtt_used=1500643328
+pp_dpm_sclk active: 8: 1800Mhz *
+pp_dpm_mclk active: 1: 800Mhz *
+/sys/class/drm/card3/device
+gpu_busy_percent=0
+mem_info_vram_used=16945819648
+mem_info_vram_total=17163091968
+mem_info_gtt_used=13606912
+pp_dpm_sclk active: 0: 700Mhz *
+pp_dpm_mclk active: 0: 350Mhz *
+/sys/class/drm/card4/device
+gpu_busy_percent=5
+mem_info_vram_used=450023424
+mem_info_vram_total=536870912
+mem_info_gtt_used=157003776
+pp_dpm_sclk active: 1: 400Mhz *
+pp_dpm_mclk active: 3: 1600Mhz *
+
+sample=9 time=2026-11-18T19:50:56+01:00
+/sys/class/drm/card2/device
+gpu_busy_percent=100
+mem_info_vram_used=15674298368
+mem_info_vram_total=17163091968
+mem_info_gtt_used=1500643328
+pp_dpm_sclk active: 8: 1800Mhz *
+pp_dpm_mclk active: 1: 800Mhz *
+/sys/class/drm/card3/device
+gpu_busy_percent=0
+mem_info_vram_used=16945823744
+mem_info_vram_total=17163091968
+mem_info_gtt_used=13606912
+pp_dpm_sclk active: 0: 700Mhz *
+pp_dpm_mclk active: 0: 350Mhz *
+/sys/class/drm/card4/device
+gpu_busy_percent=5
+mem_info_vram_used=450023424
+mem_info_vram_total=536870912
+mem_info_gtt_used=157003776
+pp_dpm_sclk active: 1: 400Mhz *
+pp_dpm_mclk active: 3: 1600Mhz *
+
+sample=10 time=2026-11-18T19:50:58+01:00
+/sys/class/drm/card2/device
+gpu_busy_percent=100
+mem_info_vram_used=15674298368
+mem_info_vram_total=17163091968
+mem_info_gtt_used=1500643328
+pp_dpm_sclk active: 8: 1800Mhz *
+pp_dpm_mclk active: 1: 800Mhz *
+/sys/class/drm/card3/device
+gpu_busy_percent=0
+mem_info_vram_used=16945823744
+mem_info_vram_total=17163091968
+mem_info_gtt_used=13606912
+pp_dpm_sclk active: 0: 700Mhz *
+pp_dpm_mclk active: 0: 350Mhz *
+/sys/class/drm/card4/device
+gpu_busy_percent=6
+mem_info_vram_used=450023424
+mem_info_vram_total=536870912
+mem_info_gtt_used=157003776
+pp_dpm_sclk active: 1: 400Mhz *
+pp_dpm_mclk active: 3: 1600Mhz *
+
+sample=11 time=2026-11-18T19:51:00+01:00
+/sys/class/drm/card2/device
+gpu_busy_percent=0
+mem_info_vram_used=15674298368
+mem_info_vram_total=17163091968
+mem_info_gtt_used=1500643328
+pp_dpm_sclk active: 0: 700Mhz *
+pp_dpm_mclk active: 1: 800Mhz *
+/sys/class/drm/card3/device
+gpu_busy_percent=0
+mem_info_vram_used=16945823744
+mem_info_vram_total=17163091968
+mem_info_gtt_used=13606912
+pp_dpm_sclk active: 0: 700Mhz *
+pp_dpm_mclk active: 1: 800Mhz *
+/sys/class/drm/card4/device
+gpu_busy_percent=5
+mem_info_vram_used=450023424
+mem_info_vram_total=536870912
+mem_info_gtt_used=157003776
+pp_dpm_sclk active: 1: 400Mhz *
+pp_dpm_mclk active: 3: 1600Mhz *
+
+sample=12 time=2026-11-18T19:51:02+01:00
+/sys/class/drm/card2/device
+gpu_busy_percent=0
+mem_info_vram_used=15674298368
+mem_info_vram_total=17163091968
+mem_info_gtt_used=1500643328
+pp_dpm_sclk active: 0: 700Mhz *
+pp_dpm_mclk active: 0: 350Mhz *
+/sys/class/drm/card3/device
+gpu_busy_percent=0
+mem_info_vram_used=16945815552
+mem_info_vram_total=17163091968
+mem_info_gtt_used=13606912
+pp_dpm_sclk active: 0: 700Mhz *
+pp_dpm_mclk active: 0: 350Mhz *
+/sys/class/drm/card4/device
+gpu_busy_percent=5
+mem_info_vram_used=450023424
+mem_info_vram_total=536870912
+mem_info_gtt_used=157003776
+pp_dpm_sclk active: 1: 400Mhz *
+pp_dpm_mclk active: 3: 1600Mhz *
+
+sample=13 time=2026-11-18T19:51:04+01:00
+/sys/class/drm/card2/device
+gpu_busy_percent=100
+mem_info_vram_used=15674298368
+mem_info_vram_total=17163091968
+mem_info_gtt_used=1500643328
+pp_dpm_sclk active: 8: 1800Mhz *
+pp_dpm_mclk active: 1: 800Mhz *
+/sys/class/drm/card3/device
+gpu_busy_percent=0
+mem_info_vram_used=16945815552
+mem_info_vram_total=17163091968
+mem_info_gtt_used=13606912
+pp_dpm_sclk active: 0: 700Mhz *
+pp_dpm_mclk active: 0: 350Mhz *
+/sys/class/drm/card4/device
+gpu_busy_percent=5
+mem_info_vram_used=450023424
+mem_info_vram_total=536870912
+mem_info_gtt_used=157003776
+pp_dpm_sclk active: 1: 400Mhz *
+pp_dpm_mclk active: 3: 1600Mhz *
+
+sample=14 time=2026-11-18T19:51:06+01:00
+/sys/class/drm/card2/device
+gpu_busy_percent=100
+mem_info_vram_used=15674298368
+mem_info_vram_total=17163091968
+mem_info_gtt_used=1500643328
+pp_dpm_sclk active: 8: 1800Mhz *
+pp_dpm_mclk active: 1: 800Mhz *
+/sys/class/drm/card3/device
+gpu_busy_percent=0
+mem_info_vram_used=16945815552
+mem_info_vram_total=17163091968
+mem_info_gtt_used=13606912
+pp_dpm_sclk active: 0: 700Mhz *
+pp_dpm_mclk active: 0: 350Mhz *
+/sys/class/drm/card4/device
+gpu_busy_percent=6
+mem_info_vram_used=450023424
+mem_info_vram_total=536870912
+mem_info_gtt_used=157003776
+pp_dpm_sclk active: 1: 400Mhz *
+pp_dpm_mclk active: 3: 1600Mhz *
+
+sample=15 time=2026-11-18T19:51:08+01:00
+/sys/class/drm/card2/device
+gpu_busy_percent=100
+mem_info_vram_used=15674298368
+mem_info_vram_total=17163091968
+mem_info_gtt_used=1500643328
+pp_dpm_sclk active: 8: 1800Mhz *
+pp_dpm_mclk active: 1: 800Mhz *
+/sys/class/drm/card3/device
+gpu_busy_percent=0
+mem_info_vram_used=16945815552
+mem_info_vram_total=17163091968
+mem_info_gtt_used=13606912
+pp_dpm_sclk active: 0: 700Mhz *
+pp_dpm_mclk active: 0: 350Mhz *
+/sys/class/drm/card4/device
+gpu_busy_percent=5
+mem_info_vram_used=450023424
+mem_info_vram_total=536870912
+mem_info_gtt_used=157003776
+pp_dpm_sclk active: 1: 400Mhz *
+pp_dpm_mclk active: 3: 1600Mhz *
+
+sample=16 time=2026-11-18T19:51:10+01:00
+/sys/class/drm/card2/device
+gpu_busy_percent=100
+mem_info_vram_used=15674298368
+mem_info_vram_total=17163091968
+mem_info_gtt_used=1500643328
+pp_dpm_sclk active: 8: 1800Mhz *
+pp_dpm_mclk active: 1: 800Mhz *
+/sys/class/drm/card3/device
+gpu_busy_percent=27
+mem_info_vram_used=16945815552
+mem_info_vram_total=17163091968
+mem_info_gtt_used=13606912
+pp_dpm_sclk active: 4: 1485Mhz *
+pp_dpm_mclk active: 1: 800Mhz *
+/sys/class/drm/card4/device
+gpu_busy_percent=5
+mem_info_vram_used=450023424
+mem_info_vram_total=536870912
+mem_info_gtt_used=157003776
+pp_dpm_sclk active: 1: 400Mhz *
+pp_dpm_mclk active: 3: 1600Mhz *
+
+sample=17 time=2026-11-18T19:51:12+01:00
+/sys/class/drm/card2/device
+gpu_busy_percent=100
+mem_info_vram_used=15674298368
+mem_info_vram_total=17163091968
+mem_info_gtt_used=1500643328
+pp_dpm_sclk active: 8: 1800Mhz *
+pp_dpm_mclk active: 1: 800Mhz *
+/sys/class/drm/card3/device
+gpu_busy_percent=0
+mem_info_vram_used=16945815552
+mem_info_vram_total=17163091968
+mem_info_gtt_used=13606912
+pp_dpm_sclk active: 0: 700Mhz *
+pp_dpm_mclk active: 0: 350Mhz *
+/sys/class/drm/card4/device
+gpu_busy_percent=5
+mem_info_vram_used=450023424
+mem_info_vram_total=536870912
+mem_info_gtt_used=157003776
+pp_dpm_sclk active: 1: 400Mhz *
+pp_dpm_mclk active: 3: 1600Mhz *
+
+sample=18 time=2026-11-18T19:51:14+01:00
+/sys/class/drm/card2/device
+gpu_busy_percent=100
+mem_info_vram_used=15674298368
+mem_info_vram_total=17163091968
+mem_info_gtt_used=1500643328
+pp_dpm_sclk active: 8: 1800Mhz *
+pp_dpm_mclk active: 1: 800Mhz *
+/sys/class/drm/card3/device
+gpu_busy_percent=0
+mem_info_vram_used=16945815552
+mem_info_vram_total=17163091968
+mem_info_gtt_used=13606912
+pp_dpm_sclk active: 0: 700Mhz *
+pp_dpm_mclk active: 0: 350Mhz *
+/sys/class/drm/card4/device
+gpu_busy_percent=6
+mem_info_vram_used=450023424
+mem_info_vram_total=536870912
+mem_info_gtt_used=157003776
+pp_dpm_sclk active: 1: 400Mhz *
+pp_dpm_mclk active: 3: 1600Mhz *
+
+sample=19 time=2026-11-18T19:51:16+01:00
+/sys/class/drm/card2/device
+gpu_busy_percent=100
+mem_info_vram_used=15674298368
+mem_info_vram_total=17163091968
+mem_info_gtt_used=1500643328
+pp_dpm_sclk active: 8: 1800Mhz *
+pp_dpm_mclk active: 1: 800Mhz *
+/sys/class/drm/card3/device
+gpu_busy_percent=0
+mem_info_vram_used=16945823744
+mem_info_vram_total=17163091968
+mem_info_gtt_used=13606912
+pp_dpm_sclk active: 0: 700Mhz *
+pp_dpm_mclk active: 0: 350Mhz *
+/sys/class/drm/card4/device
+gpu_busy_percent=5
+mem_info_vram_used=450023424
+mem_info_vram_total=536870912
+mem_info_gtt_used=157003776
+pp_dpm_sclk active: 1: 400Mhz *
+pp_dpm_mclk active: 3: 1600Mhz *
+
+sample=20 time=2026-11-18T19:51:18+01:00
+/sys/class/drm/card2/device
+gpu_busy_percent=0
+mem_info_vram_used=15674298368
+mem_info_vram_total=17163091968
+mem_info_gtt_used=1500643328
+pp_dpm_sclk active: 4: 1545Mhz *
+pp_dpm_mclk active: 1: 800Mhz *
+/sys/class/drm/card3/device
+gpu_busy_percent=68
+mem_info_vram_used=16945823744
+mem_info_vram_total=17163091968
+mem_info_gtt_used=13606912
+pp_dpm_sclk active: 8: 1720Mhz *
+pp_dpm_mclk active: 2: 1000Mhz *
+/sys/class/drm/card4/device
+gpu_busy_percent=5
+mem_info_vram_used=450023424
+mem_info_vram_total=536870912
+mem_info_gtt_used=157003776
+pp_dpm_sclk active: 1: 400Mhz *
+pp_dpm_mclk active: 3: 1600Mhz *
+
+sample=21 time=2026-11-18T19:51:20+01:00
+/sys/class/drm/card2/device
+gpu_busy_percent=100
+mem_info_vram_used=15674298368
+mem_info_vram_total=17163091968
+mem_info_gtt_used=1500643328
+pp_dpm_sclk active: 8: 1800Mhz *
+pp_dpm_mclk active: 1: 800Mhz *
+/sys/class/drm/card3/device
+gpu_busy_percent=0
+mem_info_vram_used=16945823744
+mem_info_vram_total=17163091968
+mem_info_gtt_used=13606912
+pp_dpm_sclk active: 0: 700Mhz *
+pp_dpm_mclk active: 0: 350Mhz *
+/sys/class/drm/card4/device
+gpu_busy_percent=5
+mem_info_vram_used=450023424
+mem_info_vram_total=536870912
+mem_info_gtt_used=157003776
+pp_dpm_sclk active: 1: 400Mhz *
+pp_dpm_mclk active: 3: 1600Mhz *
+
+sample=22 time=2026-11-18T19:51:22+01:00
+/sys/class/drm/card2/device
+gpu_busy_percent=100
+mem_info_vram_used=15674298368
+mem_info_vram_total=17163091968
+mem_info_gtt_used=1500643328
+pp_dpm_sclk active: 8: 1800Mhz *
+pp_dpm_mclk active: 1: 800Mhz *
+/sys/class/drm/card3/device
+gpu_busy_percent=0
+mem_info_vram_used=16945823744
+mem_info_vram_total=17163091968
+mem_info_gtt_used=13606912
+pp_dpm_sclk active: 0: 700Mhz *
+pp_dpm_mclk active: 0: 350Mhz *
+/sys/class/drm/card4/device
+gpu_busy_percent=5
+mem_info_vram_used=450023424
+mem_info_vram_total=536870912
+mem_info_gtt_used=157003776
+pp_dpm_sclk active: 1: 400Mhz *
+pp_dpm_mclk active: 3: 1600Mhz *
+
+sample=23 time=2026-11-18T19:51:24+01:00
+/sys/class/drm/card2/device
+gpu_busy_percent=100
+mem_info_vram_used=15674298368
+mem_info_vram_total=17163091968
+mem_info_gtt_used=1500643328
+pp_dpm_sclk active: 8: 1800Mhz *
+pp_dpm_mclk active: 1: 800Mhz *
+/sys/class/drm/card3/device
+gpu_busy_percent=0
+mem_info_vram_used=16945823744
+mem_info_vram_total=17163091968
+mem_info_gtt_used=13606912
+pp_dpm_sclk active: 0: 700Mhz *
+pp_dpm_mclk active: 0: 350Mhz *
+/sys/class/drm/card4/device
+gpu_busy_percent=6
+mem_info_vram_used=450023424
+mem_info_vram_total=536870912
+mem_info_gtt_used=157003776
+pp_dpm_sclk active: 1: 400Mhz *
+pp_dpm_mclk active: 3: 1600Mhz *
+
+sample=24 time=2026-11-18T19:51:26+01:00
+/sys/class/drm/card2/device
+gpu_busy_percent=0
+mem_info_vram_used=15674298368
+mem_info_vram_total=17163091968
+mem_info_gtt_used=1500643328
+pp_dpm_sclk active: 0: 700Mhz *
+pp_dpm_mclk active: 0: 350Mhz *
+/sys/class/drm/card3/device
+gpu_busy_percent=100
+mem_info_vram_used=16945823744
+mem_info_vram_total=17163091968
+mem_info_gtt_used=13606912
+pp_dpm_sclk active: 8: 1720Mhz *
+pp_dpm_mclk active: 2: 1000Mhz *
+/sys/class/drm/card4/device
+gpu_busy_percent=5
+mem_info_vram_used=450023424
+mem_info_vram_total=536870912
+mem_info_gtt_used=157003776
+pp_dpm_sclk active: 1: 400Mhz *
+pp_dpm_mclk active: 3: 1600Mhz *
+
+sample=25 time=2026-11-18T19:51:28+01:00
+/sys/class/drm/card2/device
+gpu_busy_percent=100
+mem_info_vram_used=15674298368
+mem_info_vram_total=17163091968
+mem_info_gtt_used=1500643328
+pp_dpm_sclk active: 8: 1800Mhz *
+pp_dpm_mclk active: 1: 800Mhz *
+/sys/class/drm/card3/device
+gpu_busy_percent=0
+mem_info_vram_used=16945823744
+mem_info_vram_total=17163091968
+mem_info_gtt_used=13606912
+pp_dpm_sclk active: 0: 700Mhz *
+pp_dpm_mclk active: 0: 350Mhz *
+/sys/class/drm/card4/device
+gpu_busy_percent=5
+mem_info_vram_used=450023424
+mem_info_vram_total=536870912
+mem_info_gtt_used=157003776
+pp_dpm_sclk active: 1: 400Mhz *
+pp_dpm_mclk active: 3: 1600Mhz *
+
+sample=26 time=2026-11-18T19:51:30+01:00
+/sys/class/drm/card2/device
+gpu_busy_percent=0
+mem_info_vram_used=15674298368
+mem_info_vram_total=17163091968
+mem_info_gtt_used=1500643328
+pp_dpm_sclk active: 0: 700Mhz *
+pp_dpm_mclk active: 0: 350Mhz *
+/sys/class/drm/card3/device
+gpu_busy_percent=0
+mem_info_vram_used=16945823744
+mem_info_vram_total=17163091968
+mem_info_gtt_used=13606912
+pp_dpm_sclk active: 0: 700Mhz *
+pp_dpm_mclk active: 0: 350Mhz *
+/sys/class/drm/card4/device
+gpu_busy_percent=6
+mem_info_vram_used=450023424
+mem_info_vram_total=536870912
+mem_info_gtt_used=157003776
+pp_dpm_sclk active: 1: 400Mhz *
+pp_dpm_mclk active: 3: 1600Mhz *
+
+sample=27 time=2026-11-18T19:51:32+01:00
+/sys/class/drm/card2/device
+gpu_busy_percent=0
+mem_info_vram_used=15674298368
+mem_info_vram_total=17163091968
+mem_info_gtt_used=1500643328
+pp_dpm_sclk active: 0: 700Mhz *
+pp_dpm_mclk active: 0: 350Mhz *
+/sys/class/drm/card3/device
+gpu_busy_percent=0
+mem_info_vram_used=16945823744
+mem_info_vram_total=17163091968
+mem_info_gtt_used=13606912
+pp_dpm_sclk active: 0: 700Mhz *
+pp_dpm_mclk active: 0: 350Mhz *
+/sys/class/drm/card4/device
+gpu_busy_percent=5
+mem_info_vram_used=450023424
+mem_info_vram_total=536870912
+mem_info_gtt_used=157003776
+pp_dpm_sclk active: 1: 400Mhz *
+pp_dpm_mclk active: 3: 1600Mhz *
+
+sample=28 time=2026-11-18T19:51:34+01:00
+/sys/class/drm/card2/device
+gpu_busy_percent=100
+mem_info_vram_used=15674298368
+mem_info_vram_total=17163091968
+mem_info_gtt_used=1500643328
+pp_dpm_sclk active: 8: 1800Mhz *
+pp_dpm_mclk active: 1: 800Mhz *
+/sys/class/drm/card3/device
+gpu_busy_percent=0
+mem_info_vram_used=16945823744
+mem_info_vram_total=17163091968
+mem_info_gtt_used=13606912
+pp_dpm_sclk active: 0: 700Mhz *
+pp_dpm_mclk active: 0: 350Mhz *
+/sys/class/drm/card4/device
+gpu_busy_percent=5
+mem_info_vram_used=450023424
+mem_info_vram_total=536870912
+mem_info_gtt_used=157003776
+pp_dpm_sclk active: 1: 400Mhz *
+pp_dpm_mclk active: 3: 1600Mhz *
+
+sample=29 time=2026-11-18T19:51:36+01:00
+/sys/class/drm/card2/device
+gpu_busy_percent=100
+mem_info_vram_used=15674298368
+mem_info_vram_total=17163091968
+mem_info_gtt_used=1500643328
+pp_dpm_sclk active: 8: 1800Mhz *
+pp_dpm_mclk active: 1: 800Mhz *
+/sys/class/drm/card3/device
+gpu_busy_percent=0
+mem_info_vram_used=16945823744
+mem_info_vram_total=17163091968
+mem_info_gtt_used=13606912
+pp_dpm_sclk active: 0: 700Mhz *
+pp_dpm_mclk active: 0: 350Mhz *
+/sys/class/drm/card4/device
+gpu_busy_percent=5
+mem_info_vram_used=450023424
+mem_info_vram_total=536870912
+mem_info_gtt_used=157003776
+pp_dpm_sclk active: 1: 400Mhz *
+pp_dpm_mclk active: 3: 1600Mhz *
+
+sample=30 time=2026-11-18T19:51:38+01:00
+/sys/class/drm/card2/device
+gpu_busy_percent=0
+mem_info_vram_used=15674298368
+mem_info_vram_total=17163091968
+mem_info_gtt_used=1500643328
+pp_dpm_sclk active: 0: 700Mhz *
+pp_dpm_mclk active: 0: 350Mhz *
+/sys/class/drm/card3/device
+gpu_busy_percent=0
+mem_info_vram_used=16945823744
+mem_info_vram_total=17163091968
+mem_info_gtt_used=13606912
+pp_dpm_sclk active: 0: 700Mhz *
+pp_dpm_mclk active: 0: 350Mhz *
+/sys/class/drm/card4/device
+gpu_busy_percent=5
+mem_info_vram_used=450023424
+mem_info_vram_total=536870912
+mem_info_gtt_used=157003776
+pp_dpm_sclk active: 1: 400Mhz *
+pp_dpm_mclk active: 3: 1600Mhz *

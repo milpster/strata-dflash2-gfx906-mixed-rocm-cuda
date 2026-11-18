@@ -1,0 +1,692 @@
+2026-11-18T19:51:46+01:00
+Read-only cgroup ancestry for observed engine PID 42016; optional missing counters are not zeros.
+
+=== /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/run-p41774-i40632.scope ===
+
+memory.current
+56175702016
+
+memory.swap.current
+6421078016
+
+memory.max
+max
+
+memory.high
+max
+
+memory.min
+51539607552
+
+memory.low
+0
+
+memory.events
+low 0
+high 0
+max 0
+oom 0
+oom_kill 0
+oom_group_kill 0
+sock_throttled 205
+
+memory.events.local
+low 0
+high 0
+max 0
+oom 0
+oom_kill 0
+oom_group_kill 0
+sock_throttled 205
+
+memory.stat
+anon 39693815808
+file 16229539840
+kernel 251932672
+kernel_stack 2768896
+pagetables 174583808
+sec_pagetables 0
+percpu 1728
+sock 0
+vmalloc 0
+shmem 0
+zswap 0
+zswapped 0
+zswap_incomp 0
+file_mapped 13964886016
+file_dirty 16384
+file_writeback 0
+swapcached 170905600
+anon_thp 1501560832
+file_thp 0
+shmem_thp 0
+inactive_anon 21877702656
+active_anon 17543704576
+inactive_file 11059519488
+active_file 5170020352
+unevictable 167772160
+slab_reclaimable 71886344
+slab_unreclaimable 2631296
+slab 74517640
+workingset_refault_anon 27556110
+workingset_refault_file 417599697
+workingset_activate_anon 24363685
+workingset_activate_file 1684633
+workingset_restore_anon 24363685
+workingset_restore_file 3991927
+workingset_nodereclaim 0
+pgdemote_kswapd 0
+pgdemote_direct 0
+pgdemote_khugepaged 0
+pgdemote_proactive 0
+pgsteal_kswapd 447748725
+pgsteal_direct 237818
+pgsteal_khugepaged 0
+pgsteal_proactive 0
+pgscan_kswapd 542533453
+pgscan_direct 745462
+pgscan_khugepaged 0
+pgscan_proactive 0
+pgrefill 209409039
+pgpromote_success 0
+pgscan 543278915
+pgsteal 447986543
+pswpin 19877323
+pswpout 23143209
+pgfault 93658143
+pgmajfault 4342064
+pgactivate 63098282
+pgdeactivate 1
+pglazyfree 0
+pglazyfreed 0
+swpin_zero 7678779
+swpout_zero 7691079
+zswpin 0
+zswpout 0
+zswpwb 0
+thp_fault_alloc 62577
+thp_collapse_alloc 0
+thp_swpout 0
+thp_swpout_fallback 14340
+numa_pages_migrated 0
+numa_pte_updates 0
+numa_hint_faults 0
+
+memory.pressure
+UNAVAILABLE
+
+=== /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice ===
+
+memory.current
+60418441216
+
+memory.swap.current
+11195445248
+
+memory.max
+max
+
+memory.high
+max
+
+memory.min
+0
+
+memory.low
+0
+
+memory.events
+low 0
+high 0
+max 19024
+oom 1
+oom_kill 1
+oom_group_kill 0
+sock_throttled 942
+
+memory.events.local
+low 0
+high 0
+max 0
+oom 0
+oom_kill 0
+oom_group_kill 0
+sock_throttled 0
+
+memory.stat
+anon 41337503744
+file 18571030528
+kernel 444821504
+kernel_stack 12058624
+pagetables 262561792
+sec_pagetables 0
+percpu 1495008
+sock 53248
+vmalloc 208896
+shmem 116899840
+zswap 0
+zswapped 0
+zswap_incomp 0
+file_mapped 15743647744
+file_dirty 724992
+file_writeback 0
+swapcached 341573632
+anon_thp 1547698176
+file_thp 1298137088
+shmem_thp 0
+inactive_anon 22406684672
+active_anon 18829381632
+inactive_file 12721971200
+active_file 5732163584
+unevictable 168517632
+slab_reclaimable 140373856
+slab_unreclaimable 27484584
+slab 167858440
+workingset_refault_anon 29656814
+workingset_refault_file 421647112
+workingset_activate_anon 24643066
+workingset_activate_file 1736030
+workingset_restore_anon 24643079
+workingset_restore_file 4054319
+workingset_nodereclaim 83198
+pgdemote_kswapd 0
+pgdemote_direct 0
+pgdemote_khugepaged 0
+pgdemote_proactive 0
+pgsteal_kswapd 474318119
+pgsteal_direct 1376244
+pgsteal_khugepaged 0
+pgsteal_proactive 0
+pgscan_kswapd 582966062
+pgscan_direct 628166509
+pgscan_khugepaged 0
+pgscan_proactive 0
+pgrefill 239552857
+pgpromote_success 0
+pgscan 1211132571
+pgsteal 475694363
+pswpin 21964047
+pswpout 26882472
+pgfault 518873750
+pgmajfault 5265435
+pgactivate 78868851
+pgdeactivate 1
+pglazyfree 6090
+pglazyfreed 0
+swpin_zero 7692767
+swpout_zero 7728512
+zswpin 0
+zswpout 0
+zswpwb 0
+thp_fault_alloc 180333
+thp_collapse_alloc 1109
+thp_swpout 0
+thp_swpout_fallback 17320
+numa_pages_migrated 0
+numa_pte_updates 0
+numa_hint_faults 0
+
+memory.pressure
+UNAVAILABLE
+
+=== /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service ===
+
+memory.current
+60724531200
+
+memory.swap.current
+11599020032
+
+memory.max
+max
+
+memory.high
+max
+
+memory.min
+0
+
+memory.low
+0
+
+memory.events
+low 0
+high 0
+max 19024
+oom 1
+oom_kill 1
+oom_group_kill 0
+sock_throttled 942
+
+memory.events.local
+low 0
+high 0
+max 0
+oom 0
+oom_kill 0
+oom_group_kill 0
+sock_throttled 0
+
+memory.stat
+anon 41550241792
+file 18630443008
+kernel 485154816
+kernel_stack 16941056
+pagetables 274763776
+sec_pagetables 0
+percpu 2877408
+sock 53248
+vmalloc 356352
+shmem 117059584
+zswap 0
+zswapped 0
+zswap_incomp 0
+file_mapped 15786065920
+file_dirty 733184
+file_writeback 0
+swapcached 388640768
+anon_thp 1556086784
+file_thp 1300234240
+shmem_thp 0
+inactive_anon 22546870272
+active_anon 18902577152
+inactive_file 12750589952
+active_file 5762797568
+unevictable 168550400
+slab_reclaimable 152313064
+slab_unreclaimable 37138608
+slab 189451672
+workingset_refault_anon 29712735
+workingset_refault_file 421672166
+workingset_activate_anon 24651142
+workingset_activate_file 1738322
+workingset_restore_anon 24651158
+workingset_restore_file 4056677
+workingset_nodereclaim 84942
+pgdemote_kswapd 0
+pgdemote_direct 0
+pgdemote_khugepaged 0
+pgdemote_proactive 0
+pgsteal_kswapd 474657014
+pgsteal_direct 1380918
+pgsteal_khugepaged 0
+pgsteal_proactive 0
+pgscan_kswapd 583551771
+pgscan_direct 628188749
+pgscan_khugepaged 0
+pgscan_proactive 0
+pgrefill 240255998
+pgpromote_success 0
+pgscan 1211740520
+pgsteal 476037932
+pswpin 22017992
+pswpout 27003022
+pgfault 519735004
+pgmajfault 5303557
+pgactivate 78942659
+pgdeactivate 1
+pglazyfree 6090
+pglazyfreed 0
+swpin_zero 7694735
+swpout_zero 7734620
+zswpin 0
+zswpout 0
+zswpwb 0
+thp_fault_alloc 180423
+thp_collapse_alloc 1160
+thp_swpout 0
+thp_swpout_fallback 17322
+numa_pages_migrated 0
+numa_pte_updates 0
+numa_hint_faults 0
+
+memory.pressure
+UNAVAILABLE
+
+=== /sys/fs/cgroup/user.slice/user-1000.slice ===
+
+memory.current
+60750811136
+
+memory.swap.current
+11614691328
+
+memory.max
+max
+
+memory.high
+max
+
+memory.min
+0
+
+memory.low
+0
+
+memory.events
+low 0
+high 0
+max 19024
+oom 1
+oom_kill 1
+oom_group_kill 0
+sock_throttled 942
+
+memory.events.local
+low 0
+high 0
+max 0
+oom 0
+oom_kill 0
+oom_group_kill 0
+sock_throttled 0
+
+memory.stat
+anon 41563549696
+file 18633621504
+kernel 488411136
+kernel_stack 17137664
+pagetables 276369408
+sec_pagetables 0
+percpu 2991168
+sock 49152
+vmalloc 356352
+shmem 117059584
+zswap 0
+zswapped 0
+zswap_incomp 0
+file_mapped 15789596672
+file_dirty 737280
+file_writeback 0
+swapcached 388775936
+anon_thp 1560281088
+file_thp 1300234240
+shmem_thp 0
+inactive_anon 22551453696
+active_anon 18911293440
+inactive_file 12753629184
+active_file 5762936832
+unevictable 168550400
+slab_reclaimable 153144712
+slab_unreclaimable 37641848
+slab 190786560
+workingset_refault_anon 29713005
+workingset_refault_file 421673112
+workingset_activate_anon 24651350
+workingset_activate_file 1738322
+workingset_restore_anon 24651366
+workingset_restore_file 4056677
+workingset_nodereclaim 84971
+pgdemote_kswapd 0
+pgdemote_direct 0
+pgdemote_khugepaged 0
+pgdemote_proactive 0
+pgsteal_kswapd 474687877
+pgsteal_direct 1380936
+pgsteal_khugepaged 0
+pgsteal_proactive 0
+pgscan_kswapd 583588375
+pgscan_direct 628188769
+pgscan_khugepaged 0
+pgscan_proactive 0
+pgrefill 240269476
+pgpromote_success 0
+pgscan 1211777144
+pgsteal 476068813
+pswpin 22018262
+pswpout 27006908
+pgfault 519905370
+pgmajfault 5303949
+pgactivate 78943563
+pgdeactivate 1
+pglazyfree 6090
+pglazyfreed 0
+swpin_zero 7694735
+swpout_zero 7734790
+zswpin 0
+zswpout 0
+zswpwb 0
+thp_fault_alloc 180478
+thp_collapse_alloc 1161
+thp_swpout 0
+thp_swpout_fallback 17324
+numa_pages_migrated 0
+numa_pte_updates 0
+numa_hint_faults 0
+
+memory.pressure
+UNAVAILABLE
+
+=== /sys/fs/cgroup/user.slice ===
+
+memory.current
+60771553280
+
+memory.swap.current
+11614097408
+
+memory.max
+max
+
+memory.high
+max
+
+memory.min
+0
+
+memory.low
+0
+
+memory.events
+low 0
+high 0
+max 19024
+oom 1
+oom_kill 1
+oom_group_kill 0
+sock_throttled 942
+
+memory.events.local
+low 0
+high 0
+max 0
+oom 0
+oom_kill 0
+oom_group_kill 0
+sock_throttled 0
+
+memory.stat
+anon 41564598272
+file 18643943424
+kernel 496021504
+kernel_stack 17137664
+pagetables 277491712
+sec_pagetables 0
+percpu 3103488
+sock 49152
+vmalloc 430080
+shmem 117059584
+zswap 0
+zswapped 0
+zswap_incomp 0
+file_mapped 15799783424
+file_dirty 737280
+file_writeback 0
+swapcached 388775936
+anon_thp 1560281088
+file_thp 1300234240
+shmem_thp 0
+inactive_anon 22551453696
+active_anon 18912329728
+inactive_file 12762312704
+active_file 5764575232
+unevictable 168550400
+slab_reclaimable 156669552
+slab_unreclaimable 40405264
+slab 197074816
+workingset_refault_anon 29713253
+workingset_refault_file 421679825
+workingset_activate_anon 24651598
+workingset_activate_file 1738322
+workingset_restore_anon 24651614
+workingset_restore_file 4056689
+workingset_nodereclaim 87572
+pgdemote_kswapd 0
+pgdemote_direct 0
+pgdemote_khugepaged 0
+pgdemote_proactive 0
+pgsteal_kswapd 474818925
+pgsteal_direct 1400507
+pgsteal_khugepaged 0
+pgsteal_proactive 0
+pgscan_kswapd 583813208
+pgscan_direct 628245847
+pgscan_khugepaged 0
+pgscan_proactive 0
+pgrefill 240339551
+pgpromote_success 0
+pgscan 1212059055
+pgsteal 476219432
+pswpin 22018510
+pswpout 27006990
+pgfault 520085218
+pgmajfault 5307202
+pgactivate 78993029
+pgdeactivate 1
+pglazyfree 6090
+pglazyfreed 0
+swpin_zero 7694735
+swpout_zero 7734790
+zswpin 0
+zswpout 0
+zswpwb 0
+thp_fault_alloc 180495
+thp_collapse_alloc 1167
+thp_swpout 0
+thp_swpout_fallback 17324
+numa_pages_migrated 0
+numa_pte_updates 0
+numa_hint_faults 0
+
+memory.pressure
+UNAVAILABLE
+
+=== /sys/fs/cgroup/ ===
+
+memory.current
+UNAVAILABLE
+
+memory.swap.current
+UNAVAILABLE
+
+memory.max
+UNAVAILABLE
+
+memory.high
+UNAVAILABLE
+
+memory.min
+UNAVAILABLE
+
+memory.low
+UNAVAILABLE
+
+memory.events
+UNAVAILABLE
+
+memory.events.local
+UNAVAILABLE
+
+memory.stat
+anon 41622683648
+file 19255881728
+kernel 541618176
+kernel_stack 20283392
+pagetables 284377088
+sec_pagetables 0
+percpu 8339112
+sock 69632
+vmalloc 2134016
+shmem 117669888
+zswap 0
+zswapped 0
+zswap_incomp 0
+file_mapped 16389898240
+file_dirty 884736
+file_writeback 0
+swapcached 402857984
+anon_thp 1583349760
+file_thp 1304428544
+shmem_thp 0
+inactive_anon 22561284096
+active_anon 18960744448
+inactive_file 13347205120
+active_file 5791035392
+unevictable 169074688
+slab_reclaimable 172437624
+slab_unreclaimable 52633744
+slab 225071368
+workingset_refault_anon 29735513
+workingset_refault_file 421959715
+workingset_activate_anon 24655737
+workingset_activate_file 1956446
+workingset_restore_anon 24655843
+workingset_restore_file 4275184
+workingset_nodereclaim 91159
+pgdemote_kswapd 0
+pgdemote_direct 0
+pgdemote_khugepaged 0
+pgdemote_proactive 0
+pgsteal_kswapd 475459461
+pgsteal_direct 1415246
+pgsteal_khugepaged 0
+pgsteal_proactive 0
+pgscan_kswapd 585036286
+pgscan_direct 628394749
+pgscan_khugepaged 0
+pgscan_proactive 0
+pgrefill 244826978
+pgpromote_success 0
+pgscan 1213431035
+pgsteal 476874707
+pswpin 22039638
+pswpout 27051046
+pgfault 521969662
+pgmajfault 5332863
+pgactivate 79389273
+pgdeactivate 1
+pglazyfree 6090
+pglazyfreed 0
+swpin_zero 7695867
+swpout_zero 7737279
+zswpin 0
+zswpout 0
+zswpwb 0
+thp_fault_alloc 180594
+thp_collapse_alloc 1216
+thp_swpout 0
+thp_swpout_fallback 17342
+numa_pages_migrated 0
+numa_pte_updates 0
+numa_hint_faults 0
+
+memory.pressure
+UNAVAILABLE
+
+=== paging policy, unchanged ===
+vm.swappiness = 100
+vm.watermark_scale_factor = 100
+vm.watermark_boost_factor = 15000
+vm.min_free_kbytes = 524288
+
+=== relevant process ages ===
+    PID    PPID                  STARTED     ELAPSED %CPU   RSS STAT COMMAND
+  15094    8512 Wed Nov 18 18:01:11 2026    01:50:34  1.4 11384 R+   python
+  41533   41478 Wed Nov 18 18:03:03 2026    01:48:42  6.7 116124 SNl strata-expert-h
+  41774   41478 Wed Nov 18 18:03:04 2026    01:48:41  0.6 25248 SNl  python
+  42016   41774 Wed Nov 18 18:03:06 2026    01:48:39  513 54164980 RNLl strata-host
+
+=== on-disk production pins ===
+0d9fb58b7d1dd46df002702f2d67756be6efefc101c24de469ebf9e5a1609811  prod-config-v0238.json
+396f5cd61251d7ee5a6449cc09f511ce96866d31c05520842ac92d342bfe8916  launch-v0238.sh
+2026-11-18T19:51:46+01:00

@@ -1,0 +1,491 @@
+2026-11-18T19:49:48+01:00
+phase=active_slowdown_reported_without_gaming
+evidence_dir=bench/ab-v0210/rpcprof/out/tg-no-game-20261118-194948-2107669
+engine_log=/mnt/srcds/Strata/logs/engine-prod-ud-iq3xxs-v0233.log
+engine_log_start=4263837
+
+=== host identity and memory ===
+6598.04 62792.22
+497a13ae-5912-4f06-9924-e4b1178b5b4a
+               total        used        free      shared  buff/cache   available
+Mem:           63644       47346        1622         113       18097       16298
+Swap:         196607       10714      185893
+MemAvailable:   16689484 kB
+Cached:         18247080 kB
+SwapCached:       353884 kB
+SwapTotal:      201326568 kB
+SwapFree:       190355216 kB
+Dirty:               748 kB
+Writeback:             0 kB
+AnonPages:      41079904 kB
+Mapped:         15870060 kB
+Shmem:            115916 kB
+workingset_refault_anon 29043646
+workingset_refault_file 415103720
+pgsteal_kswapd 467915210
+pgsteal_direct 1415246
+pgsteal_khugepaged 0
+pgsteal_proactive 0
+pgsteal_anon 33256929
+pgsteal_file 436073527
+pgscan_kswapd 575652066
+pgscan_direct 628394749
+pgscan_khugepaged 0
+pgscan_proactive 0
+pgscan_anon 123952894
+pgscan_file 1080093921
+pswpin 21676371
+pswpout 26554064
+allocstall_dma 0
+allocstall_dma32 0
+allocstall_normal 405
+allocstall_movable 5915
+allocstall_device 0
+pgmajfault 5220514
+pgscan_direct_throttle 0
+
+=== process 42016 ===
+/mnt/srcds/Strata/v0238p0/rpcw-hip/strata
+
+/proc/42016/status
+Name:	strata-host
+Umask:	0002
+State:	R (running)
+Tgid:	42016
+Ngid:	0
+Pid:	42016
+PPid:	41774
+TracerPid:	0
+Uid:	1000	1000	1000	1000
+Gid:	1000	1000	1000	1000
+FDSize:	64
+Groups:	4 24 27 30 44 46 100 117 134 984 992 993 1000 
+NStgid:	42016
+NSpid:	42016
+NSpgid:	42016
+NSsid:	41478
+Kthread:	0
+VmPeak:	177827164 kB
+VmSize:	177427592 kB
+VmLck:	  163840 kB
+VmPin:	       0 kB
+VmHWM:	57188040 kB
+VmRSS:	54262060 kB
+RssAnon:	39108184 kB
+RssFile:	15153876 kB
+RssShmem:	       0 kB
+VmData:	69021768 kB
+VmStk:	     352 kB
+VmExe:	   11604 kB
+VmLib:	  167452 kB
+VmPTE:	  165140 kB
+VmSwap:	 3999664 kB
+HugetlbPages:	       0 kB
+CoreDumping:	0
+THP_enabled:	1
+untag_mask:	0xffffffffffffffff
+Threads:	94
+SigQ:	0/253223
+SigPnd:	0000000000000000
+ShdPnd:	0000000000000000
+SigBlk:	0000000000000000
+SigIgn:	0000000000000006
+SigCgt:	0000000100000000
+CapInh:	0000000800000000
+CapPrm:	0000000000000000
+CapEff:	0000000000000000
+CapBnd:	000001ffffffffff
+CapAmb:	0000000000000000
+NoNewPrivs:	0
+Seccomp:	0
+Seccomp_filters:	0
+Speculation_Store_Bypass:	vulnerable
+SpeculationIndirectBranch:	always enabled
+Cpus_allowed:	0001
+Cpus_allowed_list:	0
+Mems_allowed:	1
+Mems_allowed_list:	0
+voluntary_ctxt_switches:	2036226
+nonvoluntary_ctxt_switches:	353739
+x86_Thread_features:	
+x86_Thread_features_locked:	
+
+/proc/42016/stat
+42016 (strata-host) R 41774 42016 41478 0 -1 4194304 12271354 0 638802 0 3086785 179783 0 0 21 1 94 0 19625 181685854208 13565659 18446744073709551615 38306560 50184560 140737399533776 0 0 0 0 6 0 0 0 0 17 0 0 0 0 0 0 50217536 50233040 303915008 140737399541771 140737399543441 140737399543441 140737399549902 0
+
+/proc/42016/io
+rchar: 68076556564
+wchar: 41808059134
+syscr: 2596236
+syscw: 85179
+read_bytes: 2832224145408
+write_bytes: 41802153984
+cancelled_write_bytes: 0
+
+/proc/42016/smaps_rollup
+00200000-7ffffab4f000 ---p 00000000 00:00 0                              [rollup]
+Rss:            54262060 kB
+Pss:            54256663 kB
+Pss_Dirty:      39002112 kB
+Pss_Anon:       39108184 kB
+Pss_File:       15148479 kB
+Pss_Shmem:             0 kB
+Shared_Clean:       6576 kB
+Shared_Dirty:          0 kB
+Private_Clean:  15253372 kB
+Private_Dirty:  39002112 kB
+Referenced:     39381928 kB
+Anonymous:      39108184 kB
+KSM:                   0 kB
+LazyFree:              0 kB
+AnonHugePages:   1466368 kB
+ShmemPmdMapped:        0 kB
+FilePmdMapped:   1128448 kB
+Shared_Hugetlb:        0 kB
+Private_Hugetlb:       0 kB
+Swap:            3999664 kB
+SwapPss:         3999664 kB
+Locked:           163840 kB
+
+/proc/42016/cgroup
+1:net_cls:/
+0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-p41774-i40632.scope
+
+=== process 41533 ===
+/mnt/srcds/Strata/v0233/build-mixed-gpu/rpcw-cuda/strata-expert-helper-patient
+
+/proc/41533/status
+Name:	strata-expert-h
+Umask:	0002
+State:	S (sleeping)
+Tgid:	41533
+Ngid:	0
+Pid:	41533
+PPid:	41478
+TracerPid:	0
+Uid:	1000	1000	1000	1000
+Gid:	1000	1000	1000	1000
+FDSize:	256
+Groups:	4 24 27 30 44 46 100 117 134 984 992 993 1000 
+NStgid:	41533
+NSpid:	41533
+NSpgid:	41478
+NSsid:	41478
+Kthread:	0
+VmPeak:	66415740 kB
+VmSize:	66351912 kB
+VmLck:	       0 kB
+VmPin:	       0 kB
+VmHWM:	 8095684 kB
+VmRSS:	  116084 kB
+RssAnon:	   10916 kB
+RssFile:	   72816 kB
+RssShmem:	   32352 kB
+VmData:	  199324 kB
+VmStk:	     132 kB
+VmExe:	    6296 kB
+VmLib:	  128208 kB
+VmPTE:	   43316 kB
+VmSwap:	  108076 kB
+HugetlbPages:	       0 kB
+CoreDumping:	0
+THP_enabled:	1
+untag_mask:	0xffffffffffffffff
+Threads:	6
+SigQ:	0/253223
+SigPnd:	0000000000000000
+ShdPnd:	0000000000000000
+SigBlk:	0000000000000000
+SigIgn:	0000000000001004
+SigCgt:	0000000100004002
+CapInh:	0000000800000000
+CapPrm:	0000000000000000
+CapEff:	0000000000000000
+CapBnd:	000001ffffffffff
+CapAmb:	0000000000000000
+NoNewPrivs:	0
+Seccomp:	0
+Seccomp_filters:	0
+Speculation_Store_Bypass:	vulnerable
+SpeculationIndirectBranch:	always enabled
+Cpus_allowed:	ffff
+Cpus_allowed_list:	0-15
+Mems_allowed:	1
+Mems_allowed_list:	0
+voluntary_ctxt_switches:	1236876
+nonvoluntary_ctxt_switches:	68130
+x86_Thread_features:	
+x86_Thread_features_locked:	
+
+/proc/41533/stat
+41533 (strata-expert-h) S 41478 41478 41478 0 -1 4194304 237635 0 24900 0 38674 4941 0 0 21 1 6 0 19366 67944357888 29340 18446744073709551615 94006370631680 94006377078721 140734749259936 0 0 0 0 4100 16386 0 0 0 17 1 0 0 0 0 0 94006420548080 94006420571848 94007183278080 140734749268694 140734749269077 140734749269077 140734749269943 0
+
+/proc/41533/io
+rchar: 9486055
+wchar: 9422606
+syscr: 1177542
+syscw: 1177643
+read_bytes: 6790918144
+write_bytes: 8192
+cancelled_write_bytes: 0
+
+/proc/41533/smaps_rollup
+200000000-7fff5cbce000 ---p 00000000 00:00 0                             [rollup]
+Rss:              116084 kB
+Pss:              110121 kB
+Pss_Dirty:         50720 kB
+Pss_Anon:          10916 kB
+Pss_File:          66853 kB
+Pss_Shmem:         32352 kB
+Shared_Clean:       7664 kB
+Shared_Dirty:          0 kB
+Private_Clean:     57700 kB
+Private_Dirty:     50720 kB
+Referenced:        79632 kB
+Anonymous:         10916 kB
+KSM:                   0 kB
+LazyFree:              0 kB
+AnonHugePages:         0 kB
+ShmemPmdMapped:        0 kB
+FilePmdMapped:         0 kB
+Shared_Hugetlb:        0 kB
+Private_Hugetlb:       0 kB
+Swap:             108076 kB
+SwapPss:          108076 kB
+Locked:                0 kB
+
+/proc/41533/cgroup
+1:net_cls:/
+0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/tmux-spawn-b03ccd14-4d20-4ea6-8e4c-c5e30a9ac945.scope
+
+=== process 41774 ===
+/home/srcds/.pyenv/versions/3.11.9/bin/python3.11
+
+/proc/41774/status
+Name:	python
+Umask:	0002
+State:	S (sleeping)
+Tgid:	41774
+Ngid:	0
+Pid:	41774
+PPid:	41478
+TracerPid:	0
+Uid:	1000	1000	1000	1000
+Gid:	1000	1000	1000	1000
+FDSize:	256
+Groups:	4 24 27 30 44 46 100 117 134 984 992 993 1000 
+NStgid:	41774
+NSpid:	41774
+NSpgid:	41478
+NSsid:	41478
+Kthread:	0
+VmPeak:	 1777560 kB
+VmSize:	 1718168 kB
+VmLck:	       0 kB
+VmPin:	       0 kB
+VmHWM:	  228172 kB
+VmRSS:	   28612 kB
+RssAnon:	   15704 kB
+RssFile:	   12908 kB
+RssShmem:	       0 kB
+VmData:	  407124 kB
+VmStk:	     136 kB
+VmExe:	       4 kB
+VmLib:	   11392 kB
+VmPTE:	     728 kB
+VmSwap:	  222544 kB
+HugetlbPages:	       0 kB
+CoreDumping:	0
+THP_enabled:	1
+untag_mask:	0xffffffffffffffff
+Threads:	20
+SigQ:	0/253223
+SigPnd:	0000000000000000
+ShdPnd:	0000000000000000
+SigBlk:	0000000000000000
+SigIgn:	0000000001001006
+SigCgt:	0000000100004001
+CapInh:	0000000800000000
+CapPrm:	0000000000000000
+CapEff:	0000000000000000
+CapBnd:	000001ffffffffff
+CapAmb:	0000000000000000
+NoNewPrivs:	0
+Seccomp:	0
+Seccomp_filters:	0
+Speculation_Store_Bypass:	vulnerable
+SpeculationIndirectBranch:	always enabled
+Cpus_allowed:	ffff
+Cpus_allowed_list:	0-15
+Mems_allowed:	1
+Mems_allowed_list:	0
+voluntary_ctxt_switches:	9012
+nonvoluntary_ctxt_switches:	83
+x86_Thread_features:	
+x86_Thread_features_locked:	
+
+/proc/41774/stat
+41774 (python) S 41478 41478 41478 0 -1 4194304 121104 2448 60434 11 2913 1012 0 1 21 1 20 0 19471 1759404032 7212 18446744073709551615 93946559778816 93946559779177 140726414028176 0 0 0 0 16781318 16385 0 0 0 17 9 0 0 0 0 0 93946559790488 93946559791120 93947160264704 140726414035055 140726414035208 140726414035208 140726414041045 0
+
+/proc/41774/io
+rchar: 88087473
+wchar: 15194257
+syscr: 460529
+syscw: 8164
+read_bytes: 382865408
+write_bytes: 1236992
+cancelled_write_bytes: 0
+
+/proc/41774/smaps_rollup
+5571a352c000-7ffd6beb6000 ---p 00000000 00:00 0                          [rollup]
+Rss:               28612 kB
+Pss:               18154 kB
+Pss_Dirty:         14348 kB
+Pss_Anon:          15704 kB
+Pss_File:           2450 kB
+Pss_Shmem:             0 kB
+Shared_Clean:      12812 kB
+Shared_Dirty:          0 kB
+Private_Clean:      1452 kB
+Private_Dirty:     14348 kB
+Referenced:        23136 kB
+Anonymous:         15704 kB
+KSM:                   0 kB
+LazyFree:              0 kB
+AnonHugePages:         0 kB
+ShmemPmdMapped:        0 kB
+FilePmdMapped:      4096 kB
+Shared_Hugetlb:        0 kB
+Private_Hugetlb:       0 kB
+Swap:             222544 kB
+SwapPss:          222544 kB
+Locked:                0 kB
+
+/proc/41774/cgroup
+1:net_cls:/
+0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-p41774-i40632.scope
+
+=== live engine SHA ===
+b0ec0109ebc50c982512c371d81b2c15a8f72c70edf8a461a4ff10337da52f02  /proc/42016/exe
+
+=== AMD device telemetry (read only) ===
+
+/sys/class/drm/card0/device -> /sys/devices/platform/evdi.0
+
+/sys/class/drm/card0-DVI-I-1/device -> /sys/devices/platform/evdi.0/drm/card0
+device: cat: /sys/class/drm/card0-DVI-I-1/device/device: Is a directory
+
+/sys/class/drm/card1/device -> /sys/devices/pci0000:00/0000:00:01.1/0000:01:00.0
+vendor: 0x10de
+device: 0x249c
+
+/sys/class/drm/card1-HDMI-A-1/device -> /sys/devices/pci0000:00/0000:00:01.1/0000:01:00.0/drm/card1
+device: cat: /sys/class/drm/card1-HDMI-A-1/device/device: Is a directory
+
+/sys/class/drm/card2/device -> /sys/devices/pci0000:00/0000:00:01.2/0000:02:00.0/0000:03:00.0/0000:04:00.0
+vendor: 0x1002
+device: 0x66af
+gpu_busy_percent: 0
+mem_info_vram_used: 15674298368
+mem_info_vram_total: 17163091968
+mem_info_gtt_used: 1500643328
+pp_dpm_sclk: 0: 700Mhz *
+1: 808Mhz 
+2: 1133Mhz 
+3: 1371Mhz 
+4: 1545Mhz 
+5: 1682Mhz 
+6: 1748Mhz 
+7: 1772Mhz 
+8: 1800Mhz 
+pp_dpm_mclk: 0: 350Mhz *
+1: 800Mhz 
+2: 1102Mhz 
+power_dpm_force_performance_level: manual
+
+/sys/class/drm/card2-DP-1/device -> /sys/devices/pci0000:00/0000:00:01.2/0000:02:00.0/0000:03:00.0/0000:04:00.0/drm/card2
+device: cat: /sys/class/drm/card2-DP-1/device/device: Is a directory
+
+/sys/class/drm/card2-DP-2/device -> /sys/devices/pci0000:00/0000:00:01.2/0000:02:00.0/0000:03:00.0/0000:04:00.0/drm/card2
+device: cat: /sys/class/drm/card2-DP-2/device/device: Is a directory
+
+/sys/class/drm/card2-DP-3/device -> /sys/devices/pci0000:00/0000:00:01.2/0000:02:00.0/0000:03:00.0/0000:04:00.0/drm/card2
+device: cat: /sys/class/drm/card2-DP-3/device/device: Is a directory
+
+/sys/class/drm/card2-HDMI-A-2/device -> /sys/devices/pci0000:00/0000:00:01.2/0000:02:00.0/0000:03:00.0/0000:04:00.0/drm/card2
+device: cat: /sys/class/drm/card2-HDMI-A-2/device/device: Is a directory
+
+/sys/class/drm/card3/device -> /sys/devices/pci0000:00/0000:00:02.2/0000:07:00.0/0000:08:00.0/0000:09:00.0
+vendor: 0x1002
+device: 0x66af
+gpu_busy_percent: 100
+mem_info_vram_used: 16945819648
+mem_info_vram_total: 17163091968
+mem_info_gtt_used: 13606912
+pp_dpm_sclk: 0: 700Mhz 
+1: 808Mhz 
+2: 1107Mhz 
+3: 1325Mhz 
+4: 1485Mhz 
+5: 1611Mhz 
+6: 1672Mhz 
+7: 1694Mhz 
+8: 1720Mhz *
+pp_dpm_mclk: 0: 350Mhz 
+1: 800Mhz 
+2: 1000Mhz *
+power_dpm_force_performance_level: manual
+
+/sys/class/drm/card3-DP-4/device -> /sys/devices/pci0000:00/0000:00:02.2/0000:07:00.0/0000:08:00.0/0000:09:00.0/drm/card3
+device: cat: /sys/class/drm/card3-DP-4/device/device: Is a directory
+
+/sys/class/drm/card3-DP-5/device -> /sys/devices/pci0000:00/0000:00:02.2/0000:07:00.0/0000:08:00.0/0000:09:00.0/drm/card3
+device: cat: /sys/class/drm/card3-DP-5/device/device: Is a directory
+
+/sys/class/drm/card3-DP-6/device -> /sys/devices/pci0000:00/0000:00:02.2/0000:07:00.0/0000:08:00.0/0000:09:00.0/drm/card3
+device: cat: /sys/class/drm/card3-DP-6/device/device: Is a directory
+
+/sys/class/drm/card3-HDMI-A-3/device -> /sys/devices/pci0000:00/0000:00:02.2/0000:07:00.0/0000:08:00.0/0000:09:00.0/drm/card3
+device: cat: /sys/class/drm/card3-HDMI-A-3/device/device: Is a directory
+
+/sys/class/drm/card4/device -> /sys/devices/pci0000:00/0000:00:08.1/0000:0a:00.0
+vendor: 0x1002
+device: 0x1638
+gpu_busy_percent: 5
+mem_info_vram_used: 448385024
+mem_info_vram_total: 536870912
+mem_info_gtt_used: 159100928
+pp_dpm_sclk: 0: 200Mhz 
+1: 700Mhz 
+2: 2100Mhz *
+pp_dpm_mclk: 2: 400Mhz 
+3: 1600Mhz *
+power_dpm_force_performance_level: manual
+
+/sys/class/drm/card4-eDP-1/device -> /sys/devices/pci0000:00/0000:00:08.1/0000:0a:00.0/drm/card4
+device: cat: /sys/class/drm/card4-eDP-1/device/device: Is a directory
+
+/sys/class/drm/card5/device -> /sys/devices/platform/evdi.1
+
+/sys/class/drm/card5-DVI-I-2/device -> /sys/devices/platform/evdi.1/drm/card5
+device: cat: /sys/class/drm/card5-DVI-I-2/device/device: Is a directory
+
+/sys/class/drm/card6/device -> /sys/devices/platform/evdi.2
+
+/sys/class/drm/card6-DVI-I-3/device -> /sys/devices/platform/evdi.2/drm/card6
+device: cat: /sys/class/drm/card6-DVI-I-3/device/device: Is a directory
+
+/sys/class/drm/card7/device -> /sys/devices/platform/evdi.3
+
+/sys/class/drm/card7-DVI-I-4/device -> /sys/devices/platform/evdi.3/drm/card7
+device: cat: /sys/class/drm/card7-DVI-I-4/device/device: Is a directory
+
+=== NVIDIA helper telemetry (read only, bounded) ===
+index, name, memory.used [MiB], memory.total [MiB], utilization.gpu [%], clocks.current.graphics [MHz], clocks.current.memory [MHz], power.draw [W]
+0, NVIDIA GeForce RTX 3080 Laptop GPU, 7448 MiB, 8192 MiB, 1 %, 1245 MHz, 6001 MHz, 22.49 W
+
+=== optional host pressure counters ===
+UNAVAILABLE: /proc/pressure/memory
+UNAVAILABLE: /proc/pressure/io
+UNAVAILABLE: /proc/pressure/cpu
+2026-11-18T19:49:49+01:00
