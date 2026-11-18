@@ -68,6 +68,8 @@ Publish a three-row TG/PP comparison with input/context sizes, sample counts, me
 
 ## 3. New TG optimization chapter (fresh analysis agent, then review)
 
+Status 2026-11-18: **complete and oracle-approved for research-plan readiness only**. Settled plan: [TG optimization chapter](tg-optimization-chapter.md); explicit no-blocker verdict and evidence: [independent review](tg-optimization-review.md). No candidate has been validated or enabled. Trace/attribution preparation, implementation, additional GPU traffic and any promotion remain separately gated; unrelated optimization sweeps remain parked.
+
 Read old journals and adoption/rejection evidence first. Build a ledger of what was already tried: helper/cache limits, ring null, MMQ-off win, prefill warm/depth regression, and other relevant earlier rounds. Do not repeat a settled losing experiment without new evidence that changes its premise.
 
 Inspect relevant upstream PRs and commits read-only; record URLs, SHAs, status, backend/model applicability, and whether equivalent work is already in this fork. Upstream claims are leads, not local benchmark evidence.

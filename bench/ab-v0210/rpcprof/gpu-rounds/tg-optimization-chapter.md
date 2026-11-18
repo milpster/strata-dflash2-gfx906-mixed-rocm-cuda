@@ -1,6 +1,6 @@
-# TG optimization chapter — DRAFT v1, 2026-11-18
+# TG optimization chapter — APPROVED research plan, 2026-11-18
 
-**Not approved; not authorization to implement, benchmark or promote.** Fresh analyst: `ses_e12bcc978ffeFMfJVS8eRW6VZ2`. Independent oracle review is pending. Parent condensed the research below, corrected the analyst's stale description of the latest build as unmeasured, expanded upstream links, and marked exploratory aggregates as unvalidated. Feedback returns to the same analyst.
+**Oracle APPROVE for research-plan readiness only; not authorization to implement, benchmark or promote.** Independent reviewer: `ses_e12771b3bffev76LmVooHz0NnX`; no blockers. The reviewed substantive v1 is preserved at commit `d649e5b`. See [review and evidence notes](tg-optimization-review.md) for confirmed source/upstream facts and non-blocking clarifications. Pre-review uncertainty labels below remain conservative; unperformed experiments remain unvalidated. Fresh analyst: `ses_e12bcc978ffeFMfJVS8eRW6VZ2`.
 
 ## 1. Provenance and prior work
 
@@ -121,4 +121,4 @@ Not shortlisted: F2/F3 without a changed premise; F4/F5 before residual cost and
 - The oracle must confirm: actual timer overlap/reset semantics; historical aggregate reproducibility; upstream presence/compatibility; sampler eligibility/RNG equivalence and non-vacuous tests; attention variant arithmetic; test hardware classification and practical phase order.
 - RAM policy's observed 677 MiB boot band is not proof of low-RAM restore recovery or restart depth. Those live gates remain separate. Unrelated PP/GPU sweeps stay parked. This draft authorizes no code change, traffic or promotion.
 
-**Independent review requested.** Revise with the same analyst until explicit oracle approval; only then mark this chapter approved and link it as the settled plan.
+**Independent review complete: APPROVE, no blockers.** The bounded research plan is settled; candidate validation and any implementation, GPU window or promotion require separate authorization.
