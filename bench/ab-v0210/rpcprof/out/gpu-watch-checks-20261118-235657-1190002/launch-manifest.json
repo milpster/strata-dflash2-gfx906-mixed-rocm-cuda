@@ -1,0 +1,10 @@
+{
+  "purpose": "Approved passive monitor during ordinary workload",
+  "duration_s": 3600,
+  "interval_s": 30,
+  "output": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/gpu-residency-watch-20261118-235841-1238437",
+  "live_console": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/gpu-residency-watch-20261118-235841-1238437.console.log",
+  "launch_requested_at": "2026-11-18T23:58:41+01:00",
+  "operations": "Read-only counters and existing log output; no endpoint requests, process control or settings changes",
+  "collector_sha256": "28c16906a1a9460e1eb9e334d8b66f36d44c9fd0dade14bc051efb2fa77b4d56"
+}

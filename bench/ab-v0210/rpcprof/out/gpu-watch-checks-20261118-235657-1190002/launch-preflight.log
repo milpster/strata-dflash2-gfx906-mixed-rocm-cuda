@@ -1,0 +1,6 @@
+2026-11-18T23:58:41+01:00
+/proc/2789182/exe: OK
+/mnt/srcds/Strata/prod-config-v0238.json: OK
+gpu-rounds/watch_gpu_residency.py: OK
+monitor_preflight_exit=0
+MONITOR_OUT=/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/gpu-residency-watch-20261118-235841-1238437

@@ -1,0 +1,42 @@
+{
+  "purpose": "Parent validation and launch record for the approved one-hour passive monitor",
+  "validation_owner": "parent",
+  "specialist_patch_session": "ses_e0f3fc15fffexiXw0Y8LeQw71Z",
+  "specialist_executed_tests": false,
+  "parent_applied_and_repaired_patch": true,
+  "files_relative_to_rpcprof": {
+    "gpu-rounds/watch_gpu_residency.py": "28c16906a1a9460e1eb9e334d8b66f36d44c9fd0dade14bc051efb2fa77b4d56",
+    "tests/test_gpu_residency_cpu.py": "9b74b168066a7126c7ff4365c50ef772bb97b7b5f07ee3151d880e9f75020c70"
+  },
+  "checks": [
+    {"command": "python3 -m py_compile gpu-rounds/watch_gpu_residency.py tests/test_gpu_residency_cpu.py", "cwd": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof", "exit_code": 0},
+    {"command": "python3 tests/test_gpu_residency_cpu.py", "cwd": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof", "exit_code": 0, "tests": 15, "seconds": 0.081},
+    {"check": "LSP diagnostics on final collector and unchanged test file", "result": "No diagnostics"}
+  ],
+  "final_checks_completed_at": "2026-11-18T23:57:57+01:00",
+  "monitor": {
+    "shell_id": "sh_1f0e23e38001hTgJ9LBTqOBIui",
+    "started_at": "2026-11-18T23:58:41+01:00",
+    "duration_s": 3600,
+    "interval_s": 30,
+    "scheduled_end_at": "2026-11-19T00:58:41+01:00",
+    "output": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/gpu-residency-watch-20261118-235841-1238437",
+    "initial_supervisor_pid": 2788001,
+    "initial_generation": 1,
+    "initial_engine_pid": 2789182,
+    "initial_engine_start_ticks": "1624418",
+    "initial_shared_log_offset": 4470351,
+    "first_identity_valid": true,
+    "first_radeon_evicted_bytes": [0, 0],
+    "status_at_recording": "running; no outcome claimed"
+  },
+  "limits": [
+    "Initial all-node scan records 20 unavailable AMD-style counters on other/virtual DRM nodes; the three engine AMD clients and card2/card3 device counters are readable",
+    "The collector records unavailable counters as null plus errors, never as zero",
+    "No inference requests, restarts, driver/config changes or synthetic workload are generated",
+    "Collection times bound observation of new log bytes and are not exact request timestamps",
+    "The one-hour schedule is fixture-verified; the live hour is not complete at this record",
+    "Live JSONL, increment log and sibling console output must not be sealed or committed until the collector stops",
+    "No full repository suite, C++ builds or performance acceptance run is implied"
+  ]
+}

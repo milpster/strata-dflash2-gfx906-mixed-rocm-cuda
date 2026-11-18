@@ -1,0 +1,33 @@
+2026-11-18T23:56:57+01:00
+b4645f976dcfe49201e046758a4be978a8453f40de3f2a3e8fb8e4ab8b4dcc36  gpu-rounds/watch_gpu_residency.py
+9b74b168066a7126c7ff4365c50ef772bb97b7b5f07ee3151d880e9f75020c70  tests/test_gpu_residency_cpu.py
+
+COMMAND: python3 -m py_compile gpu-rounds/watch_gpu_residency.py tests/test_gpu_residency_cpu.py
+python_compile_exit=0
+
+COMMAND: python3 tests/test_gpu_residency_cpu.py
+test_duration_zero_actual_cli_smoke (__main__.CollectionTests.test_duration_zero_actual_cli_smoke) ... ok
+test_existing_and_broken_symlink_output_refused_without_writes (__main__.CollectionTests.test_existing_and_broken_symlink_output_refused_without_writes) ... ok
+test_hour_schedule_and_nondivisible_final_tick_without_real_sleep (__main__.CollectionTests.test_hour_schedule_and_nondivisible_final_tick_without_real_sleep) ... ok
+test_invalid_or_nonfinite_timings_rejected_before_output (__main__.CollectionTests.test_invalid_or_nonfinite_timings_rejected_before_output) ... ok
+test_no_network_or_process_control_surface (__main__.CollectionTests.test_no_network_or_process_control_surface) ... ok
+test_overslept_deadline_does_not_emit_catchup_samples (__main__.CollectionTests.test_overslept_deadline_does_not_emit_catchup_samples) ... ok
+test_initial_exclusion_and_cap_preserves_backlog (__main__.LogTests.test_initial_exclusion_and_cap_preserves_backlog) ... ok
+test_split_summary_and_nuls_preserved_in_raw (__main__.LogTests.test_split_summary_and_nuls_preserved_in_raw) ... ok
+test_truncation_rotation_path_change_and_missing_log (__main__.LogTests.test_truncation_rotation_path_change_and_missing_log) ... ok
+test_dedup_retains_actual_raw_text (__main__.ResidencyTests.test_dedup_retains_actual_raw_text) ... ok
+test_full_identity_checked_around_sample (__main__.ResidencyTests.test_full_identity_checked_around_sample) ... ok
+test_invalid_state_and_recycled_pid (__main__.ResidencyTests.test_invalid_state_and_recycled_pid) ... ok
+test_missing_memory_and_gpu_counters_are_not_zero (__main__.ResidencyTests.test_missing_memory_and_gpu_counters_are_not_zero) ... ok
+test_selected_start_and_engine_stderr_not_wrapper (__main__.ResidencyTests.test_selected_start_and_engine_stderr_not_wrapper) ... ok
+test_units_missing_and_invalid (__main__.ResidencyTests.test_units_missing_and_invalid) ... ok
+
+----------------------------------------------------------------------
+Ran 15 tests in 0.098s
+
+OK
+residency_cpu_tests_exit=0
+b4645f976dcfe49201e046758a4be978a8453f40de3f2a3e8fb8e4ab8b4dcc36  gpu-rounds/watch_gpu_residency.py
+9b74b168066a7126c7ff4365c50ef772bb97b7b5f07ee3151d880e9f75020c70  tests/test_gpu_residency_cpu.py
+parent_validation_exit=0
+2026-11-18T23:56:57+01:00

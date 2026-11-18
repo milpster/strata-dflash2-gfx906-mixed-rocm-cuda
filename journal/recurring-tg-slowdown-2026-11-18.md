@@ -123,3 +123,29 @@ Verification budget: exercise actual collection against scratch state/proc/sys/l
 The fixer's first terminal response contained only non-executed tool-call markup. Parent checked both required paths and confirmed neither file existed, then resumed the same retained fixer with instructions to use actual tool calls and report a precise blocker if execution is unavailable. No implementation, passing test or running monitor is inferred from that incomplete response; the hour remains unstarted.
 
 The second terminal response again emitted tool-call text instead of executing it; parent confirmed no collector files existed. Rather than repeat that failed handoff, the same fixer is now asked to return a literal two-file patch as its implementation artifact. Parent will apply it with actual tools and own **all** execution/validation; the specialist must not claim it ran tests. This changes only the delivery method, not the approved passive scope. The reason for the malformed specialist output is not diagnosed, and production/model configuration has not been changed to work around it.
+
+## Passive collector checked and running
+
+The fixer returned a literal patch without claiming execution. Parent review found launch-blocking timestamp handling and selection of the wrapper log instead of `engine_stderr_log`, plus a backlog test that contradicted the read cap. Parent applied a corrected implementation and retained fixture coverage for these cases, finite timing (including rejecting NaN/infinity), monotonic deadlines, complete supervisor/PID/start/log identity, duplicate DRM descriptors, missing counters, partial request lines, NUL-preserving raw increments and log resets. No collector was launched from the unreviewed patch.
+
+Final parent checks from `bench/ab-v0210/rpcprof`, completed **23:57:57 CET**:
+
+| Check | Result |
+| --- | --- |
+| `python3 -m py_compile gpu-rounds/watch_gpu_residency.py tests/test_gpu_residency_cpu.py` | Exit **0** |
+| `python3 tests/test_gpu_residency_cpu.py` | Exit **0**, **15 tests**, **0.081 s**, `OK` |
+| LSP, final collector and unchanged test file | **No diagnostics** |
+
+Evidence: `out/gpu-watch-checks-20261118-235657-1190002/`. The initial passing test run preceded small type-diagnostic edits and is superseded by `final-checks.log`. Source hashes matched before/after final checks. The tests use only scratch proc/sys/state/log fixtures under `out/tests-tmp`; no hardware performance or full-repository result is claimed.
+
+After read-only canonical live-image/config/start checks, parent launched:
+
+`python3 -u gpu-rounds/watch_gpu_residency.py --out out/gpu-residency-watch-20261118-235841-1238437 --duration 3600 --interval 30`
+
+The actual start is **2026-11-18 23:58:41 CET**, scheduled end **2026-11-19 00:58:41 CET**. Background shell `sh_1f0e23e38001hTgJ9LBTqOBIui` streams progress and newly observed request summaries in the terminal. Initial supervisor **2788001**, generation **1**, engine **2789182**, start **1624418** matched; initial shared-log offset **4470351** excludes all older rows. Both Radeon clients initially report **zero evicted VRAM**, each with **2116 KiB resident GTT**. The first sample and launch metadata were inspected independently; the monitor is actually running, not merely detached without evidence.
+
+The all-node scan reports **20 unavailable counters** on other/virtual DRM nodes (`evdi.*` and PCI `0000:01:00.0`). These are retained as null plus read errors; they are not GPU fault reports or zero-valued readings. The engine's three AMD clients and both target Radeon device counters are readable. This limitation does not invalidate those Radeon samples and does not establish anything about the unobserved device's residency.
+
+No synthetic prompts, API probes, restart, driver or configuration changes were added. Ordinary workload must supply useful active observations; idle/no-eviction samples alone cannot test the slowdown hypothesis. Live capture/console files remain unsealed until completion. The static validation/launch record can be sealed separately. Root cause, RAM acceptance prerequisites and the parked game experiment are unchanged.
+
+Operator then requested **“delegate”**. Parent assigned sole read-only explorer `ses_e0f18fb21ffelV0KX92IJwaEky` a bounded collector/interim-evidence review; it must not edit the running collector, rerun valid tests, send probes or wait/poll for the hour's completion. Parent owns reconciliation and closeout. The old fixer unexpectedly reopened after its patch had already been delivered; lifecycle inspection reported it running, so parent cancelled that obsolete run with acknowledgement to restore the one-specialist constraint. No production stop/restart accompanied cancellation. Any inference work from that unexpected reactivation is not independently quantified and must not be presented as a controlled workload.
