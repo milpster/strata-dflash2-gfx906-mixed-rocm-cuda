@@ -3,6 +3,8 @@
 Reviewed by independent oracle (ses_e15829d7effe). All review claims spot-verified at source.
 Supersedes v1. Lanes parked by operator until unparked; nothing here executes before then.
 
+Current ordering and constraints are in `serving-plan-current.md`. The operator requires zero quality sacrifice; the relaxed numerical-adoption threshold previously written below is revoked.
+
 ## Facts (measured/settled)
 - prompt_ms = 1338 + 3.74×pcie_fetch (R²=0.969) — COMMON CAUSE (slots drive both), not overlap debt.
 - Fresh 10.3k prompt: ~12 150 streamed slots (22.3 GiB), fetch 1.15 ms/slot steady 1.82 GiB/s,
@@ -41,12 +43,11 @@ Branch: wall − timeline large ⇒ idle real (A gains weight); wall ≈ timelin
     gemm_dequant_side_parity.cu in repo). Run parity test (GPU, lanes unparked) → if bit-identical claim
     holds: env-only A/B, no KL needed. This is the first real GPU-overhead round.
   * If Phase 0 shows gemm (not dequant) dominates: recompile levers (MMQ_GROUP 16→, STAGE_GRP 32→) are
-    constexpr — code change, separate cycle, tolerance-gated.
+     constexpr — code change, separate cycle, zero-quality-loss-gated.
 
 ## Gates (corrected wording)
 - Bit-identical-by-contract rounds (A1, B1, DEQUANT_SIDE-after-parity): no KL; A/B medians + decode guard.
-- Any numerics-changing round: PRE-DECLARED tolerance (mean KL ≤ 0.001 + no-NaN + content sanity).
-  KL=0.00000/bit-exact stays the champion-regression criterion, not the adoption gate for numerics levers.
+- No relaxed numerical-adoption tolerance is authorized. Use byte-exact evidence or the established teacher-forced KL 0.00000/no-NaN gates with the changed path engaged; do not treat rounded printed zero as proof of bit identity.
 - Decode guard ≥ 24 tok/s every round. B3 (helper instrumentation fix): own commit + own guard reading,
   never folded into a numerics round.
 
