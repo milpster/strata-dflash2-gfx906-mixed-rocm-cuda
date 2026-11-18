@@ -1,0 +1,39 @@
+2026-11-18T20:26:31+01:00
+/proc/3132535/exe: OK
+b0ec0109ebc50c982512c371d81b2c15a8f72c70edf8a461a4ff10337da52f02  /proc/3132535/exe
+ready: http://127.0.0.1:8009/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, context 262144 tokens, images on)
+
+=== models ===
+models_http_code=200 total_seconds=0.001240
+true
+
+=== real bounded completion ===
+completion_http_code=200 total_seconds=3.994894
+true
+{
+  "reply": "OK",
+  "finish_reason": "stop",
+  "usage": {
+    "prompt_tokens": 57,
+    "completion_tokens": 28,
+    "total_tokens": 85,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    }
+  }
+}
+/proc/3132535/exe: OK
+
+=== post-request memory and listener ===
+Name:	strata-host
+State:	S (sleeping)
+VmRSS:	38319388 kB
+VmSwap:	  195364 kB
+               total        used        free      shared  buff/cache   available
+Mem:           63644       43218        5665         110       18195       20425
+Swap:         196607        6730      189877
+State  Recv-Q Send-Q Local Address:Port Peer Address:PortProcess                              
+LISTEN 0      256        127.0.0.1:8009      0.0.0.0:*    users:(("python",pid=3131619,fd=17))
+generation_identity_unchanged=PASS
+serving_verification_exit=0
+2026-11-18T20:26:35+01:00

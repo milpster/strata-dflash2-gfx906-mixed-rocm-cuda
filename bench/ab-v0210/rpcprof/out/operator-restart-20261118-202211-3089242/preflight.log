@@ -1,0 +1,37 @@
+2026-11-18T20:22:11+01:00
+user_request=restart the engine and restore agent
+fixer_session=ses_e1040f2f0ffejvpXUnixEx6qC8
+fixer_state=cancelled before production operations
+evidence_dir=bench/ab-v0210/rpcprof/out/operator-restart-20261118-202211-3089242
+v0238p0/rpcw-hip/strata: OK
+prod-config-v0238.json: OK
+396f5cd61251d7ee5a6449cc09f511ce96866d31c05520842ac92d342bfe8916  launch-v0238.sh
+0d9fb58b7d1dd46df002702f2d67756be6efefc101c24de469ebf9e5a1609811  prod-config-v0238.json
+    PID    PPID                  STARTED STAT COMMAND
+  15094    8512 Wed Nov 18 18:01:11 2026 S+   /mnt/srcds/Strata/.venv/bin/python /mnt/srcds/Strata/tools/mixed_gpu/pair_supervisor.py run --launcher ./launch-v0238.sh --config /mnt/srcds/Strata/prod-config-v0238.json --state /mnt/srcds/Strata/run/prod-swift15-f16kv-mixed-supervisor.json --lock /mnt/srcds/Strata/run/mixed-supervisor.lock --socket /mnt/srcds/Strata/run/prod-iq3xxs-ud-mixed.sock --socket /mnt/srcds/Strata/run/prod-iq3xxs-ud-mixed2.sock --nice 1 --stage-cpus 3,5,7,9,11,13,15 --stall-timeout 600 --startup-timeout 1200
+  41478   15094 Wed Nov 18 18:03:03 2026 SNs  bash launch-v0238.sh --pair-child
+  41533   41478 Wed Nov 18 18:03:03 2026 SNl  /mnt/srcds/Strata/v0238p0/rpcw-cuda/strata-expert-helper-patient --pack /mnt/srcds/ai/iq3xxs-ud --experts ../Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00004.gguf --device 0 --slots 4600 --reserve-mib 156 --timeout 63115200000 --begin-timeout 63115200000 --socket /mnt/srcds/Strata/run/prod-iq3xxs-ud-mixed.sock --fill-mib 7100 --socket2 /mnt/srcds/Strata/run/prod-iq3xxs-ud-mixed2.sock
+  41774   41478 Wed Nov 18 18:03:04 2026 SNl  /mnt/srcds/Strata/.venv/bin/python /mnt/srcds/Strata/v0215/serve/server.py --engine strata --config /mnt/srcds/Strata/prod-config-v0238.json --port 8009
+  42016   41774 Wed Nov 18 18:03:06 2026 SNLl /mnt/srcds/Strata/v0238p0/rpcw-hip/strata --serve --gpu 0,1 --pack /mnt/srcds/ai/iq3xxs-ud --native /mnt/srcds/ai/Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00004.gguf --native-dense-gguf /mnt/srcds/ai/Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00004.gguf --native-dense-gguf /mnt/srcds/ai/Qwen3.8-Flash-Next-UD-IQ3_XXS-00002-of-00004.gguf --native-dense-gguf /mnt/srcds/ai/Qwen3.8-Flash-Next-UD-IQ3_XXS-00003-of-00004.gguf --native-dense-gguf /mnt/srcds/ai/Qwen3.8-Flash-Next-UD-IQ3_XXS-00004-of-00004.gguf --ple-gguf /mnt/srcds/ai/Qwen3.8-Flash-Next-PLE-Q8_0.gguf --expert-profile /mnt/srcds/Strata/data/expert-profile.bin --expert-cache auto --prefill 16384 --spec 5 --spec-min-p 0.5 --max-context 262144 --kv int8 --vram-reserve-mib 192 --vram-reserve-later-mib 576 --kv-resident 262144 --pcie-frac 0 --expert-cache-cpu-order --prompt-cache-spread --conversation-cache-mib 4096 --conversation-cache-min-tokens 2048 --conversation-cache-park-gain 4096 --vision --dflash /mnt/srcds/dflash2/artifacts/inco-dflash2-q4_0.gguf --dflash-block 7 --suffix-draft 0 --expert-helper-slots 4600 --expert-helper-ram-relief --conversation-cache-dir /home/srcds/strata-conv-cache --conversation-cache-disk-mib 24576 --conversation-cache-disk-ram-mib 64 --conversation-cache-disk-idle-save --conversation-cache-ram-mib 512 --kv-resident-mib 4096 --conversation-cache-evict-page-cache --expert-helper-ram-relief-packs --expert-helper-relief-hot-mib 15000 --expert-helper-relief-arena-cap-mib 22000 --layer-split 30 --expert-helper-socket /mnt/srcds/Strata/run/prod-iq3xxs-ud-mixed.sock --expert-helper-socket2 /mnt/srcds/Strata/run/prod-iq3xxs-ud-mixed2.sock --expert-helper-timeout-ms 10000
+
+=== live engine ===
+/mnt/srcds/Strata/v0238p0/rpcw-hip/strata
+b0ec0109ebc50c982512c371d81b2c15a8f72c70edf8a461a4ff10337da52f02  /proc/42016/exe
+Name:	strata-host
+State:	S (sleeping)
+VmRSS:	55130812 kB
+VmSwap:	 2868596 kB
+
+=== listening endpoints ===
+State  Recv-Q Send-Q Local Address:Port Peer Address:PortProcess                            
+LISTEN 0      256        127.0.0.1:8009      0.0.0.0:*    users:(("python",pid=41774,fd=13))
+
+=== saved trial supervisor identity ===
+{
+  "supervisor_pid": 2209284,
+  "state": "stopped",
+  "generation": 1,
+  "engine_pid": 2209830
+}
+engine_log_pre_stop_bytes=4275505
+preflight_exit=0

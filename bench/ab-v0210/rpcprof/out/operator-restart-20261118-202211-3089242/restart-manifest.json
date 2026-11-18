@@ -1,0 +1,50 @@
+{
+  "user_request": "restart the engine and restore agent",
+  "purpose": "Operator-requested recovery of unchanged canonical v0238 and restoration of the interrupted fixer",
+  "fixer_session": "ses_e1040f2f0ffejvpXUnixEx6qC8",
+  "fixer_cancel_acknowledged_before_stop": true,
+  "fixer_resumed_after_real_completion_verification": true,
+  "canonical_engine_sha256": "b0ec0109ebc50c982512c371d81b2c15a8f72c70edf8a461a4ff10337da52f02",
+  "canonical_config_sha256": "0d9fb58b7d1dd46df002702f2d67756be6efefc101c24de469ebf9e5a1609811",
+  "canonical_launcher_sha256": "396f5cd61251d7ee5a6449cc09f511ce96866d31c05520842ac92d342bfe8916",
+  "preflight": {"time": "2026-11-18T20:22:11+01:00", "exit_code": 0},
+  "stop": {
+    "command": "bash bench/ab-v0210/rpcprof/gpu-rounds/champions_stop.sh",
+    "exit_code": 0,
+    "verdict": "ALL STOPPED",
+    "old_pair_absent_and_port_free_at": "2026-11-18T20:23:05+01:00"
+  },
+  "boot": {
+    "command": "setsid --fork bash /mnt/srcds/Strata/launch-v0238.sh",
+    "detached_at": "2026-11-18T20:23:42+01:00",
+    "detach_exit_code": 0,
+    "current_generation_ready_at": "2026-11-18T20:25:30+01:00",
+    "startup_watcher_exit_code": 0
+  },
+  "serving_verification": {
+    "completed_at": "2026-11-18T20:26:35+01:00",
+    "exit_code": 0,
+    "supervisor_pid": 3131096,
+    "generation": 1,
+    "engine_pid": 3132535,
+    "engine_start_ticks": "863425",
+    "models_http_status": 200,
+    "completion_http_status": 200,
+    "completion_total_seconds": 3.994894,
+    "completion_text": "OK",
+    "finish_reason": "stop",
+    "completion_tokens_including_reasoning": 28,
+    "identity_unchanged_around_request": true,
+    "post_request_engine_rss_kib": 38319388,
+    "post_request_engine_swap_kib": 195364,
+    "scope": "Availability verification, not a matched performance benchmark or recovery claim"
+  },
+  "mutable_unsealed_files": ["launcher.log"],
+  "immutable_launcher_copy": "launcher-snapshot.log",
+  "limits": [
+    "The supervisor retains an open stdout descriptor on launcher.log; that live file is deliberately excluded from the seal and commit",
+    "No test or approval of the unfinished restore-checker repair follows from this independently performed restart",
+    "No candidate deployment, configuration change, quality relaxation or GPU acceptance run occurred",
+    "A short successful completion does not establish normal sustained generation speed or the slowdown root cause"
+  ]
+}

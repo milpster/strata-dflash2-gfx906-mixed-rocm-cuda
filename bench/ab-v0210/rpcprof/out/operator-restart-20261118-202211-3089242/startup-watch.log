@@ -1,0 +1,217 @@
+
+=== startup poll 0 time=2026-11-18T20:24:50+01:00 ===
+Starting mixed backend on 127.0.0.1:8009; log: /mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261118-202342-3131120.log; helper: /mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261118-202342-3131120-helper.log
+{
+  "supervisor_pid": 3131096,
+  "generation": 1,
+  "state": "monitoring",
+  "engine_pid": 3132535,
+  "engine_start": "863425",
+  "engine_log": "/mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261118-202342-3131120.log"
+}
+[strata] still starting (31 s) - please wait ...
+[strata] experts loaded: 46.84 GiB at 2.28 GiB/s (34 s so far)
+[strata] filling the GPU's expert cache (4983 experts, 9.23 GiB of VRAM) ...
+[strata] still starting (54 s) - please wait ...
+.4 MiB on CUDA1, pinned staging 480.5 MiB defer=0 async_d2h=0
+dflash: 580.6 MiB of VRAM held (weights, pools, scratch)
+strata generate: GPU 0: AMD Radeon VII, compute capability 9.0
+strata generate: GPU host-callback thread started before host-core pinning
+strata generate: expert arena read through the file cache (buffered (not Windows))
+strata generate: expert arena: reserve only (nothing registered, nothing locked yet); MAP_HUGETLB unavailable (needed 23983 2 MiB pages, vm.nr_hugepages=0); transparent huge pages are on for every mapping (THP always): MADV_HUGEPAGE not requested
+strata generate: loaded 46.84 GiB at 2.28 GiB/s
+strata generate: CPU pool tasks/phase: 24 (automatic), participating threads: 8
+strata generate: CPU pool: 7 workers by default (8 physical cores, 16 logical processors; bounded by every physical core but the host's)
+strata generate: 7 pool workers on logical processors 2,4,6,8,10,12,14, the host thread on 0 (draining too) (--host-core first)
+strata generate: CPU workers on logical processors 2,4,...,14 (7 workers, one per physical core; host on 0)
+strata aux cpus: threads that are neither pool workers nor the host go to CPUs 3,5,7,9,11,13,15 (on; 18 threads placed so far)
+strata prefill: HIP device 0 gfx906:sramecc+:xnack- - STRATA_HIP_PROMPT_F16=1: the prompt's 16-bit GEMMs run FP16 in and out (rocBLAS is tuned only for that on gfx103x; not bit-identical to the default)
+prefill mmq: off (env=0) [built=1]
+strata generate: expert cache auto: 9.67 GiB free, 192 MiB reserved (+0 MiB for the draft head, +256 MiB for what is allocated after the cache) -> 3724 slots
+strata generate: expert cache 4983 slots, 9.23 GiB of VRAM; policy is
+strata generate: the GPU computes the experts in the cache; it rounds differently from the CPU,
+                 so a reply can differ slightly from a run without the cache (same quality:
+                 bench/results/2026-09-27-cache-parity).
+                 PROFILE, ranked by routing frequency, no eviction.
+strata generate: pre-filled 4983 of 4983 slots from the profile in 6.9 s (1431 MB/s); slot 0 verified; pack_read_s 0.0 h2d_s 6.9 pinned_mb 9914 phases=arena:0.0s lot:6.9s
+strata generate: layer split, CUDA1: 8.83 GiB free of 15.98, room for experts 7.92 GiB
+strata generate: layer split: CUDA1 runs layers 30-47, expert cache 3985 slots (7.92 GiB), 3985 of its 9216 profiled pairs; slot 0 verified; pack_read_s 0.0 h2d_s 12.6 pinned_mb 8503 phases=arena:0.0s lot:12.6s
+strata generate: layer split: CUDA0 runs layers 0-29
+strata generate: expert-helper: 15608 of 24576 ranked pairs eligible in layers 0..47 (8968 held by a cache, 0 outside the window, 0 outside the geometry, 0 repeated, 0 Hadamard-folded)
+strata generate: expert-helper: asking 4600 slots = 9290624000 B aligned of 15608 eligible (no byte cap: AUTO, bounded by --expert-helper-slots); the helper's own free-VRAM budget decides the fill and its report is authoritative
+expert-helper: engine socket buffers achieved snd=8388608 rcv=8388608
+
+=== startup poll 1 time=2026-11-18T20:25:00+01:00 ===
+Starting mixed backend on 127.0.0.1:8009; log: /mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261118-202342-3131120.log; helper: /mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261118-202342-3131120-helper.log
+{
+  "supervisor_pid": 3131096,
+  "generation": 1,
+  "state": "attached",
+  "engine_pid": 3132535,
+  "engine_start": "863425",
+  "engine_log": "/mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261118-202342-3131120.log"
+}
+[strata] experts loaded: 46.84 GiB at 2.28 GiB/s (34 s so far)
+[strata] filling the GPU's expert cache (4983 experts, 9.23 GiB of VRAM) ...
+[strata] still starting (54 s) - please wait ...
+[strata] still starting (74 s) - please wait ...
+ults/2026-09-27-cache-parity).
+                 PROFILE, ranked by routing frequency, no eviction.
+strata generate: pre-filled 4983 of 4983 slots from the profile in 6.9 s (1431 MB/s); slot 0 verified; pack_read_s 0.0 h2d_s 6.9 pinned_mb 9914 phases=arena:0.0s lot:6.9s
+strata generate: layer split, CUDA1: 8.83 GiB free of 15.98, room for experts 7.92 GiB
+strata generate: layer split: CUDA1 runs layers 30-47, expert cache 3985 slots (7.92 GiB), 3985 of its 9216 profiled pairs; slot 0 verified; pack_read_s 0.0 h2d_s 12.6 pinned_mb 8503 phases=arena:0.0s lot:12.6s
+strata generate: layer split: CUDA0 runs layers 0-29
+strata generate: expert-helper: 15608 of 24576 ranked pairs eligible in layers 0..47 (8968 held by a cache, 0 outside the window, 0 outside the geometry, 0 repeated, 0 Hadamard-folded)
+strata generate: expert-helper: asking 4600 slots = 9290624000 B aligned of 15608 eligible (no byte cap: AUTO, bounded by --expert-helper-slots); the helper's own free-VRAM budget decides the fill and its report is authoritative
+expert-helper: engine socket buffers achieved snd=8388608 rcv=8388608
+expert-helper: 3703 rows on /mnt/srcds/Strata/run/prod-iq3xxs-ud-mixed.sock (mirrored 3703/4600 slots, 6.93 GiB, device free at hello 7496 MiB) helper_fill_s 17.3
+expert-helper: engine socket buffers achieved snd=8388608 rcv=8388608
+expert-helper: two channels on /mnt/srcds/Strata/run/prod-iq3xxs-ud-mixed.sock + /mnt/srcds/Strata/run/prod-iq3xxs-ud-mixed2.sock: the window tier (and the drafter lane) on the first, the prompt tier on the second - each channel fails on its own, the other keeps serving
+strata generate: expert-helper proxy: 3703 experts on /mnt/srcds/Strata/run/prod-iq3xxs-ud-mixed.sock, 6.93 GiB (fill report)
+strata generate: --expert-helper-ram-relief: stage drop split: hot kept 7899 pairs (14999 MiB) resident, cold dropped 3985 pairs (8109 MiB) (hot budget 15000 MiB)
+strata generate: --expert-helper-ram-relief: arena cap: 5321 tail pairs (10755 MiB) join the drop, the arena keeps 11567 pairs (21998 MiB) host-copied of 24576 (47962 MiB) (cap 22000 MiB, decode-protected 0 pairs (0 MiB))
+strata generate: --expert-helper-ram-relief: 13009 of the helper's 13009 pairs dropped from the arena (25.32 GiB of pages given back; 0 are pinned memory and stay, 0 madvise refusals, 0 out of range); their blobs come from the pack files, their rows from the helper
+strata generate: arena complement scan: 4 of 48 layers
+strata generate: arena complement scan: 8 of 48 layers
+strata generate: arena complement scan: 12 of 48 layers
+strata generate: arena complement scan: 16 of 48 layers
+strata generate: arena complement scan: 20 of 48 layers
+strata generate: arena complement scan: 24 of 48 layers
+strata generate: arena complement scan: 28 of 48 layers
+strata generate: arena complement scan: 32 of 48 layers
+strata generate: arena complement scan: 36 of 48 layers
+strata generate: arena complement scan: 40 of 48 layers
+strata generate: arena complement scan: 44 of 48 layers
+
+=== startup poll 2 time=2026-11-18T20:25:10+01:00 ===
+Starting mixed backend on 127.0.0.1:8009; log: /mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261118-202342-3131120.log; helper: /mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261118-202342-3131120-helper.log
+{
+  "supervisor_pid": 3131096,
+  "generation": 1,
+  "state": "attached",
+  "engine_pid": 3132535,
+  "engine_start": "863425",
+  "engine_log": "/mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261118-202342-3131120.log"
+}
+[strata] experts loaded: 46.84 GiB at 2.28 GiB/s (34 s so far)
+[strata] filling the GPU's expert cache (4983 experts, 9.23 GiB of VRAM) ...
+[strata] still starting (54 s) - please wait ...
+[strata] still starting (74 s) - please wait ...
+ned_mb 9914 phases=arena:0.0s lot:6.9s
+strata generate: layer split, CUDA1: 8.83 GiB free of 15.98, room for experts 7.92 GiB
+strata generate: layer split: CUDA1 runs layers 30-47, expert cache 3985 slots (7.92 GiB), 3985 of its 9216 profiled pairs; slot 0 verified; pack_read_s 0.0 h2d_s 12.6 pinned_mb 8503 phases=arena:0.0s lot:12.6s
+strata generate: layer split: CUDA0 runs layers 0-29
+strata generate: expert-helper: 15608 of 24576 ranked pairs eligible in layers 0..47 (8968 held by a cache, 0 outside the window, 0 outside the geometry, 0 repeated, 0 Hadamard-folded)
+strata generate: expert-helper: asking 4600 slots = 9290624000 B aligned of 15608 eligible (no byte cap: AUTO, bounded by --expert-helper-slots); the helper's own free-VRAM budget decides the fill and its report is authoritative
+expert-helper: engine socket buffers achieved snd=8388608 rcv=8388608
+expert-helper: 3703 rows on /mnt/srcds/Strata/run/prod-iq3xxs-ud-mixed.sock (mirrored 3703/4600 slots, 6.93 GiB, device free at hello 7496 MiB) helper_fill_s 17.3
+expert-helper: engine socket buffers achieved snd=8388608 rcv=8388608
+expert-helper: two channels on /mnt/srcds/Strata/run/prod-iq3xxs-ud-mixed.sock + /mnt/srcds/Strata/run/prod-iq3xxs-ud-mixed2.sock: the window tier (and the drafter lane) on the first, the prompt tier on the second - each channel fails on its own, the other keeps serving
+strata generate: expert-helper proxy: 3703 experts on /mnt/srcds/Strata/run/prod-iq3xxs-ud-mixed.sock, 6.93 GiB (fill report)
+strata generate: --expert-helper-ram-relief: stage drop split: hot kept 7899 pairs (14999 MiB) resident, cold dropped 3985 pairs (8109 MiB) (hot budget 15000 MiB)
+strata generate: --expert-helper-ram-relief: arena cap: 5321 tail pairs (10755 MiB) join the drop, the arena keeps 11567 pairs (21998 MiB) host-copied of 24576 (47962 MiB) (cap 22000 MiB, decode-protected 0 pairs (0 MiB))
+strata generate: --expert-helper-ram-relief: 13009 of the helper's 13009 pairs dropped from the arena (25.32 GiB of pages given back; 0 are pinned memory and stay, 0 madvise refusals, 0 out of range); their blobs come from the pack files, their rows from the helper
+strata generate: arena complement scan: 4 of 48 layers
+strata generate: arena complement scan: 8 of 48 layers
+strata generate: arena complement scan: 12 of 48 layers
+strata generate: arena complement scan: 16 of 48 layers
+strata generate: arena complement scan: 20 of 48 layers
+strata generate: arena complement scan: 24 of 48 layers
+strata generate: arena complement scan: 28 of 48 layers
+strata generate: arena complement scan: 32 of 48 layers
+strata generate: arena complement scan: 36 of 48 layers
+strata generate: arena complement scan: 40 of 48 layers
+strata generate: arena complement scan: 44 of 48 layers
+strata pin: registered after the fill: range 81 of 2682 took 4.4 s (0.4 GiB so far)
+strata pin: registered after the fill: 268 of 2682 ranges (1.6 GiB, 8 s)
+strata pin: registered after the fill: 536 of 2682 ranges (4.0 GiB, 13 s)
+
+=== startup poll 3 time=2026-11-18T20:25:20+01:00 ===
+Starting mixed backend on 127.0.0.1:8009; log: /mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261118-202342-3131120.log; helper: /mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261118-202342-3131120-helper.log
+{
+  "supervisor_pid": 3131096,
+  "generation": 1,
+  "state": "attached",
+  "engine_pid": 3132535,
+  "engine_start": "863425",
+  "engine_log": "/mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261118-202342-3131120.log"
+}
+[strata] still starting (54 s) - please wait ...
+[strata] still starting (74 s) - please wait ...
+[strata] still starting (94 s) - please wait ...
+[strata] almost ready ...
+rena complement scan: 36 of 48 layers
+strata generate: arena complement scan: 40 of 48 layers
+strata generate: arena complement scan: 44 of 48 layers
+strata pin: registered after the fill: range 81 of 2682 took 4.4 s (0.4 GiB so far)
+strata pin: registered after the fill: 268 of 2682 ranges (1.6 GiB, 8 s)
+strata pin: registered after the fill: 536 of 2682 ranges (4.0 GiB, 13 s)
+strata pin: registered after the fill: 804 of 2682 ranges (5.9 GiB, 16 s)
+strata pin: registered after the fill: 1072 of 2682 ranges (7.8 GiB, 20 s)
+strata pin: registered after the fill: 1340 of 2682 ranges (9.9 GiB, 21 s)
+strata pin: registered after the fill: 1608 of 2682 ranges (12.6 GiB, 22 s)
+strata pin: registered after the fill: 1876 of 2682 ranges (14.9 GiB, 22 s)
+strata pin: registered after the fill: 2144 of 2682 ranges (17.4 GiB, 23 s)
+strata pin: registered after the fill: 2412 of 2682 ranges (19.5 GiB, 23 s)
+strata pin: registered after the fill: 2680 of 2682 ranges (21.5 GiB, 23 s)
+strata generate: arena alias tables: 268 of 2682 registered ranges
+strata generate: arena alias tables: 536 of 2682 registered ranges
+strata generate: arena alias tables: 804 of 2682 registered ranges
+strata generate: arena alias tables: 1072 of 2682 registered ranges
+strata generate: arena alias tables: 1340 of 2682 registered ranges
+strata generate: arena alias tables: 1608 of 2682 registered ranges
+strata generate: arena alias tables: 1876 of 2682 registered ranges
+strata generate: arena alias tables: 2144 of 2682 registered ranges
+strata generate: arena alias tables: 2412 of 2682 registered ranges
+strata generate: arena alias tables: 2680 of 2682 registered ranges
+strata generate: --expert-helper-ram-relief: registered what stayed behind the helper's 13009 pairs (13009 dropped, 2682 range(s), 21.49 GiB)
+strata generate: --expert-helper-ram-relief: +3985 stage-cache pairs (8109 MiB) join the drop set
+strata generate: --expert-helper-ram-relief: ram-relief: 13009 pairs total (25963 MiB) dropped
+strata generate: routing-aware prefetch on (the next layer's router, feeding the Foresight swap space)
+strata generate: R4 hit path ON - resident experts are computed on the GPU
+strata generate: 7 expert-pool workers + the host thread
+strata generate: session is up (engine 0.1.57)
+strata generate: token graph hit path: 8968 resident experts, decided on the device
+strata prefill: HIP device 1 gfx906:sramecc+:xnack- - STRATA_HIP_PROMPT_F16=1: the prompt's 16-bit GEMMs run FP16 in and out (rocBLAS is tuned only for that on gfx103x; not bit-identical to the default)
+strata serve: the prompt path borrows 3642 CUDA0 cache slots (6.73 GiB)
+strata serve:   CUDA1 prompt path borrows 3384 of its 3985 slots (6.73 GiB)
+prefill: STRATA_SWAPIN_DEPTH=64: the stager's pack-file runs read up to 64 experts per batch (ring 128, ~162 MiB of staging in flight per run)
+prefill: STRATA_SWAPIN_DEPTH=64: the stager's pack-file runs read up to 64 experts per batch (ring 128, ~162 MiB of staging in flight per run)
+
+=== startup poll 4 time=2026-11-18T20:25:30+01:00 ===
+Starting mixed backend on 127.0.0.1:8009; log: /mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261118-202342-3131120.log; helper: /mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261118-202342-3131120-helper.log
+{
+  "supervisor_pid": 3131096,
+  "generation": 1,
+  "state": "attached",
+  "engine_pid": 3132535,
+  "engine_start": "863425",
+  "engine_log": "/mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261118-202342-3131120.log"
+}
+       open http://127.0.0.1:8009/ in a browser to chat; close this window to stop the model
+[strata] MCP server 'pandoc': 1 tool (convert-contents)
+[strata] MCP server 'markitdown': 1 tool (convert_to_markdown)
+[strata] MCP server 'docling': 21 tools (check_document_in_local_cache, remove_document_from_local_cache, convert_document_into_docling_document, convert_directory_files_into_docling_document, list_cached_documents, create_new_docling_document, export_docling_document_to_markdown, save_docling_document, ...)
+trata generate: 7 expert-pool workers + the host thread
+strata generate: session is up (engine 0.1.57)
+strata generate: token graph hit path: 8968 resident experts, decided on the device
+strata prefill: HIP device 1 gfx906:sramecc+:xnack- - STRATA_HIP_PROMPT_F16=1: the prompt's 16-bit GEMMs run FP16 in and out (rocBLAS is tuned only for that on gfx103x; not bit-identical to the default)
+strata serve: the prompt path borrows 3642 CUDA0 cache slots (6.73 GiB)
+strata serve:   CUDA1 prompt path borrows 3384 of its 3985 slots (6.73 GiB)
+prefill: STRATA_SWAPIN_DEPTH=64: the stager's pack-file runs read up to 64 experts per batch (ring 128, ~162 MiB of staging in flight per run)
+prefill: STRATA_SWAPIN_DEPTH=64: the stager's pack-file runs read up to 64 experts per batch (ring 128, ~162 MiB of staging in flight per run)
+strata hc: CUDA1: the hyper-connection read runs as staged (the norm per token and stream, the down projection's activations staged ahead by cp.async); checked bit for bit against the plain read on this card (STRATA_HC_SPLIT=1 or 0 for the earlier ones)
+strata verify: window up to 5 tokens, 70.2 MiB of device buffers
+strata serve: layer split: layers 0-29 (CUDA0), 30-47 (CUDA1), one hand-off per window
+strata hc: CUDA0: the hyper-connection read runs as staged (the norm per token and stream, the down projection's activations staged ahead by cp.async); checked bit for bit against the plain read on this card (STRATA_HC_SPLIT=1 or 0 for the earlier ones)
+strata verify: window up to 5 tokens, 70.2 MiB of device buffers
+strata serve: conversation cache: RAM ceiling 512 MiB (parked snapshots plus the retained K/V); a snapshot over it parks to disk only, and over it the least recently active conversations the disk tier published drop to disk (the active conversation is never dropped)
+strata serve: conversation cache: file page-cache release ON (park writes, restore reads and ring sidecars hand their cached pages back after their flush; the parked file's page-cache footprint stays ~0)
+strata serve: conversation cache: disk tier ON at /home/srcds/strata-conv-cache (direct I/O, budget 24576 MiB): generations=3 bytes=5382 sidecars=12 orphan temps=0 orphan sidecars=1 corrupt=0 foreign=0
+strata serve: foresight swap: slots per layer per card: card0:2, card1:8 on 2 card(s), up to 32 copies per card and window, admit after 2 miss(es), reuse after 4 windows, helper shadow ON (a landed slot serves a helper-held pair), 16-entry pinned staging ring
+strata serve: STRATA_ROUTE_TAIL_SKIP=7 is suspended: a helper expert tier is registered and the skip would zero its rows; STRATA_TAIL_SKIP_HELPER=1 skips only the misses no tier holds (the CPU-bound ones), exactly a rig without a helper
+strata serve: adaptive overlap: off: not on a layer split
+strata serve: 220 MiB of VRAM free with everything loaded - LOW: requests may stall; add --vram-reserve-mib 484 to the config's args (or lower --max-context)
+strata serve: CUDA1: 524 MiB of VRAM free with everything loaded
+
+CURRENT_GENERATION_READY time=2026-11-18T20:25:30+01:00 (real completion still required)
