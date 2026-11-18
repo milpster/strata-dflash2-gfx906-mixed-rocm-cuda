@@ -1,0 +1,45 @@
+{
+  "purpose": "Observe the next operator-controlled iGPU game run after canonical backend restart",
+  "collectors_started": "2026-11-18T16:46:58+01:00",
+  "collectors_deadline_approx": "2026-11-18T17:46:58+01:00",
+  "capture_ready_record": "capture-ready.log",
+  "game_launch_and_exit": "Awaiting operator markers; do not infer exact event times from message receipt",
+  "production": {
+    "launcher": "/mnt/srcds/Strata/launch-v0238.sh",
+    "config_sha256": "0d9fb58b7d1dd46df002702f2d67756be6efefc101c24de469ebf9e5a1609811",
+    "engine_sha256": "b0ec0109ebc50c982512c371d81b2c15a8f72c70edf8a461a4ff10337da52f02",
+    "verified_engine_pid": 1707851,
+    "verified_generation": 2,
+    "verified_wrapper_log": "/mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261118-164355-1707337.log",
+    "verification": "post-restart-identity.log, post-restart-models.json and post-restart-probe-summary.json",
+    "deployment_change": false
+  },
+  "collectors": [
+    {
+      "command": "vmstat -w -t 2 1801",
+      "shell_id": "sh_1ef56fd93001rWhsiELzMVEUZw",
+      "output": "next-game-vmstat.log",
+      "notes": "Two-second host paging samples; first row is since boot, not an interval"
+    },
+    {
+      "command": "LC_ALL=C S_TIME_FORMAT=ISO pidstat -h -r -u -d -p ALL -C 'strata-host|strata-expert-h' 2 1800",
+      "shell_id": "sh_1ef56fdb0001MSFTFqdI3FNFJc",
+      "output": "next-game-pidstat.log",
+      "notes": "Engine/helper CPU, minor/major faults, RSS and disk I/O; command-name selection can follow restarts"
+    },
+    {
+      "command": "timeout 3600 tail -n 20 -F /mnt/srcds/Strata/logs/engine-prod-ud-iq3xxs-v0233.log | stdbuf -oL tr -d '\\000'",
+      "shell_id": "sh_1ef56fdb00021H5gGHMshIc5Ko",
+      "output": "next-game-engine.log",
+      "notes": "Historical 20-line prelude is not game-run evidence; record engine-log offsets at game phase boundaries"
+    }
+  ],
+  "limits": [
+    "Collectors are live and bounded, not yet completed; growing logs are locally retained and not included in the static evidence seal",
+    "No continuous GPU-clock or per-process VmSwap time series; take explicit process/cgroup/device snapshots at game phase boundaries",
+    "Host and cgroup PSI files are unavailable on this kernel, not zero",
+    "The legacy restore checker is pinned to the failed generation-1 log; its eventual result is not the current serving verdict",
+    "No extra specialist inference, pressure injection, cache dropping or memory-policy changes during the game capture",
+    "The post-restart probe still measured only 8.5 generated tokens/s; restart did not establish normal performance recovery"
+  ]
+}

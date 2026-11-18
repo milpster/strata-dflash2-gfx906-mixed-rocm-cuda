@@ -1,6 +1,6 @@
 # Conversation parking/loading — bounded GPU acceptance window
 
-Status: preparation only; GPU execution is paused for the operator-requested passive investigation of persistent slowdown after the iGPU game exits. Preserve that state until the investigation is reconciled. Operator separately requested this GPU test after the whole-plan oracle finished. No promotion is authorized. Reuse the existing runners and cache scenarios; do not build another window framework.
+Status: preparation only; GPU execution is paused for the operator-requested post-game slowdown investigation and next-game capture. The operator subsequently authorized a diagnostic generation and canonical backend restart; pre-restart evidence is preserved in `journal/game-exit-slowdown-2026-11-18.md`, but the original slow process no longer exists. The restart did not establish normal performance recovery. Operator separately requested this GPU test after the whole-plan oracle finished. No promotion is authorized. Reuse the existing runners and cache scenarios; do not build another window framework.
 
 ## Frozen candidates and authority
 

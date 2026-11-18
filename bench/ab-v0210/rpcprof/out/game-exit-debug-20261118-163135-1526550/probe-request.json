@@ -1,0 +1,14 @@
+{
+  "model": "ud-iq3_xxs",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Diagnostic game-exit probe 20261118-163135. Count from 1 to 1000, one integer per line. Start immediately and do not explain."
+    }
+  ],
+  "max_tokens": 256,
+  "temperature": 0,
+  "stream": true,
+  "chat_template_kwargs": { "enable_thinking": false },
+  "reasoning_effort": "low"
+}

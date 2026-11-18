@@ -1,0 +1,5 @@
+# Growing next-game telemetry is retained locally and sealed after collection.
+next-game-*.log
+# Legacy readiness checker follows the failed first generation until its deadline.
+restart-restore.log
+restart-result.log
