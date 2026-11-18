@@ -1,0 +1,26 @@
+stop-all: verifying 20s of quiet
+stop-all: before=0 after=0 — ALL STOPPED
+restore: config sha 0d9fb58b7d1dd46df002702f2d67756be6efefc101c24de469ebf9e5a1609811
+restore: engine sha b0ec0109ebc50c982512c371d81b2c15a8f72c70edf8a461a4ff10337da52f02
+restore: engine log /mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261118-164218-1684008.log
+restore: still booting, 18 min of budget left
+restore: still booting, 17 min of budget left
+restore: still booting, 16 min of budget left
+restore: still booting, 15 min of budget left
+restore: still booting, 14 min of budget left
+restore: still booting, 13 min of budget left
+restore: still booting, 12 min of budget left
+restore: still booting, 11 min of budget left
+restore: still booting, 10 min of budget left
+restore: still booting, 9 min of budget left
+restore: still booting, 8 min of budget left
+restore: still booting, 7 min of budget left
+restore: still booting, 6 min of budget left
+restore: still booting, 5 min of budget left
+restore: still booting, 4 min of budget left
+restore: still booting, 3 min of budget left
+restore: still booting, 2 min of budget left
+restore: still booting, 1 min of budget left
+restore: still booting, 0 min of budget left
+restore: still booting, 0 min of budget left
+RESTORE-FAIL: no ready line before the deadline (17:02:23); see /mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261118-164218-1684008.log

@@ -1,0 +1,47 @@
+{
+  "status": "completed_observational_capture",
+  "game_experiment": "parked_by_operator; no launch or exit confirmed",
+  "started": "2026-11-18T16:46:58+01:00",
+  "final_host_and_process_sample": "2026-11-18T17:46:58+01:00",
+  "completeness_validation": {
+    "time": "2026-11-18T18:07:48+01:00",
+    "evidence": "passive-capture-validation.log",
+    "exit_code": 0,
+    "prior_static_and_parking_seals": "verified unchanged"
+  },
+  "collectors": [
+    {
+      "output": "next-game-vmstat.log",
+      "shell_id": "sh_1ef56fd93001rWhsiELzMVEUZw",
+      "terminal_state": "completed",
+      "exit_code": null,
+      "exit_code_provenance": "Completion notice supplied no numeric exit status; not inferred from completeness",
+      "verified_rows": 1801,
+      "interval_rows": 1800,
+      "excluded_since_boot_rows": 1
+    },
+    {
+      "output": "next-game-pidstat.log",
+      "shell_id": "sh_1ef56fdb0001MSFTFqdI3FNFJc",
+      "terminal_state": "completed",
+      "exit_code": null,
+      "exit_code_provenance": "Completion notice supplied no numeric exit status; not inferred from completeness",
+      "verified_samples_per_pid": {"1707851": 1800, "1707354": 1800}
+    },
+    {
+      "output": "next-game-engine.log",
+      "shell_id": "sh_1ef56fdb00021H5gGHMshIc5Ko",
+      "terminal_state": "completed",
+      "exit_code": 124,
+      "meaning": "Expected timeout of the explicitly bounded one-hour log tail, not an engine-exit status",
+      "historical_prelude": "Last 20 engine lines at collector start are not next-game evidence"
+    }
+  ],
+  "seal": "passive-capture-evidence.sha256; supplements rather than rewrites prior seals",
+  "limits": [
+    "Includes ordinary and specialist inference; no confirmed before/during/after game comparison",
+    "No new requests, process operations, memory pressure, policy changes or GPU tests during closeout",
+    "Sealing establishes retained bytes and sample completeness, not a slowdown diagnosis or performance recovery",
+    "A future game experiment requires fresh collectors and explicit launch/exit markers"
+  ]
+}

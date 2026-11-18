@@ -1,0 +1,9 @@
+2026-11-18T17:09:17+01:00
+phase=game_experiment_parked; next specialist traffic is observer load, not game evidence
+engine_pid=1707851
+/mnt/srcds/Strata/v0238p0/rpcw-hip/strata
+/proc/1707851/exe: OK
+ready: http://127.0.0.1:8009/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, context 262144 tokens, images on)
+VmHWM:	49856976 kB
+VmRSS:	40618432 kB
+VmSwap:	  192000 kB

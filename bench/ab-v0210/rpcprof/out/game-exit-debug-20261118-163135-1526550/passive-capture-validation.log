@@ -1,0 +1,21 @@
+2026-11-18T18:07:48+01:00
+=== completed capture sizes ===
+   1975  277284 bench/ab-v0210/rpcprof/out/game-exit-debug-20261118-163135-1526550/next-game-vmstat.log
+   7203  916406 bench/ab-v0210/rpcprof/out/game-exit-debug-20261118-163135-1526550/next-game-pidstat.log
+    201   33843 bench/ab-v0210/rpcprof/out/game-exit-debug-20261118-163135-1526550/next-game-engine.log
+   9379 1227533 total
+bench/ab-v0210/rpcprof/out/game-exit-debug-20261118-163135-1526550/next-game-vmstat.log size=277284 modified=2026-11-18 17:46:58.496719540 +0100
+bench/ab-v0210/rpcprof/out/game-exit-debug-20261118-163135-1526550/next-game-pidstat.log size=916406 modified=2026-11-18 17:46:58.164713678 +0100
+bench/ab-v0210/rpcprof/out/game-exit-debug-20261118-163135-1526550/next-game-engine.log size=33843 modified=2026-11-18 17:46:38.748369060 +0100
+
+=== sample completeness predicates ===
+vmstat_rows=1801 expected=1801 (one since-boot row, 1800 intervals)
+pidstat_pid=1707851 rows=1800 expected=1800
+pidstat_pid=1707354 rows=1800 expected=1800
+
+=== expected final sample markers ===
+  10    0      9758820      1950336        82732     18103780 1106    0 400554    36 24307 60087  25   9  66   0   0   0 2026-11-18 17:46:58
+17:46:58     1000   1707354    0.50    1.00    0.00    0.00    1.50     1      0.00      0.00 66351912  162776   0.25      0.00      0.00      0.00       0  strata-expert-h
+17:46:58     1000   1707851  290.50   85.50    0.00    0.00  376.00     0      0.00      0.00 176615064 55195400  84.69 395206.00      0.00      0.00       0  strata-host
+
+CAPTURE_COMPLETENESS_CHECKS_PASSED

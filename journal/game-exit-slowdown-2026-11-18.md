@@ -4,7 +4,7 @@
 
 The operator reported that Strata slowed while the iGPU game ran and did not recover after the game closed. The original game's launch/exit times are unknown. The passive investigator was cancelled before its report was written when the operator requested a backend restart. Parent then captured passive evidence and one explicitly authorized, synthetic generation before stopping production. No candidate deployment, cache clearing, swap policy change or injected memory pressure occurred.
 
-Evidence root: `bench/ab-v0210/rpcprof/out/game-exit-debug-20261118-163135-1526550/`. Times below are local CET (`+01:00`). The original slow process has been stopped. Canonical v0238 generation 2 is verified serving, passive collectors are armed, and the operator has been told the next game may launch. Performance recovery is **not** established.
+Evidence root: `bench/ab-v0210/rpcprof/out/game-exit-debug-20261118-163135-1526550/`. Times below are local CET (`+01:00`). The original slow process has been stopped; canonical generation 2 was verified serving after restart. The next-game experiment is now parked at the operator's request, and its bounded passive collectors have finished. Performance recovery is **not** established.
 
 ## Captured evidence
 
@@ -65,3 +65,15 @@ At the game-start confirmation, operator replied: “park for later, resume an a
 The original restore checker finally exited 1 at 17:02:23, specifically because the failed generation-1 wrapper log never became ready. Parent did not restart again in response. At 17:09:17, a fresh verification command exited 0: current PID 1707851 matches the canonical engine SHA, its current wrapper has readiness, and an actual completion returns `OK`, 2 tokens, `finish_reason=stop`. Evidence: `game-parked-pre-agent.log`, `pre-agent-response.json`, `game-experiment-parked.json` and the separate parking evidence seal. This establishes serving availability, not restored normal speed.
 
 Parent resumed exactly one specialist, the previous harness explorer `ses_e11015949ffeBT4ejQcEbCrLxy`, on the open RAM-fix GPU acceptance preparation. It owns only `gpu-rounds/ram-parking-gpu-fixtures.md`: concrete source-backed pressure fixtures, matched manifest/cap/floor requirements, deepest-published-boundary assertions, minimal missing glue and CPU checks. It may also describe the now-evidenced generation-aware restore-check requirement. No endpoints, GPU work, pressure, process operations, source/config edits or deployment are authorized. Production stays up for its inference; parent owns reconciliation and any eventual GPU window.
+
+## Passive capture closeout
+
+All three bounded collectors finished. Their window includes ordinary/specialist inference, not a confirmed game experiment. `passive-capture-closeout.json` and the separate `passive-capture-evidence.sha256` preserve their terminal outcomes and final bytes without rewriting either earlier seal.
+
+| Collector | Verified coverage / terminal evidence |
+| --- | --- |
+| `vmstat -w -t 2 1801` | 1801 rows: one since-boot row excluded from interval claims, then 1800 intervals. Final sample 17:46:58. Harness reported completion without a numeric exit code. |
+| `pidstat -h -r -u -d -p ALL -C 'strata-host|strata-expert-h' 2 1800` | 1800 samples each for engine 1707851 and helper 1707354, ending 17:46:58. Harness reported completion without a numeric exit code. |
+| Bounded NUL-stripped engine tail | Exit 124 from the intended `timeout 3600`, not an engine failure. The initial 20-line historical prelude remains explicitly excluded from game evidence. |
+
+At 18:07:48, parent checked both prior SHA256 seals, exact sample counts and final timestamps; the focused validation command exited 0 (`passive-capture-validation.log`). These checks establish completeness of the saved samples, not their causal attribution. No requests or production operations were repeated. A future game run needs fresh collectors and explicit phase markers; investigation remains parked while the sole specialist amends the separate RAM acceptance contract.
