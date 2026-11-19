@@ -1,0 +1,16 @@
+{
+  "_label": "NON-RUNNABLE DIAGNOSTIC FIXTURE for the read-only `preflight` probe only. exe/helper_bin/pack/experts deliberately point at files that DO NOT EXIST, so this manifest can never launch anything. Never use with `run`, `run --worker`, the launcher, or any GPU/calibration window.",
+  "base_config": "/mnt/srcds/Strata/prod-config-v0238.json",
+  "arm": "candidate",
+  "out_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/ram-raw-final-20261119-105651/diagnostic-window",
+  "exe": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/ram-raw-final-20261119-105651/diagnostic-window/slots/candidate/DOES-NOT-EXIST-strata",
+  "socket1": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/ram-raw-final-20261119-105651/diagnostic-window/run/candidate.sock",
+  "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/ram-raw-final-20261119-105651/diagnostic-window/run/candidate2.sock",
+  "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/ram-raw-final-20261119-105651/diagnostic-window/cache/candidate",
+  "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/ram-raw-final-20261119-105651/diagnostic-window/logs/candidate.engine.log",
+  "helper_bin": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/ram-raw-final-20261119-105651/diagnostic-window/bin/DOES-NOT-EXIST-expert-helper",
+  "pack": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/ram-raw-final-20261119-105651/diagnostic-window/diagnostic.pack",
+  "experts": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/ram-raw-final-20261119-105651/diagnostic-window/diagnostic.experts",
+  "supplied_files": {},
+  "serve_dir": "/mnt/srcds/Strata/v0215/serve"
+}

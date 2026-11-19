@@ -1,0 +1,2 @@
+{"preflight": "REFUSE", "reasons": ["live_serving_processes: production identity present", "supervisor_alive: production identity present"]}
+preflight_exit=2

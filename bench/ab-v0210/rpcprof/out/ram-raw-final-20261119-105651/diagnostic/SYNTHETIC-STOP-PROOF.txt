@@ -1,0 +1,5 @@
+SYNTHETIC TEST INPUT — NOT a real canonical stop-all.sh record. Written by the verification
+pass purely to let `preflight` get past the stop-proof gate and reach the phase-P production
+absence probes. It is NEVER evidence that production is down and MUST NOT be used by `run`,
+`run --worker`, the launcher, or any GPU/calibration window.
+stop-all: before=0 after=0 — ALL STOPPED

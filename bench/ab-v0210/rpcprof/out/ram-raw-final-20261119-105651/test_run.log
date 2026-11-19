@@ -1,0 +1,59 @@
+test_preflight_absent_and_clean_exit_zero (__main__.CliPreflight.test_preflight_absent_and_clean_exit_zero) ... ok
+test_preflight_refuses_nonzero_exit_code (__main__.CliPreflight.test_preflight_refuses_nonzero_exit_code) ... ok
+test_preflight_refuses_when_production_present (__main__.CliPreflight.test_preflight_refuses_when_production_present) ... ok
+test_preflight_refuses_without_code_sidecar (__main__.CliPreflight.test_preflight_refuses_without_code_sidecar) ... ok
+test_run_happy_single_owner_and_result (__main__.CliRunOuter.test_run_happy_single_owner_and_result) ... ok
+test_run_ready_timeout_never_launches_worker (__main__.CliRunOuter.test_run_ready_timeout_never_launches_worker) ... ok
+test_run_without_confirm_raises_and_spawns_nothing (__main__.CliRunOuter.test_run_without_confirm_raises_and_spawns_nothing) ... ok
+test_worker_happy_raw_ids_and_files (__main__.CliWorker.test_worker_happy_raw_ids_and_files) ... ok
+test_worker_refuses_missing_owned_helper_proof (__main__.CliWorker.test_worker_refuses_missing_owned_helper_proof) ... ok
+test_worker_refuses_on_substring_basename_identity (__main__.CliWorker.test_worker_refuses_on_substring_basename_identity) ... ok
+test_worker_refuses_unowned_helper_present (__main__.CliWorker.test_worker_refuses_unowned_helper_present) ... ok
+test_worker_refuses_when_socket_missing (__main__.CliWorker.test_worker_refuses_when_socket_missing) ... ok
+test_worker_refuses_without_confirm (__main__.CliWorker.test_worker_refuses_without_confirm) ... ok
+test_double_serve_rejected (__main__.ExactArgv.test_double_serve_rejected) ... ok
+test_exact_match_ok (__main__.ExactArgv.test_exact_match_ok) ... ok
+test_production_cache_value_rejected (__main__.ExactArgv.test_production_cache_value_rejected) ... ok
+test_empty_probes_block (__main__.Gates.test_empty_probes_block) ... ok
+test_load_stop_proof_requires_sidecar (__main__.Gates.test_load_stop_proof_requires_sidecar) ... ok
+test_owned_helper_proof_exact_not_substring (__main__.Gates.test_owned_helper_proof_exact_not_substring) ... ok
+test_pgrep_rc_semantics (__main__.Gates.test_pgrep_rc_semantics) ... ok
+test_probe_error_treated_as_present (__main__.Gates.test_probe_error_treated_as_present) ... ok
+test_run_gate_blocks_on_each_stage (__main__.Gates.test_run_gate_blocks_on_each_stage) ... ok
+test_cli_prepare_manifest_writes_plan (__main__.ImportAndCliIsInactive.test_cli_prepare_manifest_writes_plan) ... ok
+test_default_and_check_env_launch_nothing (__main__.ImportAndCliIsInactive.test_default_and_check_env_launch_nothing) ... ok
+test_import_never_loads_server (__main__.ImportAndCliIsInactive.test_import_never_loads_server) ... ok
+test_offset_and_limit_bounded (__main__.LogWindow.test_offset_and_limit_bounded) ... ok
+test_happy_close_before_terminate (__main__.OwnedPair.test_happy_close_before_terminate) ... ok
+test_helper_exits_cleaned (__main__.OwnedPair.test_helper_exits_cleaned) ... ok
+test_helper_launched_once_worker_once (__main__.OwnedPair.test_helper_launched_once_worker_once) ... ok
+test_helper_not_ready_no_worker_and_cleaned (__main__.OwnedPair.test_helper_not_ready_no_worker_and_cleaned) ... ok
+test_helper_wait_timeout_still_returns (__main__.OwnedPair.test_helper_wait_timeout_still_returns) ... ok
+test_worker_crash_still_cleans_helper (__main__.OwnedPair.test_worker_crash_still_cleans_helper) ... ok
+test_build_engine_argv_rejects_serve_in_config (__main__.PlanAndArgv.test_build_engine_argv_rejects_serve_in_config) ... ok
+test_build_worker_command_forwards_owned_identity (__main__.PlanAndArgv.test_build_worker_command_forwards_owned_identity) ... ok
+test_clean_helper_env_is_env_i_not_full_merge (__main__.PlanAndArgv.test_clean_helper_env_is_env_i_not_full_merge) ... ok
+test_engine_scope_env_unsets_and_sets (__main__.PlanAndArgv.test_engine_scope_env_unsets_and_sets) ... ok
+test_import_time_env_ok (__main__.PlanAndArgv.test_import_time_env_ok) ... ok
+test_prepare_builds_canonical_tuple (__main__.PlanAndArgv.test_prepare_builds_canonical_tuple) ... ok
+test_real_engine_handle_argv_from_reader_not_engine (__main__.RealFactory.test_real_engine_handle_argv_from_reader_not_engine) ... ok
+test_resolved_drift_aborts_before_constructor (__main__.RealFactory.test_resolved_drift_aborts_before_constructor) ... ok
+test_valid_build_constructs_once_and_reads_proc_argv (__main__.RealFactory.test_valid_build_constructs_once_and_reads_proc_argv) ... ok
+test_argv_drift_refuses_before_build (__main__.RunWorker.test_argv_drift_refuses_before_build) ... ok
+test_argv_mismatch_stops_before_generate (__main__.RunWorker.test_argv_mismatch_stops_before_generate) ... ok
+test_factory_error_records_and_no_close (__main__.RunWorker.test_factory_error_records_and_no_close) ... ok
+test_happy_capture_and_close (__main__.RunWorker.test_happy_capture_and_close) ... ok
+test_ignores_none_heartbeats (__main__.RunWorker.test_ignores_none_heartbeats) ... ok
+test_log_window_file_fallback (__main__.RunWorker.test_log_window_file_fallback) ... ok
+test_midstream_eof_incomplete (__main__.RunWorker.test_midstream_eof_incomplete) ... ok
+test_missing_state (__main__.RunWorker.test_missing_state) ... ok
+test_nonfinite_metrics (__main__.RunWorker.test_nonfinite_metrics) ... ok
+test_parse_state_hashes_cases (__main__.RunWorker.test_parse_state_hashes_cases) ... ok
+test_stalled_no_yield_is_cancelled (__main__.RunWorker.test_stalled_no_yield_is_cancelled) ... ok
+test_launcher_has_no_second_owner_and_execs_run (__main__.ThinLauncher.test_launcher_has_no_second_owner_and_execs_run) ... ok
+
+----------------------------------------------------------------------
+Ran 53 tests in 0.048s
+
+OK
+test_exit=0

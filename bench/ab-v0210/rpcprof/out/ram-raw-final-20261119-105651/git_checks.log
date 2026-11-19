@@ -1,0 +1,23 @@
+# git scope / whitespace / drift checks (read-only) - raw CLI verification 2026-11-19
+branch        : tg-stall-cause
+HEAD          : 7663ccfab7e3ee1ce913ec78b8e0a78ebb7ce358
+owned range   : 6a4b9219ef..7663ccfab7  (6e2707850b add, f99b2e534d wire, 7663ccfab7 connect)
+
+## files touched by the owned range (scope gate)
+bench/ab-v0210/rpcprof/gpu-rounds/ram-parking-gpu-fixtures.md
+bench/ab-v0210/rpcprof/gpu-rounds/ram-parking-gpu-test-plan.md
+bench/ab-v0210/rpcprof/gpu-rounds/ram_raw.py
+bench/ab-v0210/rpcprof/gpu-rounds/ram_raw_launch.sh
+bench/ab-v0210/rpcprof/tests/test_ram_raw_cpu.py
+journal/serving-tg-reeval-split-retest-2026-11-11.md
+
+## git diff --check 6a4b9219ef 7663ccfab7 (whitespace gate)
+diff_check_exit=0 (clean)
+
+## worktree drift on the 3 owned adapter paths vs HEAD (empty = clean)
+drift_end
+
+## launcher thinness (line count + no shell-side owner primitives)
+31 bench/ab-v0210/rpcprof/gpu-rounds/ram_raw_launch.sh
+no shell-side owner logic present
+29:exec "$PY" "$RAM_RAW_DIR/ram_raw.py" run \

@@ -1,0 +1,2 @@
+supervisor_pid=2788001 alive=True exe_cmd=/mnt/srcds/Strata/.venv/bin/python
+state keys: ['attached_at', 'engine_log', 'engine_pid', 'engine_start', 'engine_stderr_log', 'generation', 'helper_log', 'helper_pid']

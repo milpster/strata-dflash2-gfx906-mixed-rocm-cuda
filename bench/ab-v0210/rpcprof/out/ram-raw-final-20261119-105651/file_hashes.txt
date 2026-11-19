@@ -1,0 +1,21 @@
+# SHA256 - owned raw-adapter files at HEAD 7663ccfab7 (verified 2026-11-19, post Round18dy journal append)
+192b1178b9592275562b704f6e4c1dbf11d67e4dfae2a53510c928015220a8b9  bench/ab-v0210/rpcprof/gpu-rounds/ram_raw.py
+7f92fea49f16ca656db8e59238b6dd4830eb05d94f5666eb03f9523564778235  bench/ab-v0210/rpcprof/gpu-rounds/ram_raw_launch.sh
+1f5cf09c15447d925d480996ff9ed1d9c671c4f8eb2c4d3bb2eea8350eb96dc1  bench/ab-v0210/rpcprof/tests/test_ram_raw_cpu.py
+59fe13eb898d08b92d1204996db1c8df9ef4fc135c271a505214553bd925b61c  bench/ab-v0210/rpcprof/gpu-rounds/ram_acceptance.py
+991641e644d2d03897f9c99a482b6f72c09fe566637a57ef6af8668c328b763d  bench/ab-v0210/rpcprof/tests/test_ram_acceptance_cpu.py
+c0d284b20a53525d6e18e4f351ea000bb0e8af2c7f5f7d8af3629375ac9c2960  journal/serving-tg-reeval-split-retest-2026-11-11.md
+# declared: ram_raw.py 192b1178...a8b9 / ram_raw_launch.sh 7f92fea4...78235 / test_ram_raw_cpu.py 1f5cf09c...96dc1
+# unchanged from Round 18du (evidence commit 6a4b9219ef still valid, not rerun): ram_acceptance.py 59fe13eb...b61c / test_ram_acceptance_cpu.py 991641e6...763d
+
+# SHA256 - this verification pass's artifacts (file_hashes.txt and summary.md excluded: self-reference)
+88f4f6198b66b41daa2894ee4b5841931b885f1c2f467d4996c63888d9ce2847  bench/ab-v0210/rpcprof/out/ram-raw-final-20261119-105651/py_compile.log
+fcdd18ee0e08c6bce026c3d89d0a35d64ade0e9789db5ebd35619f1edb6dde50  bench/ab-v0210/rpcprof/out/ram-raw-final-20261119-105651/bash_n.log
+809706b2c78f383bd05b9b6405d17ec0c08e10371f0765b9480f0b928946c64d  bench/ab-v0210/rpcprof/out/ram-raw-final-20261119-105651/test_run.log
+1f1bc2cfca596cde275826c14f7c00ee27904e41f08e6a3d5cc8e9c05d46268c  bench/ab-v0210/rpcprof/out/ram-raw-final-20261119-105651/git_checks.log
+b376d2ca4899a77f0019a3e80d57a944d08774253ebae06993701cb8bae70503  bench/ab-v0210/rpcprof/out/ram-raw-final-20261119-105651/preflight_probe.log
+9cc5a18d0d5213dda6e14be44195c1df29ea0e51525d2d1b2d23942233d74eb6  bench/ab-v0210/rpcprof/out/ram-raw-final-20261119-105651/preflight_pgrep_identity.txt
+1e8d9762d86492f2c8efda364d45ce4b24065bbb99c5004ca340b8ff5e90d80c  bench/ab-v0210/rpcprof/out/ram-raw-final-20261119-105651/preflight_supervisor_identity.txt
+facab675b7550ef5280e97dd8cf6f46f9dd2ea8ee21452027f529436c7e1aeb1  bench/ab-v0210/rpcprof/out/ram-raw-final-20261119-105651/diagnostic/manifest.diagnostic.json
+41f4be02febaf772893d9d1b3fc9fb4b227ee8f9d25a20a58309819ec3a50877  bench/ab-v0210/rpcprof/out/ram-raw-final-20261119-105651/diagnostic/SYNTHETIC-STOP-PROOF.txt
+9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa  bench/ab-v0210/rpcprof/out/ram-raw-final-20261119-105651/diagnostic/SYNTHETIC-STOP-PROOF.txt.code
