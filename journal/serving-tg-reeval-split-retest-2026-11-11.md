@@ -4475,3 +4475,17 @@ Runtime locking remains blocked on expert/PLE mapping coverage and total-fit pro
   choice, not a measured verdict — the earlier reserve panel had 256/448 TG trailing both
   700/700 controls with low-free-VRAM warnings; that evidence stands as recorded.
 - Harness gate repairs remain (they serve future arms/speed-candidate windows, not only margin).
+
+## 2026-11-20 (early) — operator margin churn; prod on 256/448; Swift fixer restarts
+
+- Operator reported severe TG regression (probe 11.1 tok/s decode pre-restart, confounded by the
+  lock-incident refault aftermath). Directive sequence: revert to "old version" -> (clarified)
+  tight margins with primary minus 64 -> 192/448 (9900c42d45) -> final "go back to 256 and 448"
+  (c7bf69f302, config sha 51ec9ccd…). Restarts: 700/700 boot 00:15:58, 192/448 boot superseded
+  mid-flight, 256/448 boot 00:23:50 verified (http 200, finish=stop). All boots via lane_boot +
+  launch-v0238.sh; binaries unchanged (v0238p0, engine b0ec0109…).
+- First cold probe on 256/448: decode 12.9 tok/s, expert cache 69.6% hit (cold-cache warm-up;
+  the same config measured 22.6-23.7 tok/s at 92-96% hit once warm earlier tonight). Watching.
+- The two restarts cut the Swift parking fixer mid-Phase-B twice (operator-accepted); its
+  uncommitted +321/-73 edits survived on disk both times; resumed after verification.
+- Nemotron arena-lane agent cancelled by operator; arena trial stays armed, gate WAITING.
