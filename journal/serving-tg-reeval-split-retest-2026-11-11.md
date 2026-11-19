@@ -4449,3 +4449,19 @@ Runtime locking remains blocked on expert/PLE mapping coverage and total-fit pro
   floor-guarded; max lock 8.8–13 GiB depending on starting avail at a 4 GiB floor.
 - Tools committed: `file_residency.py`, `expert_shard_locker.py`, both trial drivers. Full
   reconciliation: `out/expert-lock-trial-20261119-run2/report.md`. Prod untouched throughout.
+
+## 2026-11-19 (night) — OPERATOR PROMOTION: standing expert-page lock active on prod
+
+- Operator ordered "promote locked to prod". Implemented as a supervised sidecar overlay — engine,
+  config and launcher untouched, prod never down.
+- `expert_shard_locker.py` extended for standing mode: `--refresh-s 120` re-locks newly resident
+  expert pages (floor-guarded 4 096 MiB) and PRESSURE-RELEASES the newest extents if MemAvailable
+  ever falls below floor + 512 MiB (game-coexistence safety the trial did not need).
+- Started 23:08 via `gpu-rounds/prod-expert-lock.sh` (state `run/prod-expert-lock.json`, hold-file
+  `run/prod-expert-lock.hold`, log `logs/prod-expert-lock-20261119-230804.log`). First pass:
+  9 659.6 MiB locked, MemAvailable 7.65 GiB, Mlocked ~9.8 GiB. Stop:
+  `gpu-rounds/prod-expert-lock-stop.sh` (hold-file release, verifies Mlocked < 512 MiB; never kill
+  by pattern).
+- Basis: run-2 verdict (locked 23.0 vs unlocked 19.2 median tok/s under held pressure; E3's
+  eviction/refault ramp). Limitations carried: resident-subset coverage, decode-only evidence,
+  single run per condition.
