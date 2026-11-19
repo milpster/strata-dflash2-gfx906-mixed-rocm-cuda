@@ -518,15 +518,18 @@ if(STRATA_BUILD_TESTS)
   # provided on this target's include path; production builds use the real ROCm/CUDA headers.
   # Each scenario runs as a separate CTest because native_mlock_detail::on() caches its value
   # on first call (static local init).
-  add_executable(native_mlock_test tests/core/native_mlock_test.cpp)
-  target_include_directories(native_mlock_test BEFORE PRIVATE tests/core include)
-  target_link_libraries(native_mlock_test PRIVATE ${CMAKE_DL_LIBS})
-  add_test(NAME native_mlock_test_off      COMMAND native_mlock_test off)
-  add_test(NAME native_mlock_test_success  COMMAND native_mlock_test success)
-  add_test(NAME native_mlock_test_empty    COMMAND native_mlock_test empty)
-  add_test(NAME native_mlock_test_first_fail COMMAND native_mlock_test first_fail)
-  add_test(NAME native_mlock_test_later_fail COMMAND native_mlock_test later_fail)
-  add_test(NAME native_mlock_test_knob_zero COMMAND native_mlock_test knob_zero)
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(native_mlock_test tests/core/native_mlock_test.cpp)
+    target_include_directories(native_mlock_test BEFORE PRIVATE tests/core include)
+    target_link_libraries(native_mlock_test PRIVATE ${CMAKE_DL_LIBS})
+    add_test(NAME native_mlock_test_off      COMMAND native_mlock_test off)
+    add_test(NAME native_mlock_test_success  COMMAND native_mlock_test success)
+    add_test(NAME native_mlock_test_empty    COMMAND native_mlock_test empty)
+    add_test(NAME native_mlock_test_first_fail COMMAND native_mlock_test first_fail)
+    add_test(NAME native_mlock_test_later_fail COMMAND native_mlock_test later_fail)
+    add_test(NAME native_mlock_test_mixed_span COMMAND native_mlock_test mixed_span)
+    add_test(NAME native_mlock_test_knob_zero COMMAND native_mlock_test knob_zero)
+  endif()
 
   # Simulated non-Linux guard probe: compiled with -U__linux__ to verify the
   # __linux__-guarded code paths degrade to a self-contained OFF/no-op contract.
@@ -534,7 +537,9 @@ if(STRATA_BUILD_TESTS)
   # Windows/macOS toolchain validation.
   add_executable(native_mlock_nonlinux_probe tests/core/native_mlock_nonlinux_probe.cpp)
   target_include_directories(native_mlock_nonlinux_probe BEFORE PRIVATE tests/core include)
-  target_compile_options(native_mlock_nonlinux_probe PRIVATE -U__linux__)
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(native_mlock_nonlinux_probe PRIVATE -U__linux__)
+  endif()
   target_link_libraries(native_mlock_nonlinux_probe PRIVATE ${CMAKE_DL_LIBS})
   add_test(NAME native_mlock_nonlinux_probe COMMAND native_mlock_nonlinux_probe)
 

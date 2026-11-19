@@ -377,6 +377,7 @@ int main(int argc, char** argv) {
             check(s.bytes == (256ull << 20), "later-fail: State.bytes exactly counts locked chunk");
             check(s.requested == two_chunks, "later-fail: State.requested exactly counts full request");
             check(s.spans == 1, "later-fail: State.spans counts one attempted span");
+            check(s.seconds == r.seconds && r.seconds >= 0.0, "later-fail: elapsed time retained exactly");
         }
 
         std::string out = read_capture("stderr_later_fail.txt");
@@ -447,6 +448,7 @@ int main(int argc, char** argv) {
             check(s.bytes == kPage, "mixed: State.bytes retains span1 locked bytes after span2 failure");
             check(s.requested == kPage + (kPage * 3), "mixed: State.requested counts both spans");
             check(s.spans == 2, "mixed: State.spans counts both attempted spans");
+            check(s.seconds == r1.seconds + r2.seconds, "mixed: elapsed time counts both spans exactly");
         }
 
         // Report should show [PARTIAL] (span2 failed) with exact aggregate
@@ -468,6 +470,7 @@ int main(int argc, char** argv) {
             check(s.bytes == 0, "mixed: State.bytes reset after report");
             check(s.requested == 0, "mixed: State.requested reset after report");
             check(s.spans == 0, "mixed: State.spans reset after report");
+            check(s.seconds == 0.0, "mixed: State.seconds reset after report");
         }
 
         free_page_aligned(buf1);
