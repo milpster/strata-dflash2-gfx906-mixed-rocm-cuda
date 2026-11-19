@@ -6,6 +6,12 @@ context (8000 / 80000), a unique per-leg tag line so no cache reuse is possible 
 judge line must read "N reused = 0". Requests: temperature 0, thinking off
 (enable_thinking false) so the parity gate compares byte-identical completions.
 
+Those parity settings are the DEFAULT, not a law: --request-template points at a frozen
+manifest file that pins the sampling and reasoning effort a speed comparison is meant to
+measure under (production's own), and then the record carries the template digest and the
+effective settings. Pass --max-tokens explicitly: the template owns neither the prompt nor
+the generation cap.
+
 The tag sits at the TAIL, which does NOT force a fresh prefill: the leading tokens still
 match, so a "prefill" leg can be served from the conversation cache. Callers that need a
 genuinely cold prompt pass --prompt-file, whose bytes were built with the identity tag at
@@ -64,16 +70,38 @@ def build_prompt(arm: str, leg: str, ctx: int) -> str:
     return prompt
 
 
-def post(url: str, prompt: str, max_tokens: int, timeout: int) -> tuple[float, str, str]:
-    body = json.dumps({
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": max_tokens,
-        "temperature": 0,
-        "enable_thinking": False,
-        "reasoning_effort": "low",
-        "stream": False,
-    }).encode()
-    req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
+def build_body(prompt: str, max_tokens: int, template: dict | None) -> dict:
+    """The request body to send.
+
+    No template means today's parity body, key for key: temperature 0, thinking off,
+    low reasoning — the settings the byte-identical-completion gate needs.
+
+    A template is a frozen profile's sampling and reasoning pins. The driver adds only
+    the two fields it owns — the corpus prompt and the shape's generation cap — so a
+    speed leg runs on the settings production actually serves instead of inheriting the
+    parity defaults. Omitted fields stay the server's to decide (enable_thinking and the
+    rest inherit the current server behaviour).
+    """
+    if template is None:
+        return {
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": max_tokens,
+            "temperature": 0,
+            "enable_thinking": False,
+            "reasoning_effort": "low",
+            "stream": False,
+        }
+    body = dict(template)
+    body["messages"] = [{"role": "user", "content": prompt}]
+    body["max_tokens"] = max_tokens
+    return body
+
+
+def post(url: str, prompt: str, max_tokens: int, timeout: int,
+         template: dict | None = None) -> tuple[float, str, str, str]:
+    body = build_body(prompt, max_tokens, template)
+    req = urllib.request.Request(url, data=json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json"})
     t0 = time.time()
     with urllib.request.urlopen(req, timeout=timeout) as r:
         resp = json.load(r)
@@ -81,11 +109,12 @@ def post(url: str, prompt: str, max_tokens: int, timeout: int) -> tuple[float, s
     m = resp["choices"][0]["message"]
     # reasoning models can return content=null (budget eaten by reasoning_content, the
     # promo_check precedent): never crash, fall back, and record where the text came from.
+    model = str(resp.get("model", ""))
     if m.get("content"):
-        return wall, m["content"], "content"
+        return wall, m["content"], "content", model
     if m.get("reasoning_content"):
-        return wall, m["reasoning_content"], "reasoning"
-    return wall, "", "empty"
+        return wall, m["reasoning_content"], "reasoning", model
+    return wall, "", "empty", model
 
 
 def size(path: str) -> int:
@@ -194,9 +223,15 @@ def main() -> int:
                     help="champions panel: this pair counts toward the medians")
     ap.add_argument("--champs-retry", type=int, default=0,
                     help="champions panel: bounded retry number of this pair (0 = first attempt)")
+    ap.add_argument("--request-template",
+                    help="JSON object of request-body pins from the frozen manifest; the driver "
+                         "adds messages + max_tokens only. Without it the legacy parity body is sent.")
+    ap.add_argument("--request-template-sha256",
+                    help="reject the run unless the template file digests to this")
     a = ap.parse_args()
 
     prompt, prompt_sha = load_prompt(a)
+    template, template_sha = load_template(a)
     max_tokens = 64 if a.kind == "warm" else a.max_tokens
     runs = 2 if a.kind == "tg" else 1
     e0, h0 = size(a.elog), size(a.hlog)
@@ -209,7 +244,9 @@ def main() -> int:
     content_from = "empty"
     for i in range(runs):
         start_e, start_h = size(a.elog), size(a.hlog)
-        wall, content, content_from = post(a.url, prompt, max_tokens, timeout=1800 if a.ctx >= 80000 else 900)
+        wall, content, content_from, model = post(a.url, prompt, max_tokens,
+                                                  timeout=1800 if a.ctx >= 80000 else 900,
+                                                  template=template)
         walls.append(round(wall, 3))
         requests.append({
             "index": i, "wall_s": round(wall, 3), "content_from": content_from,
@@ -217,6 +254,9 @@ def main() -> int:
             "elog_start": start_e, "elog_end": size(a.elog),
             "hlog_start": start_h, "hlog_end": size(a.hlog),
         })
+        if template:
+            # What the server says it served, per request, next to what we asked for.
+            requests[-1]["model"] = model
     wall = round(time.time() - t0, 3)
     sampler.stop_evt.set()
     sampler.join()
@@ -238,6 +278,18 @@ def main() -> int:
             "max_vram_mib": sampler.max_vram_mib,
         },
     }
+    if template:
+        # The body as actually sent, with the prompt replaced by its digest so the
+        # settings hash is comparable across arms instead of 88 KB of filler.
+        sent = settings_echo(template, prompt_sha, max_tokens)
+        rec["request"] = {
+            "template_path": a.request_template,
+            "template_sha256": template_sha,
+            "settings": sent,
+            "settings_sha256": hashlib.sha256(
+                json.dumps(sent, sort_keys=True).encode()).hexdigest(),
+            "url": a.url,
+        }
     if a.champs_shape and a.champs_pair is None:
         raise SystemExit("--champs-shape requires --champs-pair")
     if a.champs_shape:
@@ -249,6 +301,39 @@ def main() -> int:
         json.dump(rec, f, indent=1)
     print(json.dumps(rec))
     return 0
+
+
+def load_template(a) -> tuple[dict | None, str]:
+    """--request-template wins; without it the legacy parity body is sent unchanged.
+
+    The file is a frozen manifest artifact, so it is pinned by digest and validated
+    before anything goes on the wire: a template that carried messages or max_tokens
+    would silently override the corpus and the shape it is supposed to be paired with.
+    """
+    if not a.request_template:
+        return None, ""
+    path = pathlib.Path(a.request_template)
+    blob = path.read_bytes()
+    digest = hashlib.sha256(blob).hexdigest()
+    if a.request_template_sha256 and digest != a.request_template_sha256:
+        raise SystemExit(f"request-template sha256 {digest} != pinned {a.request_template_sha256}")
+    try:
+        template = json.loads(blob)
+    except ValueError as error:
+        raise SystemExit(f"request-template is not JSON: {path}: {error}") from error
+    if not isinstance(template, dict):
+        raise SystemExit(f"request-template must be a JSON object: {path}")
+    owned = sorted({"messages", "max_tokens"} & set(template))
+    if owned:
+        raise SystemExit(f"request-template must not pin {owned}: the corpus and the "
+                         f"shape own them ({path})")
+    return template, digest
+
+
+def settings_echo(template: dict, prompt_sha: str, max_tokens: int) -> dict:
+    """The effective request settings, with the prompt represented by its digest."""
+    return {**template, "messages": [{"role": "user", "content_sha256": prompt_sha}],
+            "max_tokens": max_tokens}
 
 
 def load_prompt(a) -> tuple[str, str]:

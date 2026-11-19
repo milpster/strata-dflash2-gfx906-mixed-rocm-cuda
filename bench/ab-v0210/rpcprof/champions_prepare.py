@@ -19,12 +19,28 @@ import os
 import random
 import re
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 ROOT = Path("/mnt/srcds/Strata")
 HERE = Path(__file__).resolve().parent
 DEFAULT_OUT = HERE / "out" / "champions-20261118"
+
+# Canonical production stack — what every panel hands back to on restore. Read, hashed
+# and recorded; never written by this module.
+PROD_CONFIG = ROOT / "prod-config-v0238.json"
+PROD_LAUNCHER = ROOT / "launch-v0238.sh"
+CANONICAL_ENGINE = ROOT / "v0238p0/rpcw-hip/strata"
+CANONICAL_ENGINE_SHA = "b0ec0109ebc50c982512c371d81b2c15a8f72c70edf8a461a4ff10337da52f02"
+SUPERVISOR_STATE = "run/prod-swift15-f16kv-mixed-supervisor.json"
+RESTORE_TIMEOUT_S = 1800
+RESTORE_POLL_S = 5
+
+# The two engine VRAM-guard reserves, in the order the report lists them. Their engine
+# defaults are 700 for the first card and (absent -> the same as the first) for the later
+# card: src/program/generate.cpp `int vram_reserve_mib = 700;` /
+# `int vram_reserve_later_mib = -1;` at the pinned source 42cb41b314.
+RESERVE_FLAGS = ("--vram-reserve-mib", "--vram-reserve-later-mib")
 
 # Shared runtime identities. The helper is byte-identical across all three eras
 # (journal 18br/18cr sha-verified); the serving wrapper is today's and shared.
@@ -57,6 +73,10 @@ class Arm:
     launcher_ref: str
     launcher_blob: str
     notes: tuple[str, ...] = ()
+    # Config args this profile moves away from the frozen snapshot, as (flag, value).
+    # Applied by retarget_config and re-checked by verify: a slot whose setting never
+    # reached the config the server execs is the defect class this guards.
+    arg_overrides: tuple[tuple[str, str], ...] = ()
 
 
 ARMS: tuple[Arm, ...] = (
@@ -156,6 +176,53 @@ SHAPES: tuple[Shape, ...] = (
 # cost the comparison that matters most; the pre-#267 arm last.
 ARM_ORDER = ("current", "nov16", "nov15")
 
+# What every panel's request model is, unless a profile says otherwise.
+REQUEST_MODEL = ("one driver call per pair, ab9 kind=tg: request 0 fresh prefill "
+                 "(PP + TG), request 1 cached re-run (TG only); pair 0 excluded")
+
+CHAMPIONS_DEVIATIONS = (
+    "conversation-cache-dir retargeted to a per-arm empty directory: the arms boot "
+    "cold and never mutate the production cache inventory. Identical for all three arms.",
+    "engine/helper/server sockets and the engine log are per-arm; the engine is "
+    "reached through a symlink slot so no production slot is written.",
+    "helper and serving server are today's byte-identical builds on all three arms "
+    "(helper is era-invariant); only the HIP engine binary and the adopted config differ.",
+    "the boot log destination is per-arm so a boot gate never globs a stale shared log.",
+)
+
+
+@dataclass(frozen=True)
+class Profile:
+    """One frozen measurement plan: which arms, which shapes, in what order, what varies.
+
+    The 2026-11-18 champion comparison and the 2026-11-19 reserve comparison share one
+    preparer. A Profile carries the difference so neither has to copy the other, and so
+    the manifest states what actually varies instead of assuming three engine binaries.
+    """
+
+    key: str
+    plan: str
+    arms: tuple[Arm, ...]
+    shapes: tuple[Shape, ...]
+    arm_order: tuple[str, ...]
+    deviations: tuple[str, ...] = CHAMPIONS_DEVIATIONS
+    request_model: str = REQUEST_MODEL
+    # The lever under test, recorded so the report can name it: flag -> {arm: value}.
+    profile_delta: dict = field(default_factory=dict)
+    # Optional request body pins for the driver. "messages" and "max_tokens" belong to
+    # the driver (the corpus and the shape own them); a profile pins the sampling and
+    # the reasoning effort so a speed leg does not inherit the driver's parity defaults.
+    request_template: dict = field(default_factory=dict)
+
+
+CHAMPIONS = Profile(
+    key="champions-3stack",
+    plan="Three-stack TG/PP champion comparison, requested 2026-11-17",
+    arms=ARMS,
+    shapes=SHAPES,
+    arm_order=ARM_ORDER,
+)
+
 
 def sha256_path(path: Path) -> str:
     h = hashlib.sha256()
@@ -194,15 +261,16 @@ def build_paired_prompt(work: str, pair: int, ctx: int) -> bytes:
     return prompt
 
 
-def corpus_files(out: Path) -> list[tuple[Shape, int, Path]]:
+def corpus_files(out: Path, shapes: tuple[Shape, ...] | None = None) -> list[tuple[Shape, int, Path]]:
+    shapes = SHAPES if shapes is None else shapes
     return [(shape, pair, out / "corpus" / f"{shape.name}-p{pair}.ctx{shape.ctx}.bin")
-            for shape in SHAPES for pair in range(shape.pairs)]
+            for shape in shapes for pair in range(shape.pairs)]
 
 
-def write_corpus(out: Path) -> list[dict]:
+def write_corpus(out: Path, shapes: tuple[Shape, ...] | None = None) -> list[dict]:
     (out / "corpus").mkdir(parents=True, exist_ok=True)
     entries = []
-    for shape, pair, path in corpus_files(out):
+    for shape, pair, path in corpus_files(out, shapes):
         prompt = build_paired_prompt(shape.name, pair, shape.ctx)
         path.write_bytes(prompt)
         entries.append({
@@ -230,14 +298,15 @@ def arg_value(args: list[str], flag: str) -> str:
 
 
 def retarget_config(raw: bytes, arm: Arm, out: Path) -> tuple[bytes, list[dict]]:
-    """Rewrite only the harness-owned paths of a frozen config; record every delta."""
+    """Rewrite only the harness-owned paths (plus the profile's declared flags) of a
+    frozen config; record every delta, tagged with who owns it."""
     cfg = json.loads(raw)
     deltas: list[dict] = []
 
     def retarget(key: str, value: str) -> None:
         old = cfg.get(key)
         if old != value:
-            deltas.append({"field": key, "from": old, "to": value})
+            deltas.append({"field": key, "from": old, "to": value, "kind": "harness"})
         cfg[key] = value
 
     # exe is what selects the engine; the launcher's BIN alone does NOT (a known
@@ -252,8 +321,21 @@ def retarget_config(raw: bytes, arm: Arm, out: Path) -> tuple[bytes, list[dict]]
     idx = args.index("--conversation-cache-dir")
     if args[idx + 1] != cache_dir:
         deltas.append({"field": "args/--conversation-cache-dir",
-                       "from": args[idx + 1], "to": cache_dir})
+                       "from": args[idx + 1], "to": cache_dir, "kind": "harness"})
     args[idx + 1] = cache_dir
+
+    # A profile's lever: only flags the frozen config already carries, and only the ones
+    # the arm declares. Inserting a flag would silently change argument order; an
+    # override that never lands in this file is invisible to the running engine.
+    for flag, value in arm.arg_overrides:
+        if flag not in args:
+            raise SystemExit(f"{arm.name}: profile override {flag} is not an argument of "
+                             f"{arm.config_ref}; refusing to invent it")
+        position = args.index(flag)
+        if args[position + 1] != value:
+            deltas.append({"field": f"args/{flag}", "from": args[position + 1],
+                           "to": value, "kind": "profile"})
+        args[position + 1] = value
 
     # Every other key stays exactly as adopted: quantization, precision, context
     # capacity, cache budgets, GPU pinning and the whole env block are frozen.
@@ -279,6 +361,49 @@ def quality_keys(cfg: dict) -> dict:
         "env": cfg.get("env"),
         **{flag: arg_value(args, flag) for flag in watched if flag in args},
     }
+
+
+# The config keys the harness re-points per arm. Everything else is the frozen setting.
+HARNESS_CONFIG_FIELDS = ("exe", "log", "expert_helper_socket", "expert_helper_socket2")
+PER_ARM_PLACEHOLDER = "<per-arm>"
+
+
+def settings_only(cfg: dict, cache_flag: str = "--conversation-cache-dir") -> dict:
+    """The config with every harness-owned path blanked, so two arms compare on settings.
+
+    The args list keeps its positions: a diff is then positional and cannot hide a
+    reordered argument list behind a set comparison.
+    """
+    blanked = {key: (PER_ARM_PLACEHOLDER if key in HARNESS_CONFIG_FIELDS else value)
+               for key, value in cfg.items()}
+    args = list(cfg["args"])
+    if cache_flag in args:
+        args[args.index(cache_flag) + 1] = PER_ARM_PLACEHOLDER
+    blanked["args"] = args
+    return blanked
+
+
+def cross_arm_setting_diffs(by_arm: dict[str, dict]) -> dict[str, dict]:
+    """Fields whose value is not shared by every arm, after the harness paths are blanked.
+
+    This is the fail-closed check a "only the lever moved" claim rests on: any setting
+    outside the declared lever shows up here, and a dry-run must refuse to run on it.
+    """
+    names = sorted(by_arm)
+    diffs: dict[str, dict] = {}
+    for key in sorted({k for cfg in by_arm.values() for k in cfg} - {"args"}):
+        values = {name: by_arm[name].get(key) for name in names}
+        if len({json.dumps(value, sort_keys=True) for value in values.values()}) > 1:
+            diffs[key] = values
+    reference = by_arm[names[0]]["args"]
+    for index in range(max(len(cfg["args"]) for cfg in by_arm.values())):
+        values = {name: (cfg["args"][index] if index < len(cfg["args"]) else None)
+                  for name, cfg in by_arm.items()}
+        if len({json.dumps(value, sort_keys=True) for value in values.values()}) > 1:
+            flag = next((token for token in reversed(reference[:index + 1])
+                         if token.startswith("--")), f"position-{index}")
+            diffs[f"args/{flag}[{index}]"] = values
+    return diffs
 
 
 def retarget_launcher(raw: bytes, arm: Arm, out: Path) -> tuple[bytes, list[dict]]:
@@ -307,7 +432,7 @@ def retarget_launcher(raw: bytes, arm: Arm, out: Path) -> tuple[bytes, list[dict
         seen[var] = seen.get(var, 0) + 1
         lines[i] = f"{var}={wanted[var]}\n"
         deltas.append({"field": f"launcher/{var}", "from": line.rstrip("\n"),
-                       "to": lines[i].rstrip("\n")})
+                       "to": lines[i].rstrip("\n"), "kind": "harness"})
     missing = sorted(k for k, n in seen.items() if n != 1)
     if missing:
         raise SystemExit(f"launcher {arm.launcher_ref}: assignment not unique: {missing}")
@@ -340,16 +465,56 @@ def write_slot(out: Path, arm: Arm) -> dict:
             "links": {str(k): str(v) for k, v in links.items()}}
 
 
-def prepare(out: Path) -> dict:
+def write_request_template(out: Path, template: dict) -> dict:
+    """Freeze a profile's request-body pins as the file the driver is pointed at.
+
+    The driver injects messages and max_tokens; a template that carried them would make
+    the corpus and the shape ambiguous, so it is refused here rather than at request time.
+    """
+    if not template:
+        return {}
+    owned = sorted({"messages", "max_tokens"} & set(template))
+    if owned:
+        raise SystemExit(f"request template must not pin {owned}: the corpus and the "
+                         "shape own them")
+    path = out / "request-template.json"
+    path.write_text(json.dumps(template, indent=1, sort_keys=True) + "\n")
+    return {"path": str(path), "sha256": sha256_path(path), "settings": template}
+
+
+def restore_pin(canonical_engine_sha: str) -> dict:
+    """What a panel hands production back to, pinned at prepare time.
+
+    Recorded so the runner can pass --out, --engine-sha, --timeout and --poll explicitly
+    instead of letting a restore write its evidence into a frozen measurement tree.
+    """
+    if canonical_engine_sha != CANONICAL_ENGINE_SHA:
+        raise SystemExit(f"canonical engine {CANONICAL_ENGINE} sha {canonical_engine_sha} "
+                         f"!= pinned {CANONICAL_ENGINE_SHA}")
+    return {
+        "launcher": str(PROD_LAUNCHER),
+        "launcher_sha256": sha256_path(PROD_LAUNCHER),
+        "config": str(PROD_CONFIG),
+        "config_sha256": sha256_path(PROD_CONFIG),
+        "engine": str(CANONICAL_ENGINE),
+        "engine_sha": canonical_engine_sha,
+        "supervisor_state": str(ROOT / SUPERVISOR_STATE),
+        "timeout_s": RESTORE_TIMEOUT_S,
+        "poll_s": RESTORE_POLL_S,
+    }
+
+
+def prepare(out: Path, profile: Profile = CHAMPIONS) -> dict:
     (out / "configs").mkdir(parents=True, exist_ok=True)
     (out / "bin").mkdir(parents=True, exist_ok=True)
     (out / "logs").mkdir(parents=True, exist_ok=True)
     (out / "run").mkdir(parents=True, exist_ok=True)
     (out / "cache").mkdir(parents=True, exist_ok=True)
 
-    corpus = write_corpus(out)
+    corpus = write_corpus(out, profile.shapes)
+    request_template = write_request_template(out, profile.request_template)
     arms = {}
-    for arm in ARMS:
+    for arm in profile.arms:
         cfg_raw = git_blob(arm.config_ref)
         blob = git_blob_id(cfg_raw)
         if blob != arm.config_blob:
@@ -396,6 +561,7 @@ def prepare(out: Path) -> dict:
             "boot_log_dir": str(out / "logs"),
             "config_deltas": cfg_deltas,
             "launcher_deltas": lau_deltas,
+            "profile_arg_overrides": dict(arm.arg_overrides),
             "notes": list(arm.notes),
             **write_slot(out, arm),
         }
@@ -404,39 +570,42 @@ def prepare(out: Path) -> dict:
         if arms[arm.name]["server"]["sha256"] != SERVER_SHA:
             raise SystemExit(f"{arm.name}: server sha drifted from the frozen identity")
 
+    order = list(profile.arm_order)
+    quality_deltas = cross_arm_quality_diffs(arms)
+    engine_shas = {name: arms[name]["engine"]["sha256"] for name in order}
     manifest = {
-        "plan": "Three-stack TG/PP champion comparison, requested 2026-11-17",
-        "plan_document": str(HERE / "gpu-rounds" / "serving-plan-current.md"),        "git_head_at_prepare": subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"],
+        "profile": profile.key,
+        "plan": profile.plan,
+        "plan_document": str(HERE / "gpu-rounds" / "serving-plan-current.md"),
+        "git_head_at_prepare": subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"],
                                               check=True, capture_output=True).stdout.decode().strip(),
-        "arm_order": list(ARM_ORDER),
+        "arm_order": order,
         "shapes": [{"name": s.name, "ctx_bytes": s.ctx, "max_tokens": s.max_tokens,
                     "warmup_pairs": s.warmup_pairs, "measured_pairs": s.measured_pairs,
-                    "pairs": s.pairs, "request_timeout_s": s.request_timeout_s} for s in SHAPES],
-        "request_model": ("one driver call per pair, ab9 kind=tg: request 0 fresh prefill "
-                          "(PP + TG), request 1 cached re-run (TG only); pair 0 excluded"),
+                    "pairs": s.pairs, "request_timeout_s": s.request_timeout_s}
+                   for s in profile.shapes],
+        "request_model": profile.request_model,
+        "request_template": request_template,
         "corpus": corpus,
         "arms": arms,
-        "quality_key_deltas": cross_arm_quality_diffs(arms),
-        # Measured fact, not an assumption: the three adopted configs differ ONLY in the
-        # harness retargets, so the panel isolates the engine binary and its lineage.
-        "config_identical_across_arms": not cross_arm_quality_diffs(arms),
+        "quality_key_deltas": quality_deltas,
+        # Measured fact, not an assumption: whatever is reported here is what the panel
+        # actually isolated, and nothing else is claimed to be equal.
+        "config_identical_across_arms": not quality_deltas,
+        "profile_delta": profile.profile_delta,
+        "restore": restore_pin(sha256_path(CANONICAL_ENGINE)),
         "effective_deltas": {
-            "engine_binary": {name: arms[name]["engine"]["sha256"] for name in ARM_ORDER},
-            "engine_source": {name: arms[name]["source_commit"] for name in ARM_ORDER},
+            "engine_binary": engine_shas,
+            "engine_binary_identical": len(set(engine_shas.values())) == 1,
+            "engine_source": {name: arms[name]["source_commit"] for name in order},
             "shared_unchanged": {
                 "helper": HELPER_SHA, "server": SERVER_SHA,
-                "quality_bearing_config": "identical across all three arms",
+                "quality_bearing_config": (
+                    f"identical across all {len(order)} arms" if not quality_deltas
+                    else "differs: " + ", ".join(sorted(quality_deltas))),
             },
         },
-        "deviations": [
-            "conversation-cache-dir retargeted to a per-arm empty directory: the arms boot "
-            "cold and never mutate the production cache inventory. Identical for all three arms.",
-            "engine/helper/server sockets and the engine log are per-arm; the engine is "
-            "reached through a symlink slot so no production slot is written.",
-            "helper and serving server are today's byte-identical builds on all three arms "
-            "(helper is era-invariant); only the HIP engine binary and the adopted config differ.",
-            "the boot log destination is per-arm so a boot gate never globs a stale shared log.",
-        ],
+        "deviations": list(profile.deviations),
     }
     (out / "manifest.json").write_text(json.dumps(manifest, indent=1, sort_keys=True) + "\n")
     (out / "manifest.sha256").write_text(
@@ -507,6 +676,15 @@ def verify(out: Path) -> list[str]:
             problems.append(f"{name}: config helper sockets not retargeted")
         if arg_value(cfg["args"], "--conversation-cache-dir") != arm["conversation_cache_dir"]:
             problems.append(f"{name}: conversation-cache-dir not retargeted")
+        # The lever must be IN the config the server execs: an override that never
+        # reaches this file changes nothing and would silently compare two identical runs.
+        for flag, value in (arm.get("profile_arg_overrides") or {}).items():
+            try:
+                actual = arg_value(cfg["args"], flag)
+            except (ValueError, IndexError):
+                actual = "<absent>"
+            if actual != value:
+                problems.append(f"{name}: profile lever {flag} is {actual!r}, not {value!r}")
         if quality_keys(cfg) != arm["quality_identity"]:
             problems.append(f"{name}: a quality-bearing key differs from the frozen snapshot")
         for sock in arm["sockets"]:
@@ -527,9 +705,19 @@ def cross_arm_quality_diffs(arms: dict) -> dict:
 
 
 def plan_text(out: Path) -> str:
+    """Print what the frozen manifest actually varies.
+
+    Every line comes from the manifest, so a profile that holds the engine fixed cannot
+    inherit the champion plan's wording about three engine binaries, and a manifest
+    written before the newer keys appeared still prints.
+    """
     manifest = json.loads((out / "manifest.json").read_text())
-    lines = [f"champions panel plan (out={out})",
-             f"  arms in order: {' -> '.join(manifest['arm_order'])}",
+    order = list(manifest.get("arm_order") or ARM_ORDER)
+    arms = manifest["arms"]
+    engine_shas = {name: arms[name]["engine"]["sha256"] for name in order}
+    same_engine = len(set(engine_shas.values())) == 1
+    lines = [f"panel plan (profile {manifest.get('profile', 'champions-3stack')}, out={out})",
+             f"  arms in order: {' -> '.join(order)}",
              "  per shape: pair 0 warm-up (excluded), then measured pairs; "
              "each pair = fresh leg + cached leg"]
     for shape in manifest["shapes"]:
@@ -538,9 +726,16 @@ def plan_text(out: Path) -> str:
                      f"(measured {shape['measured_pairs']}) timeout={shape['request_timeout_s']}s")
     legs = sum(s["pairs"] for s in manifest["shapes"])
     lines.append(f"  driver calls per arm: {legs}; requests per arm: {legs * 2}; "
-                 f"arms: {len(manifest['arms'])}")
-    for name in manifest["arm_order"]:
-        arm = manifest["arms"][name]
+                 f"arms: {len(arms)}")
+    template = manifest.get("request_template") or {}
+    if template:
+        lines.append(f"  request template: {template['path']} "
+                     f"sha256 {template['sha256'][:16]}")
+        lines.append("    pins " + ", ".join(f"{key}={value}"
+                                             for key, value in sorted(template["settings"].items())))
+        lines.append("    the driver adds messages + max_tokens only; every other field is the template's")
+    for name in order:
+        arm = arms[name]
         lines.append(f"  {name}: engine {arm['engine']['path']}")
         lines.append(f"    sha256 {arm['engine']['sha256']}  source {arm['source_commit']}")
         lines.append(f"    config snapshot {arm['config_snapshot']['git_ref']} "
@@ -549,21 +744,33 @@ def plan_text(out: Path) -> str:
                      f"blob {arm['launcher_snapshot']['blob']}")
         lines.append(f"    frozen launcher {arm['frozen_launcher']['path']}")
     lines.append("  what actually differs between the arms:")
-    if manifest["config_identical_across_arms"]:
-        lines.append("    configs are identical in every quality-bearing key (precision, capacity,"
-                     " cache budgets, env, model paths); only the engine binary differs")
+    if same_engine:
+        sources = {arms[name]["source_commit"] for name in order}
+        lines.append(f"    engine binary: identical in all {len(order)} arms "
+                     f"({next(iter(engine_shas.values()))[:16]}"
+                     + (f", source {next(iter(sources))}" if len(sources) == 1 else "") + ")")
     else:
-        for key, by_arm in manifest["quality_key_deltas"].items():
+        for name in order:
+            lines.append(f"    engine {name}: {engine_shas[name][:16]} "
+                         f"source {arms[name]['source_commit']}")
+    if manifest.get("config_identical_across_arms", True):
+        lines.append("    config: identical in every quality-bearing key (precision, capacity,"
+                     " cache budgets, env, model paths) apart from the harness paths")
+    else:
+        for key, by_arm in (manifest.get("quality_key_deltas") or {}).items():
             lines.append(f"    config {key}: " +
-                         " | ".join(f"{n}={by_arm[n]}" for n in manifest["arm_order"]))
-    for name in manifest["arm_order"]:
-        digest = manifest["effective_deltas"]["engine_binary"][name][:16]
-        source = manifest["effective_deltas"]["engine_source"][name]
-        lines.append(f"    engine {name}: {digest} source {source}")
+                         " | ".join(f"{name}={by_arm[name]}" for name in order))
+    for flag, by_arm in (manifest.get("profile_delta") or {}).items():
+        lines.append("    LEVER " + str(flag) + ": " +
+                     " | ".join(f"{name}={by_arm[name]}" for name in order if name in by_arm))
     shared = manifest["effective_deltas"]["shared_unchanged"]
     lines.append(f"    shared: helper {shared['helper'][:16]} server {shared['server'][:16]} "
                  f"({shared['quality_bearing_config']})")
-    lines.append(f"  restore target: {ROOT / 'launch-v0238.sh'} with {ROOT / 'prod-config-v0238.json'}")
+    restore = manifest.get("restore") or {}
+    lines.append(f"  restore target: {restore.get('launcher', ROOT / 'launch-v0238.sh')} with "
+                 f"{restore.get('config', ROOT / 'prod-config-v0238.json')}"
+                 + (f" (config sha {restore['config_sha256'][:16]}, engine sha "
+                    f"{restore['engine_sha'][:16]})" if restore else ""))
     return "\n".join(lines)
 
 

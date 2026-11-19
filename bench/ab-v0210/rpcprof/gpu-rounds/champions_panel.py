@@ -289,12 +289,32 @@ class Panel:
         return [line.strip() for line in text.splitlines() if RAM_POLICY.search(line)][:20]
 
     def restore(self) -> bool:
-        """Canonical production back, exactly once, reported honestly."""
+        """Canonical production back, exactly once, reported honestly.
+
+        The restore's own logs go to a FRESH directory under this run's out tree. Left to
+        its default, champions_restore.sh writes into the frozen measurement tree it is
+        named after, so a rerun would leave restore evidence beside completed arms — and a
+        test could overwrite real measurements. The pinned engine hash, deadline and poll
+        come from the manifest, so acceptance is bound to the image this profile measured.
+        """
         if self.restored:
             return True
         self.restored = True
-        progress("restoring canonical production: launch-v0238.sh, original config, b0ec engine")
-        cmd = ["bash", str(RESTORE)] + (["--health"] if self.health else [])
+        pin = self.manifest.get("restore") or {}
+        directory = self.out / "restore" / time.strftime("%Y%m%d-%H%M%S")
+        while directory.exists():
+            directory = directory.with_name(directory.name + "x")
+        directory.mkdir(parents=True, exist_ok=True)
+        progress(f"restoring canonical production: {pin.get('launcher', PREP.ROOT / 'launch-v0238.sh')}, "
+                 "original config, pinned engine")
+        cmd = ["bash", str(RESTORE), "--out", str(directory)]
+        for flag, key in (("--engine-sha", "engine_sha"), ("--timeout", "timeout_s"),
+                          ("--poll", "poll_s")):
+            if pin.get(key) is not None:
+                cmd += [flag, str(pin[key])]
+        if self.health:
+            cmd += ["--health"]
+        progress(f"restore evidence -> {directory}")
         with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                               text=True) as proc:
             for line in proc.stdout or []:
@@ -327,6 +347,10 @@ class Panel:
                "--champs-shape", shape["name"], "--champs-pair", str(pair)]
         if pair >= shape["warmup_pairs"]:
             cmd.append("--champs-measured")
+        template = self.manifest.get("request_template") or {}
+        if template:
+            cmd += ["--request-template", template["path"],
+                    "--request-template-sha256", template["sha256"]]
         progress(f"{arm} {leg}: {entry['bytes']} B, max_tokens {shape['max_tokens']}, "
                  "fresh then cached")
         deadline = time.monotonic() + shape["request_timeout_s"]
@@ -484,8 +508,10 @@ def run(out: Path, arms: list[str], health: bool) -> int:
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     outcome = "ok"
+    order = [name for name in (panel.manifest.get("arm_order") or list(PREP.ARM_ORDER))
+             if name in arms]
     try:
-        for arm in [name for name in PREP.ARM_ORDER if name in arms]:
+        for arm in order:
             progress(f"=== arm {arm} ===")
             if not panel.run_arm(arm):
                 outcome = f"{arm} incomplete"
