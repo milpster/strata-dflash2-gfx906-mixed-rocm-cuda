@@ -1,0 +1,2 @@
+card2 pci=0000:04:00.0 free_vram_bytes=112111616 free_vram_mib=106
+card3 pci=0000:09:00.0 free_vram_bytes=206057472 free_vram_mib=196

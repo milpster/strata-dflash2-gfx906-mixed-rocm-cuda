@@ -1,0 +1,16 @@
+stop-all: verifying 20s of quiet
+stop-all: before=0 after=0 — ALL STOPPED
+restore: config sha 95ef3693b3f598e6bdbe534ef7a9b195e13b9e1705acc0cad2d414db09f21852
+restore: engine on-disk sha b0ec0109ebc50c982512c371d81b2c15a8f72c70edf8a461a4ff10337da52f02
+restore: the serving image must hash to b0ec0109ebc50c982512c371d81b2c15a8f72c70edf8a461a4ff10337da52f02
+restore: launcher announced /mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261119-131019-3033949.log
+restore: still accepting, 29 min of budget left (IDENTITY-FAIL no ready line yet in /mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261119-131019-3033949.log)
+restore: still accepting, 29 min of budget left (IDENTITY-FAIL no ready line yet in /mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261119-131019-3033949.log)
+restore: still accepting, 29 min of budget left (IDENTITY-FAIL no ready line yet in /mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261119-131019-3033949.log)
+restore: still accepting, 28 min of budget left (IDENTITY-FAIL no ready line yet in /mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261119-131019-3033949.log)
+restore: still accepting, 28 min of budget left (IDENTITY-FAIL no ready line yet in /mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261119-131019-3033949.log)
+restore: still accepting, 28 min of budget left (IDENTITY-FAIL no ready line yet in /mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261119-131019-3033949.log)
+restore: following generation 1, engine pid 3034680, engine log /mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261119-131019-3033949.log
+restore: gen 1 accepted: pid 3034680 image b0ec0109ebc50c98…, models ud-iq3_xxs
+restore: gen 1 health: stop after 28 tokens
+RESTORED: ready: http://127.0.0.1:8009/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, context 262144 tokens, images on) (13:12:01) gen 1 engine pid 3034680 image b0ec0109ebc50c98…

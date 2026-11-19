@@ -48,7 +48,7 @@ R=/mnt/srcds/Strata
 HERE=$(cd "$(dirname "$0")" && pwd)
 VERIFY=$HERE/champions_restore_verify.py
 OUT=$R/bench/ab-v0210/rpcprof/out/champions-20261118
-FROZEN_CONFIG_SHA=0d9fb58b7d1dd46df002702f2d67756be6efefc101c24de469ebf9e5a1609811
+FROZEN_CONFIG_SHA=95ef3693b3f598e6bdbe534ef7a9b195e13b9e1705acc0cad2d414db09f21852
 ENGINE_SHA=b0ec0109ebc50c982512c371d81b2c15a8f72c70edf8a461a4ff10337da52f02
 TIMEOUT=1800 HEALTH=0 POLL=20
 PROC_ROOT=${PROC_ROOT:-/proc}

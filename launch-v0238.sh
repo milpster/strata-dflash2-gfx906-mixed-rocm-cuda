@@ -20,6 +20,8 @@ WORK="$ROOT/v0215"
 # STRATA_SWAPIN_DEPTH=64) + helper reserve 512->320 (R3A: fill binds at 6796 either way).
 # Measured vs v0227 split pin (R3A lean panel): 180k warm TG 18.8-23.8 -> 29.0-31.5;
 # PP 64k 359.9 -> 521.5; PP 180k 529.5 -> 578.7.
+# 2026-11-19: canonical v0238p0 engine/helper remain pinned; the production config
+# now reserves 256 MiB on the primary ROCm card and 448 MiB on the later card.
 BIN="/mnt/srcds/Strata/v0238p0"
 PY="$ROOT/.venv/bin/python"
 CONFIG="/mnt/srcds/Strata/prod-config-v0238.json"

@@ -1,0 +1,5 @@
+Live reserves verified: primary=256 MiB, peer=448 MiB
+/mnt/srcds/Strata/v0238p0/rpcw-hip/strata
+/proc/3034680/exe: OK
+prod-config-v0238.json: OK
+post_restart_verification_exit=0
