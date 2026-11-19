@@ -96,6 +96,22 @@ CAPACITY_MAX = 150
 # Enough of the environment to reconstruct the run without hoarding unrelated secrets.
 ENV_PREFIXES = ("STRATA_", "HSA_", "GPU_", "LD_LIBRARY", "CUDA_", "ROCM", "PATH", "HOME")
 
+# /proc/<pid>/stat field numbers (1-based, as `man proc` counts them): the state code is
+# field 3 and the start time that makes a PID unambiguous is field 22.
+STATE_FIELD = 3
+STARTTIME_FIELD = 22
+
+
+def proc_stat_fields_after_comm(stat_text: str) -> list[str]:
+    """The /proc/<pid>/stat fields after the bracketed comm, split the safe way.
+
+    comm is wrapped in parentheses and may itself contain spaces or ')', so splitting the
+    whole line is wrong: only split after the LAST ')'. The first field that yields is the
+    state code (field 3), so starttime (field 22) sits at index STARTTIME_FIELD-STATE_FIELD.
+    Mirrors the box's own champions_restore_verify.proc_start parser.
+    """
+    return stat_text.rsplit(")", 1)[1].split()
+
 
 def reserve_arm(name: str, label: str, reserves: dict[str, str], notes: tuple[str, ...]) -> PREP.Arm:
     """One arm of the reserve profile: the canonical stack, its reserves named."""
@@ -348,39 +364,64 @@ class ReservePanel(PANEL.Panel):
 
     def boot(self, arm: str) -> dict:
         """Panel's boot (launcher announce + fresh ready line + engine identity), then bind
-        the arm to the pair the supervisor selected and capture what it committed."""
+        the arm to the pair the supervisor selected and capture what it committed.
+
+        Two things end the arm here rather than becoming a warning, because both mean the
+        numbers would not belong to this arm: the supervisor's engine stderr is the file
+        the timing parser reads, and the engine's own argv is where the arm's reserves have
+        to be. Diagnostics are written first, then the boot fails, before any request.
+        """
         record = super().boot(arm)
         spec = self.manifest["arms"][arm]
-        pin = self.manifest.get("restore") or {}
         state = self.supervisor_state()
         # The wrapper log carries the ready line; the metrics the parser reads are the
-        # engine's own stderr. If those two disagree with this arm's manifest, the arm is
-        # not the stack this manifest describes and no number from it is usable.
+        # engine's own stderr. Absent or different, this arm has no trustworthy witness.
         declared = state.get("engine_stderr_log")
-        if declared and declared != spec["engine_log"]:
-            raise PANEL.BootFailed(f"{arm}: supervisor's engine_stderr_log {declared} is not this "
-                                   f"arm's engine log {spec['engine_log']}")
+        if declared != spec["engine_log"]:
+            raise PANEL.BootFailed(
+                f"{arm}: supervisor's engine_stderr_log is {declared or '<missing>'}, not this "
+                f"arm's engine log {spec['engine_log']}: the serve: timing lines this panel "
+                "parses are not this arm's")
         if not self.identity(arm, "boot"):
             raise PANEL.BootFailed(f"{arm}: the selected pair did not pass identity at boot")
-        self.capture_runtime(arm, state, "boot")
+        runtime = self.capture_runtime(arm, state, "boot")
         self.capture_capacity(arm, record)
+        if runtime.get("reserve_mismatch"):
+            raise PANEL.BootFailed(
+                f"{arm}: the running engine was started with {runtime['reserve_mismatch']}, not "
+                f"this arm's {dict(spec.get('profile_arg_overrides') or {})} — see "
+                f"{self.arm_dir(arm) / 'runtime.json'}; measuring a differently started engine "
+                "would not be a reserve comparison")
         self.snapshot_residency(arm, "boot")
         self._pump_all()
         return record
 
     def run_pair(self, arm: str, shape: dict, pair: int):
-        """One pair, held between two identity checks on the same generation token."""
+        """Refuse to start a pair whose generation this arm cannot still vouch for.
+
+        The matching check for AFTER the pair lives in accept_pair, so a pair that turns
+        out to straddle a supervisor retry is never written to the counted evidence at all.
+        """
         label = f"{shape['name']}-p{pair}"
         if not self.identity(arm, f"{label}-before"):
             PANEL.progress(f"{arm} {label}: refusing to start the pair — the serving generation "
                            "is not the one this arm booted")
             return None
-        result = super().run_pair(arm, shape, pair)
+        return super().run_pair(arm, shape, pair)
+
+    def accept_pair(self, arm: str, shape: dict, pair: int, result) -> str:
+        """Post-pair acceptance: residency sample, then the second identity check.
+
+        Returning a reason here means Panel never persists the pair, so it cannot reach
+        the medians or make the arm look complete.
+        """
+        label = f"{shape['name']}-p{pair}"
         self.snapshot_residency(arm, f"{label}-after")
-        if result is not None and not self.identity(arm, f"{label}-after"):
-            PANEL.progress(f"{arm} {label}: the pair is discarded — identity did not hold across it")
-            return None
-        return result
+        if not self.identity(arm, f"{label}-after"):
+            return ("identity did not hold across the pair: the pair supervisor's selected "
+                    "generation changed or stopped being accepted, so the fresh and cached "
+                    "passes are not two halves of one pair on one serving engine")
+        return ""
 
     # -- evidence ----------------------------------------------------------------
     def supervisor_state(self) -> dict:
@@ -429,8 +470,8 @@ class ReservePanel(PANEL.Panel):
         path = self.arm_dir(arm) / "runtime.json"
         path.write_text(json.dumps(runtime, indent=1, sort_keys=True) + "\n")
         if mismatches:
-            PANEL.progress(f"{arm}: WARNING the running engine was started with {mismatches}, not "
-                           "this arm's reserves — the arm's numbers describe a different stack")
+            PANEL.progress(f"{arm}: MISMATCH the running engine carries {mismatches}, not this "
+                           "arm's reserves — see runtime.json; boot() refuses to measure it")
         else:
             PANEL.progress(f"{arm}: engine argv carries the arm's reserves "
                            + " ".join(f"{flag}={runtime['reserve_args_seen'][flag]}"
@@ -442,9 +483,15 @@ class ReservePanel(PANEL.Panel):
         base = Path("/proc") / str(pid)
         evidence: dict = {"pid": pid, "declared_start": declared_start}
         try:
-            evidence["start"] = base.joinpath("stat").read_text().split()[19]
-        except (OSError, IndexError):
+            after = proc_stat_fields_after_comm(base.joinpath("stat").read_text(errors="replace"))
+        except OSError:
+            after = []
+        # A zombie carries a stale start time and is never a witness to a live arm.
+        if after and after[0] == "Z":
             evidence["start"] = None
+            evidence["zombie"] = True
+        else:
+            evidence["start"] = after[STARTTIME_FIELD - STATE_FIELD] if len(after) >= STARTTIME_FIELD else None
         evidence["start_matches"] = bool(evidence["start"]) and evidence["start"] == declared_start
         for name in ("exe", "cwd"):
             try:
@@ -556,6 +603,12 @@ def run(out: Path, arms: list[str], health: bool) -> int:
             PANEL.progress(f"=== arm {arm} ===")
             if not panel.run_arm(arm):
                 outcome = f"{arm} incomplete"
+                # A failed arm ends the sequence: the next arm would boot on top of whatever
+                # this one left behind (a half-stopped pair, an unrestored socket), and a
+                # drift bracket that does not follow its first arm measures nothing. Restore
+                # still runs in the finally block.
+                PANEL.progress(f"{arm} failed: stopping the sequence, no further arm boots")
+                break
             panel.snapshot_residency(arm, "arm-end")
     except (KeyboardInterrupt, Exception) as failure:  # noqa: BLE001 - restore is the point
         outcome = f"aborted: {type(failure).__name__}: {failure}"

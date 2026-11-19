@@ -599,6 +599,30 @@ class RunnerBehaviour(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("aborted", printed)
 
+    def test_a_failed_arm_stops_the_sequence(self):
+        """Fix 4: a failed arm must not be followed by another arm booting.
+
+        The next arm would boot on top of what the failed one left behind, and a drift
+        bracket that does not follow its first arm measures nothing. Restore still runs.
+        """
+        seen: list[str] = []
+        RP.ReservePanel.run_arm = lambda self, arm: seen.append(arm) or False
+        restores: list[bool] = []
+        real_restore = RP.PANEL.Panel.restore
+        real_verify, real_profile = PREP.verify, RP.profile_problems
+        try:
+            PREP.verify = lambda out: []
+            RP.profile_problems = lambda out: []
+            RP.PANEL.Panel.restore = lambda self: restores.append(True) or True
+            code, printed = capture_stdout(RP.run, self.out, list(RP.RESERVE_ORDER), False)
+        finally:
+            PREP.verify, RP.profile_problems, RP.PANEL.Panel.restore = (
+                real_verify, real_profile, real_restore)
+        self.assertEqual(seen, ["default_before"], "no arm may boot after a failed one")
+        self.assertIn("stopping the sequence", printed)
+        self.assertEqual(restores, [True], "a stopped run still restores production")
+        self.assertEqual(code, 1)
+
     def test_run_order_comes_from_the_manifest_not_the_champion_order(self):
         seen: list[str] = []
         RP.ReservePanel.run_arm = lambda self, arm: seen.append(arm) or True
@@ -627,6 +651,30 @@ def capture_stdout(function, *args, **kwargs):
     with contextlib.redirect_stdout(buffer):
         code = function(*args, **kwargs)
     return code, buffer.getvalue()
+
+
+class _FakeProcess:
+    """A driver subprocess that exits 0 immediately: the test supplies the record itself."""
+
+    def poll(self) -> int:
+        return 0
+
+    def wait(self) -> int:
+        return 0
+
+    def kill(self) -> None:
+        pass
+
+
+def usable_leg(shape_name: str, pair: int, prompt_bytes: int = 88400):
+    """A complete, finite fresh+cached pair: the data a counted leg would carry."""
+    fresh = PANEL.LOG.EnginePass(prompt_bytes, 0, prompt_bytes, 90000.0, 177.8, 256, 21000.0,
+                                 24.4, 0, 0, "fresh")
+    cached = PANEL.LOG.EnginePass(prompt_bytes, prompt_bytes, 0, 1000.0, 0.0, 256, 21000.0,
+                                  24.4, 0, 0, "cached")
+    return PANEL.LOG.LegResult(arm="optimized", leg=f"{shape_name}-p{pair}", shape=shape_name,
+                               pair=pair, measured=pair >= 1, max_tokens=256,
+                               prompt_bytes=prompt_bytes, fresh=fresh, cached=cached)
 
 
 class ArmEvidence(unittest.TestCase):
@@ -681,16 +729,64 @@ class ArmEvidence(unittest.TestCase):
         capture_stdout(self.panel.identity, self.arm, "boot")
         self.assertEqual(self.panel.tokens.get(self.arm, ""), "")
 
-    def test_a_generation_change_discards_the_pair_around_it(self):
-        tokens = iter(["t1", "t1", ""])
-        self.panel.identity = lambda arm, phase: next(tokens)  # type: ignore[assignment]
-        self.panel.snapshot_residency = lambda arm, phase: None  # type: ignore[assignment]
-        real_pair = PANEL.Panel.run_pair
-        PANEL.Panel.run_pair = lambda self, arm, shape, pair: "pair-ok"
-        self.addCleanup(setattr, PANEL.Panel, "run_pair", real_pair)
-        shape = self.panel.manifest["shapes"][0]
-        self.assertEqual(self.panel.run_pair(self.arm, shape, 1), "pair-ok")
-        self.assertIsNone(self.panel.run_pair(self.arm, shape, 2))
+    def _drive_one_pair(self, arm, shape, pair, *, identity, engine_log_record):
+        """Run the real Panel.run_pair against a fake driver that hands back a record."""
+        self.panel.identity = identity  # type: ignore[assignment]
+        self.panel.snapshot_residency = lambda a, phase: None  # type: ignore[assignment]
+        # Panel.boot normally fills spec["helper_log"]; the driver reads it for --hlog.
+        self.panel.manifest["arms"][arm].setdefault("helper_log", str(self.root / "helper.log"))
+        real_popen = PANEL.subprocess.Popen
+        real_windows = PANEL.LOG.read_windows
+        real_from_record = PANEL.LOG.leg_from_record
+        PANEL.subprocess.Popen = lambda *a, **k: _FakeProcess()
+        PANEL.LOG.read_windows = lambda record: []
+        PANEL.LOG.leg_from_record = lambda record, windows: usable_leg(shape["name"], pair)
+        self.addCleanup(setattr, PANEL.subprocess, "Popen", real_popen)
+        self.addCleanup(setattr, PANEL.LOG, "read_windows", real_windows)
+        self.addCleanup(setattr, PANEL.LOG, "leg_from_record", real_from_record)
+        record_dir = self.panel.arm_dir(arm) / "records"
+        record_dir.mkdir(parents=True, exist_ok=True)
+        entry = next(c for c in self.panel.manifest["corpus"]
+                     if c["shape"] == shape["name"] and c["pair"] == pair)
+        (record_dir / f"{arm}-{shape['name']}-p{pair}.json").write_text(
+            json.dumps({"prompt_sha256": entry["sha256"], "elog": engine_log_record}))
+        capture_stdout(self.panel.run_pair, arm, shape, pair)
+
+    def test_a_generation_change_after_the_pair_keeps_it_out_of_the_counted_set(self):
+        """Fix 2: post-pair identity rejection must EXCLUDE the samples, not flag them.
+
+        The old code returned None from run_pair after the leg was already in legs.jsonl;
+        usable_fresh/usable_cached ignore leg.problems, so a flagged-but-stored leg still fed
+        the medians. The pair now fails in accept_pair, before Panel persists it anywhere.
+        """
+        arm, shape = self.arm, self.panel.manifest["shapes"][0]
+        calls: list[str] = []
+
+        def identity(a, phase):  # only the after-check of this pair fails
+            calls.append(phase)
+            return "" if phase.endswith("-after") else "token"
+
+        self._drive_one_pair(arm, shape, 1, identity=identity,
+                             engine_log_record=str(self.root / "engine.log"))
+        legs = self.panel.arm_dir(arm) / "legs.jsonl"
+        rejected = self.panel.arm_dir(arm) / "rejected.jsonl"
+        self.assertFalse(legs.exists() and legs.read_text().strip(),
+                         "a pair that failed the post-pair identity check must not reach legs.jsonl")
+        self.assertTrue(rejected.is_file(), "the rejected pair is kept as evidence, not thrown away")
+        row = json.loads(rejected.read_text().splitlines()[0])
+        self.assertIn("rejected", row)
+        self.assertIn("identity did not hold", row["rejected"])
+        # Exclusion is from the counted set: summarise() reads legs.jsonl only, so the
+        # rejected pair's PP/TG rates cannot reach any median.
+        summary = PANEL.LOG.summarise([])
+        self.assertEqual(summary["shapes"], {})
+
+    def test_a_generation_change_before_the_pair_refuses_to_start_it(self):
+        arm, shape = self.arm, self.panel.manifest["shapes"][0]
+        self.panel.identity = lambda a, phase: ""  # type: ignore[assignment]
+        self.panel.snapshot_residency = lambda a, phase: None  # type: ignore[assignment]
+        self.assertIsNone(self.panel.run_pair(arm, shape, 1))
+        self.assertFalse((self.panel.arm_dir(arm) / "legs.jsonl").exists())
 
     def test_runtime_capture_notices_a_reserve_the_engine_never_got(self):
         """Reads /proc of THIS process as a harmless real target: the guard is the point."""
@@ -738,6 +834,94 @@ class ArmEvidence(unittest.TestCase):
         self.assertIn("expert cache: 4318 slots", text)
         counts = json.loads((self.panel.arm_dir(self.arm) / "capacity.json").read_text())
         self.assertGreaterEqual(counts["matches"], 2)
+
+
+class BootGates(unittest.TestCase):
+    """The boot-time refusals: a stack this arm cannot vouch for is never measured."""
+
+    def setUp(self):
+        self.root = scratch_root(self)
+        self.out = self.root / "reserve"
+        RP.prepare(self.out)
+        self.panel = RP.ReservePanel(self.out, health=False)
+        self.arm = "optimized"
+        self.panel.arm_dir(self.arm).mkdir(parents=True, exist_ok=True)
+        spec = self.panel.manifest["arms"][self.arm]
+        # Panel.boot is stubbed (no launcher); only ReservePanel's own gates matter here.
+        real_boot = PANEL.Panel.boot
+        PANEL.Panel.boot = lambda self, name: {"arm": name, "boot_log": None, "helper_log": None}
+        self.addCleanup(setattr, PANEL.Panel, "boot", real_boot)
+        self.panel.identity = lambda a, phase: "token"  # type: ignore[assignment]
+        self.panel.capture_capacity = lambda a, record: 0  # type: ignore[assignment]
+        self.panel.snapshot_residency = lambda a, phase: None  # type: ignore[assignment]
+        self.spec = spec
+
+    def _state(self, **over):
+        state = {"engine_stderr_log": self.spec["engine_log"], "engine_log": "wrapper.log",
+                 "generation": 1, "engine_pid": None}
+        return {**state, **over}
+
+    def test_a_reserve_the_engine_never_got_ends_the_boot(self):
+        """Fix 1: wrong live reserves FAIL the arm; the old code only warned and measured it."""
+        real_state = RP.ReservePanel.supervisor_state
+        RP.ReservePanel.supervisor_state = lambda self, _s=self._state(): _s
+        self.panel.capture_runtime = lambda a, state, phase: {  # type: ignore[assignment]
+            "reserve_mismatch": {"--vram-reserve-mib": {"argv": "700", "config": "256"}}}
+        self.addCleanup(setattr, RP.ReservePanel, "supervisor_state", real_state)
+        with self.assertRaises(PANEL.BootFailed) as caught:
+            self.panel.boot(self.arm)
+        self.assertIn("--vram-reserve-mib", str(caught.exception))
+
+    def test_matching_reserves_let_the_boot_proceed(self):
+        """The other half of Fix 1: a correct engine argv is accepted, not refused."""
+        real_state = RP.ReservePanel.supervisor_state
+        RP.ReservePanel.supervisor_state = lambda self, _s=self._state(): _s
+        self.panel.capture_runtime = lambda a, state, phase: {"reserve_mismatch": {}} \
+            # type: ignore[assignment]
+        self.addCleanup(setattr, RP.ReservePanel, "supervisor_state", real_state)
+        self.panel.boot(self.arm)  # no raise
+
+    def test_a_supervisor_with_no_engine_stderr_log_ends_the_boot(self):
+        """Fix 5: the timing parser reads the supervisor's engine_stderr_log; absent, the
+        serve: lines this panel parses are not this arm's."""
+        real_state = RP.ReservePanel.supervisor_state
+        RP.ReservePanel.supervisor_state = lambda self, _s=self._state(engine_stderr_log=None): _s
+        self.panel.capture_runtime = lambda a, state, phase: {"reserve_mismatch": {}} \
+            # type: ignore[assignment]
+        self.addCleanup(setattr, RP.ReservePanel, "supervisor_state", real_state)
+        with self.assertRaises(PANEL.BootFailed) as caught:
+            self.panel.boot(self.arm)
+        self.assertIn("engine_stderr_log", str(caught.exception))
+
+
+class ProcStarttime(unittest.TestCase):
+    """Fix 3: the start time that pins a PID is field 22, read past the bracketed comm."""
+
+    def test_the_parser_splits_only_after_the_last_parenthesis(self):
+        # comm "(strata) (helper)" carries both a space and a ')'. A bare split()[19] is off
+        # by the number of spaces inside comm; the field-22 token must survive regardless.
+        filler = " ".join(str(4 + i) for i in range(18))  # fields 4..21
+        line = f"4242 (strata) (helper) S {filler} 999999 extra"
+        fields = RP.proc_stat_fields_after_comm(line)
+        self.assertEqual(fields[0], "S", "field 3 is the state code")
+        self.assertEqual(fields[RP.STARTTIME_FIELD - RP.STATE_FIELD], "999999")
+        # The bug this fixes: the naive whole-line split misreads the start time here.
+        self.assertNotEqual(line.split()[RP.STARTTIME_FIELD - 1], "999999")
+
+    def test_process_evidence_agrees_with_the_box_verifier_on_a_live_pid(self):
+        import champions_restore_verify as RESTORE
+        pid = os.getpid()
+        evidence = RP.ReservePanel._process_evidence(pid, "")
+        self.assertEqual(evidence["start"], RESTORE.proc_start(Path("/proc"), str(pid)))
+        self.assertTrue(evidence["start"].isdigit())
+
+    def test_process_evidence_flags_a_zombie_as_no_start(self):
+        """A zombie's stale start time is never a witness; the parse refuses it."""
+        # State Z (field 3) immediately after the comm closes; start would be index 19.
+        filler = " ".join(str(4 + i) for i in range(18))
+        line = f"4242 (defunct) Z 1 {filler} 777 extra"
+        fields = RP.proc_stat_fields_after_comm(line)
+        self.assertEqual(fields[0], "Z")
 
 
 class DryRunIsSafe(unittest.TestCase):

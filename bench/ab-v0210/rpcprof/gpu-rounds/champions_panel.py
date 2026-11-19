@@ -324,6 +324,25 @@ class Panel:
         return code == 0
 
     # ---------- measurement -------------------------------------------------------
+    def accept_pair(self, arm: str, shape: dict, pair: int, result: "LOG.LegResult") -> str:
+        """Last gate before a parsed pair is allowed to count. Empty string accepts.
+
+        It exists because a pair can only be trusted once the evidence on the OTHER side
+        of it agrees — for the reserve panel, once the pair supervisor is still declaring
+        the same generation it declared before the pair. A reason here means the pair is
+        NOT written to legs.jsonl at all: the summariser filters on measured rates, so a
+        problem flag bolted onto a stored leg would still feed the medians.
+        """
+        return ""
+
+    def reject_pair(self, arm: str, leg: str, result: "LOG.LegResult", reason: str) -> None:
+        """Keep a rejected pair as evidence, out of the counted set, with its reason."""
+        row = result.to_dict()
+        row["rejected"] = reason
+        with (self.arm_dir(arm) / "rejected.jsonl").open("a") as sink:
+            sink.write(json.dumps(row, sort_keys=True) + "\n")
+        progress(f"{arm} {leg}: pair REJECTED, not counted — {reason}")
+
     def run_pair(self, arm: str, shape: dict, pair: int) -> LOG.LegResult | None:
         """Run one fresh+cached pair, streaming the engine logs the whole time.
 
@@ -395,6 +414,10 @@ class Panel:
                      f"{result.cached.reused} @{result.cached.tg_tps} tok/s; walls {result.walls}")
         else:
             progress(f"{arm} {leg}: UNUSABLE — {', '.join(result.reasons)}")
+        reason = self.accept_pair(arm, shape, pair, result)
+        if reason:
+            self.reject_pair(arm, leg, result, reason)
+            return None
         with (self.arm_dir(arm) / "legs.jsonl").open("a") as sink:
             sink.write(json.dumps(result.to_dict(), sort_keys=True) + "\n")
         return result
