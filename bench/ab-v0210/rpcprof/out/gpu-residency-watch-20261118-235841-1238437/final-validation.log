@@ -1,0 +1,139 @@
+# Focused closeout validation — gpu-residency-watch-20261118-235841-1238437
+# generated_by: Fixer closeout lane | branch: tg-stall-cause
+# Read-only. Raw evidence is NOT modified. Live source is only byte-range read, never hashed whole.
+
+## summary.json (terminal facts)
+{
+  "outcome": "completed",
+  "error": null,
+  "samples": 121,
+  "invalid_identity_samples": 0,
+  "prompt_rows_observed": 26,
+  "started_wall": 1795042721.4728198,
+  "ended_wall": 1795046321.4796314,
+  "ended_at": "2026-11-19T00:58:41+01:00",
+  "elapsed_s": 3600.0068255589977
+}
+exit=0
+
+## raw increment: byte count + final byte (proves no trailing partial line)
+37222 bench/ab-v0210/rpcprof/out/gpu-residency-watch-20261118-235841-1238437/engine-increment.log
+wc_exit=0
+last_byte=0a (0a=newline)
+
+## live source inode + byte-range [4470351,4507573) recheck vs raw (whole live log NOT hashed)
+live_inode=20447238 live_size=4560229
+raw_sha256=ee23f12b1f8df4b25843903e85ce35b0a8ef14ea82cd5ce4bca5f6578dd7223e
+src_range_sha256=ee23f12b1f8df4b25843903e85ce35b0a8ef14ea82cd5ce4bca5f6578dd7223e
+dd_exit=0
+RANGE_MATCH=YES
+
+parsed_prompt_rows=26 (expected 26)
+TG_tok_s min=10.7 max=25.4 unweighted_mean_of_row_rates=20.2
+PP_tok_s min=9.6 max=233.5 unweighted_mean_of_row_rates=87.3
+generated min=116 max=2908 total=23041
+context_tokens min=18645 max=73198
+reused min=0 max=70051
+read min=17 max=18645
+timeouts_sum=0 fallbacks_sum=0 zero_generated_rows=0
+
+-- per-row (PPtok/s  TGtok/s  ctx  reused  read  gen) --
+  pp= 158.1 tg= 12.7 ctx= 18645 reused=     0 read= 18645 gen=  217 to=0 fb=0
+  pp= 127.8 tg= 19.5 ctx= 20568 reused= 16384 read=  4184 gen=  321 to=0 fb=0
+  pp=  24.5 tg= 20.5 ctx= 21206 reused= 20888 read=   318 gen=  456 to=0 fb=0
+  pp=  75.5 tg= 19.2 ctx= 23583 reused= 21661 read=  1922 gen=  473 to=0 fb=0
+  pp= 151.4 tg= 19.3 ctx= 29153 reused= 24055 read=  5098 gen= 2908 to=0 fb=0
+  pp=  61.7 tg= 20.8 ctx= 33340 reused= 32060 read=  1280 gen= 1229 to=0 fb=0
+  pp= 128.1 tg= 19.4 ctx= 38510 reused= 34568 read=  3942 gen=  721 to=0 fb=0
+  pp=  53.5 tg= 20.7 ctx= 39427 reused= 38505 read=   922 gen=  653 to=0 fb=0
+  pp=   9.6 tg= 25.3 ctx= 40160 reused= 40079 read=    81 gen=  447 to=0 fb=0
+  pp=  18.1 tg= 19.3 ctx= 40798 reused= 40606 read=   192 gen= 2235 to=0 fb=0
+  pp=  70.7 tg= 23.0 ctx= 44491 reused= 43032 read=  1459 gen=  364 to=0 fb=0
+  pp=  74.5 tg= 20.2 ctx= 46731 reused= 44854 read=  1877 gen= 1022 to=0 fb=0
+  pp=  26.2 tg= 22.4 ctx= 47769 reused= 47752 read=    17 gen=  779 to=0 fb=0
+  pp=  18.6 tg= 25.4 ctx= 48794 reused= 48547 read=   247 gen=  561 to=0 fb=0
+  pp=  23.5 tg= 19.8 ctx= 49672 reused= 49354 read=   318 gen= 2199 to=0 fb=0
+  pp= 100.0 tg= 19.0 ctx= 19934 reused= 16384 read=  3550 gen=  557 to=0 fb=0
+  pp= 146.0 tg= 17.9 ctx= 21572 reused= 16384 read=  5188 gen=  448 to=0 fb=0
+  pp=  17.7 tg= 17.3 ctx= 22262 reused= 22019 read=   243 gen=  145 to=0 fb=0
+  pp= 196.0 tg= 10.7 ctx= 32479 reused= 22406 read= 10073 gen=  337 to=0 fb=0
+  pp= 205.4 tg= 22.2 ctx= 42309 reused= 32815 read=  9494 gen= 1886 to=0 fb=0
+  pp=  22.5 tg= 23.5 ctx= 44532 reused= 44194 read=   338 gen=  770 to=0 fb=0
+  pp=  34.4 tg= 21.4 ctx= 45911 reused= 45301 read=   610 gen= 1840 to=0 fb=0
+  pp=  17.7 tg= 21.5 ctx= 47993 reused= 47750 read=   243 gen=  116 to=0 fb=0
+  pp= 233.5 tg= 19.9 ctx= 62620 reused= 48108 read= 14512 gen=  671 to=0 fb=0
+  pp= 166.3 tg= 22.4 ctx= 69283 reused= 63290 read=  5993 gen=  769 to=0 fb=0
+  pp= 107.6 tg= 22.8 ctx= 73198 reused= 70051 read=  3147 gen=  917 to=0 fb=0
+
+CHECKS=17/17
+  PASS rows
+  PASS tg_min
+  PASS tg_max
+  PASS pp_min
+  PASS pp_max
+  PASS gen_min
+  PASS gen_max
+  PASS gen_total
+  PASS ctx_min
+  PASS ctx_max
+  PASS reused_min
+  PASS reused_max
+  PASS read_min
+  PASS read_max
+  PASS no_timeouts
+  PASS no_fallbacks
+  PASS no_zero_generated
+
+== samples.jsonl ==
+n_samples=121
+elapsed_s first=0.0 last=3600.0
+tick_deltas min=29.999 max=30.001 count=120
+distinct_identity_after=1 matches_initial=True identity_valid_all=True invalid_count=0
+target_client_entries=363 (expected 363)
+nonzero_evicted_entries=0 null_target_gauge_entries=0
+  client 752 0000:04:00.0: client_id=752 req==res=True resident_vram=17143697408..17144008704 resident_gtt_values=[2166784] evicted_values=[0] null=0
+  client 753 0000:09:00.0: client_id=753 req==res=True resident_vram=16857034752..16857456640 resident_gtt_values=[2166784] evicted_values=[0] null=0
+  client 754 0000:0a:00.0: client_id=754 req==res=True resident_vram=618496..618496 resident_gtt_values=[2138112] evicted_values=[0] null=0
+  device 0000:04:00.0: vram_used=17154547712..17154859008 gtt_used_values=[13737984]
+  device 0000:09:00.0: vram_used=16972861440..16973283328 gtt_used_values=[13606912]
+  device 0000:0a:00.0: vram_used=390590464..488448000 gtt_used_values=[223903744, 226000896, 236875776, 238972928, 239132672, 241041408, 241229824, 247775232, 248578048, 250675200, 251408384, 251969536, 252772352, 257945600, 261472256, 261775360, 263569408, 263872512, 346443776, 640335872, 739762176, 786833408]
+gpu_errors_per_sample=[20] count_referencing_targets=0
+distinct_error_prefixes=20
+log_chain_contiguous=True src_from=4470351 src_to=4507573 capture_from=0 capture_to=37222
+new_bytes_sum=37222 backlog_max=0 resets_nonnull=0 log_errors=0 prompt_lines_total=26
+
+SAMPLE_CHECKS=30/30
+  PASS n_samples_121
+  PASS elapsed_starts_0
+  PASS elapsed_reaches_3600
+  PASS ticks_30s
+  PASS no_dropped_ticks
+  PASS identity_unique
+  PASS identity_all_valid
+  PASS client_entries_363
+  PASS no_nonzero_evicted
+  PASS no_null_target_gauge
+  PASS c752_req_eq_res
+  PASS c752_rvram
+  PASS c752_gtt_2166784
+  PASS c753_rvram
+  PASS c753_gtt_2166784
+  PASS c754_resident_618496
+  PASS c754_gtt_2138112
+  PASS dev04_vram
+  PASS dev04_gtt_13737984
+  PASS dev09_vram
+  PASS dev09_gtt_13606912
+  PASS errors_20_per_sample
+  PASS errors_no_target_ref
+  PASS src_range_matches
+  PASS capture_to_37222
+  PASS new_sum_37222
+  PASS no_backlog
+  PASS no_resets
+  PASS no_log_errors
+  PASS prompt_total_26
+SAMPLE_AUDIT=OK
+
+AUDIT=OK
+audit_exit=0

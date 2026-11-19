@@ -1,0 +1,206 @@
+strata serve: conversation cache: disk park skipped (park-gain: advanced 0 of 4096 tokens past the published 68211; the published file stays)
+strata serve: conversation cache: parked to disk only (68211 tokens, snapshot 1757 MiB over the 512 MiB RAM ceiling; the published generation serves the next restore; parked=0 bytes=0)
+strata serve: conversation cache: checkpoint at 16384 is target-only (no legal pair boundary at 16384 (confirmed end 68211, horizon 68214))
+strata serve: adapt swap-in: 8693 swaps, 156 batches, 17695 MiB, 10005 ms file read (1.15 ms/slot) depth=64
+strata serve: adapt swap-in: 12449 swaps, 215 batches, 24825 MiB, 14047 ms file read (1.13 ms/slot) depth=64
+strata serve: adapt swap-in: 5684 swaps, 97 batches, 11562 MiB, 6813 ms file read (1.20 ms/slot) depth=64
+strata serve: adapt swap-in: 276 swaps, 30 batches, 522 MiB, 814 ms file read (2.95 ms/slot) depth=64
+strata serve: adapt swap-in: 6786 swaps, 114 batches, 13819 MiB, 7822 ms file read (1.15 ms/slot) depth=64
+strata serve: foresight swap: 77012 experts served from the swap space, 284940 copies (255257 from the router look-ahead), 96250 not landed yet, 1871467 no free slot, 10477 over budget, helper shadow: 16 staged (2470206 ring full, 0 no source)
+strata serve: conversation cache: disk park streamed 18861 tokens idle to /home/srcds/strata-conv-cache/conv-67.sess in 1496.3 ms; generations=4 bytes=7335 evicted=0 superseded=0 sidecars=0 anchor=18640 pair=18640 tail-draft=1 pages-released=38 (31739 MiB released)
+strata serve: prompt 18645 tokens = 0 reused + 18645 read in 117958 ms (158.1 tok/s), 217 generated in 17078 ms (12.7 tok/s), drafts accepted 149 of 208, 3 checkpoints helper=reqs=2644 rows=18551 bytes=189962240 timeouts=0 fallbacks=0 windows 69 ms_wait 58.92 ms_pool 26.60 ms_host 0.04 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 29496.0
+strata serve: slow read context: 18645 tokens at 158.1 tok/s; host available 4.3 GiB, swap in use 9.4 GiB of 192.0, 8 MiB of VRAM free at the request's start, 13009 expert pairs file-served
+strata serve: decode expert cache hit rate: 81.0% (92307 hits / 113929 lookups); 18551 more read by the GPU over PCIe or from another GPU (14.0% of all 132480 routed)
+strata serve: adapt swap-in: 526 swaps, 17 batches, 1071 MiB, 626 ms file read (1.19 ms/slot)
+strata serve: conversation cache: disk park skipped (park-gain: advanced 0 of 4096 tokens past the published 18861; the published file stays)
+strata serve: conversation cache: parked to disk only (18861 tokens, snapshot 748 MiB over the 512 MiB RAM ceiling; the published generation serves the next restore; parked=0 bytes=0)
+strata serve: the draft ring no longer retains a rewind to 16384 (draft miss: no pair at this checkpoint); mounting target-only with a cold drafter (no drafts claimed for the first window, the refill costs acceptance, not the read)
+strata serve: adapt swap-in: 3727 swaps, 59 batches, 7076 MiB, 3997 ms file read (1.07 ms/slot) depth=64
+strata serve: adapt swap-in: 6264 swaps, 98 batches, 12754 MiB, 7108 ms file read (1.13 ms/slot) depth=64
+strata serve: foresight swap: 77354 experts served from the swap space, 286087 copies (256304 from the router look-ahead), 96731 not landed yet, 1880006 no free slot, 10477 over budget, helper shadow: 16 staged (2485226 ring full, 0 no source)
+strata serve: conversation cache: disk park streamed 20888 tokens idle to /home/srcds/strata-conv-cache/conv-68.sess in 1290.9 ms; generations=4 bytes=4574 evicted=1 superseded=0 sidecars=6 anchor=20563 pair=20563 tail-draft=1 pages-released=40 (32458 MiB released)
+strata serve: prompt 20568 tokens = 16384 reused + 4184 read in 32731 ms (127.8 tok/s), 321 generated in 16455 ms (19.5 tok/s), drafts accepted 230 of 313, 2 checkpoints helper=reqs=3759 rows=33954 bytes=347688960 timeouts=0 fallbacks=0 windows 92 ms_wait 22.21 ms_pool 20.98 ms_host 0.04 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 11105.0
+strata serve: slow read context: 4184 tokens at 127.8 tok/s; host available 4.5 GiB, swap in use 9.4 GiB of 192.0, 8 MiB of VRAM free at the request's start, 13009 expert pairs file-served
+strata serve: decode expert cache hit rate: 91.9% (146938 hits / 159966 lookups); 33954 more read by the GPU over PCIe or from another GPU (17.5% of all 193920 routed)
+strata serve: adapt swap-in: 670 swaps, 22 batches, 1371 MiB, 787 ms file read (1.17 ms/slot)
+strata serve: adapt swap-in: 62 swaps, 20 batches, 114 MiB, 101 ms file read (1.63 ms/slot) depth=64
+strata serve: adapt swap-in: 2255 swaps, 44 batches, 4604 MiB, 2840 ms file read (1.26 ms/slot) depth=64
+strata serve: foresight swap: 77858 experts served from the swap space, 287886 copies (257907 from the router look-ahead), 97413 not landed yet, 1892138 no free slot, 10477 over budget, helper shadow: 16 staged (2506143 ring full, 0 no source)
+strata serve: conversation cache: idle save skipped (park-gain: advanced 773 of 4096 tokens past the published 20888; the published file stays)
+strata serve: prompt 21206 tokens = 20888 reused + 318 read in 12954 ms (24.5 tok/s), 456 generated in 22272 ms (20.5 tok/s), drafts accepted 311 of 470, 3 checkpoints helper=reqs=5847 rows=49083 bytes=502609920 timeouts=0 fallbacks=0 windows 146 ms_wait 21.38 ms_pool 19.81 ms_host 0.04 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 2941.0
+strata serve: decode expert cache hit rate: 92.9% (228707 hits / 246117 lookups); 49083 more read by the GPU over PCIe or from another GPU (16.6% of all 295200 routed)
+strata serve: adapt swap-in: 940 swaps, 36 batches, 1915 MiB, 1103 ms file read (1.17 ms/slot)
+strata serve: adapt swap-in: 420 swaps, 30 batches, 796 MiB, 1206 ms file read (2.87 ms/slot) depth=64
+strata serve: adapt swap-in: 4471 swaps, 78 batches, 9115 MiB, 5552 ms file read (1.24 ms/slot) depth=64
+strata serve: foresight swap: 78638 experts served from the swap space, 290037 copies (259786 from the router look-ahead), 98282 not landed yet, 1906942 no free slot, 10477 over budget, helper shadow: 16 staged (2521929 ring full, 0 no source)
+strata serve: conversation cache: idle save skipped (park-gain: advanced 3167 of 4096 tokens past the published 20888; the published file stays)
+strata serve: prompt 23583 tokens = 21661 reused + 1922 read in 25450 ms (75.5 tok/s), 473 generated in 24585 ms (19.2 tok/s), drafts accepted 287 of 471, 4 checkpoints helper=reqs=6375 rows=36552 bytes=374292480 timeouts=0 fallbacks=0 windows 187 ms_wait 19.77 ms_pool 19.45 ms_host 0.04 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 6758.0
+strata serve: decode expert cache hit rate: 92.0% (256543 hits / 278808 lookups); 36552 more read by the GPU over PCIe or from another GPU (11.6% of all 315360 routed)
+strata serve: adapt swap-in: 917 swaps, 45 batches, 1865 MiB, 1062 ms file read (1.16 ms/slot)
+strata serve: adapt swap-in: 3765 swaps, 59 batches, 7147 MiB, 4001 ms file read (1.06 ms/slot) depth=64
+strata serve: adapt swap-in: 6416 swaps, 101 batches, 13060 MiB, 7273 ms file read (1.13 ms/slot) depth=64
+strata serve: foresight swap: 81562 experts served from the swap space, 303338 copies (271537 from the router look-ahead), 102115 not landed yet, 1958795 no free slot, 10477 over budget, helper shadow: 16 staged (2629872 ring full, 0 no source)
+strata serve: conversation cache: disk park streamed 32060 tokens idle to /home/srcds/strata-conv-cache/conv-69.sess in 2369.6 ms; generations=3 bytes=4404 evicted=1 superseded=1 sidecars=2 anchor=29148 pair=29148 tail-draft=1 pages-released=44 (33855 MiB released)
+strata serve: prompt 29153 tokens = 24055 reused + 5098 read in 33678 ms (151.4 tok/s), 2908 generated in 150653 ms (19.3 tok/s), drafts accepted 1532 of 2928, 5 checkpoints helper=reqs=47412 rows=259350 bytes=2655744000 timeouts=0 fallbacks=0 windows 1377 ms_wait 19.20 ms_pool 17.86 ms_host 0.04 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 11274.0
+strata serve: slow read context: 5098 tokens at 151.4 tok/s; host available 3.2 GiB, swap in use 9.0 GiB of 192.0, 8 MiB of VRAM free at the request's start, 13009 expert pairs file-served
+strata serve: decode expert cache hit rate: 96.0% (1734845 hits / 1806570 lookups); 259350 more read by the GPU over PCIe or from another GPU (12.6% of all 2065920 routed)
+strata serve: adapt swap-in: 2821 swaps, 293 batches, 5730 MiB, 3282 ms file read (1.16 ms/slot)
+strata serve: adapt swap-in: 291 swaps, 30 batches, 551 MiB, 562 ms file read (1.93 ms/slot) depth=64
+strata serve: adapt swap-in: 3806 swaps, 69 batches, 7756 MiB, 4532 ms file read (1.19 ms/slot) depth=64
+strata serve: foresight swap: 83308 experts served from the swap space, 308981 copies (276561 from the router look-ahead), 104121 not landed yet, 1997887 no free slot, 10604 over budget, helper shadow: 16 staged (2682887 ring full, 0 no source)
+strata serve: conversation cache: idle save skipped (park-gain: advanced 2508 of 4096 tokens past the published 32060; the published file stays)
+strata serve: prompt 33340 tokens = 32060 reused + 1280 read in 20752 ms (61.7 tok/s), 1229 generated in 59005 ms (20.8 tok/s), drafts accepted 737 of 1300, 6 checkpoints helper=reqs=18256 rows=117864 bytes=1206927360 timeouts=0 fallbacks=0 windows 493 ms_wait 20.17 ms_pool 17.53 ms_host 0.04 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 5094.0
+strata serve: decode expert cache hit rate: 93.4% (692955 hits / 742296 lookups); 117864 more read by the GPU over PCIe or from another GPU (13.7% of all 860160 routed)
+strata serve: adapt swap-in: 1867 swaps, 120 batches, 3801 MiB, 2195 ms file read (1.18 ms/slot)
+strata serve: adapt swap-in: 3705 swaps, 58 batches, 7036 MiB, 3940 ms file read (1.06 ms/slot) depth=64
+strata serve: adapt swap-in: 6214 swaps, 98 batches, 12651 MiB, 7010 ms file read (1.13 ms/slot) depth=64
+strata serve: foresight swap: 84484 experts served from the swap space, 312415 copies (279519 from the router look-ahead), 105420 not landed yet, 2021889 no free slot, 10612 over budget, helper shadow: 16 staged (2722779 ring full, 0 no source)
+strata serve: conversation cache: disk park streamed 39230 tokens idle to /home/srcds/strata-conv-cache/conv-70.sess in 2801.2 ms; generations=3 bytes=4686 evicted=0 superseded=1 sidecars=1 anchor=38505 pair=38505 tail-draft=1 pages-released=47 (35454 MiB released)
+strata serve: prompt 38510 tokens = 34568 reused + 3942 read in 30781 ms (128.1 tok/s), 721 generated in 37199 ms (19.4 tok/s), drafts accepted 421 of 752, 6 checkpoints helper=reqs=11963 rows=86299 bytes=883701760 timeouts=0 fallbacks=0 windows 301 ms_wait 19.62 ms_pool 20.12 ms_host 0.03 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 10950.0
+strata serve: decode expert cache hit rate: 92.1% (385686 hits / 418661 lookups); 86299 more read by the GPU over PCIe or from another GPU (17.1% of all 504960 routed)
+strata serve: adapt swap-in: 1228 swaps, 74 batches, 2512 MiB, 1448 ms file read (1.18 ms/slot)
+strata serve: conversation cache: disk park skipped (park-gain: advanced 0 of 4096 tokens past the published 39230; the published file stays)
+strata serve: conversation cache: parked to disk only (39230 tokens, snapshot 1363 MiB over the 512 MiB RAM ceiling; the published generation serves the next restore; parked=0 bytes=0)
+strata serve: conversation cache: the draft ring for the rewind to 38505 restored from its pair (captured at 38505 tokens)
+strata serve: adapt swap-in: 176 swaps, 29 batches, 335 MiB, 224 ms file read (1.27 ms/slot) depth=64
+strata serve: adapt swap-in: 2877 swaps, 53 batches, 5893 MiB, 3344 ms file read (1.16 ms/slot) depth=64
+strata serve: foresight swap: 85474 experts served from the swap space, 315309 copies (281944 from the router look-ahead), 106410 not landed yet, 2042477 no free slot, 10722 over budget, helper shadow: 16 staged (2753037 ring full, 0 no source)
+strata serve: conversation cache: disk park streamed 40079 tokens idle to /home/srcds/strata-conv-cache/conv-71.sess in 2805.1 ms; generations=4 bytes=6256 evicted=0 superseded=0 sidecars=0 anchor=39422 pair=39422 tail-draft=1 pages-released=49 (37024 MiB released)
+strata serve: prompt 39427 tokens = 38505 reused + 922 read in 17243 ms (53.5 tok/s), 653 generated in 31580 ms (20.7 tok/s), drafts accepted 395 of 661, 6 checkpoints helper=reqs=9984 rows=67452 bytes=690708480 timeouts=0 fallbacks=0 windows 259 ms_wait 19.88 ms_pool 22.21 ms_host 0.04 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 3568.0
+strata serve: decode expert cache hit rate: 92.2% (344396 hits / 373668 lookups); 67452 more read by the GPU over PCIe or from another GPU (15.3% of all 441120 routed)
+strata serve: adapt swap-in: 950 swaps, 63 batches, 1933 MiB, 1124 ms file read (1.18 ms/slot)
+strata serve: adapt swap-in: 46 swaps, 16 batches, 86 MiB, 53 ms file read (1.15 ms/slot) depth=64
+strata serve: adapt swap-in: 1196 swaps, 27 batches, 2449 MiB, 1852 ms file read (1.55 ms/slot) depth=64
+strata serve: foresight swap: 85926 experts served from the swap space, 316782 copies (283129 from the router look-ahead), 106860 not landed yet, 2054647 no free slot, 10722 over budget, helper shadow: 16 staged (2773387 ring full, 0 no source)
+strata serve: conversation cache: idle save skipped (park-gain: advanced 527 of 4096 tokens past the published 40079; the published file stays)
+strata serve: prompt 40160 tokens = 40079 reused + 81 read in 8474 ms (9.6 tok/s), 447 generated in 17696 ms (25.3 tok/s), drafts accepted 322 of 429, 6 checkpoints helper=reqs=5420 rows=44257 bytes=453191680 timeouts=0 fallbacks=0 windows 126 ms_wait 22.26 ms_pool 30.45 ms_host 0.04 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 1905.0
+strata serve: decode expert cache hit rate: 92.4% (204918 hits / 221663 lookups); 44257 more read by the GPU over PCIe or from another GPU (16.6% of all 265920 routed)
+strata serve: adapt swap-in: 384 swaps, 31 batches, 781 MiB, 447 ms file read (1.16 ms/slot)
+strata serve: adapt swap-in: 95 swaps, 25 batches, 179 MiB, 141 ms file read (1.48 ms/slot) depth=64
+strata serve: adapt swap-in: 1562 swaps, 34 batches, 3194 MiB, 2036 ms file read (1.30 ms/slot) depth=64
+strata serve: foresight swap: 89443 experts served from the swap space, 328409 copies (293489 from the router look-ahead), 111193 not landed yet, 2128713 no free slot, 10835 over budget, helper shadow: 16 staged (2863962 ring full, 0 no source)
+strata serve: conversation cache: idle save skipped (park-gain: advanced 2953 of 4096 tokens past the published 40079; the published file stays)
+strata serve: prompt 40798 tokens = 40606 reused + 192 read in 10586 ms (18.1 tok/s), 2235 generated in 115545 ms (19.3 tok/s), drafts accepted 1227 of 2316, 6 checkpoints helper=reqs=35695 rows=206096 bytes=2110423040 timeouts=0 fallbacks=0 windows 1009 ms_wait 20.27 ms_pool 15.56 ms_host 0.04 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 2177.0
+strata serve: decode expert cache hit rate: 93.3% (1295959 hits / 1389424 lookups); 206096 more read by the GPU over PCIe or from another GPU (12.9% of all 1595520 routed)
+strata serve: adapt swap-in: 3656 swaps, 251 batches, 7413 MiB, 4304 ms file read (1.18 ms/slot)
+strata serve: adapt swap-in: 218 swaps, 29 batches, 414 MiB, 347 ms file read (1.59 ms/slot) depth=64
+strata serve: adapt swap-in: 3629 swaps, 66 batches, 7385 MiB, 4155 ms file read (1.14 ms/slot) depth=64
+strata serve: foresight swap: 90029 experts served from the swap space, 329713 copies (294540 from the router look-ahead), 111719 not landed yet, 2141322 no free slot, 10835 over budget, helper shadow: 16 staged (2879901 ring full, 0 no source)
+strata serve: conversation cache: disk park streamed 44854 tokens idle to /home/srcds/strata-conv-cache/conv-72.sess in 2994.6 ms; generations=3 bytes=4316 evicted=1 superseded=1 sidecars=6 anchor=44486 pair=44486 tail-draft=1 pages-released=53 (38733 MiB released)
+strata serve: prompt 44491 tokens = 43032 reused + 1459 read in 20635 ms (70.7 tok/s), 364 generated in 15843 ms (23.0 tok/s), drafts accepted 250 of 342, 6 checkpoints helper=reqs=4551 rows=34639 bytes=354703360 timeouts=0 fallbacks=0 windows 115 ms_wait 21.02 ms_pool 24.00 ms_host 0.04 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 4502.0
+strata serve: decode expert cache hit rate: 89.5% (164972 hits / 184241 lookups); 34639 more read by the GPU over PCIe or from another GPU (15.8% of all 218880 routed)
+strata serve: adapt swap-in: 601 swaps, 29 batches, 1216 MiB, 712 ms file read (1.18 ms/slot)
+strata serve: adapt swap-in: 436 swaps, 30 batches, 825 MiB, 800 ms file read (1.83 ms/slot) depth=64
+strata serve: adapt swap-in: 4487 swaps, 78 batches, 9146 MiB, 5224 ms file read (1.16 ms/slot) depth=64
+strata serve: foresight swap: 91405 experts served from the swap space, 334402 copies (298628 from the router look-ahead), 113118 not landed yet, 2163683 no free slot, 10867 over budget, helper shadow: 16 staged (2918897 ring full, 0 no source)
+strata serve: conversation cache: idle save skipped (park-gain: advanced 2898 of 4096 tokens past the published 44854; the published file stays)
+strata serve: prompt 46731 tokens = 44854 reused + 1877 read in 25200 ms (74.5 tok/s), 1022 generated in 50621 ms (20.2 tok/s), drafts accepted 519 of 1058, 6 checkpoints helper=reqs=16955 rows=86687 bytes=887674880 timeouts=0 fallbacks=0 windows 504 ms_wait 18.75 ms_pool 15.07 ms_host 0.04 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 6024.0
+strata serve: decode expert cache hit rate: 94.9% (628524 hits / 662593 lookups); 86687 more read by the GPU over PCIe or from another GPU (11.6% of all 749280 routed)
+strata serve: adapt swap-in: 1252 swaps, 114 batches, 2549 MiB, 1479 ms file read (1.18 ms/slot)
+strata serve: foresight swap: 92281 experts served from the swap space, 337477 copies (301152 from the router look-ahead), 114018 not landed yet, 2182929 no free slot, 10867 over budget, helper shadow: 16 staged (2962483 ring full, 0 no source)
+strata serve: conversation cache: idle save skipped (park-gain: advanced 3693 of 4096 tokens past the published 44854; the published file stays)
+strata serve: prompt 47769 tokens = 47752 reused + 17 read in 649 ms (26.2 tok/s), 779 generated in 34701 ms (22.4 tok/s), drafts accepted 508 of 807, 6 checkpoints helper=reqs=11432 rows=93703 bytes=959518720 timeouts=0 fallbacks=0 windows 275 ms_wait 20.83 ms_pool 25.13 ms_host 0.04 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 0.0
+strata serve: decode expert cache hit rate: 93.3% (395321 hits / 423737 lookups); 93703 more read by the GPU over PCIe or from another GPU (18.1% of all 517440 routed)
+strata serve: adapt swap-in: 1057 swaps, 68 batches, 2144 MiB, 1264 ms file read (1.20 ms/slot)
+strata serve: adapt swap-in: 131 swaps, 27 batches, 249 MiB, 168 ms file read (1.28 ms/slot) depth=64
+strata serve: adapt swap-in: 2275 swaps, 46 batches, 4643 MiB, 2627 ms file read (1.15 ms/slot) depth=64
+strata serve: foresight swap: 93043 experts served from the swap space, 339270 copies (302491 from the router look-ahead), 114689 not landed yet, 2204296 no free slot, 10891 over budget, helper shadow: 16 staged (2983984 ring full, 0 no source)
+strata serve: conversation cache: disk park streamed 49354 tokens idle to /home/srcds/strata-conv-cache/conv-73.sess in 3094.0 ms; generations=3 bytes=4412 evicted=0 superseded=1 sidecars=2 anchor=48789 pair=48789 tail-draft=1 pages-released=57 (40499 MiB released)
+strata serve: prompt 48794 tokens = 48547 reused + 247 read in 13301 ms (18.6 tok/s), 561 generated in 22087 ms (25.4 tok/s), drafts accepted 413 of 500, 6 checkpoints helper=reqs=6063 rows=45787 bytes=468858880 timeouts=0 fallbacks=0 windows 149 ms_wait 22.23 ms_pool 34.19 ms_host 0.03 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 2795.0
+strata serve: decode expert cache hit rate: 88.3% (234240 hits / 265253 lookups); 45787 more read by the GPU over PCIe or from another GPU (14.7% of all 311040 routed)
+strata serve: adapt swap-in: 655 swaps, 37 batches, 1330 MiB, 770 ms file read (1.18 ms/slot)
+strata serve: adapt swap-in: 145 swaps, 27 batches, 275 MiB, 189 ms file read (1.30 ms/slot) depth=64
+strata serve: adapt swap-in: 2311 swaps, 44 batches, 4721 MiB, 2863 ms file read (1.24 ms/slot) depth=64
+strata serve: foresight swap: 96444 experts served from the swap space, 349705 copies (311412 from the router look-ahead), 118519 not landed yet, 2281959 no free slot, 11170 over budget, helper shadow: 16 staged (3070401 ring full, 0 no source)
+strata serve: conversation cache: idle save skipped (park-gain: advanced 2516 of 4096 tokens past the published 49354; the published file stays)
+strata serve: prompt 49672 tokens = 49354 reused + 318 read in 13528 ms (23.5 tok/s), 2199 generated in 110830 ms (19.8 tok/s), drafts accepted 1324 of 2182, 6 checkpoints helper=reqs=31884 rows=195793 bytes=2004920320 timeouts=0 fallbacks=0 windows 876 ms_wait 22.99 ms_pool 19.66 ms_host 0.04 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 3052.0
+strata serve: decode expert cache hit rate: 92.0% (1169862 hits / 1271567 lookups); 195793 more read by the GPU over PCIe or from another GPU (13.3% of all 1467360 routed)
+strata serve: adapt swap-in: 3477 swaps, 218 batches, 7058 MiB, 4121 ms file read (1.19 ms/slot)
+strata serve: conversation cache: disk park skipped (park-gain: advanced 2516 of 4096 tokens past the published 49354; the published file stays)
+strata serve: conversation cache: parked to disk only (51870 tokens, snapshot 1535 MiB over the 512 MiB RAM ceiling; the published generation serves the next restore; parked=0 bytes=0)
+strata serve: the draft ring no longer retains a rewind to 16384 (draft miss: no pair at this checkpoint); mounting target-only with a cold drafter (no drafts claimed for the first window, the refill costs acceptance, not the read)
+strata serve: adapt swap-in: 3742 swaps, 59 batches, 7107 MiB, 3936 ms file read (1.05 ms/slot) depth=64
+strata serve: adapt swap-in: 6114 swaps, 96 batches, 12448 MiB, 6985 ms file read (1.14 ms/slot) depth=64
+strata serve: foresight swap: 97198 experts served from the swap space, 352095 copies (313623 from the router look-ahead), 119303 not landed yet, 2293526 no free slot, 11220 over budget, helper shadow: 16 staged (3095722 ring full, 0 no source)
+strata serve: conversation cache: disk park streamed 20490 tokens idle to /home/srcds/strata-conv-cache/conv-74.sess in 1271.5 ms; generations=4 bytes=5126 evicted=0 superseded=0 sidecars=1 anchor=19929 pair=19929 tail-draft=1 pages-released=60 (41253 MiB released)
+strata serve: prompt 19934 tokens = 16384 reused + 3550 read in 35507 ms (100.0 tok/s), 557 generated in 29323 ms (19.0 tok/s), drafts accepted 316 of 641, 2 checkpoints helper=reqs=8808 rows=55956 bytes=572989440 timeouts=0 fallbacks=0 windows 242 ms_wait 20.03 ms_pool 12.90 ms_host 0.05 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 10921.0
+strata serve: decode expert cache hit rate: 95.3% (350312 hits / 367404 lookups); 55956 more read by the GPU over PCIe or from another GPU (13.2% of all 423360 routed)
+strata serve: adapt swap-in: 771 swaps, 59 batches, 1565 MiB, 896 ms file read (1.16 ms/slot)
+strata serve: conversation cache: disk park skipped (park-gain: advanced 0 of 4096 tokens past the published 20490; the published file stays)
+strata serve: conversation cache: parked to disk only (20490 tokens, snapshot 657 MiB over the 512 MiB RAM ceiling; the published generation serves the next restore; parked=0 bytes=0)
+strata serve: the draft ring no longer retains a rewind to 16384 (draft miss: no pair at this checkpoint); mounting target-only with a cold drafter (no drafts claimed for the first window, the refill costs acceptance, not the read)
+strata serve: adapt swap-in: 3758 swaps, 59 batches, 7135 MiB, 4049 ms file read (1.08 ms/slot) depth=64
+strata serve: adapt swap-in: 6467 swaps, 102 batches, 13162 MiB, 7329 ms file read (1.13 ms/slot) depth=64
+strata serve: foresight swap: 97726 experts served from the swap space, 353817 copies (315071 from the router look-ahead), 119883 not landed yet, 2303228 no free slot, 11220 over budget, helper shadow: 16 staged (3113787 ring full, 0 no source)
+strata serve: conversation cache: disk park streamed 22019 tokens idle to /home/srcds/strata-conv-cache/conv-75.sess in 1311.5 ms; generations=4 bytes=4972 evicted=1 superseded=0 sidecars=2 anchor=21567 pair=21567 tail-draft=1 pages-released=62 (41986 MiB released)
+strata serve: prompt 21572 tokens = 16384 reused + 5188 read in 35535 ms (146.0 tok/s), 448 generated in 24968 ms (17.9 tok/s), drafts accepted 293 of 453, 2 checkpoints helper=reqs=6038 rows=40618 bytes=415928320 timeouts=0 fallbacks=0 windows 156 ms_wait 20.47 ms_pool 21.16 ms_host 0.04 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 11378.0
+strata serve: slow read context: 5188 tokens at 146.0 tok/s; host available 3.0 GiB, swap in use 8.1 GiB of 192.0, 8 MiB of VRAM free at the request's start, 13009 expert pairs file-served
+strata serve: decode expert cache hit rate: 93.3% (234286 hits / 251222 lookups); 40618 more read by the GPU over PCIe or from another GPU (13.9% of all 291840 routed)
+strata serve: adapt swap-in: 975 swaps, 38 batches, 1981 MiB, 1148 ms file read (1.18 ms/slot)
+strata serve: adapt swap-in: 85 swaps, 25 batches, 161 MiB, 101 ms file read (1.19 ms/slot) depth=64
+strata serve: adapt swap-in: 2494 swaps, 48 batches, 5104 MiB, 2843 ms file read (1.14 ms/slot) depth=64
+strata serve: foresight swap: 97930 experts served from the swap space, 354331 copies (315474 from the router look-ahead), 120090 not landed yet, 2307141 no free slot, 11220 over budget, helper shadow: 16 staged (3121093 ring full, 0 no source)
+strata serve: conversation cache: idle save skipped (park-gain: advanced 387 of 4096 tokens past the published 22019; the published file stays)
+strata serve: prompt 22262 tokens = 22019 reused + 243 read in 13703 ms (17.7 tok/s), 145 generated in 8398 ms (17.3 tok/s), drafts accepted 103 of 139, 3 checkpoints helper=reqs=1761 rows=16179 bytes=165672960 timeouts=0 fallbacks=0 windows 43 ms_wait 21.77 ms_pool 33.75 ms_host 0.04 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 2944.0
+strata serve: decode expert cache hit rate: 89.4% (63200 hits / 70701 lookups); 16179 more read by the GPU over PCIe or from another GPU (18.6% of all 86880 routed)
+strata serve: adapt swap-in: 337 swaps, 10 batches, 682 MiB, 393 ms file read (1.17 ms/slot)
+strata serve: adapt swap-in: 3757 swaps, 59 batches, 7133 MiB, 4013 ms file read (1.07 ms/slot) depth=64
+strata serve: adapt swap-in: 7419 swaps, 116 batches, 15099 MiB, 8369 ms file read (1.13 ms/slot) depth=64
+strata serve: foresight swap: 98531 experts served from the swap space, 355803 copies (316759 from the router look-ahead), 120753 not landed yet, 2322367 no free slot, 11220 over budget, helper shadow: 16 staged (3133875 ring full, 0 no source)
+strata serve: conversation cache: disk park streamed 32815 tokens idle to /home/srcds/strata-conv-cache/conv-76.sess in 2155.9 ms; generations=3 bytes=3813 evicted=1 superseded=1 sidecars=4 anchor=32474 pair=32474 tail-draft=1 pages-released=65 (43199 MiB released)
+strata serve: prompt 32479 tokens = 22406 reused + 10073 read in 51390 ms (196.0 tok/s), 337 generated in 31361 ms (10.7 tok/s), drafts accepted 217 of 354, 4 checkpoints helper=reqs=4410 rows=26404 bytes=270376960 timeouts=0 fallbacks=0 windows 121 ms_wait 20.71 ms_pool 20.02 ms_host 0.06 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 12382.0
+strata serve: slow read context: 10073 tokens at 196.0 tok/s; host available 3.8 GiB, swap in use 9.0 GiB of 192.0, 8 MiB of VRAM free at the request's start, 13009 expert pairs file-served
+strata serve: decode expert cache hit rate: 89.6% (180136 hits / 201116 lookups); 26404 more read by the GPU over PCIe or from another GPU (11.6% of all 227520 routed)
+strata serve: adapt swap-in: 756 swaps, 30 batches, 1533 MiB, 933 ms file read (1.23 ms/slot)
+strata serve: adapt swap-in: 3763 swaps, 59 batches, 7145 MiB, 4061 ms file read (1.08 ms/slot) depth=64
+strata serve: adapt swap-in: 7318 swaps, 115 batches, 14895 MiB, 8506 ms file read (1.16 ms/slot) depth=64
+strata serve: foresight swap: 100540 experts served from the swap space, 363444 copies (323617 from the router look-ahead), 123103 not landed yet, 2365251 no free slot, 11220 over budget, helper shadow: 16 staged (3208893 ring full, 0 no source)
+strata serve: conversation cache: disk park streamed 44194 tokens idle to /home/srcds/strata-conv-cache/conv-77.sess in 2681.4 ms; generations=3 bytes=4147 evicted=0 superseded=1 sidecars=0 anchor=42304 pair=42304 tail-draft=1 pages-released=67 (44667 MiB released)
+strata serve: prompt 42309 tokens = 32815 reused + 9494 read in 46214 ms (205.4 tok/s), 1886 generated in 84898 ms (22.2 tok/s), drafts accepted 1155 of 1901, 5 checkpoints helper=reqs=26218 rows=173885 bytes=1780582400 timeouts=0 fallbacks=0 windows 732 ms_wait 20.28 ms_pool 14.83 ms_host 0.04 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 12567.0
+strata serve: decode expert cache hit rate: 94.6% (1030525 hits / 1089475 lookups); 173885 more read by the GPU over PCIe or from another GPU (13.8% of all 1263360 routed)
+strata serve: adapt swap-in: 2840 swaps, 180 batches, 5804 MiB, 3349 ms file read (1.18 ms/slot)
+strata serve: adapt swap-in: 130 swaps, 27 batches, 247 MiB, 206 ms file read (1.58 ms/slot) depth=64
+strata serve: adapt swap-in: 2819 swaps, 53 batches, 5751 MiB, 3444 ms file read (1.22 ms/slot) depth=64
+strata serve: foresight swap: 101408 experts served from the swap space, 366378 copies (326124 from the router look-ahead), 124085 not landed yet, 2382274 no free slot, 11220 over budget, helper shadow: 16 staged (3241738 ring full, 0 no source)
+strata serve: conversation cache: idle save skipped (park-gain: advanced 1107 of 4096 tokens past the published 44194; the published file stays)
+strata serve: prompt 44532 tokens = 44194 reused + 338 read in 15003 ms (22.5 tok/s), 770 generated in 32705 ms (23.5 tok/s), drafts accepted 505 of 798, 6 checkpoints helper=reqs=9952 rows=77405 bytes=792627200 timeouts=0 fallbacks=0 windows 266 ms_wait 21.20 ms_pool 22.38 ms_host 0.04 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 3650.0
+strata serve: decode expert cache hit rate: 94.3% (408219 hits / 432835 lookups); 77405 more read by the GPU over PCIe or from another GPU (15.2% of all 510240 routed)
+strata serve: adapt swap-in: 996 swaps, 66 batches, 2039 MiB, 1182 ms file read (1.19 ms/slot)
+strata serve: adapt swap-in: 186 swaps, 29 batches, 353 MiB, 417 ms file read (2.24 ms/slot) depth=64
+strata serve: adapt swap-in: 3342 swaps, 61 batches, 6814 MiB, 3854 ms file read (1.15 ms/slot) depth=64
+strata serve: foresight swap: 103274 experts served from the swap space, 373597 copies (332505 from the router look-ahead), 126326 not landed yet, 2426712 no free slot, 11220 over budget, helper shadow: 16 staged (3308197 ring full, 0 no source)
+strata serve: conversation cache: idle save skipped (park-gain: advanced 3556 of 4096 tokens past the published 44194; the published file stays)
+strata serve: prompt 45911 tokens = 45301 reused + 610 read in 17754 ms (34.4 tok/s), 1840 generated in 85955 ms (21.4 tok/s), drafts accepted 1137 of 1904, 6 checkpoints helper=reqs=25202 rows=156456 bytes=1602109440 timeouts=0 fallbacks=0 windows 704 ms_wait 21.53 ms_pool 17.87 ms_host 0.06 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 4271.0
+strata serve: decode expert cache hit rate: 94.3% (1032877 hits / 1094904 lookups); 156456 more read by the GPU over PCIe or from another GPU (12.5% of all 1251360 routed)
+strata serve: adapt swap-in: 2217 swaps, 167 batches, 4520 MiB, 2593 ms file read (1.17 ms/slot)
+strata serve: adapt swap-in: 137 swaps, 28 batches, 257 MiB, 376 ms file read (2.74 ms/slot) depth=64
+strata serve: adapt swap-in: 2422 swaps, 45 batches, 4936 MiB, 3062 ms file read (1.26 ms/slot) depth=64
+strata serve: foresight swap: 103454 experts served from the swap space, 374008 copies (332825 from the router look-ahead), 126510 not landed yet, 2430597 no free slot, 11220 over budget, helper shadow: 16 staged (3313710 ring full, 0 no source)
+strata serve: conversation cache: idle save skipped (park-gain: advanced 3914 of 4096 tokens past the published 44194; the published file stays)
+strata serve: prompt 47993 tokens = 47750 reused + 243 read in 13696 ms (17.7 tok/s), 116 generated in 5391 ms (21.5 tok/s), drafts accepted 83 of 102, 6 checkpoints helper=reqs=1395 rows=11818 bytes=121016320 timeouts=0 fallbacks=0 windows 34 ms_wait 21.18 ms_pool 27.94 ms_host 0.04 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 3438.0
+strata serve: decode expert cache hit rate: 87.3% (46255 hits / 52982 lookups); 11818 more read by the GPU over PCIe or from another GPU (18.2% of all 64800 routed)
+strata serve: adapt swap-in: 208 swaps, 8 batches, 423 MiB, 244 ms file read (1.17 ms/slot)
+strata serve: adapt swap-in: 3756 swaps, 59 batches, 7131 MiB, 4022 ms file read (1.07 ms/slot) depth=64
+strata serve: adapt swap-in: 8267 swaps, 130 batches, 16833 MiB, 9342 ms file read (1.13 ms/slot) depth=64
+strata serve: foresight swap: 104309 experts served from the swap space, 377088 copies (335456 from the router look-ahead), 127506 not landed yet, 2448799 no free slot, 11220 over budget, helper shadow: 16 staged (3338785 ring full, 0 no source)
+strata serve: conversation cache: disk park streamed 63290 tokens idle to /home/srcds/strata-conv-cache/conv-78.sess in 3411.6 ms; generations=3 bytes=4578 evicted=0 superseded=1 sidecars=3 anchor=62615 pair=62615 tail-draft=1 pages-released=72 (46645 MiB released)
+strata serve: prompt 62620 tokens = 48108 reused + 14512 read in 62137 ms (233.5 tok/s), 671 generated in 33652 ms (19.9 tok/s), drafts accepted 379 of 690, 6 checkpoints helper=reqs=10322 rows=58160 bytes=595558400 timeouts=0 fallbacks=0 windows 293 ms_wait 19.96 ms_pool 17.83 ms_host 0.04 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 13364.0
+strata serve: decode expert cache hit rate: 93.5% (386392 hits / 413200 lookups); 58160 more read by the GPU over PCIe or from another GPU (12.3% of all 471360 routed)
+strata serve: adapt swap-in: 1174 swaps, 71 batches, 2396 MiB, 1375 ms file read (1.17 ms/slot)
+strata serve: adapt swap-in: 3756 swaps, 59 batches, 7132 MiB, 4025 ms file read (1.07 ms/slot) depth=64
+strata serve: adapt swap-in: 6618 swaps, 104 batches, 13468 MiB, 7505 ms file read (1.13 ms/slot) depth=64
+strata serve: foresight swap: 105105 experts served from the swap space, 380503 copies (338570 from the router look-ahead), 128580 not landed yet, 2469186 no free slot, 11286 over budget, helper shadow: 16 staged (3371300 ring full, 0 no source)
+strata serve: conversation cache: disk park streamed 70051 tokens idle to /home/srcds/strata-conv-cache/conv-79.sess in 3570.3 ms; generations=3 bytes=4662 evicted=0 superseded=1 sidecars=1 anchor=69278 pair=69278 tail-draft=1 pages-released=74 (48587 MiB released)
+strata serve: prompt 69283 tokens = 63290 reused + 5993 read in 36044 ms (166.3 tok/s), 769 generated in 34257 ms (22.4 tok/s), drafts accepted 458 of 819, 6 checkpoints helper=reqs=11354 rows=74409 bytes=761948160 timeouts=0 fallbacks=0 windows 312 ms_wait 20.90 ms_pool 14.47 ms_host 0.04 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 11530.0
+strata serve: slow read context: 5993 tokens at 166.3 tok/s; host available 4.5 GiB, swap in use 9.4 GiB of 192.0, 8 MiB of VRAM free at the request's start, 13009 expert pairs file-served
+strata serve: decode expert cache hit rate: 94.8% (443639 hits / 467991 lookups); 74409 more read by the GPU over PCIe or from another GPU (13.7% of all 542400 routed)
+strata serve: adapt swap-in: 874 swaps, 73 batches, 1771 MiB, 1023 ms file read (1.17 ms/slot)
+strata serve: adapt swap-in: 3753 swaps, 59 batches, 7126 MiB, 4015 ms file read (1.07 ms/slot) depth=64
+strata serve: adapt swap-in: 6064 swaps, 95 batches, 12346 MiB, 6884 ms file read (1.14 ms/slot) depth=64
+strata serve: foresight swap: 106052 experts served from the swap space, 384594 copies (342330 from the router look-ahead), 129880 not landed yet, 2495735 no free slot, 11286 over budget, helper shadow: 16 staged (3403172 ring full, 0 no source)
+strata serve: conversation cache: idle save skipped (park-gain: advanced 4063 of 4096 tokens past the published 70051; the published file stays)
+strata serve: prompt 73198 tokens = 70051 reused + 3147 read in 29237 ms (107.6 tok/s), 917 generated in 40167 ms (22.8 tok/s), drafts accepted 555 of 954, 6 checkpoints helper=reqs=12906 rows=77525 bytes=793856000 timeouts=0 fallbacks=0 windows 363 ms_wait 20.70 ms_pool 13.98 ms_host 0.04 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 10899.0
+strata serve: decode expert cache hit rate: 94.3% (522501 hits / 554155 lookups); 77525 more read by the GPU over PCIe or from another GPU (12.3% of all 631680 routed)
+strata serve: adapt swap-in: 1143 swaps, 85 batches, 2326 MiB, 1352 ms file read (1.18 ms/slot)
+strata serve: adapt swap-in: 3746 swaps, 59 batches, 7114 MiB, 4009 ms file read (1.07 ms/slot) depth=64
+strata serve: adapt swap-in: 6114 swaps, 96 batches, 12448 MiB, 6957 ms file read (1.14 ms/slot) depth=64

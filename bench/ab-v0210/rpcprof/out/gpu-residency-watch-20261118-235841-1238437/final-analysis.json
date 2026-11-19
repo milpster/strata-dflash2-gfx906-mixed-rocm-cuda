@@ -1,0 +1,153 @@
+{
+  "schema": "strata.passive_residency.final_analysis.v1",
+  "generated_by": "Fixer closeout lane",
+  "branch": "tg-stall-cause",
+  "generated_at": "2026-11-19",
+  "read_only_note": "Derived artifact. Raw evidence (metadata.json, samples.jsonl, engine-increment.log, summary.json) is unchanged. Every value below was re-derived from those files plus the byte-range recheck; see final-validation.log and audit_final.py.",
+
+  "capture": {
+    "dir": "bench/ab-v0210/rpcprof/out/gpu-residency-watch-20261118-235841-1238437",
+    "collector": "bench/ab-v0210/rpcprof/gpu-rounds/watch_gpu_residency.py",
+    "started_at": "2026-11-18T23:58:41+01:00",
+    "ended_at": "2026-11-19T00:58:41+01:00",
+    "duration_s_planned": 3600.0,
+    "interval_s_planned": 30.0
+  },
+
+  "terminal_facts": {
+    "outcome": "completed",
+    "error": null,
+    "monitor_command_exit": 0,
+    "samples": 121,
+    "invalid_identity_samples": 0,
+    "prompt_rows_observed": 26,
+    "elapsed_s": 3600.0068255589977,
+    "sources": ["summary.json", "gpu-residency-watch-20261118-235841-1238437.command-result.log"]
+  },
+
+  "selected_identity": {
+    "retained_throughout": true,
+    "distinct_identity_after_count": 1,
+    "matches_initial": true,
+    "supervisor_pid": 2788001,
+    "generation": 1,
+    "engine_pid": 2789182,
+    "declared_start": "1624418",
+    "proc_start": "1624418",
+    "engine_stderr_log": "/mnt/srcds/Strata/logs/engine-prod-ud-iq3xxs-v0233.log",
+    "wrapper_log": "/mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261118-223032-2788009.log",
+    "all_identity_valid": true
+  },
+
+  "coverage": {
+    "n_samples": 121,
+    "elapsed_first_s": 0.0,
+    "elapsed_last_s": 3600.0,
+    "tick_delta_min_s": 29.999,
+    "tick_delta_max_s": 30.001,
+    "tick_intervals": 120,
+    "dropped_ticks": 0,
+    "resets": 0,
+    "backlog_max_bytes": 0,
+    "log_read_errors": 0
+  },
+
+  "gpu_gauge_ranges_bytes": {
+    "client_0000_04_00_0": {
+      "client_id": "752",
+      "requested_equals_resident": true,
+      "resident_vram_min": 17143697408,
+      "resident_vram_max": 17144008704,
+      "resident_gtt_values": [2166784],
+      "evicted_values": [0],
+      "device_vram_used_min": 17154547712,
+      "device_vram_used_max": 17154859008,
+      "device_gtt_used_values": [13737984]
+    },
+    "client_0000_09_00_0": {
+      "client_id": "753",
+      "requested_equals_resident": true,
+      "resident_vram_min": 16857034752,
+      "resident_vram_max": 16857456640,
+      "resident_gtt_values": [2166784],
+      "evicted_values": [0],
+      "device_vram_used_min": 16972861440,
+      "device_vram_used_max": 16973283328,
+      "device_gtt_used_values": [13606912]
+    },
+    "client_0000_0a_00_0": {
+      "client_id": "754",
+      "requested_equals_resident": true,
+      "resident_vram_values": [618496],
+      "resident_gtt_values": [2138112],
+      "evicted_values": [0]
+    },
+    "target_client_entries": 363,
+    "nonzero_evicted_entries": 0,
+    "null_target_gauge_entries": 0,
+    "resident_gtt_kib": 2116
+  },
+
+  "errors": {
+    "gpu_unavailable_node_counters_per_sample": 20,
+    "gpu_unavailable_node_counter_kind": "ENOENT on absent AMD-style mem_info_* files for other/virtual DRM nodes (evdi/* and non-Radeon cards); NOT Radeon faults or zero values",
+    "gpu_errors_referencing_target_pci": 0,
+    "gpu_distinct_error_prefixes": 20,
+    "drm_errors": 0,
+    "log_read_errors": 0,
+    "new_error_kinds_observed": 0
+  },
+
+  "request_throughput": {
+    "parser": "bench/ab-v0210/rpcprof/champions_log.parse_window (PROMPT_LINE: PP group 6, TG group 10)",
+    "completed_request_rows": 26,
+    "tg_tokens_per_s": {"min": 10.7, "max": 25.4, "unweighted_mean_of_row_rates": 20.2},
+    "pp_tokens_per_s": {"min": 9.6, "max": 233.5, "unweighted_mean_of_row_rates": 87.3},
+    "generated_tokens": {"min": 116, "max": 2908, "total": 23041},
+    "context_tokens": {"min": 18645, "max": 73198},
+    "reused_tokens": {"min": 0, "max": 70051},
+    "read_tokens": {"min": 17, "max": 18645},
+    "timeouts_total": 0,
+    "fallbacks_total": 0,
+    "zero_generated_rows": 0,
+    "mean_definition_warning": "unweighted_mean_of_row_rates is the arithmetic mean of the per-row printed rates. It is NOT aggregate weighted throughput (total tokens / total time). Do not equate the two.",
+    "withdrawn_claim": "Earlier partial-report 'decode 9.6-158.1' mixed up the PP column (first row PP=158.1). It is withdrawn; the raw collector stores only raw lines and was not at fault."
+  },
+
+  "raw_increment_integrity": {
+    "file": "engine-increment.log",
+    "bytes": 37222,
+    "final_byte_hex": "0a",
+    "final_byte_is_newline": true,
+    "trailing_partial_line": false,
+    "source_path": "/mnt/srcds/Strata/logs/engine-prod-ud-iq3xxs-v0233.log",
+    "source_inode": 20447238,
+    "source_byte_range": [4470351, 4507573],
+    "capture_byte_range": [0, 37222],
+    "capture_chain_contiguous": true,
+    "new_bytes_sum": 37222,
+    "raw_sha256": "ee23f12b1f8df4b25843903e85ce35b0a8ef14ea82cd5ce4bca5f6578dd7223e",
+    "live_source_byte_range_sha256_at_recheck": "ee23f12b1f8df4b25843903e85ce35b0a8ef14ea82cd5ce4bca5f6578dd7223e",
+    "byte_range_matches_raw": true,
+    "live_source_size_bytes_at_recheck": 4560229,
+    "live_source_note": "The live source keeps growing (size 4547518 then 4560229 across rechecks). Only the declared 37222-byte range was compared; the whole live log was never hashed and is excluded from the seal as immutable evidence."
+  },
+
+  "limitations": [
+    "Zero evicted is a statement about the 121 30-second observations, NOT proof of continuous zero over the hour; transient between-sample migrations may be missed.",
+    "No matched before/after request traces, so no causal or sustained-recovery claim is supported.",
+    "The historic 5-8 tok/s severe slowdown/stall was NOT reproduced in these 26 completions; the observed TG 10.7-25.4 must not be labelled 'normal' and performance is not shown to be fixed.",
+    "Request observation timestamps bound byte arrival in the log, not execution time.",
+    "The earlier 1.38 GiB card2 slow-epoch driver eviction remains independent valid evidence.",
+    "GPU acceptance is NOT lifted; game experiment parked; quality/context/precision/tolerances and the 2560 MiB floor unchanged; no promotion."
+  ],
+
+  "audit": {
+    "helper": "audit_final.py (read-only; re-runs champions_log.parse_window over engine-increment.log and verifies samples.jsonl gauge/coverage claims)",
+    "command": "python3 bench/ab-v0210/rpcprof/out/gpu-residency-watch-20261118-235841-1238437/audit_final.py",
+    "exit": 0,
+    "rate_checks": "17/17",
+    "sample_checks": "30/30",
+    "log": "final-validation.log"
+  }
+}
