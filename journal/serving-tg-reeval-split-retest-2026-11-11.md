@@ -4465,3 +4465,13 @@ Runtime locking remains blocked on expert/PLE mapping coverage and total-fit pro
 - Basis: run-2 verdict (locked 23.0 vs unlocked 19.2 median tok/s under held pressure; E3's
   eviction/refault ramp). Limitations carried: resident-subset coverage, decode-only evidence,
   single run per condition.
+
+## 2026-11-19 (night) — OPERATOR DECISION: margin retest scrapped; tiny margins stand
+
+- Operator: "scrap the margin retest, we run our tiny margins." The planned two-turn margin
+  comparison (80k infill -> 2048 TG -> 80k infill -> 2048, 256/448 vs 700/700) is CANCELLED.
+- 256/448 MiB engine reserves remain the operator-selected operating configuration (config
+  `95ef3693…`, prod unchanged); 700/700 stays the historical control. Decision is operator
+  choice, not a measured verdict — the earlier reserve panel had 256/448 TG trailing both
+  700/700 controls with low-free-VRAM warnings; that evidence stands as recorded.
+- Harness gate repairs remain (they serve future arms/speed-candidate windows, not only margin).
