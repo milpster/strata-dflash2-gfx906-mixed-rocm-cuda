@@ -1,0 +1,16 @@
+# SHA256 - owned implementation files (verified 2026-11-19, post Round18du journal append)
+# branch tg-stall-cause  HEAD 3090a6f060c2790a0fca1c8387b70deef5ad05b4 (amends 5b939685ea)
+59fe13eb898d08b92d1204996db1c8df9ef4fc135c271a505214553bd925b61c  bench/ab-v0210/rpcprof/gpu-rounds/ram_acceptance.py
+991641e644d2d03897f9c99a482b6f72c09fe566637a57ef6af8668c328b763d  bench/ab-v0210/rpcprof/tests/test_ram_acceptance_cpu.py
+6a80dec0a5175901bdf8f482b39b73c7655755111c25c505c0fd07e309b18fac  bench/ab-v0210/rpcprof/gpu-rounds/ram-parking-gpu-test-plan.md
+ebd0338ebbf6df86da7a52431e291ef6764b550576d0eabac089e2d20777d72e  bench/ab-v0210/rpcprof/gpu-rounds/ram-parking-gpu-fixtures.md
+9b65970143f7bc5eca795db2a8d48ae4609aa015048decc59b32af2e67fd5453  journal/serving-tg-reeval-split-retest-2026-11-11.md
+
+# declared repaired hashes matched exactly: src 59fe13eb...b61c / test 991641e6...763d
+
+# SHA256 - this validation run's artifacts (summary.md excluded, see note at end)
+88f4f6198b66b41daa2894ee4b5841931b885f1c2f467d4996c63888d9ce2847  bench/ab-v0210/rpcprof/out/ram-offline-final-20261119-045233/py_compile.log
+10d0f3b5d378c78627e0de90f8677137aa5fff66c881ce0ca03fccc26c8c8388  bench/ab-v0210/rpcprof/out/ram-offline-final-20261119-045233/test_run.log
+f2058eafe2f44a089ed6512203ed9bc7ee2e124c64570c4a01a0d5d709a52f32  bench/ab-v0210/rpcprof/out/ram-offline-final-20261119-045233/checks.log
+
+# note: summary.md is excluded from its own hash list to avoid self-reference

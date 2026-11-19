@@ -1,0 +1,17 @@
+# git scope / whitespace / drift checks (read-only) - 2026-11-19
+branch            : tg-stall-cause
+HEAD              : 3090a6f060c2790a0fca1c8387b70deef5ad05b4
+amended-base      : 5b939685eaefeefa69cccdbb8dd1dd05a9479c1a
+
+## files touched by owned range 5b939685ea^..3090a6f0 (scope gate)
+bench/ab-v0210/rpcprof/gpu-rounds/ram-parking-gpu-fixtures.md
+bench/ab-v0210/rpcprof/gpu-rounds/ram-parking-gpu-test-plan.md
+bench/ab-v0210/rpcprof/gpu-rounds/ram_acceptance.py
+bench/ab-v0210/rpcprof/tests/test_ram_acceptance_cpu.py
+journal/serving-tg-reeval-split-retest-2026-11-11.md
+
+## git diff --check 5b939685ea^ 3090a6f0  (whitespace gate)
+diff_check_exit=0 (clean)
+
+## worktree drift on the 5 owned paths vs HEAD (empty = clean)
+drift_output_end

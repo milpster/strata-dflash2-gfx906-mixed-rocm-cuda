@@ -1,0 +1,54 @@
+test_default_floor_rejected_when_mutable (__main__.Config.test_default_floor_rejected_when_mutable) ... ok
+test_duplicate_relevant_flags_rejected (__main__.Config.test_duplicate_relevant_flags_rejected) ... ok
+test_equal_helper_sockets_rejected (__main__.Config.test_equal_helper_sockets_rejected) ... ok
+test_floor_default_and_explicit (__main__.Config.test_floor_default_and_explicit) ... ok
+test_forbidden_env_drift_rejected (__main__.Config.test_forbidden_env_drift_rejected) ... ok
+test_matched_arms_equal_except_exe (__main__.Config.test_matched_arms_equal_except_exe) ... ok
+test_no_secrets_in_manifest (__main__.Config.test_no_secrets_in_manifest) ... ok
+test_production_cache_and_socket_targets_rejected (__main__.Config.test_production_cache_and_socket_targets_rejected) ... ok
+test_provenance_hash_and_publicness (__main__.Config.test_provenance_hash_and_publicness) ... ok
+test_retarget_is_nonmutating (__main__.Config.test_retarget_is_nonmutating) ... ok
+test_state_hash_env_allowed_but_mismatch_between_arms_flagged (__main__.Config.test_state_hash_env_allowed_but_mismatch_between_arms_flagged) ... ok
+test_verify_missing_value_is_problem_not_indexerror (__main__.Config.test_verify_missing_value_is_problem_not_indexerror) ... ok
+test_verify_provenance_passes_and_rejects_drift (__main__.Config.test_verify_provenance_passes_and_rejects_drift) ... ok
+test_verify_rejects_duplicate_cap (__main__.Config.test_verify_rejects_duplicate_cap) ... ok
+test_verify_rejects_duplicate_floor (__main__.Config.test_verify_rejects_duplicate_floor) ... ok
+test_verify_rejects_positional_model_path_drift (__main__.Config.test_verify_rejects_positional_model_path_drift) ... ok
+test_verify_rejects_protected_value_change (__main__.Config.test_verify_rejects_protected_value_change) ... ok
+test_verify_rejects_single_dash_token_drift (__main__.Config.test_verify_rejects_single_dash_token_drift) ... ok
+test_all_complete_zero_clients_pass (__main__.DrmGuard.test_all_complete_zero_clients_pass) ... ok
+test_duplicate_fd_collapse_to_one_client (__main__.DrmGuard.test_duplicate_fd_collapse_to_one_client) ... ok
+test_guard_opens_no_real_network (__main__.DrmGuard.test_guard_opens_no_real_network) ... ok
+test_missing_eviction_gauge_blocks (__main__.DrmGuard.test_missing_eviction_gauge_blocks) ... ok
+test_missing_pci_identity_blocks (__main__.DrmGuard.test_missing_pci_identity_blocks) ... ok
+test_missing_required_pci_blocks (__main__.DrmGuard.test_missing_required_pci_blocks) ... ok
+test_missing_resident_gauge_blocks (__main__.DrmGuard.test_missing_resident_gauge_blocks) ... ok
+test_no_required_pcas_blocks (__main__.DrmGuard.test_no_required_pcas_blocks) ... ok
+test_positive_eviction_aborts (__main__.DrmGuard.test_positive_eviction_aborts) ... ok
+test_positive_first_zero_second_aborts (__main__.DrmGuard.test_positive_first_zero_second_aborts) ... ok
+test_read_error_blocks (__main__.DrmGuard.test_read_error_blocks) ... ok
+test_zero_first_missing_gauge_second_blocks (__main__.DrmGuard.test_zero_first_missing_gauge_second_blocks) ... ok
+test_zero_first_positive_second_aborts (__main__.DrmGuard.test_zero_first_positive_second_aborts) ... ok
+test_ambiguous_rows_rejected_when_counters_asserted (__main__.ExactRestore.test_ambiguous_rows_rejected_when_counters_asserted) ... ok
+test_correct_expectation_passes (__main__.ExactRestore.test_correct_expectation_passes) ... ok
+test_draft_class_is_exact_not_substring (__main__.ExactRestore.test_draft_class_is_exact_not_substring) ... ok
+test_empty_or_missing_required_expectation_is_blocked (__main__.ExactRestore.test_empty_or_missing_required_expectation_is_blocked) ... ok
+test_restore_skipped_rejected (__main__.ExactRestore.test_restore_skipped_rejected) ... ok
+test_reused_greater_than_zero_is_not_a_pass (__main__.ExactRestore.test_reused_greater_than_zero_is_not_a_pass) ... ok
+test_shallower_and_wrong_depth_rejected (__main__.ExactRestore.test_shallower_and_wrong_depth_rejected) ... ok
+test_wrong_file_rejected (__main__.ExactRestore.test_wrong_file_rejected) ... ok
+test_fallback_requires_real_eviction_evidence (__main__.LogPredicates.test_fallback_requires_real_eviction_evidence) ... ok
+test_no_network_in_predicate_paths (__main__.LogPredicates.test_no_network_in_predicate_paths) ... ok
+test_operation_totals_count_all_reasons (__main__.LogPredicates.test_operation_totals_count_all_reasons) ... ok
+test_pressure_evidence_vs_diagnostics_split (__main__.LogPredicates.test_pressure_evidence_vs_diagnostics_split) ... ok
+test_publication_keeps_t_anchor_pair_distinct (__main__.LogPredicates.test_publication_keeps_t_anchor_pair_distinct) ... ok
+test_raw_token_ids_and_state_comparisons (__main__.LogPredicates.test_raw_token_ids_and_state_comparisons) ... ok
+test_refusal_turn_does_not_require_restore_success (__main__.LogPredicates.test_refusal_turn_does_not_require_restore_success) ... ok
+test_restore_success_turn_requires_restore_line (__main__.LogPredicates.test_restore_success_turn_requires_restore_line) ... ok
+test_unengaged_pressure_is_never_pass (__main__.LogPredicates.test_unengaged_pressure_is_never_pass) ... ok
+
+----------------------------------------------------------------------
+Ran 48 tests in 0.017s
+
+OK
+test_exit=0
