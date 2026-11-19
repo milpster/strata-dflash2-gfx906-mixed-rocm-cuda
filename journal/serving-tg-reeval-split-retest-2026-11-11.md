@@ -4433,3 +4433,19 @@ Runtime locking remains blocked on expert/PLE mapping coverage and total-fit pro
   `bench/ab-v0210/rpcprof/out/expert-lock-trial-20261119/`. Limit: extent locking covers the resident
   (reclaim-vulnerable) subset of the expert source shards; tensor-level expert-only coverage within
   those extents is inferred from the serving path, not proven.
+
+## 2026-11-19 (night) — expert-page lock trial: runs 1 and 2, verdict
+
+- Run 1 (`out/expert-lock-trial-20261119/`): mechanics proven (8 781.6 MiB locked, floor-guard
+  worked, clean release, ~1:1 MemAvailable cost, no TG penalty from the lock). Pressure legs
+  invalid — two harness bugs (hold-file never created so holders exited before probing; 24 GiB
+  cap below the box's absorption). Key discovery: the engine's RAM relief releases memory nearly
+  1:1 against external allocation; synthetic avail floor ≈ 7 GiB on this box.
+- Run 2 (`out/expert-lock-trial-20261119-run2/`, corrected holder-alive design): E2 locked at
+  5.0 GiB avail held ~23 tok/s with engine RSS flat 47.6 GiB; E3 unlocked at 7.0 GiB avail (more!)
+  dropped to 11–19 tok/s with the refault recovery ramp after the relief dumped ~8 GiB.
+  **Verdict: the expert-page lock protects generation under held pressure; the cost of not
+  locking is eviction churn, not the avail level itself.** Lock cost ≈ 1:1 MemAvailable,
+  floor-guarded; max lock 8.8–13 GiB depending on starting avail at a 4 GiB floor.
+- Tools committed: `file_residency.py`, `expert_shard_locker.py`, both trial drivers. Full
+  reconciliation: `out/expert-lock-trial-20261119-run2/report.md`. Prod untouched throughout.
