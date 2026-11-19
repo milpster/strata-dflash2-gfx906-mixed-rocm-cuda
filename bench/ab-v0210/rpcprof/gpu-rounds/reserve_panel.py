@@ -59,7 +59,7 @@ DEFAULT_OUT = PREP.HERE / "out" / "reserve-compare-20261119-134637"
 BASE_COMMIT = "3ad3b700341650349762b6c126b5701984bf003b"
 CONFIG_BLOB = "b21ff4ff18c1ca6306a7df4c271b32a7a6cacb1b"
 LAUNCHER_BLOB = "5a735f97341f572dfca68bbd751b7e34a88ddd0d"
-ACTIVE_CONFIG_SHA256 = "95ef3693b3f598e6bdbe534ef7a9b195e13b9e1705acc0cad2d414db09f21852"
+ACTIVE_CONFIG_SHA256 = "b221140fc394957d9a52cf475d1539340d42edc859ff7ce8e4d06d8d6bf35df8"
 ACTIVE_LAUNCHER_SHA256 = "03535a66bdc6b72d26164619b920b5f30e24b1e01382085b36bf34db9761352c"
 SOURCE_COMMIT = "42cb41b314"
 
@@ -68,7 +68,9 @@ SOURCE_COMMIT = "42cb41b314"
 # card takes the first card's value). Passed explicitly here so the auto path is not what
 # is being measured.
 ENGINE_DEFAULT_RESERVES = {"--vram-reserve-mib": "700", "--vram-reserve-later-mib": "700"}
-# What production adopted on 2026-11-19 (commit baaf65ba99, config sha 95ef3693…).
+# The 256/448 arm (production from 2026-11-19 morning, commit baaf65ba99, config sha
+# 95ef3693…; the operator switched production to the 700/700 defaults the same evening
+# after the margin comparison — config sha b221140f…).
 OPTIMISED_RESERVES = {"--vram-reserve-mib": "256", "--vram-reserve-later-mib": "448"}
 
 # Production's own request settings (prod-config-v0238.json "sampling" + "reasoning_effort").
