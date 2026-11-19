@@ -55,6 +55,7 @@ def main() -> int:
     ap.add_argument("--label", required=True)
     ap.add_argument("--continue", dest="cont", action="store_true")
     ap.add_argument("--followup", default=DEFAULT_FOLLOWUP)
+    ap.add_argument("--followup-file", help="read the continuation message from a file (long infills)")
     ap.add_argument("--max-tokens", type=int, default=MAX_TOKENS)
     ap.add_argument("--timeout", type=int, default=900)
     args = ap.parse_args()
@@ -69,7 +70,10 @@ def main() -> int:
             print("no conversation to continue", file=sys.stderr)
             return 2
         state = json.loads(state_p.read_text())
-        state["messages"].append({"role": "user", "content": args.followup})
+        followup = args.followup
+        if args.followup_file:
+            followup = Path(args.followup_file).read_text()
+        state["messages"].append({"role": "user", "content": followup})
     else:
         if not args.prompt_file:
             print("--prompt-file required for the first turn", file=sys.stderr)
