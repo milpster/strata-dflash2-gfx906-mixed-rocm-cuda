@@ -49,7 +49,9 @@ ALLOWED_ENV_KEYS = frozenset(STATE_HASH_ENV)
 
 OFFLINE_PREPARATION = True
 OUTSTANDING_GATES = (
-    "raw-transport bridge (HTTP text/state-hash/log-token vs raw StrataEngine token IDs) is a parent decision",
+    "exact raw token-ID/state equality is REQUIRED (HTTP text/state-hash/log-token is NOT equivalent); "
+    "only the faithful raw-transport LIFECYCLE ADAPTER (engine_args/child_env + helper/env/scope/affinity, "
+    "exactly-one-pair, no serving loop) remains unimplemented and gated — the choice itself is settled",
     "finite calibrated startup-only cap ladder + physical MemAvailable/swap bounds are parent-owned",
     "exact GPU deepest-PUBLISHED cold-restart and same-boot RAM checkpoint-selection need concrete GPU fixtures",
     "GPU acceptance remains paused; parent alone runs any explicit calibration/test window between agent turns",
@@ -73,12 +75,35 @@ class ConfigRejected(ValueError):
 # =============================================================================
 
 def _flag_value(args: list[str], flag: str) -> str | None:
-    """Tolerant read of a value-taking flag from an args list (None when absent)."""
-    return args[args.index(flag) + 1] if flag in args else None
+    """Tolerant read of a value-taking flag (None when absent, bare, or followed by a flag)."""
+    if flag not in args:
+        return None
+    index = args.index(flag)
+    if index + 1 >= len(args) or args[index + 1].startswith("-"):
+        return None
+    return args[index + 1]
 
 
 def _flag_count(args: list[str], flag: str) -> int:
     return args.count(flag)
+
+
+def _value_slots(args: list[str], flag: str) -> tuple[list[str], int]:
+    """(values, missing_count) for every occurrence of a value-taking flag.
+
+    A bare flag or one immediately followed by another flag counts as a missing value so
+    verification reports it instead of raising an IndexError.
+    """
+    values, missing, i = [], 0, 0
+    while i < len(args):
+        if args[i] == flag:
+            if i + 1 < len(args) and not args[i + 1].startswith("-"):
+                values.append(args[i + 1])
+                i += 2
+                continue
+            missing += 1
+        i += 1
+    return values, missing
 
 
 def min_free_floor_mib(cfg: dict) -> int:
@@ -203,16 +228,16 @@ def build_test_config(base_cfg: dict, *, arm: str, out_dir: Path, exe: str,
 
 # Top-level keys that legitimately differ between arms; everything else must match.
 _ALLOW_TOP = {"exe", "log", "port", "expert_helper_socket", "expert_helper_socket2"}
-# Arg flags whose per-arm value is an isolated-path delta, removed before comparison.
-_ALLOW_ARGS = {"--conversation-cache-dir"}
 
 
 def verify_test_pair(baseline_cfg: dict, candidate_cfg: dict) -> list[str]:
-    """Problems proving the two arm configs are equal except exe + isolated paths/cap.
+    """Problems proving the two arm configs are equal except exe + isolated cache-dir.
 
-    Returns [] when the arms are matched: identical quality args, identical env, the
-    same memory-limit cap, and the immutable 2560 floor. The engine exe and the
-    arm-specific cache directory are the only intentional differences.
+    Returns [] when the arms match: an exact argv sequence (only the isolated
+    --conversation-cache-dir VALUE slot may differ), identical env, the same
+    startup-only memory-limit cap, and the immutable 2560 MiB floor. Protected
+    floor/cap/cache flags are re-validated directly here, so a duplicate or a
+    conflicting value cannot slip past build_test_config.
     """
     problems: list[str] = []
     for label, cfg in (("baseline", baseline_cfg), ("candidate", candidate_cfg)):
@@ -220,11 +245,12 @@ def verify_test_pair(baseline_cfg: dict, candidate_cfg: dict) -> list[str]:
             floor = min_free_floor_mib(cfg)
         except ConfigRejected as exc:
             problems.append(f"{label}: {exc}")
-            continue
-        if floor != FLOOR_MIB:
+            floor = None
+        if floor is not None and floor != FLOOR_MIB:
             problems.append(f"{label}: RAM floor {floor} != {FLOOR_MIB}")
         if cfg.get("expert_helper_socket") == cfg.get("expert_helper_socket2"):
             problems.append(f"{label}: helper sockets are not two distinct endpoints")
+        problems.extend(_protected_flag_problems(cfg.get("args", []), label))
 
     if set(baseline_cfg) != set(candidate_cfg):
         problems.append(f"key sets differ: {sorted(set(baseline_cfg) ^ set(candidate_cfg))}")
@@ -246,50 +272,67 @@ def verify_test_pair(baseline_cfg: dict, candidate_cfg: dict) -> list[str]:
     return problems
 
 
-def _arg_differences(baseline_args: list[str], candidate_args: list[str]) -> list[str]:
-    """Compare arg views after stripping arm-specific isolated-path flags."""
-    base = _arg_view(baseline_args)
-    cand = _arg_view(candidate_args)
-    if base == cand:
-        return []
-    diffs = []
-    for flag in sorted(set(base) | set(cand)):
-        if base.get(flag) != cand.get(flag):
-            diffs.append(f"quality/limit arg differs on {flag}: "
-                         f"{base.get(flag)!r} vs {cand.get(flag)!r}")
-    # Multiset of valueless positional tokens must also agree.
-    base_flags = _flag_multiset(baseline_args)
-    cand_flags = _flag_multiset(candidate_args)
-    if base_flags != cand_flags:
-        diffs.append("arg flag multiset differs between arms")
-    return diffs
+def _protected_flag_problems(args: list[str], label: str) -> list[str]:
+    """Direct duplicate/conflict validation of the protected value flags (no build path)."""
+    problems: list[str] = []
+    floor_vals, floor_missing = _value_slots(args, "--conversation-cache-min-free-mib")
+    if floor_missing:
+        problems.append(f"{label}: --conversation-cache-min-free-mib has no value")
+    if len(floor_vals) > 1:
+        problems.append(f"{label}: duplicate --conversation-cache-min-free-mib {floor_vals}")
+    for value in floor_vals:
+        if not value.isdigit() or int(value) != FLOOR_MIB:
+            problems.append(f"{label}: RAM floor {value!r} != {FLOOR_MIB} (floor is never a knob)")
+
+    cache_vals, cache_missing = _value_slots(args, "--conversation-cache-dir")
+    if cache_missing:
+        problems.append(f"{label}: --conversation-cache-dir has no value")
+    if len(cache_vals) > 1:
+        problems.append(f"{label}: duplicate conflicting --conversation-cache-dir {cache_vals}")
+
+    cap_vals, cap_missing = _value_slots(args, "--memory-limit-mib")
+    if cap_missing:
+        problems.append(f"{label}: --memory-limit-mib has no value")
+    if len(cap_vals) > 1:
+        problems.append(f"{label}: duplicate --memory-limit-mib {cap_vals}")
+    for value in cap_vals:
+        if not value.isdigit() or int(value) <= 0:
+            problems.append(f"{label}: --memory-limit-mib {value!r} is not a positive MiB cap")
+    return problems
 
 
-def _arg_view(args: list[str]) -> dict:
-    """flag -> value map, excluding arm-isolated flags whose values legitimately differ."""
-    view: dict[str, str | bool] = {}
-    i = 0
+_CACHE_DIR_SLOT = "<isolated-cache-dir>"
+
+
+def _normalized_args(args: list[str]) -> list[str]:
+    """Exact argv copy with only --conversation-cache-dir VALUE slots replaced by a sentinel.
+
+    Every other token — quality/model paths, single-dash options, positionals and their
+    order — is preserved, so a real drift cannot hide behind a flag->value projection.
+    """
+    out, i = [], 0
     while i < len(args):
         token = args[i]
-        if token.startswith("--"):
-            nxt = args[i + 1] if i + 1 < len(args) else None
-            if nxt is not None and not nxt.startswith("--"):
-                if token not in _ALLOW_ARGS:
-                    view[token] = nxt
-                i += 2
-                continue
-            if token not in _ALLOW_ARGS:
-                view[token] = True
+        out.append(token)
+        if token == "--conversation-cache-dir" and i + 1 < len(args) and not args[i + 1].startswith("-"):
+            out.append(_CACHE_DIR_SLOT)
+            i += 2
+            continue
         i += 1
-    return view
+    return out
 
 
-def _flag_multiset(args: list[str]) -> dict:
-    counts: dict[str, int] = {}
-    for token in args:
-        if token.startswith("--") and token not in _ALLOW_ARGS:
-            counts[token] = counts.get(token, 0) + 1
-    return counts
+def _arg_differences(baseline_args: list[str], candidate_args: list[str]) -> list[str]:
+    """Exact argv-sequence comparison after replacing only the isolated cache-dir slots."""
+    base = _normalized_args(baseline_args)
+    cand = _normalized_args(candidate_args)
+    if base == cand:
+        return []
+    for index in range(min(len(base), len(cand))):
+        if base[index] != cand[index]:
+            return [f"args differ at position {index}: {base[index]!r} vs {cand[index]!r} "
+                    f"(only the isolated cache-dir value may differ)"]
+    return [f"args length differs: {len(base)} vs {len(cand)}"]
 
 
 def provenance_manifest(files: dict[str, Path]) -> dict:
@@ -321,6 +364,34 @@ def manifest_is_public(manifest: dict, *, secret_markers: tuple[str, ...] =
     return not any(marker in blob for marker in secret_markers)
 
 
+def verify_provenance(expected: dict, actual: dict) -> list[str]:
+    """Compare an actual manifest against a SEPARATELY frozen expected manifest ([] = match).
+
+    Fails on a missing or added role, or a changed sha256/byte-size. The expected manifest
+    is a pre-test frozen input — this never scores the actual against itself, and it adds
+    no secret scanning or environ dump. Offline provenance only: a match is not runtime
+    readiness.
+    """
+    expected_files = expected.get("files", {}) if isinstance(expected, dict) else {}
+    actual_files = actual.get("files", {}) if isinstance(actual, dict) else {}
+    if not expected_files:
+        return ["expected manifest has no frozen file roles to verify against"]
+    problems: list[str] = []
+    for role, exp in expected_files.items():
+        act = actual_files.get(role)
+        if act is None:
+            problems.append(f"missing role in actual manifest: {role}")
+            continue
+        if act.get("sha256") != exp.get("sha256"):
+            problems.append(f"sha256 drift for role {role}: {exp.get('sha256')} != {act.get('sha256')}")
+        if act.get("bytes") != exp.get("bytes"):
+            problems.append(f"byte-size drift for role {role}: {exp.get('bytes')} != {act.get('bytes')}")
+    for role in actual_files:
+        if role not in expected_files:
+            problems.append(f"unexpected role not in frozen manifest: {role}")
+    return problems
+
+
 # =============================================================================
 # 2. LOG / PREDICATE SUPPORT (actual-source log strings; each line counted once)
 # =============================================================================
@@ -332,10 +403,13 @@ _PARK_ALLOC = re.compile(r"allocation failed; skip parking", re.IGNORECASE)
 _CKPT_SKIP = re.compile(r"checkpoint at \d+ skipped:", re.IGNORECASE)
 _RESTORE_SKIP = re.compile(r"skip restore \(", re.IGNORECASE)
 _RESTORE_SKIPPED = re.compile(r"disk restore skipped \(", re.IGNORECASE)
-# Fix-ONLY engagement lines (present on the approved RAM source; a lower count is not a
-# baseline comparison). Boot band, admitted-after, eviction-to-admit, RAM-guard admitted.
-_ENGAGE = re.compile(r"(admitted after|is the limiter|RAM guard admitted|"
-                     r"evicted \d+ parked conversation|for its \d+ MiB host copy)", re.IGNORECASE)
+# Pressure evidence is split into two families:
+#  - eviction-to-admit / donor progress (measured reclamation, a refusal reason): real pressure
+#  - boot limiter-description / plain RAM-guard admission: diagnostic only, NOT demonstrated pressure
+_EVICTION_TO_ADMIT = re.compile(r"(admitted after|evicted \d+ parked conversation|"
+                                r"for its \d+ MiB host copy|RAM guard refused|evicted \d+ to admit)",
+                                re.IGNORECASE)
+_LIMITER_OR_ADMIT = re.compile(r"(is the limiter|RAM guard admitted)", re.IGNORECASE)
 _FIX_ONLY_HEADROOM = re.compile(r"restore headroom", re.IGNORECASE)
 
 # Publication + restore boundaries (distinct fields, never equated):
@@ -364,7 +438,8 @@ def operation_totals(window: bytes) -> dict:
     """
     totals = {"park_refusal": 0, "checkpoint_skip": 0, "restore_refusal": 0}
     reasons: dict[str, int] = {}
-    fix_only_engagement = 0
+    pressure_evidence = 0   # measured donor progress / eviction-to-admit / RAM-guard refusal
+    limiter_or_admit = 0    # boot limiter-description or plain RAM-guard admission (diagnostic only)
     for line in _lines(window):
         bucket = None
         if _RESTORE_SKIPPED.search(line) or _RESTORE_SKIP.search(line):
@@ -379,14 +454,18 @@ def operation_totals(window: bytes) -> dict:
             reasons[reason] = reasons.get(reason, 0) + 1
             if _FIX_ONLY_HEADROOM.search(line):
                 reasons["_restore_headroom(diagnostic)"] = reasons.get("_restore_headroom(diagnostic)", 0) + 1
-        elif _ENGAGE.search(line):
-            fix_only_engagement += 1
+        elif _EVICTION_TO_ADMIT.search(line):
+            pressure_evidence += 1
+        elif _LIMITER_OR_ADMIT.search(line):
+            limiter_or_admit += 1
     return {
         "offline_preparation": OFFLINE_PREPARATION,
         "totals": totals,
         "reasons": reasons,
         "refusal_grand_total": sum(totals.values()),
-        "fix_only_engagement": fix_only_engagement,
+        "pressure_evidence": pressure_evidence,
+        "limiter_or_admit": limiter_or_admit,
+        "fix_only_engagement": pressure_evidence + limiter_or_admit,
     }
 
 
@@ -437,21 +516,61 @@ def parse_restore(window: bytes) -> dict:
 REFUSAL, FALLBACK, RESTORE_SUCCESS = "REFUSAL", "FALLBACK", "RESTORE_SUCCESS"
 
 
-def classify_turn(window: bytes, declared_class: str, *, expected_reused: int | None = None) -> dict:
-    """Score one declared turn against the lines actually in its byte window."""
+def _evicted_total(eviction) -> int | None:
+    """Total evicted bytes from caller-supplied byte-pressure facts; None if unproven.
+
+    Accepts an int (bytes), a mapping with `evicted_bytes`, or a list of such facts. It
+    never infers eviction from a zero cache reuse or a restore success.
+    """
+    if eviction is None or isinstance(eviction, bool):
+        return None
+    if isinstance(eviction, int):
+        return eviction
+    if isinstance(eviction, dict):
+        value = eviction.get("evicted_bytes")
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+    if isinstance(eviction, (list, tuple)):
+        if not eviction:
+            return None
+        total = 0
+        for item in eviction:
+            part = _evicted_total(item)
+            if part is None:
+                return None
+            total += part
+        return total
+    return None
+
+
+def classify_turn(window: bytes, declared_class: str, *, expected_reused: int | None = None,
+                  eviction=None) -> dict:
+    """Score one declared turn against the lines actually in its byte window.
+
+    FALLBACK is a byte-pressure cache miss: it needs a real completed request row, zero
+    reuse, and positive byte-eviction evidence supplied by the caller. Zero reuse alone, a
+    plain fresh prompt or an empty window is NOT byte-pressure engagement.
+    """
     if declared_class not in (REFUSAL, FALLBACK, RESTORE_SUCCESS):
         return {"verdict": FAIL, "problems": [f"unknown turn class {declared_class!r}"]}
     ops = operation_totals(window)
     restore = parse_restore(window)
-    reused = sum(p.reused for p in prompt_passes(window))
+    passes = prompt_passes(window)
+    reused = sum(p.reused for p in passes)
     problems: list[str] = []
     if declared_class == REFUSAL:
         if ops["refusal_grand_total"] == 0:
             problems.append("declared REFUSAL turn shows no refusal line")
         # A refusal turn must NOT be scored on restore success; success is ignored here.
     elif declared_class == FALLBACK:
+        if not passes:
+            problems.append("declared FALLBACK turn has no completed request row")
         if reused != 0:
             problems.append(f"declared FALLBACK (byte-eviction miss) turn reused {reused} tokens")
+        total = _evicted_total(eviction)
+        if total is None:
+            problems.append("declared FALLBACK turn lacks byte-eviction evidence (unproven coverage)")
+        elif total <= 0:
+            problems.append(f"declared FALLBACK byte-eviction evidence is not positive ({total})")
         if restore["successes"]:
             problems.append("declared FALLBACK turn shows a restore success (conflated classes)")
     elif declared_class == RESTORE_SUCCESS:
@@ -462,24 +581,22 @@ def classify_turn(window: bytes, declared_class: str, *, expected_reused: int | 
         if expected_reused is not None and reused != expected_reused:
             problems.append(f"reused {reused} != expected {expected_reused}")
     verdict = PASS if not problems else FAIL
-    return {"verdict": verdict, "problems": problems, "engaged": bool(ops["fix_only_engagement"]
-            or ops["refusal_grand_total"] or restore["successes"])}
+    return {"verdict": verdict, "problems": problems, "engaged": bool(ops["refusal_grand_total"]
+            or ops["pressure_evidence"] or _evicted_total(eviction))}
 
 
 def pressure_engagement(window: bytes) -> dict:
-    """PASS only when a pressure window shows a guard/refusal/restore line; else UNENGAGED.
+    """PASS only on real pressure: a refusal or measured eviction-to-admit/donor progress.
 
-    Unengaged pressure is never a pass: a window with no guard activity proves nothing
-    about the restore headroom band and must not be scored as inert-cap success.
+    A boot limiter-description (`is the limiter`) or a plain RAM-guard admission alone is a
+    diagnostic, NOT demonstrated pressure, and yields UNENGAGED. So does a bare restore
+    success or an empty window.
     """
     ops = operation_totals(window)
-    restore = parse_restore(window)
-    engaged = ops["fix_only_engagement"] + ops["refusal_grand_total"]
-    if engaged == 0 and not restore["successes"]:
-        return {"verdict": UNENGAGED, "problems": ["no park/checkpoint/restore guard line observed"]}
-    if ops["fix_only_engagement"] == 0 and ops["refusal_grand_total"] == 0 and restore["successes"]:
-        # A successful restore with no refusal/engagement line: engagement is not proven.
-        return {"verdict": UNENGAGED, "problems": ["restore success without any guard/engagement line"]}
+    if ops["refusal_grand_total"] == 0 and ops["pressure_evidence"] == 0:
+        detail = ("only boot-band/admission diagnostics, no refusal or eviction-to-admit"
+                  if ops["limiter_or_admit"] else "no refusal or eviction-to-admit line observed")
+        return {"verdict": UNENGAGED, "problems": [detail]}
     return {"verdict": PASS, "problems": []}
 
 
@@ -525,16 +642,32 @@ class RestoreExpectation:
     same actual row this object scores. T (target depth), anchor and pair_prefix stay
     distinct; nothing here equates pair_prefix < anchor with a shallower cold resume.
     """
-    published_file: str | None = None      # expected restored file identity
-    target_depth: int | None = None        # expected deepest PUBLISHED depth (== T)
-    draft_class: str | None = None         # expected resume classification substring
+    published_file: str | None = None      # REQUIRED nonempty expected restored file identity
+    target_depth: int | None = None        # REQUIRED positive exact deepest PUBLISHED depth (== T)
+    draft_class: str | None = None         # optional exact canonical resume classification (full string)
     expected_reused: int | None = None
     expected_read: int | None = None
     reject_restore_skipped: bool = True
 
 
 def evaluate_restore(window: bytes, expectation: RestoreExpectation) -> dict:
-    """Validate an actual restore window against the frozen expectation; no tolerance."""
+    """Validate an actual restore window against the frozen expectation; no tolerance.
+
+    A PASS requires a separately supplied nonempty published-file identity AND a positive
+    exact target depth first — never implicit wildcards. Missing required expectation data
+    is BLOCKED. When reused/read claims are asserted, exactly one completed-request row is
+    required (distinct requests must not be summed into an apparent match). Draft class, when
+    supplied, must equal the exact canonical classification string, not a substring.
+    """
+    missing: list[str] = []
+    if not (isinstance(expectation.published_file, str) and expectation.published_file.strip()):
+        missing.append("published_file identity required (nonempty)")
+    if not (isinstance(expectation.target_depth, int) and not isinstance(expectation.target_depth, bool)
+            and expectation.target_depth > 0):
+        missing.append("positive exact target_depth required")
+    if missing:
+        return {"verdict": BLOCKED, "problems": missing}
+
     restore = parse_restore(window)
     problems: list[str] = []
     if expectation.reject_restore_skipped and restore["skipped"]:
@@ -544,31 +677,31 @@ def evaluate_restore(window: bytes, expectation: RestoreExpectation) -> dict:
         return {"verdict": FAIL, "problems": problems}
     if len(restore["successes"]) > 1:
         problems.append(f"ambiguous: {len(restore['successes'])} restore-success lines in one window")
+        return {"verdict": FAIL, "problems": problems}
 
     success = restore["successes"][0]
-    if expectation.published_file is not None and success["file"] != expectation.published_file:
+    if success["file"] != expectation.published_file:
         problems.append(f"restored file {success['file']!r} != expected {expectation.published_file!r}")
-    if expectation.target_depth is not None:
-        if success["depth"] < expectation.target_depth:
-            problems.append(f"restored depth {success['depth']} is shallower than target "
-                            f"{expectation.target_depth}")
-        elif success["depth"] != expectation.target_depth:
-            problems.append(f"restored depth {success['depth']} != target {expectation.target_depth}")
-    if expectation.draft_class is not None and expectation.draft_class not in success["draft_class"]:
-        problems.append(f"draft class {success['draft_class']!r} does not match declared "
+    if success["depth"] != expectation.target_depth:
+        relation = "shallower than" if success["depth"] < expectation.target_depth else "different from"
+        problems.append(f"restored depth {success['depth']} is {relation} target "
+                        f"{expectation.target_depth} (exact match required)")
+    if expectation.draft_class is not None and success["draft_class"] != expectation.draft_class:
+        problems.append(f"draft class {success['draft_class']!r} does not exactly equal declared "
                         f"{expectation.draft_class!r}")
 
-    passes = prompt_passes(window)
     if expectation.expected_reused is not None or expectation.expected_read is not None:
-        if not passes:
-            problems.append("no reused/read line to compare against expectations")
-        reused = sum(p.reused for p in passes)
-        read = sum(p.read for p in passes)
-        if expectation.expected_reused is not None and reused != expectation.expected_reused:
-            problems.append(f"reused {reused} != expected {expectation.expected_reused} "
-                            "(reused>0 alone is not a pass)")
-        if expectation.expected_read is not None and read != expectation.expected_read:
-            problems.append(f"read {read} != expected {expectation.expected_read}")
+        passes = prompt_passes(window)
+        if len(passes) != 1:
+            problems.append(f"ambiguous: {len(passes)} completed-request rows while reused/read "
+                            "claims are asserted (must be exactly one)")
+        else:
+            reused, read = passes[0].reused, passes[0].read
+            if expectation.expected_reused is not None and reused != expectation.expected_reused:
+                problems.append(f"reused {reused} != expected {expectation.expected_reused} "
+                                "(reused>0 alone is not a pass)")
+            if expectation.expected_read is not None and read != expectation.expected_read:
+                problems.append(f"read {read} != expected {expectation.expected_read}")
 
     return {"verdict": PASS if not problems else FAIL, "problems": problems}
 
@@ -580,9 +713,11 @@ def evaluate_restore(window: bytes, expectation: RestoreExpectation) -> dict:
 def gpu_eviction_guard(pid: int, required_pcis, proc_root: str) -> dict:
     """Eviction guard for a caller-supplied PID + expected PCI identities via the real reader.
 
-    BLOCKED on any fdinfo read error, missing client identity, or a declared target PCI
-    that has no gauge data. ABORT on any positive evicted bytes for a required target.
-    Zero eviction is accepted only when data exists for every declared target PCI.
+    Checks EVERY distinct client on each declared target PCI (not just the first), so a
+    zero-eviction client cannot hide a positive-eviction sibling sharing the same PCI.
+    ABORT if ANY client on a required target shows positive evicted bytes; BLOCKED if a
+    required PCI has no client or any client is missing an eviction/residency gauge. PASS
+    only when every required target's every client has all gauges present and zero eviction.
     This closes the reader affordance, not physical safety policy: free VRAM is NOT an
     eviction proxy, and no host-swap policy or periodic monitor is added here.
     """
@@ -595,38 +730,44 @@ def gpu_eviction_guard(pid: int, required_pcis, proc_root: str) -> dict:
     if not clients:
         return {"verdict": BLOCKED, "problems": ["no DRM client identity observed for the selected PID"]}
 
-    by_pci: dict[str, dict] = {}
+    by_pci: dict[str, list[dict]] = {}
     for client in clients:
-        by_pci.setdefault(str(client["pci"]), client)
+        by_pci.setdefault(str(client["pci"]), []).append(client)
 
-    problems_blocked: list[str] = []
-    abort: list[str] = []
+    abort, blocked = [], []
     for pci in required:
-        client = by_pci.get(pci)
-        if client is None:
-            problems_blocked.append(f"no gauge data for required PCI {pci}")
+        targets = by_pci.get(pci)
+        if not targets:
+            blocked.append(f"no gauge data for required PCI {pci}")
             continue
-        evicted = client.get("evicted_bytes")
-        if evicted is None:
-            problems_blocked.append(f"eviction gauge missing for required PCI {pci}")
-        elif evicted > 0:
-            abort.append(f"PCI {pci} shows {evicted} evicted bytes")
+        for client in targets:
+            ident = f"PCI {pci} client {client.get('client_id')}"
+            evicted = client.get("evicted_bytes")
+            if evicted is None:
+                blocked.append(f"eviction gauge missing for {ident}")
+            elif evicted > 0:
+                abort.append(f"{ident} shows {evicted} evicted bytes")
+            for gauge in ("resident_vram_bytes", "resident_gtt_bytes"):
+                if client.get(gauge) is None:
+                    blocked.append(f"{gauge} gauge missing for {ident}")
     if abort:
         return {"verdict": ABORT, "problems": abort, "clients": _summary(clients)}
-    if problems_blocked:
-        return {"verdict": BLOCKED, "problems": problems_blocked, "clients": _summary(clients)}
+    if blocked:
+        return {"verdict": BLOCKED, "problems": blocked, "clients": _summary(clients)}
     return {"verdict": PASS, "problems": [], "clients": _summary(clients)}
 
 
 def _summary(clients) -> list[dict]:
     return [{"pci": c["pci"], "client_id": c["client_id"], "fds": c["fds"],
-             "evicted_bytes": c["evicted_bytes"]} for c in clients]
+             "evicted_bytes": c["evicted_bytes"], "resident_vram_bytes": c["resident_vram_bytes"],
+             "resident_gtt_bytes": c["resident_gtt_bytes"]} for c in clients]
 
 
 __all__ = [
     "FLOOR_MIB", "STATE_HASH_ENV", "OFFLINE_PREPARATION", "OUTSTANDING_GATES",
     "ConfigRejected", "min_free_floor_mib", "build_test_config", "verify_test_pair",
-    "provenance_manifest", "manifest_is_public", "prompt_passes", "operation_totals",
+    "provenance_manifest", "manifest_is_public", "verify_provenance", "prompt_passes",
+    "operation_totals",
     "parse_publication", "parse_restore", "classify_turn", "pressure_engagement",
     "compare_state", "compare_token_ids", "RestoreExpectation", "evaluate_restore",
     "gpu_eviction_guard", "sha256_path",

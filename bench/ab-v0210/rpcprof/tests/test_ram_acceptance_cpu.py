@@ -4,9 +4,11 @@
   python3 tests/test_ram_acceptance_cpu.py        # stdlib only
 The helper is exercised directly (not re-implemented here). Fixtures live under the
 project-local, git-ignored out/tests-tmp; the real benchmark/cache trees are untouched.
+Regression cases below pin the concrete false-PASS classes the first pass missed.
 """
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import shutil
@@ -39,7 +41,6 @@ def base_config() -> dict:
 
 
 def build_arm(base: dict, arm: str, out: Path, **over):
-    """Build one matched arm config with isolated paths under `out`."""
     exe = over.pop("exe", str(out / "slots" / arm / "rpcw-hip" / "strata"))
     return RA.build_test_config(
         base, arm=arm, out_dir=out, exe=exe,
@@ -50,8 +51,6 @@ def build_arm(base: dict, arm: str, out: Path, **over):
 
 
 class _NoNetwork:
-    """Fails the moment anything in the code under test opens a socket."""
-
     def __enter__(self):
         self._socket, self._urlopen = socket.socket, urllib.request.urlopen
 
@@ -86,9 +85,15 @@ PUB = ("strata serve: conversation cache: disk park streamed 32000 tokens chat t
        "pair=15000 tail-draft=1 pages-released=0 (0 MiB released)")
 RESTORED = ("strata serve: conversation cache: restored 32000 tokens from disk (/cache/gen.bin) "
             "in 12.3 ms: complete target+draft hit (pair: tail ring)")
-GUARD_ADMIT = "strata serve: conversation cache: disk tier RAM guard admitted: 120 MiB available"
+RESTORED_AT_PAIR = ("strata serve: conversation cache: restored 32000 tokens from disk (/cache/gen.bin) "
+                    "in 12.3 ms: complete target+draft hit (pair: checkpoint at 32000)")
+# Boot limiter-description and plain RAM-guard admission: diagnostics only, NOT pressure.
+BOOT_BAND = "strata serve: conversation cache: restore headroom 4096 MiB (MemAvailable is the limiter; band 1024 MiB)"
+RAM_GUARD_ADMIT = "strata serve: conversation cache: disk tier RAM guard admitted: 120 MiB available"
+# Eviction-to-admit / donor progress and RAM-guard refusal: real demonstrated pressure.
 CKPT_EVICT = ("strata serve: checkpoint at 16000: evicted 3 parked conversations for its "
               "400 MiB host copy")
+RAM_GUARD_REFUSED = "strata serve: conversation cache: disk tier RAM guard refused: 100 MiB available below floor+band"
 
 
 def blob(*lines: str) -> bytes:
@@ -102,7 +107,7 @@ def blob(*lines: str) -> bytes:
 class Config(unittest.TestCase):
     def test_floor_default_and_explicit(self):
         base = base_config()
-        self.assertEqual(RA.min_free_floor_mib(base), 2560)  # absent flag == 2560 default
+        self.assertEqual(RA.min_free_floor_mib(base), 2560)
         raised = {"args": base["args"] + ["--conversation-cache-min-free-mib", "1024"]}
         self.assertEqual(RA.min_free_floor_mib(raised), 1024)
         with self.assertRaises(RA.ConfigRejected):
@@ -111,7 +116,6 @@ class Config(unittest.TestCase):
                                  cache_dir="/tmp/x/cache", engine_log="/tmp/x/l.log")
 
     def test_default_floor_rejected_when_mutable(self):
-        """A non-default floor in the base config is rejected; the floor is never a knob."""
         base = base_config()
         base["args"] = base["args"] + ["--conversation-cache-min-free-mib", "3072"]
         with self.assertRaises(RA.ConfigRejected):
@@ -120,8 +124,7 @@ class Config(unittest.TestCase):
     def test_retarget_is_nonmutating(self):
         base = base_config()
         snapshot = json.dumps(base, sort_keys=True)
-        out = fresh_scratch(self)
-        build_arm(base, "baseline", out)
+        build_arm(base, "baseline", fresh_scratch(self))
         self.assertEqual(json.dumps(base, sort_keys=True), snapshot)
 
     def test_matched_arms_equal_except_exe(self):
@@ -130,8 +133,59 @@ class Config(unittest.TestCase):
         a = build_arm(base, "baseline", out, exe="/slots/baseline/rpcw-hip/strata")
         b = build_arm(base, "candidate", out, exe="/slots/candidate/rpcw-hip/strata")
         self.assertEqual(RA.verify_test_pair(a, b), [])
-        # exe is the only intended difference between the two engine identities
         self.assertNotEqual(a["exe"], b["exe"])
+
+    def _raw_pair(self, extra_args: list[str]) -> tuple[dict, dict]:
+        base = base_config()
+        a, c = copy.deepcopy(base), copy.deepcopy(base)
+        a["exe"], c["exe"] = "/slots/baseline/strata", "/slots/candidate/strata"
+        a["expert_helper_socket"], a["expert_helper_socket2"] = "/x/a.sock", "/x/a2.sock"
+        c["expert_helper_socket"], c["expert_helper_socket2"] = "/x/b.sock", "/x/b2.sock"
+        a["args"] = a["args"] + extra_args
+        c["args"] = c["args"] + extra_args
+        return a, c
+
+    def test_verify_rejects_positional_model_path_drift(self):
+        out = fresh_scratch(self)
+        base = base_config()
+        a = build_arm(base, "baseline", out)
+        c = build_arm(base, "candidate", out)
+        c["args"] = [("/other.gguf" if tok.endswith("00004-of-00004.gguf") else tok)
+                     for tok in c["args"]]
+        problems = RA.verify_test_pair(a, c)
+        self.assertTrue(any("args differ" in p for p in problems), problems)
+
+    def test_verify_rejects_single_dash_token_drift(self):
+        out = fresh_scratch(self)
+        base = base_config()
+        a = build_arm(base, "baseline", out)
+        c = build_arm(base, "candidate", out)
+        c["args"] = c["args"] + ["-x", "5"]  # single-dash + positional, previously projected away
+        self.assertTrue(any("args differ" in p or "args length" in p
+                            for p in RA.verify_test_pair(a, c)))
+
+    def test_verify_rejects_protected_value_change(self):
+        a, c = self._raw_pair([])
+        c["args"] = ["4" if (a["args"][i] == "--spec") else tok
+                     for i, tok in enumerate(c["args"])]  # --spec 5 -> 4 on the candidate only
+        self.assertTrue(any("args differ" in p for p in RA.verify_test_pair(a, c)))
+
+    def test_verify_rejects_duplicate_floor(self):
+        a, c = self._raw_pair(["--conversation-cache-min-free-mib", "2560",
+                               "--conversation-cache-min-free-mib", "1024"])
+        problems = RA.verify_test_pair(a, c)
+        self.assertTrue(any("duplicate --conversation-cache-min-free-mib" in p for p in problems), problems)
+        self.assertTrue(any("RAM floor" in p for p in problems), problems)
+
+    def test_verify_rejects_duplicate_cap(self):
+        a, c = self._raw_pair(["--memory-limit-mib", "12000", "--memory-limit-mib", "9000"])
+        problems = RA.verify_test_pair(a, c)
+        self.assertTrue(any("duplicate --memory-limit-mib" in p for p in problems), problems)
+
+    def test_verify_missing_value_is_problem_not_indexerror(self):
+        a, c = self._raw_pair(["--memory-limit-mib"])  # bare cap at end
+        problems = RA.verify_test_pair(a, c)
+        self.assertTrue(any("has no value" in p for p in problems), problems)
 
     def test_equal_helper_sockets_rejected(self):
         out = fresh_scratch(self)
@@ -160,7 +214,7 @@ class Config(unittest.TestCase):
         base = base_config()
         base["args"] = base["args"] + ["--conversation-cache-dir", "/home/srcds/strata-conv-cache"]
         out = fresh_scratch(self)
-        with self.assertRaises(RA.ConfigRejected):  # duplicate --conversation-cache-dir
+        with self.assertRaises(RA.ConfigRejected):
             RA.build_test_config(base, arm="x", out_dir=out, exe="/e",
                                  socket1=str(out / "run/a.sock"), socket2=str(out / "run/b.sock"),
                                  cache_dir=str(out / "cache/x"), engine_log=str(out / "logs/x.log"))
@@ -174,9 +228,8 @@ class Config(unittest.TestCase):
         out = fresh_scratch(self)
         base = base_config()
         a = build_arm(base, "baseline", out, env={"STRATA_STATE_HASH": "1"})
-        b = build_arm(base, "candidate", out)  # diagnostics must match; here only one arm set it
-        problems = RA.verify_test_pair(a, b)
-        self.assertTrue(any("env" in p for p in problems), problems)
+        b = build_arm(base, "candidate", out)
+        self.assertTrue(any("env" in p for p in RA.verify_test_pair(a, b)))
         c = build_arm(base, "candidate", out, env={"STRATA_STATE_HASH": "1"})
         self.assertEqual(RA.verify_test_pair(a, c), [])
 
@@ -191,16 +244,33 @@ class Config(unittest.TestCase):
             files[role] = path
         manifest = RA.provenance_manifest(files)
         for role, path in files.items():
-            self.assertEqual(manifest["files"][role]["sha256"], hashlib.sha256(path.read_bytes()).hexdigest())
+            self.assertEqual(manifest["files"][role]["sha256"],
+                             hashlib.sha256(path.read_bytes()).hexdigest())
         self.assertTrue(RA.manifest_is_public(manifest))
-        # provenance drift: mutate one supplied file, its hash no longer matches the manifest
-        (out / "engine.bin").write_bytes(b"\x7fELF changed")
-        self.assertNotEqual(RA.provenance_manifest(files)["files"]["engine"]["sha256"],
-                            manifest["files"]["engine"]["sha256"])
 
     def test_no_secrets_in_manifest(self):
-        manifest = {"env": {"STRATA_PASSWORD": "hunter2"}, "files": {}}
-        self.assertFalse(RA.manifest_is_public(manifest))
+        self.assertFalse(RA.manifest_is_public({"env": {"STRATA_PASSWORD": "hunter2"}, "files": {}}))
+
+    def test_verify_provenance_passes_and_rejects_drift(self):
+        out = fresh_scratch(self)
+        files = {}
+        for role, content in (("baseconfig", b"A"), ("launcher", b"B"),
+                              ("helper", b"C"), ("engine", b"D")):
+            (out / f"{role}.bin").write_bytes(content)
+            files[role] = out / f"{role}.bin"
+        expected = RA.provenance_manifest(files)  # frozen pre-test expectation
+        self.assertEqual(RA.verify_provenance(expected, RA.provenance_manifest(files)), [])
+        # changed file content -> hash drift rejected
+        (out / "engine.bin").write_bytes(b"D-changed")
+        drift = RA.verify_provenance(expected, RA.provenance_manifest(files))
+        self.assertTrue(any("engine" in p and "sha256" in p for p in drift), drift)
+        # dropped role -> missing rejected
+        reduced = copy.deepcopy(files)
+        del reduced["launcher"]
+        self.assertTrue(any("launcher" in p for p in RA.verify_provenance(expected,
+                                                                          RA.provenance_manifest(reduced))))
+        # empty frozen expectation is itself an error (never a vacuous pass)
+        self.assertTrue(RA.verify_provenance({"files": {}}, expected))
 
 
 # =============================================================================
@@ -209,21 +279,19 @@ class Config(unittest.TestCase):
 
 class LogPredicates(unittest.TestCase):
     def test_operation_totals_count_all_reasons(self):
-        # candidate refuses park for BOTH physical-RAM and restore-headroom reasons;
-        # totals stay comparable (reason-independent) while headroom is a diagnostic.
         window = blob(PARK_PHYS, PARK_HEADROOM, CKPT_SKIP, CKPT_SKIP_HEADROOM, RESTORE_SKIPPED)
         ops = RA.operation_totals(window)
         self.assertEqual(ops["totals"], {"park_refusal": 2, "checkpoint_skip": 2, "restore_refusal": 1})
         self.assertEqual(ops["refusal_grand_total"], 5)
         self.assertEqual(ops["reasons"].get("_restore_headroom(diagnostic)"), 2)
 
-    def test_engagement_and_prompt_split(self):
-        window = blob(GUARD_ADMIT, CKPT_EVICT, PROMPT_LINE)
-        ops = RA.operation_totals(window)
-        self.assertEqual(ops["fix_only_engagement"], 2)
-        self.assertEqual(ops["refusal_grand_total"], 0)
-        passes = RA.prompt_passes(window)
-        self.assertEqual((passes[0].reused, passes[0].read), (0, 16000))
+    def test_pressure_evidence_vs_diagnostics_split(self):
+        # eviction-to-admit is pressure; boot band + plain admit are diagnostics only.
+        ops = RA.operation_totals(blob(CKPT_EVICT, BOOT_BAND, RAM_GUARD_ADMIT, PROMPT_LINE))
+        self.assertEqual(ops["pressure_evidence"], 1)
+        self.assertEqual(ops["limiter_or_admit"], 2)
+        self.assertEqual(ops["fix_only_engagement"], 3)
+        self.assertEqual(RA.prompt_passes(blob(PROMPT_LINE))[0].reused, 0)
 
     def test_publication_keeps_t_anchor_pair_distinct(self):
         pub = RA.parse_publication(blob(PUB))[0]
@@ -231,27 +299,39 @@ class LogPredicates(unittest.TestCase):
                          (32000, 16000, 15000, True))
 
     def test_refusal_turn_does_not_require_restore_success(self):
-        window = blob(PARK_PHYS, PROMPT_LINE)  # refusal, but NO restore success
-        result = RA.classify_turn(window, RA.REFUSAL)
-        self.assertEqual(result["verdict"], RA.PASS)
+        window = blob(PARK_PHYS, PROMPT_LINE)
+        self.assertEqual(RA.classify_turn(window, RA.REFUSAL)["verdict"], RA.PASS)
         self.assertFalse(RA.parse_restore(window)["successes"])
 
     def test_restore_success_turn_requires_restore_line(self):
-        window = blob(PARK_PHYS, PROMPT_CACHED)  # has reused>0 but no restore success
+        window = blob(PARK_PHYS, PROMPT_CACHED)
         self.assertEqual(RA.classify_turn(window, RA.RESTORE_SUCCESS)["verdict"], RA.FAIL)
 
-    def test_fallback_is_not_restore_engagement(self):
-        # byte-eviction miss: reused must be 0 and no restore success on a FALLBACK turn
-        self.assertEqual(RA.classify_turn(blob(PROMPT_LINE), RA.FALLBACK)["verdict"], RA.PASS)
-        self.assertEqual(RA.classify_turn(blob(PROMPT_CACHED), RA.FALLBACK)["verdict"], RA.FAIL)
-        self.assertEqual(RA.classify_turn(blob(RESTORED, PROMPT_LINE), RA.FALLBACK)["verdict"], RA.FAIL)
+    def test_fallback_requires_real_eviction_evidence(self):
+        # empty window, a plain fresh prompt, and a fresh prompt with zero-reuse but no
+        # eviction are all rejected; only a completed row with positive eviction passes.
+        self.assertEqual(RA.classify_turn(b"", RA.FALLBACK)["verdict"], RA.FAIL)
+        self.assertEqual(RA.classify_turn(blob(PROMPT_LINE), RA.FALLBACK)["verdict"], RA.FAIL)
+        self.assertEqual(RA.classify_turn(blob(PROMPT_LINE), RA.FALLBACK, eviction={"evicted_bytes": 0})["verdict"],
+                         RA.FAIL)
+        self.assertEqual(RA.classify_turn(blob(PROMPT_LINE), RA.FALLBACK, eviction={"evicted_bytes": 4096})["verdict"],
+                         RA.PASS)
+        # reused>0, or a restore success, are still rejected regardless of eviction
+        self.assertEqual(RA.classify_turn(blob(PROMPT_CACHED), RA.FALLBACK, eviction={"evicted_bytes": 4096})["verdict"],
+                         RA.FAIL)
+        self.assertEqual(RA.classify_turn(blob(RESTORED, PROMPT_LINE), RA.FALLBACK,
+                                          eviction={"evicted_bytes": 4096})["verdict"], RA.FAIL)
 
     def test_unengaged_pressure_is_never_pass(self):
         self.assertEqual(RA.pressure_engagement(blob(PROMPT_LINE))["verdict"], RA.UNENGAGED)
-        self.assertEqual(RA.pressure_engagement(blob(GUARD_ADMIT))["verdict"], RA.PASS)
-        self.assertEqual(RA.pressure_engagement(blob(PARK_HEADROOM))["verdict"], RA.PASS)
-        # a warm restore with no guard/refusal line does not prove engagement
+        # boot limiter-description and plain admission are NOT demonstrated pressure
+        self.assertEqual(RA.pressure_engagement(blob(BOOT_BAND))["verdict"], RA.UNENGAGED)
+        self.assertEqual(RA.pressure_engagement(blob(RAM_GUARD_ADMIT))["verdict"], RA.UNENGAGED)
         self.assertEqual(RA.pressure_engagement(blob(RESTORED))["verdict"], RA.UNENGAGED)
+        # real refusal / eviction-to-admit / RAM-guard refusal ARE pressure
+        self.assertEqual(RA.pressure_engagement(blob(PARK_HEADROOM))["verdict"], RA.PASS)
+        self.assertEqual(RA.pressure_engagement(blob(CKPT_EVICT))["verdict"], RA.PASS)
+        self.assertEqual(RA.pressure_engagement(blob(RAM_GUARD_REFUSED))["verdict"], RA.PASS)
 
     def test_raw_token_ids_and_state_comparisons(self):
         self.assertEqual(RA.compare_token_ids([1, 2, 3], [1, 2, 3])["verdict"], RA.PASS)
@@ -280,9 +360,21 @@ class ExactRestore(unittest.TestCase):
     def test_correct_expectation_passes(self):
         window = blob(PUB, RESTORED, PROMPT_CACHED)
         exp = RA.RestoreExpectation(published_file="/cache/gen.bin", target_depth=32000,
-                                    draft_class="pair: tail ring", expected_reused=16000,
-                                    expected_read=0)
+                                    draft_class="complete target+draft hit (pair: tail ring)",
+                                    expected_reused=16000, expected_read=0)
         self.assertEqual(RA.evaluate_restore(window, exp)["verdict"], RA.PASS)
+
+    def test_empty_or_missing_required_expectation_is_blocked(self):
+        window = blob(RESTORED, PROMPT_CACHED)
+        self.assertEqual(RA.evaluate_restore(window, RA.RestoreExpectation())["verdict"], RA.BLOCKED)
+        self.assertEqual(RA.evaluate_restore(
+            window, RA.RestoreExpectation(target_depth=32000))["verdict"], RA.BLOCKED)
+        self.assertEqual(RA.evaluate_restore(
+            window, RA.RestoreExpectation(published_file="/cache/gen.bin"))["verdict"], RA.BLOCKED)
+        self.assertEqual(RA.evaluate_restore(
+            window, RA.RestoreExpectation(published_file="  ", target_depth=32000))["verdict"], RA.BLOCKED)
+        self.assertEqual(RA.evaluate_restore(
+            window, RA.RestoreExpectation(published_file="/cache/gen.bin", target_depth=0))["verdict"], RA.BLOCKED)
 
     def test_wrong_file_rejected(self):
         window = blob(RESTORED)
@@ -290,30 +382,43 @@ class ExactRestore(unittest.TestCase):
         self.assertEqual(RA.evaluate_restore(window, exp)["verdict"], RA.FAIL)
 
     def test_shallower_and_wrong_depth_rejected(self):
-        shallow = ("strata serve: conversation cache: restored 16000 tokens from disk "
-                   "(/cache/gen.bin) in 5 ms: complete target hit (no drafter)")
-        for depth in (16000, 40000):  # shallower than, and different from, the target
+        shallow = ("strata serve: conversation cache: restored 16000 tokens from disk (/cache/gen.bin) "
+                   "in 5 ms: complete target hit (no drafter)")
+        for depth in (16000, 40000):
             with self.subTest(depth=depth):
                 exp = RA.RestoreExpectation(published_file="/cache/gen.bin", target_depth=32000)
                 self.assertEqual(RA.evaluate_restore(blob(shallow), exp)["verdict"], RA.FAIL)
 
-    def test_wrong_declared_draft_class_rejected(self):
-        window = blob(RESTORED)
-        exp = RA.RestoreExpectation(published_file="/cache/gen.bin", target_depth=32000,
-                                    draft_class="checkpoint at 15000")
-        self.assertEqual(RA.evaluate_restore(window, exp)["verdict"], RA.FAIL)
+    def test_draft_class_is_exact_not_substring(self):
+        # 'checkpoint at 32' is a numeric-prefix of '... checkpoint at 32000' -> must be rejected.
+        exp_prefix = RA.RestoreExpectation(published_file="/cache/gen.bin", target_depth=32000,
+                                           draft_class="checkpoint at 32")
+        self.assertEqual(RA.evaluate_restore(blob(RESTORED_AT_PAIR), exp_prefix)["verdict"], RA.FAIL)
+        exp_exact = RA.RestoreExpectation(published_file="/cache/gen.bin", target_depth=32000,
+                                          draft_class="complete target+draft hit (pair: checkpoint at 32000)")
+        self.assertEqual(RA.evaluate_restore(blob(RESTORED_AT_PAIR), exp_exact)["verdict"], RA.PASS)
+        wrong = RA.RestoreExpectation(published_file="/cache/gen.bin", target_depth=32000,
+                                      draft_class="complete target+draft hit (pair: checkpoint at 15000)")
+        self.assertEqual(RA.evaluate_restore(blob(RESTORED_AT_PAIR), wrong)["verdict"], RA.FAIL)
 
     def test_restore_skipped_rejected(self):
         window = blob(RESTORE_SKIPPED)
-        exp = RA.RestoreExpectation(published_file="/cache/gen.bin", target_depth=32000)
-        result = RA.evaluate_restore(window, exp)
+        result = RA.evaluate_restore(window, RA.RestoreExpectation(published_file="/cache/gen.bin",
+                                                                   target_depth=32000))
         self.assertEqual(result["verdict"], RA.FAIL)
         self.assertTrue(any("skipped" in p for p in result["problems"]))
 
     def test_reused_greater_than_zero_is_not_a_pass(self):
         window = blob(RESTORED, PROMPT_CACHED)  # reused 16000 but expectation wants 32000
-        exp = RA.RestoreExpectation(target_depth=32000, expected_reused=32000)
+        exp = RA.RestoreExpectation(published_file="/cache/gen.bin", target_depth=32000, expected_reused=32000)
         self.assertEqual(RA.evaluate_restore(window, exp)["verdict"], RA.FAIL)
+
+    def test_ambiguous_rows_rejected_when_counters_asserted(self):
+        window = blob(RESTORED, PROMPT_LINE, PROMPT_CACHED)  # two completed rows summed
+        exp = RA.RestoreExpectation(published_file="/cache/gen.bin", target_depth=32000, expected_reused=16000)
+        result = RA.evaluate_restore(window, exp)
+        self.assertEqual(result["verdict"], RA.FAIL)
+        self.assertTrue(any("ambiguous" in p for p in result["problems"]), result["problems"])
 
 
 # =============================================================================
@@ -321,10 +426,11 @@ class ExactRestore(unittest.TestCase):
 # =============================================================================
 
 PCI = "0000:03:00.0"
+PCI_B = "0000:03:00.0"  # second client shares the target PCI, different client id
 
 
-def write_fdinfo(out: Path, pid: int, name: str, pdev: str | None, client: str | None,
-                 evicted: str | None):
+def write_fdinfo(out: Path, pid: int, name: str, pdev, client, evicted,
+                 resident_vram: str | None = "1 GiB", resident_gtt: str | None = "2 MiB"):
     d = out / str(pid) / "fdinfo"
     d.mkdir(parents=True, exist_ok=True)
     lines: list[str] = ["pos:\t0", "flags:\t0102000"]
@@ -334,7 +440,10 @@ def write_fdinfo(out: Path, pid: int, name: str, pdev: str | None, client: str |
         lines.append(f"drm-client-id:\t{client}")
     if evicted is not None:
         lines.append(f"amd-evicted-vram:\t{evicted}")
-    lines.append("drm-resident-vram:\t1 GiB")
+    if resident_vram is not None:
+        lines.append(f"drm-resident-vram:\t{resident_vram}")
+    if resident_gtt is not None:
+        lines.append(f"drm-resident-gtt:\t{resident_gtt}")
     (d / name).write_text("\n".join(lines) + "\n")
 
 
@@ -344,28 +453,50 @@ class DrmGuard(unittest.TestCase):
         write_fdinfo(out, 4242, "7", PCI, "7", "5 MiB")
         self.assertEqual(RA.gpu_eviction_guard(4242, [PCI], str(out))["verdict"], RA.ABORT)
 
-    def test_zero_eviction_with_all_pcis_passes(self):
+    def test_all_complete_zero_clients_pass(self):
         out = fresh_scratch(self)
         write_fdinfo(out, 4242, "7", PCI, "7", "0 B")
+        write_fdinfo(out, 4242, "8", PCI, "9", "0 B")  # two distinct clients, both clean
         self.assertEqual(RA.gpu_eviction_guard(4242, [PCI], str(out))["verdict"], RA.PASS)
 
-    def test_zero_accepted_only_when_all_target_pcis_have_data(self):
+    def test_zero_first_positive_second_aborts(self):
+        out = fresh_scratch(self)  # clean client first, positive-eviction sibling second
+        write_fdinfo(out, 4242, "7", PCI, "7", "0 B")
+        write_fdinfo(out, 4242, "8", PCI_B, "9", "5 MiB")
+        self.assertEqual(RA.gpu_eviction_guard(4242, [PCI], str(out))["verdict"], RA.ABORT)
+
+    def test_positive_first_zero_second_aborts(self):
+        out = fresh_scratch(self)  # positive client sorts first; the zero sibling must not mask it
+        write_fdinfo(out, 4242, "7", PCI, "7", "5 MiB")
+        write_fdinfo(out, 4242, "8", PCI_B, "9", "0 B")
+        self.assertEqual(RA.gpu_eviction_guard(4242, [PCI], str(out))["verdict"], RA.ABORT)
+
+    def test_zero_first_missing_gauge_second_blocks(self):
         out = fresh_scratch(self)
         write_fdinfo(out, 4242, "7", PCI, "7", "0 B")
-        # second required PCI has no fdinfo data at all
-        self.assertEqual(RA.gpu_eviction_guard(4242, [PCI, "0000:04:00.0"], str(out))["verdict"],
-                         RA.BLOCKED)
+        write_fdinfo(out, 4242, "8", PCI_B, "9", None)  # second client has no eviction gauge
+        self.assertEqual(RA.gpu_eviction_guard(4242, [PCI], str(out))["verdict"], RA.BLOCKED)
+
+    def test_missing_required_pci_blocks(self):
+        out = fresh_scratch(self)
+        write_fdinfo(out, 4242, "7", PCI, "7", "0 B")
+        self.assertEqual(RA.gpu_eviction_guard(4242, [PCI, "0000:04:00.0"], str(out))["verdict"], RA.BLOCKED)
 
     def test_missing_eviction_gauge_blocks(self):
         out = fresh_scratch(self)
-        write_fdinfo(out, 4242, "7", PCI, "7", None)  # no amd-evicted-vram field
+        write_fdinfo(out, 4242, "7", PCI, "7", None)
         self.assertEqual(RA.gpu_eviction_guard(4242, [PCI], str(out))["verdict"], RA.BLOCKED)
+
+    def test_missing_resident_gauge_blocks(self):
+        for kwargs in ({"resident_gtt": None}, {"resident_vram": None}):
+            with self.subTest(**kwargs):
+                out = fresh_scratch(self)
+                write_fdinfo(out, 4242, "7", PCI, "7", "0 B", **kwargs)
+                self.assertEqual(RA.gpu_eviction_guard(4242, [PCI], str(out))["verdict"], RA.BLOCKED)
 
     def test_read_error_blocks(self):
         out = fresh_scratch(self)
-        # proc_root with no pid directory -> the reused reader reports a read error
-        self.assertEqual(RA.gpu_eviction_guard(4242, [PCI], str(out / "missing"))["verdict"],
-                         RA.BLOCKED)
+        self.assertEqual(RA.gpu_eviction_guard(4242, [PCI], str(out / "missing"))["verdict"], RA.BLOCKED)
 
     def test_missing_pci_identity_blocks(self):
         out = fresh_scratch(self)
