@@ -1566,7 +1566,7 @@ bool FileExpertSource::open(const std::string& pack_dir, int64_t n_layers, int64
     if (view == MAP_FAILED) { ::close(fd); err = "FileExpertSource: mmap failed on " + path; return false; }
     fd_ = fd;
     base_ = (const uint8_t*) view;
-    native_mlock_detail::Result mlock_r = native_mlock_span(view, (uint64_t) want, "FileExpertSource mapped pack");   // STRATA_NATIVE_MLOCK: keep the pack's clean pages out of reclaim
+    native_mlock_span(view, (uint64_t) want, "FileExpertSource mapped pack");   // STRATA_NATIVE_MLOCK: keep the pack's clean pages out of reclaim
     native_mlock_report(path.c_str());
     paths_.assign(1, path);   // #286: open_direct opens it again with O_DIRECT
 #endif
@@ -1770,7 +1770,7 @@ bool FileExpertSource::open_gguf(std::string& err) {
                 m.fd = fd;
                 m.bytes = (uint64_t) st.st_size;
                 m.base = (const uint8_t*) view;
-                native_mlock_detail::Result mlock_r = native_mlock_span(view, (uint64_t) st.st_size, "FileExpertSource GGUF shard");   // STRATA_NATIVE_MLOCK
+                native_mlock_span(view, (uint64_t) st.st_size, "FileExpertSource GGUF shard");   // STRATA_NATIVE_MLOCK
 #endif
                 maps_.push_back(m);
                 paths_.push_back(path);

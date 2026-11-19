@@ -133,11 +133,13 @@ inline cudaError_t pin_unregister(void* p) {
 // serving loop keeps reading the file it already has.
 //
 // Scope: open_gguf locks each mapped GGUF shard in full (st.st_size), not merely an observed resident subset.
-// This helper locks what is mapped; it makes no claim of complete model/expert coverage, uses no mlockall,
-// and leaves PLE (pinned LRU-excluded) pages untouched.  A span mlock() cannot take is logged and left
-// reclaimable, never fatal - a partial lock is a warning and the engine continues.  Locked in bounded steps
-// so a long lock reports progress rather than looking like a stall, and one failure does not abandon the
-// spans after it.
+// This helper locks what is mapped, full shard by full shard; it makes no claim of complete model/expert
+// coverage, uses no mlockall, and does not assert that any PLE pages are excluded or that any specific
+// expert pages are covered.  Whether full-shard contents or aliasing demonstrably exclude PLE, and whether
+// the locked set fits within the RLIMIT_MEMLOCK ceiling, is a separate coverage/fit audit (runtime blocked
+// pending that audit).  A span mlock() cannot take is logged and left reclaimable, never fatal - a partial
+// lock is a warning and the engine continues.  Locked in bounded steps so a long lock reports progress
+// rather than looking like a stall, and one failure does not abandon the spans after it.
 //
 // Default OFF and the default path is byte-identical: with the knob unset native_mlock_span() returns before
 // a single syscall and prints nothing.
