@@ -1566,7 +1566,7 @@ bool FileExpertSource::open(const std::string& pack_dir, int64_t n_layers, int64
     if (view == MAP_FAILED) { ::close(fd); err = "FileExpertSource: mmap failed on " + path; return false; }
     fd_ = fd;
     base_ = (const uint8_t*) view;
-    native_mlock_span(view, (uint64_t) want, "FileExpertSource mapped pack");   // STRATA_NATIVE_MLOCK: keep the pack's clean pages out of reclaim
+    native_mlock_detail::Result mlock_r = native_mlock_span(view, (uint64_t) want, "FileExpertSource mapped pack");   // STRATA_NATIVE_MLOCK: keep the pack's clean pages out of reclaim
     native_mlock_report(path.c_str());
     paths_.assign(1, path);   // #286: open_direct opens it again with O_DIRECT
 #endif
@@ -1770,7 +1770,7 @@ bool FileExpertSource::open_gguf(std::string& err) {
                 m.fd = fd;
                 m.bytes = (uint64_t) st.st_size;
                 m.base = (const uint8_t*) view;
-                native_mlock_span(view, (uint64_t) st.st_size, "FileExpertSource GGUF shard");   // STRATA_NATIVE_MLOCK
+                native_mlock_detail::Result mlock_r = native_mlock_span(view, (uint64_t) st.st_size, "FileExpertSource GGUF shard");   // STRATA_NATIVE_MLOCK
 #endif
                 maps_.push_back(m);
                 paths_.push_back(path);
@@ -6013,7 +6013,7 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
             map_ = v;
             map_bytes_ = file_bytes;
             base_ = (const uint8_t*) v;
-            native_mlock_span(v, file_bytes, "ArenaExpertSource shared expert arena");   // STRATA_NATIVE_MLOCK
+            native_mlock_detail::Result mlock_r = native_mlock_span(v, file_bytes, "ArenaExpertSource shared expert arena");   // STRATA_NATIVE_MLOCK
             native_mlock_report(path.c_str());
             pinned_bytes_ = 0;
             dev_slice_.clear();
@@ -6022,9 +6022,17 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
             blobs_ = n_layers * n_expert;
             n_expert_ = n_expert;
             reads_ = 0;
-            note_ = "mapped read-only from " + path + (native_mlock_detail::on()
-                                                          ? " (STRATA_NATIVE_MLOCK: file pages locked, not pinned)"
-                                                          : " (STRATA_ARENA_MMAP: not locked, not pinned)");
+            if (native_mlock_detail::on()) {
+                if (mlock_r.complete) {
+                    note_ = "mapped read-only from " + path + " (STRATA_NATIVE_MLOCK: file pages locked, not pinned)";
+                } else {
+                    note_ = "mapped read-only from " + path + " (STRATA_NATIVE_MLOCK: "
+                        + std::to_string(mlock_r.locked >> 20) + " of " + std::to_string(mlock_r.requested >> 20)
+                        + " MiB locked, partial, not pinned)";
+                }
+            } else {
+                note_ = "mapped read-only from " + path + " (STRATA_ARENA_MMAP: not locked, not pinned)";
+            }
             gib_per_s_ = 0.0;
             load_seconds_ = load_read_s_ = load_copy_s_ = 0.0;
             record_inputs(path, gguf_, lay, from_gguf);   // session files: the mapped experts.bin is a model input

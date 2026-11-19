@@ -132,14 +132,20 @@ inline cudaError_t pin_unregister(void* p) {
 // back in through the NVMe on the next touch.  mlock() keeps those pages exactly where they are, so the
 // serving loop keeps reading the file it already has.
 //
+// Scope: open_gguf locks each mapped GGUF shard in full (st.st_size), not merely an observed resident subset.
+// This helper locks what is mapped; it makes no claim of complete model/expert coverage, uses no mlockall,
+// and leaves PLE (pinned LRU-excluded) pages untouched.  A span mlock() cannot take is logged and left
+// reclaimable, never fatal - a partial lock is a warning and the engine continues.  Locked in bounded steps
+// so a long lock reports progress rather than looking like a stall, and one failure does not abandon the
+// spans after it.
+//
 // Default OFF and the default path is byte-identical: with the knob unset native_mlock_span() returns before
-// a single syscall and prints nothing.  A span mlock() cannot take is logged and left reclaimable, never
-// fatal - a partial lock is a warning and the engine continues.  Locked in bounded steps so a long lock
-// reports progress rather than looking like a stall, and one failure does not abandon the spans after it.
+// a single syscall and prints nothing.
 namespace native_mlock_detail {
 struct State {
     std::mutex mu;
     uint64_t bytes = 0;     // locked since the last report()
+    uint64_t requested = 0; // requested since the last report()
     uint64_t spans = 0;
     double seconds = 0.0;
     bool limit_logged = false;
@@ -149,15 +155,22 @@ inline State& st() {
     return s;
 }
 // non-empty AND not "0" turns it on; unset (the default) is a no-op.
+// On non-Linux the knob can never be on: strcmp and the RLIMIT types below do not exist there.
 inline bool on() {
+#if defined(__linux__)
     static const bool v = [] {
         const char* e = std::getenv("STRATA_NATIVE_MLOCK");
         return e != nullptr && *e != '\0' && std::strcmp(e, "0") != 0;
     }();
     return v;
+#else
+    return false;
+#endif
 }
 // #4671, once: raise the soft RLIMIT_MEMLOCK to what the hard limit allows (no privilege needed). This box
 // runs unlimited, so it is a no-op line there; it is what lets a service started without LimitMEMLOCK lock.
+// Linux only; no-op on every other platform (no rlimit, no syscall, no log).
+#if defined(__linux__)
 inline void raise_limit_once() {
     auto& s = st();
     std::lock_guard<std::mutex> g(s.mu);
@@ -182,43 +195,87 @@ inline void raise_limit_once() {
                          "the native GGUF lock may be partial (set LimitMEMLOCK=infinity or `ulimit -l unlimited`)\n",
                  (unsigned long long) (rl.rlim_cur >> 20));
 }
+#else
+inline void raise_limit_once() {}
+#endif
+
+/// Outcome of one native_mlock_span() call.  Populated on every platform; all-zero + complete=true when the
+/// knob is off or the span is empty (nothing requested, nothing failed).
+struct Result {
+    uint64_t requested = 0;   // bytes asked to lock
+    uint64_t locked = 0;      // bytes actually page-locked
+    uint64_t failed = 0;      // requested - locked
+    bool complete = false;    // true iff locked == requested
+    double seconds = 0.0;     // elapsed wall time
+};
 }  // namespace native_mlock_detail
 
 /// STRATA_NATIVE_MLOCK: mlock one read-only native GGUF file mapping span, in bounded steps. No-op, not even
 /// a line, when the knob is unset.  Linux only; elsewhere the call is discarded.
-inline void native_mlock_span(const void* p, uint64_t n, const char* what) {
+inline native_mlock_detail::Result native_mlock_span(const void* p, uint64_t n, const char* what) {
+    native_mlock_detail::Result r;
 #if defined(__linux__)
-    if (!native_mlock_detail::on() || n == 0) return;
+    if (!native_mlock_detail::on() || n == 0) {
+        r.complete = true;
+        return r;
+    }
     native_mlock_detail::raise_limit_once();
-    constexpr uint64_t kPage = 4096;                 // the mappings are page-aligned; align outward anyway
-    constexpr uint64_t kStep = 256ull << 20;         // lock 256 MiB at a time: progress is visible, a fault is bounded
+    constexpr uint64_t kPage = 4096;
+    constexpr uint64_t kStep = 256ull << 20;
     const uintptr_t a = (uintptr_t) p & ~(uintptr_t) (kPage - 1);
     const uintptr_t b = ((uintptr_t) p + n + kPage - 1) & ~(uintptr_t) (kPage - 1);
+    const uint64_t total = (uint64_t) (b - a);
     const auto t0 = std::chrono::steady_clock::now();
+    r.requested = total;
     uint64_t got = 0;
+    uint64_t chunk = 0;
     for (uintptr_t lo = a; lo < b; lo += kStep) {
         const uintptr_t piece = lo + kStep > b ? b - lo : kStep;
+        ++chunk;
         if (mlock((const void*) lo, (size_t) piece) != 0) {
             const int why = errno;
-            std::fprintf(stderr, "strata native mlock: mlock of %s [%#llx, +%llu MiB) reached %llu MiB then failed "
-                                 "(errno %d, %s); the rest stays reclaimable and the engine continues\n",
-                         what, (unsigned long long) a, (unsigned long long) ((b - a) >> 20),
-                         (unsigned long long) (got >> 20), why, std::strerror(why));
-            return;
+            std::fprintf(stderr, "strata native mlock: mlock of %s [%#llx, +%llu MiB) chunk %llu: reached %llu of %llu MiB then failed (errno %d, %s); the rest stays reclaimable and the engine continues\n",
+                          what, (unsigned long long) a, (unsigned long long) (total >> 20),
+                          (unsigned long long) chunk, (unsigned long long) (got >> 20), (unsigned long long) (total >> 20),
+                          why, std::strerror(why));
+            r.locked = got;
+            r.failed = total - got;
+            r.complete = false;
+            const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+            r.seconds = secs;
+            auto& s = native_mlock_detail::st();
+            std::lock_guard<std::mutex> g(s.mu);
+            s.bytes += got;
+            s.requested += total;
+            ++s.spans;
+            s.seconds += secs;
+            return r;
         }
         got += (uint64_t) piece;
+        if ((chunk % 4) == 0 || lo + kStep >= b) {
+            std::fprintf(stderr, "strata native mlock: %s progress chunk %llu: %llu of %llu MiB locked\n",
+                          what, (unsigned long long) chunk, (unsigned long long) (got >> 20),
+                          (unsigned long long) (total >> 20));
+        }
     }
-    auto& s = native_mlock_detail::st();
     const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    r.locked = total;
+    r.failed = 0;
+    r.complete = true;
+    r.seconds = secs;
+    auto& s = native_mlock_detail::st();
     std::lock_guard<std::mutex> g(s.mu);
     s.bytes += got;
+    s.requested += total;
     ++s.spans;
     s.seconds += secs;
 #else
     (void) p;
     (void) n;
     (void) what;
+    r.complete = true;
 #endif
+    return r;
 }
 
 /// One progress line with what native_mlock_span() has locked since the last call here, then reset.  Nothing
@@ -229,15 +286,20 @@ inline void native_mlock_report(const char* when) {
     auto& s = native_mlock_detail::st();
     std::lock_guard<std::mutex> g(s.mu);
     if (s.spans == 0) return;
-    std::fprintf(stderr, "strata native mlock: locked %.2f GiB over %llu spans in %.1f s (%s)\n",
-                 (double) s.bytes / 1073741824.0, (unsigned long long) s.spans, s.seconds, when);
+    const uint64_t failed = s.requested > s.bytes ? s.requested - s.bytes : 0;
+    std::fprintf(stderr, "strata native mlock: locked %.2f GiB of %.2f GiB requested over %llu spans in %.1f s (%s)%s\n",
+                 (double) s.bytes / 1073741824.0, (double) s.requested / 1073741824.0,
+                 (unsigned long long) s.spans, s.seconds, when,
+                 failed != 0 ? " [PARTIAL]" : "");
     s.bytes = 0;
+    s.requested = 0;
     s.spans = 0;
     s.seconds = 0.0;
 #else
     (void) when;
 #endif
 }
+
 
 /// Take the reserves (call before the expert arena pins).  Never fails.
 inline void pin_reserve_take() {

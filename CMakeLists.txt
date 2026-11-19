@@ -509,6 +509,18 @@ if(STRATA_BUILD_TESTS)
   target_include_directories(cache_spill_test PRIVATE include)
   add_test(NAME cache_spill_test COMMAND cache_spill_test)
 
+  # STRATA_NATIVE_MLOCK: CPU-only mock/injection tests for the native file-map lock helper.
+  # OFF/no-syscall, success, first-chunk failure, later-chunk failure with already-locked
+  # bytes retained, truthful aggregate, knob=0 same as OFF, non-Linux no-op.  No GPU, no
+  # large RAM locks, no real RLIMIT changes; mlock is intercepted by this TU's own
+  # definition which the linker prefers over libc's.  Needs the HIP compat + ROCm include
+  # paths because pin_budget.hpp pulls in cuda_runtime.h.
+  add_executable(native_mlock_test tests/core/native_mlock_test.cpp)
+  target_include_directories(native_mlock_test PRIVATE include include/strata/platform/hip_compat /opt/rocm-6.1.0/include)
+  target_compile_definitions(native_mlock_test PRIVATE STRATA_HIP_GFX906=1 __HIP_PLATFORM_AMD__=1)
+  target_link_libraries(native_mlock_test PRIVATE ${CMAKE_DL_LIBS})
+  add_test(NAME native_mlock_test COMMAND native_mlock_test)
+
   # STRATA_PREFILL_ROUTED_STREAM: the prompt stream's issuer walk and route gate, on a simulated link and consumer
   # (header-only, no GPU)
   add_executable(routed_stream_test tests/prefill/routed_stream_test.cpp)
