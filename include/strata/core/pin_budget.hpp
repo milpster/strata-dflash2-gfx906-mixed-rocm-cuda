@@ -31,6 +31,14 @@
 #include <mutex>
 #include <string>
 
+#if defined(__linux__)
+#include <cerrno>
+#include <chrono>
+#include <cstring>
+#include <sys/mman.h>
+#include <sys/resource.h>
+#endif
+
 namespace strata::core {
 
 namespace pin_detail {
@@ -114,6 +122,121 @@ inline cudaError_t pin_unregister(void* p) {
         pin_detail::sim_uncharge(s, p);
     }
     return cudaHostUnregister(p);
+}
+
+// ---- native GGUF mlock (STRATA_NATIVE_MLOCK, opt-in, Linux) --------------------
+//
+// WHY mlock() a native/dense GGUF file mapping: the expert pack and the dense GGUF files are mapped
+// PROT_READ|MAP_SHARED, so their clean pages sit in the page cache as reclaimable Shared_Clean memory - the
+// ~8 GiB the kernel hands back to the first caller under memory pressure, and the engine then faults them
+// back in through the NVMe on the next touch.  mlock() keeps those pages exactly where they are, so the
+// serving loop keeps reading the file it already has.
+//
+// Default OFF and the default path is byte-identical: with the knob unset native_mlock_span() returns before
+// a single syscall and prints nothing.  A span mlock() cannot take is logged and left reclaimable, never
+// fatal - a partial lock is a warning and the engine continues.  Locked in bounded steps so a long lock
+// reports progress rather than looking like a stall, and one failure does not abandon the spans after it.
+namespace native_mlock_detail {
+struct State {
+    std::mutex mu;
+    uint64_t bytes = 0;     // locked since the last report()
+    uint64_t spans = 0;
+    double seconds = 0.0;
+    bool limit_logged = false;
+};
+inline State& st() {
+    static State s;
+    return s;
+}
+// non-empty AND not "0" turns it on; unset (the default) is a no-op.
+inline bool on() {
+    static const bool v = [] {
+        const char* e = std::getenv("STRATA_NATIVE_MLOCK");
+        return e != nullptr && *e != '\0' && std::strcmp(e, "0") != 0;
+    }();
+    return v;
+}
+// #4671, once: raise the soft RLIMIT_MEMLOCK to what the hard limit allows (no privilege needed). This box
+// runs unlimited, so it is a no-op line there; it is what lets a service started without LimitMEMLOCK lock.
+inline void raise_limit_once() {
+    auto& s = st();
+    std::lock_guard<std::mutex> g(s.mu);
+    if (s.limit_logged) return;
+    s.limit_logged = true;
+    struct rlimit rl {};
+    if (getrlimit(RLIMIT_MEMLOCK, &rl) != 0) return;
+    if (rl.rlim_cur == RLIM_INFINITY) {
+        std::fprintf(stderr, "strata native mlock: RLIMIT_MEMLOCK soft limit: unlimited\n");
+        return;
+    }
+    if (rl.rlim_max > rl.rlim_cur) {
+        struct rlimit up = rl;
+        up.rlim_cur = rl.rlim_max;
+        if (setrlimit(RLIMIT_MEMLOCK, &up) == 0) {
+            std::fprintf(stderr, "strata native mlock: RLIMIT_MEMLOCK soft limit raised from %llu MiB to %llu MiB\n",
+                         (unsigned long long) (rl.rlim_cur >> 20), (unsigned long long) (rl.rlim_max >> 20));
+            return;
+        }
+    }
+    std::fprintf(stderr, "strata native mlock: WARNING: RLIMIT_MEMLOCK soft limit is %llu MiB, not unlimited - "
+                         "the native GGUF lock may be partial (set LimitMEMLOCK=infinity or `ulimit -l unlimited`)\n",
+                 (unsigned long long) (rl.rlim_cur >> 20));
+}
+}  // namespace native_mlock_detail
+
+/// STRATA_NATIVE_MLOCK: mlock one read-only native GGUF file mapping span, in bounded steps. No-op, not even
+/// a line, when the knob is unset.  Linux only; elsewhere the call is discarded.
+inline void native_mlock_span(const void* p, uint64_t n, const char* what) {
+#if defined(__linux__)
+    if (!native_mlock_detail::on() || n == 0) return;
+    native_mlock_detail::raise_limit_once();
+    constexpr uint64_t kPage = 4096;                 // the mappings are page-aligned; align outward anyway
+    constexpr uint64_t kStep = 256ull << 20;         // lock 256 MiB at a time: progress is visible, a fault is bounded
+    const uintptr_t a = (uintptr_t) p & ~(uintptr_t) (kPage - 1);
+    const uintptr_t b = ((uintptr_t) p + n + kPage - 1) & ~(uintptr_t) (kPage - 1);
+    const auto t0 = std::chrono::steady_clock::now();
+    uint64_t got = 0;
+    for (uintptr_t lo = a; lo < b; lo += kStep) {
+        const uintptr_t piece = lo + kStep > b ? b - lo : kStep;
+        if (mlock((const void*) lo, (size_t) piece) != 0) {
+            const int why = errno;
+            std::fprintf(stderr, "strata native mlock: mlock of %s [%#llx, +%llu MiB) reached %llu MiB then failed "
+                                 "(errno %d, %s); the rest stays reclaimable and the engine continues\n",
+                         what, (unsigned long long) a, (unsigned long long) ((b - a) >> 20),
+                         (unsigned long long) (got >> 20), why, std::strerror(why));
+            return;
+        }
+        got += (uint64_t) piece;
+    }
+    auto& s = native_mlock_detail::st();
+    const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    std::lock_guard<std::mutex> g(s.mu);
+    s.bytes += got;
+    ++s.spans;
+    s.seconds += secs;
+#else
+    (void) p;
+    (void) n;
+    (void) what;
+#endif
+}
+
+/// One progress line with what native_mlock_span() has locked since the last call here, then reset.  Nothing
+/// when the knob is unset.  Call it once a source has mapped all of its native GGUF spans.
+inline void native_mlock_report(const char* when) {
+#if defined(__linux__)
+    if (!native_mlock_detail::on()) return;
+    auto& s = native_mlock_detail::st();
+    std::lock_guard<std::mutex> g(s.mu);
+    if (s.spans == 0) return;
+    std::fprintf(stderr, "strata native mlock: locked %.2f GiB over %llu spans in %.1f s (%s)\n",
+                 (double) s.bytes / 1073741824.0, (unsigned long long) s.spans, s.seconds, when);
+    s.bytes = 0;
+    s.spans = 0;
+    s.seconds = 0.0;
+#else
+    (void) when;
+#endif
 }
 
 /// Take the reserves (call before the expert arena pins).  Never fails.
