@@ -5055,3 +5055,27 @@ checks and a scoped commit. Tests/CMake are a later serial task. Parent
 marked the original worktree journal's acceptance claims as superseded and
 recorded the proven exit-1 build failure. No change to the design or serving
 configuration; no boots or GPU work.
+
+## 2026-11-20 — core source reconciled; CPU test-only lane starts
+
+Core-only fixer committed 8df8b0802a (header and implementation only). Parent
+read both files and found that the cleanup deleter was declared but never
+installed, and candidate leases were armed before throwing node preparation.
+Parent corrected those mechanical integration defects, caught create-time
+metadata failures, used actual page-size arithmetic, checked address/size
+bounds, and supplied consistent test hooks. Changes plus the corrected
+worktree journal are committed as b5e2e3b on helper-ipc-diet.
+
+Parent standalone compiler checks use -std=c++17 -Wall -Wextra -Werror,
+with Linux/non-Linux (-U__linux__) and test macro off/on. First non-Linux
+check failed on an unused parameter; after correction, all four variants
+exited 0. Evidence in engine-worktree core/parent-core-correction includes
+compile.status, recheck.status and separate logs. This proves compilation,
+not runtime locking, lifetime or allocation-failure behavior.
+
+Same sole remote Nemotron fixer ses_e062a9783ffenc2SWwjqO9mXIy now owns
+only tests/core/ram_pool_test.cpp, ram_pool_nonlinux_probe.cpp and the CMake
+test block. Require small distinct mappings, deterministic lock/metadata
+failure checks, strict real VmLck lifetime, bounded concurrency and genuine
+skip handling. Parent owns journals and acceptance; a failing core assertion
+must be reported rather than weakened. No serving integration or GPU run.
