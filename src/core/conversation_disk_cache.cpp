@@ -59,7 +59,7 @@ bool process_alive(uint64_t pid) {
 
 uint64_t disk_generation_index_bytes(const DiskGeneration& g) {
     uint64_t n = kEntryOverhead + g.path.size() + g.tokens.size() * 4 + g.images.size() * sizeof(ConversationImageKey) +
-                 g.ring_ids.size() * 8;
+                 g.ring_ids.size() * 8 + g.ckpt_prefixes.size() * sizeof(int64_t);
     return n == UINT64_MAX ? UINT64_MAX : n;
 }
 
@@ -201,6 +201,7 @@ void DiskCache::scan(const SessionFileIdentity& id, const SessionV2Requirement& 
                 g.ring_ids.push_back(cm.ring_id);
                 keep_sidecars.push_back(cm.ring_id);
             }
+            g.ckpt_prefixes.push_back((int64_t) cm.prefix);
             g.pinned = g.pinned || cm.pinned;
             g.used = std::max(g.used, cm.used);
         }

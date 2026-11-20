@@ -46,6 +46,11 @@ struct DiskGeneration {
     bool cvec = true;
     uint64_t bytes = 0;                  // the published file's size
     std::vector<uint64_t> ring_ids;      // the pair sidecars its checkpoint metas reference
+    // EVERY checkpoint prefix the published manifest holds, in its own order: the lookup's candidate list, so an
+    // eligible checkpoint answers even when the deepest scalars below are longer than the prompt.  Both paths that
+    // build an entry fill it from the manifest's metas - `scan()` at the restart inventory, the park's publish at
+    // the runtime one - and its bytes are priced into disk_generation_index_bytes, like everything else here.
+    std::vector<int64_t> ckpt_prefixes;
     int64_t anchor = 0;                  // deepest checkpoint prefix (the target anchor)
     int64_t pair_prefix = 0;             // deepest checkpoint prefix with a legal pair (0: none)
     bool tail_draft = false;             // the generation's own ring horizon retains a resume at its end
@@ -54,6 +59,18 @@ struct DiskGeneration {
     bool dir_flush_pending = false;      // published; the folder flush after the rename failed (lane 1's case)
     bool guarded = false;                // the incoming donor a restore is mounting
     bool referenced = false;             // its file is open: nothing evicts or removes it
+};
+
+// The result of a disk lookup: the generation and the ONE prefix a restore mounts.  `selected` is 0 when nothing
+// matches; otherwise it is the deepest strictly eligible prefix of the prompt - the generation's full length, or one
+// of the checkpoint prefixes that generation really publishes.  A checkpoint's PAIR is deliberately NOT decided
+// here: whether that checkpoint's ring is this drafter's and still retains the resume is a fact of the published
+// manifest, and only the restore - which validates the manifest, the region directory and the checksums - can say
+// so.  `pair_prefix`/`anchor` keep their old meaning for their own consumers (the metrics, the sidecar reclaim);
+// the lookup never consults them instead of the checkpoint list.
+struct DiskBestMatch {
+    const DiskGeneration* gen = nullptr;
+    int64_t selected = 0;                // the prefix length to restore (< prompt.size(), <= tokens.size())
 };
 
 // The index's bound for one entry: its vectors' bytes, its path, and the fixed cost of the entry itself.
@@ -89,6 +106,33 @@ inline void disk_images_below(const std::vector<ConversationImageKey>& all, int6
     out.clear();
     for (const auto& k : all)
         if (k.start < n) out.push_back(k);
+}
+
+// The two lists' pictures below `n`, compared in place: the same answer as comparing disk_images_below(a, n) with
+// disk_images_below(b, n) - same entries, same order - without materialising either.  A lookup runs it once per
+// candidate prefix of every indexed generation, so the tier never allocates on a request's path for it.
+inline bool disk_images_below_equal(const std::vector<ConversationImageKey>& a,
+                                    const std::vector<ConversationImageKey>& b, int64_t n) {
+    size_t i = 0, j = 0;
+    for (;;) {
+        while (i < a.size() && a[i].start >= n) ++i;
+        while (j < b.size() && b[j].start >= n) ++j;
+        if (i == a.size() || j == b.size()) return i == a.size() && j == b.size();
+        if (!(a[i] == b[j])) return false;
+        ++i;
+        ++j;
+    }
+}
+
+// How many bytes of one region block land when a generation is mounted at a prefix SHORTER than its own length.
+// `upto` is that region's size at the mounted prefix - the region's leading `upto` bytes are exactly its cells
+// below the prefix in the identity layout, which is how conversation_kv_restore_prefix takes an image's prefix -
+// and the restore walks the region in blocks, so the clip is asked per block: of the block [offset, offset+n),
+// `disk_prefix_clip(upto, offset, n)` bytes land at `offset` and the rest of the block is consumed and dropped
+// (0 when the block starts at or past the prefix).  A restore's KV clip is this arithmetic and nothing else.
+inline size_t disk_prefix_clip(uint64_t upto, uint64_t offset, size_t n) {
+    if (offset >= upto) return 0;
+    return (size_t) std::min<uint64_t>(n, upto - offset);
 }
 
 // What the tier reports: the counters the /metrics card reads.  The caller feeds the per-phase transfer numbers
@@ -149,27 +193,57 @@ public:
     bool enabled() const { return opt_.budget > 0; }
 
     // ---- lookup (6.1) ----
-    // The deepest published generation whose tokens this prompt starts with, whose pictures below it are exactly
-    // these, and with the same cvec.  Ties keep the most recently written one, as the RAM cache does; the caller
-    // keeps its live/RAM preference.  No LRU effect: use() stamps the entry a restore mounts.  The engine's
-    // prompt tokens are int64 and the format's are int32, so the comparison is on the caller's token type.
+    // The deepest prefix of this prompt a restore can mount.  Over every published generation with this cvec, each
+    // STRICTLY eligible candidate - the generation's full length, and every checkpoint prefix that generation really
+    // publishes - must (a) be this prompt's own first L tokens, (b) lie strictly under the prompt, since a resume
+    // leaves at least one token to read (the rule the full-length lookup always had, kept for the checkpoint
+    // candidates too), (c) be within the generation's stored token count, and (d) have exactly these pictures below
+    // it.  The deepest candidate wins; between two generations at the same depth the newer use stamp wins,
+    // compared EXPLICITLY - gens_'s order is the LRU's convenience, not the tie-break - and equal stamps go to the
+    // higher serial, so the answer never depends on the folder's read order.  A checkpoint's answer does NOT depend
+    // on `anchor` or `pair_prefix`: an eligible checkpoint is found even when both scalars are longer than the
+    // prompt (the deep prompt inside a longer published generation) or when a deeper checkpoint owns the pair.
+    // `selected` is 0 on no match.  No LRU effect: use() stamps the entry a restore mounts.
     template<class Token>
-    const DiskGeneration* best(const std::vector<Token>& prompt, const std::vector<ConversationImageKey>& images,
-                               bool cvec) const {
-        const DiskGeneration* best = nullptr;
+    DiskBestMatch best(const std::vector<Token>& prompt, const std::vector<ConversationImageKey>& images,
+                       bool cvec) const {
+        DiskBestMatch out;
+        const int64_t n = (int64_t) prompt.size();
         for (const auto& g : gens_) {
-            const int64_t L = (int64_t) g.tokens.size();
-            if (L < 1 || L >= (int64_t) prompt.size()) continue;
             if (g.cvec != cvec) continue;
-            if (!std::equal(g.tokens.begin(), g.tokens.end(), prompt.begin())) continue;
-            std::vector<ConversationImageKey> under;
-            disk_images_below(images, L, under);
-            if (under != g.images) continue;
-            // the deepest wins; a tie keeps the most recently used one, as the RAM cache does - gens_ is in
-            // use-stamp order, so `>=` walks to the newest copy
-            if (best == nullptr || L >= (int64_t) best->tokens.size()) best = &g;
+            const int64_t T = (int64_t) g.tokens.size();
+            if (T < 1) continue;
+            // A picture at or past the stored tokens is not this generation's own: the file is corrupt (the restore
+            // refuses it for the same reason), so none of its candidates is eligible.
+            bool own_pictures = true;
+            for (const auto& k : g.images)
+                if (k.start >= T) { own_pictures = false; break; }
+            if (!own_pictures) continue;
+            // How far this generation's tokens ARE this prompt's.  Its candidates are nested prefixes of them, so one
+            // walk answers the token test for all of them; the old lookup's single comparison cost the same.
+            int64_t shared = 0;
+            const int64_t cap = std::min(T, n);
+            while (shared < cap && (int64_t) g.tokens[(size_t) shared] == (int64_t) prompt[(size_t) shared]) ++shared;
+            // The generation's own best candidate.  The full length first (the ordinary resume, unchanged), then any
+            // deeper checkpoint that clears the bounds; each is judged on its own picture horizon, so a picture
+            // re-encoded after a checkpoint costs only the depth above it - the same fallback the RAM tier runs.
+            int64_t L = 0;
+            const auto eligible = [&](int64_t p) {
+                return p > L && p >= 1 && p <= T && p < n && p <= shared &&
+                       disk_images_below_equal(g.images, images, p);
+            };
+            if (eligible(T)) L = T;
+            for (const int64_t p : g.ckpt_prefixes)
+                if (eligible(p)) L = p;
+            if (L == 0) continue;
+            if (out.gen == nullptr || L > out.selected ||
+                (L == out.selected && (g.used > out.gen->used ||
+                                       (g.used == out.gen->used && g.serial > out.gen->serial)))) {
+                out.gen = &g;
+                out.selected = L;
+            }
         }
-        return best;
+        return out;
     }
     // the deepest published generation of THIS conversation - the one a publish of these tokens now supersedes - in
     // tokens: 0 when none.  It is `retire_superseded`'s own rule (the generation's tokens are a PREFIX of these, its
