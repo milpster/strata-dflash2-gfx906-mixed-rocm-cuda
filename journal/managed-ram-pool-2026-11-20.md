@@ -450,3 +450,33 @@ all exit 0). Open for Task 2: the pool .cpp files exist ONLY in the
 STRATA_BUILD_RAM_POOL_TEST block — strata_core does not compile them, so the
 engine LINK would fail on unresolved symbols (object-compile proof never
 ran the linker); Task 2 adds them to the engine build and switches srcp.
+
+## Adapter Task 2 — engine wiring; L3 complete (compile-level) — 2026-11-20
+
+a213ad7875 wires the adapter into the engine, default OFF byte-identical:
+the five pool .cpp files moved into the strata_core STATIC library (they
+existed only in the test block — the engine link would have failed on
+unresolved symbols; object-compile proof had never run the linker);
+note_async_read now calls the hook OUTSIDE the adapter mutex (the engine hook
+calls mark_completed, which locks — re-entrant deadlock removed); generate.cpp
+constructs the adapter after store open with a per-(layer,expert) CUDA event
+hook (re-arm on re-note, stream-sync+completed fallback on create/record
+failure, error-state events treated as completed so no borrower sticks), sets
+srcp = &adapter only in managed mode, and tears down with a device sync +
+event destruction before adapter/pool/store destruction. The three
+lease-bearing seams are untouched.
+
+| Check | Result |
+|---|---|
+| CPU pool suite incl. adapter | exit 0; 7/7 |
+| generate.cpp.o + strata_core + 5 pool objects on build-906 | exit 0 each |
+| nm symbol resolution | 22 undefined pool symbols in generate.cpp.o; all resolved T/V in libstrata_core.a (parent spot-checked store open/acquire/dtor, adapter mark/note/vtable) |
+| Full strata link | still blocked by the PRE-EXISTING moe_mmq.cu.o gcc-16/HIP breakage (unrelated) |
+
+Evidence: adapter/task2/ (raw ctest + nm lists + status.txt). L3 is complete
+at compile/CPU level: budget knob, store, three lease-bearing seams, and the
+adapter as managed srcp. NO runtime evidence exists — the managed path has
+never executed; a boot window requires operator authorization. Remaining
+after that: L4 whole-stack admission (helper/server scope, page-cache
+shards/tables accounting) and speed/memory measurement via the existing
+harness.
