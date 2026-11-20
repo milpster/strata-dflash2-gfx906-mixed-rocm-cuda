@@ -5332,7 +5332,24 @@ Final acceptance requires actual raw logs and same-pool scratch/reuse evidence;
 the reader remains unaccepted. Native layout, real GPU consumers and total
 serving-stack admission remain undone. Production remains stopped.
 
-## 2026-11-20 — dynamic-layout store accepted; consumer lane starts
+## 2026-11-20 — first consumer bound (compile-verified); L2 integration lane closed
+
+Fixer 8829aeb1bc bound the lent-slot refill to PoolExpertStore behind a
+null-by-default seam (no knob, no construction; legacy branch byte-identical).
+Parent review found the failure path released leases without draining queued
+copies; 0da4703b98 adds the hard-drain before the failure return. Verified:
+generate.cpp.o compiles on build-906 (exit 0), CPU pool suite 6/6 unchanged.
+The full `strata` target is blocked by pre-existing gcc-16-STL/HIP header
+errors in moe_mmq.cu.o — an unrelated TU, now recorded as an engine follow-up.
+
+L2 status: pool core, cache, reader, dynamic-layout store and one real
+consumer binding all accepted on CPU/compile evidence. Still open for L3:
+runtime pool construction/budget source, host-KV binding, and the remaining
+raw-pointer consumers (dispatch fill :5611, nibble checks, staged/queued
+fills, arena pointers) before any managed activation. No run of the managed
+branch has occurred; production remains stopped by operator order.
+
+## 2026-11-20 — dynamic-layout store accepted (heading restored)
 
 Parent verified 674a0d4cc5 against raw logs: 17/17 targeted CPU tests,
 5/5 sanitizer tests, off-tree target graph and CTest listing clean, store
