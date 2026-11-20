@@ -400,6 +400,151 @@ int main(int argc, char** argv) {
         check(!adapter.borrowed(1, 0), "7: drops after the final completion");
     }
 
+    // ============ 8. transient: true for every pair, creates no borrower ============
+    {
+        Pool pool;
+        auto ec = make_pool(pool, 256ull << 10);
+        check(!ec, "8: create pool");
+        ExpertLayout layout;
+        build_layout(layout);
+        PoolExpertStore store(pool);
+        ec = store.open(g_fixture_path.c_str(), layout);
+        check(!ec, "8: open store");
+        PoolExpertSourceAdapter adapter(store);
+
+        bool all_transient = true;
+        for (int64_t l = 0; l < 3; ++l)
+            for (int64_t e = 0; e < 4; ++e) all_transient = all_transient && adapter.transient(l, e);
+        check(all_transient, "8: transient() true for all 12 pairs");
+        check(!adapter.borrowed(0, 0) && !adapter.borrowed(2, 3), "8: transient() created no borrower");
+        check(store.stats().misses == 0, "8: transient() read nothing");
+    }
+
+    // ============ 9. copy_blob: the exact bytes, no borrower left behind ============
+    {
+        Pool pool;
+        auto ec = make_pool(pool, 256ull << 10);
+        check(!ec, "9: create pool");
+        ExpertLayout layout;
+        build_layout(layout);
+        PoolExpertStore store(pool);
+        ec = store.open(g_fixture_path.c_str(), layout);
+        check(!ec, "9: open store");
+        PoolExpertSourceAdapter adapter(store);
+
+        const int64_t pairs[5][2] = {{0, 0}, {0, 3}, {1, 2}, {2, 0}, {2, 3}};
+        for (const auto& p : pairs) {
+            std::vector<uint8_t> buf((size_t) expert_bytes(p[0]), 0xAB);
+            check(adapter.copy_blob(p[0], p[1], buf.data()), "9: copy_blob true");
+            check(region_matches(buf.data(), expert_file_offset(p[0], p[1]), expert_bytes(p[0])),
+                  "9: copy_blob byte equality");
+            check(!adapter.borrowed(p[0], p[1]), "9: copy_blob left no borrower");
+        }
+        // A pool hit must not re-read the file: (2,3) was just copied, copy it again.
+        const uint64_t miss_before = store.stats().misses;
+        std::vector<uint8_t> again((size_t) expert_bytes(2), 0);
+        check(adapter.copy_blob(2, 3, again.data()), "9: second copy_blob true");
+        check(store.stats().misses == miss_before, "9: second copy is a pool hit, no file read");
+        check(region_matches(again.data(), expert_file_offset(2, 3), expert_bytes(2)),
+              "9: second copy bytes equal");
+        check(adapter.copy_blob(0, 0, nullptr) == false, "9: null dst refused");
+    }
+
+    // ============ 10. a full sweep on a pool far smaller than the set never runs dry ====
+    {
+        // Usable payload space = one 8192-byte page: the 12 pairs' payloads
+        // (20,768 B) and even the store scratch (12,288 B) do not fit together
+        // with more than one admitted blob.  The manager path used to hold a
+        // borrower per pair for the whole sweep; the copy path must not.
+        Pool pool;
+        auto ec = make_pool(pool, 20 * 1024);
+        check(!ec, "10: create 20KiB pool");
+        ExpertLayout layout;
+        build_layout(layout);
+        PoolExpertStore store(pool);
+        ec = store.open(g_fixture_path.c_str(), layout);
+        check(!ec, "10: open store on the small pool");
+        const uint64_t scratch = store.stats().scratch_bytes;
+        check(scratch > 0 && scratch < (20 * 1024), "10: store scratch leaves one page usable");
+
+        PoolExpertSourceAdapter adapter(store);
+        bool all_ok = true, all_bytes = true, no_borrowers = true;
+        for (int64_t l = 0; l < 3; ++l) {
+            for (int64_t e = 0; e < 4; ++e) {
+                std::vector<uint8_t> buf((size_t) expert_bytes(l), 0);
+                all_ok = all_ok && adapter.copy_blob(l, e, buf.data());
+                all_bytes = all_bytes && region_matches(buf.data(), expert_file_offset(l, e),
+                                                        expert_bytes(l));
+                no_borrowers = no_borrowers && !adapter.borrowed(l, e);
+            }
+        }
+        check(all_ok, "10: all 12 pairs copied on the small pool (no exhaustion)");
+        check(all_bytes, "10: every copied pair has the exact bytes");
+        check(no_borrowers, "10: no borrower left behind");
+        check(store.stats().evictions > 0, "10: the cache evicted instead of running dry");
+        check(store.stats().resident_bytes <= 8192,
+              "10: resident payloads fit one 8192-byte page, not the 12-pair set");
+        check(pool.stats().reserved_live_bytes ==
+                  scratch + store.cache_stats().cached_bytes,
+              "10: pool hold == scratch + cache's own hold");
+
+        // The honest refusal: a 5000-byte blob cannot be admitted at all here.
+        // (Its 8192-byte page is exactly the usable space, so keep this pair for
+        // a pool with page-size payload only.)
+    }
+
+    // ============ 11. copy_blobs(n>1) is byte-identical to n copy_blob calls =====
+    {
+        Pool pool;
+        auto ec = make_pool(pool, 20 * 1024);
+        check(!ec, "11: create 20KiB pool");
+        ExpertLayout layout;
+        build_layout(layout);
+        PoolExpertStore store(pool);
+        ec = store.open(g_fixture_path.c_str(), layout);
+        check(!ec, "11: open store");
+        PoolExpertSourceAdapter adapter(store);
+
+        // All 12 pairs, in a mixed order (the window spans layers).
+        int32_t ls[12], es[12];
+        size_t k = 0;
+        for (int64_t e = 0; e < 4; ++e)
+            for (int64_t l = 2; l >= 0; --l) { ls[k] = (int32_t) l; es[k] = (int32_t) e; ++k; }
+        std::vector<std::vector<uint8_t>> one(12), many(12);
+        for (size_t i = 0; i < 12; ++i) {
+            one[i].assign((size_t) expert_bytes(ls[i]), 0);
+            many[i].assign((size_t) expert_bytes(ls[i]), 0);
+        }
+        std::vector<uint8_t*> dst;
+        for (size_t i = 0; i < 12; ++i) dst.push_back(many[i].data());
+
+        bool single = true;
+        for (size_t i = 0; i < 12; ++i)
+            single = single && adapter.copy_blob(ls[i], es[i], one[i].data());
+        check(single, "11: 12 copy_blob calls all true");
+        check(adapter.copy_blobs(ls, es, dst.data(), 12), "11: copy_blobs(12) true");
+        bool identical = true;
+        for (size_t i = 0; i < 12; ++i)
+            identical = identical && one[i] == many[i] &&
+                        region_matches(many[i].data(), expert_file_offset(ls[i], es[i]),
+                                       expert_bytes(ls[i]));
+        check(identical, "11: copy_blobs == copy_blob, pair by pair");
+        bool clean = true;
+        for (int64_t l = 0; l < 3; ++l)
+            for (int64_t e = 0; e < 4; ++e) clean = clean && !adapter.borrowed(l, e);
+        check(clean, "11: copy_blobs left no borrower");
+        check(pool.stats().reserved_live_bytes == store.stats().scratch_bytes +
+                                                     store.cache_stats().cached_bytes,
+              "11: pool hold back to scratch + cache hold");
+        // A pair the store refuses (invalid expert) reports false, not a crash.
+        std::vector<uint8_t> bad(64, 0);
+        check(adapter.copy_blobs(nullptr, nullptr, nullptr, 0),
+              "11: n==0 with null arrays is a no-op true");
+        int32_t bl = 0, be = 99; uint8_t* bd = bad.data();
+        check(!adapter.copy_blobs(&bl, &be, &bd, 1), "11: invalid expert refused");
+        check(!adapter.borrowed(0, 99), "11: refusal left no borrower");
+    }
+
     std::fprintf(stderr, "pool_expert_source_adapter_test: %d checks, %d FAILURES\n",
                  checks, failures);
     return failures == 0 ? 0 : 1;

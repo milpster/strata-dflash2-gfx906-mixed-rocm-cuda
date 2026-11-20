@@ -73,6 +73,34 @@ public:
     /// ONE part: the whole lease as a single dense buffer at=0.
     int blob_parts(int64_t layer, int64_t expert, BlobPart* out) override;
 
+    /// CS-T: the pool is a fixed budget and the prompt path's sweep touches EVERY expert of EVERY layer
+    /// (48 x 512 = 24,576 pairs, 46.84 GiB on the iq3xxs-ud pack).  Lending each blob as a borrower that
+    /// lives until the request ends ran the 36 GiB pool dry around layer 36; `blob_stable` then returned
+    /// null and prefill stopped with "the engine reported an error: prefill: expert source has no blob".
+    /// A managed-pool blob is therefore declared transient: the prompt path copies it into its own staging
+    /// buffer through `copy_blob`/`copy_blobs`, and the store's LRU - not a growing borrower table - decides
+    /// what stays resident.  The decode path is untouched: blob()/blob_stable() still borrow for as long as
+    /// the async copy needs the pointer.
+    bool transient(int64_t layer, int64_t expert) const override { (void)layer; (void)expert; return true; }
+
+    /// The copy path's lease window: `copy_blobs` holds at most this many leases at once before it copies
+    /// and drops them, so the copy path's pool footprint is bounded by (stager threads x window) blobs -
+    /// never by the size of the sweep.  `copy_blob` holds one.
+    static constexpr size_t kCopyLeaseWindow = 4;
+
+    /// The blob's bytes into `dst` (`store_.blob_bytes(layer)` of them).  A pool HIT is a memcpy from the
+    /// cached payload (no file read); a MISS reads through the store's bounded reader, exactly as
+    /// blob_stable() does.  The lease is dropped before this returns, so no borrower is created and no
+    /// caller can make the pool run dry.  Thread-safe: the store serializes its own admission.
+    /// False (with one stderr line) only when the store itself refuses - it has already run its own
+    /// eviction, which is the honest "no room" case.
+    bool copy_blob(int64_t layer, int64_t expert, uint8_t* dst) override;
+
+    /// `n` blobs at once, byte-identical to `n` calls of copy_blob.  Uses the window above; a pair the
+    /// pool refuses while the window is held is retried alone (the least the pool can be asked for)
+    /// before this reports false.
+    bool copy_blobs(const int32_t* layers, const int32_t* experts, uint8_t* const* dst, size_t n) override;
+
     /// Pool memory is mlocked; returns true (UNMEASURED perf: no speed claim may cite this path).
     bool pinned(int64_t layer, int64_t expert) const override { (void)layer; (void)expert; return true; }
 
