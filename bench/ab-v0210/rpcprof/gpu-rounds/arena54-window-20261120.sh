@@ -131,6 +131,9 @@ on_signal() {
   restore_prod
   exit 1
 }
+trap on_signal INT TERM   # armed for every phase after this point (oracle round 3): a signal in
+                          # pre-gen or T0 also leaves prod down; PRESSURE is unset there, so the
+                          # handler's kill/rm are safe no-ops and restore_prod does the work.
 
 sha256sum "$R/trial-config-arena54.json" | tee -a "$OUT/window.log"
 echo "--- pin identity (must match v0239/SHA256SUMS.txt)" | tee -a "$OUT/window.log"
@@ -267,9 +270,11 @@ echo "gate engine pid: $ENG_PID (identity confirmed in /proc/$ENG_PID/cmdline)" 
 tail -20 "$OUT/boot-gate.log" | tee -a "$OUT/window.log"
 GATE=1
 MLOCKED=$(newlog "$ELOG" "$OFF" | grep -a -c 'strata native mlock: locked')
+SPANS=$(newlog "$ELOG" "$OFF" | grep -a -o 'strata native mlock: locked.*' | grep -a -o 'over [0-9]* spans' | grep -a -o '[0-9]*' | head -1)
 FILELOCK=$(newlog "$ELOG" "$OFF" | grep -a -c 'file pages locked, not pinned')
 PROG=$(newlog "$ELOG" "$OFF" | grep -a -E 'ArenaExpertSource shared expert arena progress chunk [0-9]+: [0-9]+ of [0-9]+ MiB locked' | tail -1)
 [ "$MLOCKED" -ge 1 ] || { echo "GATE FAIL: no 'strata native mlock: locked' line" | tee -a "$OUT/window.log"; GATE=0; }
+[ "${SPANS:-0}" = "1" ] || { echo "GATE FAIL: mlock summary reports ${SPANS:-no} spans, expected exactly 1 (more = Mode::all triple-lock: pack/shards locked too)" | tee -a "$OUT/window.log"; GATE=0; }
 [ "$FILELOCK" -ge 1 ] || { echo "GATE FAIL: no 'file pages locked, not pinned' note (arena mapped without a complete lock?)" | tee -a "$OUT/window.log"; GATE=0; }
 if [ -z "$PROG" ]; then
   echo "GATE FAIL: no arena mlock progress line" | tee -a "$OUT/window.log"; GATE=0
@@ -294,9 +299,8 @@ fi
 
 snap A54-warm
 bash "$G/trial_judge_8019.sh" T0-arena54-nopress 4 2>&1 | tee -a "$OUT/probe.log"
-# From here to the end of the pressure leg the window holds the box at ~7 GiB available, so an
-# interrupt has to release the holder and hand prod back rather than just die.
-trap on_signal INT TERM
+# From here to the end of the pressure leg the window holds the box at ~7 GiB available; the
+# trap armed after on_signal() covers this phase too (re-arming would be a no-op anyway).
 rm -f "$OUT/pressure.hold"
 python3 "$G/ram_pressure.py" --target-mib $PRESS_TARGET --cap-mib 40000 --hold-file "$OUT/pressure.hold" > "$OUT/pressure.log" 2>&1 &
 PRESSURE=$!
