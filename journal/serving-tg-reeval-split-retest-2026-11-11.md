@@ -5079,3 +5079,28 @@ test block. Require small distinct mappings, deterministic lock/metadata
 failure checks, strict real VmLck lifetime, bounded concurrency and genuine
 skip handling. Parent owns journals and acceptance; a failing core assertion
 must be reported rather than weakened. No serving integration or GPU run.
+
+## 2026-11-20 — CPU test commit exists; weak green evidence returned for repair
+
+Fixer committed tests/CMake as 1bf0a7916d. Parent read all 499 test lines,
+the 78-line probe, CMake diff and actual evidence.log. The recorded 14/14
+ctest pass and exit 0 exist, but do not establish the promised invariants:
+
+- Mock mode still calls real mlock/munlock; two concurrent 16 MiB pools exceed
+  the requested 16 MiB total test-mapping cap.
+- Real test checks >=baseline+16 KiB for a 64 KiB pool and <=previous+8 KiB
+  at teardown; it neither prints the numeric lifecycle nor retains a lease
+  after owner destruction. These allow false-positive lifetime conclusions.
+- Only the first metadata allocation is faulted. Absolute alignment is not
+  tested on a deliberately misaligned base; concurrency permits failures.
+- The supposedly unaligned step is kPage*3 (aligned), while stale lock-fail
+  injection can make that test pass for the wrong reason. Prefix unlock
+  length is not asserted.
+- The new probe target is outside the opt-in block, contradicting the
+  default-OFF build claim.
+
+Same sole remote fixer continues a bounded tests/CMake-only repair: fake
+locks in mock mode, small tracked mappings, exact real VmLck lifecycle or
+genuine skip, every metadata stage, meaningful bounds/concurrency tests,
+exact lock cleanup and default-OFF omission. No source integration or GPU
+work. Old evidence is retained; fresh repair output gets its own directory.
