@@ -5014,3 +5014,29 @@ bench/ab-v0210/notes/managed-ram-pool-core-review-20261120.md. It must propose
 a small allocator/ownership repair and decisive bounded tests, not redesign
 the serving system. A fresh bounded implementation lane follows the review.
 Expert/KV integration remains blocked; production remains stopped.
+
+## 2026-11-20 — independent core review blocks; simpler partition repair scoped
+
+Parent read the 100-line oracle report. Its BLOCK verdict and source-backed
+bounds/lifetime/platform/test concerns stand. Two report errors were
+corrected: parent build.log/build.status exist and record exit 1; executable
+paths are directly under build-cpu-ram-pool, not its tests/core subdirectory.
+
+Parent rejected the proposed small vector plus emergency free list: freeing
+must not lose capacity or depend on a best-effort metadata allocation.
+Authoritative amendment specifies one ordered list partition of the pool.
+Allocations prepare an unarmed shared lease and split nodes before mutation,
+then commit with splice/erase. Last release marks its existing node free and
+coalesces by erasing neighbors, without allocating. Shared ownership keeps
+the mapping alive until the final borrower; no separate live map or per-page
+metadata reservation is needed. This changes no serving default.
+
+Fresh sole remote Nemotron fixer ses_e062a9783ffenc2SWwjqO9mXIy owns that
+bounded core/header/test/CMake repair and the existing worktree journal.
+Require actual page size, absolute-address alignment, checked arithmetic,
+single cleanup owner, truthful per-pool lock/metadata failure tests, strict
+real VmLck lifecycle (or genuine SKIP 77), and simulated non-Linux compilation.
+Focused configure/build/ctest output must include numeric statuses. Any tool
+failure is an escalation, not grounds to invent successful writes or tests.
+Parent owns artifact acceptance and final focused checks. Production stays
+down; expert/KV and whole-stack enforcement remain later, blocked stages.
