@@ -40,24 +40,29 @@ public:
     ~PoolExpertCache();
 
     /// Acquire the cached payload for (layer, expert) into `out`.
-    ///   Hit: validates requested `bytes` match the cached entry, promotes with
-    ///     splice (no read), returns a lease copy.
-    ///   Miss: pool_alloc(bytes, page alignment, candidate), then Reader fills
-    ///     candidate->data().  On capacity pressure cold cache refs are dropped
-    ///     one at a time and the alloc retried; live borrowers keep allocations
-    ///     so the pool may still refuse.
-    /// Invalid key / zero / impossible bytes leave `out` unchanged.  Failed
-    /// pressure/read publishes no entry, preserves populated `out`, releases the
-    /// candidate, and returns the reader/alloc error.
-    /// `out` is replaced only after commit, with the mutex unlocked first.
+    ///   Hit: validates requested `bytes` match the cached entry, promotes the
+    ///     entry to front (no read), returns a lease copy.  No read/copy/alloc
+    ///     on hits beyond the lease copy.
+    ///   Miss: prepares a pending list node BEFORE any pool allocation or
+    ///     pressure eviction, then pool_alloc(bytes, page alignment, candidate).
+    ///     Retry/eviction happens ONLY on std::errc::no_buffer_space: cold cache
+    ///     refs are dropped one at a time and the alloc retried; live borrowers
+    ///     keep allocations so the pool may still refuse.  Invalid key, negative
+    ///     key, zero/impossible bytes, or a metadata error leave `out` and the
+    ///     cache unchanged and never purge entries.
+    ///   Reader is invoked under the lock; on failure nothing is published,
+    ///     populated `out` is preserved, and the candidate is released (no throw).
+    ///   On commit the pending node is spliced into the LRU front, the mutex is
+    ///     unlocked, then `out` is replaced.
     std::error_code acquire(int64_t layer, int64_t expert, uint64_t bytes,
-                            ExpertReader reader, PoolLease& out);
+                            const ExpertReader& reader, PoolLease& out);
 
     /// Drop the cache's own reference to (layer, expert) if present.  Must not
     /// allocate.  Borrowers holding copies are unaffected.
     void release(int64_t layer, int64_t expert) noexcept;
 
-    /// Drop every cache-owned reference.  Borrowers may outlive the cache.
+    /// Drop every cache-owned reference.  Borrowers may outlive the cache.  Never
+    /// allocates.
     void clear() noexcept;
 
     struct Stats {
@@ -75,7 +80,6 @@ private:
         int64_t expert = 0;
         uint64_t requested_bytes = 0;
         PoolLease lease;
-        std::list<Entry>::iterator self;  // stable node handle
     };
 
     Pool* pool_ = nullptr;  // non-owning; must outlive the cache
@@ -85,8 +89,14 @@ private:
     mutable uint64_t misses_ = 0;
     mutable uint64_t evictions_ = 0;
 
-    // Caller must hold mu_.  Assumes entry exists.
-    void erase_locked(std::list<Entry>::iterator it) noexcept;
+#if defined(STRATA_RAM_POOL_TEST)
+    friend void cache_set_pre_emplace_fault(void (*hook)());
+#endif
 };
+
+#if defined(STRATA_RAM_POOL_TEST)
+// Test-only seam: invoked once before the pending Entry node is emplaced.
+void cache_set_pre_emplace_fault(void (*hook)());
+#endif
 
 }  // namespace strata::core
