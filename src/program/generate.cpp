@@ -48,6 +48,7 @@
 #include "strata/core/coupled_draft.hpp"
 #include "strata/core/expert_source.hpp"
 #include "strata/core/pool_expert_store.hpp"   // GPU-free; opt-in managed-lent-slot seam (nullptr default)
+#include "strata/core/ram_pool.hpp"            // managed pre-locked RAM pool core (pool_capacity_bytes, Pool::create)
 #include "strata/core/foresight_swap.hpp"
 #include "strata/core/pinned.hpp"
 #include "strata/core/pin_budget.hpp"
@@ -8227,6 +8228,83 @@ int main(int argc, char** argv) {
     // The earlier "the arena does not fit" conclusion was WRONG and is worth recording: the failure was a stale
     // CUDA error left set by the failed `cudaHostRegister` and read later by `gr_read`'s launch check.  See the
     // note in `pinned.cu`.
+    // ---- STRATA_RAM_BUDGET_MIB: managed pre-locked RAM pool at startup (opt-in).
+    // Unset/empty/0 = OFF: no pool is constructed, the code path below is exactly today's.
+    // Invalid (non-numeric, negative) = clear startup error exit - never silent fallback.
+    static const char* ram_budget_env = std::getenv("STRATA_RAM_BUDGET_MIB");
+    bool ram_budget_managed = false;
+    // Managed pool and store: outlive every borrower, torn down when main() returns
+    // (after generation completes). Default-constructed empty in OFF mode.
+    strata::core::Pool managed_pool;
+    std::optional<strata::core::PoolExpertStore> managed_store;
+    if (ram_budget_env != nullptr && ram_budget_env[0] != '\0') {
+        // Pure digit parser: no <cstdlib>/<cerrno> dependency, no silent fallback.
+        auto parse_budget_mib = [](const char* s, uint64_t& out) -> bool {
+            if (s == nullptr || *s == '\0') return false;
+            uint64_t v = 0;
+            for (const char* p = s; *p != '\0'; ++p) {
+                if (*p < '0' || *p > '9') return false;
+                const uint64_t prev = v;
+                v = v * 10 + static_cast<uint64_t>(*p - '0');
+                if (v < prev) return false;   // overflow
+            }
+            out = v;
+            return true;
+        };
+        uint64_t budget_mib = 0;
+        if (!parse_budget_mib(ram_budget_env, budget_mib)) {
+            std::fprintf(stderr, "strata generate: STRATA_RAM_BUDGET_MIB=%s: invalid value (expected a non-negative integer MiB)\n",
+                         ram_budget_env);
+            return 1;
+        }
+        if (budget_mib > 0) {
+            // Fail if the budget exceeds available RAM (MemAvailable / cgroup cap).
+            std::optional<uint64_t> available;
+            if (const auto hm = strata::core::sample_host_memory()) available = hm->available;
+            if (available.has_value() && (budget_mib << 20) > *available) {
+                std::fprintf(stderr, "strata generate: STRATA_RAM_BUDGET_MIB=%llu: budget %llu MiB exceeds available RAM %llu MiB\n",
+                             (unsigned long long) budget_mib,
+                             (unsigned long long) budget_mib,
+                             (unsigned long long) (*available >> 20));
+                return 1;
+            }
+            // outside_owned from REAL runtime values known at this startup point:
+            //   g_kv_host_bytes — host-KV bytes tracked by layer.cpp (0 if host-KV not configured/sized yet)
+            // Not yet known here (FileExpertSource opens after the pool is created):
+            //   mapped GGUF shard sizes — src.mapped_bytes() after FileExpertSource opens (GGUF path)
+            //   token tables — not yet loaded at this startup point
+            // headroom = 0: recorded decision, no invented reserve.
+            const uint64_t outside_owned = strata::core::qsa_kv_host_bytes();
+            const uint64_t headroom = 0;
+            uint64_t pool_bytes = 0;
+            std::error_code ec = strata::core::pool_capacity_bytes(budget_mib << 20, outside_owned, headroom, pool_bytes);
+            if (ec) {
+                std::fprintf(stderr, "strata generate: STRATA_RAM_BUDGET_MIB=%llu: pool capacity: %s\n",
+                             (unsigned long long) budget_mib, ec.message().c_str());
+                return 1;
+            }
+            managed_pool = strata::core::Pool::create(pool_bytes, ec);
+            if (ec) {
+                std::fprintf(stderr, "strata generate: STRATA_RAM_BUDGET_MIB=%llu: Pool::create: %s\n",
+                             (unsigned long long) budget_mib, ec.message().c_str());
+                return 1;
+            }
+            managed_store.emplace(managed_pool);
+            const std::string experts_bin_path = o.pack + "/experts.bin";
+            ec = managed_store->open(experts_bin_path.c_str(), strata::kernels::cpu::expert_layout());
+            if (ec) {
+                std::fprintf(stderr, "strata generate: STRATA_RAM_BUDGET_MIB=%llu: store.open(%s): %s\n",
+                             (unsigned long long) budget_mib, experts_bin_path.c_str(), ec.message().c_str());
+                return 1;
+            }
+            g_pool_expert_store = &*managed_store;
+            std::fprintf(stderr, "strata generate: STRATA_RAM_BUDGET_MIB=%llu: outside_owned=%llu pool_bytes=%llu store open\n",
+                         (unsigned long long) budget_mib,
+                         (unsigned long long) outside_owned,
+                         (unsigned long long) pool_bytes);
+            ram_budget_managed = true;
+        }
+    }
     strata::core::FileExpertSource src;
     {   // the card, and whether this build has code for it (a binary built for other GPUs fails at its first kernel
         // otherwise, after the whole expert arena has loaded) - before the arena starts loading
@@ -8329,7 +8407,7 @@ int main(int argc, char** argv) {
     }();
     for (bool again = true; again;) {
     again = false;
-    if (o.mmap_experts) {
+    if (o.mmap_experts || ram_budget_managed) {
         // FileExpertSource maps the pack's experts.bin: a canonical pack has it; a native (IQ) pack has it when
         // built with `tools/iq_pack.py --experts-bin` (the per-layer blob sizes of its layout, PR #121).  The low-RAM
         // mode: the experts come from the file through the OS cache instead of a pinned copy in RAM, for a PC whose
