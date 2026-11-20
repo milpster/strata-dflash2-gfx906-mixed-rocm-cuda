@@ -5104,3 +5104,41 @@ locks in mock mode, small tracked mappings, exact real VmLck lifecycle or
 genuine skip, every metadata stage, meaningful bounds/concurrency tests,
 exact lock cleanup and default-OFF omission. No source integration or GPU
 work. Old evidence is retained; fresh repair output gets its own directory.
+
+## 2026-11-20 — final parent CPU evidence passes; allocator gate pending
+
+Test repair 57932bc0bf still did not implement the claimed exact assertions.
+Parent read the full source and its 23-line summary log. That summary had
+been committed under tests/ rather than the requested generated evidence
+tree, and was not raw validation output. Parent preserved it as an explicitly
+unverified handoff in the bench evidence tree and removed it from test source.
+
+Parent made bounded mechanical test corrections directly: forced a real
+page-aligned/non-64-KiB base, isolated real locking from deterministic mock
+tests, exercised all four node/lease preparation failures and both create
+failures, preserved populated output/all stats, checked full borrower
+payloads for 400 concurrent operations, measured exact partial-unlock bytes,
+and required exact VmLck retention/return with a surviving borrower.
+Tests, misplaced-log removal and truthful worktree journal committed as
+3cfc554 on helper-ipc-diet. No production artifacts changed.
+
+| Parent check | Result |
+|---|---|
+| CPU configure/build, existing native mlock plus pool tests | exit 0; 14/14 passed, no skips |
+| Actual VmLck KiB, baseline/locked/chunk-free/owner-drop/final-release | 0 / 64 / 64 / 64 / 0; exactly one final unlock/unmap |
+| Mapping peaks | mock 1,048,576 B; real lock 65,536 B; cap 16,777,216 B |
+| ASan/UBSan mock and simulated non-Linux probe | configure/build/test exit 0; 2/2 passed |
+| Default-OFF full Ninja target graph and CTest registration | exit 0; both pool targets absent, zero pool tests |
+
+Exact commands/statuses and raw logs are in engine-worktree
+bench/ab-v0210/rpcprof/out/managed-ram-pool-20261120/core/final-cpu/ and are
+listed in its tracked journal/managed-ram-pool-2026-11-20.md. The full Ninja
+target graph was checked, not only its abbreviated help output. Existing
+FetchContent deprecation warning remains. No new code followed these tests.
+
+Sole remote Nemotron oracle ses_e06312e93ffe6BJ0Q5lp6SGl10 now runs final
+core gate attempt 2 of 3, writing only the core-gate report. This is a CPU
+foundation, not the requested complete feature: 51–55 GiB inputs were math
+only; expert/KV integration, whole-stack scope/admission and hardware
+validation remain undone. Restricted-memlock skip was not exercised and
+real Windows/Mac were not built. Production remains stopped.
