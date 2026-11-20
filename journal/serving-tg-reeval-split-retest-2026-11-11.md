@@ -4601,3 +4601,21 @@ Runtime locking remains blocked on expert/PLE mapping coverage and total-fit pro
   re-poll 10 min before escalating, three confound recordings before T0 (cgroup wall values,
   experts.bin VMA THP state, sha burst elapsed), pid-recycling fallback, SIGKILL recovery
   (rm hold file + stop-all + launch-v0238).
+
+## 2026-11-20 (midday) — arena-54 window #1 aborted at pre-gen; root cause found and worked around
+
+- First window run: engine exit 2 on every pre-gen generation ("conversation parking does
+  not support a layer split on one GPU"), 32 flapping generations, experts.bin never
+  written; watch-list worked (ALL STOPPED verified; prod restored and verified 11:00).
+- Parent diagnosis (bench/ab-v0210/rpcprof/out/arena54-boot-diagnosis-20261120/): binaries,
+  launcher env, systemd scope and HIP_VISIBLE_DEVICES all exonerated by A/B probes with the
+  exact engine args; reproduced via config env; isolated to STRATA_ARENA_MMAP=1 -> engine
+  setenv GPU_PINNED_MIN_XFER_SIZE=1000000 (generate.cpp:3758) -> on this ROCm 6.1.0+xnack
+  runtime the raised ROCclr pin threshold makes device enumeration see <=1 GPU -> the
+  layer split collapses to one card -> the parking guard (a correct guard!) refuses.
+  ARENA_MMAP was built for single-GPU small-RAM boxes; never run with a layer split.
+- Workaround (f0b075e7a3): GPU_PINNED_MIN_XFER_SIZE=0 in the trial config env — explicit
+  wins over the engine's overwrite=0 setenv; probe-proven 2 GPUs with ARENA_MMAP still on.
+  D-4's own measurement says the knob is a perf wash (49.06 vs 49.16 ms/window). Engine-side
+  proper guard parked for later.
+- Window re-dispatched with the fixed config; everything else unchanged.
