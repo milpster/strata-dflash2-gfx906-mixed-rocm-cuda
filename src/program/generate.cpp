@@ -14741,12 +14741,15 @@ int main(int argc, char** argv) {
                         // A checkpoint target with no pair it can retain: the file's tail ring describes tokens
                         // past the prefix, so it is never imported.  The drafter goes COLD at the mounted prefix -
                         // the same target-only fallback a RAM rewind to an unpaired checkpoint runs - so it cannot
-                        // keep the outgoing conversation's horizon and claim draft history it does not have.
+                        // keep the outgoing conversation's horizon and claim draft history it does not have.  A
+                        // drafter whose own bounds refuse that position is left as it is and the request's mount
+                        // decides from there (its pair, a cold rewind, or reading the prompt again): the restore is
+                        // past its first byte here, so a drafter bound is never a reason to kill the process.
                         std::string cw;
-                        if (!dflash.rewind_cold(U, cw)) {
-                            w = "the drafter could not go cold at the mounted checkpoint: " + cw;
-                            return false;
-                        }
+                        if (!dflash.rewind_cold(U, cw))
+                            std::fprintf(stderr, "strata serve: conversation cache: the drafter keeps its horizon at "
+                                                 "a disk checkpoint mount at %lld tokens (%s)\n",
+                                         (long long) U, cw.c_str());
                         return dflash.idle(w);
                     }
                     const strata::core::DFlashSnapshotMeta meta{manifest.draft.committed_end,
