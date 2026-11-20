@@ -4764,3 +4764,19 @@ sha c4a6bb3f39..., launcher sha c969556ab...). Dispatched to nemotron agent
 ses_e070e088 with correct gate bytes (max=59055800320, min=54760833024,
 swap=10737418240), mechanics only, no speed claims. Evidence dir:
 bench/ab-v0210/rpcprof/out/arena54-restart-20261120/.
+
+## 2026-11-20 13:53 — BOX REBOOT mid restart-tuple boot
+
+Operator rebooted the box at 13:53:13, killing the restart agent boot
+mid-generate (supervisor state file stamped 13:52 with pre-reboot pids,
+all dead; engine log ends in the ram-relief/fill lines; evidence dir still
+empty). Prod came down with it. Committed tuple 0ac1f2edf7 is on disk and
+reboot-safe. Page cache and swap wiped — the next arena lock is a cold disk
+read. The restart agent session (ses_e070e088) SURVIVED the harness restart
+(observed active seconds after the box came back) and is re-running its
+sequence per its brief (stop-all as no-op safety, boot, gates).
+
+Boot-state note for the upcoming speed window: this is a pristine boot —
+no swap residue, no page cache, load 10.6 at 2-min uptime settling
+(no strata processes; source unnamed, possibly post-boot services or the
+game). Name it in the window report.
