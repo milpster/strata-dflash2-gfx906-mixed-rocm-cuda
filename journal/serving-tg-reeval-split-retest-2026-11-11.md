@@ -5277,3 +5277,17 @@ proves retained borrowers and same-pool cross-owner storage reuse, not a
 production expert reader or whole-serving RAM budget. No source edit follows
 the final tests; next is real reader/lease-bearing consumer binding.
 Production remains down; no speed or startup-hang remedy is claimed.
+
+## 2026-11-20 — resume after accepted CPU cache
+
+Engine acceptance commit is 38fe50f; main evidence record is f3ecfa8.
+Persisted progress now reflects the completed 15-test CPU and 3-test sanitizer
+validation rather than the superseded test-repair lane. Cache storage reuse
+does not yet establish native backing I/O or whole-stack enforcement.
+
+Sole remote Nemotron explorer ses_e05cd7da2ffe1dpivVaMH6OwHl investigates
+the existing DirectFile and FileExpertSource readers, read-only. Next boundary
+must name actual direct-I/O enforcement, aligned short/EOF handling, bounded
+scratch ownership and a CPU fixture usable by the cache. It may fail closed
+on unsupported paths; mapped copies cannot be called page-cache-free.
+No boots, model-file writes, backend runtime or production promotion is allowed.
