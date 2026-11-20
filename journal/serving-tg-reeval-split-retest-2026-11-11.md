@@ -5161,3 +5161,27 @@ than assuming the existing eviction API works for mapped sources.
 The requested total-budget feature remains incomplete: no runtime budget
 knob, elastic expert integration, host-KV binding or whole-stack enforcement
 has landed. Production remains off; existing speed evidence stays invalidated.
+
+## 2026-11-20 — expert audit reconciled; cache/lease integration boundary
+
+Parent read the revised 45-line expert-contract report. The selected pack is
+50,294,988,800 bytes; native layout is dynamic, not the earlier fixed example
+geometry. KV host allocation remains in layer.cpp. The source-open lifetime
+promise of blob_stable/blob_parts cannot become an evictable raw pointer.
+FileExpertSource::note_async_read protects its recycled stage buffers only.
+
+Parent checked the actual lent-slot refill at generate.cpp:24032-24056 and
+ExpertCache's fill functions at expert_cache.cpp:784-909. Despite its name,
+fill_slot_queued_staged first queues a direct cudaMemcpyAsync; it is not an
+immediate host copy. A future pool lease must survive stream completion,
+including failure/early-return cleanup. Copying from the backing file does
+not remove that obligation. A copy-only adapter also does not establish
+the requested primary elastic resident cache.
+
+Sole remote Nemotron oracle ses_e05ee5a0cffeemFB6MIvap7mOR owns only the
+L2-boundary report. Review target: CPU-testable cache with lease ownership,
+bounded immutable reader, then a lease-bearing API and one actual consumer
+binding. Cache eviction drops its own reference; borrowers retain storage.
+Unadapted raw/alias consumers block managed-source activation. Runtime
+budget creation, host-KV mapping and whole-stack admission remain later.
+No engine changes, boots, GPU work or production configuration changes.
