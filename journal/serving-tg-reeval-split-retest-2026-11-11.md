@@ -5409,3 +5409,18 @@ the budget knob (single locked residency). generate.cpp.o compiles on
 build-906, CPU pool suite 6/6; raw logs l3-task1/parent-*. Task 2 (adapt
 the ~:17117 and ~:20300 refill consumers to lease-bearing acquisition) is
 now running as the sole fixer lane; production stays stopped.
+
+## 2026-11-20 (late) — L3 Task 2 accepted: all must-adapt consumers lease-bearing
+
+Fixer stopped correctly at blob_parts (multi-span); parent source analysis
+re-scoped: BlobPart.at is the in-blob offset — parts are dense in the slot,
+split only in the file — so the store's contiguous assembled lease replaces
+any parts layout with one staged fill. 11fa66faa1 adapted the VRAM
+evict-refill (:17252-17291) and refill_issue/refill_wait (:20463-20534) with
+the lent-slot ownership pattern (lease vectors across issue+wait, clear on
+sync success, hard drain on failure, Windows release guarded to legacy).
+CPU 6/6, generate.cpp.o exit 0, raw logs l3-task2/second/. Every must-adapt
+consumer is now lease-bearing; nothing runtime-tested (no boot authorized).
+Remaining: the ExpertSource adapter design for the still-legacy consumers
+(dispatch fill, nibble verify, blob(), swap relief) before the store can be
+the primary source; then L4 whole-stack admission. Production stays stopped.
