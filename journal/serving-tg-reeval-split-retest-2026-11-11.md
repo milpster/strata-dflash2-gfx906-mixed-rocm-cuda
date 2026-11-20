@@ -4557,3 +4557,30 @@ Runtime locking remains blocked on expert/PLE mapping coverage and total-fit pro
   the real anon-path fallback detector.
 - Pre-gen phase skip-if-exact-size: a mapping boot never prints the wrote line, so re-booting
   on an already-correct file wastes the 20-min poll — size assert still hard.
+
+## 2026-11-20 (night, cont.) — oracle round 2: FIX-FIRST, stop-all.sh blocker
+
+- Arbitration: (A1) oracle concedes to the fixer — the progress-line total is the whole mapped
+  file 50294988800>>20 = 47965 MiB exactly (file size is a page multiple; pin_budget page
+  rounding is a no-op); oracle's 47944 came from rounding GiB, and a hard gate on it would
+  have aborted a correct run. The derived EXPECTED_MIB stands. (A2) the fixer's premise was
+  wrong (MAP_HUGETLB unavailable DOES exist at pinned.cu:454, anon-path-only, and is printed
+  in today's prod log) but its action was harmless; both anon detectors stay.
+- BLOCKER: stop-all.sh (:17) hard-codes prod + trial-spill40 state files only — the arena54
+  supervisor (run/trial-arena54-supervisor.json) is never TERM'd via its state file, survives
+  the sweep, respawns its pair forever, flaps on the launcher socket guards, and stop-all
+  reports ALL STOPPED because count_strata doesn't match pair_supervisor.py. Every stop-all
+  in the window was affected. Fix: glob run/*-supervisor.json + add the two arena54 sockets.
+- Hardening applied to the window script by the same fixer round: signal trap around the
+  pressure leg (hold-file removal + ram_pressure kill + restore), stale-log false-READY fix
+  for both readiness polls, ENG_PID liveness+cmdline assert in the gate, restore_prod gains a
+  real readiness poll (all abort paths verified), experts.bin sha256 recorded on first pre-gen
+  and asserted later, wrong-size pre-flight abort before any boot (from_gguf=false means the
+  wrote line can never print), evidence-dir header aligned.
+- Oracle watch-list for the nemotron lane: THP on the file mapping is the open scientific
+  question (gate records the VMA evidence; a 4 KiB outcome must be reported as the dominant
+  confound — prod's arena is THP-backed with 23983 2 MiB pages); T0/T1 deltas carry named
+  confounds (different binary incl. Phase B, conv-cache cut) — report both deltas separately,
+  no extra baseline boot this window; memory.current will ride near the floor (~53 of 56 GiB)
+  — record memory.events oom/oom_kill + min_swap_used_mib every leg; 'nothing dropped: this
+  run maps' is EXPECTED; iq_pack.py --experts-bin stays banned on this pack.
