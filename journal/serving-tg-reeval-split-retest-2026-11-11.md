@@ -4657,3 +4657,18 @@ Runtime locking remains blocked on expert/PLE mapping coverage and total-fit pro
   56 GiB cgroup wall with one contiguous locked 46.84 GiB mapped arena + park/reread
   conversations at 2.3 GiB boots cleanly, serves ~30 tok/s, is immune to 49 GiB of external
   memory pressure, and restores prod cleanly after.
+
+## 2026-11-20 (early afternoon) — prod SIGABRT incident during oracle verification (undisgnosed)
+
+- ~12:07: prod (restored 11:53:44, verified serving) died serving the oracle verification
+  agent's first big prompt: "thinking capped at 49152 of max_tokens 65536" then engine
+  exit -6 (SIGABRT). No kernel OOM in dmesg; no abort/terminate/bad_alloc signature in the
+  engine log; the server's own message names RAM as the USUAL cause but nothing confirms it.
+  Cold-engine + giant-context + 49k-thinking is the observed shape; warm small completions
+  after reboot ran 0.5 s each. The oracle agent died with ConnectionRefused during the
+  supervisor restart (expected symptom, session recovered by resume).
+- Recovery: generation 9 booted clean (warning noted: CUDA1 396 MiB free after load — the
+  engine itself suggests --vram-reserve-later-mib 820; prod runs 448), prod verified
+  serving + warmed; oracle verification resumed with small-step instruction.
+- Follow-up parked: undiagnosed exit -6 on big cold requests — needs a repro before any
+  engine claim; watch whether the resumed oracle's load triggers it again on a warm engine.
