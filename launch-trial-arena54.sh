@@ -11,7 +11,7 @@ BIN="/mnt/srcds/Strata/v0238p0"
 PY="$ROOT/.venv/bin/python"
 CONFIG="/mnt/srcds/Strata/trial-config-arena54.json"
 SOCKET="$ROOT/run/trial-arena54.sock"
-SOCKET2="$ROOT/run/trial-arena24-2.sock"
+SOCKET2="$ROOT/run/trial-arena54-2.sock"
 HELPER="$BIN/rpcw-cuda/strata-expert-helper-patient"
 case "${1:-}" in
   --pair-child) [[ -n ${STRATA_PAIR_RECORD:-} ]] || { echo 'REFUSING unowned pair child.' >&2; exit 2; } ;;
