@@ -4619,3 +4619,22 @@ Runtime locking remains blocked on expert/PLE mapping coverage and total-fit pro
   D-4's own measurement says the knob is a perf wash (49.06 vs 49.16 ms/window). Engine-side
   proper guard parked for later.
 - Window re-dispatched with the fixed config; everything else unchanged.
+
+## 2026-11-20 (midday) — arena-54 window #2: design mechanically PROVEN, legs broken by stale judge pattern
+
+- The fix held (2-GPU split, no abort). Pre-gen wrote experts.bin in ~4 min: exactly
+  50294988800 B, sha 3de5d9e5… recorded. Measured boot gate PASS: ONE mlock span,
+  47965/47965 MiB locked, VmLck 49280040 kB (~47 GiB = the arena file), engine pid
+  identity-confirmed, cgroup wall applied, memory.events oom/oom_kill 0 throughout.
+  THE 54-GIB-WORLD DESIGN WORKS: one contiguous locked arena inside the walled engine.
+- THP verdict (expected confound materialized): the file mapping is 4 KiB pages
+  (KernelPageSize 4 kB, THPeligible 0, AnonHugePages 0) — ~12M small pages where prod's
+  anon arena has ~24K 2 MiB pages. TLB cost is real and rides on every T0/T1 number.
+- Both probe legs failed for a tooling reason: trial_judge_8019.sh grepped the stale
+  arena24 log name ('no trial log found'); manual agent probes: first probe 15.1 tok/s
+  (0 cached, cold), warm probe 24.9 tok/s (68 cached) — not leg-comparable. Pressure leg
+  inconclusive at the old 40 GiB holder cap (avail floor 8.7 GiB; the 47 GiB locked arena
+  is non-reclaimable — itself a structural safety result).
+- Fixes (9b0029d0b8): judge accepts both arena24/arena54 log names (newest wins); holder
+  cap 40000 → 49000. Measurement-only re-run dispatched: pre-gen skips on the exact-size
+  + sha asserts, wall ~25-35 min.
