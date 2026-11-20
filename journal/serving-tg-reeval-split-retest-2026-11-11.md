@@ -4951,3 +4951,36 @@ change, GPU dependency, service or benchmark in L1. Parent will read source
 and decisive test output, then obtain an independent oracle review before
 the next integration lane. The design report and parent state are separate
 from the fixer's engine-worktree write scope. Production stays down.
+
+## 2026-11-20 — RAM-pool L1 static acceptance failure, repair requested
+
+Fixer committed aa5431a5d1 with the pool core and CPU tests. Parent read the
+full 128-line API, 312-line implementation, 374-line test, CMake diff and
+supplied ctest artifact (13 tests reported passed). This is NOT accepted.
+The following are static-analysis findings, not reproduced production runs:
+
+- Fit logic rounds an offset beyond a range and subtracts it unsigned from
+  the end without first checking the bound; alignment checks only offset,
+  not the absolute returned address. Size/pointer rounding needs guards.
+- Assigning a populated output lease under the same allocator mutex can
+  destroy its old lease and attempt to reacquire that mutex.
+- Lock-failure cleanup manually unmaps while the shared owner still retains
+  base/size, allowing its deleter to unmap again.
+- Lease destruction allocates vectors and can throw; allocation metadata
+  publication is not exception-safe under memory exhaustion.
+- Unsupported-platform guards do not cover Unix headers/syscalls.
+
+The original test mock reserved 1 GiB with malloc (not the promised 16 MiB
+cap), reused one unaligned buffer for all mappings, and accepted >=1 cleanup
+counts. Real-lock checks used non-strict inequalities that could pass with
+no lock rise. Tests lacked decisive bounds, populated-output, partial-lock
+failure and destructor-allocation checks. These green tests are not usable
+acceptance evidence for those properties.
+
+Same remote fixer continues one bounded repair pass. Require small distinct
+mock mappings, strict actual VmLck/cleanup evidence, safe output-lease
+semantics, allocation-free release, robust arithmetic, platform probes and
+targeted regressions with timeouts. Parent's lsp_diagnostics request failed
+its output schema (diagnostics[2].code expected string); compiler diagnostics
+and explicit test output must supply the unavailable check. Independent
+oracle review remains required before expert/KV integration. No boots.
