@@ -108,6 +108,8 @@ def main():
     ap.add_argument("--files", required=True)
     ap.add_argument("--floor-mib", type=int, default=4096)
     ap.add_argument("--hold-file", required=True)
+    ap.add_argument("--budget-mib", type=int, default=0,
+                    help="0 = no cap; N>0 = stop locking once this many MiB are locked (defined-area cap for ladder windows)")
     ap.add_argument("--refresh-s", type=int, default=0,
                     help="0 = one-shot hold (trials); N>0 = standing mode: every N s lock new resident pages / release under floor pressure")
     ap.add_argument("--heartbeat-s", type=int, default=30)
@@ -123,6 +125,8 @@ def main():
     locked_mib = [0]
 
     def try_lock(m, mi, start_pg, n_pg):
+        if args.budget_mib > 0 and locked_mib[0] >= args.budget_mib:
+            return False
         need = n_pg * PAGE / (1 << 20)
         if meminfo("MemAvailable") - need < args.floor_mib:
             return False
