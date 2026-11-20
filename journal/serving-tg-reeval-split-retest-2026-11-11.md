@@ -5230,3 +5230,25 @@ keys, temporary-node preparation before mutation, splice publication, exact
 failure/output checks, genuinely surviving borrowers, full-byte immutable
 fixture/reuse evidence, metadata fault injection and raw numeric-status logs.
 No source-consumer binding or whole-stack budget enforcement has landed.
+
+## 2026-11-20 — cache transaction reconciled; final test-only boundary
+
+47a40ae633 and its real 67-check ctest log exist. Parent read all repaired
+files and the raw log. Two scoped source fixes were still misplaced: pending
+node allocation followed pressure eviction, and hits replaced output under
+the mutex. Tests still contained an unconditional true assertion and did not
+prove fault ordering under pressure; uniform fixture patterns plus an additive
+checksum also failed to establish byte-for-byte preservation.
+
+After two incomplete handoffs, parent narrowed the boundary. Parent source
+commit847aeb5 moves checked preflight before lookup, prepares pending metadata
+before admission/eviction, and unlocks before hit-output replacement. Header
+clarifies immutable payloads, callback lifetime and non-rollback of prior
+capacity evictions. No new runtime flag or production integration.
+
+Sole remote fixer now owns only pool_expert_cache_test.cpp: tight full-pool
+metadata-order regression, exact populated-output/failure stats, nonuniform
+full-byte fixture and length comparison, a true LRU hit/reload sequence,
+borrower-held cache refusal, measured mapping peak and exact final cleanup.
+Parent runs final focused CPU/sanitizer/default-OFF checks after reconciliation.
+71ad81a's pool error distinction is included in that revalidation. Prod stays off.
