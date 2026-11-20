@@ -74,6 +74,8 @@ public:
 
     static Pool create(uint64_t pool_bytes, std::error_code& ec);
     /// Alignment applies to the returned address. Failure preserves out_lease.
+    /// No fitting range returns no_buffer_space; metadata failure returns
+    /// not_enough_memory. Consumers must not evict on a metadata error.
     std::error_code pool_alloc(uint64_t bytes, uint64_t alignment, PoolLease& out_lease);
     void pool_free(PoolLease& lease);
     PoolStats stats() const noexcept;

@@ -438,7 +438,8 @@ int main(int argc, char** argv) {
         for (size_t i = 0; i < frags.size(); i += 2) frags[i] = PoolLease{};
         PoolLease big;
         ec = pfrag.pool_alloc(kPage * 2, kPage, big);
-        check(ec && !big.valid(), "2-page alloc fails despite fragmented total");
+        check(ec == std::errc::no_buffer_space && !big.valid(),
+              "fragmentation returns capacity error, distinct from metadata failure");
         for (auto& f : frags) f = PoolLease{};
         PoolLease full;
         ec = pfrag.pool_alloc(kPage * 8, kPage, full);

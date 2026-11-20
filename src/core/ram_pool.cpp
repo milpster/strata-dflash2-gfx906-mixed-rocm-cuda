@@ -303,7 +303,7 @@ std::error_code Pool::pool_alloc(uint64_t bytes, uint64_t alignment,
         chosen = it;
         break;
     }
-    if (chosen == st.partition.end()) { ec = std::make_error_code(std::errc::not_enough_memory); return ec; }
+    if (chosen == st.partition.end()) { ec = std::make_error_code(std::errc::no_buffer_space); return ec; }
 
     const uint64_t s0 = chosen->start;
     const uint64_t e0 = chosen->end;
