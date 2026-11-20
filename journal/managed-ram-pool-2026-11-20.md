@@ -793,3 +793,95 @@ row, `VmRSS` peak 45,220 MiB, and zero occurrences of `no blob`, `refill failed`
 around by hand: the `swap_used_mib` column was fed an unset variable, and the engine was
 found with a `pgrep -f` pattern that also matches a shell carrying that text. Both fixed
 (main tree `6052b4a282`); the self-test reads a swap figure identical to `/proc/meminfo`.
+
+## Window 2g — STRATA_RAM_BUDGET_MIB=43008 (2026-11-21, port 8009)
+
+Two GiB more locked memory than the 40,960 window, same tuple: engine
+`/mnt/srcds/Strata-wt-helper-ipc/build-906/strata --serve --gpu 0,1`, config
+`bench/ab-v0210/rpcprof/trial-managed-pool.json` unmodified, `--vram-reserve-mib 192` and
+`--vram-reserve-later-mib 576` untouched, helper the RTX 3080
+`strata-expert-helper-patient` (pid 2664394). Production down for the whole window; no push.
+
+Boot line, from this boot's elog only:
+
+    strata generate: STRATA_RAM_BUDGET_MIB=43008: outside_owned=4294967296 pool_bytes=40802189312 store open
+    strata generate: RAM pool store: pool_bytes=40802189312 scratch_bytes=2666496 usable_bytes=40799522816
+                     blob_max=2662400 io_window=2666496 preads_per_blob=1 resident_pairs=0
+
+40,802,189,312 B = 38,912 MiB, i.e. 43,008 minus the 4,096 MiB the engine already owns. The
+budget took on the first boot. `--expert-helper-ram-relief` reports "this run's expert
+source is not the arena", so the managed store, not the arena, is the expert source.
+Health answered `loaded: true` 40 s after the launcher started.
+
+| leg | request | wall s | engine prompt | engine decode | hit rate | over PCIe |
+|---|---|---|---|---|---|---|
+| 1 short, cold | "Reply with the single word ready.", max 32 | 5.1 | 59 read in 3,788 ms (15.6 tok/s, 64.2 ms/tok) | 16 in 1,306 ms (12.2 tok/s) | 84.8% | 16.2% |
+| 2 80k, disk-warm (not cold) | 80k prompt file, max 2,048 | 114.1 | 74,630 reused + 5 read in 15,914 ms — 15,652 ms of it a disk restore | 1,538 in 73,083 ms (21.0) + 152 in 5,826 ms (26.1) = 1,690 in 78,909 ms (21.4) | 95.2% | 13.2% |
+| 3 80k, warm, 256 | same file, max 256 | 9.5 | 74,630 reused + 5 read in 275 ms | 128 in 4,337 ms (29.5) + 110 in 4,398 ms (25.0) = 238 in 8,735 ms (27.2) | 94.2% | 13.5% |
+| 4 80k, warm again | same file, max 2,048 | 64.7 | 74,630 reused + 5 read in 250 ms | 1,536 in 55,716 ms (27.6) + 213 in 8,257 ms (25.8) = 1,749 in 63,973 ms (27.3) | 94.3% | 13.5% |
+
+Decode figures are the engine's own `N generated in M ms` lines, never the client's: legs 3
+and 4 delivered their deltas in one burst (`infill_measure.py` withheld the client figure,
+as it should). Leg 1 again returned 16 reasoning tokens and no content, the same
+"thinking capped at 16 of max_tokens 32" shape as the 40,960 window.
+
+**Leg 2 was not cold.** The config's disk conversation cache
+(`/mnt/srcds/Strata-wt-helper-ipc/run/diet-soak-cache`, 3.4 GiB, written by the 40,960
+window) held this exact prompt, and the engine restored it before the request ran:
+
+    strata serve: conversation cache: restored 74630 tokens from disk (checkpoint) in 15652.2 ms
+    strata serve: prompt 74635 tokens = 74630 reused + 5 read in 15914 ms (0.3 tok/s)
+
+So 15,652 of those 15,914 ms are a 1.7 GiB direct-I/O restore at about 109 MiB/s, and only
+5 tokens were embedded. This window therefore has **no cold 80k prefill** and cannot be
+compared against the 40,960 window's 280.2 tok/s / 3.57 ms per token on that axis. Getting
+one needs that cache dir emptied before a boot; it belongs to the soak lane, so it was not
+touched. A novel-prompt substitute was rejected: it would run against a warm expert pool
+after three legs, which the 40,960 cold row did not have, so it would confound the
+comparison in the opposite direction.
+
+Every 80k request also restarted once mid-generation (5 checkpoints, rewind to 74,630):
+part 1 ran to the cap's 1,536 tokens (128 for the 256-token cap), part 2 re-read 1,559 or 19
+tokens. The parts add up to the client's completion counts, so the decode totals above are
+sums of the engine's own segments.
+
+Memory, from `mem-2g.csv` (86 samples, 5 s):
+
+| figure | 43,008 window | 40,960 window |
+|---|---|---|
+| VmLck | 39,072 MiB flat | 37,024 MiB |
+| VmRSS peak | 45,912 MiB | 45,220 MiB |
+| MemAvailable min | 8,222 MiB (during leg 2's disk restore) | 8,252 MiB |
+| swap | 3,527 -> 6,285 MiB (peak 6,297) | 1,381 -> 2,564 MiB |
+
+Two GiB more locked and the low-water mark moved 30 MiB, i.e. nothing, while RSS peak rose
+692 MiB and swap use grew further. The pool is not what sets the floor here.
+
+Verdict against the 40,960 window: no measurable change in decode throughput (21.0 vs
+20.2 tok/s on the same 80k request shape), in decode expert cache hit rate (95.2% vs 95.5%),
+or in the PCIe share (13.2% both), and none in memory low-water (8,222 vs 8,252 MiB). All of
+these deltas sit inside the row-to-row noise this box has already shown: the same payload
+ran at 2 tok/s and at 21 tok/s two minutes apart in leg A, and prefill was 76.2 ms/token in
+one boot and 984.8 ms/token in the next. No speed claim is made.
+
+Hygiene: zero `no blob`, zero `refill failed`, zero `no_buffer_space` in the boot's elog;
+7 `no free slot` counts are pool-pressure counters inside `foresight swap` lines, not
+refusals. Two VRAM warnings were logged and not acted on (quoted in `status.txt`): "only
+220 MiB of VRAM free at the start of this request (below 512 MiB)" and, after the legs,
+"only 8 MiB". The disk tier refused two idle saves on free space (6,518 MiB free, a 3,376 -
+3,412 MiB snapshot plus a 4,096 MiB floor), so the cache did not grow.
+
+Teardown: sampler stopped by its explicit pid 2716076 (verified cmdline, no pattern kill),
+then `./stop-all.sh` alone ("before=0 after=0 — ALL STOPPED", exit 0), then `check-quiet.sh`
+in its own invocation (QUIET, exit 0). Ports 8009 and 8019 free, no sockets in `run/`,
+MemAvailable back to 55,024 MiB, 1,643 MiB of swap left in place.
+
+Raw files, main tree
+`bench/ab-v0210/rpcprof/out/managed-ram-pool-20261120/trial-window-2g/`: `boot-2g.log`,
+`before-state.txt`, `engine-elog-2g.txt`, `legs-engine-lines.txt`, `mem-2g.csv`,
+`leg{1,2,3,4}.log`, `leg{1,2,3,4}-*.{json,txt}`, `prompt-short.txt`, `status.txt`.
+
+Still UNMEASURED: cold 80k prefill at this budget (cache hit, see above); any non-80k cold
+prompt at 43,008; concurrency (every request serial); the pool's behaviour between 36,864
+and 40,960 MiB with a cold prompt cache; whether the mid-generation rewind is a reasoning
+budget or checkpoint effect, and what it costs.
