@@ -14103,6 +14103,7 @@ int main(int argc, char** argv) {
                     meta.pair_prefix = std::max<int64_t>(meta.pair_prefix, (int64_t) cm.prefix);
                     meta.ring_ids.push_back(cm.ring_id);
                 }
+                meta.ckpt_prefixes.push_back((int64_t) cm.prefix);
             }
             if (has_dflash) {
                 strata::core::DFlashRingState tail;
@@ -14223,11 +14224,15 @@ int main(int argc, char** argv) {
         // `live_ok = false` marks the mutation's start: a pass-2 failure after it is
         // fatal, a half-written session is never decoded from (the same contract as a RAM restore).
         // Returns 0 = restored, 1 = safe miss, 2 = fatal; `tokens_out` is the conversation's length.
+        // `target_prefix` is the prefix the disk lookup selected: the file is always read and checksummed complete,
+        // and only the bytes at or below this prefix become live.  0: the whole generation - what a manual session
+        // restore asks for, and what a lookup selects when the prompt outgrows the file.
         auto disk_restore = [&](const std::string& path, uint64_t serial, const strata::core::SessionFileIdentity& id,
                                 const std::function<void()>& quiesce,
                                 const std::function<void(uint64_t, uint64_t)>& moving,
                                 const std::function<void(const char*, uint64_t)>& blocking,
                                 int64_t& tokens_out, std::string& why, uint64_t max_file_bytes,
+                                int64_t target_prefix,
                                 std::string& report) -> int {
             report.clear();
             strata::core::DiskCache& dc = *disk;
@@ -14272,6 +14277,24 @@ int main(int argc, char** argv) {
             dc.stats().transfer_high = std::max(dc.stats().transfer_high, (uint64_t) fbytes);
             const int64_t T = (int64_t) manifest.tokens.size();
             if (T == 0 || T > o.max_context) { why = "the conversation is outside this engine's context"; return 1; }
+            // The prefix to mount: the lookup's selection, or the whole generation.  Every byte above it stays on
+            // disk; the file itself is still read and checksummed complete (the region directory below is the one
+            // this engine has at T), so a truncated or foreign file is refused, never half-mounted.
+            const int64_t U = target_prefix > 0 ? std::min(target_prefix, T) : T;
+            // A checkpoint prefix past the stored tokens is not a checkpoint of this conversation, and the chain's
+            // host vectors below are sized from these prefixes: refuse the file instead.
+            int64_t target_ckpt = -1;
+            for (size_t i = 0; i < manifest.checkpoints.size(); ++i) {
+                const int64_t p = (int64_t) manifest.checkpoints[i].prefix;
+                if (p < 1 || p > T) {
+                    why = "a checkpoint's prefix is outside the generation's tokens";
+                    return 1;
+                }
+                if (U < T && target_ckpt < 0 && p == U) target_ckpt = (int64_t) i;
+            }
+            // A restore to a checkpoint is only possible AT a checkpoint: the lookup only ever selects one of the
+            // manifest's own prefixes, so this is the file-mutated-under-us guard, not a policy choice.
+            if (U < T && target_ckpt < 0) { why = "the selected prefix has no checkpoint in the manifest"; return 1; }
             for (const ImgKey& k : manifest.images)
                 if (k.start >= T) { why = "an image key starts past the stored tokens"; return 1; }
             if (has_dflash) {
@@ -14340,6 +14363,57 @@ int main(int argc, char** argv) {
                     return 1;
                 }
             }
+            // The K/V extents AT THE MOUNTED PREFIX, computed once here.  A file's K/V regions are the whole image
+            // at T; restoring to U lands only their leading bytes - the cells below U, exactly what
+            // conversation_kv_restore_prefix takes when it mounts a prefix - and the bytes past U are dropped, never
+            // written at U's extent.  A part's leading bytes ARE its cells below U in the identity layout, so the
+            // clip is by part, and it is decided here, BEFORE the pools open: a file whose bytes do not match this
+            // engine's layout at U is a safe miss, not a half-written session.
+            std::vector<std::vector<std::array<uint64_t, strata::core::kSessionKvParts>>> kv_u((size_t) disk_stages);
+            std::array<uint64_t, strata::core::kSessionKvParts> mtp_u{};
+            for (int64_t s = 0; s < disk_stages; ++s) {
+                strata::core::SessionState& ses = disk_session(s);
+                const int64_t rows = ses.layer_hi - ses.layer_lo;
+                kv_u[(size_t) s].resize((size_t) rows);
+                for (int64_t i = 0; i < rows; ++i) {
+                    const strata::core::QsaState* q = disk_qsa_of(ses, ses.layer_lo + i);
+                    if (q == nullptr) continue;   // a layer with no K/V of its own: named by five zero-size regions
+                    std::string w;
+                    if (!strata::core::conversation_kv_part_sizes(*q, g, U, true, kv_u[(size_t) s][(size_t) i], w)) {
+                        why = "this engine has no K/V extent at " + std::to_string(U) + " tokens on stage " +
+                              std::to_string(s) + ": " + w;
+                        return 1;
+                    }
+                }
+            }
+            if (use_mtp) {
+                std::string w;
+                if (!strata::core::conversation_kv_part_sizes(mtp.kv_state(), g, U, false, mtp_u, w)) {
+                    why = "this drafter has no extent at " + std::to_string(U) + " tokens: " + w;
+                    return 1;
+                }
+            }
+            // The chain this restore adopts must be this engine's own bodies: a checkpoint's running state has the
+            // same shape as the live state's parts, and mounting a checkpoint at U installs exactly those bytes.
+            // (A full-generation restore never mounts them - the live state is the file's own - so it stays as it
+            // was, sized as the file declares.)
+            if (U < T) {
+                for (size_t i = 0; i <= (size_t) target_ckpt; ++i) {
+                    const auto& stt = cps[i].state;
+                    for (int64_t s = 0; s < disk_stages; ++s) {
+                        if (s > 0 && manifest.checkpoints[i].stage_parts == 0) continue;
+                        if (s >= (int64_t) stt.size() || s >= (int64_t) spec.stages.size()) {
+                            why = "a checkpoint's running state does not cover this layout";
+                            return 1;
+                        }
+                        for (int64_t p = 0; p < strata::core::kSessionStateParts; ++p)
+                            if (stt[(size_t) s][(size_t) p] != spec.stages[(size_t) s].live[(size_t) p]) {
+                                why = "a checkpoint's running state is not this engine's running state";
+                                return 1;
+                            }
+                    }
+                }
+            }
             // the draft side of the resume: the live-tail ring retains a resume at the generation's
             // end, or a checkpoint PAIR at exactly that prefix does (the deepest such pair).  Chosen
             // in this pre-mutation pass from the manifest's counters - the sink read's validation pass
@@ -14355,24 +14429,46 @@ int main(int argc, char** argv) {
                     s.committed_end = ce; s.appended_through = at;
                     return s;
                 };
-                tail_ok = state_of(manifest.draft.ring_cells, manifest.draft.window, manifest.draft.capacity,
-                                   manifest.draft.committed_end, manifest.draft.appended_through)
-                              .context_retained(T, rows);
-                if (!tail_ok) {
-                    const strata::core::DFlashSnapshotMeta mine_df = dflash.snapshot_meta();
-                    for (size_t i = manifest.checkpoints.size(); i-- > 0;) {
-                        const auto& cm = manifest.checkpoints[i];
-                        if (!cm.ring_id || cm.prefix != (uint64_t) T) continue;
-                        if (cm.ring_cells != mine_df.ring_cells || cm.ring_window != mine_df.window ||
-                            cm.ring_capacity != mine_df.capacity)
-                            continue;
-                        if (state_of(cm.ring_cells, cm.ring_window, cm.ring_capacity, cm.ring_committed_end,
-                                     cm.ring_appended_through)
-                                .context_retained(T, rows)) {
-                            pair_pick = (int64_t) i;
-                            break;
+                if (U == T) {
+                    // full-generation restore: the live-tail ring retains a resume at the generation's
+                    // end, else a checkpoint PAIR exactly at T.
+                    tail_ok = state_of(manifest.draft.ring_cells, manifest.draft.window, manifest.draft.capacity,
+                                       manifest.draft.committed_end, manifest.draft.appended_through)
+                                      .context_retained(T, rows);
+                    if (!tail_ok) {
+                        const strata::core::DFlashSnapshotMeta mine_df = dflash.snapshot_meta();
+                        for (size_t i = manifest.checkpoints.size(); i-- > 0;) {
+                            const auto& cm = manifest.checkpoints[i];
+                            if (!cm.ring_id || cm.prefix != (uint64_t) T) continue;
+                            if (cm.ring_cells != mine_df.ring_cells || cm.ring_window != mine_df.window ||
+                                cm.ring_capacity != mine_df.capacity)
+                                continue;
+                            if (state_of(cm.ring_cells, cm.ring_window, cm.ring_capacity, cm.ring_committed_end,
+                                         cm.ring_appended_through)
+                                    .context_retained(T, rows)) {
+                                pair_pick = (int64_t) i;
+                                break;
+                            }
                         }
                     }
+                } else {
+                    // A checkpoint target: the pair is THAT checkpoint's own, read off its own manifest meta - so a
+                    // generation whose deepest pair sits deeper than the resume still restores the pair it has at
+                    // the prefix it mounts, and one whose anchor and pair are the same prefix loses nothing.  Never
+                    // the generation's tail ring: its rows describe tokens past the selected prefix.  No pair (or
+                    // one whose horizon no longer reaches): the mount runs its own cold-drafter fallback, which
+                    // mounts target-only or reads the prompt again - it never imports future draft state.
+                    const auto& cm = manifest.checkpoints[(size_t) target_ckpt];
+                    if (cm.ring_id) {
+                        const strata::core::DFlashSnapshotMeta mine_df = dflash.snapshot_meta();
+                        if (cm.ring_cells == mine_df.ring_cells && cm.ring_window == mine_df.window &&
+                            cm.ring_capacity == mine_df.capacity &&
+                            state_of(cm.ring_cells, cm.ring_window, cm.ring_capacity, cm.ring_committed_end,
+                                     cm.ring_appended_through)
+                                .context_retained(U, rows))
+                            pair_pick = target_ckpt;
+                    }
+                    tail_ok = false;   // no tail ring for a checkpoint target
                 }
             }
             // the chosen pair's ring geometry, computed from this drafter's pools at the pair's own
@@ -14429,7 +14525,7 @@ int main(int argc, char** argv) {
             }
             // the K/V must cover the file's cells, and every card must be able to move the bytes, BEFORE the
             // live state is opened (the same preflights a RAM restore runs; both are safe misses here)
-            if (!kvg_ensure(T + 256, quiesce)) {
+            if (!kvg_ensure(U + 256, quiesce)) {
                 why = "the K/V cannot grow to the conversation on disk: no VRAM is left";
                 return 1;
             }
@@ -14502,7 +14598,13 @@ int main(int argc, char** argv) {
                     strata::core::SessionState& ses = disk_session(s);
                     strata::core::QsaState* q = disk_qsa_of(ses, ses.layer_lo + r.index);
                     if (q == nullptr) { w = "this stage has no K/V pool at that layer"; return false; }
-                    return strata::core::conversation_kv_stream_write(*q, g, T, true, (size_t) r.part, off, b, n, w,
+                    // The part's leading bytes at the mounted prefix, and nothing past them: the region arrives in
+                    // blocks, so the clip is per block, and a block that starts past the prefix is consumed.
+                    const size_t take = strata::core::disk_prefix_clip(kv_u[(size_t) s][(size_t) r.index][(size_t) r.part],
+                                                                        off, n);
+                    if (take == 0) return true;
+                    return strata::core::conversation_kv_stream_write(*q, g, U, true,
+                                                                      (size_t) r.part, off, b, take, w,
                                                                      kDiskRestoreQueued);
                 };
                 d.finish = [&, s, rows](std::string& w) {
@@ -14515,7 +14617,7 @@ int main(int argc, char** argv) {
                     for (int64_t i = 0; i < (int64_t) rows.size(); ++i) {
                         strata::core::QsaState* q = disk_qsa_of(ses, ses.layer_lo + i);
                         if (q == nullptr) continue;
-                        if (!strata::core::conversation_kv_stream_finish(*q, g, T, true, w)) return false;
+                        if (!strata::core::conversation_kv_stream_finish(*q, g, U, true, w)) return false;
                     }
                     return true;
                 };
@@ -14534,12 +14636,19 @@ int main(int argc, char** argv) {
                 };
                 d.write = [&, s](const strata::core::SessionRegion& r, uint64_t off, const void* b, size_t n,
                                         std::string& w) {
+                    // A mount at a checkpoint does NOT take the file's running state: that image describes the
+                    // generation's END.  The selected checkpoint's own body (adopted into the chain below) is what
+                    // the request's checkpoint-at-resume mount installs, so the live state, the K/V and the drafter
+                    // all describe the same prefix.  The region is still read and checksummed - the file is
+                    // validated complete - its bytes are just not made live.
+                    if (U < T) return true;
                     mutated = true;
                     const strata::core::OnDevice on(disk_dev(s));
                     return strata::core::conversation_state_stream_write(disk_session(s), g, r.part, off, b, n, w,
                                                                         kDiskRestoreQueued);
                 };
                 d.finish = [&, s](std::string& w) {
+                    if (U < T) return true;   // nothing landed, so there is nothing to refresh
                     const strata::core::OnDevice on(disk_dev(s));
                     if (kDiskRestoreQueued && cudaDeviceSynchronize() != cudaSuccess) {
                         w = "the queued running-state copies did not land on this stage";
@@ -14564,8 +14673,12 @@ int main(int argc, char** argv) {
                                         std::string& w) {
                     mutated = true;
                     const strata::core::OnDevice on(disk_dev(disk_mtp_stage));
-                    return strata::core::conversation_kv_stream_write(mtp.kv_state(), g, T, false, (size_t) r.part,
-                                                                      off, b, n, w, kDiskRestoreQueued);
+                    // clip each incoming chunk to the leading bytes at the mounted prefix (see the K/V leg)
+                    const size_t take = strata::core::disk_prefix_clip(mtp_u[(size_t) r.part], off, n);
+                    if (take == 0) return true;
+                    return strata::core::conversation_kv_stream_write(mtp.kv_state(), g, U, false,
+                                                                      (size_t) r.part, off, b, take, w,
+                                                                      kDiskRestoreQueued);
                 };
                 d.finish = [&](std::string& w) {
                     const strata::core::OnDevice on(disk_dev(disk_mtp_stage));
@@ -14573,7 +14686,7 @@ int main(int argc, char** argv) {
                         w = "the queued drafter copies did not land";
                         return false;
                     }
-                    return strata::core::conversation_kv_stream_finish(mtp.kv_state(), g, T, false, w);
+                    return strata::core::conversation_kv_stream_finish(mtp.kv_state(), g, U, false, w);
                 };
                 dests.push_back(std::move(d));
             }
@@ -14592,6 +14705,7 @@ int main(int argc, char** argv) {
                                                size_t n, std::string& w) {
                     mutated = true;
                     if (pair_pick >= 0) return true;   // a pair was chosen: the tail ring is validated and consumed
+                    if (U < T) return true;   // checkpoint target without a pair: target-only, no ring
                     const strata::core::OnDevice on_df(dflash.device());
                     uint64_t at = 0, done = 0;
                     const uint8_t* src = static_cast<const uint8_t*>(b);
@@ -14623,6 +14737,18 @@ int main(int argc, char** argv) {
                         return false;
                     }
                     if (pair_pick >= 0) return dflash.idle(w);   // the counters land with the chosen pair
+                    if (U < T) {
+                        // A checkpoint target with no pair it can retain: the file's tail ring describes tokens
+                        // past the prefix, so it is never imported.  The drafter goes COLD at the mounted prefix -
+                        // the same target-only fallback a RAM rewind to an unpaired checkpoint runs - so it cannot
+                        // keep the outgoing conversation's horizon and claim draft history it does not have.
+                        std::string cw;
+                        if (!dflash.rewind_cold(U, cw)) {
+                            w = "the drafter could not go cold at the mounted checkpoint: " + cw;
+                            return false;
+                        }
+                        return dflash.idle(w);
+                    }
                     const strata::core::DFlashSnapshotMeta meta{manifest.draft.committed_end,
                                                                 manifest.draft.appended_through,
                                                                 manifest.draft.ring_cells, manifest.draft.window,
@@ -14715,6 +14841,8 @@ int main(int argc, char** argv) {
                 d.write = [&](const strata::core::SessionRegion& r, uint64_t off, const void* b,
                                                    size_t n, std::string& w) {
                     mutated = true;
+                    // a checkpoint target discards every later checkpoint: only adopt bodies at or before it.
+                    if (U < T && (int64_t) r.index > target_ckpt) return true;
                     ConvCheckpoint& c = built[(size_t) r.index];
                     std::vector<uint8_t>* vec = nullptr;
                     if (r.stage == 0) vec = &c.gdn;
@@ -14760,20 +14888,29 @@ int main(int argc, char** argv) {
                 dc.stats().pages_released += 1;
                 dc.stats().pages_released_bytes += (uint64_t) bytes2;
             }
-            live = std::move(got.tokens);
-            live_imgs = std::move(got.images);
+            live.assign(got.tokens.begin(), got.tokens.begin() + (std::ptrdiff_t) U);
+            live_imgs.clear();
+            for (const ImgKey& k : got.images)
+                if (k.start < U) live_imgs.push_back(k);
+            if (U < T) built.resize((size_t) target_ckpt + 1);
             checks = std::move(built);
             cvec_cached = got.cvec;
             live_ok = true;
-            tokens_out = T;
+            tokens_out = U;
             // classification in the cache's own vocabulary: a complete target+draft hit, a
             // target-only prefix match with a draft miss, with a concise reason code
-            if (!has_dflash)
+            if (U == T && !has_dflash)
                 report = "complete target hit (no drafter)";
-            else if (tail_ok)
+            else if (U == T && tail_ok)
                 report = "complete target+draft hit (pair: tail ring)";
-            else if (pair_pick >= 0)
+            else if (U == T && pair_pick >= 0)
                 report = "complete target+draft hit (pair: checkpoint at " + std::to_string(pair_prefix) + ")";
+            else if (U < T && pair_pick >= 0)
+                report = "checkpoint mount at " + std::to_string(U) + " of " + std::to_string(T) +
+                         " tokens (target+draft: the mounted checkpoint's own pair)";
+            else if (U < T)
+                report = "checkpoint mount at " + std::to_string(U) + " of " + std::to_string(T) +
+                         " tokens (target-only: no pair retained at that checkpoint)";
             else
                 report = "target-only prefix match, draft miss (no pair at the resume; tail ring horizon " +
                          std::to_string(manifest.draft.appended_through) + " over ring " +
@@ -14783,7 +14920,7 @@ int main(int argc, char** argv) {
             ++s.restores;
             ++s.hits;
             s.last_serial = serial;
-            s.reused_tokens += (uint64_t) T;
+            s.reused_tokens += (uint64_t) U;
             if (has_dflash) {
                 if (!tail_ok) ++s.ring_retention_misses;
                 if (pair_pick >= 0) ++s.draft_pair_hits;
@@ -18534,8 +18671,10 @@ int main(int argc, char** argv) {
                         int64_t v2_tokens = 0;
                         const uint64_t* v2cap = disk_v2_read_cap(v2why);
                         if (v2cap == nullptr) { refuse(v2why, strata::core::SessionError::io); continue; }
+                        // A manual session restore has no lookup to select a checkpoint with: 0 = the whole
+                        // generation, which is what this protocol has always restored.
                         const int rc = disk_restore(path, 0, id, adapt_quiesce, moving, blocking, v2_tokens, v2why,
-                                                    *v2cap, v2report);
+                                                    *v2cap, 0, v2report);
                         if (rc == 2) {
                             std::fprintf(stderr, "strata serve: session restore %s: transfer failed: %s\n",
                                          path.c_str(), v2why.c_str());
@@ -19226,13 +19365,15 @@ int main(int argc, char** argv) {
             // it wins on depth alone; a borrowed prefix never beats it (a borrow is shallower by definition).
             std::string disk_start;
             int64_t disk_tokens = 0;
+            int64_t disk_full = 0;   // the matched generation's own length: below it the mount is a checkpoint
             uint64_t disk_serial = 0;
             if (disk_on()) {
-                const strata::core::DiskGeneration* gen = disk->best(ids, req_imgs, want_cvec);
-                if (gen != nullptr) {
-                    disk_tokens = (int64_t) gen->tokens.size();
-                    disk_start = gen->path;
-                    disk_serial = gen->serial;
+                const strata::core::DiskBestMatch disk_match = disk->best(ids, req_imgs, want_cvec);
+                if (disk_match.gen != nullptr) {
+                    disk_tokens = disk_match.selected;
+                    disk_full = (int64_t) disk_match.gen->tokens.size();
+                    disk_start = disk_match.gen->path;
+                    disk_serial = disk_match.gen->serial;
                 }
             }
             // The disk leg wins ONLY when it is deeper than every start this session already holds: the live
@@ -19651,7 +19792,7 @@ int main(int argc, char** argv) {
                 const strata::core::SessionFileIdentity* sid = disk_identity(dwhy);
                 const int rc = sid == nullptr ? 1 : disk_restore(disk_start, disk_serial, *sid, kv_quiesce,
                                                                  disk_moving, disk_blocking, dtokens, dwhy,
-                                                                 disk->budget(), dreport);
+                                                                 disk->budget(), disk_tokens, dreport);
                 if (rc == 2) {
                     std::printf("ERR restoring a parked conversation from disk: %s\n", dwhy.c_str());
                     return 1;
@@ -19661,11 +19802,15 @@ int main(int argc, char** argv) {
                                           "the prompt\n", dwhy.c_str());
                 else {
                     resume = dtokens;
-                    // the file's live image IS the mounted state (every cell at `resume` is in the pools,
-                    // exactly a RAM live restore): the checkpoint-at-resume mount below is not for this path
-                    from_live = true;
-                    std::fprintf(stderr, "strata serve: conversation cache: restored %lld tokens from disk (%s) "
-                                          "in %.1f ms: %s\n", (long long) resume, disk_start.c_str(),
+                    // A restore that reached the generation's own end mounted the file's LIVE image: every cell at
+                    // `resume` is in the pools and so is the running state of exactly that length, as in a RAM live
+                    // restore.  A restore that stopped at a checkpoint mounted the cells below it and the file's
+                    // CHAIN, and it is the checkpoint-at-resume mount below that installs that checkpoint's running
+                    // state - so the session never ends up with a longer conversation's state on a shorter prefix.
+                    from_live = dtokens >= disk_full;
+                    std::fprintf(stderr, "strata serve: conversation cache: restored %lld tokens from disk (%s"
+                                          ") in %.1f ms: %s\n", (long long) resume,
+                                 from_live ? "full generation" : "checkpoint",
                                  std::chrono::duration<double, std::milli>(Clock::now() - disk_t0).count(),
                                  dreport.c_str());
                 }
