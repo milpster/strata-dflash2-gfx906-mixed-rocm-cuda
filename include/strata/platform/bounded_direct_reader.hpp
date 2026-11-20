@@ -9,6 +9,8 @@
 // the (possibly unaligned) destination.  No pimpl, no metadata allocation,
 // no buffered fallback, no thread pool, no retained state beyond the scalar
 // fd/size/alignment.  Synchronous, scratch/caller lifetime only.
+// The caller keeps the file immutable externally and serializes shared scratch;
+// a read-only descriptor cannot prevent another process from writing the file.
 //
 // Error contract: open/fstat failure is transactional - a previous opened file
 // is preserved.  Invalid read_exact requests return an error without touching

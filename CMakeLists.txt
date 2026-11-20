@@ -584,7 +584,7 @@ if(STRATA_BUILD_TESTS)
       set_tests_properties(pool_expert_cache_test PROPERTIES TIMEOUT 15)
 
       # BoundedDirectReader (O_DIRECT) + PoolExpertCache over the same RAM pool.
-      # Wraps pread (plus the pool's mmap/mlock/munlock/munlock) and preflights
+      # Wraps pread (plus the pool's mmap/mlock/munmap/munlock) and preflights
       # bare O_DIRECT; skips 77 only when the real filesystem lacks O_DIRECT.
       add_executable(bounded_direct_reader_test
                      tests/core/bounded_direct_reader_test.cpp
@@ -599,7 +599,7 @@ if(STRATA_BUILD_TESTS)
           -Wl,--wrap=mmap -Wl,--wrap=mlock -Wl,--wrap=munmap -Wl,--wrap=munlock -Wl,--wrap=pread)
       endif()
       add_test(NAME bounded_direct_reader_test COMMAND bounded_direct_reader_test ${CMAKE_BINARY_DIR})
-      set_tests_properties(bounded_direct_reader_test PROPERTIES TIMEOUT 15)
+      set_tests_properties(bounded_direct_reader_test PROPERTIES TIMEOUT 15 SKIP_RETURN_CODE 77)
     endif()
   endif()
 

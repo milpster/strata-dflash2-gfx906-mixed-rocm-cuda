@@ -1,12 +1,14 @@
 // src/platform/bounded_direct_reader.cpp - see include/strata/platform/bounded_direct_reader.hpp.
 #include "strata/platform/bounded_direct_reader.hpp"
 
+#include <algorithm>
 #include <cerrno>
 #include <cstring>
-#include <sys/types.h>
-#include <unistd.h>
+#include <limits>
 
 #if defined(__linux__)
+#include <sys/types.h>
+#include <unistd.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #endif
@@ -15,15 +17,13 @@ namespace strata::platform {
 
 namespace {
 
+#if defined(__linux__)
 /// Conservative alignment: max(4096, Linux page size), power-of-two.
 uint64_t reader_alignment() noexcept {
-#if defined(__linux__)
     const long page = ::sysconf(_SC_PAGESIZE);
-    uint64_t p = (page > 0) ? static_cast<uint64_t>(page) : 4096ull;
-#else
-    uint64_t p = 4096ull;
-#endif
-    if (p < 4096ull) p = 4096ull;
+    if (page <= 0) return 0;
+    const uint64_t p = std::max(uint64_t{4096}, static_cast<uint64_t>(page));
+    if ((p & (p - 1)) != 0) return 0;
     return p;
 }
 
@@ -34,6 +34,7 @@ ssize_t pread_retry(int fd, void* buf, size_t count, off_t offset) noexcept {
         if (got >= 0 || errno != EINTR) return got;
     }
 }
+#endif
 
 }  // namespace
 
@@ -64,6 +65,10 @@ std::error_code BoundedDirectReader::open(const char* path) noexcept {
 
     // alignment_ is set only after the new file is fully validated.
     const uint64_t align = reader_alignment();
+    if (align == 0) {
+        ::close(fd);
+        return std::make_error_code(std::errc::operation_not_supported);
+    }
     close();
     fd_ = fd;
     size_ = static_cast<uint64_t>(st.st_size);
@@ -76,9 +81,9 @@ void BoundedDirectReader::close() noexcept {
 #if defined(__linux__)
     if (fd_ >= 0) {
         ::close(fd_);
-        fd_ = -1;
     }
 #endif
+    fd_ = -1;
     size_ = 0;
     alignment_ = 0;
 }
@@ -86,6 +91,10 @@ void BoundedDirectReader::close() noexcept {
 std::error_code BoundedDirectReader::read_exact(uint64_t offset, uint64_t bytes,
                                                 uint8_t* dst, uint8_t* scratch,
                                                 uint64_t scratch_bytes) const noexcept {
+#if !defined(__linux__)
+    (void) offset; (void) bytes; (void) dst; (void) scratch; (void) scratch_bytes;
+    return std::make_error_code(std::errc::operation_not_supported);
+#else
     using std::errc;
 
     if (!is_open()) return std::make_error_code(errc::not_connected);   // bad fd / not open
@@ -104,6 +113,8 @@ std::error_code BoundedDirectReader::read_exact(uint64_t offset, uint64_t bytes,
     const uint64_t end = offset + bytes;
     if (end > size_)
         return std::make_error_code(errc::invalid_argument);   // extent beyond file
+    if (end > static_cast<uint64_t>(std::numeric_limits<off_t>::max()))
+        return std::make_error_code(errc::result_out_of_range);
 
     // Scratch: aligned, at least one alignment, multiple of alignment.
     if (scratch_bytes < alignment_ || (scratch_bytes % alignment_) != 0)
@@ -120,6 +131,9 @@ std::error_code BoundedDirectReader::read_exact(uint64_t offset, uint64_t bytes,
         return std::make_error_code(errc::invalid_argument);
 
     const uint64_t align = alignment_;
+    const uint64_t max_io = static_cast<uint64_t>(std::numeric_limits<ssize_t>::max()) / align * align;
+    const uint64_t io_cap = std::min(scratch_bytes, max_io);
+    if (io_cap == 0) return std::make_error_code(errc::result_out_of_range);
     uint64_t src_off = offset;
     uint8_t* d = dst;
     uint64_t rem = bytes;
@@ -128,11 +142,11 @@ std::error_code BoundedDirectReader::read_exact(uint64_t offset, uint64_t bytes,
         // Aligned covering window for src_off; length <= scratch cap (aligned).
         const uint64_t win_start = src_off - (src_off % align);
         const uint64_t off_in_win = src_off - win_start;
-        const uint64_t win_len = scratch_bytes;   // aligned multiple, <= cap
-        uint64_t take = rem;
-        if (take > win_len - off_in_win) take = win_len - off_in_win;
+        const uint64_t take = std::min(rem, io_cap - off_in_win);
+        const uint64_t needed = off_in_win + take;
+        const uint64_t win_len = needed + (align - needed % align) % align;
 
-        // off_t range: win_start and win_len fit (extent <= size_ <= off_t max).
+        // The offset fits off_t; the aligned count fits ssize_t and the scratch.
         const ssize_t got = pread_retry(fd_, scratch, (size_t)win_len,
                                         (off_t)win_start);
         if (got < 0)
@@ -148,6 +162,7 @@ std::error_code BoundedDirectReader::read_exact(uint64_t offset, uint64_t bytes,
         rem -= take;
     }
     return {};
+#endif
 }
 
 }  // namespace strata::platform
