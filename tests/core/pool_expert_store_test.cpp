@@ -70,8 +70,8 @@ static bool write_file(const std::string& path, const std::string& data) {
 // nonzero gapped offsets (0, 4096, 8192), 4 experts per layer.
 //   layer 0: [0, 256)       bytes/expert=64
 //   layer 1: [4096, 4608)   bytes/expert=128  (gap 256..4096)
-//   layer 2: [8192, 18192)  bytes/expert=5000 (gap 4608..8192, > page scratch)
-// total = 18192 = file size.
+//   layer 2: [8192, 28192)  bytes/expert=5000 (gap 4608..8192, > page scratch)
+// total = 8192 + 4*5000 = 28192 = file size.
 static bool build_layout(ExpertLayout& layout) {
     layout = ExpertLayout{};
     layout.native = true;
@@ -127,7 +127,9 @@ int pread_calls = 0;
 static std::map<void*, uint64_t> live_maps;
 static uint64_t total_live_bytes = 0;
 static uint64_t peak_live_bytes = 0;
-constexpr uint64_t kMappingLimit = 1ull << 20;  // 1 MiB
+constexpr uint64_t kMappingLimit = 2ull << 20;  // 2 MiB: a canonical BLOB
+// expert is 1,382,400 B, so one canonical payload page-reserved in the pool
+// legitimately exceeds the earlier 1 MiB cap; native scenarios stay far below.
 }  // namespace wrap
 
 static void track_mmap(void* p, uint64_t len) {
@@ -487,7 +489,116 @@ int main(int argc, char** argv) {
         check(wrap::mmap_calls == wrap::munmap_calls,
               "final: mmap_calls == munmap_calls");
         check(wrap::peak_live_bytes <= wrap::kMappingLimit,
-              "peak mapping <= 1 MiB");
+              "peak mapping <= 2 MiB");
+    }
+
+    // ---- 6b. canonical Q2_0 layout path (native=false, derived offsets) -----
+    {
+        // One layer, one expert: total = BLOB (1,382,400).  The canonical path
+        // derives the offset/bytes with checked arithmetic instead of vectors.
+        ExpertLayout layout;
+        layout = ExpertLayout{};
+        layout.native = false;
+        layout.n_layers = 1;
+        layout.n_expert = 1;
+        layout.total = strata::kernels::cpu::BLOB;
+
+        const std::string canon_path = build_dir + "/expert_store_canon_20261120.bin";
+        std::string canon_data;
+        canon_data.resize(layout.total);
+        for (uint64_t p = 0; p < layout.total; ++p) canon_data[p] = byte_at(p + 7);
+        if (!write_file(canon_path, canon_data)) { std::fprintf(stderr, "FAIL: write canon\n"); std::abort(); }
+
+        // Pool fits scratch (4096) + one page-rounded BLOB payload.
+        const uint64_t payload = ((layout.total + kPage - 1) / kPage) * kPage;
+        Pool pool;
+        auto ec = make_pool(pool, payload + kPage);
+        check(!ec, "create canonical pool");
+        PoolExpertStore store(pool);
+        ec = store.open(canon_path.c_str(), layout);
+        check(!ec, "open canonical layout");
+        check(store.valid() && store.total() == strata::kernels::cpu::BLOB,
+              "canonical geometry snapshot");
+
+        PoolLease out;
+        ec = store.acquire(0, 0, out);
+        check(!ec && out.valid(), "canonical acquire (0,0)");
+        check(out.size() == payload, "canonical payload page-rounded size");
+        check(std::memcmp(out.data(), canon_data.data(), layout.total) == 0,
+              "canonical: ALL BLOB bytes correct");
+        out = PoolLease{};
+
+        // Canonical file mismatch rejected transactionally.
+        ExpertLayout wrong = layout;
+        wrong.n_expert = 2;   // total no longer matches the file
+        PoolExpertStore fresh(pool);
+        auto ec2 = fresh.open(canon_path.c_str(), wrong);
+        check(static_cast<bool>(ec2) && !fresh.valid(),
+              "canonical size mismatch rejected");
+        check(store.valid(), "canonical old store preserved");
+    }
+
+    // ---- 6c. vector-short + overflow layouts rejected -----------------------
+    {
+        Pool pool;
+        auto ec = make_pool(pool, 256ull << 10);
+        check(!ec, "create pool");
+        ExpertLayout layout;
+        build_layout(layout);
+
+        // Native vectors shorter than n_layers.
+        ExpertLayout shortv = layout;
+        shortv.offset.resize(1);
+        PoolExpertStore fresh1(pool);
+        auto ec1 = fresh1.open(g_fixture_path.c_str(), shortv);
+        check(ec1 == std::make_error_code(std::errc::invalid_argument),
+              "vector-short layout rejected");
+        check(!fresh1.valid(), "vector-short: store not open");
+
+        // Per-expert bytes so large that n_expert * bytes overflows uint64.
+        ExpertLayout huge = layout;
+        huge.bytes[0] = 0x4000000000000000ull;   // 4 * 2^62 overflows
+        PoolExpertStore fresh2(pool);
+        auto ec2 = fresh2.open(g_fixture_path.c_str(), huge);
+        check(ec2 == std::make_error_code(std::errc::result_out_of_range),
+              "overflow layout rejected");
+        check(!fresh2.valid(), "overflow: store not open");
+    }
+
+    // ---- 6d. never-opened + closed stores refuse acquire --------------------
+    {
+        Pool pool;
+        auto ec = make_pool(pool, 256ull << 10);
+        check(!ec, "create pool");
+
+        PoolLease out;
+        PoolExpertStore unopened(pool);
+        auto ec1 = unopened.acquire(0, 0, out);
+        check(ec1 == std::make_error_code(std::errc::not_connected),
+              "never-opened store refuses acquire");
+        check(!out.valid(), "never-opened: no lease");
+
+        ExpertLayout layout;
+        build_layout(layout);
+        PoolExpertStore store(pool);
+        ec = store.open(g_fixture_path.c_str(), layout);
+        check(!ec, "open for close test");
+        ec = store.acquire(0, 0, out);
+        check(!ec && out.valid(), "warm before close");
+        const auto ptr = out.data();
+        const auto sz = out.size();
+        const int pread_before = wrap::pread_calls;
+        store.close();
+        check(!store.valid(), "closed store invalid");
+        auto ec2 = store.acquire(0, 0, out);
+        check(ec2 == std::make_error_code(std::errc::not_connected),
+              "closed store refuses acquire");
+        check(out.data() == ptr && out.size() == sz,
+              "closed refusal preserves populated out");
+        check(wrap::pread_calls == pread_before, "closed refusal: no pread");
+        check(pool.stats().reserved_live_bytes == kPage,
+              "close released scratch; borrower payload remains reserved");
+        out = PoolLease{};
     }
 
     // ---- 7. fixture immutable byte-for-byte over the whole run --------------
