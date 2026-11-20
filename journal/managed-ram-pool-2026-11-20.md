@@ -321,3 +321,38 @@ ownership through close. Still NOT done: runtime construction/budget (L3),
 host-KV, whole-stack admission (L4), GGUF role slices, any GPU consumer, any
 engine selection of this store, speed or production claims. The store is not
 referenced by any engine target outside the opt-in test.
+
+## First real consumer bound — 2026-11-20 (compile-verified, not run)
+
+8829aeb1bc binds the lent-slot refill (generate.cpp:24038-24100 after the
+edit) to PoolExpertStore behind a file-scope null-by-default pointer seam.
+No env/config read, no construction, no public knob: the legacy branch is
+the original code indented; when the seam is nullptr the default path is
+byte-identical. Managed path: store->acquire per lent slot, fill through the
+existing xcache blocking/queued_staged selection, PoolLease copies held in a
+vector cleared only after sync_queued success, no note_async_read for
+lease-backed data, per-expert bytes still from expert_layout().blob_bytes.
+
+Parent review found one ownership gap: the failure path returned without
+draining queued copies, letting leases destruct at scope exit while async
+DMAs could still be in flight. 0da4703b98 adds a best-effort hard
+cudaDeviceSynchronize() drain (the pattern already used at the kvg call
+site) before the failure return.
+
+| Parent check | Result |
+|---|---|
+| generate.cpp.o on build-906 (gfx906 recipe) | exit 0 (up to date at 8829aeb1bc; rebuilt clean at 0da4703b98) |
+| CPU pool/cache/reader/store ctest | exit 0; 6/6, unchanged |
+| Full `strata` backend target | blocked by PRE-EXISTING gcc-16-STL/HIP system-header errors in moe_mmq.cu.o — unrelated TU, not touched by this lane |
+
+Evidence: bench/ab-v0210/rpcprof/out/managed-ram-pool-20261120/consumer/
+first/ (fixer: ctest_cpu.log, backend_build.log) and consumer/parent-check/
+(generate-obj.log, generate-obj-drain.log, cpu-ctest.log, status.txt).
+
+Limits: the seam is never set — the managed branch has no runtime evidence;
+this lane proves the ownership shape and that it compiles on the gfx906
+backend. All other raw-pointer consumers remain unadapted; engine-wide
+managed activation, runtime pool construction/budget (L3), host-KV and
+whole-stack admission (L4) remain open. No boots, no GPU runs, no promotion;
+production stays stopped. The pre-existing moe_mmq.cu.o build breakage is
+recorded for the engine follow-up list, not fixed here.
