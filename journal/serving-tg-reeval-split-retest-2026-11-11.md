@@ -5142,3 +5142,22 @@ foundation, not the requested complete feature: 51–55 GiB inputs were math
 only; expert/KV integration, whole-stack scope/admission and hardware
 validation remain undone. Restricted-memlock skip was not exercised and
 real Windows/Mac were not built. Production remains stopped.
+
+## 2026-11-20 — CPU foundation accepted; expert integration contracts next
+
+Parent read the final 23-line oracle report: PASS, limited CPU foundation.
+Accepted the reconciled allocator/test state at 3cfc554 and reused the still-
+valid final CPU/sanitizer/default-OFF evidence. No source edit followed it.
+The report grants no deployment authorization or expert/KV behavior claim.
+
+Next sole remote Nemotron explorer ses_e05fc3566ffen200C6r5diqqXb owns a
+read-only source audit of ExpertSource/ArenaExpertSource/FileExpertSource,
+actual raw-pointer and asynchronous consumers, contiguous/alias assumptions,
+and bounded immutable expert backing reads. It writes only
+bench/ab-v0210/notes/managed-ram-pool-expert-contracts-20261120.md. Parent
+will scope the smallest real consumer integration from that evidence rather
+than assuming the existing eviction API works for mapped sources.
+
+The requested total-budget feature remains incomplete: no runtime budget
+knob, elastic expert integration, host-KV binding or whole-stack enforcement
+has landed. Production remains off; existing speed evidence stays invalidated.
