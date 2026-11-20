@@ -589,3 +589,54 @@ sampled); the cause of the 2.0 vs 15.1 tok/s variance between long #1 and long #
 whether the 220 MiB VRAM margin is that cause (not isolated, args untouched); a
 pool-vs-non-pool baseline on the same box and window; L4 total-budget enforcement
 and the adapter under real traffic (helper counters only, no admission evidence).
+
+## Read granularity fixed: one pread per expert blob (commit 0cd9c50541)
+
+The store admitted a one-page (4 KiB) pool scratch, so bounded_direct_reader
+walked every expert through 4 KiB O_DIRECT windows. A 1.95 MiB blob therefore
+cost about 488 synchronous preads; the oracle's attribution report
+(bench/ab-v0210/notes/managed-ram-pool-trial-attribution-20261120.md) computed
+the miss arithmetic and put the read path at 9-29 ms per blob (68-212 MB/s on
+this disk), which is what held the managed pool to 2.2 tok/s cold.
+
+The scratch is now sized from the largest blob over the layers present:
+2,666,496 B on the iq3xxs-ud pack (cap 8 MiB), so one pread delivers a whole
+blob. It costs 2.5 MiB of pool bytes. The store now reports what it does:
+`RAM pool store: pool_bytes=38654705664 scratch_bytes=2666496
+usable_bytes=38652039168 blob_max=2662400 io_window=2666496 preads_per_blob=1`
+at boot, and hits/misses/evictions/resident_bytes at exit. Tests: 7/7 pass
+(ram_pool x3, pool_expert_cache, bounded_direct_reader, pool_expert_store,
+pool_expert_source_adapter); build-906 links.
+
+### Trial leg, budget 40960 MiB (port 8019, same config as the first window)
+
+| Request | Wall | Completion tokens | tok/s wall | Same request before the fix |
+|---|---|---|---|---|
+| short ("reply ready") | 5.23 s | 16 | 3.06 | 26.25 s, 0.61 |
+| long, cold boot | 37.15 s | 256 | 6.89 | 120 s cap at 241 tok, 2.0 (engine log) |
+| long, second run | 13.21 s | 256 | 19.38 | 16.93 s, 15.12 (engine log 21.1) |
+| tool call (get_time) | 13.22 s | call returned | - | 28.86 s, served |
+
+Memory is unchanged from the first window: engine VmLck 37,912,576 kB =
+37,024 MiB against a 36,864 MiB pool (the whole pool locked), MemAvailable
+10.99 GiB after the requests (11.17 GiB mid-run), SwapFree flat - the 4.7 GiB
+of swap in use is leg B's residue, nothing new was swapped during this leg.
+
+Verdict: the cold-start penalty is gone (5x on the first request, 3.4x on the
+first long run); the warm steady state sits where this tuple already was
+(19.4 against 15.1-21.1), so the fix removed a startup handicap, not a
+steady-state limit. The 220 MiB VRAM margin warning and the "foresight swap"
+counters (over budget flat at 6,749, no free slot climbing to 54,887) are the
+VRAM-side device slots, not the pool (oracle attribution, question 2).
+
+Teardown incident, recorded so it is not repeated: stop-all.sh's process sweep
+also matched the invoking shell, because that shell's own command line carried
+the sweep's pattern text (a verification pgrep). The stack did go down - no
+engine, helper or server process remains and port 8019 is free - but the
+command that ran the check was killed mid-run, and the engine was TERMed before
+it could print the exit counters. Check liveness with ps/awk or ss, never with
+a pattern that stop-all also sweeps.
+
+Still UNMEASURED: throughput past 256 tokens and at long context; concurrency;
+a sustained-load memory curve; a pool-vs-non-pool baseline on the same box and
+window; L4 total-budget enforcement.
