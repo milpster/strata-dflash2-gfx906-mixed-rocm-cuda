@@ -24070,6 +24070,9 @@ int main(int argc, char** argv) {
                 // on any failure: leases stay in the vector until scope exit (a failed
                 // sync is not proof of quiescence; pool lease destruction order at scope exit is safe)
                 if (!ok) {
+                    // Drain any queued copies before the leases destruct at scope exit:
+                    // hard-wait the device (a failed/absent sync is not proof of quiescence).
+                    (void) cudaDeviceSynchronize();
                     std::fprintf(stderr, "strata generate: refilling a lent slot failed: %s\n", err.c_str());
                     return 1;
                 }
