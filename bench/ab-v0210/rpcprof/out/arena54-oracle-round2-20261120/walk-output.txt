@@ -1,0 +1,104 @@
+# mock walks, 2026-11-20T06:33:32Z, fixer lane, nothing booted or stopped
+
+=================== mock-stop-all-walk.sh (against /mnt/srcds/Strata/stop-all.sh) ===================
+sandbox run/ listing:
+prod-swift15-f16kv-mixed-supervisor-affinity-1-1.json
+prod-swift15-f16kv-mixed-supervisor.json
+prod-ud-iq3xxs-mixed-supervisor.json
+r7-trial-supervisor.json
+trial-arena54-supervisor.json
+trial-spill40-supervisor.json
+live stand-in supervisor pid: 232482 (cmdline: /home/srcds/.pyenv/versions/3.11.9/bin/python3 /tmp/tmp.xUGPdm0biq/fake/pair_supervisor.py )
+the harness pid 232478 is live but is a bash, not a supervisor
+
+--- extracted loop (verbatim from /mnt/srcds/Strata/stop-all.sh) ---
+for state in run/*-supervisor.json; do
+  [ -f "$state" ] || continue
+  sup=$(jq -r '.supervisor_pid // empty' "$state" 2>/dev/null)
+  # TERM it only if that pid really is a pair supervisor: a state file outlives its run and
+  # its pid can be recycled to something unrelated by the time the next lane stops.
+  [ -n "${sup:-}" ] && kill -0 "$sup" 2>/dev/null && grep -qa 'pair_supervisor[.]py' "/proc/$sup/cmdline" 2>/dev/null && { echo "  TERM $state supervisor $sup"; term_pid "$sup"; }
+done
+-----------------------------------------
+  TERM run/prod-swift15-f16kv-mixed-supervisor.json supervisor 232482
+    [stub term_pid] would wait up to 60s for pid 232482
+  TERM run/trial-arena54-supervisor.json supervisor 232482
+    [stub term_pid] would wait up to 60s for pid 232482
+  TERM run/trial-spill40-supervisor.json supervisor 232482
+    [stub term_pid] would wait up to 60s for pid 232482
+
+socket sweep line from the real file:
+rm -f run/prod-swift15-f16kv-mixed.sock run/prod-swift15-f16kv-mixed2.sock \
+      run/prod-iq3xxs-ud-mixed.sock run/prod-iq3xxs-ud-mixed2.sock \
+      run/trial-spill40.sock run/trial-spill40-2.sock \
+      run/trial-arena54.sock run/trial-arena54-2.sock
+stand-in exited; nothing on this box was signalled.
+walk-1 exit=0
+
+=================== mock-window-guards.sh (against arena54-window-20261120.sh) ===================
+extracting the pieces under test from: /mnt/srcds/Strata/bench/ab-v0210/rpcprof/gpu-rounds/arena54-window-20261120.sh
+extracted: wait_ready (15 lines), pre-flight (7 lines), skip branch (38 lines)
+
+--- #3 A: the state file still names the PREVIOUS boot's log, which already contains
+          'ready: http://', and that is also the pre-boot snapshot -> must refuse.
+  RESULT: refused; READY_LINE='' -> correct
+
+--- #3 B: this boot recorded a NEW log path, ready and answering -> must accept.
+  RESULT: accepted: READY_LINE='ready: http://127.0.0.1:8009 (this boot)' READY_LOG=/tmp/tmp.7LddeK1LIh/logs/prod-swift15-f16kv-mixed-20261120-070000.log -> correct
+
+--- #3 C: new path with a ready line, but the port does not answer -> must refuse.
+  RESULT: refused (ready line AND a live port are both required) -> correct
+
+--- #7 pre-flight, three states of the arena file (expected 4096 B):
+  (a) absent:
+    (continued past the pre-flight)
+    status=0
+  (b) exact size:
+    (continued past the pre-flight)
+    status=0
+  (c) wrong size 1024 B (the iq_pack.py --experts-bin shape):
+PRE-FLIGHT ABORT 07:33:57: experts.bin is 1024 B, expected 4096 B.
+  A stale/unpadded experts.bin blocks pre-gen: delete it or re-derive it, and never run
+  tools/iq_pack.py --experts-bin on this pack while this window depends on the file.
+    [stub restore_prod] would stop the lanes and verify prod
+    status=1
+
+--- #6 skip branch, three states of the content record:
+    record file: /tmp/tmp.7LddeK1LIh/experts-bin.sha256
+  (a) no record yet (deferred until the boot gate passes):
+pre-gen: experts.bin already 4096 B - no pre-gen boot needed
+    (reached the end, BIN_SHA_PENDING=1)
+    status=0
+  (b) record matches the file:
+pre-gen: experts.bin content matches the recorded ad7facb2586fc6e966c004d7d1d16b024f5805ff7cb47c7a85dabd8b48892ca7 (07:33:57)
+pre-gen: experts.bin already 4096 B - no pre-gen boot needed
+    (reached the end, BIN_SHA_PENDING=0)
+    status=0
+  (c) same size, different bytes -> content changed:
+PRE-GEN ABORT 07:33:57: experts.bin content changed - recorded ad7facb2586fc6e966c004d7d1d16b024f5805ff7cb47c7a85dabd8b48892ca7, now e009968be9ca34e6323b33bf90f848126f6abf3db488d643adcde27a46174d10.
+  The measured boot would map a different file than the earlier legs did.
+    [stub restore_prod] would stop the lanes and verify prod
+    status=1
+
+--- #4 engine pid assert, four states of ENG_PID (kill -0 only probes; nothing is signalled):
+  (a) pid 0 (state file holds no engine_pid):
+GATE FAIL 07:33:58: engine pid '0' is missing, dead, or is not this trial's engine
+  state file: /tmp/tmp.7LddeK1LIh/trial-arena54-supervisor.json; that pid's command line: (unreadable - no such process)
+    [stub restore_prod] would stop the lanes and verify prod
+    status=1
+  (b) a dead pid:
+GATE FAIL 07:33:58: engine pid '999999' is missing, dead, or is not this trial's engine
+  state file: /tmp/tmp.7LddeK1LIh/trial-arena54-supervisor.json; that pid's command line: (unreadable - no such process)
+    [stub restore_prod] would stop the lanes and verify prod
+    status=1
+  (c) live pid, wrong process 239086: [sleep 12 ]
+GATE FAIL 07:33:58: engine pid '239086' is missing, dead, or is not this trial's engine
+  state file: /tmp/tmp.7LddeK1LIh/trial-arena54-supervisor.json; that pid's command line: sleep 12 
+    [stub restore_prod] would stop the lanes and verify prod
+    status=1
+  (d) live pid carrying the trial marker 239087: [/home/srcds/.pyenv/versions/3.11.9/bin/python3 -c import time; time.sleep(12) /tmp/tmp.7LddeK1LIh/run/trial-arena54.sock ]
+    (passed the assert, ENG_PID=239087)
+    status=0
+
+walk finished; the sandbox is removed and nothing on this box was stopped, booted or probed.
+walk-2 exit=0
