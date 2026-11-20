@@ -225,10 +225,11 @@ int main(int argc, char** argv) {
 
     // ============ 2. drop-on-release frees capacity ============
     {
-        // Pool = scratch(4096) + one 4096-page entry = exactly full.
+        // Pool = the store's scratch (a whole max blob + one page = 12288) +
+        // one 4096-page entry = exactly full.
         Pool pool;
-        auto ec = make_pool(pool, 2 * kPage);
-        check(!ec, "2: create tight 8KiB pool");
+        auto ec = make_pool(pool, 4 * kPage);
+        check(!ec, "2: create tight 16KiB pool");
         ExpertLayout layout;
         build_layout(layout);
         PoolExpertStore store(pool);
@@ -256,7 +257,7 @@ int main(int argc, char** argv) {
     // ============ 3. pressure -> nullptr (no throw, no drop of live borrowers) ============
     {
         Pool pool;
-        auto ec = make_pool(pool, 2 * kPage);
+        auto ec = make_pool(pool, 4 * kPage);
         check(!ec, "3: create tight pool");
         ExpertLayout layout;
         build_layout(layout);

@@ -89,10 +89,32 @@ public:
         return layers_[(size_t)layer].bytes;
     }
     /// Bytes reserved for scratch (page-aligned, same pool).  Zero until open.
+    /// Since the read-granularity fix this is a WHOLE blob plus one alignment
+    /// page, not one page: one pread per expert instead of one per 4 KiB.
     uint64_t scratch_bytes() const noexcept { return scratch_.valid() ? scratch_.size() : 0; }
 
     /// Cache-only stats (metadata/payload geometry not in Pool stats).
     PoolExpertCache::Stats cache_stats() const noexcept { return cache_.stats(); }
+
+    /// Store stats.  The scratch is REAL pool bytes, so `usable_bytes` (pool
+    /// minus scratch) is the space payload may occupy: capacity assertions use
+    /// it, never the whole pool.  `preads_per_blob` is the read granularity the
+    /// store actually gets: 1 when a whole blob (plus its alignment slack) fits
+    /// in one window.
+    struct Stats {
+        uint64_t pool_capacity_bytes = 0;  // pool bytes this store can allocate from
+        uint64_t scratch_bytes = 0;        // pool bytes held by the read scratch
+        uint64_t usable_bytes = 0;         // pool_capacity_bytes - scratch_bytes
+        uint64_t blob_bytes_max = 0;       // largest per-expert blob in the file
+        uint64_t io_window_bytes = 0;      // bytes per pread window (clamped scratch)
+        uint64_t preads_per_blob = 0;      // read calls a max-size blob costs
+        uint64_t resident_pairs = 0;       // cache-owned (layer, expert) payloads
+        uint64_t resident_bytes = 0;       // pool bytes those payloads reserve
+        uint64_t hits = 0;
+        uint64_t misses = 0;
+        uint64_t evictions = 0;
+    };
+    Stats stats() const noexcept;
 
 private:
     struct Prepared {
@@ -114,10 +136,12 @@ private:
     int64_t n_layers_ = 0;
     int64_t n_expert_ = 0;
     uint64_t total_ = 0;
+    uint64_t blob_max_ = 0;   // largest per-expert blob in the snapshot
+    uint64_t io_window_ = 0;  // bytes per pread window (scratch clamped to ssize_t)
     std::vector<LayerGeom> layers_;   // out-of-pool metadata snapshot
     strata::platform::BoundedDirectReader reader_;      // readonly fd over experts.bin
     PoolExpertCache cache_;           // payload cache over the same pool
-    PoolLease scratch_;               // one page, same pool, reader's alignment
+    PoolLease scratch_;               // one whole blob + alignment, same pool
 };
 
 }  // namespace strata::core

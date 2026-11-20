@@ -8373,6 +8373,23 @@ int main(int argc, char** argv) {
                          (unsigned long long) budget_mib,
                          (unsigned long long) outside_owned,
                          (unsigned long long) pool_bytes);
+            // Read granularity, declared at boot so a trial reads it, not guesses:
+            // scratch is real pool bytes, usable_bytes is what payload may use.
+            {
+                const strata::core::PoolExpertStore::Stats st = managed_store->stats();
+                std::fprintf(stderr, "strata generate: RAM pool store: pool_bytes=%llu scratch_bytes=%llu"
+                                     " usable_bytes=%llu blob_max=%llu io_window=%llu preads_per_blob=%llu"
+                                     " resident_pairs=%llu hits=%llu misses=%llu\n",
+                             (unsigned long long) st.pool_capacity_bytes,
+                             (unsigned long long) st.scratch_bytes,
+                             (unsigned long long) st.usable_bytes,
+                             (unsigned long long) st.blob_bytes_max,
+                             (unsigned long long) st.io_window_bytes,
+                             (unsigned long long) st.preads_per_blob,
+                             (unsigned long long) st.resident_pairs,
+                             (unsigned long long) st.hits,
+                             (unsigned long long) st.misses);
+            }
             ram_budget_managed = true;
         }
     }
@@ -25777,6 +25794,19 @@ int main(int argc, char** argv) {
         (void)cudaDeviceSynchronize();
         for (auto& kv : adapter_hook_events) cudaEventDestroy(kv.second);
         adapter_hook_events.clear();
+        // The same numbers the boot line declared, now with the counters a run
+        // actually produced: a trial reads hits/misses/evictions here.
+        if (managed_store) {
+            const strata::core::PoolExpertStore::Stats st = managed_store->stats();
+            std::fprintf(stderr, "strata generate: RAM pool store at exit: scratch_bytes=%llu"
+                                 " resident_pairs=%llu resident_bytes=%llu hits=%llu misses=%llu evictions=%llu\n",
+                         (unsigned long long) st.scratch_bytes,
+                         (unsigned long long) st.resident_pairs,
+                         (unsigned long long) st.resident_bytes,
+                         (unsigned long long) st.hits,
+                         (unsigned long long) st.misses,
+                         (unsigned long long) st.evictions);
+        }
     }
     return 0;
 }

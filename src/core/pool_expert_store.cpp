@@ -8,7 +8,9 @@
 
 #include "strata/kernels/cpu/expert_layout.hpp"
 
+#include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <system_error>
 #include <utility>
 
@@ -17,6 +19,36 @@ namespace strata::core {
 namespace {
 
 using std::errc;
+
+// Upper bound on the read scratch, in pool bytes.  The pack on this box has
+// ~1.95-2.71 MB blobs, so one blob plus its alignment slack fits well inside
+// this; the cap only stops a pathological pack from reserving unbounded RAM.
+constexpr uint64_t kScratchCapBytes = 8ull << 20;
+
+// Scratch needed so that ONE pread delivers a whole blob even when the blob
+// starts mid-page: the window must cover up to (alignment - 1) bytes before
+// the blob plus the blob itself.  round_up(blob + alignment, alignment) is that
+// (and equals blob + one page for the page-multiple pack here).  Clamped to
+// [alignment, kScratchCapBytes]; a cap-sized window still reads many fewer
+// times than one page per call.
+uint64_t scratch_bytes_for(uint64_t max_blob, uint64_t alignment) noexcept {
+    if (alignment == 0) return 0;
+    uint64_t cap = (kScratchCapBytes / alignment) * alignment;
+    if (cap < alignment) cap = alignment;
+    if (max_blob > cap - alignment) return cap;   // one read would exceed the cap
+    const uint64_t sum = max_blob + alignment;
+    uint64_t want = ((sum + alignment - 1) / alignment) * alignment;
+    if (want > cap || want < sum) want = cap;     // cap, or rounding overflow
+    return want < alignment ? alignment : want;
+}
+
+// The reader clamps its window to ssize_t; mirror that for the reported number.
+uint64_t io_window_for(uint64_t scratch_bytes, uint64_t alignment) noexcept {
+    if (alignment == 0) return 0;
+    const uint64_t max_io =
+        static_cast<uint64_t>(std::numeric_limits<ssize_t>::max()) / alignment * alignment;
+    return std::min(scratch_bytes, max_io);
+}
 
 // Checked multiply: *out = a * b, false on overflow.
 bool checked_mul(uint64_t a, uint64_t b, uint64_t& out) noexcept {
@@ -64,11 +96,21 @@ std::error_code PoolExpertStore::open(const char* experts_bin,
     ec = prepare_geometry(layout, file_size, prep);
     if (ec) return ec;
 
-    // ---- admit one page of same-pool scratch (reader alignment) ----
-    // May transiently need an extra page; never evicts cache entries.
-    prep.scratch_bytes = new_reader.alignment();
+    // ---- admit same-pool scratch sized for a WHOLE blob ----
+    // One 4 KiB window per pread cost ~488 synchronous reads for a 1.95 MiB
+    // expert (measured 9-29 ms/blob on this box, 68-212 MB/s).  Size the scratch
+    // so a whole blob (plus its alignment slack) lands in one read: the largest
+    // per-expert blob over the layers actually present, clamped to the cap.
+    // The reader keeps every strict check (alignment, disjoint spans, overflow)
+    // and still coalesces to cap-sized windows when a blob exceeds the cap.
+    uint64_t max_blob = 0;
+    for (const LayerGeom& g : prep.layers) max_blob = std::max(max_blob, g.bytes);
+    const uint64_t align = new_reader.alignment();
+    prep.scratch_bytes = scratch_bytes_for(max_blob, align);
+    if (prep.scratch_bytes == 0) return std::make_error_code(errc::invalid_argument);
+    // May transiently need the scratch on top of the cache; never evicts entries.
     PoolLease scratch;
-    ec = pool_->pool_alloc(prep.scratch_bytes, prep.scratch_bytes, scratch);
+    ec = pool_->pool_alloc(prep.scratch_bytes, align, scratch);
     if (ec) return ec;
 
     // ---- commit: clear old cache, then swap/move prepared state (no alloc) ----
@@ -79,6 +121,8 @@ std::error_code PoolExpertStore::open(const char* experts_bin,
     n_layers_ = prep.n_layers;
     n_expert_ = prep.n_expert;
     total_ = prep.total;
+    blob_max_ = max_blob;
+    io_window_ = io_window_for(prep.scratch_bytes, align);
     open_ = true;
     return {};
 }
@@ -200,6 +244,36 @@ std::error_code PoolExpertStore::acquire(int64_t layer, int64_t expert,
     return cache_.acquire(layer, expert, bytes, reader, out);
 }
 
+// ---- stats -----------------------------------------------------------------
+
+PoolExpertStore::Stats PoolExpertStore::stats() const noexcept {
+    Stats s;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (pool_ != nullptr) s.pool_capacity_bytes = pool_->capacity();
+        s.scratch_bytes = scratch_bytes();
+        s.usable_bytes = (s.pool_capacity_bytes > s.scratch_bytes)
+                             ? s.pool_capacity_bytes - s.scratch_bytes : 0;
+        s.blob_bytes_max = blob_max_;
+        s.io_window_bytes = io_window_;
+        if (io_window_ > 0) {
+            // Worst case per window: the blob may start one byte before the end
+            // of the alignment unit, so a window delivers io_window - align + 1
+            // useful bytes; 1 when a whole blob (plus slack) fits.
+            const uint64_t align = reader_.alignment();
+            const uint64_t useful = (align > 0 && io_window_ + 1 > align) ? io_window_ - align + 1 : 0;
+            s.preads_per_blob = useful ? (blob_max_ + useful - 1) / useful : 0;
+        }
+    }
+    const PoolExpertCache::Stats c = cache_.stats();
+    s.resident_pairs = c.entries;
+    s.resident_bytes = c.cached_bytes;
+    s.hits = c.hits;
+    s.misses = c.misses;
+    s.evictions = c.evictions;
+    return s;
+}
+
 // ---- release / clear / close ----------------------------------------------
 
 void PoolExpertStore::release(int64_t layer, int64_t expert) noexcept {
@@ -221,6 +295,8 @@ void PoolExpertStore::close() noexcept {
     n_layers_ = 0;
     n_expert_ = 0;
     total_ = 0;
+    blob_max_ = 0;
+    io_window_ = 0;
     layers_.clear();
 }
 
