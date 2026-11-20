@@ -63,6 +63,13 @@ PROD_IDENTITY_PATTERN = "launch-prod-|launch-trial-|strata --serve|strata-expert
 DEFAULT_SERVE_DIR = "/mnt/srcds/Strata/v0215/serve"
 # The preflight/worker MUST see all of these probe names; an empty/missing probe set BLOCKS.
 REQUIRED_PROBES = ("live_serving_processes", "supervisor_alive", "isolated_sockets_free")
+# Minimum frozen-provenance roles the execution gate requires: the canonical base config, the
+# engine binary, the expert helper, the wrapper/control source and the frozen request fixture. A
+# missing bound role BLOCKS (no wildcard); their frozen paths must equal the paths actually used.
+REQUIRED_PROVENANCE_ROLES = ("base_config", "exe", "helper_bin", "wrapper", "fixture")
+# Roles whose frozen path is bound to the file the run ACTUALLY uses (wrapper is a declared
+# control source pinned by hash only, not bound to a spawned artifact).
+_BOUND_USED_ROLES = ("base_config", "exe", "helper_bin", "fixture")
 # Engine-scope env normalization from launch-v0238.sh:117-122 (cfg.env still applied last by child_env).
 ENGINE_UNSET = ("CUDA_VISIBLE_DEVICES", "STRATA_ARENA_MMAP", "GPU_PINNED_MIN_XFER_SIZE",
                 "HSA_USERPTR_FOR_PAGED_MEM", "LD_PRELOAD")
@@ -194,7 +201,8 @@ def build_helper_command(*, helper_bin: str, pack: str, experts: str, socket: st
 def prepare_plan(*, base_cfg: dict, arm: str, out_dir: Path, exe: str, socket1: str, socket2: str,
                  cache_dir: str, engine_log: str, helper_bin: str, pack: str, experts: str,
                  supplied_files: dict, port: int | None = None, memory_limit_mib: int | None = None,
-                 env: dict | None = None, serve_dir: str = DEFAULT_SERVE_DIR) -> dict:
+                 env: dict | None = None, serve_dir: str = DEFAULT_SERVE_DIR,
+                 expected_provenance: dict | None = None) -> dict:
     """Build the dry-run plan: matched test config, expected argv, helper command, provenance.
 
     Performs NO launch and NO real-wrapper import. Returns status PREPARED with the GPU claim
@@ -225,6 +233,7 @@ def prepare_plan(*, base_cfg: dict, arm: str, out_dir: Path, exe: str, socket1: 
         "expected_helper_argv": helper_argv,
         "expected_helper_env": helper_env,
         "provenance": RA.provenance_manifest(supplied_files),
+        "provenance_status": _prepare_provenance_status(expected_provenance, supplied_files),
         "outstanding_gates": list(RA.OUTSTANDING_GATES),
     }
 
@@ -485,6 +494,7 @@ class WorkerResult:
     configured_watchdogs: dict = field(default_factory=dict)
     harness_fired: bool = False
     engine_exit: str = ""
+    provenance: dict = field(default_factory=dict)   # frozen-input identity verdict (not a readiness claim)
 
     @property
     def prompt_passes(self) -> list:
@@ -633,6 +643,7 @@ def write_worker_result(result: WorkerResult, out_dir: str | Path, arm: str) -> 
         "engine_info": result.engine_info, "state_hashes": result.state_hashes, "problems": result.problems,
         "gpu": result.gpu, "events": result.events, "configured_watchdogs": result.configured_watchdogs,
         "harness_fired": result.harness_fired, "engine_exit": result.engine_exit,
+        "provenance": result.provenance,
         "window_file": str(window_path), "window_bytes": len(result.engine_log_bytes),
     }, indent=2), encoding="utf-8")
     return json_path
@@ -650,7 +661,8 @@ def read_worker_result(json_path: str | Path) -> WorkerResult:
                         engine_log_bytes=window, problems=list(raw.get("problems") or []), gpu=raw.get("gpu", GPU_STATUS),
                         events=list(raw.get("events") or []),
                         configured_watchdogs=dict(raw.get("configured_watchdogs") or {}),
-                        harness_fired=bool(raw.get("harness_fired")), engine_exit=str(raw.get("engine_exit") or ""))
+                        harness_fired=bool(raw.get("harness_fired")), engine_exit=str(raw.get("engine_exit") or ""),
+                        provenance=dict(raw.get("provenance") or {}))
 
 
 # =============================================================================
@@ -1028,9 +1040,112 @@ def _make_helper_factory(seams: Seams):
     return make
 
 
-def _build_from_manifest(manifest_path: str | Path, *, serve_dir_default: str = DEFAULT_SERVE_DIR) -> dict:
-    """Read a frozen test manifest (paths/identity only) and build the dry-run plan (pure)."""
-    manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+def _expected_provenance(manifest: dict) -> dict | None:
+    """Load the SEPARATELY frozen expected provenance from the trusted manifest.
+
+    The manifest may inline it (a dict) or name a JSON file path. It is only ever READ here —
+    never synthesized or refreshed from the current files, so `run` cannot grade itself.
+    """
+    ep = manifest.get("expected_provenance")
+    if isinstance(ep, dict):
+        return ep
+    if isinstance(ep, str) and ep.strip():
+        p = Path(ep)
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+    return None
+
+
+def _used_role_paths(manifest: dict, plan: dict, fixture_path: str | None) -> dict[str, Path]:
+    """The authoritative inputs the run ACTUALLY uses, keyed by declared provenance role.
+
+    base_config/exe/helper_bin come from the manifest/plan (the config read and the binaries
+    spawned); fixture from the CLI fixture; wrapper from the manifest's declared control source
+    (top-level `wrapper` or `supplied_files.wrapper`). A missing declared role simply yields no
+    path, so the required-role check blocks rather than wildcards it.
+    """
+    supplied = manifest.get("supplied_files") or {}
+    roles: dict[str, str] = {
+        "base_config": str(manifest.get("base_config", "")),
+        "exe": str(plan["exe"]),
+        "helper_bin": str(plan["expected_helper_argv"][0]),
+    }
+    if fixture_path:
+        roles["fixture"] = str(fixture_path)
+    wrapper = manifest.get("wrapper") or supplied.get("wrapper")
+    if wrapper:
+        roles["wrapper"] = str(wrapper)
+    return {role: Path(path) for role, path in roles.items() if path}
+
+
+def _used_provenance(used: dict[str, Path]) -> tuple[dict, list[str]]:
+    """Hash the used role files now; an unreadable role is a refusal diagnostic, not a crash."""
+    files: dict[str, dict] = {}
+    problems: list[str] = []
+    for role, path in used.items():
+        try:
+            files[role] = {"path": str(path), "sha256": RA.sha256_path(path), "bytes": path.stat().st_size}
+        except OSError as exc:
+            problems.append(f"role {role} path {path} is unreadable: {type(exc).__name__}")
+    return {"files": files}, problems
+
+
+def provenance_gate(manifest: dict, plan: dict, fixture_path: str | None) -> tuple[dict, list[str]]:
+    """Compare the CURRENT actual role files against the frozen expected provenance.
+
+    This is the executable drift gate the dry-run plan cannot be: it refuses a missing/empty
+    expectation, a missing required role, a frozen path that is not the path actually used, or a
+    changed config/exe/helper/wrapper/fixture — BEFORE any helper spawn (outer) or lazy
+    `serve.server` import (worker). A MATCH proves frozen input IDENTITY only: never GPU
+    compatibility, placement, physical safety, quality equivalence or raw parity acceptance. It
+    hashes the bounded role set once per phase; it never dumps env, model weight trees or live logs.
+    """
+    expected = _expected_provenance(manifest)
+    if expected is None or not (isinstance(expected, dict) and expected.get("files")):
+        return ({"status": "REFUSE", "roles": {}},
+                ["no nonempty frozen expected_provenance in the manifest (never refreshed from current files)"])
+    exp_files = expected.get("files", {})
+    used = _used_role_paths(manifest, plan, fixture_path)
+    problems: list[str] = []
+    for role in REQUIRED_PROVENANCE_ROLES:
+        if role not in exp_files:
+            problems.append("expected_provenance missing required role: " + str(role))
+    for role in _BOUND_USED_ROLES:
+        exp = exp_files.get(role)
+        if role in used and exp and exp.get("path") and Path(exp["path"]).resolve() != used[role].resolve():
+            problems.append(f"role {role} frozen path {exp['path']!r} is not the used path {str(used[role])!r}")
+    actual, actual_problems = _used_provenance(used)
+    problems += actual_problems
+    problems += RA.verify_provenance(expected, actual)
+    verdict = {"status": "MATCH" if not problems else "REFUSE",
+               "roles": {role: {"expected": exp_files.get(role, {}).get("sha256"),
+                                "actual": actual["files"].get(role, {}).get("sha256")}
+                         for role in used}}
+    return verdict, problems
+
+
+def _prepare_provenance_status(expected: dict | None, supplied_files: dict) -> dict:
+    """Prepare-time (non-gating) provenance report: fresh actual vs any frozen expected.
+
+    Partial by design — the prepare plan has no CLI fixture to bind. Execution re-runs the full
+    bound `provenance_gate`; a prepare MATCH is not an execution grant.
+    """
+    if not isinstance(expected, dict) or not expected.get("files"):
+        return {"status": "UNVERIFIED",
+                "problems": ["no frozen expected_provenance supplied (execution re-verifies against it)"]}
+    problems = RA.verify_provenance(expected, RA.provenance_manifest(supplied_files))
+    return {"status": "MATCH" if not problems else "MISMATCH", "problems": problems}
+
+
+def _load_manifest(manifest_path: str | Path) -> dict:
+    """Read the trusted pre-frozen test manifest verbatim (the expected-provenance record source)."""
+    return json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+
+
+def _plan_from_manifest(manifest: dict, *, serve_dir_default: str = DEFAULT_SERVE_DIR) -> dict:
+    """Build the dry-run plan from an already-read manifest (the manifest is NOT re-read here)."""
     base_cfg = json.loads(Path(manifest["base_config"]).read_text(encoding="utf-8"))
     return prepare_plan(
         base_cfg=base_cfg, arm=manifest["arm"], out_dir=Path(manifest["out_dir"]),
@@ -1039,7 +1154,13 @@ def _build_from_manifest(manifest_path: str | Path, *, serve_dir_default: str = 
         helper_bin=manifest["helper_bin"], pack=manifest["pack"], experts=manifest["experts"],
         supplied_files={role: Path(p) for role, p in (manifest.get("supplied_files") or {}).items()},
         port=manifest.get("port"), memory_limit_mib=manifest.get("memory_limit_mib"),
-        env=manifest.get("env"), serve_dir=manifest.get("serve_dir", serve_dir_default))
+        env=manifest.get("env"), serve_dir=manifest.get("serve_dir", serve_dir_default),
+        expected_provenance=manifest.get("expected_provenance"))
+
+
+def _build_from_manifest(manifest_path: str | Path, *, serve_dir_default: str = DEFAULT_SERVE_DIR) -> dict:
+    """Read a frozen test manifest (paths/identity only) and build the dry-run plan (pure)."""
+    return _plan_from_manifest(_load_manifest(manifest_path), serve_dir_default=serve_dir_default)
 
 
 def main(argv=None, *, seams: Seams | None = None) -> int:
@@ -1088,7 +1209,8 @@ def main(argv=None, *, seams: Seams | None = None) -> int:
         return 0 if ok else 3
 
     if command == "preflight":
-        plan = _build_from_manifest(getattr(args, "manifest"))
+        manifest = _load_manifest(getattr(args, "manifest"))
+        plan = _plan_from_manifest(manifest)
         tc = plan["test_config"]
         probes = phase_P_probes(sockets=[tc["expert_helper_socket"], tc["expert_helper_socket2"]],
                                 supervisor_state=seams.supervisor_state,
@@ -1097,14 +1219,20 @@ def main(argv=None, *, seams: Seams | None = None) -> int:
         if not ok:
             print(json.dumps({"preflight": "REFUSE", "reasons": reasons}), file=sys.stderr)
             return 2
-        print("preflight: stop proof clean and production absent; a run may proceed")
+        exp = _expected_provenance(manifest)
+        exp_roles = sorted((exp.get("files", {}) or {}).keys()) if exp else []
+        print("preflight: stop proof clean and production absent; a run may proceed. "
+              f"provenance expectation: {'present' if exp_roles else 'ABSENT'} roles={exp_roles} "
+              "(informational only — preflight has no execute authority; run/run --worker enforce the "
+              "bound role paths + fixture before any spawn/import)")
         return 0
 
     if command == "run" and getattr(args, "worker", False):
         return _cli_worker(args, plan_seams=seams)
 
     if command == "run":
-        plan = _build_from_manifest(getattr(args, "manifest"))
+        manifest = _load_manifest(getattr(args, "manifest"))
+        plan = _plan_from_manifest(manifest)
         tc = plan["test_config"]
         probes = phase_P_probes(sockets=[tc["expert_helper_socket"], tc["expert_helper_socket2"]],
                                 supervisor_state=seams.supervisor_state,
@@ -1112,6 +1240,9 @@ def main(argv=None, *, seams: Seams | None = None) -> int:
         confirm = bool(getattr(args, "confirm_production_down", False))
         stop_proof = _load_stop_proof(getattr(args, "stop_proof"))
         run_gate(confirm=confirm, env=dict(os.environ), stop_proof=stop_proof, probes=probes)   # raises before spawn
+        verdict, prov_problems = provenance_gate(manifest, plan, getattr(args, "fixture", None))
+        if prov_problems:                                                                        # before helper spawn
+            raise AdapterBlocked(f"frozen raw-input provenance refused before helper creation: {prov_problems}")
         helper = (seams.helper_factory or _make_helper_factory(seams))(plan)
         outcome = run_owned(
             helper=helper,
@@ -1122,6 +1253,7 @@ def main(argv=None, *, seams: Seams | None = None) -> int:
                 owned_start=helper.start_time),
             ready_deadline_s=float(plan.get("ready_deadline_s", 600.0)))
         payload = {"status": outcome.status, "events": outcome.events, "problems": outcome.problems,
+                   "provenance": verdict,
                    "worker": (None if outcome.worker is None else
                               {"status": outcome.worker.status, "generated_ids": outcome.worker.generated_ids,
                                "engine_argv": outcome.worker.engine_argv, "engine_exe": outcome.worker.engine_exe,
@@ -1136,7 +1268,8 @@ def main(argv=None, *, seams: Seams | None = None) -> int:
 
 def _cli_worker(args, *, plan_seams: Seams) -> int:
     """`run --worker`: gate (phase-correct), require owned-helper proof, then run the real worker."""
-    plan = _build_from_manifest(getattr(args, "manifest"))
+    manifest = _load_manifest(getattr(args, "manifest"))
+    plan = _plan_from_manifest(manifest)          # re-reads inputs; re-validates them below
     tc = plan["test_config"]
     out_dir, arm = plan["out_dir"], plan["arm"]
     owned_pid = getattr(args, "owned_helper_pid", None)
@@ -1156,8 +1289,13 @@ def _cli_worker(args, *, plan_seams: Seams) -> int:
                               self_pids=self_pids, owned_identity_ok=owned_identity_ok, sockets_ok=sockets_ok)
     if proof:
         reasons = reasons + proof
+    # Revalidate the CURRENT actual role files against the SAME frozen expectation (a passing outer
+    # snapshot must not bypass this); refuse BEFORE any lazy `serve.server` import.
+    verdict, prov_problems = provenance_gate(manifest, plan, getattr(args, "fixture", None))
+    if prov_problems:
+        reasons = reasons + [f"provenance: {r}" for r in prov_problems]
     if not ok:
-        print(json.dumps({"worker": "REFUSE", "reasons": reasons}), file=sys.stderr)
+        print(json.dumps({"worker": "REFUSE", "reasons": reasons, "provenance": verdict}), file=sys.stderr)
         return 2
     fixture = load_fixture(getattr(args, "fixture"))
     deps = EngineDeps(server_import=lambda: plan_seams.server_import(plan["serve_dir"]),
@@ -1165,6 +1303,7 @@ def _cli_worker(args, *, plan_seams: Seams) -> int:
     factory = plan_seams.engine_factory(tc, deps)
     result = run_worker(exe=plan["exe"], args=plan["expected_engine_argv"], env={}, log_path=tc["log"],
                         fixture=fixture, engine_factory=factory)
+    result.provenance = verdict
     try:
         write_worker_result(result, out_dir, arm)
     except OSError as exc:  # an output-write failure is a FAIL, after the engine is already closed
@@ -1172,7 +1311,8 @@ def _cli_worker(args, *, plan_seams: Seams) -> int:
         return 4
     print(json.dumps({"status": result.status, "generated_ids": result.generated_ids,
                       "engine_pid": result.engine_pid, "engine_exe": result.engine_exe,
-                      "state_hashes": result.state_hashes, "problems": result.problems}, indent=2))
+                      "state_hashes": result.state_hashes, "provenance": verdict,
+                      "problems": result.problems}, indent=2))
     return 0 if result.status == "PASS" else 4
 
 

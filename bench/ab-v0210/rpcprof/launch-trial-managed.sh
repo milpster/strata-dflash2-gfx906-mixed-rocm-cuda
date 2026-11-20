@@ -32,7 +32,7 @@ case "${1:-}" in
   *) echo 'Usage: launcher [--recover|--single-run]' >&2; exit 2 ;;
 esac
 command -v ss >/dev/null
-[[ -z $(ss -H -ltn "sport = :${PORT:-8009}") ]] || { echo "REFUSING: port ${PORT:-8019} occupied." >&2; exit 1; }
+[[ -z $(ss -H -ltn "sport = :${PORT:-8009}") ]] || { echo "REFUSING: port ${PORT:-8009} occupied." >&2; exit 1; }
 [[ ! -e "$SOCKET" && ! -L "$SOCKET" ]] || { echo "REFUSING: existing socket $SOCKET" >&2; exit 1; }
 [[ ! -e "$SOCKET2" && ! -L "$SOCKET2" ]] || { echo "REFUSING: existing socket $SOCKET2" >&2; exit 1; }
 for file in "$PY" "$HELPER" "$BIN/rpcw-hip/strata"; do

@@ -236,16 +236,52 @@ def good_handle(exe, args, **over) -> FakeEngineHandle:
 
 # ---- CLI fixtures + fake seams --------------------------------------------------
 
-def write_manifest(out: Path, arm: str = "candidate") -> tuple[str, dict]:
-    """Write manifest.json + fixture.json into scratch; return (manifest_path, plan)."""
+def role_paths(out: Path) -> dict:
+    """Deterministic scratch paths for the bound provenance roles (exe/helper/config/wrapper/fixture)."""
+    d = out / "inputs"
+    return {"base_config": d / "base-config.json", "exe": d / "strata",
+            "helper_bin": d / "strata-expert-helper-patient", "wrapper": d / "champions-wrapper.sh",
+            "fixture": out / "fixture.json"}
+
+
+def _write_fake_roles(out: Path) -> dict:
+    """Lay small LEGITIMATE on-disk role files (never the prod exe as a run target); copy config."""
+    rp = role_paths(out)
+    rp["base_config"].parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(PROD_CONFIG, rp["base_config"])          # read-only source -> scratch copy, never mutated here
+    rp["exe"].write_bytes(b"#!/bin/sh\necho fake-engine\n")
+    rp["helper_bin"].write_bytes(b"#!/bin/sh\necho fake-helper\n")
+    rp["wrapper"].write_bytes(b"#!/bin/bash\n# fake wrapper/control source\n")
+    return rp
+
+
+def frozen_expected_provenance(out: Path) -> dict:
+    """Freeze the bound-role provenance from the CURRENT role files (call BEFORE any mutation)."""
+    rp = role_paths(out)
+    return RA.provenance_manifest({role: rp[role] for role in RR.REQUIRED_PROVENANCE_ROLES})
+
+
+def write_manifest(out: Path, arm: str = "candidate", *, fixture: dict | None = None) -> tuple[str, dict]:
+    """Write manifest.json + fixture.json with frozen expected provenance; return (path, plan).
+
+    The manifest binds every used authoritative input role to a small on-disk file and freezes
+    their provenance from the content written NOW (a caller can later mutate a file to prove the
+    execution gate refuses — the expected record is never refreshed by `run`).
+    """
+    rp = _write_fake_roles(out)
+    fixture = fixture or {"ids": [1, 2, 3], "max_new": 4, "sampling": {"min_p": 0.5}}
+    role_paths(out)["fixture"].write_text(json.dumps(fixture), encoding="utf-8")
     a = plan_args(out, arm)
+    a["base_cfg"] = json.loads(rp["base_config"].read_text(encoding="utf-8"))
+    a["exe"] = str(rp["exe"])
+    a["helper_bin"] = str(rp["helper_bin"])
     plan = RR.prepare_plan(**a)
-    m = {k: (str(v) if isinstance(v, Path) else v) for k, v in a.items() if k != "base_cfg"}
-    m["base_config"] = str(PROD_CONFIG)
+    m = {k: (str(v) if isinstance(v, Path) else v) for k, v in a.items() if k not in ("base_cfg",)}
+    m["base_config"] = str(rp["base_config"])
+    m["wrapper"] = str(rp["wrapper"])
+    m["expected_provenance"] = frozen_expected_provenance(out)   # frozen from current content
     mpath = out / "manifest.json"
     mpath.write_text(json.dumps(m), encoding="utf-8")
-    fix = out / "fixture.json"
-    fix.write_text(json.dumps({"ids": [1, 2, 3], "max_new": 4, "sampling": {"min_p": 0.5}}), encoding="utf-8")
     return str(mpath), plan
 
 
@@ -293,6 +329,7 @@ class SeamKit:
         self.out, self.plan = out, plan
         self.popen_calls, self.pgrep_calls, self.simport_calls = [], 0, 0
         self.read_json_calls = 0
+        self.serve_dirs: list[str] = []
         self.pgrep_result: tuple[str, list[str]] = ("absent", [])
         self.sockets_present = True
         self.proc_identity_result: dict = {"exe": str(plan["expected_helper_argv"][0]), "start": 4321}
@@ -316,6 +353,7 @@ class SeamKit:
 
         def simport(serve_dir):
             self.simport_calls += 1
+            self.serve_dirs.append(serve_dir)
             return server_import(serve_dir) if server_import else types.SimpleNamespace()
 
         def proc_identity(pid):
@@ -350,6 +388,7 @@ def make_fake_server(expected_args, exe, ctor, tokens=(10, 11, 12), log=GOOD_STA
     class FE:
         def __init__(self, e, args, cwd=None, log="", env=None):
             ctor["n"] += 1
+            ctor["cwd"] = cwd                                  # record the cwd the factory forwarded
             self._log = log
             self.proc = types.SimpleNamespace(pid=4242, poll=lambda: None)
             self.last = last or {"finish": "eos", "generated": len(tokens), "prompt_ms": 1.0, "decode_ms": 1.0}
@@ -510,13 +549,12 @@ class CliWorker(unittest.TestCase):
 
     def test_worker_happy_raw_ids_and_files(self):
         out = fresh_scratch(self)
-        mpath, plan = write_manifest(out)
+        # Bake the expected raw output INTO the fixture at freeze time (never mutate a frozen file).
+        mpath, plan = write_manifest(out, fixture={
+            "ids": [1, 2, 3], "max_new": 4, "sampling": {"min_p": 0.5},
+            "expected_output_ids": [10, 11, 12], "expected_state": GOOD_HASH})
         proof = write_clean_proof(out)
         set_ready_env(self)
-        # Pin the frozen expected raw output on the fixture the worker reads back.
-        (out / "fixture.json").write_text(json.dumps(
-            {"ids": [1, 2, 3], "max_new": 4, "sampling": {"min_p": 0.5},
-             "expected_output_ids": [10, 11, 12], "expected_state": GOOD_HASH}), encoding="utf-8")
         ctor = {"n": 0}
         kit, seams = self._worker_seams(out, plan, ctor=ctor,
                                         expected_args=plan["expected_engine_argv"], exe=plan["exe"])
@@ -533,7 +571,11 @@ class CliWorker(unittest.TestCase):
         self.assertEqual(result.generated_ids, [10, 11, 12])
         self.assertEqual(result.state_hashes, GOOD_HASH)
         self.assertEqual(result.status, "PASS")
+        self.assertEqual(result.provenance["status"], "MATCH")         # frozen-input identity persisted
         self.assertEqual(_POPEN_CALLS, [])                            # no real process for the worker either
+        # Gap closure: the fake server import got the EXACT serve_dir and the ctor got the cfg cwd.
+        self.assertEqual(kit.serve_dirs, [plan["serve_dir"]])
+        self.assertEqual(ctor.get("cwd"), plan["test_config"].get("cwd"))
 
     def test_worker_refuses_missing_owned_helper_proof(self):
         out = fresh_scratch(self)
