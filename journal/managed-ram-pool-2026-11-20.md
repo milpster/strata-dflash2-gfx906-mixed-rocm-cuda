@@ -387,3 +387,35 @@ serves the lent-slot site); mapped shard sizes and token tables remain
 unaccounted outside_owned inputs (unknown before FileExpertSource opens;
 page-cache demand-paged, named for L4 admission); the fixer's own log dir
 again contained only a summary — parent logs are the evidence of record.
+
+## L3 Task 2 — both must-adapt refill consumers lease-bearing — 2026-11-20
+
+Fixer's first pass correctly STOPPED at Site B's blob_parts (multi-span).
+Parent source analysis re-scoped it: BlobPart{p,n,at} carries the part's
+offset WITHIN the assembled blob (expert_source.cpp:4720, three tensors per
+expert; fill_slot_queued_parts copies to dst+at, expert_cache.cpp:891-898) —
+pieces are discontiguous only in the FILE, dense in the SLOT. The store's
+lease IS the assembled blob, so one staged fill from lease.data() reproduces
+any parts layout; blob_parts is a legacy no-assembled-copy optimization the
+managed branch skips entirely.
+
+Second pass 11fa66faa1 (parent diff-reviewed): Site A VRAM evict-refill
+(:17252-17291) and Site B refill_issue/refill_wait (:20463-20534) mirror the
+accepted lent-slot seam — acquire, fill blocking/queued per refill_blocking(),
+lease vectors scoped across issue+wait, cleared only after sync_queued
+success, cudaDeviceSynchronize drain on every failure path with fills in
+flight, no note_async_read for lease data, Windows srcp->release guarded to
+legacy mode, legacy branches byte-identical.
+
+| Check | Result |
+|---|---|
+| CPU pool suite | exit 0; 6/6 |
+| generate.cpp.o on build-906 | exit 0 |
+| Raw logs | l3-task2/second/{ctest,ninja}.log + status.txt |
+
+Every must-adapt consumer is now lease-bearing. Still nothing runtime-tested
+(the seam is only set by STRATA_RAM_BUDGET_MIB and no boot is authorized);
+remaining legacy consumers (:5611 dispatch fill, :9346/:9522 nibble verify,
+ArenaExpertSource blob(), swap relief) still read via the unlocked
+FileExpertSource mmap — the adapter that makes the store the primary source
+for them is the next design piece.
