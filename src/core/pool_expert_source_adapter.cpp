@@ -35,25 +35,31 @@ uint64_t PoolExpertSourceAdapter::release(int64_t layer, int64_t expert) {
 }
 
 void PoolExpertSourceAdapter::note_async_read(const uint8_t* blob, void* stream) {
-    std::lock_guard<std::mutex> lk(mu_);
     int64_t found_key = -1;
-    for (auto& kv : borrowers_) {
-        if (kv.second.lease.valid() &&
-            kv.second.lease.data() == static_cast<const void*>(blob)) {
-            found_key = kv.first;
-            break;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        for (auto& kv : borrowers_) {
+            if (kv.second.lease.valid() &&
+                kv.second.lease.data() == static_cast<const void*>(blob)) {
+                found_key = kv.first;
+                break;
+            }
         }
+        if (found_key < 0) return;
+        auto& b = borrowers_[found_key];
+        // A newer note supersedes any prior event: the legacy stage buffer recycles
+        // on the event recorded after the LAST async copy out of it
+        // (expert_source.cpp:1255).  Re-arm before recording.
+        b.pending_event = true;
+        b.completed = false;
+    }   // mu_ released BEFORE hook_: the engine hook may call mark_completed(),
+    // which locks mu_; calling hook_ while holding mu_ would deadlock re-entrantly.
+    // The hook may call mark_completed()/borrowed() safely.  Never drop at issue time.
+    if (found_key >= 0 && hook_) hook_(found_key >> 32, found_key & 0xFFFFFFFFll, stream);
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        sweep_completed_locked();
     }
-    if (found_key < 0) return;
-    auto& b = borrowers_[found_key];
-    // A newer note supersedes any prior event: the legacy stage buffer recycles
-    // on the event recorded after the LAST async copy out of it
-    // (expert_source.cpp:1255).  Re-arm before recording.
-    b.pending_event = true;
-    b.completed = false;
-    // Record via hook (if set); ALWAYS retain - never drop at issue time.
-    if (hook_) hook_(found_key >> 32, found_key & 0xFFFFFFFFll, stream);
-    sweep_completed_locked();
 }
 
 // Simulate the async event completing for this borrower (CPU test hook; the

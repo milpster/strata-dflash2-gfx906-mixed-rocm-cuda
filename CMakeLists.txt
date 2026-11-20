@@ -685,7 +685,8 @@ target_link_libraries(strata-plan PRIVATE strata_plan)
 # Only built when a GPU backend is on, so the Phase 1 targets keep working without a toolkit.
 if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   add_library(strata_core STATIC src/core/device.cu src/core/pinned.cu src/platform/memory.cpp src/platform/io_priority.cpp src/core/graph.cpp src/core/weights.cpp
-                               src/core/layout.cpp)
+                               src/core/layout.cpp
+                               src/core/ram_pool.cpp src/core/pool_expert_cache.cpp src/platform/bounded_direct_reader.cpp src/core/pool_expert_store.cpp src/core/pool_expert_source_adapter.cpp)
   target_include_directories(strata_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
   # the DFlash2 drafter (src/core/dflash2.cpp, src/kernels/cuda/dflash2.cu) exists in the CUDA and HIP builds; the Metal and SYCL builds compile without it.
   # It is now an option (STRATA_HAVE_DFLASH2), default ON exactly as upstream v0.2.3 had it, so the build can be made to carry exactly ONE tap producer:

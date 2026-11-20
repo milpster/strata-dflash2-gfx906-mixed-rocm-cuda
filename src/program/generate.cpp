@@ -48,6 +48,7 @@
 #include "strata/core/coupled_draft.hpp"
 #include "strata/core/expert_source.hpp"
 #include "strata/core/pool_expert_store.hpp"   // GPU-free; opt-in managed-lent-slot seam (nullptr default)
+#include "strata/core/pool_expert_source_adapter.hpp"  // Task 2: managed-mode ExpertSource adapter (default OFF)
 #include "strata/core/ram_pool.hpp"            // managed pre-locked RAM pool core (pool_capacity_bytes, Pool::create)
 #include "strata/core/foresight_swap.hpp"
 #include "strata/core/pinned.hpp"
@@ -8237,6 +8238,13 @@ int main(int argc, char** argv) {
     // (after generation completes). Default-constructed empty in OFF mode.
     strata::core::Pool managed_pool;
     std::optional<strata::core::PoolExpertStore> managed_store;
+    // Task 2: the adapter borrows from managed_store and holds lease-backed
+    // borrowers until their async copies complete. Declared AFTER the pool and
+    // store so it is destroyed BEFORE them (leases release before pool teardown).
+    std::optional<strata::core::PoolExpertSourceAdapter> managed_adapter;
+    // Task 2: completion events recorded by the adapter's hook; destroyed at
+    // teardown (before the adapter/pool/store are torn down).
+    std::map<int64_t, cudaEvent_t> adapter_hook_events;
     if (ram_budget_env != nullptr && ram_budget_env[0] != '\0') {
         // Pure digit parser: no <cstdlib>/<cerrno> dependency, no silent fallback.
         auto parse_budget_mib = [](const char* s, uint64_t& out) -> bool {
@@ -8318,6 +8326,49 @@ int main(int argc, char** argv) {
                 return 1;
             }
             g_pool_expert_store = &*managed_store;
+            // Task 2: construct the adapter after the store opens.  Its hook
+            // records CUDA completion events per (layer, expert) borrower and
+            // polls them, driving adapter.mark_completed() when an event lands.
+            // The adapter lives in managed_adapter (declared above); the hook
+            // captures it by reference and is only called during generation,
+            // once the adapter is engaged.
+            auto adapter_hook = [&managed_adapter, &adapter_hook_events](int64_t layer, int64_t expert, void* stream) {
+                const int64_t key = (layer << 32) | (expert & 0xFFFFFFFFll);
+                // Re-arm: a newer note supersedes any prior event for the borrower.
+                auto it = adapter_hook_events.find(key);
+                if (it != adapter_hook_events.end()) { cudaEventDestroy(it->second); adapter_hook_events.erase(it); }
+                cudaStream_t s = static_cast<cudaStream_t>(stream);
+                cudaEvent_t ev = nullptr;
+                cudaError_t err = cudaEventCreateWithFlags(&ev, cudaEventDisableTiming);
+                if (err == cudaSuccess) err = cudaEventRecord(ev, s);
+                if (err != cudaSuccess) {
+                    // Legacy pattern: fall back to a synchronous stream wait and
+                    // treat the borrower as completed immediately.
+                    (void)cudaStreamSynchronize(s);
+                    managed_adapter->mark_completed(layer, expert);
+                    return;
+                }
+                adapter_hook_events.emplace(key, ev);
+                // Poll every stored event: completed -> mark + destroy; not-ready -> keep;
+                // any other error -> treat as completed (an error-state event never lands,
+                // so a borrower can never be stuck waiting on it).
+                for (auto eit = adapter_hook_events.begin(); eit != adapter_hook_events.end();) {
+                    cudaError_t q = cudaEventQuery(eit->second);
+                    if (q == cudaSuccess) {
+                        managed_adapter->mark_completed(eit->first >> 32, eit->first & 0xFFFFFFFFll);
+                        cudaEventDestroy(eit->second);
+                        eit = adapter_hook_events.erase(eit);
+                    } else if (q == cudaErrorNotReady) {
+                        ++eit;
+                    } else {
+                        (void)cudaGetLastError();
+                        managed_adapter->mark_completed(eit->first >> 32, eit->first & 0xFFFFFFFFll);
+                        cudaEventDestroy(eit->second);
+                        eit = adapter_hook_events.erase(eit);
+                    }
+                }
+            };
+            managed_adapter.emplace(*managed_store, adapter_hook);
             std::fprintf(stderr, "strata generate: STRATA_RAM_BUDGET_MIB=%llu: outside_owned=%llu pool_bytes=%llu store open\n",
                          (unsigned long long) budget_mib,
                          (unsigned long long) outside_owned,
@@ -8539,7 +8590,8 @@ int main(int argc, char** argv) {
         } else if (const char* sv = std::getenv("STRATA_IO_STATS"); sv != nullptr && std::atoi(sv) != 0) {
             src.set_io_stats(true);
         }
-        srcp = &src;
+        srcp = ram_budget_managed ? static_cast<strata::core::ExpertSource*>(&*managed_adapter)
+                                  : static_cast<strata::core::ExpertSource*>(&src);
     } else {
         arena_src.set_gguf(o.native_preset);   // plan v0.3 P6: a native pack may take its experts from shard 1
         // Under WDDM (Windows, WSL2), a multi-GPU run (a layer split, or remote experts) starts with at most 8 GiB of
@@ -25717,6 +25769,15 @@ int main(int argc, char** argv) {
     cudaFree(d_parts);
     cudaFree(sbuf);
     cudaFree(arena);
+    // Task 2 teardown (managed mode only): quiesce the device, then destroy
+    // every remaining hook event so no adapter borrower is left waiting on an
+    // event that will never complete.  Runs before the adapter/pool/store are
+    // torn down (adapter is declared after them, so it is destroyed first).
+    if (ram_budget_managed) {
+        (void)cudaDeviceSynchronize();
+        for (auto& kv : adapter_hook_events) cudaEventDestroy(kv.second);
+        adapter_hook_events.clear();
+    }
     return 0;
 }
 
