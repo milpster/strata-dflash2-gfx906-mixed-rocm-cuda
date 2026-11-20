@@ -50,8 +50,10 @@ constexpr uint64_t kPage = 4096;
 // ---- fixture ---------------------------------------------------------------
 // Deterministic nonuniform per-byte data keyed by global offset, so offset or
 // order corruption cannot hide behind a uniform pattern.
-// byte(p) = (p * 31 + 7) & 0xFF
-static uint8_t byte_at(uint64_t p) { return static_cast<uint8_t>((p * 31u + 7u) & 0xFFu); }
+// Mix higher address bits too: page-aligned regions must not repeat.
+static uint8_t byte_at(uint64_t p) {
+    return static_cast<uint8_t>((p * 31u) ^ (p >> 8) ^ (p >> 16) ^ 7u);
+}
 
 struct FixtureEntry {
     int64_t layer = 0;
@@ -196,9 +198,14 @@ int __wrap_munlock(const void*, size_t) { ++wrap::munlock_calls; return 0; }
 // File-scope state for the ram_pool metadata-fault bridge.
 static int s_meta_calls = 0;
 static int s_meta_throw_on = 0;
+static int s_cache_meta_calls = 0;
 static void bridge() {
     ++s_meta_calls;
     if (s_meta_calls == s_meta_throw_on) throw std::bad_alloc{};
+}
+static void cache_fault() {
+    ++s_cache_meta_calls;
+    throw std::bad_alloc{};
 }
 
 // ---- helpers ----------------------------------------------------------------
@@ -218,6 +225,8 @@ int main(int argc, char** argv) {
         return 2;
     }
     auto reader = file_reader(g_fixture_path);
+    check(byte_at(0) != byte_at(4096) && byte_at(4096) != byte_at(8192),
+          "fixture distinguishes page-aligned source offsets");
 
     // ---- 1. invalid keys/bytes leave out and cache unchanged ---------------
     {
@@ -468,6 +477,7 @@ int main(int argc, char** argv) {
         check(ec == std::make_error_code(std::errc::io_error), "short read -> io_error");
         check(!out.valid(), "short read: no entry published");
         check(cache.stats().entries == 0, "short read: cache empty");
+        check(pool.stats().reserved_live_bytes == 0, "short read: candidate fully released");
         out = PoolLease{};
     }
 
@@ -488,12 +498,11 @@ int main(int argc, char** argv) {
         s_meta_calls = 0;
         s_meta_throw_on = 1;
         ram_pool_set_metadata_fault(bridge);
-        PoolLease o;
-        ec = cache.acquire(0, 1, 128, reader, o);  // new key, pool_alloc metadata fault
+        ec = cache.acquire(0, 1, 128, reader, out);  // Preserve this populated output.
         ram_pool_set_metadata_fault(nullptr);
         check(ec == std::make_error_code(std::errc::not_enough_memory),
               "metadata fault -> not_enough_memory");
-        check(!o.valid(), "metadata fault: new-key output not populated");
+        check(region_matches(out.data(), 0, 64), "metadata fault: output bytes preserved");
         check(cache.stats().entries == entries_before, "metadata fault: no eviction");
         check(pool.stats().reserved_live_bytes == reserved_before,
               "metadata fault: pool reserved unchanged");
@@ -503,13 +512,18 @@ int main(int argc, char** argv) {
         // full coalesce once borrower released.
         s_meta_calls = 0;
         s_meta_throw_on = 1;
+        s_cache_meta_calls = 0;
         ram_pool_set_metadata_fault(bridge);
+        cache_set_pre_emplace_fault(cache_fault);
         cache.release(0, 0);
         check(s_meta_calls == 0, "release does not invoke metadata hook");
         cache.clear();
         check(s_meta_calls == 0, "clear does not invoke metadata hook");
-        ram_pool_set_metadata_fault(nullptr);
         out = PoolLease{};
+        check(s_meta_calls == 0 && s_cache_meta_calls == 0,
+              "release, clear and final borrower release allocate no metadata");
+        ram_pool_set_metadata_fault(nullptr);
+        cache_set_pre_emplace_fault(nullptr);
         check(cache.stats().entries == 0, "cache empty after clear");
         check(pool.stats().free_bytes == pool.stats().capacity_bytes,
               "full coalesce: free == capacity");
@@ -541,20 +555,42 @@ int main(int argc, char** argv) {
             ++reader_calls;
             return std::make_error_code(std::errc::io_error);  // never reached
         };
-        auto hook = []() { throw std::bad_alloc{}; };
-        cache_set_pre_emplace_fault(hook);
-        PoolLease o;
-        ec = cache.acquire(2, 3, 500, counting, o);  // NEW key -> pending fault
+        s_meta_calls = 0; s_meta_throw_on = 1; s_cache_meta_calls = 0;
+        ram_pool_set_metadata_fault(bridge);
+        cache_set_pre_emplace_fault(cache_fault);
+        ec = cache.acquire(2, 3, 500, counting, aout);  // NEW key -> pending fault.
         cache_set_pre_emplace_fault(nullptr);
+        ram_pool_set_metadata_fault(nullptr);
         check(ec == std::make_error_code(std::errc::not_enough_memory),
               "pre-emplace fault -> not_enough_memory");
         check(reader_calls == 0, "pre-emplace fault: reader not called");
-        check(!o.valid(), "pre-emplace fault: no new entry");
+        check(s_cache_meta_calls == 1 && s_meta_calls == 0,
+              "pending-node fault precedes all pool metadata preparation");
         check(cache.stats().entries == entries_before, "pre-emplace: no eviction");
         check(pool.stats().reserved_live_bytes == reserved_before,
               "pre-emplace: no pool allocation");
         check(aout.data() == ptr && aout.size() == sz, "pre-emplace: captured output preserved");
         aout = PoolLease{};
+    }
+
+    // A live borrower may prevent cache admission even after its cache ref drops.
+    {
+        Pool pool;
+        auto ec = make_pool(pool, kPage);
+        check(!ec, "create one-page pressure pool");
+        PoolExpertCache cache(pool);
+        PoolLease held, next;
+        ec = cache.acquire(0, 0, 64, reader, held);
+        check(!ec && held.valid(), "hold sole page through a borrower");
+        ec = cache.acquire(0, 1, 128, reader, next);
+        check(ec == std::errc::no_buffer_space && !next.valid(),
+              "borrower-held pressure refuses cache acquisition");
+        check(cache.stats().entries == 0 && region_matches(held.data(), 0, 64),
+              "eviction drops cache ownership without touching borrower bytes");
+        held = PoolLease{};
+        ec = cache.acquire(0, 1, 128, reader, next);
+        check(!ec && next.valid() && region_matches(next.data(), 4096, 128),
+              "cache admission succeeds after the final borrower releases");
     }
 
     // ---- 12. concurrency: 80/80 full nonuniform borrower data --------------

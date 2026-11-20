@@ -186,3 +186,51 @@ No runtime code changed after final tests. Next is a source-backed audit of
 expert readers, raw-pointer/async consumers and immutable backing I/O before
 implementing a pool-primary expert cache. This core acceptance grants no
 production boot, GPU run, promotion or whole-stack budget claim.
+
+## CPU expert-cache component accepted — 2026-11-20
+
+Initial cache 5a43e481fa and repair 47a40ae633 were not accepted as handed off.
+Parent reconciled transaction order at 847aeb5; d642f90007 tightened tests.
+Parent then made the last bounded test corrections: page-distinct fixture
+bytes, actual populated-output fault tests, both metadata hooks during final
+release, and borrower-held cache admission/refusal/retry. These tests exercise
+the pool capacity/metadata error distinction introduced in 71ad81a.
+
+Parent evidence root (raw logs and numeric status.txt):
+bench/ab-v0210/rpcprof/out/managed-ram-pool-20261120/cache/final-cpu/
+
+| Check | Exit / result |
+|---|---|
+| CPU configure/build, pool/cache/native-lock targets | 0 / 0 |
+| Combined targeted ctest | 0; 15/15, no skips; cache 132 assertions |
+| Real pool VmLck KiB | 0 / 64 / 64 / 64 / 0 through final borrower release |
+| Default-OFF configure/full Ninja target graph/CTest registration | all 0; all 3 pool/cache targets absent, zero corresponding tests |
+| ASan/UBSan configure/build/targeted ctest | all 0; 3/3 |
+
+Exact configure options are the CPU options above; default-OFF uses
+`-USTRATA_BUILD_RAM_POOL_TEST` to exercise the declared default, not a forced
+OFF value. Target build includes ram_pool_test, ram_pool_nonlinux_probe,
+pool_expert_cache_test, native_mlock_test and native_mlock_nonlinux_probe.
+
+```sh
+ctest --test-dir build-cpu-ram-pool -R 'ram_pool|native_mlock|pool_expert_cache' --timeout 15 -V
+ninja -C build-cpu-ram-pool-off -t targets all
+ctest --test-dir build-cpu-ram-pool-off -N -R 'ram_pool|pool_expert_cache'
+ctest --test-dir build-cpu-ram-pool-sanitized -R '^(ram_pool_test_mock|ram_pool_nonlinux_probe|pool_expert_cache_test)$' --timeout 30 -V
+```
+
+Cache mapping peak 262144 B (limit 1048576 B); final live mappings/bytes 0 and
+matching mmap/munmap counts. A held borrower survives cache+Pool destruction.
+Dropping the cache ref does not allow premature reuse; final borrower release
+allows whole-pool allocation at the same address. After overwrite, reload
+restores every fixture byte and the source file remains byte/length identical.
+Tight-cache pending metadata failure precedes pool preparation/eviction/read.
+Cache capacity pressure refuses with a held borrower and succeeds after its
+release. All 80 concurrent full-payload borrower checks pass.
+
+This accepts the CPU cache component only, not completed L2 or serving.
+Cache tests fake lock calls; the separate pool test proves real small locking.
+No native model layout/read path, GPU copy/fence, 52 GiB allocation, total-budget
+admission, speed claim or production change is established. Existing CMake
+FetchContent deprecation warning remains. Backend builds are not needed for
+this isolated CPU component; actual consumer binding still requires them.
