@@ -234,3 +234,51 @@ No native model layout/read path, GPU copy/fence, 52 GiB allocation, total-budge
 admission, speed claim or production change is established. Existing CMake
 FetchContent deprecation warning remains. Backend builds are not needed for
 this isolated CPU component; actual consumer binding still requires them.
+
+## Bounded immutable reader component accepted — 2026-11-20
+
+Reader 063afb0 was not accepted as handed off. Parent corrected alignment,
+syscall-count and non-Linux guards in 682e8ba. Test repair 4f9e071 has a real
+106-check raw log, but still overstated its skip/size-validation and second-
+window fault coverage. Parent corrected those checks without expanding scope.
+
+Initial parent build failed (exit 1): the test used nonexistent
+PoolLease::reserved_size(). Parent fixed that typo to size(), which already
+returns reserved bytes. Initial failure logs remain under reader/final-cpu/;
+all final evidence is under:
+bench/ab-v0210/rpcprof/out/managed-ram-pool-20261120/reader/final-cpu/recheck/
+
+| Final check | Result |
+|---|---|
+| Combined pool/cache/reader/native-lock build and targeted ctest | exit 0; 16/16, no skips |
+| ASan/UBSan build and selected pool/probe/cache/reader ctest | exit 0; 4/4 |
+| Reader compile with -U__linux__, -Wall -Wextra -Werror | exit 0; simulated guard compile only |
+| Default unset opt-in, full Ninja graph and CTest listing | all exit 0; all 4 pool/cache/reader targets absent; zero tests |
+| Real pool VmLck lifecycle, KiB | 0 / 64 / 64 / 64 / 0 |
+| Reader test | 103 assertions; 18 pread calls, zero flag/buffer/cap violations |
+| Reader pool/scratch/final mappings | 64 KiB / 4 KiB / zero; matched map/unmap |
+
+CPU configure options remain Release, tests ON, CUDA/HIP/SYCL OFF and
+STRATA_BUILD_RAM_POOL_TEST ON. The sanitizer build uses Debug and
+`-fsanitize=address,undefined -fno-omit-frame-pointer`. Exact final commands:
+
+```sh
+cmake --build build-cpu-ram-pool --target ram_pool_test ram_pool_nonlinux_probe pool_expert_cache_test bounded_direct_reader_test native_mlock_test native_mlock_nonlinux_probe --parallel 2
+ctest --test-dir build-cpu-ram-pool -R 'ram_pool|native_mlock|pool_expert_cache|bounded_direct_reader' --timeout 15 -V
+c++ -std=c++17 -Wall -Wextra -Werror -U__linux__ -I include -c src/platform/bounded_direct_reader.cpp -o build-cpu-ram-pool/bounded-reader-nonlinux.o
+ctest --test-dir build-cpu-ram-pool-sanitized -R '^(ram_pool_test_mock|ram_pool_nonlinux_probe|pool_expert_cache_test|bounded_direct_reader_test)$' --timeout 30 -V
+```
+
+Actual Linux O_DIRECT fixture reads cover unaligned multi-window slices and
+non-page-aligned EOF. Invalid input issues no I/O. A second-window EIO discards
+the partially filled cache candidate while preserving the populated output.
+Scratch stays reserved while a different owner overwrites released payload
+storage; cache reload restores every original byte. Fixture bytes and length
+remain identical. No buffered fallback or implicit workers exist in the reader.
+
+This accepts a small CPU reader/cache component only. Metadata/kernel/driver
+memory and filesystem behavior are not a whole-stack budget measurement.
+No actual model read, native-layout binding, GGUF role reader, GPU consumer,
+Windows/Mac build, full-sized pool, speed claim or production change occurred.
+The existing CMake FetchContent deprecation warning remains. Next bind the
+existing dynamic ExpertLayout to the reader/cache, then adapt real consumers.

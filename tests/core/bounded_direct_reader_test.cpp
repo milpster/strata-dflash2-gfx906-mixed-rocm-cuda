@@ -156,7 +156,6 @@ ssize_t __wrap_pread(int fd, void* buf, size_t count, off_t offset) {
     // second window failing mid-read).
     if (wrap::cur_mode == wrap::kEio2nd) {
         if (wrap::eio_window++ >= 1) { errno = EIO; return -1; }
-        wrap::cur_mode = wrap::kPass;  // first window succeeds via real pread
     }
     if (wrap::cur_mode == wrap::kEintrOnce && wrap::eintr_remaining-- > 0) {
         errno = EINTR; return -1;
@@ -231,9 +230,10 @@ int main(int argc, char** argv) {
     int probe_fd = ::open(g_fixture_path.c_str(), O_RDONLY | O_DIRECT);
     if (probe_fd < 0) {
         const int openerr = errno;
-        std::fprintf(stderr, "SKIP 77: O_DIRECT open unsupported on this fs (%s)\n",
-                     strerror(openerr));
-        return 77;
+        const bool unsupported = openerr == EINVAL || openerr == EOPNOTSUPP || openerr == ENOSYS;
+        std::fprintf(stderr, "%s: O_DIRECT probe open: %s\n",
+                     unsupported ? "SKIP 77" : "FAIL", strerror(openerr));
+        return unsupported ? 77 : 2;
     }
     const ssize_t probe_got = ::pread(probe_fd, scratch.data(), 4096, 0);
     const int probe_err = errno;
@@ -246,6 +246,9 @@ int main(int argc, char** argv) {
         return 77;
     }
     check(probe_got == 4096, "preflight pread returns full 4096 bytes");
+    if (probe_got != 4096) return 2;
+    check(std::memcmp(scratch.data(), g_full_data.data(), 4096) == 0,
+          "OS preflight delivers the expected bytes");
 
     BoundedDirectReader reader;
     ec = reader.open(g_fixture_path.c_str());
@@ -283,7 +286,7 @@ int main(int argc, char** argv) {
         check(!ec, "unaligned multi-window read 257/8000 (>scratch)");
         check(std::memcmp(dst.data(), g_full_data.data() + 257, 8000) == 0,
               "multi-window bytes correct");
-        check(wrap::pread_calls > before, "multi-window issues >=2 preads");
+        check(wrap::pread_calls == before + 3, "multi-window issues exactly 3 preads");
         check(wrap::violations == 0, "zero pread violations across multi-window");
     }
 
@@ -312,27 +315,33 @@ int main(int argc, char** argv) {
     expect_fail_no_io(reader, scratch, dst64, 64, 0, 64, 100,
                       "scratch cap 100 too small");
     {
-        // scratch 3000 >= alignment but NOT a multiple of alignment
+        // Greater than alignment, but not a multiple. Refuse before dereference.
         uint8_t dst64b[64];
         std::memset(dst64b, 0xAA, 64);
         std::memset(scratch.data(), 0xBB, scratch.size());
         const auto before = wrap::pread_calls;
-        ec = reader.read_exact(0, 64, dst64b, (uint8_t*)scratch.data(), 3000);
-        check(static_cast<bool>(ec), "scratch 3000 not multiple of alignment");
-        check(wrap::pread_calls == before, "scratch 3000 no pread");
-        check(dst_untouched(dst64b, 64), "scratch 3000 dst untouched");
-        check(scratch_untouched(scratch), "scratch 3000 scratch untouched");
+        ec = reader.read_exact(0, 64, dst64b, (uint8_t*)scratch.data(), 4097);
+        check(static_cast<bool>(ec), "scratch 4097 not multiple of alignment");
+        check(wrap::pread_calls == before, "scratch 4097 no pread");
+        check(dst_untouched(dst64b, 64), "scratch 4097 dst untouched");
+        check(scratch_untouched(scratch), "scratch 4097 scratch untouched");
+        ec = reader.read_exact(0, 64, dst64b, (uint8_t*)scratch.data() + 1, 4096);
+        check(ec && wrap::pread_calls == before && dst_untouched(dst64b, 64) && scratch_untouched(scratch),
+              "misaligned scratch refuses before touching either buffer");
     }
     {
         uint8_t* s = (uint8_t*)scratch.data();
-        std::memset(s, 0xAA, 64);
+        std::memset(s, 0xAA, scratch.size());
         const auto before = wrap::pread_calls;
         ec = reader.read_exact(0, 64, s, s, scratch.size());
         check(static_cast<bool>(ec), "dst/scratch overlap");
         check(wrap::pread_calls == before, "overlap no pread");
+        check(dst_untouched(s, scratch.size()), "overlap buffer unchanged");
     }
     // null dst / null scratch
     {
+        std::memset(dst64, 0xAA, sizeof dst64);
+        std::memset(scratch.data(), 0xBB, scratch.size());
         const auto before = wrap::pread_calls;
         ec = reader.read_exact(0, 64, nullptr,
                                (uint8_t*)scratch.data(), scratch.size());
@@ -341,6 +350,8 @@ int main(int argc, char** argv) {
         ec = reader.read_exact(0, 64, dst64, nullptr, scratch.size());
         check(static_cast<bool>(ec), "null scratch fails");
         check(wrap::pread_calls == before, "null scratch no pread");
+        check(dst_untouched(dst64, sizeof dst64) && scratch_untouched(scratch),
+              "null-buffer refusals leave available buffers unchanged");
     }
     // closed reader
     {
@@ -350,6 +361,8 @@ int main(int argc, char** argv) {
                                (uint8_t*)scratch.data(), scratch.size());
         check(static_cast<bool>(ec), "closed reader fails");
         check(wrap::pread_calls == before, "closed reader no pread");
+        check(dst_untouched(dst64, sizeof dst64) && scratch_untouched(scratch),
+              "closed reader leaves buffers unchanged");
         ec = reader.open(g_fixture_path.c_str());
         check(!ec, "reopen after close");
     }
@@ -418,7 +431,7 @@ int main(int argc, char** argv) {
         for (const auto& en : entries) {
             if (en.layer == l && en.expert == e) {
                 // callback MUST validate requested bytes == entry.bytes
-                check(b == en.bytes, "cache_cb validates entry bytes");
+                if (b != en.bytes) return std::make_error_code(std::errc::invalid_argument);
                 return reader.read_exact(en.offset, en.bytes, d,
                                          (uint8_t*)scratch.data(),
                                          scratch.size());
@@ -434,6 +447,12 @@ int main(int argc, char** argv) {
         auto r = [&](int64_t l, int64_t e, uint8_t* d, uint64_t b)
                          -> std::error_code { ++reads; return cache_cb(l, e, d, b); };
         PoolLease out;
+        const int before_bad_size = wrap::pread_calls;
+        const auto reserved = pool.stats().reserved_live_bytes;
+        ec = cache.acquire(0, 0, 64, cache_cb, out);
+        check(ec == std::errc::invalid_argument && !out.valid() && cache.stats().entries == 0 &&
+              pool.stats().reserved_live_bytes == reserved && wrap::pread_calls == before_bad_size,
+              "callback refuses wrong blob size without I/O or publication");
         ec = cache.acquire(0, 0, 500, r, out);
         check(!ec && out.valid(), "cache miss acquires (0,0)");
         check(reads == 1, "miss reads once");
@@ -448,7 +467,7 @@ int main(int argc, char** argv) {
     }
 
     // ---- T11: same-pool reuse; borrower blocks usable-capacity alloc ------
-    // usable capacity = pool.capacity() - scratch.reserved_size()
+    // PoolLease::size() is the page-reserved size, not the requested size.
     {
         const uint64_t usable = pool.capacity() - scratch.size();
         PoolExpertCache cache(pool);
@@ -456,7 +475,6 @@ int main(int argc, char** argv) {
         ec = cache.acquire(0, 1, 128, cache_cb, borrower);
         check(!ec && borrower.valid(), "borrower (0,1)");
         const void* borrower_ptr = borrower.data();
-        const uint64_t borrower_sz = borrower.size();
 
         // live borrower: usable-capacity owner alloc refused
         PoolLease full;
@@ -515,28 +533,20 @@ int main(int argc, char** argv) {
         check(pool.stats().reserved_live_bytes == reserved_before,
               "short miss: candidate pool bytes released");
 
-        // EIO into the SAME populated out (fresh cache so candidate exists)
-        cache.clear();
-        PoolLease out2;
-        ec = cache.acquire(0, 0, 500, cache_cb, out2);
-        check(!ec && out2.valid(), "warm (0,0) populated again");
-        const void* ptr2 = out2.data();
-        const uint64_t sz2 = out2.size();
-        std::vector<uint8_t> orig2(sz2);
-        std::memcpy(orig2.data(), out2.data(), sz2);
-        wrap::cur_mode = wrap::kEio;
-        ec = cache.acquire(1, 0, 808, cache_cb, out2);
+        // First window actually arrives; EIO on the second must discard the candidate.
+        const int before_eio = wrap::pread_calls;
+        wrap::eio_window = 0;
+        wrap::cur_mode = wrap::kEio2nd;
+        ec = cache.acquire(0, 2, 8000, cache_cb, out);
         wrap::cur_mode = wrap::kPass;
-        check(static_cast<bool>(ec), "EIO cache miss -> error");
-        // populated out is preserved (still valid, same pointer+size+bytes)
-        check(out2.valid(), "EIO miss: out still valid (preserved)");
-        check(out2.data() == ptr2 && out2.size() == sz2,
-              "EIO miss: out pointer+size preserved");
-        check(std::memcmp(out2.data(), orig2.data(), sz2) == 0,
-              "EIO miss: out ALL bytes preserved");
-        check(pool.stats().reserved_live_bytes == reserved_before + 4096,
-              "EIO miss: candidate freed, back to scratch+first payload");
-        out2 = PoolLease{};
+        check(ec == std::errc::io_error && wrap::eio_window == 2 && wrap::pread_calls == before_eio + 2,
+              "EIO after first delivered window stops on the second");
+        check(out.data() == ptr && out.size() == sz,
+               "EIO miss: out pointer+size preserved");
+        check(std::memcmp(out.data(), orig.data(), sz) == 0,
+               "EIO miss: out ALL bytes preserved");
+        check(pool.stats().reserved_live_bytes == reserved_before && cache.stats().entries == entries_before,
+              "EIO miss: partially filled candidate freed and never published");
     }
 
     // ---- fixture immutable (bytes + length) + mapping limits ----------------
@@ -558,4 +568,3 @@ int main(int argc, char** argv) {
                  checks, failures);
     return failures == 0 ? 0 : 1;
 }
-
