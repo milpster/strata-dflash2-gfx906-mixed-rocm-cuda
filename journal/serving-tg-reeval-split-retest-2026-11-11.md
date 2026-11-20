@@ -4930,3 +4930,24 @@ double residency, actual host-KV ownership, whole-stack scope including
 helper, and a real end-to-end first pass with runtime storage reuse. A
 partial-lock alternative must be labeled honestly, not called the requested
 reusable pool. No engine code has been changed and production stays down.
+
+## 2026-11-20 — RAM-pool foundation implementation begins, CPU only
+
+Revised oracle design drops the duplicate full-file lock: immutable unlocked
+backing plus a pool-primary expert cache. Parent verified the configured KV
+host allocation at layer.cpp:585-620 and its mapped-device use :961-995. The
+design direction is accepted with explicit parent conditions in the report:
+direct-reader fallbacks need bounding, raw expert pointers need lifetime
+ownership, free pool chunks do not reduce physical locked RAM, and helper
+scope/headroom admission must precede any whole-stack guarantee. Stale S4
+descriptions do not defer primary expert storage beyond the first completed
+integration pass.
+
+One remote Nemotron fixer, ses_e0652e163ffelNFNcm3rJFZLkE, now owns L1 on
+helper-ipc-diet: CPU-only anonymous locked pool, checked byte arithmetic,
+coalescing suballocation, shared leases preventing early reuse/unmap, focused
+CPU tests and incremental commits. No expert/KV wiring, env/CLI knob, default
+change, GPU dependency, service or benchmark in L1. Parent will read source
+and decisive test output, then obtain an independent oracle review before
+the next integration lane. The design report and parent state are separate
+from the fixer's engine-worktree write scope. Production stays down.
