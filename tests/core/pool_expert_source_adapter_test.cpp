@@ -331,7 +331,7 @@ int main(int argc, char** argv) {
         adapter.release(0, 0);
     }
 
-    // ============ 6. note-deferral: fake completes (dropped on sweep) ============
+    // ============ 6. note-deferral: event completes (recycled on sweep, no release) ============
     {
         Pool pool;
         auto ec = make_pool(pool, 256ull << 10);
@@ -345,18 +345,58 @@ int main(int argc, char** argv) {
         g_hook = HookLog{0, false};
         PoolExpertSourceAdapter adapter(store, fake_hook);
 
-        const uint8_t* p = adapter.blob_stable(0, 0);
+        const uint8_t* p = adapter.blob_stable(0, 0);   // count 1, never released
         check(p != nullptr, "6: borrow (0,0)");
+        check(adapter.borrowed(0, 0), "6: borrower table has (0,0)");
 
-        adapter.note_async_read(p, nullptr);  // mark pending, hook called
+        adapter.note_async_read(p, nullptr);            // pending, hook called, retained
         check(g_hook.noted == 1, "6: hook called once");
         check(adapter.blob_stable(0, 0) == p, "6: borrower still there right after note");
 
-        // Simulate the async event completing, then sweep (via release of a
-        // different key or another note_async_read) drops the completed borrower.
+        // The event lands.  A sweep triggered by an UNRELATED note (no release
+        // of (0,0) anywhere - the fill pattern never calls release) must
+        // recycle the completed borrower despite count > 0: legacy recycles
+        // the stage buffer once the event after the LAST async copy completes.
         adapter.mark_completed(0, 0);
-        adapter.release(0, 1);  // triggers sweep; drops completed (0,0)
-        check(adapter.blob_stable(0, 0) != nullptr, "6: re-borrow after completed sweep");
+        const uint8_t* q = adapter.blob_stable(0, 1);
+        check(q != nullptr, "6: borrow (0,1)");
+        adapter.note_async_read(q, nullptr);            // sweep runs inside
+        check(!adapter.borrowed(0, 0), "6: completed borrower recycled without release");
+        check(adapter.borrowed(0, 1), "6: pending (0,1) survives the sweep");
+    }
+
+    // ============ 7. re-arm: a later note supersedes a completed-but-unswept event ============
+    {
+        Pool pool;
+        auto ec = make_pool(pool, 256ull << 10);
+        check(!ec, "7: create pool");
+        ExpertLayout layout;
+        build_layout(layout);
+        PoolExpertStore store(pool);
+        ec = store.open(g_fixture_path.c_str(), layout);
+        check(!ec, "7: open store");
+
+        g_hook = HookLog{0, false};
+        PoolExpertSourceAdapter adapter(store, fake_hook);
+
+        const uint8_t* r = adapter.blob_stable(1, 0);
+        check(r != nullptr, "7: borrow (1,0)");
+        adapter.note_async_read(r, nullptr);
+        adapter.mark_completed(1, 0);                   // completed but NOT yet swept
+        adapter.note_async_read(r, nullptr);            // re-arm: a newer copy is in flight
+        check(adapter.borrowed(1, 0), "7: re-armed borrower alive right after re-note");
+
+        const uint8_t* s = adapter.blob_stable(1, 1);   // trigger a sweep
+        check(s != nullptr, "7: borrow (1,1)");
+        adapter.note_async_read(s, nullptr);
+        check(adapter.borrowed(1, 0), "7: re-armed borrower survives sweep (new event pending)");
+        check(adapter.blob_stable(1, 0) == r, "7: same pointer while re-armed");
+
+        adapter.mark_completed(1, 0);                   // the newest event lands
+        const uint8_t* t = adapter.blob_stable(1, 2);
+        check(t != nullptr, "7: borrow (1,2)");
+        adapter.note_async_read(t, nullptr);            // sweep
+        check(!adapter.borrowed(1, 0), "7: drops after the final completion");
     }
 
     std::fprintf(stderr, "pool_expert_source_adapter_test: %d checks, %d FAILURES\n",

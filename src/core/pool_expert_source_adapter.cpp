@@ -46,7 +46,11 @@ void PoolExpertSourceAdapter::note_async_read(const uint8_t* blob, void* stream)
     }
     if (found_key < 0) return;
     auto& b = borrowers_[found_key];
+    // A newer note supersedes any prior event: the legacy stage buffer recycles
+    // on the event recorded after the LAST async copy out of it
+    // (expert_source.cpp:1255).  Re-arm before recording.
     b.pending_event = true;
+    b.completed = false;
     // Record via hook (if set); ALWAYS retain - never drop at issue time.
     if (hook_) hook_(found_key >> 32, found_key & 0xFFFFFFFFll, stream);
     sweep_completed_locked();
@@ -90,14 +94,27 @@ void PoolExpertSourceAdapter::drop_all_locked() {
 }
 
 void PoolExpertSourceAdapter::sweep_completed_locked() {
+    // A completed borrower's last issued copy has landed: recycle it NOW, even
+    // at count > 0.  The legacy contract recycles the stage buffer once the
+    // event recorded after the LAST async copy completes, and callers re-borrow
+    // for each further use (expert_source.cpp:1255).  Requiring count==0 would
+    // pin every filled expert until teardown — the fill pattern never calls
+    // release().  Non-noted borrowers (long synchronous retention) are never
+    // swept: they drop only at release()/teardown.
     for (auto it = borrowers_.begin(); it != borrowers_.end();) {
-        if (it->second.completed && it->second.count == 0) {
+        if (it->second.completed) {
             it->second.lease = PoolLease{};
             it = borrowers_.erase(it);
         } else {
             ++it;
         }
     }
+}
+
+bool PoolExpertSourceAdapter::borrowed(int64_t layer, int64_t expert) const {
+    std::lock_guard<std::mutex> lk(mu_);
+    const auto it = borrowers_.find(key_of(layer, expert));
+    return it != borrowers_.end() && it->second.count > 0;
 }
 
 }  // namespace strata::core

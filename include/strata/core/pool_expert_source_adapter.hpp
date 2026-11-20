@@ -55,7 +55,14 @@ public:
     /// instead).  Marks the borrower so the next sweep drops it.
     void mark_completed(int64_t layer, int64_t expert);
 
-    ~PoolExpertSourceAdapter() override { drop_all_locked(); }
+    /// Inspection hook (tests/diagnostics): true while a borrower entry for
+    /// (layer, expert) is live in the table.  Not used by engine code.
+    bool borrowed(int64_t layer, int64_t expert) const;
+
+    ~PoolExpertSourceAdapter() override {
+        std::lock_guard<std::mutex> lk(mu_);
+        drop_all_locked();
+    }
 
     /// Borrow (acquire + refcount) and return lease.data() (stable pointer).
     const uint8_t* blob_stable(int64_t layer, int64_t expert) override;
