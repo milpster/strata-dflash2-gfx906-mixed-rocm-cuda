@@ -4701,3 +4701,16 @@ Runtime locking remains blocked on expert/PLE mapping coverage and total-fit pro
   locked — the structural un-squeezeability stands on its own: holder maxed its 49 GiB
   cap, box floor 7.5 GiB, kernel reclaimed page cache instead). Promotion should rest on
   mechanics + speed + structure, NOT on a pressure-depth claim this run cannot support.
+
+## 2026-11-20 — operator directive: speeds from promote-park window INVALIDATED
+
+While the combined promote+park window (ses_e073b1ec) was mid Phase B, the operator
+invalidated ALL speed/timing observations from arena54-promote-park-20261120.
+Marker: SPEEDS-INVALIDATED.md in that dir. Reasons: operational window not a
+measurement leg (no baseline arm); wall deviates from trial (56G/4G boot,
+operator-ordered 55G/10G pending); park turns interleaved. Mechanics evidence
+(gates, mlock span, park-recover) remains valid. Trial attempt-3 speeds
+(T0 30.3 / T1 30.45, confound-flagged) unaffected. Attribution -> A/B arm.
+Live scope confirmed at invalidation time: memory.max=60129542144 (56G),
+min=54760833024, swap.max=4294967296, current~48.5G — i.e. gate (e) passed
+against the REAL 56G value; the brief wrong-byte risk is moot.
