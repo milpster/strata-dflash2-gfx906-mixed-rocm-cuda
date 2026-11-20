@@ -5204,3 +5204,29 @@ retention and actual expert-to-other-owner reuse of the same pool storage.
 This intermediate commit is infrastructure, not completed L2: production
 reader bounds, actual consumer binding and primary-store activation still
 follow. No runtime knob, extra arena, GPU work or production change.
+
+## 2026-11-20 — initial cache commit rejected; transaction/tests under repair
+
+Parent read all new source/test files and CMake changes in 5a43e481fa.
+The cache incorrectly rejects zero-based layer/expert zero, accepts negative
+keys, and evicts on every allocator error. Its final push_front can allocate
+after reading, despite the comment claiming non-allocating splice. Reader
+copying and hit-output replacement also miss the scoped transaction contract.
+
+Test assertions include unconditional true expressions; the supposed surviving
+borrower is destroyed before the cache, and byte checks cover only prefixes.
+The claimed generated cache log directory is absent. These are source/artifact
+findings, not reproduced serving failures. The reported green summary is not
+accepted as proof; no production/GPU run occurred.
+
+Parent made a small allocator error distinction in 71ad81a: no fitting range
+returns no_buffer_space, while metadata failures remain not_enough_memory.
+This lets the cache evict only for actual capacity/fragmentation refusal.
+The existing fragmentation assertion now checks that distinction. Final CPU
+revalidation is pending after the cache writer reconciles its files.
+
+Same sole remote Nemotron fixer owns one bounded cache-only repair: zero-based
+keys, temporary-node preparation before mutation, splice publication, exact
+failure/output checks, genuinely surviving borrowers, full-byte immutable
+fixture/reuse evidence, metadata fault injection and raw numeric-status logs.
+No source-consumer binding or whole-stack budget enforcement has landed.
