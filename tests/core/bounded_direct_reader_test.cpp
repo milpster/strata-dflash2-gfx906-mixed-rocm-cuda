@@ -4,9 +4,10 @@
 //
 // Real mmap/munmap/mlock/munlock via link-time --wrap; mlock/munlock faked.
 // O_DIRECT pread is wrapped (__wrap_pread) to inject EINTR/short/EIO and to
-// record fd O_DIRECT, buf==scratch, len<=cap, and syscall count. Fixture under
-// the build dir (unique name, never a production model); total live mapping
-// <= 1 MiB; source fixture never mutated; bytes+length compared, not checksums.
+// record fd O_DIRECT, buf==scratch, count<=cap&aligned on EVERY call.
+// Fixture under build dir (unique name, never a production model); total live
+// mapping <= 1 MiB; source fixture never mutated; bytes+length compared,
+// not checksums. Skip 77 ONLY when the real filesystem lacks O_DIRECT.
 //
 // Usage: bounded_direct_reader_test <build_dir>
 
@@ -68,6 +69,7 @@ static bool build_fixture(const std::string& dir) {
     return write_file(g_fixture_path, g_full_data);
 }
 
+// Exact bytes + length; also fails on fread error / fclose failure.
 static bool file_contents_equal(const std::string& path,
                                 const std::string& expected) {
     std::FILE* f = std::fopen(path.c_str(), "rb");
@@ -76,7 +78,8 @@ static bool file_contents_equal(const std::string& path,
     char buf[4096];
     size_t n;
     while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) got.append(buf, n);
-    std::fclose(f);
+    if (std::ferror(f)) { std::fclose(f); return false; }
+    if (std::fclose(f) != 0) return false;
     return got == expected;
 }
 
@@ -87,14 +90,18 @@ static std::vector<std::pair<void*, uint64_t>> live_maps;
 static uint64_t total_live_bytes = 0, peak_live_bytes = 0;
 constexpr uint64_t kMappingLimit = 1ull << 20;
 
-int pread_calls = 0, last_fd = -1;
+int pread_calls = 0;
+int violations = 0;   // fcntl<0, !O_DIRECT, buf!=scratch, count>cap, count!aligned
+void* scratch_buf = nullptr;
 void* last_buf = nullptr;
 size_t last_len = 0;
-int odirect_seen = 0;
-enum Mode { kPass, kEintrOnce, kShort, kZero, kEio };
+int last_fd = -1;
+uint64_t scratch_cap = 0;
+enum Mode { kPass, kEintrOnce, kShort, kZero, kEio, kEio2nd };
 Mode cur_mode = kPass;
 int eintr_remaining = 1;
 ssize_t short_return = 0;
+int eio_window = 0;   // kEio2nd: fail on the 2nd covering window of a read
 }  // namespace wrap
 
 static void track_mmap(void* p, uint64_t len) {
@@ -139,8 +146,18 @@ int __wrap_munlock(const void*, size_t) { ++wrap::munlock_calls; return 0; }
 
 ssize_t __wrap_pread(int fd, void* buf, size_t count, off_t offset) {
     ++wrap::pread_calls;
+    const int flags = ::fcntl(fd, F_GETFL);
+    if (flags < 0 || (flags & O_DIRECT) == 0) ++wrap::violations;
+    if (buf != wrap::scratch_buf) ++wrap::violations;
+    if (count > wrap::scratch_cap || (count % 4096) != 0) ++wrap::violations;
     wrap::last_fd = fd; wrap::last_buf = buf; wrap::last_len = count;
-    wrap::odirect_seen = (::fcntl(fd, F_GETFL) & O_DIRECT) ? 1 : 0;
+
+    // kEio2nd: fail the 2nd covering window (simulate first chunk copied,
+    // second window failing mid-read).
+    if (wrap::cur_mode == wrap::kEio2nd) {
+        if (wrap::eio_window++ >= 1) { errno = EIO; return -1; }
+        wrap::cur_mode = wrap::kPass;  // first window succeeds via real pread
+    }
     if (wrap::cur_mode == wrap::kEintrOnce && wrap::eintr_remaining-- > 0) {
         errno = EINTR; return -1;
     }
@@ -163,18 +180,27 @@ static bool dst_untouched(uint8_t* dst, uint64_t bytes) {
     for (uint64_t i = 0; i < bytes; ++i) if (dst[i] != 0xAA) return false;
     return true;
 }
+static bool scratch_untouched(PoolLease& scratch) {
+    uint8_t* s = (uint8_t*)scratch.data();
+    for (uint64_t i = 0; i < scratch.size(); ++i) if (s[i] != 0xBB) return false;
+    return true;
+}
 
 static void expect_fail_no_io(BoundedDirectReader& r, PoolLease& scratch,
-                              uint64_t off, uint64_t bytes, const char* label) {
-    uint8_t dst[64];
-    std::memset(dst, 0xAA, sizeof dst);
+                              uint8_t* dst, uint64_t dst_bytes,
+                              uint64_t off, uint64_t bytes,
+                              uint64_t scratch_bytes, const char* label) {
+    std::memset(dst, 0xAA, dst_bytes);
     std::memset(scratch.data(), 0xBB, scratch.size());
     const auto before = wrap::pread_calls;
+    const auto before_viol = wrap::violations;
     std::error_code ec = r.read_exact(off, bytes, dst,
-                                      (uint8_t*)scratch.data(), scratch.size());
+                                      (uint8_t*)scratch.data(), scratch_bytes);
     check(static_cast<bool>(ec), label);
-    check(wrap::pread_calls == before, label);
-    check(dst_untouched(dst, sizeof dst), label);
+    check(wrap::pread_calls == before, (std::string(label) + " no pread issued").c_str());
+    check(wrap::violations == before_viol, (std::string(label) + " no pread violations").c_str());
+    check(dst_untouched(dst, dst_bytes), (std::string(label) + " dst untouched").c_str());
+    check(scratch_untouched(scratch), (std::string(label) + " scratch untouched").c_str());
 }
 
 }  // namespace
@@ -185,34 +211,41 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "FAIL: cannot write fixture\n"); return 2;
     }
 
-    // ---- preflight: bare OS O_DIRECT using the same aligned scratch ---------
-    int probe_fd = ::open(g_fixture_path.c_str(), O_RDONLY | O_DIRECT);
-    if (probe_fd < 0) {
-        std::fprintf(stderr, "SKIP 77: O_DIRECT open unsupported on this fs: %s\n",
-                     strerror(errno));
-        return 77;
-    }
-    uint8_t* probe_buf = nullptr;
-    if (::posix_memalign((void**)&probe_buf, 4096, 4096) != 0) {
-        ::close(probe_fd); return 2;
-    }
-    const ssize_t probe_got = ::pread(probe_fd, probe_buf, 4096, 0);
-    const int probe_err = errno;
-    ::close(probe_fd);
-    std::free(probe_buf);
-    if (probe_got < 0 && probe_err == EINVAL) {
-        std::fprintf(stderr, "SKIP 77: O_DIRECT pread unsupported on this fs\n");
-        return 77;
-    }
-
-    // ---- pool + aligned 4 KiB scratch (reservation visible in Pool.stats) ----
+    // ---- pool + aligned 4 KiB scratch FIRST (setup must succeed or stop) ----
     Pool pool;
     std::error_code ec = make_pool(pool, 64ull << 10);
     check(!ec, "create 64KiB pool");
+    if (ec) return 2;
     PoolLease scratch;
     ec = pool.pool_alloc(4096, 4096, scratch);
     check(!ec && scratch.valid() && scratch.size() == 4096, "alloc 4KiB scratch");
     check(pool.stats().reserved_live_bytes == 4096, "scratch reservation visible");
+    if (!ec && scratch.valid()) {
+        wrap::scratch_buf = scratch.data();
+        wrap::scratch_cap = scratch.size();
+    } else {
+        return 2;
+    }
+
+    // ---- preflight: bare OS O_DIRECT using THAT pool scratch -----------------
+    int probe_fd = ::open(g_fixture_path.c_str(), O_RDONLY | O_DIRECT);
+    if (probe_fd < 0) {
+        const int openerr = errno;
+        std::fprintf(stderr, "SKIP 77: O_DIRECT open unsupported on this fs (%s)\n",
+                     strerror(openerr));
+        return 77;
+    }
+    const ssize_t probe_got = ::pread(probe_fd, scratch.data(), 4096, 0);
+    const int probe_err = errno;
+    ::close(probe_fd);
+    // EINVAL/EOPNOTSUPP/ENOSYS => real unsupported -> skip 77. Anything else
+    // (EIO/permission/missing) is a test failure, not a silent continue.
+    if (probe_got < 0 &&
+        (probe_err == EINVAL || probe_err == EOPNOTSUPP || probe_err == ENOSYS)) {
+        std::fprintf(stderr, "SKIP 77: O_DIRECT pread unsupported on this fs\n");
+        return 77;
+    }
+    check(probe_got == 4096, "preflight pread returns full 4096 bytes");
 
     BoundedDirectReader reader;
     ec = reader.open(g_fixture_path.c_str());
@@ -221,63 +254,74 @@ int main(int argc, char** argv) {
     check(reader.size() == 9000, "reader size 9000");
     check(reader.alignment() == 4096, "alignment 4096");
 
-    // ---- S2: unaligned offset+len within one page ---------------------------
+    // ---- S1: unaligned offset+len within one page ---------------------------
     {
         uint8_t dst[500];
         std::memset(dst, 0xAA, sizeof dst);
         std::memset(scratch.data(), 0xBB, scratch.size());
         wrap::cur_mode = wrap::kPass;
+        const auto before = wrap::pread_calls;
         ec = reader.read_exact(1000, 500, dst,
                                (uint8_t*)scratch.data(), scratch.size());
         check(!ec, "unaligned read 1000/500");
         check(std::memcmp(dst, g_full_data.data() + 1000, 500) == 0,
               "unaligned bytes correct");
-        check(wrap::odirect_seen == 1, "pread fd has O_DIRECT");
+        check(wrap::pread_calls == before + 1, "exactly one pread");
         check(wrap::last_buf == scratch.data() && wrap::last_len <= scratch.size(),
               "pread buf==scratch len<=cap");
+        check(wrap::violations == 0, "pread fd has O_DIRECT + aligned count");
     }
 
-    // ---- S3: multi-window blob larger than scratch --------------------------
+    // ---- S2: true unaligned multi-window offset257/len8000 > scratch -------
     {
         std::vector<uint8_t> dst(8000);
         std::memset(dst.data(), 0xAA, dst.size());
         wrap::cur_mode = wrap::kPass;
-        ec = reader.read_exact(0, 8000, dst.data(),
+        const auto before = wrap::pread_calls;
+        ec = reader.read_exact(257, 8000, dst.data(),
                                (uint8_t*)scratch.data(), scratch.size());
-        check(!ec, "multi-window read 0/8000 (>scratch)");
-        check(std::memcmp(dst.data(), g_full_data.data(), 8000) == 0,
+        check(!ec, "unaligned multi-window read 257/8000 (>scratch)");
+        check(std::memcmp(dst.data(), g_full_data.data() + 257, 8000) == 0,
               "multi-window bytes correct");
+        check(wrap::pread_calls > before, "multi-window issues >=2 preads");
+        check(wrap::violations == 0, "zero pread violations across multi-window");
     }
 
-    // ---- S4: non-page-aligned EOF exact success -----------------------------
+    // ---- S3: non-page-aligned EOF exact success -----------------------------
     {
         uint8_t dst[808];
         std::memset(dst, 0xAA, sizeof dst);
         wrap::cur_mode = wrap::kPass;
+        const auto before = wrap::pread_calls;
         ec = reader.read_exact(8192, 808, dst,
                                (uint8_t*)scratch.data(), scratch.size());
         check(!ec, "non-page-aligned EOF read 8192/808");
         check(std::memcmp(dst, g_full_data.data() + 8192, 808) == 0,
               "EOF bytes correct");
+        check(wrap::pread_calls == before + 1, "EOF read exactly one pread");
     }
 
-    // ---- S5: validation failures BEFORE I/O, output unchanged ---------------
-    expect_fail_no_io(reader, scratch, 8500, 600, "past end of file");
-    expect_fail_no_io(reader, scratch, UINT64_MAX, 1, "offset overflow");
-    expect_fail_no_io(reader, scratch, 0, 0, "zero bytes");
+    // ---- S4: validation failures BEFORE I/O; dst AND scratch unchanged ------
+    uint8_t dst64[64];
+    expect_fail_no_io(reader, scratch, dst64, 64, 8500, 600, scratch.size(),
+                      "past end of file");
+    expect_fail_no_io(reader, scratch, dst64, 64, UINT64_MAX, 1, scratch.size(),
+                      "offset overflow");
+    expect_fail_no_io(reader, scratch, dst64, 64, 0, 0, scratch.size(),
+                      "zero bytes");
+    expect_fail_no_io(reader, scratch, dst64, 64, 0, 64, 100,
+                      "scratch cap 100 too small");
     {
-        uint8_t dst[64]; std::memset(dst, 0xAA, 64);
+        // scratch 3000 >= alignment but NOT a multiple of alignment
+        uint8_t dst64b[64];
+        std::memset(dst64b, 0xAA, 64);
+        std::memset(scratch.data(), 0xBB, scratch.size());
         const auto before = wrap::pread_calls;
-        ec = reader.read_exact(0, 64, dst, (uint8_t*)scratch.data(), 100);
-        check(static_cast<bool>(ec), "scratch too small");
-        check(wrap::pread_calls == before, "scratch too small no pread");
-        check(dst_untouched(dst, 64), "scratch too small dst untouched");
-    }
-    {
-        uint8_t dst[64]; std::memset(dst, 0xAA, 64);
-        ec = reader.read_exact(0, 64, dst, (uint8_t*)scratch.data(), 3000);
-        check(static_cast<bool>(ec), "scratch not multiple of alignment");
-        check(dst_untouched(dst, 64), "scratch not multiple dst untouched");
+        ec = reader.read_exact(0, 64, dst64b, (uint8_t*)scratch.data(), 3000);
+        check(static_cast<bool>(ec), "scratch 3000 not multiple of alignment");
+        check(wrap::pread_calls == before, "scratch 3000 no pread");
+        check(dst_untouched(dst64b, 64), "scratch 3000 dst untouched");
+        check(scratch_untouched(scratch), "scratch 3000 scratch untouched");
     }
     {
         uint8_t* s = (uint8_t*)scratch.data();
@@ -287,8 +331,30 @@ int main(int argc, char** argv) {
         check(static_cast<bool>(ec), "dst/scratch overlap");
         check(wrap::pread_calls == before, "overlap no pread");
     }
+    // null dst / null scratch
+    {
+        const auto before = wrap::pread_calls;
+        ec = reader.read_exact(0, 64, nullptr,
+                               (uint8_t*)scratch.data(), scratch.size());
+        check(static_cast<bool>(ec), "null dst fails");
+        check(wrap::pread_calls == before, "null dst no pread");
+        ec = reader.read_exact(0, 64, dst64, nullptr, scratch.size());
+        check(static_cast<bool>(ec), "null scratch fails");
+        check(wrap::pread_calls == before, "null scratch no pread");
+    }
+    // closed reader
+    {
+        reader.close();
+        const auto before = wrap::pread_calls;
+        ec = reader.read_exact(0, 64, dst64,
+                               (uint8_t*)scratch.data(), scratch.size());
+        check(static_cast<bool>(ec), "closed reader fails");
+        check(wrap::pread_calls == before, "closed reader no pread");
+        ec = reader.open(g_fixture_path.c_str());
+        check(!ec, "reopen after close");
+    }
 
-    // ---- S6: missing path / directory preserve old reader -------------------
+    // ---- S5: missing path / directory preserve old reader -------------------
     {
         const bool was_open = reader.is_open();
         const uint64_t was_size = reader.size();
@@ -296,10 +362,9 @@ int main(int argc, char** argv) {
         check(static_cast<bool>(ec), "missing path open fails");
         check(reader.is_open() == was_open && reader.size() == was_size,
               "missing path preserves old reader");
-        uint8_t dst[16];
-        ec = reader.read_exact(0, 16, dst,
+        ec = reader.read_exact(0, 16, dst64,
                                (uint8_t*)scratch.data(), scratch.size());
-        check(!ec, "old reader still reads after failed open");
+        check(!ec, "old reader still reads after failed missing open");
     }
     {
         ec = reader.open(build_dir.c_str());
@@ -307,59 +372,58 @@ int main(int argc, char** argv) {
         check(reader.is_open(), "directory open preserves old reader");
     }
 
-    // ---- S7: close/reopen ---------------------------------------------------
-    reader.close();
-    check(!reader.is_open(), "closed reader not open");
-    ec = reader.open(g_fixture_path.c_str());
-    check(!ec && reader.is_open() && reader.size() == 9000, "reopen works");
-
-    // ---- S8: EINTR injected, reader recovers --------------------------------
+    // ---- S6: EINTR must produce exactly 2 calls -----------------------------
     {
         wrap::cur_mode = wrap::kEintrOnce; wrap::eintr_remaining = 1;
         const int before = wrap::pread_calls;
-        uint8_t dst[100];
-        ec = reader.read_exact(2000, 100, dst,
+        uint8_t dst100[100];
+        ec = reader.read_exact(2000, 100, dst100,
                                (uint8_t*)scratch.data(), scratch.size());
         check(!ec, "EINTR read recovers");
-        check(wrap::pread_calls > before, "EINTR retried (>=2 preads)");
-        check(std::memcmp(dst, g_full_data.data() + 2000, 100) == 0,
+        check(wrap::pread_calls == before + 2, "EINTR exactly 2 preads (1 fail + 1 ok)");
+        check(std::memcmp(dst100, g_full_data.data() + 2000, 100) == 0,
               "EINTR bytes correct");
         wrap::cur_mode = wrap::kPass;
     }
 
-    // ---- S9: EIO and insufficient short refuse safely -----------------------
+    // ---- S7: EIO refuses safely; short uses valid 500 buffer ----------------
     {
         wrap::cur_mode = wrap::kEio;
-        uint8_t dst[100]; std::memset(dst, 0xAA, 100);
+        uint8_t dst500[500];
+        std::memset(dst500, 0xAA, 500);
         const auto before = wrap::pread_calls;
-        ec = reader.read_exact(2000, 100, dst,
+        ec = reader.read_exact(2000, 100, dst500,
                                (uint8_t*)scratch.data(), scratch.size());
         check(static_cast<bool>(ec), "EIO refused");
         check(wrap::pread_calls == before + 1, "EIO one pread then stop");
-        check(dst_untouched(dst, 100), "EIO dst untouched");
+        check(dst_untouched(dst500, 500), "EIO whole 500 buffer untouched");
         wrap::cur_mode = wrap::kPass;
 
         wrap::cur_mode = wrap::kShort; wrap::short_return = 100;
-        std::memset(dst, 0xAA, 100);
-        ec = reader.read_exact(2000, 500, dst,
+        std::memset(dst500, 0xAA, 500);
+        ec = reader.read_exact(2000, 500, dst500,
                                (uint8_t*)scratch.data(), scratch.size());
         check(static_cast<bool>(ec), "insufficient short refused");
-        check(dst_untouched(dst, 100), "short dst untouched");
+        check(dst_untouched(dst500, 500), "short whole 500 buffer untouched");
         wrap::cur_mode = wrap::kPass;
     }
 
     // ---- PoolExpertCache integration: synthetic NONuniform keys -------------
     struct Entry { int64_t layer, expert; uint64_t offset, bytes; };
     const Entry entries[] = {
-        {0, 0, 1000, 500}, {0, 1, 4096, 128}, {1, 0, 8192, 808},
+        {0, 0, 1000, 500}, {0, 1, 4096, 128}, {1, 0, 8192, 808}, {0, 2, 257, 8000},
     };
     auto cache_cb = [&](int64_t l, int64_t e, uint8_t* d, uint64_t b)
                           -> std::error_code {
-        for (const auto& en : entries)
-            if (en.layer == l && en.expert == e)
+        for (const auto& en : entries) {
+            if (en.layer == l && en.expert == e) {
+                // callback MUST validate requested bytes == entry.bytes
+                check(b == en.bytes, "cache_cb validates entry bytes");
                 return reader.read_exact(en.offset, en.bytes, d,
                                          (uint8_t*)scratch.data(),
                                          scratch.size());
+            }
+        }
         return std::make_error_code(std::errc::invalid_argument);
     };
 
@@ -383,40 +447,47 @@ int main(int argc, char** argv) {
         out = PoolLease{};
     }
 
-    // ---- T11: eviction+reload restores ALL bytes after owner overwrite ------
-    // Fresh pool (no scratch competing) so full-capacity alloc can succeed.
+    // ---- T11: same-pool reuse; borrower blocks usable-capacity alloc ------
+    // usable capacity = pool.capacity() - scratch.reserved_size()
     {
-        Pool tpool;
-        std::error_code tec = make_pool(tpool, 64ull << 10);
-        check(!tec, "T11 create 64KiB pool");
-        PoolExpertCache cache(tpool);
+        const uint64_t usable = pool.capacity() - scratch.size();
+        PoolExpertCache cache(pool);
         PoolLease borrower;
         ec = cache.acquire(0, 1, 128, cache_cb, borrower);
         check(!ec && borrower.valid(), "borrower (0,1)");
         const void* borrower_ptr = borrower.data();
+        const uint64_t borrower_sz = borrower.size();
+
+        // live borrower: usable-capacity owner alloc refused
         PoolLease full;
-        ec = tpool.pool_alloc(tpool.capacity(), 4096, full);
-        check(ec && !full.valid(), "live borrower blocks full-pool alloc");
+        ec = pool.pool_alloc(usable, 4096, full);
+        check(ec && !full.valid(), "live borrower blocks usable-capacity alloc");
 
         cache.release(0, 1);
-        ec = tpool.pool_alloc(tpool.capacity(), 4096, full);
-        check(ec && !full.valid(), "full-pool refused with borrower alive");
-        borrower = PoolLease{};
-        ec = tpool.pool_alloc(tpool.capacity(), 4096, full);
-        check(!ec && full.valid(), "full-pool succeeds after release");
-        check(full.data() == borrower_ptr, "reuses same address");
+        ec = pool.pool_alloc(usable, 4096, full);
+        check(ec && !full.valid(), "usable-capacity refused with borrower alive");
+        borrower = PoolLease{};  // final borrower release
+        ec = pool.pool_alloc(usable, 4096, full);
+        check(!ec && full.valid(), "usable-capacity succeeds after release");
+        check(full.data() == borrower_ptr, "reuses former borrower address");
         std::memset(full.data(), 0xAA, full.size());   // OWNER overwrites pool memory
         full = PoolLease{};
+        check(pool.stats().reserved_live_bytes == 4096,
+              "scratch reservation STILL 4096 after owner cycle");
 
         PoolLease fresh;
         ec = cache.acquire(0, 1, 128, cache_cb, fresh);
         check(!ec && fresh.valid(), "reload (0,1) after owner overwrite");
         check(std::memcmp(fresh.data(), g_full_data.data() + 4096, 128) == 0,
               "reload restores ALL original bytes from fixture");
+        check(pool.stats().reserved_live_bytes == 4096 + 4096,
+              "scratch + payload both reserved (128 rounds to page)");
         fresh = PoolLease{};
+        check(scratch.size() == 4096,
+              "scratch reservation STILL 4096 after payload release (cache retains payload)");
     }
 
-    // ---- T12: short/error cache miss preserves output, publishes nothing -----
+    // ---- T12: failing acquire into POPULATED out; short + EIO --------------
     {
         PoolExpertCache cache(pool);
         PoolLease out;
@@ -424,33 +495,61 @@ int main(int argc, char** argv) {
         check(!ec && out.valid(), "warm (0,0) populated");
         const void* ptr = out.data();
         const uint64_t sz = out.size();
+        // snapshot ALL original bytes
+        std::vector<uint8_t> orig(sz);
+        std::memcpy(orig.data(), out.data(), sz);
         const auto entries_before = cache.stats().entries;
         const auto reserved_before = pool.stats().reserved_live_bytes;
 
-        // Fresh out for the failing acquire: on failure nothing is published,
-        // and the previously populated `out` is preserved.
-        PoolLease short_out;
+        // SHORT into the SAME populated out
         wrap::cur_mode = wrap::kShort; wrap::short_return = 10;
-        ec = cache.acquire(1, 0, 808, cache_cb, short_out);
+        ec = cache.acquire(1, 0, 808, cache_cb, out);
         wrap::cur_mode = wrap::kPass;
         check(static_cast<bool>(ec), "short cache miss -> error");
-        check(!short_out.valid(), "short miss: nothing published");
+        // populated out is preserved (still valid, same pointer+size+bytes)
+        check(out.data() == ptr && out.size() == sz,
+              "short miss: out pointer+size preserved");
+        check(std::memcmp(out.data(), orig.data(), sz) == 0,
+              "short miss: out ALL bytes preserved");
         check(cache.stats().entries == entries_before, "short miss: no new entry");
         check(pool.stats().reserved_live_bytes == reserved_before,
               "short miss: candidate pool bytes released");
-        check(out.data() == ptr && out.size() == sz, "short miss: output preserved");
-        out = PoolLease{};
+
+        // EIO into the SAME populated out (fresh cache so candidate exists)
+        cache.clear();
+        PoolLease out2;
+        ec = cache.acquire(0, 0, 500, cache_cb, out2);
+        check(!ec && out2.valid(), "warm (0,0) populated again");
+        const void* ptr2 = out2.data();
+        const uint64_t sz2 = out2.size();
+        std::vector<uint8_t> orig2(sz2);
+        std::memcpy(orig2.data(), out2.data(), sz2);
+        wrap::cur_mode = wrap::kEio;
+        ec = cache.acquire(1, 0, 808, cache_cb, out2);
+        wrap::cur_mode = wrap::kPass;
+        check(static_cast<bool>(ec), "EIO cache miss -> error");
+        // populated out is preserved (still valid, same pointer+size+bytes)
+        check(out2.valid(), "EIO miss: out still valid (preserved)");
+        check(out2.data() == ptr2 && out2.size() == sz2,
+              "EIO miss: out pointer+size preserved");
+        check(std::memcmp(out2.data(), orig2.data(), sz2) == 0,
+              "EIO miss: out ALL bytes preserved");
+        check(pool.stats().reserved_live_bytes == reserved_before + 4096,
+              "EIO miss: candidate freed, back to scratch+first payload");
+        out2 = PoolLease{};
     }
 
     // ---- fixture immutable (bytes + length) + mapping limits ----------------
-    // Release pool + scratch so the final mapping checks see a teardown state.
+    // Release pool + scratch so final mapping checks see teardown state.
     scratch = PoolLease{};
     pool = Pool{};
     check(file_contents_equal(g_fixture_path, g_full_data),
           "fixture file unchanged at end (bytes + length)");
-    std::fprintf(stderr, "peak_mapping_bytes=%llu limit=%llu\n",
+    std::fprintf(stderr, "pread_calls=%d violations=%d peak_mapping_bytes=%llu limit=%llu\n",
+                 wrap::pread_calls, wrap::violations,
                  (unsigned long long)wrap::peak_live_bytes,
                  (unsigned long long)wrap::kMappingLimit);
+    check(wrap::violations == 0, "zero pread violations");
     check(wrap::peak_live_bytes <= wrap::kMappingLimit, "peak <= 1 MiB");
     check(wrap::live_maps.empty(), "final: no live mappings");
     check(wrap::mmap_calls == wrap::munmap_calls, "final: mmap==munmap");
@@ -459,3 +558,4 @@ int main(int argc, char** argv) {
                  checks, failures);
     return failures == 0 ? 0 : 1;
 }
+
