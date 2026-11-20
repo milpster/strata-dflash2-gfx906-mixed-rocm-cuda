@@ -25,17 +25,19 @@ Bypasses virtual access: ArenaExpertSource::blob() (cpp:6727) returns base_+aren
 
 ## 3. Immutable selected experts.bin bounded I/O
 
-read_direct() (cpp:2844): Linux O_DIRECT + one io_submit per batch; windows sorted by offset, merged ≤32 MiB; thread-local aligned scratch; 4 KiB sectors. Consumes experts.bin (role_ptr_ empty → one contiguous range per blob at cpp:2993-2997) AND native GGUF role slices (cpp:3001-3009: 3 spans per blob, per-role file/offset). copy_blobs() (cpp:3549) uses read_direct ONLY when direct_ or pdirect_ non-empty (unbuffered mode, n>1); otherwise falls back to per-blob copy_blob→copy_from_files→mapped memcpy (cpp:3550). Default path is mapped-file memcpy, NOT guaranteed direct/page-cache-free. Scratch upper bound: one batch, merged ≤32 MiB per thread, thread-local and reused. Fallback: per-blob copy_from_files (mapped memcpy or direct single-blob read).
+read_direct() uses Linux O_DIRECT/AIO, sorted windows and 4 KiB sectors. It consumes contiguous experts.bin ranges and three native GGUF role slices per blob. copy_blobs() uses this path only in unbuffered mode; default/per-blob fallback can use mapped memcpy, not guaranteed page-cache-free.
+
+**Parent source correction at 38fe50f:** 32 MiB limits a merged request, NOT retained scratch per thread. src/core/expert_source.cpp:2998-3003 grows thread-local scratch to the batch total before the shared deep-window decision at :3011-3021. The earlier ≤32 MiB/thread claim was false; this is not a bounded pool backing reader.
 
 ## 4. Recommended ONE slice (bounded, existing consumer)
 
 Do NOT bundle budget knob, all expert source, host-KV, or generate.cpp wiring. KV host allocation is layer.cpp:585 kv_host_alloc() (cudaHostAllocMapped|Portable, g_kv_host_bytes), NOT generate.cpp.
 
-Slice: add a pool-backed copy-only read to FileExpertSource — a method taking (layer, expert, Pool&) that copy_blobs one blob into a fresh pool lease and returns the lease; bind it to the lent-slot refill consumer at generate.cpp:23985 (replace blob_stable→fill_slot_queued_staged with pool-alloc→copy_blob→fill from lease). Completion: xcache.sync_queued() + the lease's own lifetime (no note_async_read needed since data is copied, not aliased). Does NOT cover: verify/nibble blob_stable users (:9346 etc.), CPU dispatch fill (:5611), VRAM refill (:17117), ArenaExpertSource arena pointers, or host-KV redirection. Those are later lanes.
+Historical proposal, **not accepted as the final storage solution**: a copy-only pool read for one lent-slot refill. Accepted direction is a primary lease-owned cache and bounded immutable backing reader; see the authoritative parent addendum in the L2 boundary report. Copying bytes from a file does not make a subsequent GPU copy synchronous: retain the lease through proven completion or teardown. Current refill is generate.cpp:24032-24056. All other raw/alias consumers still need adaptation before managed-source activation.
 
 ## 5. CPU test fixture / obstruction
 
-No CPU-instantiable ExpertSource test fixture exists for byte-equivalence against experts.bin. ram_pool_test.cpp tests the pool only (no ExpertSource I/O). Obstruction: expert_source.cpp includes <cuda_runtime.h> (cpp:29) and calls cudaHostAlloc/cudaEventCreateWithFlags/cudaEventRecord in stage buffer management (cpp:1935, 2131, 2138), so linking a pure-CPU ExpertSource test requires CUDA/HIP headers and libraries. Smallest isolated CPU seam: test FileExpertSource::copy_blobs/copy_from_files byte-equivalence against the mapped blob via a harness stubbing cuda_* calls, or test read_direct offset/alignment arithmetic directly. No new abstraction advertised as integration.
+expert_source.cpp is GPU-linked through CUDA/HIP allocation/event calls; no CPU fixture instantiating that source was established. The accepted CPU PoolExpertCache fixture at 38fe50f proves cache ownership/reuse, not native backing integration. Next is a real synchronous direct reader with caller-owned pool scratch, tested through the actual cache; stubbing a large GPU runtime is not accepted evidence.
 
 ## Remaining blockers (unresolved)
 

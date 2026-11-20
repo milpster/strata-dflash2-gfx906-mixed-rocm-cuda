@@ -5291,3 +5291,26 @@ must name actual direct-I/O enforcement, aligned short/EOF handling, bounded
 scratch ownership and a CPU fixture usable by the cache. It may fail closed
 on unsupported paths; mapped copies cannot be called page-cache-free.
 No boots, model-file writes, backend runtime or production promotion is allowed.
+
+## 2026-11-20 — bounded backing-read implementation starts
+
+Read-only explorer ended. Parent checked DirectFile's worker creation and
+the actual Linux FileExpertSource::read_direct body. DirectFile opens up to
+16 default workers; the latter allocates batch-total thread-local scratch
+before its deep-window decision. A 32 MiB merged-request limit is not a
+per-thread allocation cap. The earlier expert-contract report is corrected.
+
+Sole remote Nemotron fixer ses_e05c9e519ffe1BDuDEZJd2E2AS owns a small
+synchronous Linux O_DIRECT reader, its CPU test and the existing pool-test
+CMake block. Scratch comes from the same Pool, is caller-owned, and stays
+bounded while larger reads loop over it. No implicit workers, buffered
+fallback, new test flag or model-format parser. Unsupported paths fail
+explicitly. Pool-cache tests must keep the backing fixture frozen; overwrite
+released pool storage, never the immutable source, to demonstrate reload.
+
+Parent rejects the explorer's suggested new test option and source-overwrite
+test. Dynamic experts.bin layout and GGUF role metadata are distinct from
+the current source's mapped implementation; neither format integration nor
+page-cache accounting is established by this reader-only slice. Actual
+consumer leases and GPU failure teardown remain later activation gates.
+No serving configuration/default or production state changes are authorized.
