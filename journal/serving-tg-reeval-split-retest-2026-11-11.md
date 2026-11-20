@@ -5314,3 +5314,20 @@ the current source's mapped implementation; neither format integration nor
 page-cache accounting is established by this reader-only slice. Actual
 consumer leases and GPU failure teardown remain later activation gates.
 No serving configuration/default or production state changes are authorized.
+
+## 2026-11-20 — reader handoff reviewed, test-only repair
+
+Parent inspected all four files in 063afb0. Source did not actually check
+power-of-two alignment or clamp syscall counts; POSIX includes/helpers also
+escaped the non-Linux guard. The claimed reader/first log directory is absent.
+These are static/artifact findings; no serving runtime occurred.
+
+Parent commit 682e8ba repairs those boundaries and adds the missing CTest
+skip-code property. Tests still need repair: OS preflight used heap scratch,
+the reload test used another pool, and a failure acquired into an empty
+variable while asserting preservation of a different populated variable.
+The short-read test also supplied a smaller destination than its request.
+Same sole remote Nemotron now owns only bounded_direct_reader_test.cpp.
+Final acceptance requires actual raw logs and same-pool scratch/reuse evidence;
+the reader remains unaccepted. Native layout, real GPU consumers and total
+serving-stack admission remain undone. Production remains stopped.
