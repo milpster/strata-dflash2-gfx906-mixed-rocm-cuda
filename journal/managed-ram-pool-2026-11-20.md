@@ -885,3 +885,111 @@ Still UNMEASURED: cold 80k prefill at this budget (cache hit, see above); any no
 prompt at 43,008; concurrency (every request serial); the pool's behaviour between 36,864
 and 40,960 MiB with a cold prompt cache; whether the mid-generation rewind is a reasoning
 budget or checkpoint effect, and what it costs.
+
+## Cold 80k prefill at 43,008 MiB — empty conversation cache — 2026-11-21
+
+The 43,008 window above never measured a cold 80k: its leg 2 read the prompt back from a
+disk checkpoint (`76,430 reused + 5 read in 15,914 ms`, 15,652 ms of it a restore), so its
+`280.2 tok/s / 3.57 ms per token` describes a warm prompt, not prefill, and the 40,960
+window's `280.2`/`3.57` had nothing to be checked against. This window boots the derived
+config `bench/ab-v0210/rpcprof/trial-managed-pool-cold-2g.json`: the same args as
+`trial-managed-pool.json` except `--conversation-cache-dir` points at an empty
+`/mnt/srcds/Strata-wt-helper-ipc/run/diet-cache-cold-2g` (verified empty before boot),
+budget 43,008 MiB, and `--vram-reserve-later-mib` cut 576 -> 192 by operator order (device 0
+keeps `--vram-reserve-mib 192`). Production was down for the whole window; the trial served
+on 8009 (`launch-trial-managed.sh --single-run`, `/health` ok after 80 s), engine
+`/mnt/srcds/Strata-wt-helper-ipc/build-906/strata`.
+
+Boot identity, from the elog:
+
+```
+strata generate: STRATA_RAM_BUDGET_MIB=43008: outside_owned=4294967296 pool_bytes=40802189312 store open
+strata generate: RAM pool store: pool_bytes=40802189312 scratch_bytes=2666496 usable_bytes=40799522816
+                 blob_max=2662400 io_window=2666496 preads_per_blob=1 resident_pairs=0 hits=0 misses=0
+strata serve: 220 MiB of VRAM free with everything loaded - LOW: requests may stall; add --vram-reserve-mib 484 ...
+strata serve: CUDA1: 360 MiB of VRAM free with everything loaded - LOW: its window graphs are captured on first use ...
+```
+
+The pool geometry is byte-identical to the 43,008 window (`scratch_bytes 2666496`,
+`usable_bytes 40799522816`), i.e. the +2 GiB is against the 40,960 window's
+`pool_bytes=38654705664` and this config did not shave it. Device 1 loaded with 360 MiB free:
+384 MiB more than the previous 576 MiB reserve leaves, and still 152 MiB under the 512 MiB
+paging threshold, so the trimmed device-1 margin bought VRAM but not a quiet card.
+
+Requests (client `infill_measure.py`, temperature 0, stream, max 2,048 on the 80k legs):
+
+| leg | request | client wall s | prompt tok | compl tok | engine prompt | engine decode | hit rate | PCIe share |
+|---|---|---|---|---|---|---|---|---|
+| 1 short, cold | "Reply with the single word ready.", max 32 | 5.25 | 59 | 16 | 59 = 0 reused + 59 read in 3,780 ms (15.6 tok/s) | 16 in 1,458 ms (11.0 tok/s) | 85.9% | 16.2% |
+| 2 80k, cold | 80k prompt file, max 2,048 | 367.61 | 74,635 | 1,597 | 74,635 = 0 reused + 74,635 read in 287,366 ms (259.7 tok/s, 3.85 ms/token) | 1,537 in 77,734 ms (19.8 tok/s) | 95.0% | 13.1% |
+| 3 80k, warm repeat | same file, max 2,048 | 63.83 | 74,635 | 1,582 | 74,630 reused + 5 read in 281 ms | 1,537 in 62,214 ms (24.7 tok/s) | 95.3% | 13.2% |
+| 4 short, warm | "Reply with the single word ready.", max 32 | 1.99 | 59 | 16 | 59 = 0 reused + 59 read in 1,515 ms (39.0 tok/s) | 16 in 467 ms (34.3 tok/s) | 94.9% | 16.2% |
+
+Leg 2 is the cold number that was missing, and the elog proves it: `prompt 74635 tokens =
+0 reused + 74635 read in 287366 ms`. Nothing was restored — the cache directory was empty at
+boot and the disk tier never wrote a generation (every park refused on free space: a
+~3,410 MiB snapshot plus a 4,096 MiB floor against 6,477 MiB free), so the directory now holds
+only `owner.lock` and three ring files (43 MiB) and there was no checkpoint to reuse. The warm
+repeat on the same 74,635-token prompt then read back in 281 ms, 1,022x less prompt time.
+
+The honest prefill figure is the engine's 287.4 s / 3.85 ms per prompt token. The client's
+TTFT (365.71 s, 4.90 ms/token) carries the first-token wait on top and is not the prefill
+rate. Drafts: 881 of 1,189 accepted on leg 2, 822 of 1,145 on leg 3.
+
+Each 80k leg is followed in the elog by a second, internal request whose prompt is the leg's
+own prompt plus the tokens it generated (`76,189 tokens = 76,171 reused + 18 read in 454 ms
+and 304 ms`, 43 and 28 tokens generated). The serve log names the cause once — "the reply
+reached max tokens while still thinking, so it has no answer" — and no other client was
+connected when checked with `ss` after the legs, so this is the serve layer continuing a
+reply that hit the cap inside its thinking budget (55,000 tokens against a 2,048 cap). It is
+engine time, not client time: the client's 1,597 completion tokens are 1,537 + 60.
+
+Memory, from `mem-cold.csv` (113 samples, 5 s, 00:26:53 -> 00:37:26):
+
+| figure | this window (cold, 43,008) | 43,008 window (disk-warm) | 40,960 window |
+|---|---|---|---|
+| VmLck | 39,072 MiB flat | 39,072 MiB | 37,024 MiB |
+| VmRSS peak | 47,170 MiB (during leg 2's decode) | 45,912 MiB | 45,220 MiB |
+| MemAvailable min | 7,932 MiB (during leg 2) | 8,222 MiB | 8,252 MiB |
+| swap | 5,116 -> 7,701 MiB (peak 7,719) | 3,527 -> 6,285 MiB | 1,381 -> 2,564 MiB |
+
+The pool line's `scratch_bytes`/`usable_bytes` are unchanged from the 43,008 window. The
+5,116 MiB of swap already in use before this boot is box residue, not this window's, so the
+swap columns' start points differ; the 2.6 GiB that this window added is its own.
+
+Verdict against the 40,960 window's cold 80k (`280.2 tok/s / 3.57 ms per token`, decode
+`20.2 tok/s`, hit rate `95.5%`, PCIe `13.2%`): prefill came out at 259.7 tok/s / 3.85
+ms/token (7.3% fewer tok/s, 7.8% more ms/token), decode at 19.8 tok/s (-2.0%), hit rate at
+95.0%, PCIe at 13.1%. Every one of those deltas is inside the row-to-row noise this box has
+already shown — the same payload ran at 2 tok/s and 21 tok/s two minutes apart, and prefill
+was 76.2 ms/token in one boot against 984.8 ms/token in the next. The cold 80k prefill rate
+therefore holds across the +2 GiB pool and the 384 MiB device-1 margin change; it does not
+improve. No speed claim is made either way. What is NOT comparable: the 43,008 window's 80k
+leg (disk restore, 15,652 ms of read-back) and this window's leg 3 (RAM/ring reuse, 281 ms);
+and no second cold 80k was run, so the 7.3% spread between the two windows cannot be
+separated from a one-shot.
+
+Hygiene: zero `no blob`, zero `refill failed`, zero `no_buffer_space` / `No buffer space` in
+the boot's elog; every helper line carries `timeouts=0 fallbacks=0`. One rewind line and it
+is benign (`the draft ring for the rewind to 74630 restored from its pair (captured at 74630
+tokens)`, leg 3). Two VRAM warnings were logged and not acted on: "only 220 MiB of VRAM free
+at the start of this request (below 512 MiB)" at load and leg 1, and "only 8 MiB of VRAM free
+at the start of this request" at leg 2's decode — the card stayed responsive (19.8 tok/s
+decode on that same request), but 8 MiB is the thinnest this box has logged.
+
+Teardown: sampler stopped by its explicit pid (verified from `/proc/<pid>/cmdline`), then
+`./stop-all.sh` alone (exit 0, `TERM 3221104 3221122 3221867 3223334`, `KILL 3221104
+3221867`, "before=0 after=0 - ALL STOPPED"), then `check-quiet.sh` in its own invocation
+(QUIET, exit 0). No sockets left in `run/`, ports 8009 and 8019 free.
+
+Raw files, main tree
+`bench/ab-v0210/rpcprof/out/managed-ram-pool-20261120/trial-window-cold/`: `boot-cold.log`,
+`legs-cold.log`, `legs-engine-lines.txt`, `elog-clean.txt`, `mem-cold.csv`,
+`L{1,2,3,4}-*.{json,txt}`, `prompt-short.txt`, `status.txt`, `extract_legs.py` (the leg
+splitter, kept so the per-leg blocks can be rebuilt from the elog).
+
+Still UNMEASURED: a second cold 80k in the same boot (repeatability against the 7.3%
+spread); the same empty-cache cold 80k at 40,960 MiB (no such boot, so the pool size is still
+confounded with the window); concurrency (every request serial); whether the 8 MiB VRAM
+trough during leg 2's decode costs anything on a following cold 80k; the 2.6 GiB of swap this
+window added beyond its 5.1 GiB residue.
