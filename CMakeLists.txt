@@ -545,11 +545,31 @@ if(STRATA_BUILD_TESTS)
     if(STRATA_BUILD_RAM_POOL_TEST)
       add_executable(ram_pool_test tests/core/ram_pool_test.cpp src/core/ram_pool.cpp)
       target_include_directories(ram_pool_test BEFORE PRIVATE tests/core include)
-      target_link_libraries(ram_pool_test PRIVATE ${CMAKE_DL_LIBS})
+      target_compile_definitions(ram_pool_test PRIVATE STRATA_RAM_POOL_TEST)
+      target_link_libraries(ram_pool_test PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
+      if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_link_options(ram_pool_test PRIVATE
+          -Wl,--wrap=mmap -Wl,--wrap=mlock -Wl,--wrap=munmap -Wl,--wrap=munlock)
+      endif()
       add_test(NAME ram_pool_test_mock COMMAND ram_pool_test mock)
+      set_tests_properties(ram_pool_test_mock PROPERTIES TIMEOUT 15)
       add_test(NAME ram_pool_test_real_mock COMMAND ram_pool_test real_mock)
+      set_tests_properties(ram_pool_test_real_mock PROPERTIES TIMEOUT 15 SKIP_RETURN_CODE 77)
     endif()
   endif()
+
+  # Simulated non-Linux guard probe: compiles the probe AND the core implementation
+  # with -U__linux__ to verify the __linux__-guarded code paths degrade to a
+  # self-contained refusal contract.  Simulated preprocessor coverage on a Linux
+  # CPU host, not a real Windows/macOS toolchain validation.
+  add_executable(ram_pool_nonlinux_probe tests/core/ram_pool_nonlinux_probe.cpp src/core/ram_pool.cpp)
+  target_include_directories(ram_pool_nonlinux_probe BEFORE PRIVATE tests/core include)
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(ram_pool_nonlinux_probe PRIVATE -U__linux__)
+  endif()
+  target_link_libraries(ram_pool_nonlinux_probe PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
+  add_test(NAME ram_pool_nonlinux_probe COMMAND ram_pool_nonlinux_probe)
+
 
   # Simulated non-Linux guard probe: compiled with -U__linux__ to verify the
   # __linux__-guarded code paths degrade to a self-contained OFF/no-op contract.
