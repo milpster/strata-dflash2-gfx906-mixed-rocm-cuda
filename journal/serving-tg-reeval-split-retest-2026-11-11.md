@@ -4489,3 +4489,21 @@ Runtime locking remains blocked on expert/PLE mapping coverage and total-fit pro
 - The two restarts cut the Swift parking fixer mid-Phase-B twice (operator-accepted); its
   uncommitted +321/-73 edits survived on disk both times; resumed after verification.
 - Nemotron arena-lane agent cancelled by operator; arena trial stays armed, gate WAITING.
+
+## 2026-11-20 (night) — defined 55 GiB expert-area ladder: measured ceiling 8 GiB
+
+- Operator window: graded lock ladder on live prod (no downtime), defined area 55 GiB, 4 GiB steps,
+  floor 4096 MiB, clean release per step. Executed by a Nemotron lane agent; parent verified the
+  raw logs match the analysis (out/expert-area-ladder-20261120/).
+- Curve (mean tok/s / MemAvailable): L0 unlocked 22.5 @15.3 GiB; L4g 24.5 @11.4 GiB (within
+  warm-up noise); L8g 22.5 @7.1 GiB (one 17.7 dip, −8% step cost); 12 GiB step REFUSED at
+  pre-check (16283−12288 < floor) → measured external-lock ceiling with the engine serving:
+  8 GiB (engine RSS 53.8 GiB, internal expert cache resident 13.7 GiB). 55 GiB unreachable on
+  this box — now a measurement, not an estimate.
+- Pressure at ceiling (8 GiB locked, holder-held ~7.2 GiB avail): 23.7 / 11.6 / 22.6 / 18.9 /
+  23.0 — transient dip with immediate recovery, milder than unlocked E3's sustained 11→23 ramp;
+  no stall, safety lever never used, Mlocked back to 161 MiB.
+- Convergence across all three lock experiments: the engine's own arena cache already holds the
+  hot set (unlocked baseline ≈ locked steps at steady state); an external lock buys only
+  pressure-window protection; the ceiling moves opposite the engine's warmth (15.7 GiB cold-ish
+  vs 8 GiB warm). The 55 GiB area design is confirmed as a ≥96 GiB-RAM proposition.
