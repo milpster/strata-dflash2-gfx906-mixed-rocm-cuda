@@ -4538,3 +4538,22 @@ Runtime locking remains blocked on expert/PLE mapping coverage and total-fit pro
   launcher's env -u only scrubs server.py itself. iq_pack.py --experts-bin must never run on
   this pack while the mmap experts.bin exists (writes the unpadded size, silently breaking
   the mmap match).
+
+## 2026-11-20 (night, cont.) — oracle corrections applied; helper pinned; two oracle spec items refuted
+
+- Swift fixer amendment (43c6b20655): v0239 pin created (engine c4c4a5ed… + fresh rpcw-cuda
+  helper 81e3e8fd… from worktree HEAD bde983cf41, re-derived from the golden frozen conf;
+  ldd/RUNPATH shape matches the v0238p0 helper, sm_86 fatbin); trial config repointed (exe,
+  STRATA_ARENA_MMAP=1, own engine log); launcher props env-tunable (56G/51G/4G defaults,
+  none-omission for the pre-gen boot), engine self-limit 55296; window script gained the
+  pre-gen phase (uncapped boot, wrote-line poll, exact 50294988800 B assert, iq_pack warning),
+  the E2 boot gate, and E3 lock/THP/oom evidence. Parent added STRATA_TRIAL_STARTUP_TIMEOUT_S
+  (default 1200, pre-gen raises 2400) — the 46.8g load + write can outrun the 20-min pair
+  timeout (516d39ce9e). Helper evidence preserved into the main tree.
+- Fixer refuted two oracle spec items, pending oracle arbitration: (1) the progress-line total
+  is the whole mapped file (want+blob)>>20 = 47965 MiB, not oracle's 47944 — a hard gate on
+  47944 would abort a correct run; the script now derives it from the asserted size.
+  (2) 'MAP_HUGETLB unavailable' does not exist in this source; 'expert arena read' added as
+  the real anon-path fallback detector.
+- Pre-gen phase skip-if-exact-size: a mapping boot never prints the wrote line, so re-booting
+  on an already-correct file wastes the 20-min poll — size assert still hard.
