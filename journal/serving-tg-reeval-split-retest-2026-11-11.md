@@ -4907,3 +4907,26 @@ compatibility. Implement serially on helper-ipc-diet in the existing engine
 worktree only after reviewing that design. CPU tests and backend builds are
 separate from later operator-authorized hardware validation. A pool is not
 claimed to fix the unresolved ROCm startup hang.
+
+## 2026-11-20 — RAM-pool architecture gate: first proposal rejected
+
+Parent read the 211-line draft and checked decisive engine source. The
+proposed first stage kept the full 46.84 GiB file arena locked while sizing
+an additional anonymous pool as total budget minus outside overhead/burst.
+That equation omits the retained arena and does not provide elastic primary
+expert storage. It is not accepted for implementation.
+
+Source checks: expert_source.cpp:6008-6042 maps and locks the whole file;
+release_pair at :7076-7081 explicitly refuses mapped/shared arenas. Its
+unregister/madvise path does not return reusable chunks to a locked pool.
+generate.cpp:13309-13319 distinguishes conversation-cache-mib (construction
+capacity) from conversation-cache-ram-mib (RAM ceiling). The draft left the
+explicitly enabled host-KV path unverified and the helper outside the wall.
+
+Same remote oracle session continues architecture attempt 2 of 3. Required
+correction: one total-budget equation, immutable UNLOCKED backing plus a
+pool-primary expert cache candidate, bounded streaming without whole-file
+double residency, actual host-KV ownership, whole-stack scope including
+helper, and a real end-to-end first pass with runtime storage reuse. A
+partial-lock alternative must be labeled honestly, not called the requested
+reusable pool. No engine code has been changed and production stays down.
