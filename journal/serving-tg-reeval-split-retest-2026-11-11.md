@@ -4584,3 +4584,20 @@ Runtime locking remains blocked on expert/PLE mapping coverage and total-fit pro
   no extra baseline boot this window; memory.current will ride near the floor (~53 of 56 GiB)
   — record memory.events oom/oom_kill + min_swap_used_mib every leg; 'nothing dropped: this
   run maps' is EXPECTED; iq_pack.py --experts-bin stays banned on this pack.
+
+## 2026-11-20 (morning) — oracle round 3: GO; arena-54 window dispatched
+
+- Oracle round 3 (delta review of d1b2355178): GO, no FIX-FIRST items. stop-all.sh glob
+  verified live (7 state files, exactly one live pid — prod's; cmdline guard positive on the
+  real supervisor); both fixer deviations ACCEPTED — the socket-name gate marker was in fact
+  NECESSARY (no config path appears in a live engine's cmdline; oracle's config-only marker
+  would have failed the gate every run). Two near-free edits applied pre-run by parent
+  (a9de59c64e): trap armed for every phase (a signal in pre-gen or T0 also leaves prod down),
+  and the gate now asserts the mlock summary reports exactly 1 span (a typo'd knob parsing as
+  Mode::all would triple-lock and still pass the old gate).
+- Window dispatched to the nemotron lane (backend-independent; prod down for the duration,
+  verified restore). Watch-list baked into the brief: read stop-all output + require ALL
+  STOPPED (never hand-kill; re-run once then stop on repeat), PROD RESTORE FAIL is suspect →
+  re-poll 10 min before escalating, three confound recordings before T0 (cgroup wall values,
+  experts.bin VMA THP state, sha burst elapsed), pid-recycling fallback, SIGKILL recovery
+  (rm hold file + stop-all + launch-v0238).
