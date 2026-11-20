@@ -12,9 +12,14 @@
 #undef STRATA_RAM_POOL_TEST
 
 #include <cstdio>
+#include <algorithm>
+#include <cerrno>
+#include <cstdlib>
 #include <cstring>
+#include <new>
 #include <string>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <thread>
 #include <vector>
 #include <atomic>
@@ -51,24 +56,39 @@ int munlock_calls = 0;
 long mlock_fail_at = -1;
 int mlock_fail_errno = ENOMEM;
 bool actual_lock_mode = false;  // real_mock alone performs real mlock/munlock
+bool force_misaligned = false;
+uint64_t last_unlock_bytes = 0;
+int last_mlock_errno = 0;
+int cleanup_errno = 0;
+int setup_trims = 0;
 
 void reset_counts() {
     mmap_calls = 0; munmap_calls = 0; mlock_calls = 0; munlock_calls = 0;
     mlock_fail_at = -1; mlock_fail_errno = ENOMEM; actual_lock_mode = false;
+    force_misaligned = false; last_unlock_bytes = 0;
+    last_mlock_errno = 0; cleanup_errno = 0; setup_trims = 0;
 }
 }  // namespace wrap
 
 static std::map<void*, uint64_t> live_maps;
 static uint64_t total_live_bytes = 0;
+static uint64_t peak_live_bytes = 0;
+constexpr uint64_t kMappingLimit = 16ull << 20;
 
 static void track_mmap(void* p, uint64_t len) {
     if (p == nullptr || p == MAP_FAILED) return;
     if (live_maps.count(p)) { std::fprintf(stderr, "FAIL: duplicate mmap base %p\n", p); std::abort(); }
     live_maps[p] = len; total_live_bytes += len;
+    peak_live_bytes = std::max(peak_live_bytes, total_live_bytes);
+    if (total_live_bytes > kMappingLimit) std::abort();
 }
-static void track_munmap(void* p) {
+static void track_munmap(void* p, uint64_t len) {
     auto it = live_maps.find(p);
-    if (it == live_maps.end()) { std::fprintf(stderr, "FAIL: unmatched munmap base %p\n", p); std::abort(); }
+    if (it == live_maps.end() || it->second != len) {
+        std::fprintf(stderr, "FAIL: unmatched munmap base/length %p/%llu\n",
+                     p, (unsigned long long)len);
+        std::abort();
+    }
     total_live_bytes -= it->second; live_maps.erase(it);
 }
 
@@ -79,9 +99,6 @@ static void meta_hook() {
     if (g_meta_call == g_meta_throw_on) throw std::bad_alloc{};
 }
 
-static void track_mmap(void* p, uint64_t len);
-static void track_munmap(void* p);
-
 extern "C" {
 
 void* __real_mmap(void* addr, size_t len, int prot, int flags, int fd, off_t off);
@@ -91,7 +108,28 @@ int __real_munmap(void* addr, size_t len);
 
 void* __wrap_mmap(void* addr, size_t len, int prot, int flags, int fd, off_t off) {
     ++wrap::mmap_calls;
-    void* p = __real_mmap(addr, len, prot, flags, fd, off);
+    const size_t extra = wrap::force_misaligned ? 65536 : 0;
+    if (len > kMappingLimit || total_live_bytes + len + extra > kMappingLimit) {
+        errno = ENOMEM;
+        return MAP_FAILED;
+    }
+    void* p = __real_mmap(addr, len + extra, prot, flags, fd, off);
+    if (p == MAP_FAILED) return p;
+    peak_live_bytes = std::max(peak_live_bytes, total_live_bytes + len + extra);
+    if (extra != 0) {
+        // Select a real page-aligned mapping whose base is 4 KiB past 64 KiB.
+        const size_t prefix = (65536 + kPage - reinterpret_cast<uintptr_t>(p) % 65536) % 65536;
+        const size_t suffix = extra - prefix;
+        if (prefix != 0) {
+            if (__real_munmap(p, prefix) != 0) std::abort();
+            ++wrap::setup_trims;
+        }
+        p = static_cast<char*>(p) + prefix;
+        if (suffix != 0) {
+            if (__real_munmap(static_cast<char*>(p) + len, suffix) != 0) std::abort();
+            ++wrap::setup_trims;
+        }
+    }
     track_mmap(p, len);
     return p;
 }
@@ -99,20 +137,29 @@ int __wrap_mlock(const void* addr, size_t len) {
     ++wrap::mlock_calls;
     if (wrap::mlock_fail_at >= 0 && wrap::mlock_calls > wrap::mlock_fail_at) {
         errno = wrap::mlock_fail_errno;
+        wrap::last_mlock_errno = errno;
         return -1;
     }
-    if (wrap::actual_lock_mode) return __real_mlock(addr, len);
+    if (wrap::actual_lock_mode) {
+        const int result = __real_mlock(addr, len);
+        if (result != 0) wrap::last_mlock_errno = errno;
+        return result;
+    }
     return 0;
 }
 int __wrap_munlock(const void* addr, size_t len) {
     ++wrap::munlock_calls;
+    wrap::last_unlock_bytes = len;
     if (wrap::actual_lock_mode) return __real_munlock(addr, len);
     return 0;
 }
 int __wrap_munmap(void* addr, size_t len) {
     ++wrap::munmap_calls;
-    track_munmap(addr);
-    return __real_munmap(addr, len);
+    track_munmap(addr, len);
+    const int result = __real_munmap(addr, len);
+    if (result != 0) std::abort();
+    if (wrap::cleanup_errno != 0) errno = wrap::cleanup_errno;
+    return result;
 }
 
 }  // extern "C"
@@ -137,12 +184,14 @@ static uint64_t read_vmlck_kb() {
 
 // ---- helpers ---------------------------------------------------------------
 
-static std::error_code make_small_pool(Pool& out, uint64_t bytes) {
+static std::error_code make_small_pool(Pool& out, uint64_t bytes, bool misaligned = false) {
     bool was_real = wrap::actual_lock_mode;
     wrap::reset_counts();
     wrap::actual_lock_mode = was_real;
+    wrap::force_misaligned = misaligned;
     std::error_code ec;
     auto p = Pool::create(bytes, ec);
+    wrap::force_misaligned = false;
     out = std::move(p);
     return ec;
 }
@@ -157,6 +206,13 @@ static bool assert_aligned_bounds(const PoolLease& l, const Pool& pool, uint64_t
     return true;
 }
 
+static bool same_stats(const PoolStats& a, const PoolStats& b) {
+    return a.capacity_bytes == b.capacity_bytes && a.locked_bytes == b.locked_bytes &&
+        a.reserved_live_bytes == b.reserved_live_bytes &&
+        a.requested_live_bytes == b.requested_live_bytes && a.free_bytes == b.free_bytes &&
+        a.alloc_count == b.alloc_count && a.alloc_high_water == b.alloc_high_water;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -166,9 +222,10 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "usage: ram_pool_test mock|real_mock\n");
         return 2;
     }
-    wrap::actual_lock_mode = real;
+    wrap::actual_lock_mode = false;
 
 #if defined(__linux__)
+    if (!real) {
     // ---- 1. capacity arithmetic (input math only) --------------------------
     {
         const uint64_t gib = 1073741824ull;
@@ -326,12 +383,10 @@ int main(int argc, char** argv) {
     {
         std::error_code ec;
         Pool pool;
-        ec = make_small_pool(pool, 512ull << 10);
+        ec = make_small_pool(pool, 512ull << 10, true);
         check(!ec, "align pool create 512 KiB");
-        // Deliberately page-aligned but not 64 KiB aligned base via wrapper trim:
-        // overmap pool + 64 KiB, trim prefix/suffix so base is page-aligned
-        // but not 64 KiB aligned.  (Wrapper in real mode maps aligned; the
-        // allocator must still align the returned address.)
+        check(reinterpret_cast<uintptr_t>(pool.base()) % 65536 == kPage && wrap::setup_trims > 0,
+              "forced page-aligned base is not 64 KiB aligned");
         PoolLease al;
         ec = pool.pool_alloc(100, 65536, al);
         check(!ec && al.valid(), "64 KiB alignment alloc");
@@ -412,8 +467,12 @@ int main(int argc, char** argv) {
                 unsigned char pat = static_cast<unsigned char>(0x41 + (id % 5));
                 std::memset(t.data(), pat, t.size());
                 PoolLease t2 = t;  // copied borrower
-                if (std::memcmp(t2.data(), t.data(), 1) == 0) ++payload_ok;
                 t = PoolLease{};
+                std::this_thread::yield();
+                const auto* data = static_cast<const unsigned char*>(t2.data());
+                if (assert_aligned_bounds(t2, pconc, kPage) &&
+                    std::all_of(data, data + t2.size(), [pat](unsigned char v) { return v == pat; }))
+                    ++payload_ok;
                 t2 = PoolLease{};
             }
         };
@@ -421,7 +480,7 @@ int main(int argc, char** argv) {
         for (int i = 0; i < 4; ++i) threads.emplace_back(worker, i);
         for (auto& th : threads) th.join();
         check(success_count == 400 && fail_count == 0, "all 400 concurrent ops succeed");
-        check(payload_ok > 0, "copied borrower payload correct");
+        check(payload_ok == 400, "all 400 copied borrowers preserve full payload");
         auto sc = pconc.stats();
         check(sc.alloc_count == 0, "zero live allocations after joins");
         check(sc.free_bytes == sc.capacity_bytes, "full free bytes restored");
@@ -452,6 +511,7 @@ int main(int argc, char** argv) {
         check(wrap::munmap_calls == 1, "later-fail: one unmap");
         check(wrap::munlock_calls == 1, "later-fail: one munlock (partial prefix)");
         check(wrap::mlock_calls == 6, "later-fail: 6 mlock attempts");
+        check(wrap::last_unlock_bytes == 5 * kPage * 2, "later-fail: exact 40 KiB prefix unlocked");
         check(total_live_bytes == 0, "later-fail: no live bytes leaked");
         ram_pool_set_lock_step_bytes(256ull << 20);
 
@@ -459,9 +519,11 @@ int main(int argc, char** argv) {
         wrap::reset_counts();
         wrap::mlock_fail_at = 0;
         wrap::mlock_fail_errno = EACCES;
+        wrap::cleanup_errno = EIO;
         Pool pool3;
         pool3 = Pool::create(kPage * 16, ec);
         check(ec && ec.value() == EACCES, "original errno EACCES preserved");
+        check(errno == EIO, "cleanup changed errno without changing returned error");
 
         // zero step refused BEFORE mmap/lock
         ram_pool_set_lock_step_bytes(0);
@@ -482,12 +544,10 @@ int main(int argc, char** argv) {
     {
         std::error_code ec;
         Pool pool;
-        ec = make_small_pool(pool, 512ull << 10);
+        ec = make_small_pool(pool, 512ull << 10, true);
         check(!ec, "meta pool create 512 KiB");
-        // Hold a block at offset 0 so the next 64KiB-aligned alloc has lead+trail:
-        // free block starts at 4096; abs rounds up to 65536 -> lead=61440, live,
-        // trail.  All four metadata points (make_shared, lead, live, trail) are
-        // exercised.
+        // Forced base is 4 KiB past 64 KiB. Two page allocations guarantee
+        // that the next aligned allocation needs both leading/trailing nodes.
         PoolLease lead_blk;
         ec = pool.pool_alloc(kPage, kPage, lead_blk);
         check(!ec && lead_blk.valid(), "meta: lead block at offset 0");
@@ -495,18 +555,19 @@ int main(int argc, char** argv) {
         ec = pool.pool_alloc(1000, kPage, before);
         check(!ec && before.valid(), "meta: alloc before fault");
         auto sb = pool.stats();
+        void* const old_output = before.data();
 
         // Force each stage to fail; existing output preserved, stats unchanged.
         int stages[] = {1, 2, 3, 4};
         for (int throw_on : stages) {
             g_meta_call = 0; g_meta_throw_on = throw_on;
             ram_pool_set_metadata_fault(meta_hook);
-            PoolLease bad;
-            ec = pool.pool_alloc(1000, 65536, bad);
-            check(ec && !bad.valid(), "meta: stage throws -> error not exception");
-            check(before.valid(), "meta: existing output untouched");
-            check(pool.stats().reserved_live_bytes == sb.reserved_live_bytes,
-                  "meta: stats unchanged");
+            ec = pool.pool_alloc(1000, 65536, before);
+            check(ec && ec == std::errc::not_enough_memory, "meta: stage throws -> error not exception");
+            check(g_meta_call == throw_on, "meta: selected preparation stage reached");
+            check(before.data() == old_output, "meta: populated output untouched");
+            check(same_stats(pool.stats(), sb), "meta: every statistic unchanged");
+            std::fprintf(stderr, "metadata_fault_stage=%d calls=%d preserved=1\n", throw_on, g_meta_call);
             ram_pool_set_metadata_fault(nullptr);
         }
 
@@ -520,10 +581,24 @@ int main(int argc, char** argv) {
               "meta: full coalesce after release with hook set");
         ram_pool_set_metadata_fault(nullptr);
         PoolLease reuse;
-        ec = pool.pool_alloc(1000, kPage, reuse);
+        ec = pool.pool_alloc(pool.capacity(), kPage, reuse);
         check(!ec && reuse.valid(), "meta: reusable after fault release");
         reuse = PoolLease{};
         ram_pool_set_metadata_fault(nullptr);
+    }
+
+    // Creation has two preparation stages and must fail before mapping either.
+    for (int stage = 1; stage <= 2; ++stage) {
+        wrap::reset_counts();
+        g_meta_call = 0; g_meta_throw_on = stage;
+        ram_pool_set_metadata_fault(meta_hook);
+        std::error_code ec;
+        auto failed = Pool::create(64ull << 10, ec);
+        ram_pool_set_metadata_fault(nullptr);
+        check(ec == std::errc::not_enough_memory && failed.capacity() == 0,
+              "create metadata fault returns error");
+        check(g_meta_call == stage && wrap::mmap_calls == 0 && live_maps.empty(),
+              "create metadata fault leaves no mapping");
     }
 
     // ---- 10. PoolLeaseGuard usable -----------------------------------------
@@ -541,6 +616,7 @@ int main(int argc, char** argv) {
         }
         check(pool.stats().alloc_count == 0, "guard released on scope exit");
     }
+    }
 #else
     (void)real;
     {
@@ -553,29 +629,30 @@ int main(int argc, char** argv) {
     // ---- real_mock: strict actual Linux VmLck lifecycle --------------------
 #if defined(__linux__)
     if (real) {
-        wrap::actual_lock_mode = true;  // ensure real locking for this section
-        uint64_t base = read_vmlck_kb();
+        wrap::reset_counts();
+        wrap::actual_lock_mode = true;
+        const uint64_t bytes = 64ull << 10;
+        const uint64_t base = read_vmlck_kb();
         std::error_code re;
         Pool rpool;
-        rpool = Pool::create(64ull << 10, re);  // 64 KiB small
+        rpool = Pool::create(bytes, re);
         if (re) {
-            // Genuine skip 77 ONLY when failing syscall is mlock and EPERM or
-            // measured insufficient finite RLIMIT_MEMLOCK explains it.
-            bool mlock_restriction = (re.value() == EPERM || re.value() == ENOMEM);
-            std::fprintf(stderr, "SKIP: real_mock: pool create failed (%s) value=%d mlock_restriction=%d\n",
-                         re.message().c_str(), re.value(), mlock_restriction ? 1 : 0);
-            if (failures != 0 || !mlock_restriction) return 1;
-            std::fprintf(stderr, "ram_pool_test (real_mock): %d checks passed (VmLck skipped - locking not permitted)\n", checks);
+            struct rlimit limit{};
+            const bool have_limit = getrlimit(RLIMIT_MEMLOCK, &limit) == 0;
+            const bool insufficient_limit = have_limit && limit.rlim_cur != RLIM_INFINITY &&
+                (limit.rlim_cur < bytes || base > (limit.rlim_cur - bytes) / 1024);
+            const bool failed_lock = wrap::mlock_calls > 0 && wrap::last_mlock_errno == re.value();
+            const bool restricted = failed_lock &&
+                (re.value() == EPERM || (re.value() == ENOMEM && insufficient_limit));
+            std::fprintf(stderr, "%s: real lock error=%d soft_limit=%llu baseline_kib=%llu\n",
+                         restricted ? "SKIP" : "FAIL", re.value(),
+                         (unsigned long long)limit.rlim_cur, (unsigned long long)base);
+            if (!restricted || !live_maps.empty() || read_vmlck_kb() != base) return 1;
             return 77;
         }
         check(re.value() == 0, "real_mock: create succeeded");
-        uint64_t locked = read_vmlck_kb();
-        {
-            char lbl[160];
-            std::snprintf(lbl, sizeof lbl, "real_mock: VmLck rose by pool KiB (baseline %llu -> %llu)",
-                          (unsigned long long)base, (unsigned long long)locked);
-            check(locked >= base + 16, lbl);
-        }
+        const uint64_t locked = read_vmlck_kb();
+        check(locked == base + bytes / 1024, "real_mock: exact 64 KiB lock rise");
         auto rs = rpool.stats();
         check(rs.locked_bytes == 64ull << 10, "real_mock: locked == 64 KiB");
 
@@ -584,13 +661,8 @@ int main(int argc, char** argv) {
         check(!re && x.valid(), "real_mock: alloc chunk");
         std::memset(x.data(), 0x01, x.size());
         x = PoolLease{};  // release chunk: VmLck must NOT fall
-        uint64_t mid = read_vmlck_kb();
-        {
-            char lbl[160];
-            std::snprintf(lbl, sizeof lbl, "real_mock: VmLck retained after chunk free (%llu >= %llu)",
-                          (unsigned long long)mid, (unsigned long long)locked);
-            check(mid >= locked, lbl);
-        }
+        const uint64_t mid = read_vmlck_kb();
+        check(mid == locked, "real_mock: exact lock retention after chunk free");
 
         // retain a borrower past owner destruction
         PoolLease borrower;
@@ -598,22 +670,21 @@ int main(int argc, char** argv) {
         check(!re && borrower.valid(), "real_mock: borrower alloc");
         rpool = Pool{};  // destroy owner while borrower holds lease
         check(borrower.valid(), "real_mock: borrower valid after owner destroyed");
-        uint64_t od = read_vmlck_kb();
-        {
-            char lbl[160];
-            std::snprintf(lbl, sizeof lbl, "real_mock: VmLck held through owner drop (%llu >= %llu)",
-                          (unsigned long long)od, (unsigned long long)locked);
-            check(od >= locked, lbl);
-        }
+        const uint64_t od = read_vmlck_kb();
+        check(od == locked, "real_mock: exact lock retention after owner drop");
 
         borrower = PoolLease{};  // final release -> exact baseline
-        uint64_t end = read_vmlck_kb();
-        {
-            char lbl[160];
-            std::snprintf(lbl, sizeof lbl, "real_mock: VmLck back at baseline after final release (%llu <= %llu+8)",
-                          (unsigned long long)end, (unsigned long long)base);
-            check(end <= base + 8, lbl);
-        }
+        const uint64_t end = read_vmlck_kb();
+        check(end == base, "real_mock: exact baseline after final borrower release");
+        check(wrap::munlock_calls == 1 && wrap::munmap_calls == 1,
+              "real_mock: exactly one final unlock and unmap");
+        check(total_live_bytes == 0 && live_maps.empty(), "real_mock: no mapping remains");
+        std::fprintf(stderr,
+            "VmLck_KiB baseline=%llu locked=%llu chunk_free=%llu owner_drop=%llu final_release=%llu\n",
+            (unsigned long long)base, (unsigned long long)locked, (unsigned long long)mid,
+            (unsigned long long)od, (unsigned long long)end);
+        std::fprintf(stderr, "peak_mapping_bytes=%llu limit=%llu\n",
+            (unsigned long long)peak_live_bytes, (unsigned long long)kMappingLimit);
 
         if (failures != 0) {
             std::fprintf(stderr, "ram_pool_test (real_mock): %d checks, %d FAILURES\n", checks, failures);
@@ -624,8 +695,10 @@ int main(int argc, char** argv) {
     }
 #endif
 
-    std::fprintf(stderr, "MAX live mapping bytes during run: %llu (limit 16 MiB)\n",
-                 (unsigned long long)total_live_bytes);
+    check(total_live_bytes == 0 && live_maps.empty(), "all mock mappings released");
+    check(peak_live_bytes <= kMappingLimit, "mapping peak respects 16 MiB cap");
+    std::fprintf(stderr, "peak_mapping_bytes=%llu limit=%llu\n",
+                 (unsigned long long)peak_live_bytes, (unsigned long long)kMappingLimit);
     if (failures != 0) {
         std::fprintf(stderr, "ram_pool_test (%s): %d checks, %d FAILURES\n", scenario, checks, failures);
         return 1;

@@ -2,9 +2,9 @@
 
 **Branch:** `helper-ipc-diet` @ `bde983cf41` (worktree `/mnt/srcds/Strata-wt-helper-ipc`).
 **Lane:** Foundation S1a — managed pre-locked RAM pool core + focused CPU tests only.
-**Status: NOT ACCEPTED.** The initial implementation and dirty repair failed
-parent acceptance. Statements below are the initial fixer's historical
-claims, not current verification. See the parent correction at the end.
+**Status: CPU checks pass; final core review pending.** Initial implementation
+and repair claims below are superseded. Read the final parent validation
+section at the end for current evidence. No serving integration is complete.
 
 ## Scope honored (write scope, no extras)
 
@@ -124,3 +124,54 @@ warning was fixed, all four variants exited 0. Exact output/status files:
 bench/ab-v0210/rpcprof/out/managed-ram-pool-20261120/core/parent-core-correction/
 (compile.status, recheck.status and per-mode logs). No runtime behavior is
 established by compilation. Focused test/CMake reconciliation is next.
+
+## Final parent CPU validation — 2026-11-20
+
+Test commits 1bf0a7916d and 57932bc0bf needed further reconciliation. The
+latter still used weak lock inequalities, did not force a misaligned mapping,
+did not check prefix unlock length, and saved a claim summary under tests/.
+Parent corrected those tests directly. The misplaced summary is preserved
+as unverified-handoff.txt in the generated evidence tree, not test source.
+
+Current evidence root:
+bench/ab-v0210/rpcprof/out/managed-ram-pool-20261120/core/final-cpu/
+Every command's numeric exit is recorded in status.txt; raw output is kept
+in the matching log. Commands ran in the engine worktree, on Linux/GNU 15.2.
+
+| Check | Command / log | Exit / result |
+|---|---|---|
+| CPU configure | `cmake -S . -B build-cpu-ram-pool -G Ninja -DCMAKE_BUILD_TYPE=Release -DSTRATA_BUILD_TESTS=ON -DSTRATA_ENABLE_CUDA=OFF -DSTRATA_ENABLE_HIP=OFF -DSTRATA_ENABLE_SYCL=OFF -DSTRATA_BUILD_RAM_POOL_TEST=ON` | 0 |
+| Focused build | `cmake --build build-cpu-ram-pool --target ram_pool_test ram_pool_nonlinux_probe native_mlock_test native_mlock_nonlinux_probe --parallel 2` | 0 |
+| CPU regression | ctest.log; exact command below | 0; 14/14, no skips |
+| Default-OFF configure | Same configure with `-B build-cpu-ram-pool-off -DSTRATA_BUILD_RAM_POOL_TEST=OFF` | 0 |
+| Full OFF target graph | `ninja -C build-cpu-ram-pool-off -t targets all`; targets-off-all.log | 0; neither pool target present |
+| OFF test registration | `ctest --test-dir build-cpu-ram-pool-off -N -R ram_pool` | 0; zero tests |
+| ASan/UBSan configure | Same CPU options, `-B build-cpu-ram-pool-sanitized -DCMAKE_BUILD_TYPE=Debug '-DCMAKE_CXX_FLAGS=-fsanitize=address,undefined -fno-omit-frame-pointer'` | 0 |
+| Sanitized build | `cmake --build build-cpu-ram-pool-sanitized --target ram_pool_test ram_pool_nonlinux_probe --parallel 2` | 0 |
+| Sanitized regression | ctest-sanitized.log; exact command below | 0; 2/2 |
+
+```sh
+ctest --test-dir build-cpu-ram-pool -R 'ram_pool|native_mlock' --timeout 15 -V
+ctest --test-dir build-cpu-ram-pool-sanitized -R '^(ram_pool_test_mock|ram_pool_nonlinux_probe)$' --timeout 30 -V
+```
+
+Decisive regular-run observations:
+- Actual VmLck KiB: baseline 0, locked 64, chunk freed 64, owner dropped with
+  borrower 64, final borrower released 0. Exactly one final unlock/unmap.
+- Mock mapping peak 1,048,576 bytes; real-lock peak 65,536 bytes. Hard test
+  cap 16,777,216 bytes, including temporary alignment setup mappings.
+- Four allocation-preparation faults reached stages 1/2/3/4 and preserved
+  all stats and the populated output; both create preparation faults passed.
+- Freeing while the metadata hook would throw invoked no hook. Fragmented
+  two-page admission failed; releasing all blocks allowed whole-pool reuse.
+- 400 concurrent allocations and full-payload borrower checks passed.
+- Deliberately non-64-KiB mapping, exact 40-KiB partial unlock, original errno
+  despite cleanup errno changes, and simulated non-Linux refusal passed.
+
+Limits: this establishes a small CPU allocator foundation only. No 51–55 GiB
+pool was allocated; those inputs were arithmetic tests. The real restricted
+memlock skip branch was not exercised. ASan/UBSan covered mock/probe, not real
+locking. No real Windows/Mac build, GPU/backend runtime, source-to-expert or
+host-KV integration, whole-stack enforcement, startup-hang fix, speed claim,
+or binary-identity measurement is established. CMake emits an existing
+FetchContent deprecation warning. Production remains stopped.
