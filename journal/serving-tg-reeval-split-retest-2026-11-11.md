@@ -4799,3 +4799,20 @@ anon 3.17G (conv 1024 working), current 52.3G, events oom/high/max all 0.
 Suspected chain: 10G swap allowance -> engine anon swapped during cold-boot
 churn -> swap-in stall on first serve -> helper RPC timeout -> abort/stall
 kill. Exit-6 lane owns confirmation.
+
+## 2026-11-20 ~14:2x — revert verified; gen-1 death cause; min 53G ordered
+
+Revert agent (ses_e06ecc80b) complete: all gates PASS on 56G/4G (boot 101 s,
+VmLck 49280040 kB, wall bytes exact). Gen-1 death captured verbatim: NOT
+exit -6 — "Unrecoverable native verification failure: verify: timed out at
+layer 0; its GPU waits were released but the GPU did not finish within 5 s
+(#267)", exit code 1, 0 tokens in 72 s, server KeyboardInterrupt. Swap storm
+starved the GPU pipeline -> verify watchdog abort. Distinct from the two
+prod -6 incidents; exit-6/engine-death lane owns all three samples.
+Fresh-boot anomalies: scope swap rose 2.06->3.19 GiB under swappiness=1 with
+current BELOW min (min leaky under kswapd global reclaim); memory.current
+~44-48G because arena page-cache charges ride the parent cgroup after first
+cold read (VmLck/VmRSS remain the truth). Operator ordered MemoryMin 53G
+(56908316672) — partly an experiment: readout = fresh scope swap.current.
+Benched-config anchor restated: trial attempt-3 = 56G/4G wall, min 51, conv
+2048; current serving differs by conv 1024 (+min 53 after this boot).
