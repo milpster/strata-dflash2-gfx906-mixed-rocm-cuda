@@ -356,3 +356,34 @@ managed activation, runtime pool construction/budget (L3), host-KV and
 whole-stack admission (L4) remain open. No boots, no GPU runs, no promotion;
 production stays stopped. The pre-existing moe_mmq.cu.o build breakage is
 recorded for the engine follow-up list, not fixed here.
+## L3 Task 1 — runtime budget construction — 2026-11-20
+
+Boundary report (oracle, source-fact-checked by parent incl. arena mlock/
+cudaHostRegister sites expert_source.cpp:6018/:3929/:4037/:4080/:4355, the KV
+device-alias requirement layer.cpp:968-979, and the mislabeled :15638 — it is
+checkpoint_at, not swap_blobs_batch) accepted with a parent sequencing
+addendum (main tree 34d232a): host-KV stays OUTSIDE the pool charged as
+outside-owned; no ExpertSource adapter until every must-adapt consumer is
+lease-bearing; no invented headroom constants.
+
+Fixer 7517b62720 wired STRATA_RAM_BUDGET_MIB at generate startup (unset/0 =
+OFF byte-identical; invalid = error exit; budget > MemAvailable = error
+exit; managed mode skips ArenaExpertSource entirely, srcp stays the unlocked
+FileExpertSource fallback). Parent review found three defects and repaired
+them in 171d745219: (1) outside_owned used qsa_kv_host_bytes(), which is 0
+before layers allocate — now charges the CONFIGURED --kv-resident-mib cap
+(over-subtract safe); (2) budget_mib<<20 could overflow — MiB-domain guard
+added; (3) an operator-set STRATA_NATIVE_MLOCK alongside the budget would
+double-lock — now an exclusive-knob startup error.
+
+| Parent check | Result |
+|---|---|
+| generate.cpp.o on build-906 after 171d745219 | exit 0 |
+| CPU pool suite (6 tests) | exit 0; 6/6 |
+| Raw logs | managed-ram-pool-20261120/l3-task1/parent-{obj,ctest}.log + parent-status.txt |
+
+Limits: the managed branch still has zero runtime evidence (the seam only
+serves the lent-slot site); mapped shard sizes and token tables remain
+unaccounted outside_owned inputs (unknown before FileExpertSource opens;
+page-cache demand-paged, named for L4 admission); the fixer's own log dir
+again contained only a summary — parent logs are the evidence of record.
