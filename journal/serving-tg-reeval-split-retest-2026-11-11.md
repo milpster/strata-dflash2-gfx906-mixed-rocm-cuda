@@ -4829,3 +4829,39 @@ page-cache charge at parent cgroup, expected. Serving tuple: Min 53 / Max
 56 / Swap 4, conv 1024, self-limit 55296. Benched anchor (trial attempt-3)
 differs by conv 1024 (was 2048) and min 53 (was 51). VRAM margins held
 256/448 per standing instruction.
+
+## 2026-11-20 — production MCP startup disabled; recovery blocked before readiness
+
+Operator found document MCP servers running again and ordered their removal,
+then a Swift investigation. At the first snapshot, docling (PID 407418),
+markitdown (407421), and pandoc (407419) were direct children of production
+server 393487. Their commands were still configured in
+prod-config-arena54.json. RSS at that snapshot was 263704, 58000, and 23296
+KiB respectively; these figures exclude swapped pages and are not a total
+memory saving claim. The config's mcp_servers block is now empty. The pinned
+serve/mcp.py hub_from_config returns None when neither config block nor an
+explicit --mcp-config supplies servers. The production launcher supplies no
+--mcp-config. OpenCode-owned tools and installed packages were not removed.
+
+Before guarded teardown could signal any process, production server 393487
+and the three MCP processes had already exited. The stale supervisor record
+said "helper exited". The teardown helper failed before sending signals and
+was removed rather than retained as an unused script. Cause of that exit is
+not established. An initial detached restart also exited before starting the
+API: helper log 144326-709431 records SIGTERM/SIGINT, with server_pid 0.
+Do not call that an allocation failure or a proven MCP-related failure.
+
+stop-all.sh was run separately before each boot, with exit 0 and ALL STOPPED.
+The tracked background launch (shell sh_1f934f46b001Gpr8mQcqw6waFY) is alive:
+supervisor 745844, server 746146, engine 746618. It loaded and locked the arena,
+filled the caches/helper, then stopped logging after the prompt-path borrow
+lines. Main thread remains CPU-active; no listener on 8009. The 101-attempt
+health check exited 7; no real completion has passed and Swift is NOT spawned.
+Debugger attach was denied; sudo -n gdb also failed (password required).
+No GPU reset, engine/config workaround, or memory-limit change was applied.
+
+Current config SHA256 after MCP removal:
+88a6596b31c2048541fa89d5ba878baec1da99da69f5cfccebef160b013e8dd7.
+Launcher remains 98e92a2431c93cdb41a537f48545be252a74035e57b40ec082d19b813b877dfd.
+Startup-entry lineage and prior MCP removal must be investigated by Swift
+once a real production completion succeeds. Benchmarks remain paused.
