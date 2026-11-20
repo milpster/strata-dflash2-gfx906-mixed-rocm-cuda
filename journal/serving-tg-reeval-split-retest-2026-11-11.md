@@ -4672,3 +4672,15 @@ Runtime locking remains blocked on expert/PLE mapping coverage and total-fit pro
   serving + warmed; oracle verification resumed with small-step instruction.
 - Follow-up parked: undiagnosed exit -6 on big cold requests — needs a repro before any
   engine claim; watch whether the resumed oracle's load triggers it again on a warm engine.
+
+## 2026-11-20 (afternoon) — SECOND prod SIGABRT: the pattern is reproducible
+
+- 12:26: prod died again (exit -6) serving the resumed oracle's first big verification
+  prompt — warm engine this time, same signature, no diagnostic, no kernel OOM. TWO for two:
+  giant thinking-capped (~49k budget) requests abort this engine. Recovery: supervisor gen
+  booted, first completion 48 s cold then 1.2-10 s normal.
+- Consequence: oracle verification cannot ride prod (it kills its own backend). Oracle
+  re-routed to the independent nemotron backend as a fresh session with a compact brief
+  (the errored session's accumulated rounds-1-3 context is exactly what made each request
+  engine-killing). Engine-side diagnosis of the exit -6 remains parked — needs a dedicated
+  repro lane (smaller model context, core dumps on) before any claim.
