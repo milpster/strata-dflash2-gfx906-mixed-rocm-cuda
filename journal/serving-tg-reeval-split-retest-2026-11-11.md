@@ -4865,3 +4865,45 @@ Current config SHA256 after MCP removal:
 Launcher remains 98e92a2431c93cdb41a537f48545be252a74035e57b40ec082d19b813b877dfd.
 Startup-entry lineage and prior MCP removal must be investigated by Swift
 once a real production completion succeeds. Benchmarks remain paused.
+
+## 2026-11-20 — operator stops hung production; leave it down
+
+Operator captured logs/prod-startup-20261120.bt, then ordered the hanging
+production attempt killed to free the system. Parent ran stop-all.sh:
+supervisor 745844 received TERM; the sweep completed with exit 0 and
+"before=0 after=0 — ALL STOPPED" after 20 seconds of quiet. The tracked
+launcher shell sh_1f934f46b001Gpr8mQcqw6waFY then completed. No restart is
+authorized by this stop order. No Swift subagent has been launched.
+
+The captured backtrace exists and ends with successful debugger detach from
+engine 1879460. Its main thread's first twelve frames are inside ROCm 6.1.0
+libhsa-runtime64.so.1 and libamdhip64.so.6; this truncated, unsymbolized stack
+does not establish the application call site or the cause of the hang.
+Keep the file for later offline diagnosis. Document MCP startup remains
+disabled in production config (de4425f); benchmarks and the requested Swift
+MCP-lineage investigation remain paused with production down.
+
+## 2026-11-20 — managed locked pool requested; remote Nemotron design lane
+
+Operator clarified the requested feature: one whole-Strata RAM allowance
+(example 52 GiB), preferably a reusable preallocated mlocked pool rather
+than locking the entire expert file. Serving allocations and an elastic
+expert cache must share the allowance, with runtime rebalancing. Outside-pool
+runtime/helper/driver overhead must count too; the locked pool cannot simply
+equal the full allowance. No measured maximum reserve has been established.
+
+Operator explicitly authorized Nemotron while production remains stopped.
+Remote Nvidia model nvidia/nvidia/nemotron-3.5-super-vl-120b-a12b was confirmed
+with the model catalog. One oracle lane, ses_e065f02a0fferlDOya5l4iz2ra, owns
+source-grounded architecture and a staged CPU-verification plan, writing only
+bench/ab-v0210/notes/managed-ram-pool-design-20261120.md. Parent owns this
+journal and integration. No other specialist is active. Production remains
+off; no boots, GPU work, new benchmark driver or model-file changes permitted.
+
+Gate before engine implementation: identify real allocation owners/lifetimes,
+safe runtime eviction and async-pointer lifetimes, accounting/kernel cap,
+startup double-residency hazards, impossible-budget refusal, and default-off
+compatibility. Implement serially on helper-ipc-diet in the existing engine
+worktree only after reviewing that design. CPU tests and backend builds are
+separate from later operator-authorized hardware validation. A pool is not
+claimed to fix the unresolved ROCm startup hang.

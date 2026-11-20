@@ -73,6 +73,7 @@ dist-hip/
 # BEGIN worktrees
 .slim/
 # END worktrees
+.slim/deepwork/
 
 # deployed engine/helper binaries + pre-promotion backups (reproduced from the validated bench build)
 v0210/
