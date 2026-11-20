@@ -65,7 +65,7 @@ snap() {
         /^[0-9a-f]+-[0-9a-f]+ / { hit = ($0 ~ want"$"); if (hit) print "  " $0; next }
         hit && /^(KernelPageSize|AnonHugePages|FilePmdMapped|THPeligible|Rss|Dirty|Locked):/ { print "  " $0 }
       ' /proc/$eng/smaps
-      CG=$(grep -m1 -o '[^:]*$' /proc/$eng/cgroup 2>/dev/null | tr -d ' ')
+      CG=$(grep -m1 '^0::' /proc/$eng/cgroup 2>/dev/null | sed 's/^0:://' | tr -d ' ')
       [ -n "$CG" ] && echo "cgroup memory.max: $(cat /sys/fs/cgroup${CG}/memory.max 2>/dev/null) memory.min: $(cat /sys/fs/cgroup${CG}/memory.min 2>/dev/null) memory.current: $(cat /sys/fs/cgroup${CG}/memory.current 2>/dev/null)"
       [ -n "$CG" ] && [ -r /sys/fs/cgroup${CG}/memory.events ] && echo "cgroup memory.events: $(tr '\n' ' ' < /sys/fs/cgroup${CG}/memory.events)"
     fi
