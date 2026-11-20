@@ -4816,3 +4816,16 @@ cold read (VmLck/VmRSS remain the truth). Operator ordered MemoryMin 53G
 (56908316672) — partly an experiment: readout = fresh scope swap.current.
 Benched-config anchor restated: trial attempt-3 = 56G/4G wall, min 51, conv
 2048; current serving differs by conv 1024 (+min 53 after this boot).
+
+## 2026-11-20 14:22 — Min-53G boot: gates PASS, scope swap ARRESTED
+
+Min-53 agent (ses_e06e31d77) complete. All gates exact (min=56908316672,
+max=60129542144, swap=4294967296; VmLck 49280040; boot 60 s; liveness 200).
+EXPERIMENT READOUT: scope swap flat 2.15->2.20 GiB (vs min-51 boot climbing
+2.06->3.19 in 60 s); si=so=0 across samples; engine VmSwap ~555 MiB flat =
+pre-restart residue (faults back on use). The 53G floor arrested global-
+reclaim swapping of scope pages. memory.current reads low (12.5G) — arena
+page-cache charge at parent cgroup, expected. Serving tuple: Min 53 / Max
+56 / Swap 4, conv 1024, self-limit 55296. Benched anchor (trial attempt-3)
+differs by conv 1024 (was 2048) and min 53 (was 51). VRAM margins held
+256/448 per standing instruction.
