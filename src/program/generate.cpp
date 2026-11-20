@@ -8259,6 +8259,12 @@ int main(int argc, char** argv) {
         }
         if (budget_mib > 0) {
             // Fail if the budget exceeds available RAM (MemAvailable / cgroup cap).
+            // Compare in MiB first: budget_mib << 20 can overflow for huge values.
+            if (budget_mib > (UINT64_MAX >> 20)) {
+                std::fprintf(stderr, "strata generate: STRATA_RAM_BUDGET_MIB=%llu: value too large\n",
+                             (unsigned long long) budget_mib);
+                return 1;
+            }
             std::optional<uint64_t> available;
             if (const auto hm = strata::core::sample_host_memory()) available = hm->available;
             if (available.has_value() && (budget_mib << 20) > *available) {
@@ -8268,13 +8274,27 @@ int main(int argc, char** argv) {
                              (unsigned long long) (*available >> 20));
                 return 1;
             }
-            // outside_owned from REAL runtime values known at this startup point:
-            //   g_kv_host_bytes — host-KV bytes tracked by layer.cpp (0 if host-KV not configured/sized yet)
+            // Managed mode must be the ONLY locked residency: refuse a native-mlock
+            // knob the operator may also have set, instead of silently double-locking.
+            if (const char* nm = std::getenv("STRATA_NATIVE_MLOCK")) {
+                const std::string nm_v = nm;
+                if (!nm_v.empty() && nm_v != "0" && nm_v != "off") {
+                    std::fprintf(stderr, "strata generate: STRATA_RAM_BUDGET_MIB and STRATA_NATIVE_MLOCK=%s are exclusive"
+                                         " (one locked residency): unset STRATA_NATIVE_MLOCK\n", nm_v.c_str());
+                    return 1;
+                }
+            }
+            // outside_owned from REAL runtime values known at this startup point.
+            // Host-KV sits outside the pool and is allocated later (layer.cpp), so the
+            // runtime tracker (qsa_kv_host_bytes) is still 0 here: charge the CONFIGURED
+            // cap from --kv-resident-mib instead (over-subtracting is safe; under is not).
             // Not yet known here (FileExpertSource opens after the pool is created):
             //   mapped GGUF shard sizes — src.mapped_bytes() after FileExpertSource opens (GGUF path)
-            //   token tables — not yet loaded at this startup point
+            //   token tables — not yet loaded at this startup point (demand-paged page cache)
             // headroom = 0: recorded decision, no invented reserve.
-            const uint64_t outside_owned = strata::core::qsa_kv_host_bytes();
+            const uint64_t kv_cap_bytes =
+                (o.kv_resident_mib > 0) ? (uint64_t) o.kv_resident_mib << 20 : 0;
+            const uint64_t outside_owned = kv_cap_bytes;
             const uint64_t headroom = 0;
             uint64_t pool_bytes = 0;
             std::error_code ec = strata::core::pool_capacity_bytes(budget_mib << 20, outside_owned, headroom, pool_bytes);
