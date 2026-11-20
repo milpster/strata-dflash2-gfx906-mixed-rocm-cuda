@@ -993,3 +993,24 @@ spread); the same empty-cache cold 80k at 40,960 MiB (no such boot, so the pool 
 confounded with the window); concurrency (every request serial); whether the 8 MiB VRAM
 trough during leg 2's decode costs anything on a following cold 80k; the 2.6 GiB of swap this
 window added beyond its 5.1 GiB residue.
+
+#### At a 38 GiB pool the conversation-cache disk tier silently does nothing
+
+Six refusals and two contradictory park lines in the cold window's elog:
+
+    conversation cache: parked to disk only (76231 tokens, snapshot 1753 MiB over the 512 MiB
+      RAM ceiling; the published generation serves the next restore; parked=0 bytes=0)
+    conversation cache: idle save skipped (disk cache: free-space refusal (3408 MiB plus a
+      floor of 4096 MiB needed, 6477 MiB free))
+
+The park announces "to disk only" and then writes nothing (`parked=0 bytes=0`); the idle save
+is refused because the disk tier wants the 3408 MiB snapshot plus a 4096 MiB free-space floor
+against the 6477 MiB the box has left while serving. At this pool size that headroom does not
+exist, so a 76k-token conversation is never checkpointed: every such request is cold, and the
+281 ms reuse measured in leg 3 came from the in-process RAM/ring state, not from disk.
+
+This is a memory-budget consequence, not a cache bug: 38 GiB of locked pool leaves ~6.5 GiB,
+and the disk tier's floor alone is 4 GiB plus the snapshot. It belongs in the budget's
+documentation - a long prompt under a big pool pays a full cold prefill every time and the
+disk tier is silently unavailable. Separately, "parked to disk only" printing `bytes=0` without
+saying "not written" is a small reporting defect worth raising on its own.
