@@ -4684,3 +4684,20 @@ Runtime locking remains blocked on expert/PLE mapping coverage and total-fit pro
   (the errored session's accumulated rounds-1-3 context is exactly what made each request
   engine-killing). Engine-side diagnosis of the exit -6 remains parked — needs a dedicated
   repro lane (smaller model context, core dumps on) before any claim.
+
+## 2026-11-20 (afternoon) — oracle verification of arena-54 attempt 3: core verified, corrections applied
+
+- Verified independently: gate (1 span, 47965/47965 MiB, VmLck 49 280 040 kB), T0/T1 probe
+  numbers exact (medians 30.3/30.45), timeline/pid coherence, sha, restore. +33% correctly
+  confound-flagged (plus a NEW confound: VRAM 284→127 MiB free during requests).
+- Corrections (applied to the analysis as a corrigendum): pressure floor 7 533 MiB (not
+  7 863); the 8 723 floor was attempt-2 bleed-through; timeout 480 s; and oom=0 was
+  UNVERIFIED — the snap's cgroup readout was empty on every snapshot (hybrid-v1 net_cls
+  line grabbed instead of the 0:: scope line). Readout fixed in the window script and
+  verified live on prod (min 48G, max unset, events readable). The trial boot's wall was
+  therefore never measured; the promoted boot must record it.
+- Framing per oracle: 'no pressure degradation' is a null result at shallow depth (T1 ran
+  at ~9.5 GiB available; the 7 GiB design point is physically unreachable with 47 GiB
+  locked — the structural un-squeezeability stands on its own: holder maxed its 49 GiB
+  cap, box floor 7.5 GiB, kernel reclaimed page cache instead). Promotion should rest on
+  mechanics + speed + structure, NOT on a pressure-depth claim this run cannot support.
