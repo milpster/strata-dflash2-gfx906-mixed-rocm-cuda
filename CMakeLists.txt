@@ -534,6 +534,23 @@ if(STRATA_BUILD_TESTS)
     add_test(NAME native_mlock_test_word_all COMMAND native_mlock_test word_all)
   endif()
 
+  # STRATA_RAM_POOL: deterministic CPU-only tests for the managed pre-locked RAM
+  # pool core (include/strata/core/ram_pool.hpp, src/core/ram_pool.cpp).  Opt-in
+  # via -DSTRATA_BUILD_RAM_POOL_TEST=ON; default OFF keeps the default path
+  # byte-identical and adds nothing to the default build.  No GPU, no large RAM
+  # locks (<= 16 MiB per scenario), no real RLIMIT changes in mock mode; a
+  # real_mock scenario exercises real mmap/mlock and /proc/self/status VmLck.
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    option(STRATA_BUILD_RAM_POOL_TEST "Build the ram_pool CPU test (opt-in)" OFF)
+    if(STRATA_BUILD_RAM_POOL_TEST)
+      add_executable(ram_pool_test tests/core/ram_pool_test.cpp src/core/ram_pool.cpp)
+      target_include_directories(ram_pool_test BEFORE PRIVATE tests/core include)
+      target_link_libraries(ram_pool_test PRIVATE ${CMAKE_DL_LIBS})
+      add_test(NAME ram_pool_test_mock COMMAND ram_pool_test mock)
+      add_test(NAME ram_pool_test_real_mock COMMAND ram_pool_test real_mock)
+    endif()
+  endif()
+
   # Simulated non-Linux guard probe: compiled with -U__linux__ to verify the
   # __linux__-guarded code paths degrade to a self-contained OFF/no-op contract.
   # This is simulated preprocessor coverage on a Linux CPU host, not a real
