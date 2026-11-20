@@ -33,6 +33,35 @@ case "${1:-}" in
 esac
 command -v ss >/dev/null
 [[ -z $(ss -H -ltn "sport = :${PORT:-8009}") ]] || { echo "REFUSING: port ${PORT:-8009} occupied." >&2; exit 1; }
+
+# Operator rule (2026-11-20): an engine test NEVER runs together with prod. Both use
+# 8009, so the port check above already makes them exclusive in the normal case; this
+# refuses loudly, by name, when a prod pair is recorded as live but has not bound yet
+# (or a pair from an older tree still holds RAM/VRAM). Vacuously true when prod is down.
+prod_live=()
+for st in "$ROOT"/run/prod*-supervisor.json; do
+  [[ -f $st ]] || continue
+  case "${st##*/}" in *affinity*|*retry*) continue ;; esac
+  pids=$("$PY" - "$st" <<'PYEOF'
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(0)
+if d.get("state") == "stopped":
+    sys.exit(0)
+print(" ".join(str(d[k]) for k in ("supervisor_pid", "launcher_pid", "helper_pid", "server_pid") if d.get(k)))
+PYEOF
+)
+  for pid in $pids; do
+    if [[ -d /proc/$pid ]]; then prod_live+=("${st##*/}:$pid"); break; fi
+  done
+done
+if ((${#prod_live[@]})); then
+  echo "REFUSING: a prod pair looks live (${prod_live[*]})." >&2
+  echo "  An engine test never runs alongside prod. Stop prod with the on-disk script first, then boot the test." >&2
+  exit 1
+fi
 [[ ! -e "$SOCKET" && ! -L "$SOCKET" ]] || { echo "REFUSING: existing socket $SOCKET" >&2; exit 1; }
 [[ ! -e "$SOCKET2" && ! -L "$SOCKET2" ]] || { echo "REFUSING: existing socket $SOCKET2" >&2; exit 1; }
 for file in "$PY" "$HELPER" "$BIN/rpcw-hip/strata"; do
