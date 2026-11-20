@@ -5185,3 +5185,22 @@ binding. Cache eviction drops its own reference; borrowers retain storage.
 Unadapted raw/alias consumers block managed-source activation. Runtime
 budget creation, host-KV mapping and whole-stack admission remain later.
 No engine changes, boots, GPU work or production configuration changes.
+
+## 2026-11-20 — bounded lease-owned cache implementation starts
+
+Parent read the 67-line L2 boundary report. Accepted the cache ownership
+direction, with an explicit amendment: the CPU cache takes a synchronous
+reader callback, not a direct call into private GPU-linked copy_from_files.
+One LRU list suffices. Hits validate the requested size. Eviction drops only
+cache refs; a borrower can still prevent admission. Failed pressure/read
+may evict cache refs but must preserve the caller's output and publish no
+partial entry. Default acquisition must preserve legacy behavior, and a
+failed GPU sync must never be treated as proven quiescence.
+
+Sole remote Nemotron fixer ses_e05eaa0dbfferwffIwLodGv9Pa owns only a new
+pool_expert_cache header/cpp/test and its existing opt-in CMake block. Its
+small immutable fixture must prove read bytes, eviction/reload, borrower
+retention and actual expert-to-other-owner reuse of the same pool storage.
+This intermediate commit is infrastructure, not completed L2: production
+reader bounds, actual consumer binding and primary-store activation still
+follow. No runtime knob, extra arena, GPU work or production change.
