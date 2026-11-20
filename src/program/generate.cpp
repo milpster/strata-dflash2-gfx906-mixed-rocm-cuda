@@ -17234,6 +17234,7 @@ int main(int argc, char** argv) {
                 const int64_t live = xcache.slots();
                 std::string ferr;
                 std::vector<std::pair<int32_t, int32_t>> keep_out;
+                std::vector<strata::core::PoolLease> leases;
                 for (const auto& [i, slot] : vram_evicted) {
                     if (slot >= live) { keep_out.emplace_back(i, slot); continue; }
                     const int64_t layer = i / g.n_expert;
@@ -17249,17 +17250,44 @@ int main(int argc, char** argv) {
                         }
                     }
                     if (pick < 0) continue;
-                    const uint8_t* b = srcp->blob_stable(layer, pick % g.n_expert);
-                    if (b == nullptr || !xcache.fill_slot_queued_staged(slot, b, ferr,
-                            (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(layer))) {
-                        e = "VRAM: refilling the cache failed: " + ferr;
-                        return false;
+                    if (g_pool_expert_store != nullptr) {
+                        // Managed path: PoolExpertStore-backed lease.  The lease owns the host
+                        // memory until sync_queued reports the batch quiesced; a queued
+                        // cudaMemcpyAsync reads the lease memory asynchronously.
+                        strata::core::PoolLease lease;
+                        const int64_t expert = pick % g.n_expert;
+                        if (const std::error_code ec = g_pool_expert_store->acquire(layer, expert, lease)) {
+                            ferr = ec.message();
+                            if (!leases.empty()) (void) cudaDeviceSynchronize();
+                            e = "VRAM: refilling the cache failed: " + ferr;
+                            return false;
+                        }
+                        const int64_t nb = (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(layer);
+                        if (lease.data() == nullptr ||
+                            !xcache.fill_slot_queued_staged(slot, (const uint8_t*) lease.data(), ferr, nb)) {
+                            if (!leases.empty()) (void) cudaDeviceSynchronize();
+                            e = "VRAM: refilling the cache failed: " + ferr;
+                            return false;
+                        }
+                        leases.push_back(std::move(lease));
+                        host_res[(size_t) pick] = slot;
+                    } else {
+                        const uint8_t* b = srcp->blob_stable(layer, pick % g.n_expert);
+                        if (b == nullptr || !xcache.fill_slot_queued_staged(slot, b, ferr,
+                                (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(layer))) {
+                            e = "VRAM: refilling the cache failed: " + ferr;
+                            return false;
+                        }
+                        srcp->note_async_read(b, nullptr);   // #1237: the queued copy reads a stage buffer; it is not recycled under it
+                        host_res[(size_t) pick] = slot;
                     }
-                    srcp->note_async_read(b, nullptr);   // #1237: the queued copy reads a stage buffer; it is not recycled under it
-                    host_res[(size_t) pick] = slot;
                 }
                 vram_evicted.swap(keep_out);
-                if (!xcache.sync_queued(ferr)) { e = "VRAM: " + ferr; return false; }
+                if (!xcache.sync_queued(ferr)) {
+                    if (!leases.empty()) (void) cudaDeviceSynchronize();
+                    e = "VRAM: " + ferr; return false;
+                }
+                leases.clear();
                 res_upload();
             }
             relend();
@@ -20428,10 +20456,31 @@ int main(int argc, char** argv) {
             // STRATA_REFILL_OVERLAP=1: the final refill's marks are deferred to refill_complete below.  A queued
             // fill leaves its pair kNotResident until its copy lands: the windows in flight read it over PCIe
             // (dispatch kind 1) from the SAME host bytes the fill is reading, never from the half-written slot.
+            std::vector<strata::core::PoolLease> leases;
             auto refill_issue = [&](PfPart& p, std::string& e, const bool deferred = false) -> bool {
                 tr("refill start", (long long) p.lent.size());
                 const strata::core::OnDevice on(p.dev);
                 for (const auto& [i, slot] : p.lent) {   // D-4: queued, one wait (STRATA_REFILL_BLOCKING=1: each)
+                    if (g_pool_expert_store != nullptr) {
+                        strata::core::PoolLease lease;
+                        const int64_t layer = i / g.n_expert;
+                        const int64_t expert = i % g.n_expert;
+                        if (const std::error_code ec = g_pool_expert_store->acquire(layer, expert, lease)) {
+                            e = ec.message();
+                            if (!leases.empty()) (void) cudaDeviceSynchronize();
+                            return false;
+                        }
+                        const int64_t nb = (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(layer);
+                        if (lease.data() == nullptr ||
+                            !(refill_blocking() ? p.cache->fill_slot_blocking(slot, (const uint8_t*) lease.data(), e, nb)
+                                                : p.cache->fill_slot_queued_staged(slot, (const uint8_t*) lease.data(), e, nb))) {
+                            if (!leases.empty()) (void) cudaDeviceSynchronize();
+                            return false;
+                        }
+                        leases.push_back(std::move(lease));
+                        if (!(deferred && !refill_blocking())) host_res[(size_t) i] = slot;
+                        continue;
+                    }
                     strata::core::BlobPart parts[3];
                     const int np = refill_parts && !refill_blocking() ? srcp->blob_parts(i / g.n_expert, i % g.n_expert, parts) : 0;
                     if (np > 0) {   // the GGUF read in place: the tensors' pieces go from the mapping to the slot, no assembled copy
@@ -20471,11 +20520,17 @@ int main(int argc, char** argv) {
             };
             auto refill_wait = [&](PfPart& p, std::string& e) -> bool {
                 const strata::core::OnDevice on(p.dev);
-                if (!p.cache->sync_queued(e)) return false;
+                if (!p.cache->sync_queued(e)) {
+                    if (!leases.empty()) (void) cudaDeviceSynchronize();
+                    return false;
+                }
+                leases.clear();
 #if defined(_WIN32)
-                // The copies have landed: the file pages touched by the loan need not stay in the working set.
-                for (const auto& [i, slot] : p.lent)
-                    srcp->release(i / g.n_expert, i % g.n_expert);
+                if (g_pool_expert_store == nullptr) {
+                    // The copies have landed: the file pages touched by the loan need not stay in the working set.
+                    for (const auto& [i, slot] : p.lent)
+                        srcp->release(i / g.n_expert, i % g.n_expert);
+                }
 #endif
                 p.lent.clear();
                 p.lent_chunk = 0;
