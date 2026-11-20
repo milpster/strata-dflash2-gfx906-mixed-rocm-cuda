@@ -102,10 +102,11 @@
     "STRATA_GRAPH_FAMILY_TRIM": "8",
     "STRATA_PREFILL_MMQ": "0",
     "STRATA_AUX_CPUS": "3,5,7,9,11,13,15",
-    "STRATA_NATIVE_MLOCK": "arena"
+    "STRATA_NATIVE_MLOCK": "arena",
+    "STRATA_ARENA_MMAP": "1"
   },
   "env_to_user": true,
-  "exe": "/mnt/srcds/Strata/v0238p0/rpcw-hip/strata",
+  "exe": "/mnt/srcds/Strata/v0239/rpcw-hip/strata",
   "expert_helper_slots": 4600,
   "expert_helper_socket": "/mnt/srcds/Strata/run/trial-arena54.sock",
   "expert_helper_socket2": "/mnt/srcds/Strata/run/trial-arena54-2.sock",
@@ -121,7 +122,7 @@
     "/home/srcds/rocm-gfx906-xnack/lib",
     "/opt/rocm-6.1.0/lib"
   ],
-  "log": "/mnt/srcds/Strata/logs/engine-prod-ud-iq3xxs-v0233.log",
+  "log": "/mnt/srcds/Strata/logs/engine-trial-arena54-20261120.log",
   "model_name": "ud-iq3_xxs",
   "port": 8019,
   "reasoning_budget_tokens": 55000,

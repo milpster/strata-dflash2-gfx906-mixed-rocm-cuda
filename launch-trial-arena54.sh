@@ -1,13 +1,29 @@
 #!/usr/bin/env bash
-# Trial launcher: arena-resize arm 1 (relief hot 24000 / cap 28000 MiB) on :8019.
-# Derived from launch-v0238.sh (same binaries v0238p0, same pair-supervisor flow);
-# differences: trial config/sockets/state/log-tag, port 8019, raised engine memory
-# limit (51200 -> 56320 MiB) and cgroup MemoryMin (48G -> 50G) to let the bigger
-# arena actually populate. Prod boots ONLY through launch-v0238.sh; never this one.
+# Trial launcher: the arena-54 arm on :8019. Binaries are the frozen pin
+# /mnt/srcds/Strata/v0239 (rpcw-hip/strata + rpcw-cuda/strata-expert-helper-patient;
+# hashes in v0239/SHA256SUMS.txt), not a live build tree.
+# Design: the shared expert arena becomes a file-backed mmap of the pack's experts.bin
+# (STRATA_ARENA_MMAP=1) and only that one span gets mlocked (STRATA_NATIVE_MLOCK=arena),
+# so one consecutive chunk of page-cache pages holds the engine's hot expert world and
+# survives memory reclaim instead of being dropped and re-read. Both variables come from
+# the config's "env" block (trial-config-arena54.json), which serve/server.py child_env()
+# puts into the engine's environment; the -u STRATA_ARENA_MMAP further down clears it only
+# from this host process, so it does not stop the engine from getting it.
+# Memory wall (oracle ruling, 2026-11-20): the arena is a fixed 46.84 GiB, so 54G left no
+# margin - the cgroup gets MemoryMax=56G, MemoryMin=51G, MemorySwapMax=4G (a bounded
+# thrash ceiling rather than an unbounded one), and the engine self-limits at
+# STRATA_MEMORY_LIMIT_MIB=55296 (54 GiB), i.e. 2 GiB below the wall. All three props are
+# env-tunable: STRATA_TRIAL_MEMORY_MAX / STRATA_TRIAL_MEMORY_MIN / STRATA_TRIAL_SWAP_MAX,
+# and the value "none" leaves that -p prop out altogether (a first boot on a pack that has
+# no experts.bin yet needs the cap lifted, or the write of a 50 GiB file gets OOM-killed).
+# FIRST RUN: that uncapped boot is the arena pre-generation boot - it loads the anonymous
+# arena and writes the file; it is NOT a measured boot. bench/ab-v0210/rpcprof/gpu-rounds/
+# arena54-window-20261120.sh runs it as its pre-gen phase and asserts the file's size.
+# Prod boots ONLY through launch-prod-swift15.sh; never this one.
 set -euo pipefail
 ROOT=${STRATA_PROD_TREE:-/mnt/srcds/Strata}
 WORK="$ROOT/v0215"
-BIN="/mnt/srcds/Strata/v0238p0"
+BIN="/mnt/srcds/Strata/v0239"
 PY="$ROOT/.venv/bin/python"
 CONFIG="/mnt/srcds/Strata/trial-config-arena54.json"
 SOCKET="$ROOT/run/trial-arena54.sock"
@@ -77,15 +93,26 @@ for ((i=0; i<60; i++)); do
   sleep 1
 done
 [[ -S "$SOCKET" && -S "$SOCKET2" ]] || { echo "Second channel socket missing: $SOCKET2" >&2; exit 1; }
-echo "Starting TRIAL mixed backend (arena-54 world: MemoryMax=54G, mlock arena) on 127.0.0.1:8019; log: $LOG; helper: $HLOG"
+# Cgroup memory props (defaults: the 56G wall, the 51G floor, a 4G swap ceiling).
+# STRATA_TRIAL_MEMORY_MAX / _MIN / STRATA_TRIAL_SWAP_MAX override each one; the value
+# "none" omits that -p prop entirely, which is what the arena pre-generation boot needs
+# (writing a 50 GiB experts.bin under a 56G cap would race the same memory it reserves).
+mem_max=${STRATA_TRIAL_MEMORY_MAX-56G}
+mem_min=${STRATA_TRIAL_MEMORY_MIN-51G}
+mem_swap=${STRATA_TRIAL_SWAP_MAX-4G}
+cgroup_props=()
+for prop in "MemoryMax=$mem_max" "MemoryMin=$mem_min" "MemorySwapMax=$mem_swap"; do
+  [[ -z ${prop#*=} || ${prop#*=} == none ]] || cgroup_props+=("-p" "$prop")   # empty or "none": omit the prop
+done
+echo "Starting TRIAL mixed backend (arena-54 world: mmap arena + mlock; cgroup props: ${cgroup_props[*]:-none}) on 127.0.0.1:8019; log: $LOG; helper: $HLOG"
 cd "$WORK"
 env -u CUDA_VISIBLE_DEVICES -u STRATA_ARENA_MMAP -u GPU_PINNED_MIN_XFER_SIZE \
   -u HSA_USERPTR_FOR_PAGED_MEM -u LD_PRELOAD \
   HSA_OVERRIDE_GFX_VERSION=9.0.6 GPU_MAX_ALLOC_PERCENT=100 STRATA_WATCHDOG_S=120 \
-  STRATA_MEMORY_LIMIT_MIB=53760 \
+  STRATA_MEMORY_LIMIT_MIB=55296 \
   STRATA_ENGINE_READY_S=2400 \
   LD_LIBRARY_PATH=${STRATA_ROCM_ROOT:-/home/srcds/rocm-gfx906-xnack}/lib:/opt/rocm-6.1.0/lib \
-  systemd-run --user --scope -p MemoryMin=51G -p MemoryMax=54G \
+  systemd-run --user --scope ${cgroup_props[@]+"${cgroup_props[@]}"} \
   "$PY" "$WORK/serve/server.py" --engine strata --config "$CONFIG" --port 8019 \
   >>"$LOG" 2>&1 < /dev/null &
 server_pid=$!
