@@ -5331,3 +5331,26 @@ Same sole remote Nemotron now owns only bounded_direct_reader_test.cpp.
 Final acceptance requires actual raw logs and same-pool scratch/reuse evidence;
 the reader remains unaccepted. Native layout, real GPU consumers and total
 serving-stack admission remain undone. Production remains stopped.
+
+## 2026-11-20 — bounded reader CPU evidence accepted
+
+Parent read 4f9e071's complete test and real log, then fixed the remaining
+skip classification, callback-size refusal, unaligned scratch and second-
+window EIO checks. An initial parent test compile typo failed exit 1 and
+was corrected; its raw log is preserved, not replaced with the passing run.
+
+| Final parent check | Result |
+|---|---|
+| Combined targeted CPU tests | exit 0; 16/16, no skips |
+| ASan/UBSan selected tests | exit 0; 4/4 |
+| Default unset pool-test option | all 4 corresponding targets absent; zero tests |
+| Simulated non-Linux reader guard compile | exit 0; not a native platform build |
+| Reader fixture | 103 assertions; 18 pread calls, zero flag/buffer/cap violations |
+| Same-pool mapping/scratch | 64 KiB / 4 KiB; final mappings zero |
+
+Raw final logs/statuses: engine-worktree
+bench/ab-v0210/rpcprof/out/managed-ram-pool-20261120/reader/final-cpu/recheck/.
+The worktree journal records exact commands and limits. Accept the bounded
+reader/cache component, not completed L2 or a serving feature. Native layout
+and actual consumer ownership still follow; total-stack admission and host KV
+are later. No real model reads, GPU work, boot, promotion or speed claim.
