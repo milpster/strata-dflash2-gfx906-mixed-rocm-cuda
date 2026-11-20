@@ -5252,3 +5252,28 @@ full-byte fixture and length comparison, a true LRU hit/reload sequence,
 borrower-held cache refusal, measured mapping peak and exact final cleanup.
 Parent runs final focused CPU/sanitizer/default-OFF checks after reconciliation.
 71ad81a's pool error distinction is included in that revalidation. Prod stays off.
+
+## 2026-11-20 — CPU expert-cache component verified; real reader still pending
+
+Parent inspected d642f90007's full test and raw 124-check log, then corrected
+the remaining decisive gaps directly. Fixture bytes now differ across page
+offsets, metadata failures act on the actual populated output, both hooks
+stay armed through release, and cache admission itself is tested while a
+borrower prevents storage reuse. No production model or GPU call was used.
+
+| Parent final check | Result |
+|---|---|
+| Combined pool/cache/native-lock build and targeted ctest | exit 0; 15/15, no skips; cache 132 assertions |
+| ASan/UBSan mock pool, simulated non-Linux probe, cache | configure/build/test exit 0; 3/3 |
+| Default unset opt-in, full Ninja targets and test registration | exit 0; all 3 pool/cache targets absent; zero tests |
+| Actual pool lock lifecycle, KiB | 0 / 64 / 64 / 64 / 0 |
+| Cache mapping peak/final | 262144 B / 0; limit 1048576 B; matched map/unmap |
+
+Raw output/statuses: engine-worktree
+bench/ab-v0210/rpcprof/out/managed-ram-pool-20261120/cache/final-cpu/.
+Worktree journal records exact command filters/options and evidence limits.
+Parent accepts the CPU cache component over the reconciled allocator. It
+proves retained borrowers and same-pool cross-owner storage reuse, not a
+production expert reader or whole-serving RAM budget. No source edit follows
+the final tests; next is real reader/lease-bearing consumer binding.
+Production remains down; no speed or startup-hang remedy is claimed.
