@@ -618,6 +618,26 @@ if(STRATA_BUILD_TESTS)
       endif()
       add_test(NAME pool_expert_store_test COMMAND pool_expert_store_test ${CMAKE_BINARY_DIR})
       set_tests_properties(pool_expert_store_test PROPERTIES TIMEOUT 15)
+
+      # PoolExpertSourceAdapter over the same RAM pool (opt-in, same guard).
+      # CPU-only TU: no CUDA headers; the async-note hook is injected (the CUDA
+      # event implementation comes with Task 2/engine wiring). Default OFF.
+      add_executable(pool_expert_source_adapter_test
+                     tests/core/pool_expert_source_adapter_test.cpp
+                     src/core/pool_expert_source_adapter.cpp
+                     src/core/pool_expert_store.cpp
+                     src/core/pool_expert_cache.cpp
+                     src/platform/bounded_direct_reader.cpp
+                     src/core/ram_pool.cpp)
+      target_include_directories(pool_expert_source_adapter_test BEFORE PRIVATE tests/core include)
+      target_compile_definitions(pool_expert_source_adapter_test PRIVATE STRATA_RAM_POOL_TEST)
+      target_link_libraries(pool_expert_source_adapter_test PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
+      if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_link_options(pool_expert_source_adapter_test PRIVATE
+          -Wl,--wrap=mmap -Wl,--wrap=mlock -Wl,--wrap=munmap -Wl,--wrap=munlock -Wl,--wrap=pread)
+      endif()
+      add_test(NAME pool_expert_source_adapter_test COMMAND pool_expert_source_adapter_test ${CMAKE_BINARY_DIR})
+      set_tests_properties(pool_expert_source_adapter_test PROPERTIES TIMEOUT 15)
     endif()
   endif()
 

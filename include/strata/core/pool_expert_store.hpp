@@ -83,6 +83,11 @@ public:
     int64_t n_layers() const noexcept { return n_layers_; }
     int64_t n_expert() const noexcept { return n_expert_; }
     uint64_t total() const noexcept { return total_; }
+    /// Per-expert bytes for `layer` (from the snapshot); 0 when invalid.
+    uint64_t blob_bytes(int64_t layer) const noexcept {
+        if (layer < 0 || layer >= n_layers_) return 0;
+        return layers_[(size_t)layer].bytes;
+    }
     /// Bytes reserved for scratch (page-aligned, same pool).  Zero until open.
     uint64_t scratch_bytes() const noexcept { return scratch_.valid() ? scratch_.size() : 0; }
 
