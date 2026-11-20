@@ -1014,3 +1014,105 @@ and the disk tier's floor alone is 4 GiB plus the snapshot. It belongs in the bu
 documentation - a long prompt under a big pool pays a full cold prefill every time and the
 disk tier is silently unavailable. Separately, "parked to disk only" printing `bytes=0` without
 saying "not written" is a small reporting defect worth raising on its own.
+
+## Helper allocation +128 MiB, same 43,008 MiB pool — 2026-11-21 (measured)
+
+Window: pool 43,008 MiB unchanged, device reserves 192/192 unchanged, the helper's RTX 3080
+given 128 MiB more room. The two knobs had to move together: the last boots stopped on
+`fill stopped: fill-mib`, i.e. the fill hit its `--fill-mib` cap (6796) before its budget
+(6816.2 MiB), so lowering the reserve alone would have changed nothing.
+
+    STRATA_HELPER_RESERVE=384    (reserve 512 -> 384)
+    STRATA_FILL_MIB=6924         (cap 6796 -> 6924)
+
+Config `bench/ab-v0210/rpcprof/trial-managed-pool-cold-3g.json`, empty conversation-cache
+dir (`run/diet-cache-cold-3g`), port 8009, engine `/mnt/srcds/Strata-wt-helper-ipc/build-906/strata`.
+
+### The helper's own lines prove the env arrived
+
+    fill preflight: device free 7516 MiB of 7842 MiB, budget 6944.2 MiB (reserve 384 MiB,
+      scratch 672000 B, buffers 180098776 B), slots cap 4600, fill-mib cap 6924
+    filled 4377 slots (6.76 GiB), scratch 672000 B, buffers 180098776 B
+    fill stopped: fill-mib; device free now 590 MiB of 7842 MiB (4377 slots, 6.76 GiB uploaded)
+
+The 512/6796 boots read `budget 6816.2 MiB ... fill-mib cap 6796`, `filled 4250 slots
+(6.64 GiB)`, `device free now 718 MiB`. So: +127 slots, +0.12 GiB resident, and the freed
+128 MiB is genuinely occupied (free after fill 718 -> 590 MiB). The engine agrees on the
+engine side: `expert-helper proxy: 4377 experts ... 6.76 GiB (fill report)`, and
+`RAM pool store: pool_bytes=40802189312` with `STRATA_RAM_BUDGET_MIB=43008:
+outside_owned=4294967296 pool_bytes=40802189312 store open`.
+
+### Three legs
+
+| leg | what | prompt tokens | prefill | decode | hit | PCIe | helper on that leg |
+|---|---|---|---|---|---|---|---|
+| H1 | cold, 32 max | 59 = 0 reused | 3691 ms (16.0 tok/s) | 16 gen in 1236 ms (12.9 tok/s) | 85.7% | 16.4% | reqs=176 rows=1258 bytes=12,881,920 |
+| H2 | **cold 80k, 2048 max** | 74,635 = **0 reused** + 74,635 read | **298,634 ms (249.9 tok/s, 4.00 ms/token)** | 1536 gen in 76,464 ms (**20.1 tok/s**) | **95.7%** | **13.5%** | reqs=25,132 rows=119,406 bytes=1,222,717,440 |
+| H3 | warm repeat | 74,635 = 74,630 reused + 5 read | 252 ms | 1540 gen in 59,786 ms (25.8 tok/s) | 95.3% | 13.2% | reqs=23,389 rows=115,807 bytes=1,185,863,680 |
+
+H2's cold proof is exact: `prompt 74635 tokens = 0 reused + 74635 read in 298634 ms`, no
+`restored ... from disk`, empty cache dir, `drafts accepted 818 of 1131, 5 checkpoints,
+timeouts=0 fallbacks=0`.
+
+### Comparison, and what is comparable
+
+| row | prefill | ms/token | decode | hit | PCIe | helper rows / bytes |
+|---|---|---|---|---|---|---|
+| 43,008, helper 512/6796 (cold-2g) | 259.7 tok/s | 3.85 | 19.8 | 95.0% | 13.1% | 116,334 / 1,191,260,160 (reqs=23,383) |
+| **43,008, helper 384/6924 (this)** | **249.9** | **4.00** | **20.1** | **95.7%** | **13.5%** | **119,406 / 1,222,717,440 (reqs=25,132)** |
+| 40,960 (pool window) | 280.2 | 3.57 | 20.2 | - | - | 122,350 / 1,252,864,000 (reqs=27,520) |
+
+All three are the same protocol (chat, `infill_measure.py`, 74,635-token prompt, 2048 max,
+cold cache) and are therefore comparable. Verdict: the extra 128 MiB did not move anything
+beyond the spread these windows already show. Prefill sits 3.8% below the 512/6796 row and
+10.8% below the 40,960 row - at the low end of the 249.9-259.7 band the same budget has
+produced, not a gain, and one leg cannot tell a real 4% loss from noise. Decode is flat
+(20.1 vs 19.8 vs 20.2). Hit rate +0.7 pt, PCIe share +0.4 pt and helper work +2.6% rows /
++2.6% bytes all land inside the reference rows' own spread (rows 116k-122k, bytes 1.19-1.25
+GB), and the helper carried *more* rows with more slots resident, not fewer. No speed claim
+is made from anything but the engine's own lines.
+
+### Memory (sampler, 5 s, 113 samples)
+
+VmLck 39,072 MiB flat (the pool lock; `pool_bytes` 38,912 MiB plus overhead), VmRSS peak
+47,780 MiB, MemAvailable min 7,236 MiB. Swap: 4,771 MiB at sampler start, 7,157 at the end,
+peak 7,161 - and 3,177 MiB of that was already residue before the boot, so this window added
+~4.0 GiB. Same boot-state confound as the cold window; named, not explained.
+
+### Hygiene
+
+Zero `no blob`, zero `refill failed`, zero `no_buffer_space` in the boot's elog; every leg
+carries `timeouts=0 fallbacks=0`. Two rewind lines, both benign: `the draft ring for the
+rewind to 74630 restored from its pair (captured at 74630 tokens)` (elog:119 and 126). VRAM
+warnings quoted and not acted on: 220 MiB at load and at H1's start (suggests 484/512), CUDA1
+360 MiB (suggests 600), and 8 MiB at the start of the 76,189-token follow-up after H2
+(suggests 704). The verify-window captures all succeeded (77.2, 87.0, 14.4, 8.7, 17.0, 8.0 ms,
+no upload/sync error) and H2 still decoded at 20.1 tok/s through that thin margin.
+
+### Deviation worth recording
+
+The elog carries two 76,189-token follow-up requests that no client of this window issued
+(elog:115, 260 tokens; elog:129, 84 tokens). Both follow an 80k leg, both restore warm
+(76,170 / 74,630 reused), and an `ss` sample during a controlled 59-token probe showed only
+this window's client connected. The identical shape (76,189 tokens; 43/28/152/213 tokens)
+appears in the cold-2g and pool windows' logs, so it is a pre-existing artifact of the window
+protocol rather than an effect of the helper change. It overlapped H3's launch by ~7 s; H3's
+own line is a clean restore (`74630 reused + 5 read in 252 ms`), so H3 is reported as it
+stands and H2 (the row) is untouched by it - H2 had already finished when the first follow-up
+arrived.
+
+Teardown: sampler TERM'd by its explicit pid (4139432, from `/proc/<pid>/cmdline`), csv frozen;
+`./stop-all.sh` alone (`TERM 4057939 4057941 4057957 4058714 4059529`, `KILL 4057941 4058714`,
+"before=0 after=0 - ALL STOPPED"); `check-quiet.sh` in its own invocation (QUIET, exit 0).
+No sockets left, ports 8009 and 8019 free.
+
+Raw files, main tree
+`/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/managed-ram-pool-20261120/trial-window-helper/`: `boot-helper.log`,
+`legs-helper.log`, `legs-engine-lines.txt`, `mem-helper.csv`, `H{1,2,3}.{json,txt}`,
+`prompt-h1.txt`, `probe-conns.log`, `status.txt`.
+
+Still UNMEASURED: a second cold 80k in this boot (repeatability against the 5-10% band above);
+the same helper allocation at 40,960 MiB, so pool size and helper slots stay mutually
+confounded; whether the 127 extra slots change steady-state hit rate over a longer run than
+one leg; concurrency (every request serial); the origin of the 76,189-token follow-up
+requests; the ~4.0 GiB of swap this window added.
