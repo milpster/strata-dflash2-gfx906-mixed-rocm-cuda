@@ -302,7 +302,7 @@ bash "$G/trial_judge_8019.sh" T0-arena54-nopress 4 2>&1 | tee -a "$OUT/probe.log
 # From here to the end of the pressure leg the window holds the box at ~7 GiB available; the
 # trap armed after on_signal() covers this phase too (re-arming would be a no-op anyway).
 rm -f "$OUT/pressure.hold"
-python3 "$G/ram_pressure.py" --target-mib $PRESS_TARGET --cap-mib 40000 --hold-file "$OUT/pressure.hold" > "$OUT/pressure.log" 2>&1 &
+python3 "$G/ram_pressure.py" --target-mib $PRESS_TARGET --cap-mib 49000 --hold-file "$OUT/pressure.hold" > "$OUT/pressure.log" 2>&1 &
 PRESSURE=$!
 touch "$OUT/pressure.hold"
 t0=$SECONDS
