@@ -5332,7 +5332,31 @@ Final acceptance requires actual raw logs and same-pool scratch/reuse evidence;
 the reader remains unaccepted. Native layout, real GPU consumers and total
 serving-stack admission remain undone. Production remains stopped.
 
-## 2026-11-20 — bounded reader CPU evidence accepted
+## 2026-11-20 — dynamic-layout store accepted; consumer lane starts
+
+Parent verified 674a0d4cc5 against raw logs: 17/17 targeted CPU tests,
+5/5 sanitizer tests, off-tree target graph and CTest listing clean, store
+fixture 135 assertions with full byte equality on a real native ExpertLayout
+and on the canonical BLOB path. Parent first fixed a real open/close mutex
+race and dead header declaration in b988202, and preserved its own one
+failing-run log (a wrong test expectation, not a store defect).
+
+| Component | Commit | Status |
+|---|---|---|
+| L1 pool core | 3cfc554 (+71ad81a error split) | accepted |
+| L2 lease-owned cache | 38fe50f | accepted |
+| L2 bounded O_DIRECT reader | 07d2de6 | accepted |
+| L2 dynamic-layout store | b988202 + 674a0d4cc5 | accepted |
+
+Next lane: bind the lent-slot refill consumer (generate.cpp:24032-24056) to
+the store through a null-by-default pointer seam — no public budget knob
+(pool construction stays L3), legacy path byte-identical, lease copies held
+through xcache.sync_queued() and retained on failure until teardown. Compile
+evidence via the worktree's configured build-906 (gfx906 recipe); no boots,
+no GPU runs, no promotion. All other raw-pointer consumers remain unadapted
+and block any engine-wide managed activation.
+
+## 2026-11-20 — bounded reader CPU evidence accepted (restored heading)
 
 Parent read 4f9e071's complete test and real log, then fixed the remaining
 skip classification, callback-size refusal, unaligned scratch and second-
