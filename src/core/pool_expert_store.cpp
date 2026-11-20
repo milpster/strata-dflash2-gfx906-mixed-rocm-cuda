@@ -151,7 +151,12 @@ std::error_code PoolExpertStore::prepare_geometry(const strata::kernels::cpu::Ex
 
     // total extent must equal layout.total and the file size.
     if (prev_end > layout.total) return std::make_error_code(errc::invalid_argument);
-    if (file_size != layout.total) return std::make_error_code(errc::invalid_argument);
+    // The file either holds exactly the layout's expert bytes, or those bytes plus the ONE spare blob the engine's own
+    // STRATA_ARENA_MMAP writer appends (expert_file_bytes_ok, expert_layout.hpp) - the pack on this box is that form:
+    // 48 layers x 512 blobs = 50292326400 B of data, then one 2662400 B max blob of padding.  Both sizes are the same
+    // expert geometry (the offsets and blob sizes above are unchanged); any other size is still refused.
+    if (!strata::kernels::cpu::expert_file_bytes_ok(layout, file_size))
+        return std::make_error_code(errc::invalid_argument);
 
     prepared.n_layers = n_layers;
     prepared.n_expert = n_expert;

@@ -565,6 +565,61 @@ int main(int argc, char** argv) {
         check(!fresh2.valid(), "overflow: store not open");
     }
 
+    // ---- 6c2. the padded experts.bin the engine's own arena writer leaves --
+    // expert_source.cpp's STRATA_ARENA_MMAP writer appends ONE spare blob (lay.max_blob) to the layout's expert
+    // bytes so that a whole-slot copy may start at any expert; the pack on this box (iq3xxs-ud) is that form:
+    // 50,292,326,400 B of experts + one 2,662,400 B pad = 50,294,988,800 B.  The store must describe that file's
+    // real geometry (same offsets and blob sizes, the pad never read) and still refuse any other size.
+    {
+        Pool pool;
+        auto ec = make_pool(pool, 256ull << 10);
+        check(!ec, "create pool for padded fixture");
+
+        ExpertLayout layout;
+        build_layout(layout);   // total 28192, max_blob 5000
+        std::string padded = g_full_data;
+        padded.append((size_t) layout.max_blob, '\0');   // the spare blob
+
+        const std::string padded_path = build_dir + "/expert_store_padded_20261120.bin";
+        if (!write_file(padded_path, padded)) { std::fprintf(stderr, "FAIL: write padded\n"); std::abort(); }
+
+        PoolExpertStore store(pool);
+        ec = store.open(padded_path.c_str(), layout);
+        check(!ec, "open padded (+one max blob) fixture");
+        check(store.valid(), "padded: store valid");
+        check(store.total() == layout.total, "padded: total is the expert bytes, not the file size");
+
+        // The pad is never read: every payload is the same bytes as in the unpadded fixture.
+        for (int64_t l = 0; l < 3; ++l) {
+            PoolLease out;
+            auto ec2 = store.acquire(l, 3, out);
+            check(!ec2 && region_matches(out.data(), expert_file_offset(l, 3), expert_bytes(l)),
+                  "padded: last expert of every layer byte-exact");
+        }
+
+        // Any other size stays refused: one byte short of the pad, and two pad blobs.
+        std::string short_pad = g_full_data;
+        short_pad.append((size_t) layout.max_blob - 1, '\0');
+        const std::string short_path = build_dir + "/expert_store_pad_short_20261120.bin";
+        if (!write_file(short_path, short_pad)) { std::fprintf(stderr, "FAIL: write\n"); std::abort(); }
+        PoolExpertStore fresh(pool);
+        auto ec_short = fresh.open(short_path.c_str(), layout);
+        check(ec_short == std::make_error_code(std::errc::invalid_argument),
+              "one byte short of the pad is rejected");
+        check(!fresh.valid(), "short pad: store not open");
+        check(store.valid(), "short pad: existing store preserved");
+
+        std::string two_pads = padded;
+        two_pads.append((size_t) layout.max_blob, '\0');
+        const std::string two_path = build_dir + "/expert_store_pad_two_20261120.bin";
+        if (!write_file(two_path, two_pads)) { std::fprintf(stderr, "FAIL: write\n"); std::abort(); }
+        PoolExpertStore fresh2(pool);
+        auto ec_two = fresh2.open(two_path.c_str(), layout);
+        check(ec_two == std::make_error_code(std::errc::invalid_argument),
+              "two pad blobs are rejected");
+        check(!fresh2.valid(), "two pads: store not open");
+    }
+
     // ---- 6d. never-opened + closed stores refuse acquire --------------------
     {
         Pool pool;
