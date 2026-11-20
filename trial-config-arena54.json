@@ -103,7 +103,8 @@
     "STRATA_PREFILL_MMQ": "0",
     "STRATA_AUX_CPUS": "3,5,7,9,11,13,15",
     "STRATA_NATIVE_MLOCK": "arena",
-    "STRATA_ARENA_MMAP": "1"
+    "STRATA_ARENA_MMAP": "1",
+    "GPU_PINNED_MIN_XFER_SIZE": "0"
   },
   "env_to_user": true,
   "exe": "/mnt/srcds/Strata/v0239/rpcw-hip/strata",
