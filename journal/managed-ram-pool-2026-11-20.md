@@ -767,3 +767,29 @@ UNMEASURED: sustained load and concurrency; a second 80k request in the same pro
 (warm cache); a pool-vs-non-pool baseline on this box and window; and the decode-side
 refill's own simultaneous-lease requirement (up to lent x blob bytes), which is the same
 shape of exposure as the two walls fixed here but did not refuse in this run.
+
+#### Evidence location, and one figure in it that must not be quoted
+
+The raw files behind the table above were written into the worktree's bench tree
+(`/mnt/srcds/Strata-wt-helper-ipc/bench/ab-v0210/rpcprof/out/managed-ram-pool-20261120/trial-window/`).
+They are now also in the main tree at
+`bench/ab-v0210/rpcprof/out/managed-ram-pool-20261120/trial-window/`: `boot-boot2.log`,
+`server-boot2.log`, `helper-boot2.log`, `engine-elog-boot2.txt`, `mem-stream-fix.csv`,
+`legs-stream-fix.log`, `infill80k-stream.{json,txt,log}`, `leg1-short-cold.*`,
+`leg2-warm256.*`, `status-fix.txt`.
+
+`infill80k-stream.json` says `decode_tok_s: 1009.06`. That figure is wrong and must not be
+quoted: the server delivered all 38 content deltas in the last 1.6 s of a 346 s request, so
+the client's window is not the generation time. The engine's own line is the measurement:
+`1536 generated in 75968 ms (20.2 tok/s)`. `infill_measure.py` now withholds the client
+figure when the deltas arrive in one burst (main tree `37a39576da`).
+
+Re-verified from the raw files, not from the summary: `MemAvailable` minimum 8,252 MiB
+(what else could be expected on this box with a 36 GiB pool), `VmLck` 37,024 MiB in every
+row, `VmRSS` peak 45,220 MiB, and zero occurrences of `no blob`, `refill failed`,
+`no_buffer_space` in the boot's elog.
+
+`trial-managed-sampler.sh` had the empty swap column bug that this window had to work
+around by hand: the `swap_used_mib` column was fed an unset variable, and the engine was
+found with a `pgrep -f` pattern that also matches a shell carrying that text. Both fixed
+(main tree `6052b4a282`); the self-test reads a swap figure identical to `/proc/meminfo`.
