@@ -419,3 +419,34 @@ remaining legacy consumers (:5611 dispatch fill, :9346/:9522 nibble verify,
 ArenaExpertSource blob(), swap relief) still read via the unlocked
 FileExpertSource mmap — the adapter that makes the store the primary source
 for them is the next design piece.
+
+## Adapter Task 1 — PoolExpertSourceAdapter (default OFF) — 2026-11-20
+
+Oracle design (interface inventory at :9396/:9522/:11448/:16286/:3058 etc.,
+nullptr-safe at every site) accepted with a parent addendum after one real
+correction: the oracle's note_async_read mapping (drop borrower at issue
+time) violated the legacy #1237 contract (expert_source.cpp:2124-2146 only
+RECORDS an event; recycling waits for completion) — dropping at issue would
+free pool memory under an in-flight queued copy. Addendum: event deferral,
+pinned()=true with UNMEASURED-perf caveat, drop points (release immediate,
+note deferred, teardown), refcounted double-borrow, injectable async hook.
+
+Fixer 032ac1f655 delivered the adapter + store blob_bytes() accessor +
+57-check CPU test (7/7 pool suite, ASan/UBSan clean, default-OFF 0 targets).
+Parent review found the sweep rule (`completed && count==0`) never recycles
+noted borrowers — the fill pattern never calls release(), so every filled
+expert would pin the pool until teardown — and the passing test was vacuous
+(its re-borrow check could not fail). 4fc53f2839 repairs it to legacy
+equivalence: a newer note RE-ARMS (supersedes the prior event, mirroring
+"the event recorded after the last asynchronous copy out of it") and a
+completed borrower is recycled on sweep regardless of count; non-noted
+long-retention borrowers still drop only at release/teardown. New sections
+6/7 assert recycle-without-release and re-arm survival via a borrowed()
+inspection hook; destructor now locks. 69 checks 0 failures CPU + sanitizer,
+7/7 suite, default-OFF still 0 targets.
+
+Evidence: adapter/task1/ (fixer) + adapter/task1/repair/ (parent, status.txt
+all exit 0). Open for Task 2: the pool .cpp files exist ONLY in the
+STRATA_BUILD_RAM_POOL_TEST block — strata_core does not compile them, so the
+engine LINK would fail on unresolved symbols (object-compile proof never
+ran the linker); Task 2 adds them to the engine build and switches srcp.
