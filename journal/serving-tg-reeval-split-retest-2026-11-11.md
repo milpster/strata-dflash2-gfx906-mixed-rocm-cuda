@@ -5040,3 +5040,18 @@ Focused configure/build/ctest output must include numeric statuses. Any tool
 failure is an escalation, not grounds to invent successful writes or tests.
 Parent owns artifact acceptance and final focused checks. Production stays
 down; expert/KV and whole-stack enforcement remain later, blocked stages.
+
+## 2026-11-20 — core repair output limit; smaller serial implementation boundary
+
+Nemotron fixer ses_e062a9783ffenc2SWwjqO9mXIy ended in an output-limit error.
+Parent verified that no new code, commit, journal or partition-repair evidence
+landed: HEAD remains aa5431a5d1 and the same partial repairs remain dirty.
+The inspection command exited 2 only because the claimed new evidence
+directory does not exist; its preceding git status/log/diff commands worked.
+
+Same exact topic resumes with a much smaller scope: ram_pool.cpp and minimal
+header changes only, then standalone CPU Linux/simulated-non-Linux compile
+checks and a scoped commit. Tests/CMake are a later serial task. Parent
+marked the original worktree journal's acceptance claims as superseded and
+recorded the proven exit-1 build failure. No change to the design or serving
+configuration; no boots or GPU work.
