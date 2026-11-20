@@ -660,3 +660,12 @@ pool-vs-non-pool leg on the same box and window.
 Also: the VRAM margins stay at the tuple's own values (--vram-reserve-mib 192,
 --vram-reserve-later-mib 576). A trial-config edit that raised the reserve to 704 was made
 and reverted the same day; the operator directive is not to touch them.
+
+### Operator directive: engine tests move to port 8009
+
+From 2026-11-20 (late) all engine tests run on **port 8009**. The trial-port
+separation (8019) is retired; production is down, so 8009 is simply the test
+port now. The lane running when this arrived finishes on 8019 (it was already
+booting there); every later boot, launcher default and config port moves to
+8009. The stop rule is unchanged: teardown only through the on-disk scripts,
+and a test that holds 8009 is stopped deliberately, never left running.
