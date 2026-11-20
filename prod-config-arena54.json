@@ -41,7 +41,7 @@
     "--expert-cache-cpu-order",
     "--prompt-cache-spread",
     "--conversation-cache-mib",
-    "2048",
+    "1024",
     "--conversation-cache-min-tokens",
     "2048",
     "--conversation-cache-park-gain",
