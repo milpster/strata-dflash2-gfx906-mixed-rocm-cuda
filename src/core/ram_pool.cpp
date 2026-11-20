@@ -1,85 +1,112 @@
 // src/core/ram_pool.cpp - managed pre-locked RAM pool core (foundation lane).
 //
-// One anonymous, writable, page-aligned mmap, fully mlocked before any allocation is
-// handed out.  Page-granular sub-allocator with refcounted leases: a range returns to
-// the free list only when its LAST owning lease is released, and the mapping stays
-// alive until every lease is gone (even if the Pool wrapper that created it is
-// destroyed first).  Locked once at creation, unlocked only at final teardown.
+// ONE anonymous writable mmap, fully mlocked before any allocation is handed out.
+// Sub-allocator over a single ordered std::list<Range> partition of [0, capacity),
+// each node free or allocated.  LeaseState holds shared PoolState ownership plus a
+// stable iterator to its allocated node.  Mapping stays alive until the last lease
+// is gone even if the Pool wrapper is destroyed first.  Locked once at creation,
+// unlocked exactly once at final teardown (incl. a partly locked prefix).
 //
-// No GPU headers, no HIP/CUDA registration, no default behavior change, no env knob
-// read here.  Not wired into the engine yet.
+// No GPU headers, no HIP/CUDA registration, no default behavior change, no env knob.
+// Not wired into the engine yet.
 
 #include "strata/core/ram_pool.hpp"
 
-#include <algorithm>
 #include <cerrno>
-#include <cstring>
-#include <map>
+#include <cstdint>
+#include <functional>
+#include <list>
 #include <memory>
 #include <mutex>
+#include <new>
+#include <utility>
+
+#if defined(__linux__)
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <unistd.h>
-#include <utility>
-#include <vector>
+#endif
 
 namespace strata::core {
 namespace detail {
 
 constexpr uint64_t kPage = 4096;
-constexpr uint64_t kLockStep = 256ull << 20;  // bounded mlock progress chunks
 
 inline uint64_t round_up_page(uint64_t v) { return (v + kPage - 1) & ~(kPage - 1); }
-inline uint64_t round_up(uint64_t v, uint64_t align) {
-    return (v + align - 1) & ~(align - 1);
+
+inline bool round_up(uint64_t v, uint64_t align, uint64_t& out) {
+    if (align == 0 || (align & (align - 1)) != 0) return false;
+    if (v > UINT64_MAX - (align - 1)) return false;
+    out = (v + align - 1) & ~(align - 1);
+    return true;
 }
+
 inline bool is_pow2(uint64_t v) { return v != 0 && (v & (v - 1)) == 0; }
 
-struct LeaseState;  // defined below; PoolState::live keys on its pointer
+// Test-only mlock progress-chunk seam (default production step).  Defined in the
+// implementation TU so declarations and definitions always match.
+inline uint64_t& lock_step() {
+    static uint64_t step = 256ull << 20;
+    return step;
+}
+inline void set_lock_step(uint64_t s) { lock_step() = s; }
+
+// Test-only metadata-injection seam: if non-null, invoked once before each metadata
+// allocation during pool_alloc preparation (make_shared<LeaseState>).  May throw
+// std::bad_alloc, caught transactionally, to force deterministic failure at each
+// preparation point.  Not called on release.
+using MetadataFault = std::function<void()>;
+MetadataFault g_metadata_fault;
+
+struct Range {
+    uint64_t start = 0;
+    uint64_t end = 0;   // exclusive
+    bool free = true;
+};
 
 struct PoolState {
     std::mutex mu;
     void* base = nullptr;
     uint64_t size = 0;
     bool locked = false;
-    // free ranges, sorted by start, coalesced, page-aligned half-open [start, end)
-    struct Range {
-        uint64_t start;
-        uint64_t end;
-    };
-    std::vector<Range> free;
-    // live allocations keyed by lease state pointer
-    struct Live {
-        uint64_t start;
-        uint64_t size;      // reserved (aligned) bytes
-        uint64_t requested; // raw bytes requested
-    };
-    std::map<LeaseState*, Live> live;
+    std::list<Range> partition;   // ordered [start,end) partition of [0, size)
     PoolStats stats;
-
-    void free_range_unlocked(uint64_t start, uint64_t size);
 };
 
 struct LeaseState {
     std::shared_ptr<PoolState> pool;
-    uint64_t start = 0;
-    uint64_t size = 0;      // reserved bytes
+    std::list<Range>::iterator node;   // stable iterator into pool->partition
+    uint64_t size = 0;      // reserved (aligned) bytes
     uint64_t requested = 0; // raw bytes requested
 
-    ~LeaseState() {
+    ~LeaseState() noexcept {
         if (pool == nullptr || size == 0) return;
         std::lock_guard<std::mutex> g(pool->mu);
-        pool->live.erase(this);
+        node->free = true;
         pool->stats.reserved_live_bytes -= size;
         pool->stats.requested_live_bytes -= requested;
         if (pool->stats.alloc_count > 0) pool->stats.alloc_count--;
-        pool->stats.free_bytes =
-            pool->stats.capacity_bytes - pool->stats.reserved_live_bytes;
-        pool->free_range_unlocked(start, size);
+        pool->stats.free_bytes = pool->stats.capacity_bytes - pool->stats.reserved_live_bytes;
+        // Merge adjacent free nodes by erase only (no allocation).
+        auto cur = node;
+        auto n = std::next(cur);
+        if (n != pool->partition.end() && cur->free && n->free && cur->end == n->start) {
+            cur->end = n->end;
+            pool->partition.erase(n);
+        }
+        if (cur != pool->partition.begin()) {
+            auto p = std::prev(cur);
+            if (p->free && p->end == cur->start) {
+                p->end = cur->end;
+                pool->partition.erase(cur);
+            }
+        }
     }
 };
 
 }  // namespace detail
+
+// ---- pool_capacity_bytes ----
 
 std::error_code pool_capacity_bytes(uint64_t total_bytes,
                                     uint64_t outside_owned,
@@ -88,46 +115,18 @@ std::error_code pool_capacity_bytes(uint64_t total_bytes,
     out_pool_bytes = 0;
     if (total_bytes == 0) return std::make_error_code(std::errc::invalid_argument);
     if (outside_owned > total_bytes) return std::make_error_code(std::errc::invalid_argument);
-    const uint64_t after_owners = total_bytes - outside_owned;
+    const uint64_t after_owners = total_bytes - outside_owned; // no underflow (guarded)
     if (internal_headroom > after_owners) return std::make_error_code(std::errc::invalid_argument);
-    uint64_t raw = after_owners - internal_headroom;
+    const uint64_t raw = after_owners - internal_headroom; // no underflow (guarded)
     if (raw == 0) return std::make_error_code(std::errc::invalid_argument);
-    uint64_t page = raw & ~(detail::kPage - 1);
+    if (raw > UINT64_MAX - (detail::kPage - 1)) return std::make_error_code(std::errc::invalid_argument);
+    const uint64_t page = raw & ~(detail::kPage - 1);
     if (page == 0) return std::make_error_code(std::errc::invalid_argument);
     out_pool_bytes = page;
     return {};
 }
 
-namespace {
-
-// Merge overlapping/adjacent free ranges; keeps the list sorted and non-overlapping.
-void coalesce_free(std::vector<detail::PoolState::Range>& free) {
-    if (free.empty()) return;
-    std::sort(free.begin(), free.end(),
-              [](const detail::PoolState::Range& a, const detail::PoolState::Range& b) {
-                  return a.start < b.start;
-              });
-    std::vector<detail::PoolState::Range> out;
-    out.push_back(free[0]);
-    for (size_t i = 1; i < free.size(); ++i) {
-        auto& last = out.back();
-        if (free[i].start <= last.end) {
-            if (free[i].end > last.end) last.end = free[i].end;
-        } else {
-            out.push_back(free[i]);
-        }
-    }
-    free = std::move(out);
-}
-
-}  // namespace
-
-void detail::PoolState::free_range_unlocked(uint64_t start, uint64_t size) {
-    free.push_back({start, start + size});
-    coalesce_free(free);
-}
-
-// ---- PoolStats ----
+// ---- PoolStats / PoolLease ----
 
 PoolStats Pool::stats() const noexcept {
     if (impl_ == nullptr) return {};
@@ -135,45 +134,43 @@ PoolStats Pool::stats() const noexcept {
     return impl_->stats;
 }
 
-// ---- PoolLease ----
-
 PoolLease::~PoolLease() = default;
 
 void* PoolLease::data() const noexcept {
     if (impl_ == nullptr || impl_->pool == nullptr) return nullptr;
-    return static_cast<char*>(impl_->pool->base) + impl_->start;
+    return static_cast<char*>(impl_->pool->base) + impl_->node->start;
 }
 uint64_t PoolLease::size() const noexcept { return impl_ ? impl_->size : 0; }
-uint64_t PoolLease::offset() const noexcept { return impl_ ? impl_->start : 0; }
+uint64_t PoolLease::offset() const noexcept { return impl_ ? impl_->node->start : 0; }
 
-// ---- Pool ----
+// ---- Pool lifecycle ----
 
-Pool::~Pool() {
-    // Releasing our shared_ptr may be the last reference (or a lease may still hold
-    // the mapping alive).  Either way the PoolState destructor performs munlock +
-    // munmap exactly once when the final reference goes away.
-    impl_.reset();
-}
+Pool::~Pool() { impl_.reset(); }
 
-void* Pool::base() const noexcept {
-    return impl_ ? impl_->base : nullptr;
-}
-uint64_t Pool::capacity() const noexcept {
-    return impl_ ? impl_->stats.capacity_bytes : 0;
-}
+void* Pool::base() const noexcept { return impl_ ? impl_->base : nullptr; }
+uint64_t Pool::capacity() const noexcept { return impl_ ? impl_->stats.capacity_bytes : 0; }
 
 namespace {
+
 struct PoolStateDeleter {
     void operator()(detail::PoolState* s) const noexcept {
         if (s == nullptr) return;
+#if defined(__linux__)
         if (s->base != nullptr && s->size != 0) {
-            if (s->locked) ::munlock(s->base, s->size);
-            ::munmap(s->base, s->size);
+            int saved = 0;
+            if (s->locked) {
+                if (::munlock(s->base, s->size) != 0 && saved == 0) saved = errno;
+            }
+            if (::munmap(s->base, s->size) != 0 && saved == 0) saved = errno;
         }
+#endif
         delete s;
     }
 };
+
 }  // namespace
+
+// ---- Pool::create ----
 
 Pool Pool::create(uint64_t pool_bytes, std::error_code& ec) {
     ec = {};
@@ -182,13 +179,28 @@ Pool Pool::create(uint64_t pool_bytes, std::error_code& ec) {
         ec = std::make_error_code(std::errc::invalid_argument);
         return p;
     }
+    if (pool_bytes > static_cast<uint64_t>(SIZE_MAX)) {
+        ec = std::make_error_code(std::errc::not_enough_memory);
+        return p;
+    }
 
 #if defined(__linux__)
-    auto st = std::shared_ptr<detail::PoolState>(new detail::PoolState, PoolStateDeleter{});
+    long pagesize = ::sysconf(_SC_PAGESIZE);
+    if (pagesize <= 0) {
+        ec = std::error_code(EINVAL, std::generic_category());
+        return p;
+    }
+    const uint64_t page = static_cast<uint64_t>(pagesize);
+    if (pool_bytes % page != 0) {
+        ec = std::make_error_code(std::errc::invalid_argument);
+        return p;
+    }
+
+    auto st = std::make_shared<detail::PoolState>();
     st->stats.capacity_bytes = pool_bytes;
     st->stats.free_bytes = pool_bytes;
+    st->partition.push_back({0, pool_bytes, true});
 
-    // One anonymous writable mmap, page-aligned.
     void* base = ::mmap(nullptr, pool_bytes, PROT_READ | PROT_WRITE,
                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (base == MAP_FAILED) {
@@ -197,24 +209,27 @@ Pool Pool::create(uint64_t pool_bytes, std::error_code& ec) {
     }
     st->base = base;
     st->size = pool_bytes;
-    st->free.push_back({0, pool_bytes});
 
-    // Fully mlock in bounded progress chunks.  Complete lock or explicit failure
-    // with full cleanup -- never a silent partial/unlocked fallback.
+    // Lock in bounded offset-sized chunks; pre-fault each page.  Preserve first
+    // failing syscall errno.  Complete lock or explicit failure with cleanup.
     uint64_t got = 0;
+    int saved_errno = 0;
     bool ok = true;
-    for (uintptr_t lo = (uintptr_t)base; lo < (uintptr_t)base + pool_bytes;
-         lo += detail::kLockStep) {
-        const uintptr_t piece =
-            (lo + detail::kLockStep > (uintptr_t)base + pool_bytes)
-                ? (uintptr_t)base + pool_bytes - lo
-                : detail::kLockStep;
-        if (::mlock((const void*)lo, (size_t)piece) != 0) {
+    const uint64_t step = detail::lock_step();
+    for (uint64_t off = 0; off < pool_bytes && ok; ) {
+        const uint64_t piece = (step < pool_bytes - off) ? step : (pool_bytes - off);
+        volatile char* fp = static_cast<volatile char*>(base) + off;
+        for (uint64_t i = 0; i < piece; i += page) { *fp = 0; fp += page; }
+        if (::mlock(static_cast<const void*>(static_cast<char*>(base) + off),
+                    static_cast<size_t>(piece)) != 0) {
             ok = false;
+            saved_errno = errno;
             break;
         }
-        got += (uint64_t)piece;
+        got += piece;
+        off += piece;
     }
+
     if (ok) {
         st->locked = true;
         st->stats.locked_bytes = pool_bytes;
@@ -222,10 +237,17 @@ Pool Pool::create(uint64_t pool_bytes, std::error_code& ec) {
         return p;
     }
 
-    // Failure: unlock what we got, unmap everything, report error, no fallback.
-    if (got != 0) ::munlock(base, (size_t)got);
-    ::munmap(base, pool_bytes);
-    ec = std::make_error_code(std::errc::not_enough_memory);
+    // Failure: unlock the locked prefix, unmap the whole mapping, drop base/size so
+    // the shared ownership runs its deleter exactly once at teardown.  Preserve errno.
+    if (got != 0) {
+        if (::munlock(static_cast<const void*>(base), static_cast<size_t>(got)) != 0 && saved_errno == 0)
+            saved_errno = errno;
+    }
+    if (::munmap(base, pool_bytes) != 0 && saved_errno == 0)
+        saved_errno = errno;
+    st->base = nullptr;
+    st->size = 0;
+    ec = std::error_code(saved_errno ? saved_errno : ENOMEM, std::generic_category());
     return p;
 #else
     ec = std::make_error_code(std::errc::not_supported);
@@ -233,11 +255,13 @@ Pool Pool::create(uint64_t pool_bytes, std::error_code& ec) {
 #endif
 }
 
+// ---- Pool::pool_free ----
+
 void Pool::pool_free(PoolLease& lease) {
-    // Releasing our reference; when it was the last owning lease the LeaseState
-    // destructor returns the range to the free list.
-    lease.impl_.reset();
+    lease.impl_.reset();  // last owner's LeaseState dtor frees+coalesces the node
 }
+
+// ---- Pool::pool_alloc ----
 
 std::error_code Pool::pool_alloc(uint64_t bytes, uint64_t alignment,
                                  PoolLease& out_lease) {
@@ -252,61 +276,75 @@ std::error_code Pool::pool_alloc(uint64_t bytes, uint64_t alignment,
     if (reserved < bytes) { ec = std::make_error_code(std::errc::result_out_of_range); return ec; }
 
     auto& st = *impl_;
-    std::lock_guard<std::mutex> g(st.mu);
+    std::unique_lock<std::mutex> g(st.mu);
 
-    // First-fit over coalesced free ranges.
-    size_t slot = 0;
+    // First-fit over the ordered free partition.  Absolute-address alignment:
+    // returned address = base + chosen_start; base may be only page-aligned, so
+    // round the absolute address up to alignment and derive start.
+    const uintptr_t base_addr = reinterpret_cast<uintptr_t>(st.base);
     uint64_t chosen_start = 0;
-    bool found = false;
-    for (size_t i = 0; i < st.free.size(); ++i) {
-        const uint64_t s0 = st.free[i].start;
-        const uint64_t e0 = st.free[i].end;
-        const uint64_t start = detail::round_up(s0, alignment);
-        if (reserved > e0 - start) continue;  // overflow-safe fit test
+    auto chosen = st.partition.end();
+    for (auto it = st.partition.begin(); it != st.partition.end(); ++it) {
+        if (!it->free) continue;
+        const uint64_t s0 = it->start;
+        const uint64_t e0 = it->end;
+        uintptr_t abs = base_addr + s0; // checked: s0 <= capacity <= SIZE_MAX
+        uintptr_t abs_rounded = abs;
+        if (!detail::round_up(abs, alignment, abs_rounded)) continue;
+        if (abs_rounded < abs) continue;                 // overflow (unreachable)
+        const uint64_t start = static_cast<uint64_t>(abs_rounded - base_addr);
+        if (start > e0) continue;
+        if (reserved > e0 - start) continue;
+        if (reserved > st.stats.capacity_bytes - st.stats.reserved_live_bytes) continue;
         chosen_start = start;
-        slot = i;
-        found = true;
+        chosen = it;
         break;
     }
-    if (!found) { ec = std::make_error_code(std::errc::not_enough_memory); return ec; }
+    if (chosen == st.partition.end()) { ec = std::make_error_code(std::errc::not_enough_memory); return ec; }
 
-    const uint64_t s0 = st.free[slot].start;
-    const uint64_t e0 = st.free[slot].end;
+    const uint64_t s0 = chosen->start;
+    const uint64_t e0 = chosen->end;
     const uint64_t lead = chosen_start - s0;
     const uint64_t trail = e0 - (chosen_start + reserved);
 
-    auto ls = std::make_shared<detail::LeaseState>();
-    ls->pool = impl_;
-    ls->start = chosen_start;
-    ls->size = reserved;
-    ls->requested = bytes;
+    // Prepare UNARMED candidate + replacement nodes before mutating shared state.
+    std::shared_ptr<detail::LeaseState> ls;
+    std::list<detail::Range> repl;
+    try {
+        if (detail::g_metadata_fault) detail::g_metadata_fault();
+        ls = std::make_shared<detail::LeaseState>();
+        ls->pool = impl_;
+        ls->size = reserved;
+        ls->requested = bytes;
+        if (lead != 0) repl.push_back({s0, chosen_start, true});
+        repl.push_back({chosen_start, chosen_start + reserved, false});
+        if (trail != 0) repl.push_back({chosen_start + reserved, e0, true});
+    } catch (const std::bad_alloc&) {
+        ec = std::make_error_code(std::errc::not_enough_memory);
+        return ec;
+    } catch (const std::length_error&) {
+        ec = std::make_error_code(std::errc::not_enough_memory);
+        return ec;
+    }
 
-    detail::LeaseState* raw = ls.get();
-    st.live.emplace(raw, detail::PoolState::Live{chosen_start, reserved, bytes});
+    // Commit with non-allocating splice/erase.  Splice moves repl nodes before
+    // chosen, then erase the old node.  Iterators into repl remain valid and now
+    // refer to partition nodes.
+    auto live_it = std::next(repl.begin(), (lead != 0) ? 1 : 0);
+    ls->node = live_it;
+    st.partition.splice(chosen, repl, repl.begin(), repl.end());
+    st.partition.erase(chosen);
+
+    // Arm stats, unlock BEFORE replacing the output (safe last-lease swap).
     st.stats.reserved_live_bytes += reserved;
     st.stats.requested_live_bytes += bytes;
     st.stats.alloc_count++;
     if (st.stats.alloc_count > st.stats.alloc_high_water)
         st.stats.alloc_high_water = st.stats.alloc_count;
-    st.stats.free_bytes =
-        st.stats.capacity_bytes - st.stats.reserved_live_bytes;
-
-    // Rebuild the free slot without the carved piece, keeping it sorted/coalesced.
-    if (lead != 0 && trail != 0) {
-        st.free[slot] = {s0, chosen_start};
-        st.free.insert(st.free.begin() + static_cast<long>(slot) + 1,
-                       detail::PoolState::Range{chosen_start + reserved, e0});
-    } else if (lead != 0) {
-        st.free[slot] = {s0, chosen_start};
-    } else if (trail != 0) {
-        st.free[slot] = {chosen_start + reserved, e0};
-    } else {
-        st.free.erase(st.free.begin() + static_cast<long>(slot));
-    }
-    coalesce_free(st.free);
-
+    st.stats.free_bytes = st.stats.capacity_bytes - st.stats.reserved_live_bytes;
+    g.unlock();
     out_lease.impl_ = ls;
-    return ec;
+    return {};
 }
 
 }  // namespace strata::core
