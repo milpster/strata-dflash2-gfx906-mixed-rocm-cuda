@@ -4714,3 +4714,19 @@ operator-ordered 55G/10G pending); park turns interleaved. Mechanics evidence
 Live scope confirmed at invalidation time: memory.max=60129542144 (56G),
 min=54760833024, swap.max=4294967296, current~48.5G — i.e. gate (e) passed
 against the REAL 56G value; the brief wrong-byte risk is moot.
+
+## 2026-11-20 — operator decision: 1 GiB shave from conversation RAM tier
+
+Operator ordered another 1 GiB off engine RAM usage. Chose the recommended
+source: --conversation-cache-mib 2048 -> 1024 (park-to-disk tier absorbs it;
+the park-recover fix under validation in this very window is what makes it
+cheap; KV-resident 4096 left untouched to protect the decode path).
+Post-window restart tuple (ONE prod-down window, applies together):
+  - launcher: MemoryMax=55G, MemorySwapMax=10G, MemoryMin=51G (self-limit 55296 untouched)
+  - config: conversation-cache-mib 1024 (sha to be recomputed and recorded)
+  - verify: gates vs max=59055800320 min=54760833024 swap=10737418240,
+    mlock 1 span 47965 MiB, VmLck unchanged, scope memory.current ~1 GiB lower,
+    oom 0. Mechanics only — no speed claims (speeds invalidated by directive).
+Observation points after restart: parking churn rate (if excessive, the dials
+are conversation-cache-park-gain 4096 / min-tokens 2048); resumed-conversation
+reread latency (expect seconds-class, no 78.7s-class reads).
