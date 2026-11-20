@@ -103,10 +103,6 @@ private:
                                      uint64_t file_size,
                                      Prepared& prepared) const noexcept;
 
-    /// Allocate one page of aligned scratch from the pool.  May transiently
-    /// require an extra page; never evicts cache entries to make room.
-    std::error_code admit_scratch(uint64_t bytes) noexcept;
-
     Pool* pool_ = nullptr;            // non-owning; must outlive the store
     mutable std::mutex mu_;
     bool open_ = false;

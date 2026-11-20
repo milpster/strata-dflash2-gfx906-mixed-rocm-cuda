@@ -46,6 +46,11 @@ std::error_code PoolExpertStore::open(const char* experts_bin,
     if (experts_bin == nullptr)
         return std::make_error_code(errc::invalid_argument);
 
+    // The whole open (preparation + commit) is serialized against acquire()/
+    // close(): the commit mutates reader_/scratch_/layers_, which a concurrent
+    // acquire() reads under the same mutex.
+    std::lock_guard<std::mutex> lk(mu_);
+
     // ---- transactional preparation: nothing mutates shared state yet ----
     strata::platform::BoundedDirectReader new_reader;
     std::error_code ec = new_reader.open(experts_bin);
@@ -201,11 +206,13 @@ void PoolExpertStore::clear() noexcept {
 }
 
 void PoolExpertStore::close() noexcept {
+    // Serialized against acquire()/open(): acquire() reads reader_/scratch_
+    // under this mutex, so the state teardown must hold it too.
+    std::lock_guard<std::mutex> lk(mu_);
+    open_ = false;
     cache_.clear();
     reader_.close();
     scratch_ = PoolLease{};  // release scratch; borrowers keep their leases
-    std::lock_guard<std::mutex> lk(mu_);
-    open_ = false;
     n_layers_ = 0;
     n_expert_ = 0;
     total_ = 0;
