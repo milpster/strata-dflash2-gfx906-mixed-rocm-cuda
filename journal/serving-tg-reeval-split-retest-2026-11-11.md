@@ -4507,3 +4507,34 @@ Runtime locking remains blocked on expert/PLE mapping coverage and total-fit pro
   hot set (unlocked baseline ≈ locked steps at steady state); an external lock buys only
   pressure-window protection; the ceiling moves opposite the engine's warmth (15.7 GiB cold-ish
   vs 8 GiB warm). The 55 GiB area design is confirmed as a ≥96 GiB-RAM proposition.
+
+## 2026-11-20 (night, cont.) — oracle review: patch accepted, arena-54 trial fix-first
+
+- Patch bde983cf41 (STRATA_NATIVE_MLOCK=arena) ACCEPTED by oracle: every evidence claim
+  reproduced (11/11 ctest, deterministic sha, gfx906-correct ldd); default path byte-identical;
+  on() truth table unchanged for all pre-existing inputs; refused spans assert zero syscalls
+  AND zero output. Non-blocking follow-ups parked: case-insensitive parse + typo warning
+  (deferred to avoid pre-measurement churn — the window's boot gate asserts the exact value).
+- Trial DO-NOT-BOOT as configured: (1) config exe still pointed at v0238p0, which predates the
+  whole mlock feature — STRATA_NATIVE_MLOCK=arena would lock nothing, silently (and had the
+  feature existed there, "arena" would parse as "all" on the old grammar); (2) STRATA_ARENA_MMAP=1
+  missing from config env; (3) arena file size premise wrong: layout.total is pack-defined
+  (native_experts.txt) = 46.84 GiB fixed (50294988800 B incl. blob), NOT relief-sized (~43 was
+  wrong); relief hot/cap are inert-and-guarded in mmap mode (set_unfilled prints "nothing
+  dropped" and never madvises locked pages); (4) first boot WRITES experts.bin from inside the
+  capped cgroup (46.85 GiB write atop the anon arena) — OOM risk; no standalone generate mode
+  exists, so the window gains an uncapped PRE-GEN boot phase (wait for the wrote line, assert
+  the exact byte size, then the capped boot is the measured one).
+- Wall resized: MemoryMax 54G→56G (46.84 + non-arena ~4.3 = 51.1 GiB engine world; 54G left
+  ~0 margin vs prod's observed 55.46 GiB memory.current), MemoryMin 51G, MemorySwapMax 4G
+  bounded, engine self-limit 55296 MiB — operator's 54G preserved as the engine's own limit
+  with the cgroup wall 2G above. Deviation journaled: forced by the measured fixed arena size.
+- Boot gate added to the window: PASS requires the mlock locked line + "file pages locked, not
+  pinned" + "47944 MiB" progress line; hard-fail list covers every silent-fallback signature.
+  Known confounds for T0/T1: THP loss on the file mapping (measure smaps FilePmdMapped/
+  AnonHugePages — oracle's #1), mlock prefault win, cold 46.84 GiB read at boot, conv-cache cut,
+  different binary (parking Phase B rides along), helper outside the cgroup.
+- Config env path confirmed end-to-end: server.py child_env applies config env last; the
+  launcher's env -u only scrubs server.py itself. iq_pack.py --experts-bin must never run on
+  this pack while the mmap experts.bin exists (writes the unpadded size, silently breaking
+  the mmap match).
