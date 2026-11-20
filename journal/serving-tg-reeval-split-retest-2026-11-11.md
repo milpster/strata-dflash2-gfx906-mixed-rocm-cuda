@@ -4984,3 +4984,33 @@ targeted regressions with timeouts. Parent's lsp_diagnostics request failed
 its output schema (diagnostics[2].code expected string); compiler diagnostics
 and explicit test output must supply the unavailable check. Independent
 oracle review remains required before expert/KV integration. No boots.
+
+## 2026-11-20 — RAM-pool repair handoff not accepted; parent CPU rebuild fails
+
+The repair session ended without a usable validation report. Parent checked
+the actual worktree: HEAD is still aa5431a5d1, three tracked pool/test files
+are modified, and ram_pool_nonlinux_probe.cpp is untracked. The claimed
+CMake changes, repair journal and new commit are absent. Parent shell/read
+tools worked; the cause of the child's reported tool trouble is unverified.
+
+Parent ran:
+`cmake --build build-cpu-ram-pool --target ram_pool_test native_mlock_test native_mlock_nonlinux_probe --parallel 2`
+Exit **1**: linker undefined references to
+`strata::core::ram_pool_set_lock_step_bytes(unsigned long)`. The test seam
+definitions are outside their namespace and not enabled for the source TU.
+No fresh runtime tests ran. Evidence: engine-worktree
+bench/ab-v0210/rpcprof/out/managed-ram-pool-20261120/core/parent-repair-check/
+build.log and build.status. Earlier green ctest output remains pre-repair.
+
+Read-through still finds offset-only alignment, unchecked pointer-end math,
+throwing metadata creation, unguarded Unix headers/deleter calls, one shared
+static fake mapping, an alignment test using an already-destroyed pool, and
+weak VmLck/skip checks. These are static findings; no serving run occurred.
+
+After two failed handoffs, the parent stopped the fixer patch loop and
+changed the boundary to an independent, minimal core review. Sole remote
+Nemotron oracle ses_e06312e93ffe6BJ0Q5lp6SGl10 owns only
+bench/ab-v0210/notes/managed-ram-pool-core-review-20261120.md. It must propose
+a small allocator/ownership repair and decisive bounded tests, not redesign
+the serving system. A fresh bounded implementation lane follows the review.
+Expert/KV integration remains blocked; production remains stopped.
