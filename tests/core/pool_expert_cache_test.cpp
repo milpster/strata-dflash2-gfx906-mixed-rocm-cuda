@@ -13,11 +13,13 @@
 #undef STRATA_RAM_POOL_TEST
 
 #include <algorithm>
+#include <atomic>
+#include <cerrno>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <map>
-#include <new>
 #include <string>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -46,53 +48,78 @@ void check(bool ok, const char* label) {
 constexpr uint64_t kPage = 4096;
 
 // ---- fixture ---------------------------------------------------------------
-// Regions: (layer, expert, offset, size, pattern byte).  Includes (0,0) to
-// prove zero-based keys are valid.
+// Deterministic nonuniform per-byte data keyed by global offset, so offset or
+// order corruption cannot hide behind a uniform pattern.
+// byte(p) = (p * 31 + 7) & 0xFF
+static uint8_t byte_at(uint64_t p) { return static_cast<uint8_t>((p * 31u + 7u) & 0xFFu); }
+
 struct FixtureEntry {
     int64_t layer = 0;
     int64_t expert = 0;
     uint64_t offset = 0;
     uint64_t size = 0;
-    uint8_t pat = 0;
 };
 
-std::string g_fixture_path;
-std::string g_short_path;  // truncated copy for short-read tests
+std::string g_full_data;          // byte_at(p) for p in [0, max_end)
+std::string g_fixture_path;       // complete fixture
+std::string g_short_path;         // prefix ending 100 bytes into region (2,3)
 std::vector<FixtureEntry> g_entries;
 
-static std::string fixture_bytes() {
+static bool write_file(const std::string& path, const std::string& data);
+
+static bool build_fixture(const std::string& dir) {
+    g_entries = {
+        {0, 0, 0, 64},
+        {0, 1, 4096, 128},
+        {1, 0, 8192, 200},
+        {2, 3, 12288, 500},
+    };
     uint64_t max_end = 0;
     for (const auto& e : g_entries) max_end = std::max(max_end, e.offset + e.size);
-    std::vector<uint8_t> buf(max_end, 0);
-    for (const auto& e : g_entries)
-        std::memset(buf.data() + e.offset, e.pat, e.size);
-    return std::string(buf.begin(), buf.end());
+    g_full_data.resize(max_end);
+    for (uint64_t p = 0; p < max_end; ++p) g_full_data[p] = byte_at(p);
+
+    g_fixture_path = dir + "/cache_fixture_20261120_testfinal.bin";
+    if (!write_file(g_fixture_path, g_full_data)) return false;
+
+    // Short file: region prefix ending 100 bytes INTO region (2,3) (offset
+    // 12288 + 100), not 100 bytes total before the region.  Reading region
+    // (2,3) (500 bytes at 12288) yields only 100 bytes -> short read.
+    g_short_path = dir + "/cache_short_20261120_testfinal.bin";
+    std::string short_data = g_full_data.substr(0, 12288 + 100);
+    return write_file(g_short_path, short_data);
 }
 
 static bool write_file(const std::string& path, const std::string& data) {
     std::FILE* f = std::fopen(path.c_str(), "wb");
     if (!f) return false;
-    std::fwrite(data.data(), 1, data.size(), f);
-    std::fclose(f);
+    if (std::fwrite(data.data(), 1, data.size(), f) != data.size()) {
+        std::fclose(f);
+        return false;
+    }
+    if (std::fclose(f) != 0) return false;
     return true;
 }
 
-static bool write_fixture(const std::string& dir) {
-    g_entries = {
-        {0, 0, 0, 64, 0x00},
-        {0, 1, 4096, 128, 0x01},
-        {1, 0, 8192, 200, 0x10},
-        {2, 3, 12288, 500, 0x23},
-    };
-    const std::string data = fixture_bytes();
-    g_fixture_path = dir + "/cache_fixture_20261120_repair1.bin";
-    if (!write_file(g_fixture_path, data)) return false;
-    // Short-read copy: first 100 bytes of region (2,3) which claims size 500.
-    g_short_path = dir + "/cache_short_20261120_repair1.bin";
-    std::string short_data(data.begin(), data.begin() + 100);
-    return write_file(g_short_path, short_data);
+static bool region_matches(const void* data, uint64_t offset, uint64_t size) {
+    if (size == 0) return true;
+    if (offset + size > g_full_data.size()) return false;
+    return std::memcmp(data, g_full_data.data() + offset, size) == 0;
 }
 
+static bool file_contents_equal(const std::string& path,
+                                const std::string& expected) {
+    std::FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return false;
+    std::string got;
+    char buf[4096];
+    size_t n;
+    while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) got.append(buf, n);
+    std::fclose(f);
+    return got == expected;  // complete bytes + length
+}
+
+// ---- reader ----------------------------------------------------------------
 static ExpertReader file_reader(const std::string& path) {
     return [path](int64_t layer, int64_t expert, uint8_t* dest, uint64_t bytes)
                -> std::error_code {
@@ -125,6 +152,7 @@ int mlock_calls = 0;
 int munlock_calls = 0;
 static std::map<void*, uint64_t> live_maps;
 static uint64_t total_live_bytes = 0;
+static uint64_t peak_live_bytes = 0;
 constexpr uint64_t kMappingLimit = 1ull << 20;
 }  // namespace wrap
 
@@ -132,6 +160,7 @@ static void track_mmap(void* p, uint64_t len) {
     if (p == nullptr || p == MAP_FAILED) return;
     if (wrap::live_maps.count(p)) { std::fprintf(stderr, "FAIL: duplicate mmap\n"); std::abort(); }
     wrap::live_maps[p] = len; wrap::total_live_bytes += len;
+    wrap::peak_live_bytes = std::max(wrap::peak_live_bytes, wrap::total_live_bytes);
     if (wrap::total_live_bytes > wrap::kMappingLimit) std::abort();
 }
 static void track_munmap(void* p, uint64_t len) {
@@ -164,7 +193,7 @@ int __wrap_mlock(const void*, size_t) { ++wrap::mlock_calls; return 0; }
 int __wrap_munlock(const void*, size_t) { ++wrap::munlock_calls; return 0; }
 }  // extern "C"
 
-// File-scope state for the ram_pool metadata-fault bridge (test 10).
+// File-scope state for the ram_pool metadata-fault bridge.
 static int s_meta_calls = 0;
 static int s_meta_throw_on = 0;
 static void bridge() {
@@ -180,73 +209,65 @@ static std::error_code make_pool(Pool& out, uint64_t bytes) {
     return ec;
 }
 
-static uint64_t file_checksum(const std::string& path) {
-    std::FILE* f = std::fopen(path.c_str(), "rb");
-    if (!f) return 0;
-    uint64_t sum = 0;
-    int c;
-    while ((c = std::fgetc(f)) != EOF) sum += static_cast<uint8_t>(c);
-    std::fclose(f);
-    return sum;
-}
-
 }  // namespace
 
 int main(int argc, char** argv) {
     const std::string build_dir = (argc > 1) ? argv[1] : ".";
-    if (!write_fixture(build_dir)) {
+    if (!build_fixture(build_dir)) {
         std::fprintf(stderr, "FAIL: cannot write fixture\n");
         return 2;
     }
     auto reader = file_reader(g_fixture_path);
-    const uint64_t fsum_before = file_checksum(g_fixture_path);
 
     // ---- 1. invalid keys/bytes leave out and cache unchanged ---------------
     {
-        Pool pool; make_pool(pool, 256ull << 10);
+        Pool pool;
+        auto ec = make_pool(pool, 256ull << 10);
+        check(!ec, "create 256KiB pool");
         PoolExpertCache cache(pool);
         PoolLease out;
-        // pre-populate so we can assert cache not purged
-        cache.acquire(0, 0, 64, reader, out);
+        ec = cache.acquire(0, 0, 64, reader, out);
+        check(!ec && out.valid(), "warm (0,0)");
         const auto entries_before = cache.stats().entries;
         const auto out_ptr = out.data();
         const auto out_size = out.size();
 
-        auto try_invalid = [&](int64_t l, int64_t e, uint64_t b, const char* label) {
+        auto try_invalid = [&](int64_t l, int64_t e, uint64_t b,
+                               const char* label) {
             PoolLease o = out;  // populated copy
-            auto ec = cache.acquire(l, e, b, reader, o);
-            check(ec == std::make_error_code(std::errc::invalid_argument), label);
+            auto ec2 = cache.acquire(l, e, b, reader, o);
+            check(ec2 == std::make_error_code(std::errc::invalid_argument), label);
             check(o.data() == out_ptr && o.size() == out_size, "out preserved");
+            check(cache.stats().entries == entries_before, label);
         };
+        // NEW keys for oversize so cached-size mismatch cannot bypass preflight.
         try_invalid(-1, 0, 64, "negative layer");
         try_invalid(0, -1, 64, "negative expert");
         try_invalid(0, 0, 0, "zero bytes");
-        try_invalid(0, 0, UINT64_MAX, "UINT64_MAX bytes");
-        try_invalid(0, 0, pool.capacity() + 1, "pool.capacity()+1 bytes");
+        try_invalid(9, 9, UINT64_MAX, "UINT64_MAX bytes new key");
+        try_invalid(9, 9, pool.capacity() + 1, "pool.capacity()+1 new key");
 
         check(cache.stats().entries == entries_before, "invalid requests: no eviction");
         check(out.data() == out_ptr && out.size() == out_size, "original out untouched");
         out = PoolLease{};
     }
 
-    // ---- 2. miss reads full bytes; hit does not read twice -----------------
+    // ---- 2. miss reads full nonuniform bytes; hit does not read twice ------
     {
-        Pool pool; make_pool(pool, 256ull << 10);
+        Pool pool;
+        auto ec = make_pool(pool, 256ull << 10);
+        check(!ec, "create 256KiB pool");
         PoolExpertCache cache(pool);
         int reads = 0;
         auto r = [&](int64_t l, int64_t e, uint8_t* d, uint64_t b) -> std::error_code {
             ++reads; return reader(l, e, d, b);
         };
         PoolLease out;
-        auto ec = cache.acquire(2, 3, 500, r, out);
+        ec = cache.acquire(2, 3, 500, r, out);
         check(!ec && out.valid(), "miss (2,3) 500 bytes");
         check(reads == 1, "miss reads once");
-        bool full = true;
-        for (uint64_t i = 0; i < 500; ++i)
-            if (static_cast<const uint8_t*>(out.data())[i] != 0x23) full = false;
-        check(full, "(2,3) full payload pattern 0x23");
+        check(region_matches(out.data(), 12288, 500), "(2,3) full nonuniform payload");
 
-        // hit: no second read, lease copy
         const void* hit_ptr = out.data();
         const uint64_t hit_size = out.size();
         auto ec2 = cache.acquire(2, 3, 500, r, out);
@@ -259,13 +280,16 @@ int main(int argc, char** argv) {
 
     // ---- 3. same key different size refuses, out preserved -----------------
     {
-        Pool pool; make_pool(pool, 256ull << 10);
+        Pool pool;
+        auto ec = make_pool(pool, 256ull << 10);
+        check(!ec, "create pool");
         PoolExpertCache cache(pool);
         PoolLease out;
-        cache.acquire(0, 1, 128, reader, out);
+        ec = cache.acquire(0, 1, 128, reader, out);
+        check(!ec && out.valid(), "warm (0,1)");
         const void* ptr = out.data();
         const uint64_t sz = out.size();
-        auto ec = cache.acquire(0, 1, 127, reader, out);
+        ec = cache.acquire(0, 1, 127, reader, out);
         check(ec == std::make_error_code(std::errc::invalid_argument), "diff size refused");
         check(out.data() == ptr && out.size() == sz, "diff size: out pointer+bytes preserved");
         check(cache.stats().entries == 1, "diff size: no purge");
@@ -274,86 +298,94 @@ int main(int argc, char** argv) {
 
     // ---- 4. bad key refuses, out preserved ---------------------------------
     {
-        Pool pool; make_pool(pool, 256ull << 10);
+        Pool pool;
+        auto ec = make_pool(pool, 256ull << 10);
+        check(!ec, "create pool");
         PoolExpertCache cache(pool);
         PoolLease out;
-        cache.acquire(0, 0, 64, reader, out);
+        ec = cache.acquire(0, 0, 64, reader, out);
+        check(!ec && out.valid(), "warm (0,0)");
         const void* ptr = out.data();
         const uint64_t sz = out.size();
-        auto ec = cache.acquire(9, 9, 64, reader, out);
+        ec = cache.acquire(9, 9, 64, reader, out);
         check(ec == std::make_error_code(std::errc::invalid_argument), "bad key refused");
         check(out.data() == ptr && out.size() == sz, "bad key: out preserved");
         check(cache.stats().entries == 1, "bad key: no purge");
         out = PoolLease{};
     }
 
-    // ---- 5. tight-cap LRU: evict, re-acquire evicted key = second read -----
+    // ---- 5. tight-cap LRU: hit A, missD evicts B, reload B = 2nd read ------
+    // Sequence: warm A,B,C (cache owns, no borrowers). LRU tail=A.
+    // HIT A -> [A,C,B], tail=B. missD evicts B -> [D,A,C].
+    // reacquire A -> hit. reload B -> evict C -> [B,A,D], readsB==2.
     {
-        Pool pool; make_pool(pool, 3 * kPage);  // exactly 3 page-frames
+        Pool pool;
+        auto ec = make_pool(pool, 3 * kPage);
+        check(!ec, "create 12KiB pool");
         PoolExpertCache cache(pool);
-        {
-            PoolLease t;
-            cache.acquire(0, 0, 64, reader, t);
-            cache.acquire(0, 1, 128, reader, t);
-            cache.acquire(1, 0, 200, reader, t);
-        }
+        std::map<int64_t, int> reads;
+        auto key_of = [](int64_t l, int64_t e) { return l * 10000000LL + e; };
+        auto rc = [&](int64_t l, int64_t e, uint8_t* d, uint64_t b)
+                      -> std::error_code {
+            ++reads[key_of(l, e)];
+            return reader(l, e, d, b);
+        };
+        PoolLease t;
+        ec = cache.acquire(0, 0, 64, rc, t);  // A
+        check(!ec, "warm A"); t = PoolLease{};
+        ec = cache.acquire(0, 1, 128, rc, t); // B
+        check(!ec, "warm B"); t = PoolLease{};
+        ec = cache.acquire(1, 0, 200, rc, t); // C
+        check(!ec, "warm C"); t = PoolLease{};
         check(cache.stats().entries == 3, "three entries cached");
         check(pool.stats().reserved_live_bytes == 3 * kPage, "pool full");
 
-        // (0,0) is coldest (LRU tail). Next miss must evict it, then re-acquire
-        // (0,0) => a second source read for that key, payload correct.
-        int reads = 0;
-        auto r = [&](int64_t l, int64_t e, uint8_t* d, uint64_t b) -> std::error_code {
-            ++reads; return reader(l, e, d, b);
-        };
-        PoolLease d;
-        auto ec = cache.acquire(2, 3, 500, r, d);
-        check(!ec && d.valid(), "eviction-reload miss succeeds");
-        check(cache.stats().entries == 3, "LRU stays at capacity (evict cold)");
-        bool full = true;
-        for (uint64_t i = 0; i < 500; ++i)
-            if (static_cast<const uint8_t*>(d.data())[i] != 0x23) full = false;
-        check(full, "evicted-reloaded payload correct");
-
-        // Re-acquire the evicted (0,0): second read of that key, correct.
+        // HIT A: readsA stays 1, no read.
         PoolLease a;
-        reads = 0;
-        auto ec2 = cache.acquire(0, 0, 64, r, a);
-        check(!ec2 && reads == 1, "re-acquire evicted key = second read");
-        bool aok = true;
-        for (uint64_t i = 0; i < 64; ++i)
-            if (static_cast<const uint8_t*>(a.data())[i] != 0x00) aok = false;
-        check(aok, "(0,0) reloaded pattern 0x00");
+        ec = cache.acquire(0, 0, 64, rc, a);
+        check(!ec, "hit A");
+        check(reads[key_of(0, 0)] == 1, "hit A: readsA stays 1");
+        check(cache.stats().hits == 1, "hit A counted");
 
-        // Hit promotion: (0,1) was next-coldest; accessing it should keep it,
-        // and a subsequent new-miss evicts the now-coldest (1,0).
-        auto ec3 = cache.acquire(0, 1, 128, r, a);
-        check(!ec3, "hit (0,1)");
-        PoolLease e;
-        auto ec4 = cache.acquire(1, 0, 200, r, e);
-        check(!ec4 && e.valid(), "second eviction-reload");
-        bool eok = true;
-        for (uint64_t i = 0; i < 200; ++i)
-            if (static_cast<const uint8_t*>(e.data())[i] != 0x10) eok = false;
-        check(eok, "(1,0) reloaded after hit-promotion pattern 0x10");
+        // missD evicts B (tail after hit A).
+        PoolLease d;
+        ec = cache.acquire(2, 3, 500, rc, d);
+        check(!ec && d.valid(), "miss D evicts B");
+        check(reads[key_of(2, 3)] == 1, "D read once");
+        check(cache.stats().entries == 3, "LRU stays at capacity");
+        check(cache.stats().evictions == 1, "one eviction (B)");
+        check(region_matches(d.data(), 12288, 500), "D full payload");
+
+        // reacquire A: still a hit (A retained).
+        ec = cache.acquire(0, 0, 64, rc, a);
+        check(!ec, "reacquire A hit");
+        check(reads[key_of(0, 0)] == 1, "reacquire A: still hit, no new read");
+        check(cache.stats().hits == 2, "second hit counted");
+
+        // reload B: evicts C (now tail), B read a second time, payload correct.
+        PoolLease b;
+        ec = cache.acquire(0, 1, 128, rc, b);
+        check(!ec && b.valid(), "reload B evicts C");
+        check(reads[key_of(0, 1)] == 2, "readsB becomes 2");
+        check(cache.stats().evictions == 2, "second eviction (C)");
+        check(region_matches(b.data(), 4096, 128), "B full nonuniform payload");
     }
 
     // ---- 6. borrower outlives cache + Pool scopes --------------------------
     {
         PoolLease borrower;
-        uint64_t borrower_size = 0;
         {
-            Pool pool; make_pool(pool, 64ull << 10);
+            Pool pool;
+            auto ec = make_pool(pool, 64ull << 10);
+            check(!ec, "create 64KiB pool");
             PoolExpertCache cache(pool);
-            cache.acquire(1, 0, 200, reader, borrower);
-            borrower_size = borrower.size();
+            ec = cache.acquire(1, 0, 200, reader, borrower);
+            check(!ec && borrower.valid(), "acquire borrower (1,0)");
             // cache and pool destroyed at scope end while borrower alive
         }
         check(borrower.valid(), "borrower valid after cache+pool destroyed");
-        bool btok = true;
-        for (uint64_t i = 0; i < 200; ++i)  // requested bytes, not reserved size
-            if (static_cast<const uint8_t*>(borrower.data())[i] != 0x10) btok = false;
-        check(btok, "borrower payload intact after owner scopes gone");
+        check(region_matches(borrower.data(), 8192, 200),
+              "borrower payload intact after owner scopes gone");
         check(wrap::total_live_bytes == 64ull << 10,
               "pool mapping alive while borrower holds lease");
         borrower = PoolLease{};  // final release -> exact last unmap
@@ -361,49 +393,50 @@ int main(int argc, char** argv) {
         check(wrap::total_live_bytes == 0, "all mappings released");
     }
 
-    // ---- 7. live borrower blocks full-pool alloc; release -> same range ----
+    // ---- 7. live borrower blocks full-pool alloc; release -> same range -----
     {
-        Pool pool; make_pool(pool, 64ull << 10);
+        Pool pool;
+        auto ec = make_pool(pool, 64ull << 10);
+        check(!ec, "create 64KiB pool");
         PoolExpertCache cache(pool);
         PoolLease borrower;
-        cache.acquire(2, 3, 500, reader, borrower);
+        ec = cache.acquire(2, 3, 500, reader, borrower);
+        check(!ec && borrower.valid(), "acquire borrower");
         const void* borrower_ptr = borrower.data();
-        const uint64_t borrower_size = borrower.size();
         PoolLease full;
-        auto ec = pool.pool_alloc(pool.capacity(), kPage, full);
+        ec = pool.pool_alloc(pool.capacity(), kPage, full);
         check(ec && !full.valid(), "full-pool alloc refused with live borrower");
 
-        // Drop cache ref while borrower alive -> full-pool refuses (borrower
-        // keeps storage).
-        cache.release(2, 3);
-        auto ec2 = pool.pool_alloc(pool.capacity(), kPage, full);
-        check(ec2 && !full.valid(), "full-pool still refused with borrower alive");
+        cache.release(2, 3);  // drop cache ref, borrower alive
+        ec = pool.pool_alloc(pool.capacity(), kPage, full);
+        check(ec && !full.valid(), "full-pool still refused with borrower alive");
 
         borrower = PoolLease{};  // final borrower release
-        auto ec3 = pool.pool_alloc(pool.capacity(), kPage, full);
-        check(!ec3 && full.valid(), "full-pool alloc succeeds after release");
+        ec = pool.pool_alloc(pool.capacity(), kPage, full);
+        check(!ec && full.valid(), "full-pool alloc succeeds after release");
         check(full.data() == borrower_ptr, "full-pool reuses same address");
-        check(full.size() == pool.capacity(), "full-pool range is whole pool");
 
         std::memset(full.data(), 0xAA, full.size());
         full = PoolLease{};  // free storage so cache can reload
 
         PoolLease fresh;
-        auto ec4 = cache.acquire(2, 3, 500, reader, fresh);
-        check(!ec4 && fresh.valid(), "reread original key after overwrite");
-        bool ftok = true;
-        for (uint64_t i = 0; i < 500; ++i)
-            if (static_cast<const uint8_t*>(fresh.data())[i] != 0x23) ftok = false;
-        check(ftok, "reread restores ALL original bytes from fixture");
+        ec = cache.acquire(2, 3, 500, reader, fresh);
+        check(!ec && fresh.valid(), "reread original key after overwrite");
+        check(region_matches(fresh.data(), 12288, 500),
+              "reread restores ALL original bytes from fixture");
     }
 
-    // ---- 8. throwing reader: not_enough_memory, reader not called ----------
+    // ---- 8. throwing reader preserves exact output + no leaked allocation --
     {
-        Pool pool; make_pool(pool, 256ull << 10);
+        Pool pool;
+        auto ec = make_pool(pool, 256ull << 10);
+        check(!ec, "create pool");
         PoolExpertCache cache(pool);
         PoolLease out;
-        cache.acquire(0, 0, 64, reader, out);  // warm cache
+        ec = cache.acquire(0, 0, 64, reader, out);
+        check(!ec, "warm (0,0)");
         const auto entries_before = cache.stats().entries;
+        const auto reserved_before = pool.stats().reserved_live_bytes;
         const void* ptr = out.data();
         const uint64_t sz = out.size();
         int reader_calls = 0;
@@ -411,79 +444,124 @@ int main(int argc, char** argv) {
             ++reader_calls;
             throw std::bad_alloc{};
         };
-        auto ec = cache.acquire(3, 3, 400, throwing, out);
-        check(ec == std::make_error_code(std::errc::not_enough_memory), "throw -> not_enough_memory");
+        ec = cache.acquire(3, 3, 400, throwing, out);
+        check(ec == std::make_error_code(std::errc::not_enough_memory),
+              "throw -> not_enough_memory");
         check(reader_calls == 1, "throwing reader was called and threw");
         check(cache.stats().entries == entries_before, "throw: no new entry");
         check(cache.stats().entries == entries_before, "throw: no eviction");
+        check(pool.stats().reserved_live_bytes == reserved_before,
+              "throw: no leaked reserved allocation");
         check(out.data() == ptr && out.size() == sz, "throw: out preserved");
         out = PoolLease{};
     }
 
-    // ---- 9. failing reader (io_error / short read): no entry ---------------
+    // ---- 9. failing reader (short read): no entry published ----------------
     {
-        Pool pool; make_pool(pool, 256ull << 10);
+        Pool pool;
+        auto ec = make_pool(pool, 256ull << 10);
+        check(!ec, "create pool");
         PoolExpertCache cache(pool);
-        auto short_reader = file_reader(g_short_path);  // claims 500, file 100
+        auto short_reader = file_reader(g_short_path);  // ends 100 bytes into (2,3)
         PoolLease out;
-        auto ec = cache.acquire(2, 3, 500, short_reader, out);
+        ec = cache.acquire(2, 3, 500, short_reader, out);
         check(ec == std::make_error_code(std::errc::io_error), "short read -> io_error");
         check(!out.valid(), "short read: no entry published");
         check(cache.stats().entries == 0, "short read: cache empty");
         out = PoolLease{};
     }
 
-    // ---- 10. ram_pool metadata fault must NOT evict cache refs -------------
+    // ---- 10. ram_pool metadata fault must NOT evict cache refs ------------
     {
-        Pool pool; make_pool(pool, 256ull << 10);
+        Pool pool;
+        auto ec = make_pool(pool, 256ull << 10);
+        check(!ec, "create pool");
         PoolExpertCache cache(pool);
         PoolLease out;
-        cache.acquire(0, 0, 64, reader, out);  // warm cache
+        ec = cache.acquire(0, 0, 64, reader, out);  // warm + populated out
+        check(!ec && out.valid(), "warm (0,0) populated");
         const auto entries_before = cache.stats().entries;
+        const auto reserved_before = pool.stats().reserved_live_bytes;
+        const void* ptr = out.data();
+        const uint64_t sz = out.size();
 
-        // static function pointer bridge (ram_pool_set_metadata_fault takes raw fn)
         s_meta_calls = 0;
         s_meta_throw_on = 1;
         ram_pool_set_metadata_fault(bridge);
         PoolLease o;
-        auto ec = cache.acquire(0, 1, 128, reader, o);
+        ec = cache.acquire(0, 1, 128, reader, o);  // new key, pool_alloc metadata fault
         ram_pool_set_metadata_fault(nullptr);
         check(ec == std::make_error_code(std::errc::not_enough_memory),
               "metadata fault -> not_enough_memory");
+        check(!o.valid(), "metadata fault: new-key output not populated");
         check(cache.stats().entries == entries_before, "metadata fault: no eviction");
-        check(o.valid() == false || true, "metadata fault: output error path");
-        // release existing entry while hook set -> hook not invoked, full coalesce
-        s_meta_calls = 0; s_meta_throw_on = 1;
+        check(pool.stats().reserved_live_bytes == reserved_before,
+              "metadata fault: pool reserved unchanged");
+        check(out.data() == ptr && out.size() == sz, "metadata fault: populated out preserved");
+
+        // release existing entry + clear with hook set: hook never invoked,
+        // full coalesce once borrower released.
+        s_meta_calls = 0;
+        s_meta_throw_on = 1;
         ram_pool_set_metadata_fault(bridge);
-        o = PoolLease{};
+        cache.release(0, 0);
         check(s_meta_calls == 0, "release does not invoke metadata hook");
+        cache.clear();
+        check(s_meta_calls == 0, "clear does not invoke metadata hook");
         ram_pool_set_metadata_fault(nullptr);
+        out = PoolLease{};
+        check(cache.stats().entries == 0, "cache empty after clear");
+        check(pool.stats().free_bytes == pool.stats().capacity_bytes,
+              "full coalesce: free == capacity");
     }
 
-    // ---- 11. pre-emplace fault hook: not_enough_memory, reader not called --
+    // ---- 11. pre-emplace fault on TIGHT cache: before eviction/read --------
     {
-        Pool pool; make_pool(pool, 256ull << 10);
+        Pool pool;
+        auto ec = make_pool(pool, 3 * kPage);
+        check(!ec, "create 12KiB pool");
         PoolExpertCache cache(pool);
+        PoolLease t;
+        ec = cache.acquire(0, 0, 64, reader, t); check(!ec, "warm A"); t = PoolLease{};
+        ec = cache.acquire(0, 1, 128, reader, t); check(!ec, "warm B"); t = PoolLease{};
+        ec = cache.acquire(1, 0, 200, reader, t); check(!ec, "warm C"); t = PoolLease{};
+        check(cache.stats().entries == 3, "tight cache full");
+        check(pool.stats().reserved_live_bytes == 3 * kPage, "pool full");
+
+        PoolLease aout;
+        ec = cache.acquire(0, 0, 64, reader, aout);
+        check(!ec && aout.valid(), "capture populated output on A");
+        const auto entries_before = cache.stats().entries;
+        const auto reserved_before = pool.stats().reserved_live_bytes;
+        const void* ptr = aout.data();
+        const uint64_t sz = aout.size();
+
         int reader_calls = 0;
-        auto counting_reader = [&](int64_t, int64_t, uint8_t*, uint64_t) -> std::error_code {
+        auto counting = [&](int64_t, int64_t, uint8_t*, uint64_t) -> std::error_code {
             ++reader_calls;
-            return reader(0, 0, /*dest*/ nullptr, /*bytes*/ 0);  // never reached
+            return std::make_error_code(std::errc::io_error);  // never reached
         };
         auto hook = []() { throw std::bad_alloc{}; };
         cache_set_pre_emplace_fault(hook);
-        PoolLease out;
-        auto ec = cache.acquire(4, 4, 100, counting_reader, out);
+        PoolLease o;
+        ec = cache.acquire(2, 3, 500, counting, o);  // NEW key -> pending fault
         cache_set_pre_emplace_fault(nullptr);
         check(ec == std::make_error_code(std::errc::not_enough_memory),
               "pre-emplace fault -> not_enough_memory");
         check(reader_calls == 0, "pre-emplace fault: reader not called");
-        check(cache.stats().entries == 0, "pre-emplace fault: no entry");
-        out = PoolLease{};
+        check(!o.valid(), "pre-emplace fault: no new entry");
+        check(cache.stats().entries == entries_before, "pre-emplace: no eviction");
+        check(pool.stats().reserved_live_bytes == reserved_before,
+              "pre-emplace: no pool allocation");
+        check(aout.data() == ptr && aout.size() == sz, "pre-emplace: captured output preserved");
+        aout = PoolLease{};
     }
 
-    // ---- 12. concurrency: distinct payloads + held copies ------------------
+    // ---- 12. concurrency: 80/80 full nonuniform borrower data --------------
     {
-        Pool pool; make_pool(pool, 256ull << 10);
+        Pool pool;
+        auto ec = make_pool(pool, 256ull << 10);
+        check(!ec, "create pool");
         PoolExpertCache cache(pool);
         std::atomic<int> ok{0};
         std::atomic<int> bad{0};
@@ -491,18 +569,14 @@ int main(int argc, char** argv) {
             const FixtureEntry& fe = g_entries[id % g_entries.size()];
             for (int i = 0; i < 20; ++i) {
                 PoolLease out;
-                auto ec = cache.acquire(fe.layer, fe.expert, fe.size, reader, out);
-                if (ec) { ++bad; continue; }
-                bool full = true;
-                for (uint64_t i = 0; i < fe.size; ++i)
-                    if (static_cast<const uint8_t*>(out.data())[i] != fe.pat) full = false;
+                auto ec2 = cache.acquire(fe.layer, fe.expert, fe.size, reader, out);
+                if (ec2) { ++bad; continue; }
+                bool full = region_matches(out.data(), fe.offset, fe.size);
                 if (full) ++ok; else ++bad;
                 PoolLease copy = out;  // held borrower copy
                 out = PoolLease{};
                 std::this_thread::yield();
-                bool copyok = true;
-                for (uint64_t i = 0; i < fe.size; ++i)
-                    if (static_cast<const uint8_t*>(copy.data())[i] != fe.pat) copyok = false;
+                bool copyok = region_matches(copy.data(), fe.offset, fe.size);
                 if (!copyok) ++bad;
                 copy = PoolLease{};
             }
@@ -519,12 +593,45 @@ int main(int argc, char** argv) {
         check(sc.free_bytes == sc.capacity_bytes, "concurrency: full free restored");
     }
 
-    // ---- 13. fixture immutable byte-for-byte --------------------------------
+    // ---- 13. clear/release repeat safe -------------------------------------
     {
-        const uint64_t fsum_after = file_checksum(g_fixture_path);
-        check(fsum_after == fsum_before, "fixture file unchanged at end");
+        Pool pool;
+        auto ec = make_pool(pool, 64ull << 10);
+        check(!ec, "create pool");
+        PoolExpertCache cache(pool);
+        PoolLease a, b;
+        ec = cache.acquire(1, 0, 200, reader, a);
+        check(!ec, "acquire a");
+        ec = cache.acquire(0, 1, 128, reader, b);
+        check(!ec, "acquire b");
+        cache.release(1, 0);
+        cache.release(1, 0);  // repeat release safe
+        cache.clear();
+        cache.clear();        // repeat clear safe
+        cache.release(9, 9);  // release missing safe
+        check(cache.stats().entries == 0, "empty after repeat clear");
+        PoolLease c;
+        ec = cache.acquire(2, 3, 500, reader, c);
+        check(!ec && c.valid(), "usable after repeat clear");
     }
 
-    std::fprintf(stderr, "pool_expert_cache_test: %d checks, %d FAILURES\n", checks, failures);
+    // ---- 14. fixture immutable byte-for-byte + mapping limits --------------
+    {
+        check(file_contents_equal(g_fixture_path, g_full_data),
+              "fixture file unchanged at end (bytes + length)");
+        std::fprintf(stderr, "peak_mapping_bytes=%llu limit=%llu\n",
+                     (unsigned long long)wrap::peak_live_bytes,
+                     (unsigned long long)wrap::kMappingLimit);
+        check(wrap::peak_live_bytes <= wrap::kMappingLimit, "peak <= 1 MiB");
+    }
+
+    // ---- final: every mmap matched, no live mappings ------------------------
+    check(wrap::live_maps.empty(), "final: no live mappings");
+    check(wrap::total_live_bytes == 0, "final: zero live bytes");
+    check(wrap::mmap_calls == wrap::munmap_calls,
+          "final: mmap_calls == munmap_calls");
+
+    std::fprintf(stderr, "pool_expert_cache_test: %d checks, %d FAILURES\n",
+                 checks, failures);
     return failures == 0 ? 0 : 1;
 }
