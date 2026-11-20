@@ -38,7 +38,7 @@ case "${1:-}" in
       --socket "$SOCKET" --socket "$SOCKET2" --nice 1 \
       --stage-cpus 3,5,7,9,11,13,15 \
       --stall-timeout 600 \
-      --startup-timeout 1200 ;;
+      --startup-timeout "${STRATA_TRIAL_STARTUP_TIMEOUT_S:-1200}" ;;
   *) echo 'Usage: launcher [--recover|--single-run]' >&2; exit 2 ;;
 esac
 command -v ss >/dev/null

@@ -93,6 +93,7 @@ else
   sleep 8
   OFF=$(size_of "$ELOG")
   ( cd "$R" && STRATA_TRIAL_MEMORY_MAX=none STRATA_TRIAL_MEMORY_MIN=none STRATA_TRIAL_SWAP_MAX=none \
+      STRATA_TRIAL_STARTUP_TIMEOUT_S=2400 \
       setsid --fork "$R/launch-trial-arena54.sh" > "$R/logs/lane-arena54-pregen.log" 2>&1 < /dev/null )
   WROTE=""
   for i in $(seq 1 120); do   # up to 20 min: the load plus a 46.84 GiB write
