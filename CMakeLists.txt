@@ -570,6 +570,18 @@ if(STRATA_BUILD_TESTS)
       target_link_libraries(ram_pool_nonlinux_probe PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
       add_test(NAME ram_pool_nonlinux_probe COMMAND ram_pool_nonlinux_probe)
       set_tests_properties(ram_pool_nonlinux_probe PROPERTIES TIMEOUT 15)
+
+      # CPU expert-cache foundation over the RAM pool (opt-in, same guard).
+      add_executable(pool_expert_cache_test tests/core/pool_expert_cache_test.cpp src/core/pool_expert_cache.cpp src/core/ram_pool.cpp)
+      target_include_directories(pool_expert_cache_test BEFORE PRIVATE tests/core include)
+      target_compile_definitions(pool_expert_cache_test PRIVATE STRATA_RAM_POOL_TEST)
+      target_link_libraries(pool_expert_cache_test PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
+      if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_link_options(pool_expert_cache_test PRIVATE
+          -Wl,--wrap=mmap -Wl,--wrap=mlock -Wl,--wrap=munmap -Wl,--wrap=munlock)
+      endif()
+      add_test(NAME pool_expert_cache_test COMMAND pool_expert_cache_test ${CMAKE_BINARY_DIR})
+      set_tests_properties(pool_expert_cache_test PROPERTIES TIMEOUT 15)
     endif()
   endif()
 
