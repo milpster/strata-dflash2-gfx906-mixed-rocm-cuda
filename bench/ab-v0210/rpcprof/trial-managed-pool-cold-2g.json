@@ -33,7 +33,7 @@
     "--vram-reserve-mib",
     "192",
     "--vram-reserve-later-mib",
-    "576",
+    "448",
     "--kv-resident",
     "262144",
     "--pcie-frac",
@@ -157,5 +157,5 @@
   "trial_note": "managed-RAM-pool validation trial 2026-11-20; helper host arena capped low because the managed pool is the primary expert cache; VRAM margins left at the tuple's own 192/576",
   "managed_budget_mib": 40960,
   "derived_from": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/trial-managed-pool.json",
-  "derived_note": "empty conversation cache for a genuinely cold prefill; budget 43008; +2 GiB locked pool vs the 40960 window"
+  "derived_note": "empty conversation cache for a genuinely cold prefill; budget 43008; +2 GiB locked pool vs the 40960 window; device-1 VRAM margin reduced 576 -> 448 MiB by operator request 2026-11-21 (card 1 had ~451 MiB free; --vram-reserve-later-mib is the per-device reserve for every device after device 0, generate.cpp:5690). Device 0 keeps --vram-reserve-mib 192."
 }
