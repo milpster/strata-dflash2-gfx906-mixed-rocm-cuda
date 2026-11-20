@@ -1,0 +1,23 @@
+ram_pool repair evidence (2026-11-20)
+Build: cmake -S . -B build-cpu-ram-pool -G Ninja -DCMAKE_BUILD_TYPE=Release
+  -DSTRATA_BUILD_TESTS=ON -DSTRATA_BUILD_RAM_POOL_TEST=ON
+Scope: tests/core/ram_pool_test.cpp, tests/core/ram_pool_nonlinux_probe.cpp, CMakeLists.txt
+Constraints honored: CPU-only, no GPU/engine/inference/ports-8009-8019, no /tmp, no push,
+pools <= 512 KiB (simultaneous <= 1 MiB << 16 MiB), opt-in STRATA_BUILD_RAM_POOL_TEST default OFF.
+
+Results:
+- ram_pool_test mock: 107 checks passed, exit 0
+- ram_pool_test real_mock: 116 checks passed, exit 0 (strict VmLck: exact +64 KiB, hold through
+  owner drop w/ borrower, exact baseline after final release)
+- ram_pool_nonlinux_probe: 11 checks passed, exit 0 (-U__linux__ refusal contract)
+- native_mlock_test + native_mlock_nonlinux_probe: pass
+- ctest -R 'ram_pool|native_mlock' --timeout 15 -V: 14/14 passed, exit 0
+- OFF build: ram_pool_test and ram_pool_nonlinux_probe targets absent (opt-in honored)
+
+Verified behaviors: actual_lock_mode switch (mock fakes lock, real_mock real mlock/munlock),
+live-mapping byte tracking with duplicate/unmatched unmap abort, distinct pool bases/nonoverlap,
+metadata fault at every prepare stage (make_shared/lead/live/trail) w/ output+stats preserved,
+page-aligned non-64KiB base via overmap+trim tracking setup trims separately, huge-align failure
+preserves stats/output, fragmentation 2-page fail then full-pool success, 400-op concurrency all
+succeed w/ zero live allocs after join, lock-failure exact unlock prefix + errno preserved,
+zero/unaligned step refused before mmap/lock.
