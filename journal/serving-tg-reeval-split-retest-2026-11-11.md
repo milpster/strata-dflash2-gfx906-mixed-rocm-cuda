@@ -4638,3 +4638,22 @@ Runtime locking remains blocked on expert/PLE mapping coverage and total-fit pro
 - Fixes (9b0029d0b8): judge accepts both arena24/arena54 log names (newest wins); holder
   cap 40000 → 49000. Measurement-only re-run dispatched: pre-gen skips on the exact-size
   + sha asserts, wall ~25-35 min.
+
+## 2026-11-20 (midday) — arena-54 window #3: COMPLETE — the design works and it is FAST
+
+- Measurement-only re-run (pre-gen skipped on the exact-size + sha asserts; judge fixed).
+  Gate PASS again: 1 span, 47965/47965 MiB, VmLck 49280040 kB. Wall clock ~16 min.
+- T0 (no pressure): 25.6 cold → 30.3 → 30.3 → 32.4 tok/s, cache 93.5–96.3%; MEDIAN 30.3.
+- T1 (max holder pressure, 49 GiB cap): 29.5–33.7 tok/s; MEDIAN 30.45 — statistically
+  identical to T0. MemAvailable floor 8723/9450 MiB (7 GiB target unreachable: the 47 GiB
+  arena is non-reclaimable); memory.events oom/oom_kill 0 across the whole window.
+- Verdicts: (1) pressure immunity is STRUCTURAL — locked arena un-squeezeable, the kernel
+  reclaims page cache instead, TG never moved; yesterday's stall class is dead by design.
+  (2) Speed: ~30 tok/s vs prod ~22.5 warm (+~33%) — but confounded (v0239 binary incl.
+  Phase B, conv cuts, mmap-arena mode, 4 KiB THP loss which it OVERCAME). Not attributable
+  to mlock alone; a same-binary A/B would be needed to split the causes — and notably the
+  number beats prod DESPITE losing THP.
+- Standing facts for the promotion conversation (operator decides): the whole engine in a
+  56 GiB cgroup wall with one contiguous locked 46.84 GiB mapped arena + park/reread
+  conversations at 2.3 GiB boots cleanly, serves ~30 tok/s, is immune to 49 GiB of external
+  memory pressure, and restores prod cleanly after.
