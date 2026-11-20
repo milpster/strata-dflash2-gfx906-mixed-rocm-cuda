@@ -679,3 +679,91 @@ and refuses to boot when a `run/prod*-supervisor.json` records a pair whose pids
 still alive, naming the state file and pid, so the rule is enforced by the launcher and
 not by memory. Prod's own launcher refuses an occupied 8009, so the exclusion holds in
 both directions.
+
+### The 80k prompt that failed: copy into the staging buffer, do not lend (2026-11-21 early)
+
+An 80k-token prompt on the managed pool failed twice. First with "prefill: expert
+source has no blob": the adapter handed the prompt path only a borrowed pointer, and
+the prompt's staging step copies. With that fixed, the same prompt staged 74,630 of
+74,635 rows and then died at 238 s with "refilling a lent slot failed: No buffer space
+available". There were two walls, and both were the adapter lending what it should copy.
+
+**Wall one: the adapter lent its experts.** `PoolExpertSourceAdapter` now answers
+`transient()` true for every pair (`include/strata/core/pool_expert_source_adapter.hpp:84`):
+the source copies the bytes out of the pool, so the store's LRU - not a growing borrower
+table - decides what stays. `copy_blob` (`src/core/pool_expert_source_adapter.cpp:25`)
+acquires the blob, copies it into the caller's buffer and drops the lease, so no borrower
+is left behind. `copy_blobs` (`:38`) holds at most `kCopyLeaseWindow = 4` leases at once
+(header `:89`), copies them, and falls back to one-at-a-time if the store refuses the
+window, so a bigger sweep never needs a bigger pool. A refused pair prints one stderr
+line. Every path that does not see `transient()` is byte-identical to before.
+
+**Wall two: the prompt's helper probe borrowed every pair.** The probe that decides which
+experts the helper must serve asked `blob_stable()` for every expert of every layer
+(`src/prefill/prefill.cpp:5263`). For a transient source that keeps one borrower per pair:
+512 experts x 48 layers of ~2 MiB is about 24,000 borrowers, the whole 36 GiB pool, held
+before the last chunk of a long prompt was read - which is why the lent-slot refill after
+the prompt had nothing to reclaim. A transient pair is never lent for the whole sweep, so
+the probe now answers 1 for it ("the host has these bytes"); non-transient sources keep
+the old probe exactly as it was. For diagnosis, `PoolExpertStore::pool_reserved_live_bytes()`
+(`include/strata/core/pool_expert_store.hpp:102`) and one line in the managed refill
+failure (`src/program/generate.cpp:24297-24312`) now say whether the cache or live
+borrowers held the pool at a refusal. Both changes are in commits `8e861ca533` and
+`1ae83e157d` on `helper-ipc-diet`.
+
+Tests: sections 8-11 in `tests/core/pool_expert_source_adapter_test.cpp:403,423,453,496`
+cover `transient()` being true and creating no borrower, `copy_blob` returning the exact
+bytes and leaving no borrower (a second copy still fits), a full sweep over a pool far
+smaller than the expert set never running dry, and `copy_blobs(n>1)` being byte-identical
+to `n` `copy_blob` calls, including the refusal path. 114 checks, 0 failures on the
+final build; the full build-906 suite (7/7), the ASan/UBSan build (6/6) and the plain-CPU
+build (7/7) passed earlier in the same window.
+
+#### Trial leg: the same 80k request, port 8019
+
+Engine `/mnt/srcds/Strata-wt-helper-ipc/build-906/strata` at `1ae83e157d`, managed mode,
+`STRATA_RAM_BUDGET_MIB=40960`, trial config unchanged, `--vram-reserve-mib 192` and
+`--vram-reserve-later-mib 576` untouched. Production was down for the whole window.
+
+| leg | request | wall s | prompt tok | compl tok | tok/s wall | engine prompt | engine decode |
+|---|---|---|---|---|---|---|---|
+| 1 short, cold | "Reply with the single word ready.", max 32 | 5.12 | 59 | 16 | 3.12 | 59 in 3,745 ms (15.8 tok/s) | 16 in 1,366 ms (11.7 tok/s) |
+| 2 80k, cold | 80k prompt file, max 2,048 | 346.37 | 74,635 | 1,594 (stop) | 4.60 | 0 reused + 74,635 read in 266,328 ms (280.2 tok/s, 3.57 ms/token) | 1,536 in 75,968 ms (20.2 tok/s) |
+| 3 256, warm | 109-token prompt, max 256 | 27.49 | 109 | 256 | 9.31 | 109 in 8,210 ms (13.3 tok/s) | 132 in 7,662 ms (17.2 tok/s) |
+
+The 80k request answers now: all 74,635 prompt tokens staged, the completion stopped
+on `finish_reason stop` at 1,594 tokens rather than the cap, and zero "no blob",
+zero "refill failed" and zero "No buffer space" in the boot's elog. The honest prefill
+figure is the engine's 266.3 s / 3.57 ms per prompt token; the client's TTFT is 344.79 s
+because the thinking stream arrives before the first answer delta and the measuring
+script does not time it. The helper served 27,520 requests / 1,252,864,000 B on leg 2
+with no timeouts or fallbacks. Leg 3's prompt (109 tokens) is not the shape of the
+earlier window's 74-token request, so its 9.31 tok/s is not comparable with that table.
+
+Memory held: VmLck flat at 37,024 MiB (the 36,864 MiB pool, locked), VmRSS peaked at
+45,220 MiB during the warm leg, MemAvailable bottomed at 8,252 MiB inside the 80k
+prefill and sat at 52,738 MiB after teardown. Swap in use was 4,773 MiB at window end
+and 3,593 MiB after teardown; the window's baseline was not captured, and the sampler's
+swap column is empty in every row (a script bug - the values here were read from
+`/proc/meminfo` by hand). VRAM was as tight as before: the serve log warned "only 8 MiB
+of VRAM free at the start of this request" at the warm leg, and the foresight swap
+counters on the 80k leg read 1,255 experts served from swap, 17,308 copies, 1,610 not
+landed yet, 140,234 no free slot, 6,671 over budget. The margins stay as they are by
+directive.
+
+Teardown: the sampler was stopped by pid found with the on-disk `find-proc.sh`; an
+inline pattern-kill had again matched its own shell and printed "Killed by SIGTERM"
+(fourth such incident, now recorded as a rule). `./stop-all.sh` then ran alone - TERM
+1749429 1749626 1750371 1751661, KILL 1749429 1750371, before=0 after=0, ALL STOPPED -
+and `check-quiet.sh` in a separate invocation reported QUIET with ports 8009 and 8019
+free.
+
+Deviations: (1) the launcher in the main tree is now mode 664 and defaults to 8009, so
+the trial booted with `bash .../launch-trial-managed.sh` and `STRATA_PORT=8019`, which
+the script still honours; config and reserves untouched. (2) leg 2 was first launched
+with a wrong driver path, wrote nothing and was re-run.
+
+UNMEASURED: sustained load and concurrency; a second 80k request in the same process
+(warm cache); a pool-vs-non-pool baseline on this box and window; and the decode-side
+refill's own simultaneous-lease requirement (up to lent x blob bytes), which is the same
+shape of exposure as the two walls fixed here but did not refuse in this run.
