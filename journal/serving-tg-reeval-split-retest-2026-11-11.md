@@ -5424,3 +5424,19 @@ consumer is now lease-bearing; nothing runtime-tested (no boot authorized).
 Remaining: the ExpertSource adapter design for the still-legacy consumers
 (dispatch fill, nibble verify, blob(), swap relief) before the store can be
 the primary source; then L4 whole-stack admission. Production stays stopped.
+
+## 2026-11-20 (late) — L3 COMPLETE at compile level; adapter wired as managed srcp
+
+Adapter Task 1 (032ac1f + parent repair 4fc53f2: legacy-equivalent recycle on
+event completion with re-arm; the original sweep rule would have pinned every
+filled expert until teardown, and its test was vacuous) and Task 2 (a213ad7875:
+pool sources into strata_core closing a real link gap, hook-outside-mutex
+deadlock fix, CUDA event hook + srcp=&adapter in managed mode, nm symbol
+proof; journal 4c41258699). Whole L3 chain now: STRATA_RAM_BUDGET_MIB ->
+Pool::create -> PoolExpertStore -> three lease-bearing seams + adapter for
+every remaining ExpertSource consumer. All compile-verified + CPU-tested
+(7/7 pool suite, sanitizer clean, default OFF byte-identical); zero runtime
+evidence — the managed path has never booted. Next decision is the
+operator's: authorize a trial validation window (existing harness, several
+budgets, memory metrics) or proceed to L4 admission design first. Production
+stays down; the moe_mmq.cu.o pre-existing breakage still blocks a full link.
