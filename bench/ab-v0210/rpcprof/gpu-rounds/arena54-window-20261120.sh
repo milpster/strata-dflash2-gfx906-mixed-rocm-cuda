@@ -14,7 +14,8 @@
 # RAM pressure to ~7 GiB available -> T1 probe -> restore -> prod restore + completion check.
 #
 # RUN ONLY AFTER: (a) the arena-mode patch is accepted, (b) fresh operator prod-down go.
-# Evidence: bench/ab-v0210/rpcprof/out/arena54-trial-20261120/
+# Evidence: everything lands in $OUT, i.e. bench/ab-v0210/rpcprof/out/arena54-trial-20261120
+# (the same name as this file's date tag; the window echoes it at start so the log proves it).
 set -uo pipefail
 R=/mnt/srcds/Strata
 G=$R/bench/ab-v0210/rpcprof/gpu-rounds
@@ -29,8 +30,14 @@ EXPECTED_MIB=$(( EXPERTS_BIN_BYTES / 1048576 ))
 # The engine's own log = the trial config's "log" entry. It is appended to (serve/server.py
 # opens it "a"), so every phase reads only the bytes its own boot added (see newlog()).
 ELOG=$R/logs/engine-trial-arena54-20261120.log
+# Lane state files (pair_supervisor.py records the running pair there, including the log path
+# of THIS boot and the engine pid) and the arena-file content record.
+TRIAL_STATE=$R/run/trial-arena54-supervisor.json
+PROD_STATE=$R/run/prod-swift15-f16kv-mixed-supervisor.json
+BIN_SHA_FILE=$OUT/experts-bin.sha256
 mkdir -p "$OUT"
 echo "=== arena-54 window start $(date +%T) ===" | tee -a "$OUT/window.log"
+echo "evidence dir: $OUT" | tee -a "$OUT/window.log"
 
 sup_pid() { python3 -c "import json;print(json.load(open('$1')).get('engine_pid',0))" 2>/dev/null || echo 0; }
 size_of() { stat -c %s "$1" 2>/dev/null || echo 0; }
@@ -44,7 +51,7 @@ vmlck() { # VmLck/VmRSS of the engine: with arena mlock these must NOT fall unde
   fi
 }
 snap() {
-  local eng=$(sup_pid "$R/run/trial-arena54-supervisor.json")
+  local eng=$(sup_pid "$TRIAL_STATE")
   { echo "--- snap $1 $(date +%T) engine=$eng"
     grep -E '^(MemAvailable|Mlocked|SwapFree|Cached):' /proc/meminfo
     if [ "$eng" != "0" ] && [ -d /proc/$eng ]; then
@@ -65,10 +72,64 @@ snap() {
     python3 "$G/file_residency.py" "$eng" --match=IQ3_XXS-0000; } >> "$OUT/memory.log" 2>&1
   tail -20 "$OUT/memory.log"
 }
-restore_prod() { # shared teardown: stop the trial lane, boot prod on :8009
-  bash "$R/stop-all.sh" >/dev/null 2>&1
+sup_field() { python3 -c "import json;print(json.load(open('$1')).get('$2',''))" 2>/dev/null || echo ""; }
+# Readiness of one lane, immune to the previous boot's log: the path comes from this run's
+# supervisor state file (pair_supervisor.py records the launcher's log there), and a path that
+# still equals the snapshot taken BEFORE the boot is refused - so a log that already contains
+# 'ready: http://' from an earlier boot can never be mistaken for this one.
+# Sets READY_LINE/READY_LOG; returns 1 when the tries run out.
+wait_ready() { # wait_ready <state-file> <pre-boot-log> <port> <tries>
+  local state=$1 prev=$2 port=$3 tries=$4 log rd i
+  READY_LINE="" READY_LOG=""
+  for i in $(seq 1 "$tries"); do
+    log=$(sup_field "$state" engine_log)
+    if [ -n "$log" ] && [ "$log" != "$prev" ] && [ -f "$log" ]; then
+      rd=$(tr -d '\0' < "$log" 2>/dev/null | grep -a 'ready: http://' | tail -1)
+      if [ -n "$rd" ] && [ -n "$(curl -s -m 5 "http://127.0.0.1:$port/v1/models" 2>/dev/null | head -c 20)" ]; then
+        READY_LINE=$rd READY_LOG=$log; return 0
+      fi
+    fi
+    sleep 10
+  done
+  return 1
+}
+# The pair supervisor publishes engine_pid when it attaches, and it attaches on the same
+# ready line the poll above waits for - give it a minute before calling a 0 pid a failure.
+engine_pid_ready() { # engine_pid_ready <state-file> -> echoes the pid, or 0 after a minute
+  local state=$1 p=0 i
+  for i in $(seq 1 12); do
+    p=$(sup_pid "$state")
+    [ "$p" != "0" ] && [ -d "/proc/$p" ] && { echo "$p"; return; }
+    sleep 5
+  done
+  echo "$p"
+}
+record_bin_sha() { # the mapped arena file's content, once per window, for the later assert
+  sha256sum "$EXPERTS_BIN" > "$BIN_SHA_FILE" 2>>"$OUT/window.log" &&
+    echo "experts.bin sha256 recorded ($(cut -d' ' -f1 "$BIN_SHA_FILE")) $(date +%T)" | tee -a "$OUT/window.log"
+}
+restore_prod() { # shared teardown: stop every lane, boot prod on :8009, and VERIFY it came back
+  bash "$R/stop-all.sh" 2>&1 | tail -2 | tee -a "$OUT/window.log"
   sleep 8
+  local prev; prev=$(sup_field "$PROD_STATE" engine_log)
   ( cd "$R" && setsid --fork "$R/launch-v0238.sh" > "$R/logs/lane-restore.log" 2>&1 < /dev/null )
+  if wait_ready "$PROD_STATE" "$prev" 8009 120; then
+    echo "prod restored: $READY_LINE ($(date +%T)) log: $READY_LOG" | tee -a "$OUT/window.log"
+    return 0
+  fi
+  echo "PROD RESTORE FAIL — INTERVENTION NEEDED $(date +%T): prod did not answer on :8009" | tee -a "$OUT/window.log"
+  return 1
+}
+# A signal in the middle of the pressure leg used to be the end of it: ram_pressure.py holds
+# the box at ~7 GiB available until its hold file disappears, so a killed window left 40 GiB
+# squeezed and prod un-restored. The trap releases the hold, stops the holder, hands prod back.
+on_signal() {
+  trap - INT TERM   # never twice
+  echo "SIGNAL $(date +%T): releasing $OUT/pressure.hold, stopping the holder, restoring prod" | tee -a "$OUT/window.log"
+  rm -f "$OUT/pressure.hold"
+  [ -n "${PRESSURE:-}" ] && kill -TERM "$PRESSURE" 2>/dev/null
+  restore_prod
+  exit 1
 }
 
 sha256sum "$R/trial-config-arena54.json" | tee -a "$OUT/window.log"
@@ -76,19 +137,55 @@ echo "--- pin identity (must match v0239/SHA256SUMS.txt)" | tee -a "$OUT/window.
 ( cd "$R/v0239" && sha256sum -c SHA256SUMS.txt ) 2>&1 | tee -a "$OUT/window.log"
 curl -s -m 8 -o /dev/null -w 'prod models pre-window: http %{http_code}\n' http://127.0.0.1:8009/v1/models | tee -a "$OUT/window.log"
 
+# ---- pre-flight: the mapped arena file must be absent, or exactly right ------------------
+# With ANY experts.bin present the engine does not read the GGUF at all (from_gguf=false), so
+# the "wrote ... (the next start maps it)" line can never print: a wrong-size file - the
+# unpadded one tools/iq_pack.py --experts-bin writes, for instance - does not merely slow the
+# pre-gen boot, it makes it unwinnable. So this aborts before any serving lane is touched,
+# instead of 20 minutes into a poll that could not have ended well. restore_prod is still the
+# right teardown: it guarantees a verified prod-serving end state however far the window got,
+# and costs one prod restart in the case where nothing had been started yet.
+BIN_BYTES=$(size_of "$EXPERTS_BIN")
+if [ -f "$EXPERTS_BIN" ] && [ "$BIN_BYTES" != "$EXPERTS_BIN_BYTES" ]; then
+  echo "PRE-FLIGHT ABORT $(date +%T): experts.bin is $BIN_BYTES B, expected $EXPERTS_BIN_BYTES B." | tee -a "$OUT/window.log"
+  echo "  A stale/unpadded experts.bin blocks pre-gen: delete it or re-derive it, and never run" | tee -a "$OUT/window.log"
+  echo "  tools/iq_pack.py --experts-bin on this pack while this window depends on the file." | tee -a "$OUT/window.log"
+  restore_prod
+  exit 1
+fi
+
 # ---- E1: arena pre-generation boot -------------------------------------------------------
 # experts.bin is written once, on the first STRATA_ARENA_MMAP boot that loads the arena from
 # the GGUF: the engine fills the anonymous arena, then writes want + one blob to the pack and
 # prints "STRATA_ARENA_MMAP: wrote <path> (the next start maps it)". That boot loads 46.84 GiB
 # of arena AND writes 46.84 GiB of file, so it runs with the cgroup props dropped
 # (STRATA_TRIAL_MEMORY_MAX/_MIN/STRATA_TRIAL_SWAP_MAX = none) - it is NOT the measured boot.
-# If the file is already the exact size, a mapping boot never prints the wrote line at all, so
-# booting again would only burn the 20-minute poll: skip straight to the assert.
+# If the file is already there, the pre-flight above has just proved its size is exact, and a
+# mapping boot prints no wrote line at all - booting anyway would only burn the 20-minute poll.
+# The file's CONTENT is pinned too: the first run that makes it records its sha256, and a later
+# run with a different file aborts rather than measuring a different world.
 echo "--- E1 arena pre-gen phase $(date +%T) (experts.bin target $EXPERTS_BIN_BYTES B = $EXPECTED_MIB MiB)" | tee -a "$OUT/window.log"
 PREG_OK=1
-if [ -f "$EXPERTS_BIN" ] && [ "$(size_of "$EXPERTS_BIN")" = "$EXPERTS_BIN_BYTES" ]; then
+PREGEN_BOOT_RAN=0   # 1 only on the run that actually generated the arena file
+BIN_SHA_PENDING=1   # set to 0 once $BIN_SHA_FILE holds a hash this run agreed with
+[ -s "$BIN_SHA_FILE" ] || echo "pre-gen: no $BIN_SHA_FILE record yet - hashing this file is deferred until the boot gate passes" | tee -a "$OUT/window.log"
+if [ -f "$EXPERTS_BIN" ]; then
+  if [ -s "$BIN_SHA_FILE" ]; then
+    WANT_SHA=$(cut -d' ' -f1 "$BIN_SHA_FILE")
+    GOT_SHA=$(sha256sum "$EXPERTS_BIN" | cut -d' ' -f1)
+    if [ "$GOT_SHA" = "$WANT_SHA" ]; then
+      BIN_SHA_PENDING=0
+      echo "pre-gen: experts.bin content matches the recorded $WANT_SHA ($(date +%T))" | tee -a "$OUT/window.log"
+    else
+      echo "PRE-GEN ABORT $(date +%T): experts.bin content changed - recorded $WANT_SHA, now $GOT_SHA." | tee -a "$OUT/window.log"
+      echo "  The measured boot would map a different file than the earlier legs did." | tee -a "$OUT/window.log"
+      restore_prod
+      exit 1
+    fi
+  fi
   echo "pre-gen: experts.bin already $EXPERTS_BIN_BYTES B - no pre-gen boot needed" | tee -a "$OUT/window.log"
 else
+  PREGEN_BOOT_RAN=1
   bash "$R/stop-all.sh" 2>&1 | tail -3 | tee -a "$OUT/window.log"
   sleep 8
   OFF=$(size_of "$ELOG")
@@ -122,6 +219,11 @@ if [ "$PREG_OK" != 1 ] || [ "$BIN_BYTES" != "$EXPERTS_BIN_BYTES" ]; then
   restore_prod
   exit 1
 fi
+# The boot that just wrote the file is the only one that can attest to its content.
+if [ "$PREGEN_BOOT_RAN" = 1 ]; then
+  echo "pre-gen: recording the content of the file this boot just wrote" | tee -a "$OUT/window.log"
+  record_bin_sha && BIN_SHA_PENDING=0
+fi
 echo "WARNING: iq_pack.py --experts-bin must NOT run on this pack while $EXPERTS_BIN exists" | tee -a "$OUT/window.log"
 echo "         (it writes the unpadded size and silently breaks the mmap size match)." | tee -a "$OUT/window.log"
 
@@ -129,18 +231,12 @@ echo "         (it writes the unpadded size and silently breaks the mmap size ma
 bash "$R/stop-all.sh" 2>&1 | tail -3 | tee -a "$OUT/window.log"
 sleep 8
 OFF=$(size_of "$ELOG")
+PREV_TRIAL_LOG=$(sup_field "$TRIAL_STATE" engine_log)   # the previous boot's log, to be refused
 ( cd "$R" && setsid --fork "$R/launch-trial-arena54.sh" > "$R/logs/lane-arena54.log" 2>&1 < /dev/null )
-RD=""
-for i in $(seq 1 150); do
-  S=$(ls -t $R/logs/trial-arena54-mixed-*.log 2>/dev/null | grep -v -- '-helper' | head -1)
-  RD=$(tr -d '\0' < "$S" 2>/dev/null | grep -a 'ready: http://' | tail -1)
-  PORT=$(curl -s -m 5 http://127.0.0.1:8019/v1/models 2>/dev/null | head -c 20)
-  [ -n "$RD" ] && [ -n "$PORT" ] && break
-  RD=""; sleep 10
-done
-[ -n "$RD" ] || { echo "TRIAL BOOT FAIL $(date +%T) — restoring prod" | tee -a "$OUT/window.log"; restore_prod; exit 1; }
-echo "trial ready: $RD ($(date +%T))" | tee -a "$OUT/window.log"
-S=$(ls -t $R/logs/trial-arena54-mixed-*.log 2>/dev/null | grep -v -- '-helper' | head -1)
+wait_ready "$TRIAL_STATE" "$PREV_TRIAL_LOG" 8019 150 || {
+  echo "TRIAL BOOT FAIL $(date +%T) — restoring prod" | tee -a "$OUT/window.log"; restore_prod; exit 1; }
+RD=$READY_LINE; S=$READY_LOG
+echo "trial ready: $RD ($(date +%T)) log: $S" | tee -a "$OUT/window.log"
 echo "--- boot identity (relief + arena lock + memory guard)" | tee -a "$OUT/window.log"
 tr -d '\0' < "$S" | grep -a -iE 'relief|arena|native mlock|MemoryMax|memory limit' | head -10 | tee -a "$OUT/window.log"
 
@@ -150,7 +246,20 @@ tr -d '\0' < "$S" | grep -a -iE 'relief|arena|native mlock|MemoryMax|memory limi
 # expected 47965 MiB total. "nothing dropped: this run maps" is EXPECTED here (the RAM-relief
 # knob is inert in mmap mode) - it is not a failure. A missing pass line, or any of the fail
 # lines below (anon fallback, a refused/partial lock, no room to write the file), ends the run.
-ENG_PID=$(sup_pid "$R/run/trial-arena54-supervisor.json")
+ENG_PID=$(engine_pid_ready "$TRIAL_STATE")
+# The kernel-side evidence (VmLck, smaps, the cgroup line) is read from this pid alone: a 0, a
+# dead pid, or one left over from the previous boot would silently drop that evidence or
+# describe the wrong process. Accepted identity markers in its command line are the trial's own
+# config path or - what serve/server.py actually passes down - the trial's helper socket path.
+if [ "${ENG_PID:-0}" = "0" ] || ! kill -0 "$ENG_PID" 2>/dev/null \
+   || ! grep -qaE 'trial-config-arena54|trial-arena54[.]sock' "/proc/$ENG_PID/cmdline" 2>/dev/null; then
+  echo "GATE FAIL $(date +%T): engine pid '$ENG_PID' is missing, dead, or is not this trial's engine" | tee -a "$OUT/window.log"
+  CMDLINE=$([ -r "/proc/$ENG_PID/cmdline" ] && tr '\0' ' ' < "/proc/$ENG_PID/cmdline" | head -c 200)
+  echo "  state file: $TRIAL_STATE; that pid's command line: ${CMDLINE:-(unreadable - no such process)}" | tee -a "$OUT/window.log"
+  restore_prod
+  exit 1
+fi
+echo "gate engine pid: $ENG_PID (identity confirmed in /proc/$ENG_PID/cmdline)" | tee -a "$OUT/window.log"
 { echo "--- E2 boot gate $(date +%T) engine=$ENG_PID"
   newlog "$ELOG" "$OFF" | grep -a -iE 'arena|native mlock|mlock|relief|memory limit|MemoryMax' | head -25
   echo "cgroup of engine: $(cat /proc/$ENG_PID/cgroup 2>/dev/null | tr '\n' ' ')"
@@ -176,9 +285,18 @@ done
 [ "$GATE" = 1 ] || { echo "BOOT GATE ABORT $(date +%T) - restoring prod" | tee -a "$OUT/window.log"; restore_prod; exit 1; }
 echo "boot gate PASS $(date +%T): the arena is mapped and locked ($MLOCKED report line, $FILELOCK note)" | tee -a "$OUT/window.log"
 { echo "--- VmLck at ready (before/after comparison starts here) $(date +%T)"; vmlck "$ENG_PID" "at-ready"; } | tee -a "$OUT/window.log"
+# A first run that found the file without a hash record gets one now: the gate has proved this
+# boot really maps it, so its content is the content the measurement depends on.
+if [ "$BIN_SHA_PENDING" = 1 ]; then
+  echo "gate passed: recording experts.bin content as the reference for later runs" | tee -a "$OUT/window.log"
+  record_bin_sha && BIN_SHA_PENDING=0
+fi
 
 snap A54-warm
 bash "$G/trial_judge_8019.sh" T0-arena54-nopress 4 2>&1 | tee -a "$OUT/probe.log"
+# From here to the end of the pressure leg the window holds the box at ~7 GiB available, so an
+# interrupt has to release the holder and hand prod back rather than just die.
+trap on_signal INT TERM
 rm -f "$OUT/pressure.hold"
 python3 "$G/ram_pressure.py" --target-mib $PRESS_TARGET --cap-mib 40000 --hold-file "$OUT/pressure.hold" > "$OUT/pressure.log" 2>&1 &
 PRESSURE=$!
@@ -190,20 +308,12 @@ done
 echo "pressure: avail=$(awk '/^MemAvailable:/{print int($2/1024)}' /proc/meminfo) MiB after $((SECONDS - t0))s" | tee -a "$OUT/window.log"
 bash "$G/trial_judge_8019.sh" T1-arena54-press 6 2>&1 | tee -a "$OUT/probe.log"
 rm -f "$OUT/pressure.hold"; wait $PRESSURE 2>/dev/null
+trap - INT TERM   # the holder is stopped and released; the scripted teardown takes over
 snap A54-final
 
-bash "$R/stop-all.sh" 2>&1 | tail -2 | tee -a "$OUT/window.log"
-sleep 8
-( cd "$R" && setsid --fork "$R/launch-v0238.sh" > "$R/logs/lane-restore.log" 2>&1 < /dev/null )
-RD=""
-for i in $(seq 1 120); do
-  S=$(ls -t $R/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-2026111*.log 2>/dev/null | grep -v -- '-helper' | head -1)
-  RD=$(tr -d '\0' < "$S" 2>/dev/null | grep -a 'ready: http://' | tail -1)
-  PORT=$(curl -s -m 5 http://127.0.0.1:8009/v1/models 2>/dev/null | head -c 20)
-  [ -n "$RD" ] && [ -n "$PORT" ] && break
-  RD=""; sleep 10
-done
-[ -n "$RD" ] && echo "prod restored: $RD ($(date +%T))" | tee -a "$OUT/window.log" || { echo "PROD RESTORE FAIL — INTERVENTION NEEDED" | tee -a "$OUT/window.log"; exit 1; }
+# Scripted teardown: restore_prod does the stop-all, the prod boot and its own readiness poll,
+# so this path ends verified exactly like the four abort paths do.
+restore_prod || exit 1
 sleep 5
 curl -s -m 60 http://127.0.0.1:8009/v1/chat/completions -H 'Content-Type: application/json' \
   -d '{"model":"ud-iq3_xxs","messages":[{"role":"user","content":"Reply with OK."}],"max_tokens":8}' \
