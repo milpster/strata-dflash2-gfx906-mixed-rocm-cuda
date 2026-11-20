@@ -516,8 +516,8 @@ if(STRATA_BUILD_TESTS)
   # this TU's own definitions which the linker prefers over libc's.  pin_budget.hpp includes
   # <cuda_runtime.h> unconditionally, so a minimal test-only shim lives in tests/core and is
   # provided on this target's include path; production builds use the real ROCm/CUDA headers.
-  # Each scenario runs as a separate CTest because native_mlock_detail::on() caches its value
-  # on first call (static local init).
+  # Each scenario runs as a separate CTest because native_mlock_detail::mode() (and on(), which reads it)
+  # caches the knob's value on first call (static local init).
   if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_executable(native_mlock_test tests/core/native_mlock_test.cpp)
     target_include_directories(native_mlock_test BEFORE PRIVATE tests/core include)
@@ -529,6 +529,9 @@ if(STRATA_BUILD_TESTS)
     add_test(NAME native_mlock_test_later_fail COMMAND native_mlock_test later_fail)
     add_test(NAME native_mlock_test_mixed_span COMMAND native_mlock_test mixed_span)
     add_test(NAME native_mlock_test_knob_zero COMMAND native_mlock_test knob_zero)
+    add_test(NAME native_mlock_test_arena_only COMMAND native_mlock_test arena_only)
+    add_test(NAME native_mlock_test_all_spans COMMAND native_mlock_test all_spans)
+    add_test(NAME native_mlock_test_word_all COMMAND native_mlock_test word_all)
   endif()
 
   # Simulated non-Linux guard probe: compiled with -U__linux__ to verify the

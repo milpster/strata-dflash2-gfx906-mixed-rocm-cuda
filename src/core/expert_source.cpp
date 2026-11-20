@@ -6013,7 +6013,10 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
             map_ = v;
             map_bytes_ = file_bytes;
             base_ = (const uint8_t*) v;
-            native_mlock_detail::Result mlock_r = native_mlock_span(v, file_bytes, "ArenaExpertSource shared expert arena");   // STRATA_NATIVE_MLOCK
+            // The arena's own mapping is the one this source reads the experts from, so it is the one span
+            // STRATA_NATIVE_MLOCK=arena locks; the pack and the shards ask as ordinary spans and are refused.
+            native_mlock_detail::Result mlock_r = native_mlock_span(v, file_bytes, "ArenaExpertSource shared expert arena",
+                                                                     NativeMlockScope::arena);   // STRATA_NATIVE_MLOCK
             native_mlock_report(path.c_str());
             pinned_bytes_ = 0;
             dev_slice_.clear();

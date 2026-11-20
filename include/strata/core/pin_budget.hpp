@@ -141,9 +141,20 @@ inline cudaError_t pin_unregister(void* p) {
 // lock is a warning and the engine continues.  Locked in bounded steps so a long lock reports progress
 // rather than looking like a stall, and one failure does not abandon the spans after it.
 //
-// Default OFF and the default path is byte-identical: with the knob unset native_mlock_span() returns before
-// a single syscall and prints nothing.
+// Values of STRATA_NATIVE_MLOCK:
+//   unset, empty, "0"  OFF. The default path is byte-identical: native_mlock_span() returns before a single
+//                        syscall and prints nothing.
+//   "1"                every mapped native span: the expert pack, each GGUF shard, the shared expert arena.
+//   "arena"            the SHARED EXPERT ARENA's own mapping, and nothing else. The pack and the shards ask as
+//                        ordinary spans and are refused before any syscall, so their pages stay reclaimable
+//                        exactly as they are with the knob off, and their report stays silent too. The point is
+//                        a run that reads its experts out of one mapped arena file: that file's pages are the
+//                        ones worth locking, not a second locked copy of the same weights in pack and shards.
+//   anything else      every mapped native span, as any non-empty value always did.
 namespace native_mlock_detail {
+// What the knob asked for.  Decided once, on the first call: an engine's spans never see the environment
+// change under them.
+enum class Mode { off, all, arena };
 struct State {
     std::mutex mu;
     uint64_t bytes = 0;     // locked since the last report()
@@ -156,19 +167,24 @@ inline State& st() {
     static State s;
     return s;
 }
-// non-empty AND not "0" turns it on; unset (the default) is a no-op.
+// Which spans the knob covers.  Unset, empty or "0": off.  "arena": the shared expert arena only.  Any other
+// non-empty word ("1" included): every mapped native span, which is what any non-empty value always meant.
 // On non-Linux the knob can never be on: strcmp and the RLIMIT types below do not exist there.
-inline bool on() {
+inline Mode mode() {
 #if defined(__linux__)
-    static const bool v = [] {
+    static const Mode v = [] {
         const char* e = std::getenv("STRATA_NATIVE_MLOCK");
-        return e != nullptr && *e != '\0' && std::strcmp(e, "0") != 0;
+        if (e == nullptr || *e == '\0' || std::strcmp(e, "0") == 0) return Mode::off;
+        if (std::strcmp(e, "arena") == 0) return Mode::arena;
+        return Mode::all;
     }();
     return v;
 #else
-    return false;
+    return Mode::off;
 #endif
 }
+// the knob is on in some mode; unset (the default) is a no-op
+inline bool on() { return mode() != Mode::off; }
 // #4671, once: raise the soft RLIMIT_MEMLOCK to what the hard limit allows (no privilege needed). This box
 // runs unlimited, so it is a no-op line there; it is what lets a service started without LimitMEMLOCK lock.
 // Linux only; no-op on every other platform (no rlimit, no syscall, no log).
@@ -212,12 +228,25 @@ struct Result {
 };
 }  // namespace native_mlock_detail
 
+/// Which mapping a native_mlock_span() call speaks for.  The knob's "arena" value takes the arena's own
+/// mapping and refuses every ordinary span, so a caller that serves the experts out of one mapped arena file
+/// keeps the page-locked copy it reads from, without a second locked copy of the same weights in the pack and
+/// the GGUF shards.
+enum class NativeMlockScope { file, arena };
+
 /// STRATA_NATIVE_MLOCK: mlock one read-only native GGUF file mapping span, in bounded steps. No-op, not even
-/// a line, when the knob is unset.  Linux only; elsewhere the call is discarded.
-inline native_mlock_detail::Result native_mlock_span(const void* p, uint64_t n, const char* what) {
+/// a line, when the knob is unset - and no-op for an ordinary span when the knob says "arena".
+/// Linux only; elsewhere the call is discarded.
+inline native_mlock_detail::Result native_mlock_span(const void* p, uint64_t n, const char* what,
+                                                     NativeMlockScope scope = NativeMlockScope::file) {
     native_mlock_detail::Result r;
 #if defined(__linux__)
-    if (!native_mlock_detail::on() || n == 0) {
+    const native_mlock_detail::Mode want_mode = native_mlock_detail::mode();
+    // Off: nothing at all.  "arena" with an ordinary span: nothing at all, and NOT the limit line below either
+    // - a refused span is silent, exactly as a span with the knob unset, and its native_mlock_report() stays
+    // silent too because it books no span.
+    if (want_mode == native_mlock_detail::Mode::off || n == 0 ||
+        (want_mode == native_mlock_detail::Mode::arena && scope != NativeMlockScope::arena)) {
         r.complete = true;
         return r;
     }
@@ -281,7 +310,9 @@ inline native_mlock_detail::Result native_mlock_span(const void* p, uint64_t n, 
 }
 
 /// One progress line with what native_mlock_span() has locked since the last call here, then reset.  Nothing
-/// when the knob is unset.  Call it once a source has mapped all of its native GGUF spans.
+/// when the knob is unset, and nothing when no span was booked since the last call: that is how the pack and
+/// the GGUF shard paths stay silent with STRATA_NATIVE_MLOCK=arena, having had every span they asked for refused.
+/// Call it once a source has mapped all of its native GGUF spans.
 inline void native_mlock_report(const char* when) {
 #if defined(__linux__)
     if (!native_mlock_detail::on()) return;

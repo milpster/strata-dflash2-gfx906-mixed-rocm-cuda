@@ -13,6 +13,10 @@
 //   later_fail   - STRATA_NATIVE_MLOCK=1: fail on 2nd chunk, first chunk locked retained
 //   mixed_span   - STRATA_NATIVE_MLOCK=1: span1 succeeds, span2 fails; aggregate retains span1 bytes
 //   knob_zero    - STRATA_NATIVE_MLOCK=0: same as OFF
+//   arena_only   - STRATA_NATIVE_MLOCK=arena: the arena-scoped span locks; the pack's and a shard's spans make
+//                  no mlock call, print nothing and book nothing, so their report stays silent
+//   all_spans    - STRATA_NATIVE_MLOCK=1: an ordinary span AND the arena span both lock (nothing was taken away)
+//   word_all     - STRATA_NATIVE_MLOCK=yes: any other word is every span, as any non-empty value always was
 //
 // Each scenario must run in its own process because native_mlock_detail::on()
 // caches its value on first call (static local init).
@@ -161,6 +165,8 @@ int main(int argc, char** argv) {
         // ---- OFF: knob unset, no syscalls, no log, all-zero Result, silent ----
         ::unsetenv("STRATA_NATIVE_MLOCK");
         reset_mocks();
+        check(native_mlock_detail::on() == false, "OFF: on() is false");
+        check(native_mlock_detail::mode() == native_mlock_detail::Mode::off, "OFF: mode() is off");
         auto buf = alloc_page_aligned(kPage);
 
         if (capture_stderr("stderr_off.txt") != 0) {
@@ -202,6 +208,8 @@ int main(int argc, char** argv) {
         // ---- knob "0": same as OFF -------------------------------------------
         ::setenv("STRATA_NATIVE_MLOCK", "0", 1);
         reset_mocks();
+        check(native_mlock_detail::on() == false, "knob=0: on() is false");
+        check(native_mlock_detail::mode() == native_mlock_detail::Mode::off, "knob=0: mode() is off");
         auto buf = alloc_page_aligned(kPage);
 
         if (capture_stderr("stderr_knob_zero.txt") != 0) {
@@ -475,6 +483,155 @@ int main(int argc, char** argv) {
 
         free_page_aligned(buf1);
         free_page_aligned(buf2);
+    }
+    else if (std::strcmp(scenario, "arena_only") == 0) {
+        // ---- knob "arena": the shared expert arena's span ONLY ------------------
+        // The pack and the GGUF shards ask as ordinary spans.  They must make not one mlock() call, not one
+        // rlimit call, print not one line (not even the RLIMIT notice) and book no span, so their own
+        // native_mlock_report() stays silent too: their pages stay reclaimable exactly as with the knob off.
+        ::setenv("STRATA_NATIVE_MLOCK", "arena", 1);
+        reset_mocks();
+        check(native_mlock_detail::on() == true, "arena: on() is true");
+        check(native_mlock_detail::mode() == native_mlock_detail::Mode::arena, "arena: mode() is arena");
+
+        // (a) the expert pack's mapped span: refused in silence
+        auto pack = alloc_page_aligned(kPage * 7);
+        if (capture_stderr("stderr_arena_pack.txt") != 0) {
+            std::fprintf(stderr, "FAIL: arena: pack capture setup failed\n");
+            return 1;
+        }
+        native_mlock_detail::Result rp = native_mlock_span(pack, kPage * 7, "FileExpertSource mapped pack");
+        std::fflush(stderr);
+        restore_stderr();
+        check(rp.requested == 0, "arena: the pack span requests nothing");
+        check(rp.locked == 0, "arena: the pack span locks nothing");
+        check(rp.complete == true, "arena: a refused span is a complete no-op, not a failure");
+        check(rp.seconds == 0.0, "arena: the pack span spends no time");
+        check(test_mock::chunks_seen == 0, "arena: the pack span makes no mlock call");
+        check(test_mock::getrlimit_calls == 0, "arena: the pack span makes no getrlimit call");
+        check(test_mock::setrlimit_calls == 0, "arena: the pack span makes no setrlimit call");
+        std::string out = read_capture("stderr_arena_pack.txt");
+        check(out.find("___CAPTURE_FAILED___") == std::string::npos, "arena: pack capture file readable");
+        check(out.empty(), "arena: the pack span prints nothing at all");
+
+        // (b) its report: silent, because no span was booked
+        if (capture_stderr("stderr_arena_pack_report.txt") != 0) {
+            std::fprintf(stderr, "FAIL: arena: pack report capture setup failed\n");
+            return 1;
+        }
+        native_mlock_report("FileExpertSource mapped pack");
+        std::fflush(stderr);
+        restore_stderr();
+        out = read_capture("stderr_arena_pack_report.txt");
+        check(out.find("___CAPTURE_FAILED___") == std::string::npos, "arena: pack report capture file readable");
+        check(out.empty(), "arena: the pack report is silent");
+
+        // (c) a GGUF shard's span, same answer
+        auto shard = alloc_page_aligned(kPage * 11);
+        if (capture_stderr("stderr_arena_shard.txt") != 0) {
+            std::fprintf(stderr, "FAIL: arena: shard capture setup failed\n");
+            return 1;
+        }
+        native_mlock_detail::Result rs = native_mlock_span(shard, kPage * 11, "FileExpertSource GGUF shard");
+        std::fflush(stderr);
+        restore_stderr();
+        check(rs.requested == 0 && rs.locked == 0 && rs.complete, "arena: a shard span is the same no-op");
+        check(test_mock::chunks_seen == 0, "arena: the shard span makes no mlock call");
+        out = read_capture("stderr_arena_shard.txt");
+        check(out.find("___CAPTURE_FAILED___") == std::string::npos, "arena: shard capture file readable");
+        check(out.empty(), "arena: the shard span prints nothing at all");
+
+        // (d) the arena's own span: locked, progress reported, one span booked
+        auto arena = alloc_page_aligned(kPage * 3);
+        if (capture_stderr("stderr_arena_span.txt") != 0) {
+            std::fprintf(stderr, "FAIL: arena: arena span capture setup failed\n");
+            return 1;
+        }
+        native_mlock_detail::Result ra = native_mlock_span(arena, kPage * 3, "ArenaExpertSource shared expert arena",
+                                                           NativeMlockScope::arena);
+        std::fflush(stderr);
+        restore_stderr();
+        check(ra.requested == kPage * 3, "arena: the arena span requests its bytes");
+        check(ra.locked == kPage * 3, "arena: the arena span locks its bytes");
+        check(ra.complete == true, "arena: the arena span completes");
+        check(test_mock::chunks_seen == 1, "arena: exactly the arena span reaches mlock");
+        check(test_mock::getrlimit_calls >= 1, "arena: the arena span raises the limit as usual");
+        out = read_capture("stderr_arena_span.txt");
+        check(out.find("___CAPTURE_FAILED___") == std::string::npos, "arena: arena span capture file readable");
+        check(out.find("progress") != std::string::npos, "arena: the arena span reports progress");
+
+        auto& s = native_mlock_detail::st();
+        {
+            std::lock_guard<std::mutex> g(s.mu);
+            check(s.spans == 1, "arena: only the arena span is booked");
+            check(s.bytes == kPage * 3, "arena: the booked bytes are the arena's");
+        }
+        if (capture_stderr("stderr_arena_report.txt") != 0) {
+            std::fprintf(stderr, "FAIL: arena: report capture setup failed\n");
+            return 1;
+        }
+        native_mlock_report("ArenaExpertSource");
+        std::fflush(stderr);
+        restore_stderr();
+        out = read_capture("stderr_arena_report.txt");
+        check(out.find("___CAPTURE_FAILED___") == std::string::npos, "arena: report capture file readable");
+        check(out.find("locked") != std::string::npos, "arena: the arena report is emitted");
+        {
+            std::lock_guard<std::mutex> g(s.mu);
+            check(s.spans == 0, "arena: the report resets the booking");
+        }
+
+        free_page_aligned(pack);
+        free_page_aligned(shard);
+        free_page_aligned(arena);
+    }
+    else if (std::strcmp(scenario, "all_spans") == 0) {
+        // ---- knob "1": every span, the arena's included: nothing was taken away ----
+        ::setenv("STRATA_NATIVE_MLOCK", "1", 1);
+        reset_mocks();
+        check(native_mlock_detail::on() == true, "all: on() is true");
+        check(native_mlock_detail::mode() == native_mlock_detail::Mode::all, "all: mode() is all");
+
+        auto file_span = alloc_page_aligned(kPage);
+        auto arena_span = alloc_page_aligned(kPage * 2);
+        native_mlock_detail::Result r1 = native_mlock_span(file_span, kPage, "FileExpertSource GGUF shard");
+        native_mlock_detail::Result r2 = native_mlock_span(arena_span, kPage * 2, "ArenaExpertSource shared expert arena",
+                                                           NativeMlockScope::arena);
+        check(r1.locked == kPage, "all: the ordinary span still locks with the knob at 1");
+        check(r2.locked == kPage * 2, "all: the arena span locks too");
+        check(test_mock::chunks_seen == 2, "all: both spans reach mlock");
+        auto& s = native_mlock_detail::st();
+        {
+            std::lock_guard<std::mutex> g(s.mu);
+            check(s.spans == 2, "all: both spans are booked");
+            check(s.bytes == kPage * 3, "all: every locked byte is counted");
+        }
+        if (capture_stderr("stderr_report_all.txt") != 0) {
+            std::fprintf(stderr, "FAIL: all: report capture setup failed\n");
+            return 1;
+        }
+        native_mlock_report("all-spans-report");
+        std::fflush(stderr);
+        restore_stderr();
+        std::string out = read_capture("stderr_report_all.txt");
+        check(out.find("___CAPTURE_FAILED___") == std::string::npos, "all: report capture file readable");
+        check(out.find("locked") != std::string::npos, "all: the report is emitted");
+        free_page_aligned(file_span);
+        free_page_aligned(arena_span);
+    }
+    else if (std::strcmp(scenario, "word_all") == 0) {
+        // ---- any other word: every span, as any non-empty value always meant ----
+        // Only "arena" is a special word.  This is the grammar's backward-compatibility guard: a run that has
+        // been setting STRATA_NATIVE_MLOCK to something else must keep locking everything it locked before.
+        ::setenv("STRATA_NATIVE_MLOCK", "yes", 1);
+        reset_mocks();
+        check(native_mlock_detail::on() == true, "word: on() is true");
+        check(native_mlock_detail::mode() == native_mlock_detail::Mode::all, "word: a word other than arena is all");
+        auto file_span = alloc_page_aligned(kPage);
+        native_mlock_detail::Result r = native_mlock_span(file_span, kPage, "FileExpertSource mapped pack");
+        check(r.locked == kPage, "word: the ordinary span locks");
+        check(test_mock::chunks_seen == 1, "word: the ordinary span reaches mlock");
+        free_page_aligned(file_span);
     }
     else {
         std::fprintf(stderr, "unknown scenario: %s\n", scenario);
