@@ -2,7 +2,7 @@
 
 **Branch:** `helper-ipc-diet` @ `bde983cf41` (worktree `/mnt/srcds/Strata-wt-helper-ipc`).
 **Lane:** Foundation S1a — managed pre-locked RAM pool core + focused CPU tests only.
-**Status: CPU checks pass; final core review pending.** Initial implementation
+**Status: limited CPU foundation accepted.** Initial implementation
 and repair claims below are superseded. Read the final parent validation
 section at the end for current evidence. No serving integration is complete.
 
@@ -175,3 +175,14 @@ locking. No real Windows/Mac build, GPU/backend runtime, source-to-expert or
 host-KV integration, whole-stack enforcement, startup-hang fix, speed claim,
 or binary-identity measurement is established. CMake emits an existing
 FetchContent deprecation warning. Production remains stopped.
+
+## Independent gate accepted
+
+Parent read the final core-gate report (L1 attempt 2, PASS limited CPU
+foundation) and accepted 3cfc554 with the final-cpu evidence above. Review
+artifact is in the main tree at
+bench/ab-v0210/notes/managed-ram-pool-core-gate-20261120.md.
+No runtime code changed after final tests. Next is a source-backed audit of
+expert readers, raw-pointer/async consumers and immutable backing I/O before
+implementing a pool-primary expert cache. This core acceptance grants no
+production boot, GPU run, promotion or whole-stack budget claim.
