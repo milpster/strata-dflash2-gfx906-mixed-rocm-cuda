@@ -5332,23 +5332,28 @@ Final acceptance requires actual raw logs and same-pool scratch/reuse evidence;
 the reader remains unaccepted. Native layout, real GPU consumers and total
 serving-stack admission remain undone. Production remains stopped.
 
-## 2026-11-20 — first consumer bound (compile-verified); L2 integration lane closed
+## 2026-11-20 — bounded reader CPU evidence accepted (restored heading)
 
-Fixer 8829aeb1bc bound the lent-slot refill to PoolExpertStore behind a
-null-by-default seam (no knob, no construction; legacy branch byte-identical).
-Parent review found the failure path released leases without draining queued
-copies; 0da4703b98 adds the hard-drain before the failure return. Verified:
-generate.cpp.o compiles on build-906 (exit 0), CPU pool suite 6/6 unchanged.
-The full `strata` target is blocked by pre-existing gcc-16-STL/HIP header
-errors in moe_mmq.cu.o — an unrelated TU, now recorded as an engine follow-up.
+Parent read 4f9e071's complete test and real log, then fixed the remaining
+skip classification, callback-size refusal, unaligned scratch and second-
+window EIO checks. An initial parent test compile typo failed exit 1 and
+was corrected; its raw log is preserved, not replaced with the passing run.
 
-L2 status: pool core, cache, reader, dynamic-layout store and one real
-consumer binding all accepted on CPU/compile evidence. Still open for L3:
-runtime pool construction/budget source, host-KV binding, and the remaining
-raw-pointer consumers (dispatch fill :5611, nibble checks, staged/queued
-fills, arena pointers) before any managed activation. No run of the managed
-branch has occurred; production remains stopped by operator order.
+| Final parent check | Result |
+|---|---|
+| Combined targeted CPU tests | exit 0; 16/16, no skips |
+| ASan/UBSan selected tests | exit 0; 4/4 |
+| Default unset pool-test option | all 4 corresponding targets absent; zero tests |
+| Simulated non-Linux reader guard compile | exit 0; not a native platform build |
+| Reader fixture | 103 assertions; 18 pread calls, zero flag/buffer/cap violations |
+| Same-pool mapping/scratch | 64 KiB / 4 KiB; final mappings zero |
 
+Raw final logs/statuses: engine-worktree
+bench/ab-v0210/rpcprof/out/managed-ram-pool-20261120/reader/final-cpu/recheck/.
+The worktree journal records exact commands and limits. Accept the bounded
+reader/cache component, not completed L2 or a serving feature. Native layout
+and actual consumer ownership still follow; total-stack admission and host KV
+are later. No real model reads, GPU work, boot, promotion or speed claim.
 ## 2026-11-20 — dynamic-layout store accepted (heading restored)
 
 Parent verified 674a0d4cc5 against raw logs: 17/17 targeted CPU tests,
@@ -5373,25 +5378,34 @@ evidence via the worktree's configured build-906 (gfx906 recipe); no boots,
 no GPU runs, no promotion. All other raw-pointer consumers remain unadapted
 and block any engine-wide managed activation.
 
-## 2026-11-20 — bounded reader CPU evidence accepted (restored heading)
+## 2026-11-20 — first consumer bound (compile-verified); L2 integration lane closed
 
-Parent read 4f9e071's complete test and real log, then fixed the remaining
-skip classification, callback-size refusal, unaligned scratch and second-
-window EIO checks. An initial parent test compile typo failed exit 1 and
-was corrected; its raw log is preserved, not replaced with the passing run.
+Fixer 8829aeb1bc bound the lent-slot refill to PoolExpertStore behind a
+null-by-default seam (no knob, no construction; legacy branch byte-identical).
+Parent review found the failure path released leases without draining queued
+copies; 0da4703b98 adds the hard-drain before the failure return. Verified:
+generate.cpp.o compiles on build-906 (exit 0), CPU pool suite 6/6 unchanged.
+The full `strata` target is blocked by pre-existing gcc-16-STL/HIP header
+errors in moe_mmq.cu.o — an unrelated TU, now recorded as an engine follow-up.
 
-| Final parent check | Result |
-|---|---|
-| Combined targeted CPU tests | exit 0; 16/16, no skips |
-| ASan/UBSan selected tests | exit 0; 4/4 |
-| Default unset pool-test option | all 4 corresponding targets absent; zero tests |
-| Simulated non-Linux reader guard compile | exit 0; not a native platform build |
-| Reader fixture | 103 assertions; 18 pread calls, zero flag/buffer/cap violations |
-| Same-pool mapping/scratch | 64 KiB / 4 KiB; final mappings zero |
+L2 status: pool core, cache, reader, dynamic-layout store and one real
+consumer binding all accepted on CPU/compile evidence. Still open for L3:
+runtime pool construction/budget source, host-KV binding, and the remaining
+raw-pointer consumers (dispatch fill :5611, nibble checks, staged/queued
+fills, arena pointers) before any managed activation. No run of the managed
+branch has occurred; production remains stopped by operator order.
 
-Raw final logs/statuses: engine-worktree
-bench/ab-v0210/rpcprof/out/managed-ram-pool-20261120/reader/final-cpu/recheck/.
-The worktree journal records exact commands and limits. Accept the bounded
-reader/cache component, not completed L2 or a serving feature. Native layout
-and actual consumer ownership still follow; total-stack admission and host KV
-are later. No real model reads, GPU work, boot, promotion or speed claim.
+## 2026-11-20 (late) — L3 Task 1 accepted: budget knob wired at startup
+
+Oracle L3 boundary (source facts parent-verified: KV requires a device alias
+at layer.cpp:969, so host-KV stays outside the pool; arena mlock/register
+sites named; :15638 mislabel corrected) accepted with addendum 34d232a.
+Fixer 7517b62720 wired STRATA_RAM_BUDGET_MIB (default OFF byte-identical;
+invalid or oversubscribed budgets error out; managed mode skips the arena
+entirely). Parent repairs 171d745219: charge the CONFIGURED --kv-resident-mib
+cap as outside_owned (runtime tracker is 0 before layers), guard the
+budget_mib<<20 shift overflow, and refuse STRATA_NATIVE_MLOCK together with
+the budget knob (single locked residency). generate.cpp.o compiles on
+build-906, CPU pool suite 6/6; raw logs l3-task1/parent-*. Task 2 (adapt
+the ~:17117 and ~:20300 refill consumers to lease-bearing acquisition) is
+now running as the sole fixer lane; production stays stopped.
