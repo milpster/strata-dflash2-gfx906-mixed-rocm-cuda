@@ -14,25 +14,29 @@
 
 #include <cerrno>
 #include <cstdint>
-#include <functional>
 #include <list>
 #include <memory>
 #include <mutex>
 #include <new>
+#include <stdexcept>
 #include <utility>
 
 #if defined(__linux__)
 #include <sys/mman.h>
-#include <sys/resource.h>
 #include <unistd.h>
 #endif
 
 namespace strata::core {
 namespace detail {
 
-constexpr uint64_t kPage = 4096;
-
-inline uint64_t round_up_page(uint64_t v) { return (v + kPage - 1) & ~(kPage - 1); }
+inline uint64_t page_bytes() {
+#if defined(__linux__)
+    const long page = ::sysconf(_SC_PAGESIZE);
+    return page > 0 ? static_cast<uint64_t>(page) : 0;
+#else
+    return 4096;  // Arithmetic only; pool creation is unsupported here.
+#endif
+}
 
 inline bool round_up(uint64_t v, uint64_t align, uint64_t& out) {
     if (align == 0 || (align & (align - 1)) != 0) return false;
@@ -55,8 +59,14 @@ inline void set_lock_step(uint64_t s) { lock_step() = s; }
 // allocation during pool_alloc preparation (make_shared<LeaseState>).  May throw
 // std::bad_alloc, caught transactionally, to force deterministic failure at each
 // preparation point.  Not called on release.
-using MetadataFault = std::function<void()>;
-MetadataFault g_metadata_fault;
+#if defined(STRATA_RAM_POOL_TEST)
+void (*g_metadata_fault)() = nullptr;
+#endif
+inline void before_metadata_allocation() {
+#if defined(STRATA_RAM_POOL_TEST)
+    if (g_metadata_fault) g_metadata_fault();
+#endif
+}
 
 struct Range {
     uint64_t start = 0;
@@ -68,7 +78,8 @@ struct PoolState {
     std::mutex mu;
     void* base = nullptr;
     uint64_t size = 0;
-    bool locked = false;
+    uint64_t locked_bytes = 0;
+    uint64_t page_bytes = 0;
     std::list<Range> partition;   // ordered [start,end) partition of [0, size)
     PoolStats stats;
 };
@@ -119,10 +130,13 @@ std::error_code pool_capacity_bytes(uint64_t total_bytes,
     if (internal_headroom > after_owners) return std::make_error_code(std::errc::invalid_argument);
     const uint64_t raw = after_owners - internal_headroom; // no underflow (guarded)
     if (raw == 0) return std::make_error_code(std::errc::invalid_argument);
-    if (raw > UINT64_MAX - (detail::kPage - 1)) return std::make_error_code(std::errc::invalid_argument);
-    const uint64_t page = raw & ~(detail::kPage - 1);
-    if (page == 0) return std::make_error_code(std::errc::invalid_argument);
-    out_pool_bytes = page;
+    const uint64_t page = detail::page_bytes();
+    if (!detail::is_pow2(page)) return std::make_error_code(std::errc::not_supported);
+    const uint64_t capacity = raw & ~(page - 1);
+    if (capacity == 0) return std::make_error_code(std::errc::invalid_argument);
+    if (capacity > SIZE_MAX || capacity > PTRDIFF_MAX)
+        return std::make_error_code(std::errc::result_out_of_range);
+    out_pool_bytes = capacity;
     return {};
 }
 
@@ -157,11 +171,8 @@ struct PoolStateDeleter {
         if (s == nullptr) return;
 #if defined(__linux__)
         if (s->base != nullptr && s->size != 0) {
-            int saved = 0;
-            if (s->locked) {
-                if (::munlock(s->base, s->size) != 0 && saved == 0) saved = errno;
-            }
-            if (::munmap(s->base, s->size) != 0 && saved == 0) saved = errno;
+            if (s->locked_bytes != 0) ::munlock(s->base, s->locked_bytes);
+            ::munmap(s->base, s->size);
         }
 #endif
         delete s;
@@ -175,31 +186,37 @@ struct PoolStateDeleter {
 Pool Pool::create(uint64_t pool_bytes, std::error_code& ec) {
     ec = {};
     Pool p;
-    if (pool_bytes == 0 || pool_bytes % detail::kPage != 0) {
+#if defined(__linux__)
+    const uint64_t page = detail::page_bytes();
+    if (!detail::is_pow2(page)) {
+        ec = std::make_error_code(std::errc::not_supported);
+        return p;
+    }
+    const uint64_t step = detail::lock_step();
+    if (pool_bytes == 0 || pool_bytes % page != 0 || step == 0 || step % page != 0) {
         ec = std::make_error_code(std::errc::invalid_argument);
         return p;
     }
-    if (pool_bytes > static_cast<uint64_t>(SIZE_MAX)) {
+    if (pool_bytes > SIZE_MAX || pool_bytes > PTRDIFF_MAX) {
+        ec = std::make_error_code(std::errc::result_out_of_range);
+        return p;
+    }
+    std::shared_ptr<detail::PoolState> st;
+    try {
+        detail::before_metadata_allocation();
+        st = std::shared_ptr<detail::PoolState>(new detail::PoolState, PoolStateDeleter{});
+        detail::before_metadata_allocation();
+        st->partition.push_back({0, pool_bytes, true});
+    } catch (const std::bad_alloc&) {
+        ec = std::make_error_code(std::errc::not_enough_memory);
+        return p;
+    } catch (const std::length_error&) {
         ec = std::make_error_code(std::errc::not_enough_memory);
         return p;
     }
-
-#if defined(__linux__)
-    long pagesize = ::sysconf(_SC_PAGESIZE);
-    if (pagesize <= 0) {
-        ec = std::error_code(EINVAL, std::generic_category());
-        return p;
-    }
-    const uint64_t page = static_cast<uint64_t>(pagesize);
-    if (pool_bytes % page != 0) {
-        ec = std::make_error_code(std::errc::invalid_argument);
-        return p;
-    }
-
-    auto st = std::make_shared<detail::PoolState>();
     st->stats.capacity_bytes = pool_bytes;
     st->stats.free_bytes = pool_bytes;
-    st->partition.push_back({0, pool_bytes, true});
+    st->page_bytes = page;
 
     void* base = ::mmap(nullptr, pool_bytes, PROT_READ | PROT_WRITE,
                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -209,47 +226,30 @@ Pool Pool::create(uint64_t pool_bytes, std::error_code& ec) {
     }
     st->base = base;
     st->size = pool_bytes;
-
-    // Lock in bounded offset-sized chunks; pre-fault each page.  Preserve first
-    // failing syscall errno.  Complete lock or explicit failure with cleanup.
-    uint64_t got = 0;
-    int saved_errno = 0;
-    bool ok = true;
-    const uint64_t step = detail::lock_step();
-    for (uint64_t off = 0; off < pool_bytes && ok; ) {
-        const uint64_t piece = (step < pool_bytes - off) ? step : (pool_bytes - off);
-        volatile char* fp = static_cast<volatile char*>(base) + off;
-        for (uint64_t i = 0; i < piece; i += page) { *fp = 0; fp += page; }
-        if (::mlock(static_cast<const void*>(static_cast<char*>(base) + off),
-                    static_cast<size_t>(piece)) != 0) {
-            ok = false;
-            saved_errno = errno;
-            break;
-        }
-        got += piece;
-        off += piece;
-    }
-
-    if (ok) {
-        st->locked = true;
-        st->stats.locked_bytes = pool_bytes;
-        p.impl_ = st;
+    if (reinterpret_cast<uintptr_t>(base) > UINTPTR_MAX - pool_bytes) {
+        ec = std::make_error_code(std::errc::result_out_of_range);
         return p;
     }
 
-    // Failure: unlock the locked prefix, unmap the whole mapping, drop base/size so
-    // the shared ownership runs its deleter exactly once at teardown.  Preserve errno.
-    if (got != 0) {
-        if (::munlock(static_cast<const void*>(base), static_cast<size_t>(got)) != 0 && saved_errno == 0)
-            saved_errno = errno;
+    // Lock in bounded offset-sized chunks; pre-fault each page.  Preserve first
+    // failing syscall errno.  Complete lock or explicit failure with cleanup.
+    for (uint64_t off = 0; off < pool_bytes; ) {
+        const uint64_t piece = (step < pool_bytes - off) ? step : (pool_bytes - off);
+        volatile char* fp = static_cast<volatile char*>(base) + off;
+        for (uint64_t i = 0; i < piece; i += page) fp[i] = 0;
+        if (::mlock(static_cast<const void*>(static_cast<char*>(base) + off),
+                    static_cast<size_t>(piece)) != 0) {
+            ec = std::error_code(errno, std::generic_category());
+            return p;  // The sole owner unlocks the prefix and unmaps once.
+        }
+        st->locked_bytes += piece;
+        off += piece;
     }
-    if (::munmap(base, pool_bytes) != 0 && saved_errno == 0)
-        saved_errno = errno;
-    st->base = nullptr;
-    st->size = 0;
-    ec = std::error_code(saved_errno ? saved_errno : ENOMEM, std::generic_category());
+    st->stats.locked_bytes = pool_bytes;
+    p.impl_ = std::move(st);
     return p;
 #else
+    (void)pool_bytes;
     ec = std::make_error_code(std::errc::not_supported);
     return p;
 #endif
@@ -268,12 +268,15 @@ std::error_code Pool::pool_alloc(uint64_t bytes, uint64_t alignment,
     std::error_code ec;
     if (impl_ == nullptr) { ec = std::make_error_code(std::errc::invalid_argument); return ec; }
     if (bytes == 0) { ec = std::make_error_code(std::errc::invalid_argument); return ec; }
-    if (!detail::is_pow2(alignment) || alignment < detail::kPage) {
+    if (!detail::is_pow2(alignment) || alignment < impl_->page_bytes) {
         ec = std::make_error_code(std::errc::invalid_argument);
         return ec;
     }
-    const uint64_t reserved = detail::round_up_page(bytes);
-    if (reserved < bytes) { ec = std::make_error_code(std::errc::result_out_of_range); return ec; }
+    uint64_t reserved = 0;
+    if (!detail::round_up(bytes, impl_->page_bytes, reserved)) {
+        ec = std::make_error_code(std::errc::result_out_of_range);
+        return ec;
+    }
 
     auto& st = *impl_;
     std::unique_lock<std::mutex> g(st.mu);
@@ -288,10 +291,10 @@ std::error_code Pool::pool_alloc(uint64_t bytes, uint64_t alignment,
         if (!it->free) continue;
         const uint64_t s0 = it->start;
         const uint64_t e0 = it->end;
-        uintptr_t abs = base_addr + s0; // checked: s0 <= capacity <= SIZE_MAX
-        uintptr_t abs_rounded = abs;
+        const uint64_t abs = base_addr + s0; // Creation checked base + capacity.
+        uint64_t abs_rounded = abs;
         if (!detail::round_up(abs, alignment, abs_rounded)) continue;
-        if (abs_rounded < abs) continue;                 // overflow (unreachable)
+        if (abs_rounded > UINTPTR_MAX) continue;
         const uint64_t start = static_cast<uint64_t>(abs_rounded - base_addr);
         if (start > e0) continue;
         if (reserved > e0 - start) continue;
@@ -311,14 +314,18 @@ std::error_code Pool::pool_alloc(uint64_t bytes, uint64_t alignment,
     std::shared_ptr<detail::LeaseState> ls;
     std::list<detail::Range> repl;
     try {
-        if (detail::g_metadata_fault) detail::g_metadata_fault();
+        detail::before_metadata_allocation();
         ls = std::make_shared<detail::LeaseState>();
-        ls->pool = impl_;
-        ls->size = reserved;
-        ls->requested = bytes;
-        if (lead != 0) repl.push_back({s0, chosen_start, true});
+        if (lead != 0) {
+            detail::before_metadata_allocation();
+            repl.push_back({s0, chosen_start, true});
+        }
+        detail::before_metadata_allocation();
         repl.push_back({chosen_start, chosen_start + reserved, false});
-        if (trail != 0) repl.push_back({chosen_start + reserved, e0, true});
+        if (trail != 0) {
+            detail::before_metadata_allocation();
+            repl.push_back({chosen_start + reserved, e0, true});
+        }
     } catch (const std::bad_alloc&) {
         ec = std::make_error_code(std::errc::not_enough_memory);
         return ec;
@@ -335,7 +342,10 @@ std::error_code Pool::pool_alloc(uint64_t bytes, uint64_t alignment,
     st.partition.splice(chosen, repl, repl.begin(), repl.end());
     st.partition.erase(chosen);
 
-    // Arm stats, unlock BEFORE replacing the output (safe last-lease swap).
+    // Arm only after all potentially throwing preparation has finished.
+    ls->pool = impl_;
+    ls->size = reserved;
+    ls->requested = bytes;
     st.stats.reserved_live_bytes += reserved;
     st.stats.requested_live_bytes += bytes;
     st.stats.alloc_count++;
@@ -343,8 +353,14 @@ std::error_code Pool::pool_alloc(uint64_t bytes, uint64_t alignment,
         st.stats.alloc_high_water = st.stats.alloc_count;
     st.stats.free_bytes = st.stats.capacity_bytes - st.stats.reserved_live_bytes;
     g.unlock();
-    out_lease.impl_ = ls;
+    out_lease.impl_ = std::move(ls);
     return {};
 }
+
+#if defined(STRATA_RAM_POOL_TEST)
+uint64_t ram_pool_lock_step_bytes() { return detail::lock_step(); }
+void ram_pool_set_lock_step_bytes(uint64_t step) { detail::set_lock_step(step); }
+void ram_pool_set_metadata_fault(void (*hook)()) { detail::g_metadata_fault = hook; }
+#endif
 
 }  // namespace strata::core

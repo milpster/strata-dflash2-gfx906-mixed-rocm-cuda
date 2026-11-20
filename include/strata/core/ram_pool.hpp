@@ -14,9 +14,9 @@
 #pragma once
 
 #include <cstdint>
-#include <list>
 #include <memory>
 #include <system_error>
+#include <utility>
 
 namespace strata::core {
 
@@ -25,7 +25,8 @@ struct PoolState;   // defined in src/core/ram_pool.cpp
 struct LeaseState;  // defined in src/core/ram_pool.cpp
 }  // namespace detail
 
-/// Deterministic, checked byte arithmetic for pool capacity.
+/// Total minus outside-owned bytes and headroom, rounded down to a system page.
+/// Errors reset out_pool_bytes to zero. This does not enforce a serving budget.
 std::error_code pool_capacity_bytes(uint64_t total_bytes,
                                     uint64_t outside_owned,
                                     uint64_t internal_headroom,
@@ -51,6 +52,7 @@ public:
     PoolLease& operator=(PoolLease&&) noexcept = default;
 
     bool valid() const noexcept { return impl_ != nullptr; }
+    /// Pointer stays valid while a lease copy exists. size() is page-reserved bytes.
     void* data() const noexcept;
     uint64_t size() const noexcept;
     uint64_t offset() const noexcept;
@@ -71,6 +73,7 @@ public:
     Pool& operator=(Pool&&) noexcept = default;
 
     static Pool create(uint64_t pool_bytes, std::error_code& ec);
+    /// Alignment applies to the returned address. Failure preserves out_lease.
     std::error_code pool_alloc(uint64_t bytes, uint64_t alignment, PoolLease& out_lease);
     void pool_free(PoolLease& lease);
     PoolStats stats() const noexcept;
@@ -85,7 +88,9 @@ private:
 struct PoolLeaseGuard {
     Pool& pool;
     PoolLease lease;
-    ~PoolLeaseGuard() { if (lease.valid()) pool.pool_free(lease); }
+    PoolLeaseGuard(Pool& owner, PoolLease held) noexcept
+        : pool(owner), lease(std::move(held)) {}
+    ~PoolLeaseGuard() = default;
     PoolLeaseGuard(const PoolLeaseGuard&) = delete;
     PoolLeaseGuard& operator=(const PoolLeaseGuard&) = delete;
     PoolLeaseGuard(PoolLeaseGuard&&) noexcept = default;
@@ -93,8 +98,10 @@ struct PoolLeaseGuard {
 };
 
 #if defined(STRATA_RAM_POOL_TEST)
+// Process-global test controls: change only when no pool operation is running.
 uint64_t ram_pool_lock_step_bytes();
 void ram_pool_set_lock_step_bytes(uint64_t);
+void ram_pool_set_metadata_fault(void (*hook)());
 #endif
 
 }  // namespace strata::core

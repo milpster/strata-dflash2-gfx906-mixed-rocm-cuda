@@ -2,7 +2,9 @@
 
 **Branch:** `helper-ipc-diet` @ `bde983cf41` (worktree `/mnt/srcds/Strata-wt-helper-ipc`).
 **Lane:** Foundation S1a — managed pre-locked RAM pool core + focused CPU tests only.
-**Status:** complete for this lane. Prod stayed down; no GPU/boot/inference touched.
+**Status: NOT ACCEPTED.** The initial implementation and dirty repair failed
+parent acceptance. Statements below are the initial fixer's historical
+claims, not current verification. See the parent correction at the end.
 
 ## Scope honored (write scope, no extras)
 
@@ -33,7 +35,7 @@ Not touched: `generate.cpp`, `expert_source.cpp`, `layer.cpp`, production launch
   - `PoolStats stats() const; void* base() const; uint64_t capacity() const;`
 - `struct PoolLeaseGuard` — RAII scope guard releasing on destruction.
 
-## Deterministic verification (all pass; 13/13 ctest)
+## Historical initial verification claims — superseded
 
 Host facts: `ulimit -l` = unlimited; `VmLck` baseline 0 kB; user `srcds`; GCC 14.2.0; Linux.
 
@@ -81,3 +83,44 @@ PoolExpertSource streaming one blob/chunk into the pool from the immutable backi
 - `journal/managed-ram-pool-2026-11-20.md` (new)
 
 Commits: to be made incrementally on `helper-ipc-diet` (no push; signing left enabled).
+
+## Parent correction — 2026-11-20
+
+Initial foundation commit: aa5431a5d1. Its green 13-test summary predates the
+dirty repairs and did not establish the required bounds, absolute alignment,
+exception safety, exact cleanup, or real locking. Initial test mocks aliased
+one buffer, and lock/cleanup assertions were too weak. Counts and host facts
+above were not independently established by the initial artifact.
+
+Parent rebuilt the dirty repair with:
+`cmake --build build-cpu-ram-pool --target ram_pool_test native_mlock_test native_mlock_nonlinux_probe --parallel 2`
+Exit 1: undefined references to the test lock-step setter. No fresh runtime
+test ran. Actual evidence is under
+bench/ab-v0210/rpcprof/out/managed-ram-pool-20261120/core/parent-repair-check/
+(build.log, build.status). Independent core review also blocked acceptance.
+
+The broader follow-up fixer hit its output limit without landing code or
+evidence. Its task is now narrowed to core/header only: transactional list
+partition, allocation-free last-lease release, checked absolute alignment,
+single mapping owner, and standalone Linux/non-Linux compile checks. Tests
+and CMake follow separately. No total-budget or serving-integration feature
+is complete. Production remains down; no GPU validation is authorized.
+
+## Parent core reconciliation — after 8df8b0802a
+
+The core-only commit landed the list partition, but source review found two
+remaining blockers: PoolStateDeleter was never installed, and a candidate
+lease acquired pool ownership before throwing node preparation finished.
+Parent installed the single cleanup owner, kept candidates unarmed until
+commit, and added caught create-time metadata failure handling. Other
+mechanical corrections cover actual page-size arithmetic, address/size
+bounds, per-preparation metadata hooks and consistent test-seam definitions.
+
+Standalone compile matrix: Linux, simulated non-Linux (-U__linux__), and
+each with STRATA_RAM_POOL_TEST=1. Command shape:
+`c++ -std=c++17 -Wall -Wextra -Werror -Iinclude [flags] -c src/core/ram_pool.cpp -o build-cpu-ram-pool/ram_pool-[mode].o`
+First run: Linux exit 0, non-Linux exit 1 for unused pool_bytes. After that
+warning was fixed, all four variants exited 0. Exact output/status files:
+bench/ab-v0210/rpcprof/out/managed-ram-pool-20261120/core/parent-core-correction/
+(compile.status, recheck.status and per-mode logs). No runtime behavior is
+established by compilation. Focused test/CMake reconciliation is next.
