@@ -480,3 +480,112 @@ never executed; a boot window requires operator authorization. Remaining
 after that: L4 whole-stack admission (helper/server scope, page-cache
 shards/tables accounting) and speed/memory measurement via the existing
 harness.
+
+## Live trial window — two budget legs, first runtime evidence — 2026-11-20
+
+The managed path has now run. Two legs on port 8019, production (:8009) down and
+untouched throughout, engine `/mnt/srcds/Strata-wt-helper-ipc/build-906/strata
+--serve --gpu 0,1`, pack `iq3xxs-ud` (Qwen3.8-Flash-Next UD IQ3_XXS), 2x Radeon VII
++ RTX 3080 expert helper. Raw evidence, request transcripts and mem snapshots:
+`/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/managed-ram-pool-20261120/trial-window/`
+(`status.txt` holds every number).
+
+### The geometry fix that made the boot possible (1c83893327)
+`store.open()` refused this box's `experts.bin` with EINVAL. The native layout is
+50,292,326,400 B of expert data (48 layers x 512 blobs, contiguous, the header's
+own total); the file is 50,294,988,800 B — exactly one spare blob larger
+(max_blob 2,662,400 B, the layer-47 blob the log calls "largest blob 2.66 MB").
+The file is written by the engine's own STRATA_ARENA_MMAP writer, which pads the
+arena by one blob so a whole-slot copy may start at any expert
+(`expert_source.cpp`), and ArenaExpertSource already accepted that form. The extra
+bytes are a tail pad the store never reads. One rule now states that
+(`expert_file_bytes_ok` in `expert_layout.hpp`: exactly total, or total plus one
+max_blob), used by ArenaExpertSource (unchanged), FileExpertSource (maps only up
+to total) and PoolExpertStore (any other size still refused). The 22:05 boot log
+still carries the old EINVAL line; the 22:25 and 22:46 boots open cleanly.
+
+### Boot lines
+```
+strata generate: STRATA_RAM_BUDGET_MIB=40960: outside_owned=4294967296 pool_bytes=38654705664 store open
+strata generate: STRATA_RAM_BUDGET_MIB=45056: outside_owned=4294967296 pool_bytes=42949672960 store open
+```
+Leg A: pool 36,864 MiB, `VmLck 37,912,576 kB = 37,024 MiB` (pool + 160 MiB),
+`smaps_rollup Locked` agrees; VmRSS 41,214 MiB at rest, 42,612 MiB after requests.
+Leg B: pool 40,960 MiB, `VmLck 42,106,880 kB = 41,120 MiB` (the same +160 MiB),
+VmRSS 45,420 MiB at rest, 46,832 MiB after requests. The pool is fully locked in
+both legs; the 160 MiB on top is constant, so it is not proportional overhead.
+
+### Memory low-water
+| Leg | MemAvailable pre/post | sampler min | swap used | VRAM free |
+|---|---|---|---|---|
+| A (40960) | 9,362 / 9,067 MiB | 8,529 MiB (22:43:57, n=473) | 1,381 → 2,564 MiB | 220 MiB CUDA0 (LOW), 744 MiB CUDA1 |
+| B (45056) | 8,325 / 8,314 MiB | (leg B rows in mem.csv) | 4,129 → 5,536 MiB | same 220 / 744 MiB |
+Swap rose 1.2 GiB in leg A and 1.4 GiB in leg B; leg B started with 4.1 GiB of
+unreclaimed swap from leg A — a boot-state confound, named, not corrected.
+
+### Requests (curl --max-time 120; wall clock from date +%s.%N around curl;
+tok/s = usage.completion_tokens / wall; the server's own figure is quoted beside it)
+| Leg | id | HTTP | wall s | compl tok | tok/s wall | log tok/s | cache hit |
+|---|---|---|---|---|---|---|---|
+| A | short | 200 | 26.25 | 16 | 0.61 | 2.2 | 84.3% |
+| A | long #1 | 000 (client timeout) | 120.02 | 241 | 2.01 | 6.2 | 83.8% |
+| A | tool | 200 | 28.86 | 52 | 1.80 | 8.1 | 88.9% |
+| A | long #2 | 200 | 16.93 | 256 | 15.12 | 21.1 | 93.5% |
+| B | short | 200 | 23.34 | 16 | 0.69 | 2.5 | 84.3% |
+| B | long | 200 | 105.02 | 256 | 2.44 | 7.5 | 83.6% |
+| B | tool | 200 | 34.24 | 65 | 1.90 | 9.5 | 89.6% |
+The short request (max_tokens 32) spends its whole budget on thinking
+("thinking capped at 16 of max_tokens 32") and returns `content: null`,
+`finish_reason: length` — a reasoning-model artefact of the 32-token cap, not a
+failure. The tool request returns `finish_reason: tool_calls` with
+`{"name": "get_time", "arguments": "{}"}`, so tool calling works through the pool.
+Long #1 was killed by the client at 120 s (HTTP 000) while the engine was still
+answering at 241 of 256 tokens — the same payload re-sent two minutes later
+finished in 16.93 s (256 tokens, 447 chars of content). That speed difference is
+unexplained and is the single largest open question from this window: 2.0 vs
+15.1 tok/s wall on identical input. The VRAM-low warning is the prime suspect; it
+was not isolated (args were left alone, as instructed).
+Leg B is slower than leg A on every request (prompt processing 984.8 ms/token vs
+76.2 ms/token on the long request). Cause named, not proven: cold page cache after
+the reboot plus 4.1 GiB of swap residue.
+
+### Expert-store traffic in the log
+The pool's experts are served from RAM, not streamed; what the log does show is
+the foresight-swap / slot machinery around it. Counts over the whole elog (both
+legs, null bytes stripped with `tr -d '\0'`): `foresight swap` 7,
+`served from the swap` 6, `no free slot` 6, `over budget` 6,
+`decode expert cache hit rate` 6, `read by the GPU over PCIe` 6, `evict` 3 (all in
+"PROFILE, ranked by routing frequency, no eviction" — no eviction happened),
+`lease` 1, `no_buffer_space` **0** — that string does not exist in this build; the
+pool-full seam is logged as "no free slot". Two quoted lines:
+```
+strata serve: foresight swap: 837 experts served from the swap space, 2952 copies (2554 from the router look-ahead), 402 not landed yet, 40730 no free slot, 6993 over budget
+strata serve: decode expert cache hit rate: 96.6% (63285 hits / 65479 lookups); 12761 more read by the GPU over PCIe or from another GPU (16.3% of all 78240 routed)
+```
+"no free slot" grows monotonically within a leg (1,725 → 52,439) while "over
+budget" saturates at ~6,993 — a slot-shortage counter, not eviction.
+
+### VRAM margin (recorded, args unchanged)
+```
+strata serve: 220 MiB of VRAM free with everything loaded - LOW: requests may stall; add --vram-reserve-mib 484 to the config's args (or lower --max-context)
+strata serve: WARNING: only 220 MiB of VRAM free at the start of this request (below 512 MiB): ... decode falls to a few tok/s and a window may never finish (#2065). Add --vram-reserve-mib 512 ...
+```
+Four occurrences across the two legs; at request start the free margin fell to
+63–166 MiB. CUDA1 keeps 744 MiB.
+
+### Teardown
+`stop-all.sh` twice (leg A 22:46, leg B 22:53). Both runs tripped over the same
+self-match: leg A was killed by its own pattern sweep ("Killed by SIGTERM" mid-run)
+and leg B reported `before=0 after=1 — STILL ALIVE, RUN AGAIN`, where the 1 is its
+own `bash -c`. Verified independently each time: no strata/helper process, port
+8019 free, 20 s of quiet (4x5 s samples). The sampler (pid 2608304) was left
+running; its CSV's last row (22:53:44) has a bogus engine_pid — every row before
+that belongs to a real leg.
+
+### UNMEASURED
+Throughput past 256 tokens and at long context; concurrency (all requests were
+serial, no --parallel); a sustained-load memory curve (only idle + 4 requests
+sampled); the cause of the 2.0 vs 15.1 tok/s variance between long #1 and long #2;
+whether the 220 MiB VRAM margin is that cause (not isolated, args untouched); a
+pool-vs-non-pool baseline on the same box and window; L4 total-budget enforcement
+and the adapter under real traffic (helper counters only, no admission evidence).
