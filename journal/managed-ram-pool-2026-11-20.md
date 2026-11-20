@@ -282,3 +282,42 @@ No actual model read, native-layout binding, GGUF role reader, GPU consumer,
 Windows/Mac build, full-sized pool, speed claim or production change occurred.
 The existing CMake FetchContent deprecation warning remains. Next bind the
 existing dynamic ExpertLayout to the reader/cache, then adapt real consumers.
+
+## Dynamic-layout store component accepted — 2026-11-20
+
+Handoff 278822b was not accepted as-is: open()/close() mutated shared state
+without the mutex acquire() holds (a data race), the header declared an
+admit_scratch that was never defined, the claimed expert-store log directory
+did not exist, and the canonical-layout/overflow/vector-short/closed-store
+paths were untested. Parent committed b988202 (serialize open/close, drop the
+dead declaration) and wrote the missing scenarios plus a canonical BLOB test
+(canonical payload legitimately raises this test's mapping cap to 2 MiB).
+
+Parent's first combined run failed one assertion (exit 8) — a parent test
+expectation bug, not a store defect: after close() a live borrower's payload
+stays reserved (4096, not 0). That failing raw log is preserved under
+expert-store/final-cpu/ctest.log. Fixer repair 674a0d4cc5 fixed the assertion
+and reran everything; parent verified the commit diff, numeric status file and
+raw logs.
+
+| Final check | Result |
+|---|---|
+| Combined targeted CPU ctest (17 tests) | exit 0; 17/17, no skips; store 135 assertions |
+| ASan/UBSan selected ctest (5 tests) | exit 0; 5/5; store 135 assertions |
+| Default unset opt-in: full Ninja graph + CTest listing | grep empty (exit 1 = pass); Total Tests: 0 |
+| Store test mappings | peak 1,388,544 B <= 2 MiB cap; final maps 0; matched map/unmap |
+| Canonical path | real ExpertLayout native=false; all 1,382,400 BLOB bytes equal |
+
+Evidence: bench/ab-v0210/rpcprof/out/managed-ram-pool-20261120/expert-store/
+final-cpu/ (first run, incl. the failure) and final-cpu/repair/ (final, with
+status.txt). Native fixture layers {64,128,5000}B x 4 experts at gapped
+offsets; every key resolves with full byte equality; snapshot survives caller
+layout destruction; failed opens preserve the old store and borrowers; close
+keeps borrower payloads reserved while releasing scratch.
+
+Accepted as the L2 primary expert-store component: real dynamic ExpertLayout
+geometry, immutable O_DIRECT backing, one pool for scratch+payload, borrower
+ownership through close. Still NOT done: runtime construction/budget (L3),
+host-KV, whole-stack admission (L4), GGUF role slices, any GPU consumer, any
+engine selection of this store, speed or production claims. The store is not
+referenced by any engine target outside the opt-in test.
