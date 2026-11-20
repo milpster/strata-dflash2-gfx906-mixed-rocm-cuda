@@ -4780,3 +4780,22 @@ Boot-state note for the upcoming speed window: this is a pristine boot —
 no swap residue, no page cache, load 10.6 at 2-min uptime settling
 (no strata processes; source unnamed, possibly post-boot services or the
 game). Name it in the window report.
+
+## 2026-11-20 ~14:1x — pressure diagnosis + operator REVERT to 56G/4G
+
+Post-reboot state measured: swap thrash active (si+so 70-150 MB/s both ways,
+~8G swapped system-wide: python tooling 2.1G, strata-vision 1.0G, hindsight
+0.9G, bun, docling; engine scope swap.current 2.3G of the NEW 10G cap),
+load 10-14, sock_throttled 101 (first nonzero). free output double-counts
+the mlocked arena (used+cache); honest figure: available 7.6G at 14:04.
+Gen-1 engine (pid 55486, booted by the restart agent post-reboot) DIED
+~14:05:37 after serving health ok at 14:04:22 — no kernel OOM; supervisor
+pair-reset to generation 2 (engine 171742, arena lock 1.3 s from page cache).
+Death cause not yet extracted (log section grep broke on empty var; per-gen
+wrapper logs exist: *135732-54731* gen1, *140537-171000* gen2).
+Operator reverted the wall to the trial-validated tuple 56G/4G; agent
+cancelled; revert committed. Engine world itself was healthy at death:
+anon 3.17G (conv 1024 working), current 52.3G, events oom/high/max all 0.
+Suspected chain: 10G swap allowance -> engine anon swapped during cold-boot
+churn -> swap-in stall on first serve -> helper RPC timeout -> abort/stall
+kill. Exit-6 lane owns confirmation.
