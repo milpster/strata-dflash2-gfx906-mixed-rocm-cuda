@@ -4730,3 +4730,37 @@ Post-window restart tuple (ONE prod-down window, applies together):
 Observation points after restart: parking churn rate (if excessive, the dials
 are conversation-cache-park-gain 4096 / min-tokens 2048); resumed-conversation
 reread latency (expect seconds-class, no 78.7s-class reads).
+
+## 2026-11-20 — combined window COMPLETE: promotion PASS, park-recover NOT demonstrated
+
+Window ses_e073b1ec finished. Phase A promote: ALL gates PASS (2-GPU split,
+mlock 1 span 47965/47965 MiB in 50.2 s, VmLck 49280040 kB, wall measured,
+oom 0, rollback unused). The agent independently caught the brief bad 56G
+byte figure and proved 60129542144 = 56x2^30 exactly via min/swap cross-check
+— wrong-byte risk formally closed. All window speeds (incl. its ~28 tok/s
+note) remain struck per SPEEDS-INVALIDATED.md.
+
+Phase B park-recover: park-to-disk TRIGGERS (conv-1/2/3 .sess, generations
+0->3, within-boot restore works: 2873/243 reused), but the post-restart boot
+scan judged all three parks corrupt: "generations=0 bytes=0 sidecars=4 orphan
+sidecars=4 corrupt=3 foreign=0" -> continuation served cold (0 reused,
+~51.6 s, 78.7s-class). CROSS-RESTART CHECKPOINT REUSE NOT DEMONSTRATED.
+Evidence note: the corrupt .sess files are auto-removed by the boot scan —
+a post-hoc snapshot caught only post-restart rings; evidence = engine log
+lines + analysis.md + cheap reproduction (3 rapid parks + restart).
+With conv tier now cut to 1024 MiB parking fires more often — this failure
+mode gained weight; needs a dedicated diagnosis lane (DiskCache sidecar/
+orphan handling at rescan; contrast phase-b T3 clean corrupt=0 park).
+
+Forensics: window agent scope-clean (only the supervisor state file at its
+13:19 boot). Dirty harness files (ram_raw.py, test_ram_raw_cpu.py Nov 19,
+spd-prod-judge.csv 02:34) belong to the earlier harness lanes, untouched.
+
+Live-engine check resolved a transient cgroup misread: VmLck 49280040 kB on
+pid 1085175, restart boot had its own full lock (49.5 s, 1 span).
+
+Restart tuple committed (0ac1f2edf7): wall 55G/10G, conv tier 1024 (config
+sha c4a6bb3f39..., launcher sha c969556ab...). Dispatched to nemotron agent
+ses_e070e088 with correct gate bytes (max=59055800320, min=54760833024,
+swap=10737418240), mechanics only, no speed claims. Evidence dir:
+bench/ab-v0210/rpcprof/out/arena54-restart-20261120/.
