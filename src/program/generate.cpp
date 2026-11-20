@@ -47,6 +47,7 @@
 #include "strata/core/defaults_026.hpp"
 #include "strata/core/coupled_draft.hpp"
 #include "strata/core/expert_source.hpp"
+#include "strata/core/pool_expert_store.hpp"   // GPU-free; opt-in managed-lent-slot seam (nullptr default)
 #include "strata/core/foresight_swap.hpp"
 #include "strata/core/pinned.hpp"
 #include "strata/core/pin_budget.hpp"
@@ -3704,6 +3705,11 @@ static void exit_if_gpu_fatal(const std::string& err) {
         if (context_gone) exit_gpu_fatal(err.empty() ? std::string(cudaGetErrorString(sticky)) : err);
     }
 }
+
+// Opt-in managed lent-slot seam: nullptr unless a future L3 hook sets it.
+// Nothing in this lane sets it at runtime — no env read, no config read, no construction.
+// Default path (seam nullptr) is byte-identical to today.
+static strata::core::PoolExpertStore* g_pool_expert_store = nullptr;
 
 #if defined(STRATA_USE_HIP) && defined(_WIN32)
 static int engine_main(int argc, char** argv) {   // main() is at the end of this file (#3431)
@@ -24032,25 +24038,63 @@ int main(int argc, char** argv) {
         // refill the lent slots from the arena and give them back to the decode tier
         if (!lent.empty()) {
             const Clock::time_point tr = Clock::now();
-            for (const auto& [i, slot] : lent) {   // D-4: queued, one wait (STRATA_REFILL_BLOCKING=1: each)
-                const uint8_t* b = srcp->blob_stable(i / g.n_expert, i % g.n_expert);
-                const int64_t nb = (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(i / g.n_expert);
-                if (b == nullptr || !(refill_blocking() ? xcache.fill_slot_blocking(slot, b, err, nb)
-                                                        : xcache.fill_slot_queued_staged(slot, b, err, nb))) {
+            if (g_pool_expert_store != nullptr) {
+                // Managed path: PoolExpertStore-backed leases.  The lease owns the host
+                // memory until sync_queued reports the batch quiesced; a queued
+                // cudaMemcpyAsync reads the lease memory asynchronously.
+                std::vector<strata::core::PoolLease> leases;
+                leases.reserve(lent.size());
+                bool ok = true;
+                for (const auto& [i, slot] : lent) {   // D-4: queued, one wait (STRATA_REFILL_BLOCKING=1: each)
+                    const int64_t layer = i / g.n_expert;
+                    const int64_t expert = i % g.n_expert;
+                    strata::core::PoolLease lease;
+                    if (const std::error_code ec = g_pool_expert_store->acquire(layer, expert, lease)) {
+                        err = ec.message();
+                        ok = false;
+                        break;
+                    }
+                    const int64_t nb = (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(layer);
+                    if (lease.data() == nullptr || !(refill_blocking() ? xcache.fill_slot_blocking(slot, (const uint8_t*)lease.data(), err, nb)
+                                                                        : xcache.fill_slot_queued_staged(slot, (const uint8_t*)lease.data(), err, nb))) {
+                        ok = false;
+                        break;
+                    }
+                    leases.push_back(std::move(lease));
+                    host_res[(size_t) i] = slot;
+                }
+                if (ok && !xcache.sync_queued(err)) ok = false;
+                if (ok) {
+                    leases.clear();   // sync_queued succeeded: all queued copies quiesced, leases no longer needed
+                }
+                // on any failure: leases stay in the vector until scope exit (a failed
+                // sync is not proof of quiescence; pool lease destruction order at scope exit is safe)
+                if (!ok) {
                     std::fprintf(stderr, "strata generate: refilling a lent slot failed: %s\n", err.c_str());
                     return 1;
                 }
-                if (!refill_blocking()) srcp->note_async_read(b, nullptr);   // #1237
-                host_res[(size_t) i] = slot;
-            }
-            if (!xcache.sync_queued(err)) {
-                std::fprintf(stderr, "strata generate: refilling the lent slots failed: %s\n", err.c_str());
-                return 1;
-            }
+            } else {
+                // Legacy path: byte-identical to today (seam nullptr → existing code untouched).
+                for (const auto& [i, slot] : lent) {   // D-4: queued, one wait (STRATA_REFILL_BLOCKING=1: each)
+                    const uint8_t* b = srcp->blob_stable(i / g.n_expert, i % g.n_expert);
+                    const int64_t nb = (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(i / g.n_expert);
+                    if (b == nullptr || !(refill_blocking() ? xcache.fill_slot_blocking(slot, b, err, nb)
+                                                            : xcache.fill_slot_queued_staged(slot, b, err, nb))) {
+                        std::fprintf(stderr, "strata generate: refilling a lent slot failed: %s\n", err.c_str());
+                        return 1;
+                    }
+                    if (!refill_blocking()) srcp->note_async_read(b, nullptr);   // #1237
+                    host_res[(size_t) i] = slot;
+                }
+                if (!xcache.sync_queued(err)) {
+                    std::fprintf(stderr, "strata generate: refilling the lent slots failed: %s\n", err.c_str());
+                    return 1;
+                }
 #if defined(_WIN32)
-            for (const auto& [i, slot] : lent)
-                srcp->release(i / g.n_expert, i % g.n_expert);
+                for (const auto& [i, slot] : lent)
+                    srcp->release(i / g.n_expert, i % g.n_expert);
 #endif
+            }
             res_put(d_res);
             std::fprintf(stderr, "strata generate: %zu lent slots refilled in %.1f ms\n", lent.size(),
                          std::chrono::duration<double, std::milli>(Clock::now() - tr).count());
