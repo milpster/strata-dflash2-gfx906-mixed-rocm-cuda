@@ -669,3 +669,13 @@ port now. The lane running when this arrived finishes on 8019 (it was already
 booting there); every later boot, launcher default and config port moves to
 8009. The stop rule is unchanged: teardown only through the on-disk scripts,
 and a test that holds 8009 is stopped deliberately, never left running.
+
+#### Clarification: 8009 is shared, test and prod are mutually exclusive
+
+The port directive above must not be read as "8009 is now just a test port". The rule
+is that an engine test never runs **together with prod**. Tests moved to 8009, and prod
+is down by order; the two are exclusive. `launch-trial-managed.sh` now defaults to 8009
+and refuses to boot when a `run/prod*-supervisor.json` records a pair whose pids are
+still alive, naming the state file and pid, so the rule is enforced by the launcher and
+not by memory. Prod's own launcher refuses an occupied 8009, so the exclusion holds in
+both directions.
