@@ -25,6 +25,8 @@ namespace strata::core {
 /// exactly `bytes` bytes starting at that expert's source offset; returns an
 /// error_code on failure (short read, bad key, IO error).  Invoked under the
 /// cache mutex and must not re-enter the cache.
+/// One cache represents one immutable source; callers treat leased payloads as
+/// read-only and the reader must not retain its destination past the callback.
 using ExpertReader =
     std::function<std::error_code(int64_t layer, int64_t expert,
                                   uint8_t* dest, uint64_t bytes)>;
@@ -47,11 +49,12 @@ public:
     ///     pressure eviction, then pool_alloc(bytes, page alignment, candidate).
     ///     Retry/eviction happens ONLY on std::errc::no_buffer_space: cold cache
     ///     refs are dropped one at a time and the alloc retried; live borrowers
-    ///     keep allocations so the pool may still refuse.  Invalid key, negative
-    ///     key, zero/impossible bytes, or a metadata error leave `out` and the
-    ///     cache unchanged and never purge entries.
+    ///     keep allocations so the pool may still refuse. Invalid requests and
+    ///     pending-node failure do not evict. A pool metadata error does not
+    ///     trigger eviction; prior capacity-driven evictions are not rolled back.
     ///   Reader is invoked under the lock; on failure nothing is published,
     ///     populated `out` is preserved, and the candidate is released (no throw).
+    ///     Pressure/read failure may have dropped old cache references.
     ///   On commit the pending node is spliced into the LRU front, the mutex is
     ///     unlocked, then `out` is replaced.
     std::error_code acquire(int64_t layer, int64_t expert, uint64_t bytes,
@@ -89,9 +92,6 @@ private:
     mutable uint64_t misses_ = 0;
     mutable uint64_t evictions_ = 0;
 
-#if defined(STRATA_RAM_POOL_TEST)
-    friend void cache_set_pre_emplace_fault(void (*hook)());
-#endif
 };
 
 #if defined(STRATA_RAM_POOL_TEST)

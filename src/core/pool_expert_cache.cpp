@@ -30,7 +30,7 @@ namespace {
 uint64_t cache_page_size() noexcept {
 #if defined(__linux__)
     const long page = ::sysconf(_SC_PAGESIZE);
-    return page > 0 ? static_cast<uint64_t>(page) : 4096ull;
+    return page > 0 ? static_cast<uint64_t>(page) : 0;
 #else
     return 4096ull;
 #endif
@@ -61,6 +61,11 @@ std::error_code PoolExpertCache::acquire(int64_t layer, int64_t expert,
         return std::make_error_code(std::errc::invalid_argument);
     }
 
+    const uint64_t page = cache_page_size();
+    uint64_t reserved = 0;
+    if (!detail_round_up(bytes, page, reserved) || reserved > pool_->capacity())
+        return std::make_error_code(std::errc::invalid_argument);
+
     std::unique_lock<std::mutex> g(mu_);
 
     // ---- hit path: validate bytes, promote, return lease copy (no read) ----
@@ -71,21 +76,12 @@ std::error_code PoolExpertCache::acquire(int64_t layer, int64_t expert,
             }
             lru_.splice(lru_.begin(), lru_, it);
             ++hits_;
-            out = it->lease;  // borrower copy while still locked
+            PoolLease copy = it->lease;
+            g.unlock();
+            out = std::move(copy);
             return {};
         }
     }
-    ++misses_;
-
-    // Validate impossible size against pool capacity BEFORE any eviction so a
-    // refused request never purges cache entries or touches `out`.
-    const uint64_t page = cache_page_size();
-    uint64_t reserved = 0;
-    if (!detail_round_up(bytes, page, reserved) ||
-        reserved > pool_->capacity()) {
-        return std::make_error_code(std::errc::invalid_argument);
-    }
-
     // ---- miss path ----
     // Prepare the pending Entry node in a temporary list BEFORE pool allocation
     // / pressure / read, so no allocation throws after shared state mutates.
@@ -95,23 +91,7 @@ std::error_code PoolExpertCache::acquire(int64_t layer, int64_t expert,
     pending.expert = expert;
     pending.requested_bytes = bytes;
 
-    PoolLease candidate;
-    std::error_code ec = pool_->pool_alloc(bytes, page, candidate);
-    // Retry/evict ONLY on no_buffer_space (no fitting range).  Metadata errors
-    // and invalid requests leave the cache untouched.
-    while (ec == std::errc::no_buffer_space && !lru_.empty()) {
-        lru_.back().lease = PoolLease{};  // drop cold cache ref only
-        lru_.pop_back();
-        ++evictions_;
-        ec = pool_->pool_alloc(bytes, page, candidate);
-    }
-    if (ec) return ec;  // refuse; pool exhausted by live borrowers
-
-    pending.lease = std::move(candidate);
-
-    // Test-only fault injection before the pending node is emplaced.  A throw
-    // here simulates pending-node allocation failure; nothing has mutated the
-    // cache or `out`, and the reader has not been called.
+    // All cache metadata is ready before pool admission, eviction or I/O.
     try {
 #if defined(STRATA_RAM_POOL_TEST)
         if (g_pre_emplace_fault) g_pre_emplace_fault();
@@ -122,6 +102,16 @@ std::error_code PoolExpertCache::acquire(int64_t layer, int64_t expert,
     } catch (const std::length_error&) {
         return std::make_error_code(std::errc::not_enough_memory);
     }
+
+    ++misses_;
+    PoolLease& candidate = pending_list.front().lease;
+    std::error_code ec = pool_->pool_alloc(bytes, page, candidate);
+    while (ec == std::errc::no_buffer_space && !lru_.empty()) {
+        lru_.pop_back();  // Drop only the cache's reference.
+        ++evictions_;
+        ec = pool_->pool_alloc(bytes, page, candidate);
+    }
+    if (ec) return ec;
 
     // Read payload under lock.  Reader bad_alloc/length caught here.  Failed
     // read publishes no entry, preserves populated out, releases candidate.
