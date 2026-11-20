@@ -1,0 +1,2 @@
+strata generate: memory guard: limit 54.0 GiB (source: flag), current 44.7 GiB, reclaimable cache credited 0.0 GiB; available 9.3 GiB (MemAvailable 17.5 GiB, --memory-limit-mib 55296), floor 2560 MiB
+strata serve: conversation parking does not support a layer split on one GPU (--split-device 0); disable parking with --conversation-cache-mib 0

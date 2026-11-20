@@ -1,0 +1,10 @@
+strata: a model with K-quant experts (Unsloth UD-Q4/Q5/Q6_K_XL) reads its prompt on llama.cpp's MMQ kernels (STRATA_MMQ_KQ=0 or STRATA_NV_KQ_DEFAULT=0 turns it off)
+strata generate: memory guard: limit 62.2 GiB (source: meminfo), current 44.7 GiB, reclaimable cache credited 0.0 GiB; available 17.4 GiB (MemAvailable 17.4 GiB), floor 2560 MiB
+strata generate: layer split across 2 GPUs: CUDA0, then CUDA1 (split 30)
+strata generate: this CPU has no AVX-512: the expert kernels run on AVX-2 (multi-token for the i-quant gate/up rows)
+strata generate: --kv-resident-mib 4096: 12864 bytes per resident KV cell over 12 QSA layers -> resident 262144 of 262144 asked cells (3.1 GiB resident of the 262144-token context, the rest streams; --kv-resident 262144)
+strata generate: native pack: /mnt/srcds/ai/iq3xxs-ud experts (largest blob 2.66 MB), token embedding Q6_K in mapped host memory (497 MiB, 0.3 s)
+strata generate: cudaMalloc(1485606400) for the weight arena failed (out of memory): 284 MiB of 16368 MiB VRAM free on this GPU. The arena is allocated first, before the KV and expert caches: another program (or an engine that is still exiting) holds the rest - nvidia-smi / rocm-smi lists them
+strata generate: GPU memory right now (best effort):
+strata generate:   CUDA0 (AMD Radeon VII): 284 MiB free of 16368 MiB; the driver does not say which programs use it here
+strata generate:   CUDA1 (AMD Radeon VII): 396 MiB free of 16368 MiB; the driver does not say which programs use it here
