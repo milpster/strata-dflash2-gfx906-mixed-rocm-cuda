@@ -640,3 +640,23 @@ a pattern that stop-all also sweeps.
 Still UNMEASURED: throughput past 256 tokens and at long context; concurrency;
 a sustained-load memory curve; a pool-vs-non-pool baseline on the same box and
 window; L4 total-budget enforcement.
+
+### Correction (operator, 2026-11-20 late): the VRAM-margin explanation is refuted
+
+The first window's section above names the low free-VRAM warning as the prime suspect
+for the slow long request ("The VRAM-low warning is the prime suspect"). The operator
+states that explanation is refuted and false on this box, and it must not be repeated.
+No measurement here supports it either: it was an inference from a warning line, not an
+isolated A/B, and the same config ran warm at 19.4-21.1 tok/s while the warning was
+present in the log.
+
+What the evidence does support for decode speed in managed mode: the pool holds 36 GiB
+of a 46.84 GiB expert set, so roughly a fifth of routed experts are not resident and the
+elog reports 13-17% of them read over PCIe or from another GPU each window; the read
+granularity that used to cost ~488 preads per blob is fixed (0cd9c50541). Attribution of
+the remaining gap needs a measurement, not a hypothesis: the unmeasured item is still a
+pool-vs-non-pool leg on the same box and window.
+
+Also: the VRAM margins stay at the tuple's own values (--vram-reserve-mib 192,
+--vram-reserve-later-mib 576). A trial-config edit that raised the reserve to 704 was made
+and reverted the same day; the operator directive is not to touch them.
