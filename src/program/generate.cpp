@@ -24295,6 +24295,19 @@ int main(int argc, char** argv) {
                     // Drain any queued copies before the leases destruct at scope exit:
                     // hard-wait the device (a failed/absent sync is not proof of quiescence).
                     (void) cudaDeviceSynchronize();
+                    // What the pool looked like when it refused: a request that ends here has no other
+                    // report, and the numbers say whether the cache (evictable) or live borrowers held it.
+                    const strata::core::PoolExpertStore::Stats ps = g_pool_expert_store->stats();
+                    std::fprintf(stderr,
+                                 "strata generate: managed pool at the refusal: capacity=%llu scratch=%llu "
+                                 "usable=%llu resident_pairs=%llu resident_bytes=%llu pool_reserved=%llu "
+                                 "hits=%llu misses=%llu evictions=%llu\n",
+                                 (unsigned long long) ps.pool_capacity_bytes, (unsigned long long) ps.scratch_bytes,
+                                 (unsigned long long) ps.usable_bytes, (unsigned long long) ps.resident_pairs,
+                                 (unsigned long long) ps.resident_bytes,
+                                 (unsigned long long) g_pool_expert_store->pool_reserved_live_bytes(),
+                                 (unsigned long long) ps.hits, (unsigned long long) ps.misses,
+                                 (unsigned long long) ps.evictions);
                     std::fprintf(stderr, "strata generate: refilling a lent slot failed: %s\n", err.c_str());
                     return 1;
                 }

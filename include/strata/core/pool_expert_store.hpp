@@ -96,6 +96,13 @@ public:
     /// Cache-only stats (metadata/payload geometry not in Pool stats).
     PoolExpertCache::Stats cache_stats() const noexcept { return cache_.stats(); }
 
+    /// Pool bytes reserved right now: the scratch, the cache's own payloads, and every
+    /// borrower's lease.  Diagnostics only (a report of what a refusal looked like), never
+    /// a decision.
+    uint64_t pool_reserved_live_bytes() const noexcept {
+        return pool_ != nullptr ? pool_->stats().reserved_live_bytes : 0;
+    }
+
     /// Store stats.  The scratch is REAL pool bytes, so `usable_bytes` (pool
     /// minus scratch) is the space payload may occupy: capacity assertions use
     /// it, never the whole pool.  `preads_per_blob` is the read granularity the

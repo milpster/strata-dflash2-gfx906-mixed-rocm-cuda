@@ -5249,9 +5249,20 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                 // is prompt-eligible by the hold-set (the same holds[] select_prompt_rows screens),
                                 // and its rows come from the helper.  A pair the helper does not hold keeps today's
                                 // rule (its arena bytes are there, stable, as they always were).
+                                // CS-T: a transient pair is never LENT for the whole layer sweep - the source
+                                // copies it on demand, so the eligibility answer is "the host has these
+                                // bytes", not "blob_stable lent them".  Probing blob_stable here anyway (this
+                                // line did, for every expert of every layer with the helper on) takes one pool
+                                // borrower per pair from the managed store: 512 experts x 48 layers of ~2 MiB
+                                // exhaust the 36 GiB pool before a long prompt's last chunk is read, and the
+                                // lent-slot refill after the prompt then fails with "No buffer space available"
+                                // (2026-11-20, the 80k prefill).  Non-transient sources keep the probe exactly
+                                // as it was - byte-identical for every source that does not set transient().
                                 hp_stable[(size_t) e] = (m.hp_ram_relief && hp_holds[(size_t) e])
                                                             ? 1
-                                                            : (m.src->blob_stable(l, e) != nullptr ? 1 : 0);
+                                                            : (m.src->transient(l, e)
+                                                                   ? 1
+                                                                   : (m.src->blob_stable(l, e) != nullptr ? 1 : 0));
                             }
                             // M4c (a): the size-adaptive claim. The M4b re-measure found the crossover -
                             // deep claims WON at small chunks (+19.8% at 222 tok) and LOST above (-22.7% at
