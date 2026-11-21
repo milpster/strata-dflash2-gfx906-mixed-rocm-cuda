@@ -74,7 +74,13 @@ ledger, old, new, log, err, prompt, gen_txt, vram, park = sys.argv[1:10]
 if "could not produce a blob" in err:
     klass = "host-pool-admission"
 elif "No buffer space available" in err or "refilling a lent slot" in err:
-    klass = "vram-exhaustion"
+    # 2026-11-21: this was labelled vram-exhaustion and that was wrong.  "No buffer space
+    # available" is errno ENOBUFS, and the only code that produces it is the RAM pool
+    # (ram_pool.cpp:306 pool_alloc, pool_expert_cache.cpp LRU) - the refill loop takes
+    # g_pool_expert_store->acquire() straight (generate.cpp refill_issue) and prints
+    # ec.message(), so a lent slot that could not be refilled is a HOST POOL refusal on the
+    # refill path, not a card out of VRAM.  CUDA reports out-of-memory as "out of memory".
+    klass = "host-pool-refill"
 elif "SIGABRT" in err or "Aborted" in err:
     klass = "engine-abort"
 else:

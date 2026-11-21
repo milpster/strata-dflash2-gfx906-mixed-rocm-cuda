@@ -182,3 +182,33 @@ balanced, but `prefill.cpp:6190`/`:7881`/`:5306` borrow from a source that repor
 `pinned()` and `transient()` true - one borrow per non-resident pair per layer with no note
 and no release. That is the leak the guard should have caught had it counted idle entries
 instead of the whole table.
+
+## Correction: `refilling a lent slot failed: No buffer space available` is the host pool, not the card
+
+Every margin step from 384 to 640 was taken on the belief that this line was VRAM exhaustion.
+It is not, and the code says so plainly:
+
+- `"No buffer space available"` is errno **ENOBUFS**. The only producers of
+  `std::errc::no_buffer_space` in this tree are `src/core/ram_pool.cpp:306` (pool_alloc, no
+  fitting range) and `pool_expert_cache.cpp` (its LRU gave up). CUDA reports a full card as
+  `"out of memory"`, never as ENOBUFS.
+- The refill loop takes the store **directly**: `generate.cpp` `refill_issue` does
+  `g_pool_expert_store->acquire(layer, expert, lease)` and, on failure, `e = ec.message()`.
+  The caller prints `ERR refilling a lent slot failed: %s`. So the failing prompt read at
+  53,170 of 53,175 tokens (280 s) was the **RAM pool refusing a refill**, not the card.
+
+That also explains why failing boots carried no `borrow refused` evidence line: refills go
+through the store, not through the adapter, so the adapter's one-per-second refusal line never
+fires for them.
+
+What this costs the record: the ladder's premise was wrong, and the direction was wrong too -
+a larger CUDA0 margin shrinks the GPU expert cache, which sends *more* pairs to the host pool
+on every refill, i.e. it increases the pressure that was actually failing. The 640 rung stays
+as the current state only because it is what is running; no further step is taken on this axis
+until the pool is fixed and a genuine card failure (CUDA's own out-of-memory text) has been
+seen.
+
+The classifier is corrected (`host-pool-refill`) and the ledger re-derived with
+`bench/ab-v0210/rpcprof/reclassify-ledger.py`: 9 entries reclassified, and the ledger now holds
+no `vram-exhaustion` entry at all - 5 pool admissions, 7 pool refills, the rest empty or
+SIGABRT.
