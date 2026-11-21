@@ -48,8 +48,22 @@ convenience, the rule wins. Numbers come from the engine's own lines, never from
   exhausted VRAM, one step per real failure**. Thin-but-working is not exhaustion.
   CUDA0 `--vram-reserve-mib`, CUDA1 `--vram-reserve-later-mib`, helper `--reserve-mib`
   (clamped 64..4096; 0 means 64 and the fill stops on `budget`).
-- Current: pool 38 GiB (`STRATA_RAM_BUDGET_MIB=43008` -> `pool_bytes=40802189312`), CUDA0 320 on
-  prod / 256 as measured, CUDA1 192, helper reserve 0, fill 7400, slots 4600.
+- Current: pool 38 GiB (`STRATA_RAM_BUDGET_MIB=43008` -> `pool_bytes=40802189312`), CUDA0 **640** on
+  prod (raised 384->448->512->576->640 on 2026-11-21 before the class was corrected - see the next
+  bullet - so it is provisional, not earned), CUDA1 192, helper reserve 0, fill 7400, slots 4600.
+- **`refilling a lent slot failed: No buffer space available` is the RAM pool, not the card.**
+  ENOBUFS is produced only by `ram_pool.cpp` (`pool_alloc`) and the pool cache's LRU; CUDA calls a
+  full card `out of memory`. The refill loop takes `g_pool_expert_store->acquire()` directly, so a
+  margin step can never answer it - and a *larger* CUDA0 margin shrinks the GPU expert cache, which
+  sends more pairs to the pool and makes it worse. The pool is answered in code; the two pool
+  classes are `the expert source could not produce a blob` (admission) and the ENOBUFS refill.
+- The pool's own evidence line, when a borrow is refused:
+  `managed pool: borrow refused layer L expert E: borrowers=N completed=N pending=N resident_pairs=N
+  evictions=N`. `borrowers` near the pair count with `completed=0 pending=0` is a pin leak in the
+  engine, not a budget problem. `STRATA_POOL_BORROW_TRACE=1` prints the borrowing caller's frames.
+- A lane's build claim is two binaries, not one: the test binary that ran *and* the `strata` that
+  will be booted. `ninja` can compile a TU and leave the engine unlinked - check
+  `sha256sum build-*/strata` against the last staged sha before copying anything into `run/`.
 - A margin change costs cache: +64 MiB on CUDA0 bought 348 instead of 284 MiB free and cost 34
   slot pairs (4,951 -> 4,917). Say both numbers.
 - Margins are edited in the config's `args`, never in a running process.
