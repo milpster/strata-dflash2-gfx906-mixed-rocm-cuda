@@ -869,3 +869,24 @@ VRAM and pool budgets are from the engine's own boot lines.
 
 One pre-existing, non-fatal warning seen once: `--ple-io direct measures slow here (12,863 rows/s, ~53 MB/s of
 random 4 KiB reads)`.
+
+### Cross-boot restore from the disk tier (fsclamp-champion-xboot, 00:36–00:38)
+
+Fresh boot, engine `4b8251e9`, cache kept (conv-1/conv-2/ring-1 on disk), same 239,646-token prompt:
+
+| | value |
+|---|---|
+| restore | **restored 239,641 tokens from disk (checkpoint) in 32,681 ms** — checkpoint mount at 239,641 of 240,051 (conv-2's generation) |
+| prompt line | 239,646 = 239,641 reused + 5 read in 33,252 ms |
+| decode | 512 generated in 21,168 ms (**24.2 tok/s**), drafts 318/496; second pass 145 at 30.2 tok/s after a 475 ms re-mount |
+| client | 675 tokens, **64.7 s end-to-end** (10.4 tok/s overall), coherent answer |
+| park after | conv-3.sess, 240,157 tokens in 4,825 ms; generations=3, **11,603 MiB** of the 24,576 MiB tier |
+| non-finite | **0** |
+
+So both restore paths are measured: same-boot reuse in 393 ms, cross-boot from disk in 32.7 s (≈118 MiB/s direct-I/O
+checkpoint restore, against ~810 MiB/s park writes) — versus 842.7 s to read the prompt cold. The 240k no-output bug
+and the park/restore story are both closed on the clamped engine.
+
+Next, per operator order "turn the expert trail back on and measure again": clean A/B at reserves 600/600
+(cache size held constant), arm `fson-rsv600` with `STRATA_FS_SLOTS=2,8` (the clamp grants what fits) against arm
+`fsoff-rsv600` with the swap off, same window script.
