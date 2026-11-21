@@ -40,6 +40,27 @@ for kv in sys.argv[4:]:
         d['exe'] = v.rstrip('/') + '/rpcw-hip/strata'
     elif k == 'ARGS':       # extra engine arguments, space separated (e.g. ARGS="--layer-split 34")
         d['args'] = list(d.get('args') or []) + v.split()
+    elif k == 'HELPER' and v == 'off':
+        # HELPER=off: run with no remote expert tier.  The tier is opt-in through its socket, so the test
+        # has to remove the arguments, the config keys and the env levers, not add a flag.
+        drop = {'--expert-helper-socket', '--expert-helper-socket2', '--expert-helper-slots',
+                '--expert-helper-layers', '--expert-helper-timeout', '--expert-helper-ram-relief',
+                '--expert-helper-ram-relief-packs', '--expert-helper-relief-hot-mib',
+                '--expert-helper-relief-arena-cap-mib'}
+        src = list(d.get('args') or [])
+        kept, i = [], 0
+        while i < len(src):
+            if src[i] in drop:
+                i += 2 if (i + 1 < len(src) and not src[i + 1].startswith('--')) else 1
+                continue
+            kept.append(src[i])
+            i += 1
+        d['args'] = kept
+        for key in ('expert_helper_slots', 'expert_helper_socket', 'expert_helper_socket2',
+                    'expert_helper_timeout'):
+            d.pop(key, None)
+        for key in ('STRATA_PREFILL_HELPER', 'STRATA_FS_HELPER_SHADOW', 'STRATA_PREFILL_HELPER_TIMEOUT_MS'):
+            d['env'].pop(key, None)
     else:
         d['env'][k] = v
 d['log'] = f'/mnt/srcds/Strata/logs/engine-{label}.log'
@@ -52,6 +73,9 @@ ELOG=$(python3 -c "import json;print(json.load(open('$CFG'))['log'])")
 EXE=$(python3 -c "import json;print(json.load(open('$CFG'))['exe'])")
 EXEDIR=$(dirname "$EXE")
 EXPECT=$(sha256sum "$EXE" | cut -c1-16)
+
+# DRYRUN=1: write the generated config and stop, so an override can be inspected without touching the GPUs.
+if [ "${DRYRUN:-0}" = 1 ]; then echo "DRYRUN: config written to $CFG, no boot"; exit 0; fi
 
 echo "=== stop ==="
 ./stop-all.sh | tail -1
