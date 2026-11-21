@@ -7,6 +7,7 @@
 #include "strata/core/expert_nibble.hpp"
 #include "strata/core/foresight_swap.hpp"
 #include "strata/core/on_device.hpp"
+#include "strata/core/vram_guard.hpp"
 #include "strata/core/ple_residency.hpp"
 #include "strata/platform/aux_cpus.hpp"
 #include "strata/core/remote_experts.hpp"
@@ -7654,12 +7655,41 @@ bool ForesightSwap::init(int slots_per_layer, int64_t layers, int64_t experts, c
     card_round.assign(devices.size(), ~0ull);
     card_used.assign(devices.size(), 0);
     const auto& lay = strata::kernels::cpu::expert_layout();
+    int cards_alloc = 0;   // cards whose slot allocation survived the per-card VRAM clamp
     for (size_t c = 0; c < devices.size(); ++c) {
-        uint64_t bytes = 0;
+        uint64_t per_slot = 0;   // one slot on each of this card's layers, in bytes
         for (int64_t l = 0; l < layers; ++l)
-            if (card_of_layer[(size_t) l] == (int) c) bytes += (uint64_t) card_slots[c] * (uint64_t) lay.blob_bytes(l);
-        if (bytes == 0) continue;
+            if (card_of_layer[(size_t) l] == (int) c) per_slot += (uint64_t) lay.blob_bytes(l);
+        if (per_slot == 0) continue;
+        const int asked = card_slots[c];
+        if (asked <= 0) continue;
         const OnDevice on(devices[c]);
+        // The cudaMalloc below lands after the expert cache fill and outside every reserve
+        // calculation, so a comma list can hand a thin-VRAM card more slots than its CURRENT free
+        // VRAM can hold (STRATA_FS_SLOTS="2,8" put ~220 MiB on a card that had 140 MiB free, and
+        // the first stage-2 GEMM went non-finite).  Clamp this card's slots to what it can afford
+        // while leaving at least the request-start warning's low line (vram_guard::kLowMib) free.
+        size_t free_b = 0, total_b = 0;
+        if (cudaMemGetInfo(&free_b, &total_b) == cudaSuccess) {
+            const int64_t budget = (int64_t) free_b - (vram_guard::kLowMib << 20);
+            int granted = asked;
+            if (budget <= 0 || (uint64_t) granted * per_slot > (uint64_t) budget)
+                granted = budget > 0 ? (int) ((uint64_t) budget / per_slot) : 0;
+            if (granted < asked) {
+                card_slots[c] = granted;
+                std::fprintf(stderr, "strata serve: foresight swap: card%zu asked %d slots (%llu MiB) with %lld MiB "
+                                     "free -> granted %d slots (%llu MiB), leaving %lld MiB\n",
+                             c, asked, (unsigned long long) ((uint64_t) asked * per_slot >> 20),
+                             (long long) (free_b >> 20), granted,
+                             (unsigned long long) ((uint64_t) granted * per_slot >> 20),
+                             (long long) ((free_b - (uint64_t) granted * per_slot) >> 20));
+            }
+        } else {
+            cudaGetLastError();   // no figure to clamp against: keep the asked slots, the malloc below fails on its own
+        }
+        const uint64_t bytes = (uint64_t) card_slots[c] * per_slot;
+        if (bytes == 0) continue;   // clamped to zero: no cudaMalloc on this card
+        ++cards_alloc;
         cudaStream_t s = nullptr;
         if (cudaMalloc(&card_mem[c], bytes) != cudaSuccess ||
             cudaStreamCreateWithFlags(&s, cudaStreamNonBlocking) != cudaSuccess) {
@@ -7688,6 +7718,10 @@ bool ForesightSwap::init(int slots_per_layer, int64_t layers, int64_t experts, c
                 off += bb;
             }
         }
+    }
+    if (cards_alloc == 0) {   // every card with layers clamped to zero slots: the swap serves nothing
+        err = "every card's slots clamped to zero against the free-VRAM low line";
+        return false;   // the caller logs this and returns nullptr, as if the swap were off
     }
     if (helper_shadow && ring_want > 0) {
         // the staging ring: one pinned entry per in-flight helper-shadow fill (STRATA_FS_RING).  The
