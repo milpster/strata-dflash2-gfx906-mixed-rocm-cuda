@@ -105,7 +105,7 @@
     "STRATA_AUX_CPUS": "3,5,7,9,11,13,15"
   },
   "env_to_user": true,
-  "exe": "/mnt/srcds/Strata/run/trial-managed-bin/rpcw-hip/strata",
+  "exe": "/mnt/srcds/Strata/run/pool-admit-bin/rpcw-hip/strata",
   "expert_helper_slots": 4600,
   "expert_helper_socket": "/mnt/srcds/Strata/run/prod-iq3xxs-ud-mixed.sock",
   "expert_helper_socket2": "/mnt/srcds/Strata/run/prod-iq3xxs-ud-mixed2.sock",

@@ -30,7 +30,7 @@ WORK="$ROOT/v0215"
 # -> 38 GiB pool + 4 GiB outside area, CUDA0 VRAM margin 256 (one +64 step after the
 # 40 GiB run exhausted the card at 7 MiB free), CUDA1 192, helper reserve 0 (the component
 # clamps it to 64), fill 7400 MiB, relief hot 2048 / arena cap 4096.
-BIN="$ROOT/run/trial-managed-bin"
+BIN="$ROOT/run/pool-admit-bin"
 export STRATA_RAM_BUDGET_MIB=${STRATA_RAM_BUDGET_MIB:-43008}
 PY="$ROOT/.venv/bin/python"
 CONFIG="$ROOT/prod-config-ud-iq3xxs-dflash-w4-q4_0-mixed.json"
