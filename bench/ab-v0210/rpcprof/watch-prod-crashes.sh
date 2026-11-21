@@ -69,10 +69,21 @@ while (( $(date +%s) < end )); do
   python3 - "$LEDGER" "$last_gen" "$cur" "${dead_log##*/}" "$err" "$prompt" "$gen_txt" "$vram" "$park" <<'PY'
 import json, sys, datetime
 ledger, old, new, log, err, prompt, gen_txt, vram, park = sys.argv[1:10]
+# Two classes need different answers: a VRAM exhaustion is answered by a margin step on the
+# card that failed, a pool refusal is host RAM and is answered by code, never by a margin.
+if "could not produce a blob" in err:
+    klass = "host-pool-admission"
+elif "No buffer space available" in err or "refilling a lent slot" in err:
+    klass = "vram-exhaustion"
+elif "SIGABRT" in err or "Aborted" in err:
+    klass = "engine-abort"
+else:
+    klass = ""
 rec = {
     "at": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
     "generation": [old, new],
     "dead_log": log,
+    "failure_class": klass,
     "error": err,
     "failed_request": prompt,
     "request_outcome": gen_txt,
