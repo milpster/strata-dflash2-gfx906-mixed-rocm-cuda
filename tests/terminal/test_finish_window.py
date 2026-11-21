@@ -29,7 +29,7 @@ PROD = {
     "exe": "/prod/strata", "cwd": os.environ.get("STRATA_PROD_TREE", "/mnt/user/Strata") + "", "port": 8009,
     "model_name": "swift-1.5-iq3_xxs", "log": "/prod/log",
     "lib_dirs": [os.environ.get("STRATA_ROCM_ROOT", "/home/user/rocm-gfx906-xnack") + "/lib", "/opt/rocm-6.1.0/lib"],
-    "args": ["--gpu", "0,1", "--pack", os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3xxs-15",
+    "args": ["--gpu", "0,1", "--pack", os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3xxs-ud",
              "--expert-helper-slots", "4200"],
     "env": {"HSA_OVERRIDE_GFX_VERSION": "9.0.6"},
     "expert_helper_socket": "/prod/prod-mixed.sock",

@@ -101,7 +101,7 @@ Historical multi-round windows (relief/CPU-share/memo arms, prod configs) match 
 | Gate | What it checks | Result |
 | --- | --- | --- |
 | Greedy 80k SHA | deep-infill byte-identical fork / flags-off / stock | held 18/18 kept rounds; reproduced on the v0.2.10 and v0.2.11 builds |
-| Teacher-forced yardstick | 4995 positions, full-vocab top-1 / KL(p99) / PPL vs stock | **top-1 100.00 % · KL 0.00000 · p99 0.0000 · PPL 4.052 = 4.052** (iq3xxs-15 pack; historical iq3s: 4.115 = 4.115) |
+| Teacher-forced yardstick | 4995 positions, full-vocab top-1 / KL(p99) / PPL vs stock | **top-1 100.00 % · KL 0.00000 · p99 0.0000 · PPL 4.052 = 4.052** (iq3xxs-ud pack; historical iq3s: 4.115 = 4.115) |
 | Prompt-mode first logits | 20 prompts, fork vs stock | top-1 100 % · KL 0.00000 (both upmerges) |
 | Probe determinism | fixed prompt → exact sha per config | reproduces exactly |
 | ctest | full suite, fresh builds | 291 tests: all pass (guarded skips only) |
