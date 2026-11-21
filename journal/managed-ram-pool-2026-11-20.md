@@ -1733,3 +1733,164 @@ band belongs to the superseded rows and must not be reused as this series' error
 the two parks' page-cache release costs anything on a following cold prefill; concurrency (every
 request serial); the origin of the 76,189-token continuation requests; the ~6.1 GiB of swap this
 window added.
+
+## 230k fill + 10k generation, two attempts (2026-11-21): 40 GiB dies on VRAM, 38 GiB on a missing expert blob
+
+Two boots of the same UD-only config, one cold ~230k prefill + `max_tokens 10000` each, engine
+`/mnt/srcds/Strata-wt-helper-ipc/build-906/strata` (0.1.57), port 8009, prod down, `--single-run`.
+Same prompt both times (`prompt-230k.txt`, 1,050,980 chars, sha256 `23b2d656…b07645`, 226,967
+tokens, `0 reused` = cold). The operator needs them read as a pair: attempt 2 changes three things
+against attempt 1 and fails differently, not later.
+
+### Side by side
+
+| | attempt 1 — 40 GiB | attempt 2 — 38 GiB |
+|---|---|---|
+| engine start | 02:29:09 | 03:03:35 |
+| `STRATA_RAM_BUDGET_MIB` | 45,056 | 43,008 |
+| `pool_bytes` | 42,949,672,960 | 40,802,189,312 |
+| `usable_bytes` | 42,947,006,464 | 40,799,522,816 |
+| `--vram-reserve-mib` actually applied | 192 (`expert cache auto … 192 MiB reserved`) | 256 (`… 256 MiB reserved`) |
+| CUDA0 expert cache | 4,983 slots, 9.23 GiB | 4,951 slots, 9.17 GiB |
+| CUDA1 expert cache | 4,174 slots, 8.29 GiB | 4,174 slots, 8.29 GiB |
+| helper fill | 3,787 slots, 7.09 GiB, `stopped: budget`, 250 MiB free | 3,785 slots, 7.09 GiB, `stopped: budget`, 250 MiB free |
+| prefill (cold) | 226,967 in 948,351 ms = **239.3 tok/s** (4.18 ms/token) | 226,967 in 930,474 ms = **243.9 tok/s** (4.10 ms/token) |
+| first segment | 7,504 generated in 251,660 ms = **29.8 tok/s** | 2,000 generated in 97,596 ms = **20.5 tok/s** |
+| drafts accepted | 5,852 / 5,976 | 1,378 / 1,643 |
+| helper at that point | reqs 69,411 rows 451,524 bytes 4,623,605,760 timeouts 0 fallbacks 0 | reqs 23,736 rows 139,420 bytes 1,427,660,800 timeouts 0 fallbacks 0 |
+| helper at channel close | 69,456 window reqs / 451,811 rows; 450 prompt reqs / 111,965 rows | 37,285 window reqs / 222,871 rows; 420 prompt reqs / 103,353 rows |
+| decode hit rate | 92.8% (2,979,971 / 3,209,916) | 93.0% (881,727 / 947,780) |
+| read over PCIe | 451,524 = 12.3% of 3,661,440 | 139,420 = 12.8% of 1,087,200 |
+| foresight swap | 1,697 experts, 36,945 copies (36,052 look-ahead), 3,322 not landed, 805,999 `no free slot`, 183 `over budget` | 1,658 experts, 13,277 copies (12,269), 1,928 not landed, 162,138 `no free slot`, 250 `over budget` |
+| park | 234,470 tokens in 60,190.6 ms, `pages-released=2 (3824 MiB)` | 228,966 tokens in 4,663.8 ms, `pages-released=2 (3755 MiB)` |
+| ended at | 7,518 tokens, 1,363 s | 3,437 tokens, 1,089 s |
+| error (server) | `refilling a lent slot failed: No buffer space available` | `the expert source could not produce a blob` |
+| `done:` | 7,518 tokens in 1,363 s (29.8 tok/s) (error), 92.8% hit | 3,437 tokens in 1,089 s (20.5 tok/s) (error), 93.0% hit |
+
+Memory, sampled every 10 s (attempt 1: `trial-window-fill230k/mem-230k.csv`, engine pid 769,070;
+attempt 2: `trial-window-fill230k-38g/mem-230k.csv`):
+
+| | 40 GiB | 38 GiB |
+|---|---|---|
+| engine guard `available` at boot | 52.6 GiB | 52.6 GiB |
+| MemAvailable after pool lock | 12,646 MiB | 10,618 MiB |
+| MemAvailable min in leg | 7,578 MiB | 8,211 MiB |
+| MemFree min | 1,404 MiB | 1,425 MiB |
+| swap used start / peak | 6,039 / 12,034 MiB | 6,381 / 7,734 MiB |
+| VmLck max | 41,120 MiB | 39,072 MiB |
+| VmRSS max | 48,659 MiB | 46,943 MiB |
+| RTX 3080 free min | 251 MiB | 251 MiB |
+| Radeon VII 0 used max (of 16,368) | 16,368 → **0 MiB free** | 16,365 → 3 MiB free |
+| Radeon VII 1 used max (of 16,368) | 16,299 → 69 MiB free | 16,295 → 73 MiB free |
+
+**The 2 GiB host reduction bought no VRAM headroom.** Both boots ended with both Radeon VIIs at
+0–73 MiB free; the extra host MiB went to host, and the 32 fewer CUDA0 cache slots (256 vs 192
+reserved) were absorbed, not saved. Attempt 1 also swapped ~4.3 GiB more (12.0 vs 7.7 GiB peak) and
+held 1.7 GiB more RSS.
+
+### The three deltas, as they actually applied
+
+1. Budget 45,056 → 43,008 (pool 40 → 38 GiB): confirmed in the boot line; `usable_bytes` 40.80 GiB.
+2. `--vram-reserve-mib` 192 → 256: real. Attempt 1's boot arg dump shows 192 and its cache auto reserved
+   192 → 4,983 slots; attempt 2 reserves 256 → 4,951 slots. (The config file on disk now reads 256 in
+   both because attempt 1's config was edited in place afterwards; its elog is the evidence for 192.)
+3. Thinking budget: attempt 1 carried `reasoning_budget_tokens: 55000`, and the serve layer fitted it
+   down (`thinking capped at 7500 of max_tokens 10000`); attempt 2 sets 2,000 (`thinking budget: 2000
+   tokens`) so a 10k request is ~2k thinking + ~8k answer.
+Plus: fresh empty cache dir (attempt 2). The helper's `--slots 3700` did not bind again — the engine
+hello asks 4,600 and the fill stops on `budget` at 3,785 (same as the 80k row).
+
+### How each ended, verbatim
+
+Attempt 1 (order as logged):
+```
+strata serve: WARNING: only 220 MiB of VRAM free at the start of this request (below 512 MiB): ...
+strata serve: foresight swap: 1697 experts served from the swap space, 36945 copies (36052 from the router look-ahead), 3322 not landed yet, 805999 no free slot, 183 over budget
+strata serve: conversation cache: disk park streamed 234470 tokens idle to .../diet-cache-fill230k/conv-1.sess in 60190.6 ms; ... pages-released=2 (3824 MiB released)
+strata serve: prompt 226967 tokens = 0 reused + 226967 read in 948351 ms (239.3 tok/s), 7504 generated in 251660 ms (29.8 tok/s), drafts accepted 5852 of 5976, 6 checkpoints helper=reqs=69411 rows=451524 bytes=4623605760 timeouts=0 fallbacks=0
+strata serve: WARNING: only 7 MiB of VRAM free at the start of this request (below 512 MiB): ...
+strata serve: conversation cache: the draft ring for the rewind to 226962 restored from its pair (captured at 226962 tokens)
+[strata] thinking budget reached (7500 tokens): wrapping up the thinking
+[strata] the engine reported an error: refilling a lent slot failed: No buffer space available
+[strata] done: 7518 tokens in 1363 s (29.8 tok/s) (error, cancel=False), expert cache 92.8% hit (+12.3% of the routed experts over PCIe)
+```
+It died 18 tokens after the wrap-up, with CUDA0 at 7 MiB free.
+
+Attempt 2:
+```
+strata serve: WARNING: only 284 MiB of VRAM free at the start of this request (below 512 MiB): ...
+strata serve: CUDA1: 360 MiB of VRAM free with everything loaded - LOW: ...
+strata serve: foresight swap: 1658 experts served from the swap space, 13277 copies (12269 from the router look-ahead), 1928 not landed yet, 162138 no free slot, 250 over budget
+strata serve: conversation cache: disk park streamed 228966 tokens idle to .../diet-cache-fill230k-38g/conv-1.sess in 4663.8 ms; ... pages-released=2 (3755 MiB released)
+strata serve: prompt 226967 tokens = 0 reused + 226967 read in 930474 ms (243.9 tok/s), 2000 generated in 97596 ms (20.5 tok/s), drafts accepted 1378 of 1643, 6 checkpoints helper=reqs=23736 rows=139420 bytes=1427660800 timeouts=0 fallbacks=0
+strata serve: WARNING: only 71 MiB of VRAM free at the start of this request (below 512 MiB): ...
+[strata] thinking budget reached (2000 tokens): wrapping up the thinking
+[strata] answering: 2031 of max 10000 tokens, 19.5 tok/s, 1035 s
+... (1,437 answer tokens, 19.5 → 22.7 tok/s) ...
+[strata] the engine reported an error: the expert source could not produce a blob
+[strata] done: 3437 tokens in 1089 s (20.5 tok/s) (error, cancel=False), expert cache 93.0% hit (+12.8% of the routed experts over PCIe)
+```
+The answer stream was healthy for ~90 s after the wrap-up and then lost its expert source. The
+reply text up to that point is a coherent, structured report (3,990 chars, 109 lines, saved as
+`L1-230k.txt`), cut mid-list.
+
+### Reading — and what is NOT established
+
+- Comparable numbers: the cold prefill (same prompt, `0 reused`) — 243.9 vs 239.3 tok/s, +1.9% for the
+  smaller pool, inside a single-leg error bar we have not measured. Decode is **not** comparable across
+  the two: 7,504 thinking tokens at 29.8 tok/s vs 2,000 thinking + 1,437 answer at 20.5 tok/s, with the
+  same hit rate and PCIe share either way.
+- The helper is not a variable: 3,785 vs 3,787 slots, 7.09 GiB, 250 MiB left, 0 timeouts, 0 fallbacks.
+- `the expert source could not produce a blob` is a new error class in this series. It is set only where
+  `d.src->blob()` returns null (`src/core/expert_source.cpp:4894` and `:5316`; the same condition in the
+  helper's CPU-recompute fallback, `src/core/expert_helper_fallback.cpp:95`). With `--mmap-experts` and
+  the buffered file tier (`experts via mmap`, `io prefetch stays off`), null can only come from
+  `mapped_blob()`'s `unmapped_`/bounds guards or from `staged_blob()` finding neither a free stage buffer
+  nor one it may fill (`src/core/expert_source.cpp:2172–2185`). **Unconfirmed static analysis** — the
+  dispatch records `fail_layer`/`fail_expert` but nothing logs them, so the failing row is unknown.
+- What the pair does establish: host-budget reduction is not the lever for a card that reaches 0–8 MiB
+  free, and the failure moved from "cannot get VRAM" to "cannot get a blob" without moving past the
+  thinking→answer transition. If the class is VRAM, the engine's own advice in both logs is the lever
+  (CUDA1 `--vram-reserve-later-mib 600`, CUDA0 `--vram-reserve-mib 512`/lower `--max-context`), plus a
+  smaller cache or a smaller slot request.
+
+### Deviations
+
+1. Attempt 1 ran twice: 02:29 (the measured leg) and 02:55:45 (a second boot that never ran a leg and was
+   cancelled at ~03:00). Its evidence dir holds both; every attempt-1 number here is the 02:29 boot.
+2. Two samplers from the cancelled 40 GiB lane were still alive during this window (pids 2,093,400 /
+   2,093,401) and kept appending to `trial-window-fill230k/{mem-run2,vram-run2}.csv`. Cost: one awk plus
+   one `nvidia-smi`/`rocm-smi` per 10 s. Reaped at 03:29 with an on-disk script (pattern inside the file).
+3. Attempt 2 held 10.6 GiB free after the pool lock, 2.0 GiB *less* than attempt 1's 12.6 GiB, although it
+   locked 2 GiB less: the mapped GGUF page cache differed (Mapped 9.0 GiB). Named, not chased.
+4. `infill_measure.py` reports `prompt_tokens`/`completion_tokens` null for both legs (no usage chunk on a
+   failed stream); the engine's own line is the measurement, as the driver intends.
+5. Attempt 2's client saw 1,400 content chunks for 3,437 tokens (thinking deltas are not content), so its
+   client-side decode figure is withheld.
+
+### Teardown
+
+Samplers TERM'd by explicit pid (mem 2,574,337, vram 2,574,338; both gone). `./stop-all.sh` alone:
+`before=0 after=0 — ALL STOPPED`, exit 0 (its MCP-orphan scan raced a few exits, cosmetic
+`/proc/<pid>/cmdline: No such file or directory` lines; no TERM list, the launcher had already exited 143
+when the server died). `check-quiet.sh` in its own invocation: `QUIET: no engine, helper, server or
+listening port`, rc=0.
+
+### Evidence
+
+- 38 GiB rerun: `bench/ab-v0210/rpcprof/out/managed-ram-pool-20261120/trial-window-fill230k-38g/` —
+  `status.txt`, `boot-38g-230k.sh`, `boot-38g.log`, `before-state.txt`, `elog-clean.txt`,
+  `elog-38g-raw.log`, `serve-38g.log`, `helper-38g.log`, `leg-230k.log`, `L1-230k.{txt,json}` (3,990 chars,
+  3,437 engine tokens), `out-head.txt`, `out-tail.txt`, `mem-230k.csv`, `vram-230k.csv`,
+  `start-samplers.sh`, `leg-230k.sh`, `vram-sample.sh`, `reap-orphan-samplers.sh`.
+- 40 GiB attempt: `…/trial-window-fill230k/` — `elog-run1-full.txt` (the measured boot 02:29:09),
+  `serve-run1.log`, `helper-run1.log`, `leg-230k.log`, `L1-230k.json`, `mem-230k.csv`, `vram-230k.csv`;
+  `elog-clean.txt` there is the cancelled 02:55:45 boot, not the leg.
+
+### UNMEASURED
+
+A leg that reaches 10,000 tokens (neither did); the failing (layer, expert) and whether the park /
+page-cache release is on the path (needs a log line and a park-off leg); whether CUDA0 `--vram-reserve-mib
+512` or CUDA1 `--vram-reserve-later-mib 600` moves the ceiling without costing decode; a second cold 230k
+prefill for the error bar; the same leg on the 40 GiB pool with the 2,000-token thinking budget (isolates
+the thinking budget from the pool).
