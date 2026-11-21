@@ -311,3 +311,32 @@ earlier boots.
 Corrected practice, used since: slice by marker, not by offset -
 `grep -n "engine started:" | tail -1` gives the line where this boot begins, and every number is
 taken after it. The refusal line that appeared in the bad slice was the old 07:30 boot's.
+
+## The agent shape: eight parked turns, 46k to 71k, on the same boot
+
+`multiturn-stress.py --turns 8 --seed-tokens 55000 --max-tokens 900 --idle 25`: one conversation,
+each turn appends its answer and a new question, 25 s idle so the engine parks and restores it.
+
+| Turn | Prompt the engine reported | Engine's own decode | Expert cache |
+|---|---|---|---|
+| 5 | `59983 tokens = 56398 reused + 3585 read in 52607 ms (68.1 tok/s), 453 generated in 16751 ms (27.0 tok/s)` | 27.0 tok/s | 97.5% |
+| 6 | `63532 = 59978 reused + 3554 read in 46150 ms (77.0 tok/s), 304 in 11342 ms (26.8 tok/s)` | 26.8 | 98.4% |
+| 7 | `67038 = 63527 reused + 3511 read in 32729 ms (107.3 tok/s), 271 in 9409 ms (28.8 tok/s)` | 28.8 | 98.5% |
+| 8 | `70486 = 67033 reused + 3453 read in 32084 ms (107.6 tok/s), 170 in 5856 ms (29.0 tok/s)` | 29.0 | 99.1% |
+
+All 8 turns answered. 19 park/restore lines, 0 borrower-guard lines, 0 refusal lines.
+
+Two things the run shows beside the stability:
+
+- **The script's own `decode=` column is not a speed** - it divides by elapsed time, which includes
+  the 25 s idle and the restore. The engine's line is the number: 26.8-29.0 tok/s. The script
+  should either subtract the idle or stop printing a rate; noted rather than claimed.
+- Every park went to disk: `parked to disk only (63835 tokens, snapshot 1698 MiB over the 512 MiB
+  RAM ceiling; the published generation serves the next restore)`, then
+  `disk park streamed 67308 tokens idle ... in 2207.6 ms`. The snapshot is ~1.7 GiB per 70k-token
+  conversation against a 512 MiB ceiling, so the RAM park cannot hold one. That is the
+  conversation-cache policy, not this fix, and it belongs to the parked backlog (park misreport).
+
+The stability claim this run supports is narrow and exact: the borrower table stays quiet and no
+request is refused on a parked multi-turn conversation that grows past the sizes that killed prod
+(53,717 and 64,507 tokens on 2026-11-21).
