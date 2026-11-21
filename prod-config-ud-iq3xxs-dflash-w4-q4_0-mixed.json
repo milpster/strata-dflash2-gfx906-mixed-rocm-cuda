@@ -31,7 +31,7 @@
     "--kv",
     "int8",
     "--vram-reserve-mib",
-    "512",
+    "576",
     "--vram-reserve-later-mib",
     "192",
     "--kv-resident",
