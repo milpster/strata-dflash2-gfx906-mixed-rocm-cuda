@@ -6,19 +6,20 @@
 // THE ONE DOCUMENTED COMMAND (a live window, after the helper is up on a device the engine will not use):
 //
 //   build-mixed-gpu/engine-cuda/strata-expert-helper \
-//       --pack /mnt/user/ai/iq3xxs-15 --socket <run>/helper.sock --device 1 &
+//       --pack /mnt/user/ai/iq3xxs-ud --socket <run>/helper.sock --device 1 &
 //   build-mixed-gpu/engine-cuda/p2_measure_harness \
-//       --pack /mnt/user/ai/iq3xxs-15 --socket <run>/helper.sock \
+//       --pack /mnt/user/ai/iq3xxs-ud --socket <run>/helper.sock \
 //       --activations <run>/moe \
 //       --out build-mixed-gpu/p2-measure-harness/measure.json \
-//       [--experts ../Swift-…gguf] [--layers 32-47] [--fixtures all] [--max-tokens 2048] [--arm-groups]
+//       [--experts Qwen3.8-Flash-Next-UD-IQ3_XXS-00002-of-00004.gguf] [--layers 32-47] [--fixtures all] [--max-tokens 2048] [--arm-groups]
 //       [--eps 1e-12] [--slots 0] [--reserve-mib 512] [--max-fill-pairs 0] [--max-device-mib 4000]
 //       [--rows-timeout-ms 120000] [--fill-timeout-ms 600000] [--summary-only] [--worst 20] [--device 0]
 //
 // THE BLOB FILE (the same file the helper maps, resolved the same way - p2_measure.hpp section 6):
 // `--experts PATH` joins onto the pack dir exactly as the helper joins it, so the published packs'
-// experts, which live in the model GGUF one level up, are named `--experts ../<name>.gguf` (the frozen
-// acceptance driver's HELPER_EXPERTS, run_acceptance.py:70).  With no --experts the harness takes
+// experts, which live in a container GGUF, are named relative to the pack dir - `--experts <shard>.gguf`
+// with the container inside the pack (or `--experts ../<name>.gguf` when it sits one level up, as the
+// frozen acceptance driver's retired Swift container did; run_acceptance.py:71 HELPER_EXPERTS).  With no --experts the harness takes
 // <pack>/experts.bin, and when a pack has none it resolves the GGUF named by native_experts.txt's
 // header, beside the pack.  A GGUF-mapped pack has no packed blob region, so every (layer, expert) row
 // is assembled per role at the helper's own offsets (helper_main.cpp:226-247) - not a second reading of

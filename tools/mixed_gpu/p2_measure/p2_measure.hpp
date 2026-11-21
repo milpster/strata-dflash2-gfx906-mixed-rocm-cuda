@@ -410,9 +410,10 @@ std::string ggml_type_name(int32_t t);
 //
 // 1. WHICH FILE.  The helper concatenates its `--experts` value onto the pack dir
 //    (helper_main.cpp:708-712: `p = pack; if (p.back() != '/') p += "/"; p += experts_file`), so a
-//    RELATIVE value resolves against the PACK DIR - the published packs keep their experts in the model
-//    GGUF one level up, and the frozen acceptance driver passes exactly that
-//    (run_acceptance.py:70 `HELPER_EXPERTS = "../Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf"`).
+//    RELATIVE value resolves against the PACK DIR - the containers keep their experts in a GGUF beside
+//    or inside the pack dir (the retired Swift container sat one level up; the UD pack's shard sits in
+//    it), and the frozen acceptance driver passes exactly that
+//    (run_acceptance.py:71 `HELPER_EXPERTS = "Qwen3.8-Flash-Next-UD-IQ3_XXS-00002-of-00004.gguf"`).
 //    The join is a concatenation, not a search: an ABSOLUTE value joins too (`<pack>//abs/name`), which
 //    is what the helper does with it - the harness mirrors that and refuses the joined path when it is
 //    not a file.  The default stays `experts.bin`, i.e. `<pack>/experts.bin`, which is what a pack with

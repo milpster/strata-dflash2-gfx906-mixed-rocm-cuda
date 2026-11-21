@@ -97,7 +97,7 @@ log "CAPTURE: rc=$CAPTURE_RC ($(grep -c '	ok$' "$OUT/moe/checkpoint.tsv" 2>/dev/
 
 # 4. helper on device 0 (single CUDA GPU; handoff said --device 1 - impossible here)
 : > "$EVID/helper.log"
-"$HELPER_BIN" --pack ${STRATA_AI_DIR:-/mnt/user/ai}/iq3xxs-15 --socket "$SOCK" --device 0 \
+"$HELPER_BIN" --pack ${STRATA_AI_DIR:-/mnt/user/ai}/iq3xxs-ud --socket "$SOCK" --device 0 \
   --begin-timeout 600000 --timeout 600000 >> "$EVID/helper.log" 2>&1 &
 HELPER_PID=$!
 log "HELPER: pid=$HELPER_PID waiting for socket"
@@ -110,7 +110,7 @@ done
 
 # 5. the measurement
 log "HARNESS: starting"
-"$HARNESS" --pack ${STRATA_AI_DIR:-/mnt/user/ai}/iq3xxs-15 --socket "$SOCK" \
+"$HARNESS" --pack ${STRATA_AI_DIR:-/mnt/user/ai}/iq3xxs-ud --socket "$SOCK" \
   --activations "$OUT/moe" \
   --out "$W/build-mixed-gpu/p2-measure-harness/measure.json" \
   >> "$EVID/harness.log" 2>&1

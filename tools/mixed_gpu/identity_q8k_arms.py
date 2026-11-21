@@ -88,8 +88,8 @@ def sha256_file(path: Path) -> str:
 
 def helper_argv(helper: Path, sock: Path, sock2: Path) -> list[str]:
     # ppf1-a-launch.sh lines 49-54 verbatim (the tested window recipe).
-    return [str(helper), "--pack", os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3xxs-15",
-            "--experts", "../Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
+    return [str(helper), "--pack", os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3xxs-ud",
+            "--experts", "Qwen3.8-Flash-Next-UD-IQ3_XXS-00002-of-00004.gguf",
             "--device", "0", "--slots", "4200", "--reserve-mib", "300",
             "--timeout", "7200000", "--begin-timeout", "1800000",
             "--socket", str(sock), "--fill-mib", "6400", "--socket2", str(sock2)]

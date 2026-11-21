@@ -76,8 +76,8 @@ CANONICAL_HELPER_OPTS = {
     "--reserve-mib": "300",
     "--timeout": "7200000",
     "--begin-timeout": "1800000",
-    "--pack": os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3xxs-15",
-    "--experts": "../Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
+    "--pack": os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3xxs-ud",
+    "--experts": "Qwen3.8-Flash-Next-UD-IQ3_XXS-00002-of-00004.gguf",
 }
 
 # ---------------------------------------------------------------------------------------------

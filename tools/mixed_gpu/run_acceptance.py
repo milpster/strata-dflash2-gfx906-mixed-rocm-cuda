@@ -67,8 +67,8 @@ TELEMETRY = {"STRATA_DECODE_TIMING": "1", "STRATA_VERIFY_PROFILE": "1", "LOOKAHE
 DROP_ENV_PREFIX = ("STRATA_DF_", "STRATA_DFLASH_", "STRATA_DUMP_", "STRATA_WINDOW_")
 DROP_ENV_EXACT = ("LD_PRELOAD", "CUDA_VISIBLE_DEVICES", "STRATA_ARENA_MMAP",
                   "GPU_PINNED_MIN_XFER_SIZE", "HSA_USERPTR_FOR_PAGED_MEM")
-HELPER_PACK = os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3xxs-15"
-HELPER_EXPERTS = "../Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf"
+HELPER_PACK = os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3xxs-ud"
+HELPER_EXPERTS = "Qwen3.8-Flash-Next-UD-IQ3_XXS-00002-of-00004.gguf"
 
 
 def helper_argv() -> list[str]:
