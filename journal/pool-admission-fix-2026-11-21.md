@@ -385,3 +385,34 @@ one answer re-read per turn, small next to the question, and the design intent o
 So: park/restore behaves as designed on the fixed build; the per-turn latency is prefill
 throughput; the 512 MiB ceiling is a deliberate setting that forces every 70k park to disk, and
 it is undocumented outside `--help` (a docs gap, queued).
+
+## The merge lands, armed and unproven at runtime
+
+`helper-ipc-diet` is merged into `main` on branch `merge-helper-ipc-diet`, commit `159e3097ef`
+(parents `bd4172ed00` + `9358921670`), and pushed to `fork`. Seven conflicts, not ten; the lane
+worked in its own worktree `/mnt/srcds/Strata-wt-merge-ipc` because the main checkout sits on
+`tg-stall-cause` with live supervisor state and a branch switch there would have clobbered it.
+
+The resolutions worth knowing, because they are the places a merge silently loses a feature:
+
+| File | Resolution |
+|---|---|
+| `src/core/expert_source.cpp` | `main`'s refactor to a shared `gates_pass_locked(..., count_miss)` kept, with the branch's `transient()` rejection re-added inside it - both survive |
+| `include/strata/core/pin_budget.hpp` | `main`'s `STRATA_ARENA_MLOCK` and the branch's `STRATA_NATIVE_MLOCK` both kept, spliced at the same insertion point |
+| `CMakeLists.txt` | `main`'s `tail_skip_guard_test` / `read_once_test` registrations kept; the branch's six pool test registrations verified present |
+| `bench/.../ab9_pcie_ctx.sh` | `main`'s per-arm `$hbin` and the branch's UD pack paths, independent axes |
+| the swift15 prod config + launcher | the branch's UD repoint, plus `main`'s validated promotion values, not the branch's stale base |
+| champion `prod-config-ud-*` / `launch-prod-ud-*` | did not conflict; the current values were ported onto the merge output and the result is semantically identical to what serves (checked by parsing both files, not by eye) |
+
+Verified by me, not taken from the lane: `pool_expert_source_adapter_test` **237 checks, 0
+failures**, `ctest -R "ram_pool|pool_expert"` **6/6**, and `build-906-merge/strata` hashes
+`5a699be1`. The lane needed `-DSTRATA_BUILD_RAM_POOL_TEST=ON` for those targets to exist at all -
+without it the mandated tests are not built, which is worth knowing for the next fresh directory.
+
+**What is armed and what is not.** `run/merge-bin/` holds the merged engine (`5a699be1`) with the
+helper unchanged (`553f3bf4`), and `run/pool-admit-a506/` holds a byte-identical copy of the engine
+that serves right now (`a506e620`), each with `SHA256SUMS` and a `README.md` naming the swap and the
+revert. Prod has **not** been switched: the merge brings `main`'s tail-skip, `STRATA_NATIVE_MLOCK`
+and helper-IPC work together with the pool work for the first time, and a build that passes the
+pool tests is not the same claim as an engine that has carried an agent leg. Promotion is the
+operator's call; the directory is ready for one command.

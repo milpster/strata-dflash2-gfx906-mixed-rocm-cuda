@@ -46,6 +46,13 @@ Each of these is a decision or a window the agent does not take alone.
 1. **Promote the engine.** Prod runs `run/pool-admit-bin/rpcw-hip/strata`, sha256 `a506e620`
    (worktree `helper-ipc-diet` @ `9358921670`). Two concurrent-stress legs passed on it with the
    borrower guard silent; the rollback pin `d534e72a` in `run/winner-pin-38g` is untouched.
+1b. **The merged engine is armed and unproven at runtime.** `run/merge-bin/` (engine `5a699be1`,
+   helper `553f3bf4`) is `main` + `helper-ipc-diet` (`159e3097ef`, pushed to `fork`), built and
+   tested but never booted: the merge brings `main`'s tail-skip, `STRATA_NATIVE_MLOCK` and helper
+   IPC work together with the pool work for the first time. Activate with
+   `rsync -a run/merge-bin/ run/pool-admit-bin/`, revert with `rsync -a run/pool-admit-a506/ ...`
+   (both READMEs name the swap); either is a stop then a boot, separate commands.
+
 2. **Measure the CUDA0 margin back down.** 640 was raised on the misread ENOBUFS class. The
    question is what the card actually needs now that the pool leak is fixed: 512 (the value
    before the ladder) then 448, each on the same 6,000-token / six-helper leg, one boot per
