@@ -146,5 +146,5 @@
   "trial_note": "managed-RAM-pool validation trial 2026-11-20; helper host arena capped low because the managed pool is the primary expert cache; VRAM margins left at the tuple's own 192/576",
   "managed_budget_mib": 40960,
   "derived_from": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/trial-managed-pool-30g-h0.json",
-  "derived_note": "empty conversation cache for a genuinely cold prefill; budget 36864 = 32 GiB pool (2 GiB more than the 30 GiB run, after the MCP servers stopped), dev1 192, helper 0/7400 (slot cap)"
+  "derived_note": "SUPERSEDED - do not run: the operator dropped this intermediate point in favour of trial-managed-pool-40g.json (budget 45056). Kept only so the config history is readable. empty conversation cache for a genuinely cold prefill; budget 36864 = 32 GiB pool (2 GiB more than the 30 GiB run, after the MCP servers stopped), dev1 192, helper 0/7400 (slot cap)"
 }
