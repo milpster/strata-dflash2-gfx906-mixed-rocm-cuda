@@ -28,6 +28,16 @@ Thin-but-working is NOT exhaustion and does not change the margin: the 40 GiB wi
 Margins are edited in the window's config `args` (they are recorded there), never by editing
 the running binary or a booted process.
 
+## No concurrency testing (operator, 2026-11-21, "once and for all")
+
+Do not run, rebuild or cite parallel-request load legs. `concurrent-stress.py` is retired
+(`RETIRED-concurrent-stress.py`, banner in the file). A pass or fail under manufactured
+concurrency says nothing about the product and costs a prod window to learn nothing.
+
+The shapes that judge this box, one lane at a time: one long prompt (infill then
+generation), one parked multi-turn conversation, one real agent session. Real agent traffic
+may of course overlap by itself - that is the workload, not a test we construct.
+
 ## Which model a lane runs on (operator, 2026-11-21)
 
 - **One active subagent at a time.** Never two, never a second spawned to "speed things up".

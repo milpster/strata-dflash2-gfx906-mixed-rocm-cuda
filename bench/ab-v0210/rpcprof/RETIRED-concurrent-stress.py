@@ -1,4 +1,14 @@
 #!/usr/bin/env python3
+"""RETIRED 2026-11-21 by the operator: "we dont do concurrency, once and for all".
+
+Do not run this and do not build a new one. The serving questions on this box are answered
+with single-lane shapes: one long prompt, one parked multi-turn conversation, one agent
+session at a time. Parallel-request load is a property of real agent traffic, not something
+we manufacture in a leg. Kept in the tree only as a record of the measurement that used it.
+Rename the second line if you ever resurrect it, so nobody mistakes it for policy.
+"""
+
+# --- original docstring follows ---
 """concurrent-stress.py - a long decode with other requests in flight beside it.
 
 The single-request and multi-turn shapes both survived on BOTH builds on 2026-11-21, so
