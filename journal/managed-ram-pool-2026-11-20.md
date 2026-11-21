@@ -1548,6 +1548,19 @@ a second delta, and it cannot reproduce the window's premise either. Summed from
 expert bytes on this card at any reserve**. The slot-cap experiment needs the -15 container back,
 or a lower slot request (a different tuple).
 
+### Probe: the UD pack does pass the helper's own gates
+The substitute was tested at the helper alone (no engine, no pool, no port, scratch socket,
+TERM'd by pid after the bind; `check-quiet.sh` QUIET afterwards):
+
+    expert-helper: listening on /tmp/opencode/h0probe/p.sock (device 0, pack /mnt/srcds/ai/iq3xxs-ud, 48 layers x 512 experts)
+    expert-helper: SIGTERM/SIGINT received; exiting cleanly
+
+So the v4 layout (48 x 512, gu/d 22/20) clears `expert_layout_load`, the 2560x640 geometry check
+and `native_expert_supported`, i.e. options (b)/(c) above are admissible at the helper level. The
+`fill preflight ... budget ... slots cap ... fill-mib cap` line only prints after the engine's
+hello, so the exact stop reason for a UD fill is still arithmetic (>= 8,977 MiB for 4,600 slots),
+not a measured line.
+
 ### Second finding: "reserve 0" is not 0
 The helper clamps `--reserve-mib` to its own range: `--reserve-mib 0 outside 64..4096, clamped to
 64`. A row measured with reserve 0 must therefore read "reserve 0 (clamped to 64)", and its
