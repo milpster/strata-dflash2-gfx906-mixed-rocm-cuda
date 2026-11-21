@@ -162,3 +162,23 @@ borrowers that completed.
 So the VRAM ladder bought the overlap its headroom (640 holds a 4,000-token decode with six
 concurrent helpers), and what remains is the lease accounting above. The next change is code,
 not another 64 MiB.
+
+## The 6,000-token leg at 640 (lease-accounting build, retry unarmed)
+
+| Request | Result |
+|---|---|
+| long, 6,000 wanted at a 53k prompt | `refilling a lent slot failed: No buffer space available` at 279.9 s |
+| six helpers, 900 each | one `engine stopped unexpectedly (exit code 1)`, five dropped |
+| overlap | 254.9 s (a real one) |
+
+So 640 holds a 4,000-token decode under six helpers and does not hold a 6,000-token one:
+the VRAM class is a function of how long the overlap lasts, not a fixed step. The ladder
+therefore continues on the failed card only after the next code build proves the pool side on
+a shape whose VRAM the current margin already covers - otherwise a failure cannot be
+attributed to either axis.
+
+Review of the same build (oracle, static, `5435391e3d`): the `generate.cpp` sites are
+balanced, but `prefill.cpp:6190`/`:7881`/`:5306` borrow from a source that reports both
+`pinned()` and `transient()` true - one borrow per non-resident pair per layer with no note
+and no release. That is the leak the guard should have caught had it counted idle entries
+instead of the whole table.
