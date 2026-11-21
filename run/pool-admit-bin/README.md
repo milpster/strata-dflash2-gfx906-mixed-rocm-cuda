@@ -1,7 +1,8 @@
 # pool-admit-bin — the build prod runs after the 2026-11-21 lease-accounting fix
 
-Engine: `rpcw-hip/strata` = worktree `helper-ipc-diet` @ `5435391e3d` (borrow only for a copy:
-`available()` probe, and note-or-release at every swap-in site), built in
+Engine: `rpcw-hip/strata` = worktree `helper-ipc-diet` @ `716c3abee5` (borrow only for a copy:
+`available()` probe, and note-or-release at every swap-in site; prefill asks `pinned && !transient`,
+so a pair it believes pinned is never borrowed from the pool), built in
 `build-906-fixadmit` with the four flags a fresh gfx906 dir needs (see the
 strata-tuning skill: DFlash on, HIP include, gcc-14, tests). sha256 in SHA256SUMS.
 
