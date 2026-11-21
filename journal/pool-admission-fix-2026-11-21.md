@@ -821,3 +821,22 @@ Leg `clamp28-240k`, 23:44 → 23:59, engine `4b8251e9`, `STRATA_FS_SLOTS=2,8`, s
 
 So the code fix closes the bug without touching the config, and the config fix closes it without a rebuild. Both
 land at the branch engine's own numbers (847-852 s, 281 tok/s). CHAMPION.md and CHAMPION.json carry the resolution.
+
+## The RAM areas and the disk park (champion tuple B, for the 1k-decode window)
+
+Read from the live config and the engine's own `--help`, not estimated:
+
+| Area | Setting | Size |
+|---|---|---|
+| Expert pool, host RAM | `STRATA_RAM_BUDGET_MIB` | 36,864 MiB (36 GiB) |
+| Conversation cache, total RAM budget | `--conversation-cache-mib` | 4,096 MiB |
+| Conversation cache, hard host-RAM ceiling | `--conversation-cache-ram-mib` | **512 MiB** (a park over it goes to disk only, no host copy) |
+| Disk park tier | `--conversation-cache-dir` + `--conversation-cache-disk-mib` | 24,576 MiB at `Strata-wt-helper-ipc/run/diet-prod-38g` |
+| Disk tier host RAM (manifest, dirs, read-ahead) | `--conversation-cache-disk-ram-mib` | 64 MiB, flat, does not scale with the conversation |
+| Park floor / gates | `--conversation-cache-min-tokens`, `--conversation-cache-park-gain` | 2,048 tokens / 4,096 tokens of growth |
+| Prompt checkpoints | `--prompt-cache` (default 6) | ~118 MiB each |
+
+So a 240k conversation is not kept in RAM: with the 512 MiB ceiling its snapshot streams to the 24 GiB disk
+tier and a matching request is restored straight into the live pools. The host side costs 64 MiB of buffers
+plus whatever the active conversation's K/V needs. Box: 62 GiB total, ~50 GiB available before the window;
+`/mnt` has 96 GiB free against the 24 GiB tier (90% used, worth watching).
