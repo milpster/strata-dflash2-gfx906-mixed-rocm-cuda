@@ -84,8 +84,8 @@ for v in STRATA_RPC_PROFILE STRATA_VERIFY_PROFILE STRATA_HELPER_REPLY_TIMEOUT_MS
   [[ -n ${!v:-} ]] && helper_env+=("$v=${!v}")
 done
 env -i "${helper_env[@]}" "$HELPER" \
-  --pack ${STRATA_AI_DIR:-/mnt/srcds/ai}/iq3xxs-15 \
-  --experts ../Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf \
+  --pack ${STRATA_AI_DIR:-/mnt/srcds/ai}/iq3xxs-ud \
+  --experts Qwen3.8-Flash-Next-UD-IQ3_XXS-00002-of-00004.gguf \
   --device 0 --slots 4600 --reserve-mib 512 --timeout 63115200000 \
   --begin-timeout 63115200000 --socket "$SOCKET" --fill-mib 6796 --socket2 "$SOCKET2" \
   >>"$HLOG" 2>&1 < /dev/null &

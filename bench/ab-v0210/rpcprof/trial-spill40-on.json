@@ -3,11 +3,11 @@
     "--gpu",
     "0,1",
     "--pack",
-    "/mnt/srcds/ai/iq3xxs-15",
+    "/mnt/srcds/ai/iq3xxs-ud",
     "--native",
-    "/mnt/srcds/ai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
+    "/mnt/srcds/ai/iq3xxs-ud/Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00004.gguf",
     "--native-dense-gguf",
-    "/mnt/srcds/ai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
+    "/mnt/srcds/ai/iq3xxs-ud/Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00004.gguf",
     "--ple-gguf",
     "/mnt/srcds/ai/Qwen3.8-Flash-Next-PLE-Q8_0.gguf",
     "--expert-profile",
@@ -109,13 +109,13 @@
     "top_k": 20,
     "top_p": 0.95
   },
-  "tokenizer": "/mnt/srcds/ai/iq3xxs-15/tokenizer",
+  "tokenizer": "/mnt/srcds/ai/iq3xxs-ud/tokenizer",
   "vision": {
     "exe": "/mnt/srcds/Strata/build-vision/bin/strata-vision",
     "gpu": false,
     "max_tokens": 2048,
     "mmproj": "/mnt/srcds/ai/mmproj-Swift-Qwen3.8-Flash-Next-BF16.gguf",
-    "model": "/mnt/srcds/ai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
+    "model": "/mnt/srcds/ai/iq3xxs-ud/Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00004.gguf",
     "threads": 8
   }
 }

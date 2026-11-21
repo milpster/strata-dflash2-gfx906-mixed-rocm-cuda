@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run-iq3xxs-sweep.sh — pick the fastest prod tuple for iq3xxs (pack iq3xxs-15).
+# run-iq3xxs-sweep.sh — pick the fastest prod tuple for iq3xxs (pack iq3xxs-ud).
 # Fixed: split-34, reserves 256/256. Swept: binary {v0216,v0219,v0220} x helper class
 # {7400/5000/300 prod, 6796/4600/512 trial}. Stage 1: 3 binary arms @ h7400, full leg
 # set each (warm, 8k x3, 80k, longtg+tg1024, killer144k). Stage 2: helper A/B — winner

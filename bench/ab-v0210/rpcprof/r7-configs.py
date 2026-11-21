@@ -22,9 +22,9 @@ OUT = pathlib.Path("/mnt/srcds/Strata/bench/ab-v0210/rpcprof")
 # The v0225 V25I8 panel engine args, verbatim from the boot line.
 ARGS = [
     "--gpu", "0,1",
-    "--pack", "/mnt/srcds/ai/iq3xxs-15",
-    "--native", "/mnt/srcds/ai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
-    "--native-dense-gguf", "/mnt/srcds/ai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
+    "--pack", "/mnt/srcds/ai/iq3xxs-ud",
+    "--native", "/mnt/srcds/ai/iq3xxs-ud/Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00004.gguf",
+    "--native-dense-gguf", "/mnt/srcds/ai/iq3xxs-ud/Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00004.gguf",
     "--ple-gguf", "/mnt/srcds/ai/Qwen3.8-Flash-Next-PLE-Q8_0.gguf",
     "--expert-profile", "/mnt/srcds/Strata/data/expert-profile.bin",
     "--expert-cache", "auto",
