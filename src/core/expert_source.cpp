@@ -5132,7 +5132,12 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                 } else {
                     if (d.fs != nullptr) d.fs->note_miss(d.src, d.layers, e);
                     if (miss_rank >= nmiss - m && fetches < P.staging_cap && fetches < 64) {
-                        const uint8_t* src = d.src->pinned(d.layers, e) ? d.src->blob(d.layers, e) : nullptr;
+                        // pinned AND not transient: the managed pool answers pinned() true so that its
+                        // copy_blob path is chosen, but its bytes must never be DMA'd straight from a borrow
+                        // held here with no note - a transient source is copied by the source instead.
+                        const uint8_t* src = (d.src->pinned(d.layers, e) && !d.src->transient(d.layers, e))
+                                                 ? d.src->blob(d.layers, e)
+                                                 : nullptr;
                         if (src != nullptr) {
                             kd = 1;
                             dma_src[fetches] = src;
@@ -7588,7 +7593,10 @@ void ForesightSwap::request_locked(ExpertSource* src, int64_t layer, int32_t exp
     const int c = layer_card[(size_t) layer];
     if (card_round[(size_t) c] != now) { card_round[(size_t) c] = now; card_used[(size_t) c] = 0; }
     if (card_used[(size_t) c] >= budget) { ++over_budget; return; }
-    if (src == nullptr || !src->pinned(layer, expert)) return;   // async copies need the pinned arena
+    // pinned AND not transient: async copies need the pinned arena, and a transient (count-limited) source
+    // copies its own bytes - the managed pool answers pinned() too, and a borrow held here across the copy
+    // would never be noted or released.
+    if (src == nullptr || !src->pinned(layer, expert) || src->transient(layer, expert)) return;
     const uint8_t* b = src->blob(layer, expert);
     if (b == nullptr) return;
     int best = -1;

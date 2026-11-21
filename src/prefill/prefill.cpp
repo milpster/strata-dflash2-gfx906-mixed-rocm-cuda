@@ -5301,9 +5301,14 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                     (m.host_res && m.cache && m.host_res[(size_t) l * m.g->n_expert + e] >= 0))
                                     continue;
                                 ++nstream;
-                                // a blob the CPU reads from RAM: page-locked, or any other that is not assembled into a
-                                // short-lived buffer (the arena's unpinned part, the mapped experts.bin's pages)
-                                if (c <= strata::kernels::cpu::MAXT && (m.src->pinned(l, e) || !m.src->transient(l, e)))
+                                // a blob the CPU reads from RAM: any pair the source does not assemble into a
+                                // short-lived buffer (the arena's unpinned part, the mapped experts.bin's pages).
+                                // CS-T: a transient pair is excluded even when it is also pinned - the managed pool
+                                // answers BOTH (its memory is mlocked AND it copies on demand), and this share holds
+                                // its pointer for the whole layer, which a pool loan must never be (the blob_stable()
+                                // below borrowed there and never gave it back).  For a non-transient source this is
+                                // the old test unchanged: `pinned || !transient` is `!transient`.
+                                if (c <= strata::kernels::cpu::MAXT && !m.src->transient(l, e))
                                     cand.emplace_back(c, e);
                             }
                             std::sort(cand.begin(), cand.end());
@@ -6139,7 +6144,11 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             for (size_t j = 0; j < order.size(); ++j) {
                                 const int32_t e = order[j];
                                 if (m.host_res && m.cache && m.host_res[(size_t) l * m.g->n_expert + e] >= 0) continue;
-                                if (m.src->pinned(l, e)) continue;
+                                // pinned AND not transient: a transient source is copied by itself (the job below),
+                                // even when it is also pinned - the managed pool answers both, and a pinned test
+                                // alone sent it round the DMA-straight-from-the-borrow path instead (a loan held for
+                                // the whole copy, never noted or released).
+                                if (m.src->pinned(l, e) && !m.src->transient(l, e)) continue;
                                 // STRATA_PROMPT_STAGE_MEMO=1: a pair this request already staged copies from the
                                 // memo, so the pack files are read once per request (off: today's jobs, byte for byte)
                                 const uint8_t* mm = stage_memo.find(l, e, m.g->n_expert);
@@ -6170,7 +6179,8 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                     for (int64_t e : m.warm_prev[(size_t) (l + 1)]) {
                                         if (m.host_res && m.cache && m.host_res[(size_t) (l + 1) * m.g->n_expert + e] >= 0)
                                             continue;
-                                        if (m.src->pinned(l + 1, (int32_t) e)) continue;
+                                        if (m.src->pinned(l + 1, (int32_t) e) && !m.src->transient(l + 1, (int32_t) e))
+                                            continue;   // as the job list above
                                         nxt.push_back(e);
                                     }
                                     m.warmer->submit(l + 1, std::move(nxt));
@@ -6186,7 +6196,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             const int sl = stage_next;
                             stage_next = (stage_next + 1) % stage_n;
                             const auto th = Clock::now();
-                            const bool pinned = m.src->pinned(l, e);   // pinned: never transient
+                            const bool pinned = m.src->pinned(l, e) && !m.src->transient(l, e);   // the job list's test
                             const uint8_t* b = pinned ? m.src->blob_stable(l, e) : nullptr;
                             if (pinned && !b) { err = "prefill: expert source has no blob"; return false; }
                             if (pinned) {
@@ -7688,7 +7698,9 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
         std::vector<Stager::Job> js;
         const bool pdirect = false;   // (STRATA_PREFILL_DIRECT, #1670's other commit, is not ported)
         for (int32_t e = 0; e < NE; ++e) {
-            if ((m.host_res && m.cache && m.host_res[(size_t) l * NE + e] >= 0) || m.src->pinned(l, e)) continue;
+            if ((m.host_res && m.cache && m.host_res[(size_t) l * NE + e] >= 0) ||
+                (m.src->pinned(l, e) && !m.src->transient(l, e)))   // as run_impl's job list: the pool is both
+                continue;
             pf_job[(size_t) e] = (int) js.size();
             if (pdirect || m.src->transient(l, e)) {
                 js.push_back({nullptr, (size_t) lay.blob_bytes(l), m.src, (int32_t) l, e});
@@ -7754,7 +7766,8 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
             const bool pdirect = false;   // (STRATA_PREFILL_DIRECT, #1670's other commit, is not ported)
             for (size_t u = 0; u < uniq.size(); ++u) {
                 const int32_t e = uniq[u];
-                if (resident(e) || m.src->pinned(l, e)) continue;
+                if (resident(e) || (m.src->pinned(l, e) && !m.src->transient(l, e)))
+                    continue;   // pinned AND not transient, as stage_one below and lm_prefetch above
                 job_of[u] = (int) js.size();
                 if (pdirect || m.src->transient(l, e)) {
                     js.push_back({nullptr, (size_t) lay.blob_bytes(l), m.src, (int32_t) l, e});
@@ -7877,7 +7890,7 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
             const int sl = stage_next;
             stage_next = (stage_next + 1) % STAGE;
             const auto tq = Clock::now();
-            const bool pinned = m.src->pinned(l, e);
+            const bool pinned = m.src->pinned(l, e) && !m.src->transient(l, e);   // as lm_prefetch: the pool is both
             const uint8_t* b = pinned ? m.src->blob_stable(l, e) : nullptr;
             if (pinned && !b) { err = "prefill (layer-major): expert source has no blob"; return false; }
             if (m.stage_live[sl]) cudaStreamWaitEvent(m.copy, m.used[m.used_of[sl]], 0);

@@ -163,6 +163,17 @@ private:
     /// Retry-gated twin of borrow_locked(): admits outside mu_, then registers the borrower and
     /// returns its data pointer under the same lock (a concurrent sweep must not turn a successful
     /// admission into a null pointer).  nullptr when the admission failed.  mu_ must NOT be held.
+    ///
+    /// THE INVARIANT EVERY CALLER OF THIS AND borrow_locked() RESTS ON: a lease may be dropped by a sweep
+    /// only when it can no longer be read or overwritten behind a queued copy.  Two facts make that true.
+    /// (1) A note records its event AFTER its copy is queued on the same stream, so when the event completes,
+    ///     the copy has completed too - "completed" means "the bytes are no longer needed", never merely
+    ///     "the caller is done with the pointer".  (2) A re-borrow of the same pair re-arms the entry
+    ///     (completed = false, pending_event = false), so a second borrower of a pair the first already
+    ///     completed cannot have its lease swept out from under a copy the first one queued.  A borrow that
+    ///     is dropped without either a note or a release therefore survives every sweep - which is exactly
+    ///     the leak the guard below names, and why a borrow that only ever hands out an ADDRESS must still be
+    ///     released (or noted) rather than left to the table's size as its only memory.
     const uint8_t* borrow_admit(int64_t layer, int64_t expert);
 
     /// Retry-gated twin of the blob_parts() body (gate ON only).
@@ -180,11 +191,11 @@ private:
     /// whether the pool was still pinned by unswept borrowers.
     void note_refusal(const char* path, int64_t layer, int64_t expert) const;
 
-    /// The leak guard: once per second at most, and only when the borrower table has grown past 4,000 entries
-    /// and NOT ONE entry is completed or pending, print what it holds and the pair whose borrow
-    /// crossed the line.  That shape - a table far larger than a request's working set with no async state on
-    /// any entry - is a caller borrowing without ever noting or releasing, which is what emptied the pool.
-    /// Cheap: one relaxed compare-exchange per borrow, and the scan runs only when that gate opens.
+    /// The leak guard: once per second at most, and only when more than 4,000 entries are in the LEAK SHAPE -
+    /// no note issued (pending_event false) and not completed.  A large table is not by itself suspicious: a
+    /// startup fill holds thousands of borrowers, and the adapt round marks its entries pending, so the guard
+    /// counts the shape and not the size, prints what the table holds and the pair whose borrow crossed the
+    /// line.  Cheap: one relaxed compare-exchange per borrow, and the scan runs only when that gate opens.
     void note_borrow_table(int64_t layer, int64_t expert) const;
 
     PoolExpertStore& store_;

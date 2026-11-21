@@ -1014,6 +1014,32 @@ int main(int argc, char** argv) {
         adapter.release(0, 1);
     }
 
+    // ============ 25. the flag contract prefill's gate depends on ==================
+    // prefill decides whether it may take a blob pointer straight into a DMA by asking pinned() (and the
+    // reconciled predicate `pinned && !transient`).  The pool answers BOTH true - its memory is mlocked AND it
+    // copies on demand - so the reconciled predicate must be false here: true would send the prompt path round
+    // blob_stable() and hold the loan for a whole copy without a note (the leak this round fixes).
+    {
+        Pool pool;
+        auto ec = make_pool(pool, 4 * kPage);
+        check(!ec, "25: create tight pool");
+        ExpertLayout layout;
+        build_layout(layout);
+        PoolExpertStore store(pool);
+        ec = store.open(g_fixture_path.c_str(), layout);
+        check(!ec, "25: open store");
+        PoolExpertSourceAdapter adapter(store);
+
+        check(adapter.pinned(0, 0), "25: the pool reports pinned() true (its pages are mlocked)");
+        check(adapter.transient(0, 0), "25: and transient() true (it copies on demand)");
+        const bool gated = adapter.pinned(0, 0) && !adapter.transient(0, 0);
+        check(!gated, "25: the reconciled predicate (pinned && !transient) is false, so no borrow follows");
+        check(!adapter.borrowed(0, 0), "25: and asking the two predicates borrowed nothing");
+        check(!(adapter.pinned(1, 3) && !adapter.transient(1, 3)),
+              "25: the reconciled predicate is false for another pair too");
+        check(!adapter.borrowed(1, 3), "25: and neither pair was borrowed");
+    }
+
     std::fprintf(stderr, "pool_expert_source_adapter_test: %d checks, %d FAILURES\n",
                  checks, failures);
     return failures == 0 ? 0 : 1;

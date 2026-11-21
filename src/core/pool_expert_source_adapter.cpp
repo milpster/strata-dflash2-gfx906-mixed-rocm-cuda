@@ -100,8 +100,10 @@ struct SecondGate {
 SecondGate g_refusal_gate;       // the refusal evidence line
 SecondGate g_borrow_table_gate;  // the many-borrowers guard
 
-// The guard's line: far more borrowers than a request's working set, and not one of them in an async cycle.
-constexpr size_t kManyBorrowers = 4000;
+// The guard's line: more leases than a request's working set with NO async cycle behind any of them.  The
+// count is of the leak shape (no note issued, not completed), not of the table - a startup fill legitimately
+// holds thousands of borrowers, and the adapt round marks its entries pending.
+constexpr size_t kManyStaleBorrowers = 4000;
 
 std::atomic<int64_t> g_retry_window_start_us{0};
 std::atomic<int64_t> g_retry_used_us{0};
@@ -427,31 +429,34 @@ void PoolExpertSourceAdapter::note_refusal(const char* path, int64_t layer, int6
 }
 
 void PoolExpertSourceAdapter::note_borrow_table(int64_t layer, int64_t expert) const {
-    // Guard against a silent return of the pin leak: a borrower table far larger than any request's working
-    // set whose entries are ALL in no async cycle means nobody is noting or releasing them.  One atomic per
-    // borrow; the scan (and the lock) run only when the one-second gate opens.
+    // Guard against a silent return of the pin leak.  The shape that matters is NOT the table's size: a fill
+    // legitimately holds many borrowers, and the adapt round marks its entries pending.  It is the count of
+    // entries that are in NO async cycle at all - no note ever issued (pending_event false) and not completed -
+    // because a caller that borrows for a copy notes or releases, and one that does neither leaves exactly those.
+    // One atomic per borrow; the scan (and the lock) run only when the one-second gate opens.
     if (!g_borrow_table_gate.take()) return;
-    size_t nb = 0, nc = 0, np = 0;
+    size_t nb = 0, stale = 0;
     {
         std::lock_guard<std::mutex> lk(mu_);
         nb = borrowers_.size();
-        if (nb <= kManyBorrowers) return;
-        for (const auto& kv : borrowers_) {
-            if (kv.second.completed) ++nc;
-            if (kv.second.pending_event) ++np;
-        }
+        for (const auto& kv : borrowers_)
+            if (!kv.second.pending_event && !kv.second.completed) ++stale;
     }
-    if (nc != 0 || np != 0) return;   // someone is driving the async cycle: not this shape
+    if (stale <= kManyStaleBorrowers) return;   // in or past an async cycle: not this shape
     const PoolExpertStore::Stats st = store_.stats();
     std::fprintf(stderr,
-                 "strata: managed pool: %zu live borrowers, none completed, none pending (the borrow that "
-                 "crossed the line: layer %lld expert %lld) - a caller is borrowing without noting or "
-                 "releasing; resident_pairs=%llu evictions=%llu\n",
-                 nb, (long long) layer, (long long) expert,
+                 "strata: managed pool: %zu live borrowers, %zu of them with no copy in flight and none completed "
+                 "(the borrow that crossed the line: layer %lld expert %lld) - a caller is borrowing without "
+                 "noting or releasing; resident_pairs=%llu evictions=%llu\n",
+                 nb, stale, (long long) layer, (long long) expert,
                  (unsigned long long) st.resident_pairs, (unsigned long long) st.evictions);
 }
 
 void PoolExpertSourceAdapter::borrow_locked(int64_t layer, int64_t expert) {
+    // The sweep is only safe because of the invariant in the header, over borrow_admit(): a note's event is
+    // recorded after its copy is queued on the same stream, and a re-borrow re-arms the entry - so no sweep can
+    // free a lease that a queued, unnoted copy still reads.  There is no per-lease accounting to check that
+    // beyond the flags below; a borrow dropped without a note or a release is simply never swept.
     const int64_t key = key_of(layer, expert);
     auto it = borrowers_.find(key);
     if (it != borrowers_.end()) {

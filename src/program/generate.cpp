@@ -2621,6 +2621,9 @@ void swap_in_read(SwapInFiles& sw, strata::core::ExpertSource* srcp,
                   std::string& err) {
     sw.at.assign(wants.size(), -1);
     sw.pairs.clear(); sw.dst.clear(); sw.of_swap.clear();
+    // Per-pair flags from the source, cleared per call: a source that cannot batch fills none, and a stale flag
+    // from the previous round would read as "staged" for a pair whose bytes were never read.
+    sw.ok.clear();
     sw.n_pairs = 0; sw.n_failed = 0; sw.n_batch = 0; sw.bytes_io = 0; sw.ms_io = 0;
     for (size_t si = 0; si < wants.size(); ++si) {
         // A yes/no question only - this used to call blob_stable(), which with a reference-counted source (the
@@ -2643,8 +2646,18 @@ void swap_in_read(SwapInFiles& sw, strata::core::ExpertSource* srcp,
     sw.n_pairs = (int64_t) sw.pairs.size();
     sw.n_batch = 1;
     if (!all) {
-        for (size_t k = 0; k < sw.ok.size(); ++k)
-            if (sw.ok[k] == 0) { sw.at[(size_t) sw.of_swap[k]] = -2; ++sw.n_failed; }
+        if (sw.ok.empty()) {
+            // A source that cannot batch answers false and fills NO per-pair flags (ExpertSource's default is
+            // "no batched pack-file read"), and the staging buffer holds nothing for those pairs - it was only
+            // sized.  Counting them as staged copied a zero-filled buffer into their slots (the copy loop
+            // falls back to `at[si]` exactly when the source has no stable blob), so a refusal with an empty
+            // flag list means every pair failed: each swap is dropped and its slot keeps its expert.
+            for (size_t k = 0; k < sw.pairs.size(); ++k) sw.at[(size_t) sw.of_swap[k]] = -2;
+            sw.n_failed = (int64_t) sw.pairs.size();
+        } else {
+            for (size_t k = 0; k < sw.ok.size(); ++k)
+                if (sw.ok[k] == 0) { sw.at[(size_t) sw.of_swap[k]] = -2; ++sw.n_failed; }
+        }
     }
 }
 } // namespace
@@ -9454,16 +9467,12 @@ int main(int argc, char** argv) {
                 return 1;
             }
         }
-        // Every blob_stable() below is a LOAN from a reference-counted source (the managed pool): it is recorded
-        // here and given back once the fill, the read-back and the 4-bit check have used the bytes.  Nothing is
-        // borrowed without being returned on this path - a startup fill that pinned would hold the pool forever.
-        // (fill_slot_blocking, verify_slot and NibbleCache::check/finish all sync before they return.)
-        std::vector<std::pair<int32_t, int32_t>> fill_loans;
-        auto loan = [&](int32_t l, int32_t e) -> const uint8_t* {
-            const uint8_t* p = srcp->blob_stable(l, e);
-            if (p != nullptr) fill_loans.emplace_back(l, e);
-            return p;
-        };
+        // Every blob_stable() below is a LOAN from a reference-counted source (the managed pool), and no loan
+        // outlives its use: a blocking slot fill has copied the bytes by the time it returns, so that loan goes
+        // back inside the loop - one lease at a time, never the whole profile.  The 4-bit fill queues its copies
+        // on nib_x's own stream and only finish() syncs them, so its loans live until finish() (right below the
+        // loop); the read-back and the 4-bit check release theirs as soon as they have compared.
+        std::vector<std::pair<int32_t, int32_t>> nib_loans;   // the 4-bit fill's loans: alive until nib_x.finish()
         for (int64_t i = 0; i < want; ++i) {
             if (!per_layer && srcp == &src && src.unbuffered() && i % 64 == 0) {
                 if (ahead.valid()) ahead.get();
@@ -9476,7 +9485,7 @@ int main(int argc, char** argv) {
                 if (per_layer) continue;
                 break;
             }
-            const uint8_t* b = loan(profile[(size_t) i].first, profile[(size_t) i].second);
+            const uint8_t* b = srcp->blob_stable(profile[(size_t) i].first, profile[(size_t) i].second);
             const bool nib_pair = nib_x.active() && nib::layer(profile[(size_t) i].first).on;   // STRATA_EXPERT_NIBBLE
             if (b == nullptr || !(nib_pair ? nib_x.add(profile[(size_t) i].first, profile[(size_t) i].second, slot, b, err)
                                            : xcache.fill_slot_blocking(slot, b, err,
@@ -9485,6 +9494,8 @@ int main(int argc, char** argv) {
                              (long long) i, err.c_str());
                 return 1;
             }
+            if (nib_pair) nib_loans.emplace_back(profile[(size_t) i].first, profile[(size_t) i].second);
+            else srcp->release(profile[(size_t) i].first, profile[(size_t) i].second);   // blocking fill: copied, done
             fill_bytes += strata::kernels::cpu::expert_layout().blob_bytes(profile[(size_t) i].first);
             ++prefilled;
             if (prefilled == 1) verified_pair = profile[(size_t) i];   // H6: profile[0] may be the helper's now
@@ -9493,6 +9504,7 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: STRATA_EXPERT_NIBBLE: CUDA0: %s\n", err.c_str());
             return 1;
         }
+        for (const auto& lp : nib_loans) srcp->release(lp.first, lp.second);   // finish() synced: the copies landed
         const double fill_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - fill_t0).count();
         // **AND ONE SLOT IS READ BACK AND COMPARED.**  A residency table that is right about indices and wrong
         // about bytes produces a plausible token, which is this project's most expensive failure mode; the
@@ -9500,20 +9512,26 @@ int main(int argc, char** argv) {
         // (STRATA_EXPERT_NIBBLE: a converted slot holds 4-bit codes, not the blob's bytes - the 4-bit check below is its check)
         // (merged: one check, both semantics - the nibble layers take their own path, and verified_pair is the
         //  first pair THIS run prefilled, not profile[0] which may be the helper's now)
-        if (prefilled > 0 && !nib::layer(verified_pair.first).on &&
-            !xcache.verify_slot(xcache.slot_of(verified_pair.first, verified_pair.second),
-                                loan(verified_pair.first, verified_pair.second), err,
-                                (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(verified_pair.first))) {
-            std::fprintf(stderr, "strata generate: %s\n", err.c_str());
-            return 1;
+        if (prefilled > 0 && !nib::layer(verified_pair.first).on) {
+            const uint8_t* vb = srcp->blob_stable(verified_pair.first, verified_pair.second);
+            const bool verified =
+                xcache.verify_slot(xcache.slot_of(verified_pair.first, verified_pair.second), vb, err,
+                                   (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(verified_pair.first));
+            srcp->release(verified_pair.first, verified_pair.second);   // verify_slot compared on the host: done
+            if (!verified) {
+                std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+                return 1;
+            }
         }
         if (nib_x.active() && nib_x.n > 0) {
             // STRATA_EXPERT_NIBBLE: the hottest converted pair read back (its hash, its down rows); every item and every
             // rebuilt GGUF block of every converted slot was already checked on the device
             size_t c = 0;
             while (c < (size_t) want && !nib::layer(profile[c].first).on) ++c;
-            if (!nib_x.check(profile[c].first, profile[c].second, loan(profile[c].first, profile[c].second),
-                             err)) {
+            const uint8_t* cb = srcp->blob_stable(profile[c].first, profile[c].second);
+            const bool checked = nib_x.check(profile[c].first, profile[c].second, cb, err);
+            srcp->release(profile[c].first, profile[c].second);   // check compared on the host: done with it
+            if (!checked) {
                 std::fprintf(stderr, "strata generate: STRATA_EXPERT_NIBBLE: CUDA0: %s\n", err.c_str());
                 return 1;
             }
@@ -9524,7 +9542,6 @@ int main(int argc, char** argv) {
                                  "slot hashes recorded); layer %d expert %d read back\n", (long long) nib_x.n, ls.size(),
                          nib_x.seconds, (int) profile[c].first, (int) profile[c].second);
         }
-        for (const auto& lp : fill_loans) srcp->release(lp.first, lp.second);   // the fill has copied them: RAM not needed
         mem_mark("the profile fill");
         std::fprintf(stderr, "strata generate: pre-filled %lld of %lld slots from the profile in %.1f s (%.0f MB/s); "
                              "slot 0 verified\n",
@@ -9644,19 +9661,15 @@ int main(int argc, char** argv) {
                 return 1;
             }
         }
-        // The same loans as CUDA0's fill above, per stage: borrowed, recorded, given back once every use has
-        // synced (see that block's note).
-        std::vector<std::pair<int32_t, int32_t>> stage_loans;
-        auto stage_loan = [&](int32_t l, int32_t e) -> const uint8_t* {
-            const uint8_t* p = srcp->blob_stable(l, e);
-            if (p != nullptr) stage_loans.emplace_back(l, e);
-            return p;
-        };
+        // The same loan rule as CUDA0's fill above, per stage: a blocking fill releases its loan at once, the
+        // 4-bit fill's loans live until nib_c.finish() (just below the loop), and the read-back and the check
+        // release theirs as soon as they have compared.
+        std::vector<std::pair<int32_t, int32_t>> nib_c_loans;   // the stage's 4-bit fill: alive until nib_c.finish()
         for (const auto& pr : st.profile) {
             if (filled >= st.cache.slots()) break;
             const int32_t slot = st.cache.admit(pr.first, pr.second);
             if (slot == strata::core::kNotResident) break;
-            const uint8_t* b = stage_loan(pr.first, pr.second);
+            const uint8_t* b = srcp->blob_stable(pr.first, pr.second);
             const bool nib_pair = nib_c.active() && nib::layer(pr.first).on;   // STRATA_EXPERT_NIBBLE
             if (b == nullptr || !(nib_pair ? nib_c.add(pr.first, pr.second, slot, b, err)
                                            : st.cache.fill_slot_blocking(slot, b, err, (int64_t) lay.blob_bytes(pr.first)))) {
@@ -9664,26 +9677,39 @@ int main(int argc, char** argv) {
                              st.dev, (long long) filled, err.c_str());
                 return 1;
             }
+            if (nib_pair) nib_c_loans.emplace_back(pr.first, pr.second);
+            else srcp->release(pr.first, pr.second);   // blocking fill: copied, done
             ++filled;
         }
         if (nib_c.active() && !nib_c.finish(err)) {
             std::fprintf(stderr, "strata generate: STRATA_EXPERT_NIBBLE: CUDA%d: %s\n", st.dev, err.c_str());
             return 1;
         }
+        for (const auto& lp : nib_c_loans) srcp->release(lp.first, lp.second);   // finish() synced: the copies landed
         // (STRATA_EXPERT_NIBBLE: a converted slot holds 4-bit codes, not the blob's bytes - the 4-bit check below is its check)
-        if (filled == 0 || (!nib::layer(st.profile[0].first).on &&
-                            !st.cache.verify_slot(st.cache.slot_of(st.profile[0].first, st.profile[0].second),
-                                                  stage_loan(st.profile[0].first, st.profile[0].second), err,
-                                                  (int64_t) lay.blob_bytes(st.profile[0].first)))) {
-            std::fprintf(stderr, "strata generate: layer split, CUDA%d expert cache: %s\n", st.dev,
-                         filled == 0 ? "nothing filled" : err.c_str());
+        if (filled == 0) {
+            std::fprintf(stderr, "strata generate: layer split, CUDA%d expert cache: nothing filled\n", st.dev);
             return 1;
+        }
+        if (!nib::layer(st.profile[0].first).on) {
+            const uint8_t* vb = srcp->blob_stable(st.profile[0].first, st.profile[0].second);
+            const bool verified =
+                st.cache.verify_slot(st.cache.slot_of(st.profile[0].first, st.profile[0].second), vb, err,
+                                     (int64_t) lay.blob_bytes(st.profile[0].first));
+            srcp->release(st.profile[0].first, st.profile[0].second);   // verify_slot compared on the host: done
+            if (!verified) {
+                std::fprintf(stderr, "strata generate: layer split, CUDA%d expert cache: %s\n", st.dev, err.c_str());
+                return 1;
+            }
         }
         if (nib_c.active() && nib_c.n > 0) {   // STRATA_EXPERT_NIBBLE: as CUDA0's above
             size_t c = 0;
             while (c < st.profile.size() && !nib::layer(st.profile[c].first).on) ++c;
             const auto& pc = st.profile[c];
-            if (!nib_c.check(pc.first, pc.second, stage_loan(pc.first, pc.second), err)) {
+            const uint8_t* cb = srcp->blob_stable(pc.first, pc.second);
+            const bool checked = nib_c.check(pc.first, pc.second, cb, err);
+            srcp->release(pc.first, pc.second);   // check compared on the host: done
+            if (!checked) {
                 std::fprintf(stderr, "strata generate: STRATA_EXPERT_NIBBLE: CUDA%d: %s\n", st.dev, err.c_str());
                 return 1;
             }
@@ -9694,7 +9720,6 @@ int main(int argc, char** argv) {
                                  "slot hashes recorded); layer %d expert %d read back\n", st.dev, (long long) nib_c.n,
                          ls.size(), nib_c.seconds, (int) pc.first, (int) pc.second);
         }
-        for (const auto& lp : stage_loans) srcp->release(lp.first, lp.second);   // copied into the stage's cache
         std::fprintf(stderr, "strata generate: layer split: CUDA%d runs layers %lld-%lld, expert cache %lld slots "
                              "(%.2f GiB), %lld of its %zu profiled pairs; slot 0 verified\n",
                      st.dev, (long long) st.lb, (long long) (st.le - 1), (long long) st.cache.slots(), st.cache.gib(),
@@ -16356,6 +16381,35 @@ int main(int argc, char** argv) {
                 swaps.swap(keep);
                 swap_in.at.swap(keep_at);
             }
+            // A swap whose source cannot produce the pair loses the swap as well: its slot keeps the expert it
+            // holds and nothing is marked evicted - the pack-file rule just above, applied to a source that has to
+            // be ASKED instead of read (the managed pool).  Before this the borrow happened at the copy, where a
+            // refusal failed the whole request (the old code had pinned the pair in the pin_blobs block, so its
+            // copy could not fail).  Dropping is decided HERE, before the fence, because here nothing has been
+            // marked evicted yet and host_res still names the slot's expert.  Only a transient (count-limited)
+            // source is asked: for a file or arena source nothing changes, and a null blob there is a broken
+            // pack, which stays fatal at the copy.
+            {
+                std::vector<Swap> keep;
+                std::vector<int64_t> keep_at;
+                int64_t dropped = 0;
+                for (size_t si = 0; si < swaps.size(); ++si) {
+                    const bool counted = srcp->transient(swaps[si].layer, swaps[si].in);
+                    if (counted && swap_in.at[si] < 0 && !srcp->available(swaps[si].layer, swaps[si].in)) {
+                        ++dropped;
+                        continue;
+                    }
+                    keep.push_back(swaps[si]);
+                    keep_at.push_back(swap_in.at[si]);
+                }
+                if (dropped > 0) {
+                    std::fprintf(stderr, "strata serve: adaptive swap-in: %lld of %lld swaps have no host bytes "
+                                         "(neither staged nor in the source); their slots keep their experts\n",
+                                 (long long) dropped, (long long) swaps.size());
+                    swaps.swap(keep);
+                    swap_in.at.swap(keep_at);
+                }
+            }
             std::vector<int32_t> fenced_slots;
             if (adapt_fence && !swaps.empty()) {
                 for (const Swap& s : swaps) {
@@ -16410,6 +16464,10 @@ int main(int argc, char** argv) {
                     adapt_copy_h2d(gs ? gs->cache.device_slot(slot) : xcache.device_slot(slot), b,
                                    (size_t) strata::kernels::cpu::expert_layout().blob_bytes(s.layer),
                                    gs ? gs->adapt_stream : adapt_stream) != cudaSuccess) {
+                    // A swap the source refused was already dropped before the fence (its slot kept its expert);
+                    // reaching `b == nullptr` here means the pair was available a moment ago and is not now, an
+                    // eviction inside this thread's own window - the batch copy is already fenced, so this stays
+                    // loud rather than being undone.
                     std::fprintf(stderr, "strata serve: adaptive swap copy failed (layer %d, slot %d, pinned %d): %s\n",
                                  (int) s.layer, (int) slot, pin_live.empty() ? 0 : 1, cudaGetErrorString(cudaGetLastError()));
                     return false;
@@ -24946,6 +25004,30 @@ int main(int argc, char** argv) {
                              (long long) swap_in_b.n_failed, (long long) swap_in_b.n_pairs, swap_err.c_str());
                 swaps.swap(keep);
                 swap_in_b.at.swap(keep_at);
+            }
+            // As in the serve path's adapt: a swap whose transient (count-limited) source cannot produce the pair
+            // loses the swap, and its slot keeps its expert (before this, the copy's borrow failed the whole
+            // request).  A file or arena source is not asked: nothing changes for it.
+            {
+                std::vector<Swap> keep;
+                std::vector<int64_t> keep_at;
+                int64_t dropped = 0;
+                for (size_t si = 0; si < swaps.size(); ++si) {
+                    const bool counted = srcp->transient(swaps[si].layer, swaps[si].in);
+                    if (counted && swap_in_b.at[si] < 0 && !srcp->available(swaps[si].layer, swaps[si].in)) {
+                        ++dropped;
+                        continue;
+                    }
+                    keep.push_back(swaps[si]);
+                    keep_at.push_back(swap_in_b.at[si]);
+                }
+                if (dropped > 0) {
+                    std::fprintf(stderr, "strata generate: adaptive swap-in: %lld of %lld swaps have no host bytes "
+                                         "(neither staged nor in the source); their slots keep their experts\n",
+                                 (long long) dropped, (long long) swaps.size());
+                    swaps.swap(keep);
+                    swap_in_b.at.swap(keep_at);
+                }
             }
             std::vector<void*> cp_dst;
             std::vector<const void*> cp_src;

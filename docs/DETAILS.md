@@ -278,10 +278,13 @@ When the RAM cannot hold them beside the system (the experts plus about 10 GB), 
   behaviour, one attempt and no wait.
 - The managed pool is never borrowed just to ask a question: the adaptive planner's "is this pair there?" probe
   takes a lease and drops it at once, and every borrow that feeds a copy is either noted on that copy's stream or
-  released once the copy has landed, so an expert the decode no longer needs stops pinning the pool. If a caller
-  ever borrows again without noting or releasing, the log says so: `strata: managed pool: N live borrowers, none
-  completed, none pending (the borrow that crossed the line: layer L expert E)`, at most one line per second, and
-  only once more than 4,000 pairs are held with no copy in flight.
+  released once the copy has landed, so an expert the decode no longer needs stops pinning the pool. The prompt
+  path asks `pinned()` only together with `!transient()`: the pool reports both, and a prompt that borrowed a pool
+  blob would hold that lease for a whole DMA, so a pool pair takes the source's own copy instead. If a caller ever
+  borrows again without noting or releasing, the log says so: `strata: managed pool: N live borrowers, M of them
+  with no copy in flight and none completed (the borrow that crossed the line: layer L expert E)`, at most one
+  line per second, and only once more than 4,000 leases are in that state - a startup fill that holds thousands of
+  leases is not reported, because its reads have been issued.
 - Windows, opt-in: `STRATA_FILE_RELEASE=1` trims the file-backed pages of experts after their GPU uploads. It is a
   working-set hint, not an unmap, and it does not reduce committed memory or SSD reads
   ([measurements and limits](../bench/results/2026-10-04-windows-mapped-release/README.md)).
