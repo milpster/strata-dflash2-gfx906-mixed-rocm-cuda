@@ -56,10 +56,16 @@ def main() -> int:
     ap.add_argument("--prompt-tokens", type=int, default=60000)
     ap.add_argument("--max-tokens", type=int, default=1500)
     ap.add_argument("--seed", type=int, default=7)
+    ap.add_argument("--ask", default="",
+                    help="text appended after the synthetic prompt; use it to demand a long "
+                         "answer, because the pool pressure that killed the old build grew with "
+                         "generated tokens, not with prompt tokens")
     ap.add_argument("--timeout", type=float, default=3600.0)
     args = ap.parse_args()
 
     prompt = synthetic_prompt(args.prompt_tokens, args.seed)
+    if args.ask:
+        prompt = prompt + "\n\n" + args.ask
     body = json.dumps({
         "model": args.model,
         "messages": [{"role": "user", "content": prompt}],
