@@ -80,6 +80,12 @@ struct Spec {
     uint64_t used = 1;
     bool pinned = false;
     size_t kv_bytes = 0;   // 0: the small fixture region; a big one fills the writer's block (see 6.3's faults)
+    // 0: the default chain {n/2, n}.  Otherwise the checkpoint prefixes to publish, ascending, each a real
+    // checkpoint of the file - the case the lookup's checkpoint candidates are about.
+    std::vector<int64_t> ckpts;
+    // Which of those checkpoints carry a paired draft capture (by INDEX in `ckpts`, or in the default chain).
+    // Empty with `pair` set: the default chain's second checkpoint, as the fixtures always had it.
+    std::vector<int64_t> pair_at;
 };
 std::vector<int32_t> tokens_of(const Spec& s) {
     std::vector<int32_t> v((size_t) s.n);
@@ -114,23 +120,38 @@ SessionManifestV2 build(const Spec& s, std::vector<std::vector<uint8_t>>& data) 
     for (int p = 0; p < 5; ++p) add(L, 0, 0, p, live[p], uint8_t(11 + p));
     for (int layer = 0; layer < 2; ++layer)
         for (int p = 0; p < 5; ++p) add(K, 0, layer, p, kv[p], uint8_t(21 + layer * 5 + p));
-    m.checkpoints = {{uint64_t(s.n / 2), s.used, s.pinned, 0, {}}, {uint64_t(s.n), s.used, s.pinned, 0, {}}};
+    std::vector<int64_t> chain = s.ckpts;
+    if (chain.empty()) chain = {s.n / 2, s.n};
+    m.checkpoints.clear();
+    for (const int64_t p : chain) {
+        SessionCheckpointMeta c;
+        c.prefix = uint64_t(p);
+        c.used = uint64_t(s.used);
+        c.pinned = s.pinned;
+        m.checkpoints.push_back(c);
+    }
+    std::vector<int64_t> paired = s.pair_at;
+    if (paired.empty() && s.pair) paired = {1};
     for (size_t i = 0; i < m.checkpoints.size(); ++i)
         for (int p = 0; p < 5; ++p) add(C, 0, int64_t(i), p, ck[p], uint8_t(41 + i * 5 + p));
     if (s.draft) {
-        m.draft = {2, 2112, 2048, 8192, s.n, s.n + 500, 0x5a5a5a5aull};
+        // the fixture's ring must be wide enough to hold the conversation: the writer refuses a draft whose
+        // counters sit past its capacity, and the checkpoint tests park generations far beyond 8192 tokens
+        const int64_t cap = std::max<int64_t>(8192, s.n + 1024);
+        m.draft = {2, 2112, 2048, cap, s.n, s.n + 500, 0x5a5a5a5aull};
         add(D, 0, 0, 0, 1u << 12, 77);
     }
-    if (s.pair) {
-        add(P, 0, 1, 0, s.pair_bytes, 131);
-        auto& c = m.checkpoints[1];
-        c.ring_id = 0xC0FFEE;
+    for (size_t k = 0; k < paired.size(); ++k) {   // a legal paired capture at each named checkpoint: captured AT its prefix
+        const int64_t which = paired[k];
+        auto& c = m.checkpoints[(size_t) which];
+        add(P, 0, which, 0, s.pair_bytes, uint8_t(131 + which));
+        c.ring_id = 0xC0FFEEull + uint64_t(k);   // distinct per pair; the fixtures' one and only pair keeps its id
         c.ring_bytes = s.pair_bytes;
         c.ring_checksum = session_hash64(data.back().data(), data.back().size(), 0);
         c.ring_cells = m.draft.ring_cells;
         c.ring_window = m.draft.window;
         c.ring_capacity = m.draft.capacity;
-        c.ring_committed_end = s.n;
+        c.ring_committed_end = int64_t(c.prefix);
         c.ring_appended_through = m.draft.appended_through;
     }
     return m;
@@ -180,6 +201,8 @@ bool park(DiskCache& c, const Spec& s, std::string& why, Parked* out = nullptr,
             meta.pair_prefix = std::max<int64_t>(meta.pair_prefix, (int64_t) cm.prefix);
             meta.ring_ids.push_back(cm.ring_id);
         }
+        // the lookup's candidate list, exactly as the engine's publish fills it from the manifest's own metas
+        meta.ckpt_prefixes.push_back((int64_t) cm.prefix);
     }
     meta.tail_draft = s.draft;
     DiskReservation res;
@@ -237,20 +260,28 @@ void test_lookup_and_supersession() {
     check(park(c, a, why, &pa), "lookup: park A");
     check(park(c, b, why, &pb), "lookup: park B");
     check(c.entries() == 2 && c.used() == pa.bytes + pb.bytes, "lookup: both generations are charged");
-    const DiskGeneration* g = c.best(prompt_of(b), {}, true);
+    const DiskGeneration* g = c.best(prompt_of(b), {}, true).gen;
     check(g != nullptr && g->serial == pb.serial, "lookup: the deeper generation wins");
-    g = c.best(prompt_of(a), {}, true);
+    g = c.best(prompt_of(a), {}, true).gen;
     check(g != nullptr && g->serial == pa.serial, "lookup: A answers its own prompt");
-    check(c.best(tokens_of(a), {}, true) == nullptr, "lookup: a prompt equal to a generation is no resume");
-    check(c.best(prompt_of(b), {}, false) == nullptr, "lookup: cvec must match");
+    // A prompt EXACTLY as long as a published generation is no full-generation resume (a resume leaves at least one
+    // token to read) - but every CHECKPOINT below it is, and the deepest one across all generations answers: B
+    // (150 tokens, of which A's are the prefix) holds a checkpoint at 75, deeper than A's own at 50.
+    const DiskBestMatch eq = c.best(tokens_of(a), {}, true);
+    check(eq.gen != nullptr && eq.selected == 75 && eq.gen->serial == pb.serial,
+          "lookup: a prompt equal to a generation mounts the deepest checkpoint of any of them");
+    const std::vector<int32_t> a_toks = tokens_of(a);
+    check(c.best(std::vector<int32_t>(a_toks.begin(), a_toks.begin() + 25), {}, true).gen == nullptr,
+          "lookup: a prompt shorter than every checkpoint is no resume");
+    check(c.best(prompt_of(b), {}, false).gen == nullptr, "lookup: cvec must match");
     const Spec ai{100, 2, {{10, 0x1111ull}}, true, false, false, 0, 3, false};
     Parked pai;
     check(park(c, ai, why, &pai), "lookup: park a conversation with a picture");
-    check(c.best(prompt_of(ai), {{10, 0x2222ull}}, true) == nullptr, "lookup: a different picture is no match");
-    check(c.best(prompt_of(ai), {{10, 0x1111ull}}, true)->serial == pai.serial, "lookup: the picture matches");
-    check(c.best(prompt_of(ai), {{10, 0x1111ull}, {150, 0x3333ull}}, true) != nullptr,
+    check(c.best(prompt_of(ai), {{10, 0x2222ull}}, true).gen == nullptr, "lookup: a different picture is no match");
+    check(c.best(prompt_of(ai), {{10, 0x1111ull}}, true).gen->serial == pai.serial, "lookup: the picture matches");
+    check(c.best(prompt_of(ai), {{10, 0x1111ull}, {150, 0x3333ull}}, true).gen != nullptr,
           "lookup: a picture past its length is not part of the match");
-    check(c.best(prompt_of(ai), {{10, 0x1111ull}, {100, 0x3333ull}}, true) != nullptr,
+    check(c.best(prompt_of(ai), {{10, 0x1111ull}, {100, 0x3333ull}}, true).gen != nullptr,
           "lookup: a picture at its length is not below it");
     // parking A again retires the generation it outgrew - only AFTER the replacement published (plan 6.3)
     check(park(c, a, why, &pa2), "lookup: park A again");
@@ -259,7 +290,7 @@ void test_lookup_and_supersession() {
     check(c.retire_superseded(tokens_of(a), {}, true, pa2.serial) == 0, "lookup: the published generation is never its own victim");
     check(!fs::exists(pa.path) && fs::exists(pa2.path) && fs::exists(pb.path), "lookup: only its file goes");
     check(c.entries() == 3 && c.stats().superseded == 1, "lookup: the index holds the live generations");
-    check(c.best(prompt_of(a), {}, true)->serial == pa2.serial, "lookup: the newest copy answers");
+    check(c.best(prompt_of(a), {}, true).gen->serial == pa2.serial, "lookup: the newest copy answers");
     check(c.parked_prefix_tokens(tokens_of(a), {}, true) == 100, "lookup: this conversation's parked prefix");
     check(c.parked_prefix_tokens(tokens_of(b), {}, true) == 150, "lookup: the longer conversation's prefix");
     check(c.parked_prefix_tokens(tokens_of(ai), {}, true) == 0, "lookup: a conversation with pictures is not this one");
@@ -484,7 +515,7 @@ void test_space_index_and_count() {
         DiskCache c(opts(idx, 256u << 20, 4u << 20));
         check(open(c, why), "index: open");
         check(c.entries() == 1, "index: the earlier fixture is indexed");
-        const uint64_t first = c.best(prompt_of(s), {}, true)->serial;
+        const uint64_t first = c.best(prompt_of(s), {}, true).gen->serial;
         c.guard(first);
         DiskReservation r;
         check(!c.reserve(1u << 20, 0, (4u << 20) + 1, r, why) && is_refused(r.refusal, "index"),
@@ -506,7 +537,7 @@ void test_space_index_and_count() {
     {
         DiskCache c(opts(cnt, 256u << 20, 4u << 20, 1));
         check(open(c, why), "count: open with one entry of room");
-        const uint64_t first = c.best(prompt_of(s), {}, true)->serial;
+        const uint64_t first = c.best(prompt_of(s), {}, true).gen->serial;
         c.guard(first);
         DiskReservation r;
         check(!c.reserve(1024, 0, 64, r, why) && is_refused(r.refusal, "count"),
@@ -585,7 +616,7 @@ void test_publication_and_faults() {
         // the folder flush is a runtime fact, not a durable one: the restarted file is committed and clean
         check(r.find(pending.serial) != nullptr && !r.find(pending.serial)->dir_flush_pending,
               "crash: the folder-flush marker does not survive the restart");
-        check(r.best(prompt_of(Spec{100, 4, {}, true, false, false, 0, 4, false, kBig}), {}, true) != nullptr,
+        check(r.best(prompt_of(Spec{100, 4, {}, true, false, false, 0, 4, false, kBig}), {}, true).gen != nullptr,
               "crash: the restarted index answers lookups");
     }
     // an eviction whose removal fails refuses the write and keeps the index whole
@@ -635,7 +666,7 @@ void test_inventory_and_tie() {
           "inventory: unpublishable files of this namespace are removed");
     check(c.stats().incompatible == 1 && c.stats().corrupt == 1, "inventory: both are reported");
     check(c.entries() == 2, "inventory: the index holds the two usable generations");
-    check(c.best(prompt_of(s), {}, true)->serial == 11, "tie: the most recently used generation wins");
+    check(c.best(prompt_of(s), {}, true).gen->serial == 11, "tie: the most recently used generation wins");
     check(c.parked_prefix_tokens(tokens_of(s), {}, true) == 100, "inventory: the parked prefix is known");
     check(c.find(10) != nullptr && c.find(11) != nullptr, "inventory: both serials are findable");
     check(c.used() > 0 && c.index_bytes() > 0, "inventory: the restart priced what it indexed");
@@ -705,6 +736,11 @@ void test_stats_and_index_cost() {
     g.ring_ids.assign(2, 7);
     g.path = "conv-1.sess";
     const uint64_t with = disk_generation_index_bytes(g);
+    // the checkpoint list the lookup walks is index memory too: exactly its own words, nothing else
+    g.ckpt_prefixes = {10, 20, 30};
+    check(disk_generation_index_bytes(g) == with + 3ull * sizeof(int64_t),
+          "stats: a generation's checkpoint list is priced in the index");
+    g.ckpt_prefixes.clear();
     g.tokens.assign(2000, 1);
     check(disk_generation_index_bytes(g) > with, "stats: the index cost follows the metadata it holds");
     DiskCache c(opts(d, 256u << 20));
@@ -713,6 +749,8 @@ void test_stats_and_index_cost() {
     check(park(c, Spec{100, 1, {}, true, false, false, 0, 1, false}, why, &p), "stats: park");
     check(c.stats().parks == 1 && c.stats().last_serial == p.serial, "stats: the park is counted");
     check(c.index_bytes() == disk_generation_index_bytes(*c.find(p.serial)), "stats: the index holds the entry's bytes");
+    check(c.find(p.serial)->ckpt_prefixes == std::vector<int64_t>({50, 100}),
+          "stats: a published generation indexes every checkpoint it carries");
     check(c.stats().index_high >= c.index_bytes(), "stats: the index high-water mark");
     check(c.budget() == 256u << 20 && c.enabled(), "stats: the budget");
     c.set_io_mode(false);
@@ -750,11 +788,11 @@ void test_restart_round_trip() {
     check(r.entries() == 2 && r.used() == used, "roundtrip: the index is rebuilt with the same bytes");
     check(r.inventory().sidecars == 1 && r.inventory().sidecar_bytes == (1u << 13) && r.inventory().orphan_sidecars == 0,
           "roundtrip: the referenced pair survives the restart");
-    const DiskGeneration* g = r.best(prompt_of(a), {{10, 0x1111ull}}, true);
+    const DiskGeneration* g = r.best(prompt_of(a), {{10, 0x1111ull}}, true).gen;
     check(g != nullptr && g->pair_prefix == 100 && g->anchor == 100, "roundtrip: the advertised pair survived");
-    check(r.best(prompt_of(b), {{10, 0x1111ull}}, false) != nullptr, "roundtrip: the cvec is restored per generation");
-    check(r.best(prompt_of(b), {{10, 0x1111ull}}, true) == nullptr, "roundtrip: a cvec mismatch is no match");
-    const std::string retired = r.best(prompt_of(b), {{10, 0x1111ull}}, false)->path;
+    check(r.best(prompt_of(b), {{10, 0x1111ull}}, false).gen != nullptr, "roundtrip: the cvec is restored per generation");
+    check(r.best(prompt_of(b), {{10, 0x1111ull}}, true).gen == nullptr, "roundtrip: a cvec mismatch is no match");
+    const std::string retired = r.best(prompt_of(b), {{10, 0x1111ull}}, false).gen->path;
     check(r.retire_superseded(tokens_of(b), {{10, 0x1111ull}}, false) == 1, "roundtrip: retirement works after a restart");
     check(!fs::exists(retired), "roundtrip: the retired file is gone");
     check(r.used() < used, "roundtrip: its bytes came back to the quota");
@@ -811,6 +849,216 @@ void test_page_cache_release() {
           "pages: the file's bytes are unchanged after the release");
 }
 
+// ============ best(): the deepest strictly eligible prefix - the full generation, or ANY checkpoint of it ========
+// What the lookup answers with is the prefix a restore can mount at, so these are the engine's own shapes: a prompt
+// inside a longer published generation, an OLDER checkpoint under a deeper one (paired or not), a prompt that ends
+// exactly at a checkpoint, and the two ways a prompt can stop matching a generation's tokens.
+void test_best_checkpoint_prefixes() {
+    const fs::path d = dir("bestckpt");
+    std::string why;
+    DiskCache c(opts(d, 256u << 20));
+    check(open(c, why), "bestckpt: open");
+    // 1000 tokens, checkpoints at 200, 500 and 800; the PAIR (a legal capture, taken AT its own prefix) sits at
+    // 500.  So anchor = 800 and pair_prefix = 500: the paired checkpoint is not the deepest one, and the deepest
+    // one carries no pair - neither scalar alone says what a prompt of 600 tokens should mount.
+    const Spec a{1000, 11, {}, true, true, false, 1u << 13, 1, false, 0, {200, 500, 800}, {1}};
+    Parked pa;
+    check(park(c, a, why, &pa), "bestckpt: publish the three checkpoints");
+    const DiskGeneration* g = c.find(pa.serial);
+    check(g != nullptr && g->anchor == 800 && g->pair_prefix == 500, "bestckpt: the deepest scalars are as advertised");
+    check(g != nullptr && g->ckpt_prefixes == std::vector<int64_t>({200, 500, 800}),
+          "bestckpt: every real checkpoint is indexed, deepest last");
+    const std::vector<int32_t> toks = tokens_of(a);
+    const auto prompt_n = [&](int64_t n) { return std::vector<int32_t>(toks.begin(), toks.begin() + (size_t) n); };
+
+    // the prompt is INSIDE the generation, past the paired checkpoint: 500 mounts, not the deeper, unpaired 800
+    const DiskBestMatch m600 = c.best(prompt_n(600), {}, true);
+    check(m600.gen != nullptr && m600.selected == 500 && m600.gen->serial == pa.serial,
+          "bestckpt: the deepest ELIGIBLE checkpoint wins over a deeper one");
+    // past every checkpoint: the whole generation resumes, exactly as it always did
+    check(c.best(prompt_n(1001), {}, true).selected == 1000, "bestckpt: a longer prompt resumes the full generation");
+    // a prompt that ends exactly AT a checkpoint: that checkpoint leaves nothing to read, so the one below it mounts
+    check(c.best(prompt_n(500), {}, true).selected == 200, "bestckpt: a prompt ending at a checkpoint mounts the one below");
+    check(c.best(prompt_n(200), {}, true).gen == nullptr, "bestckpt: a prompt at the shallowest checkpoint is no resume");
+    check(c.best(prompt_n(199), {}, true).gen == nullptr, "bestckpt: a prompt below every checkpoint is no resume");
+    // tokens decide the depth: a prompt that diverges ABOVE a checkpoint still mounts it, one that diverges INSIDE
+    // it mounts nothing (the same rule the full-length lookup always had, now per prefix)
+    std::vector<int32_t> other = prompt_n(600);
+    other[300] = 7;
+    check(c.best(other, {}, true).selected == 200, "bestckpt: a prompt diverging above a checkpoint still mounts it");
+    other[100] = 7;
+    check(c.best(other, {}, true).gen == nullptr, "bestckpt: a prompt diverging inside a checkpoint is no resume");
+    // the cvec is part of the match at any depth
+    check(c.best(prompt_n(600), {}, !a.cvec).gen == nullptr, "bestckpt: the cvec must match at a checkpoint too");
+    // a lookup never stamps: reading an entry does not move it in the tier's own LRU
+    const uint64_t used_before = c.find(pa.serial)->used;
+    check(c.best(prompt_n(600), {}, true).selected == 500, "bestckpt: the answer is stable across lookups");
+    check(c.find(pa.serial)->used == used_before, "bestckpt: a lookup does not restamp the entry");
+}
+
+// ============ an OLDER paired checkpoint, under a deeper pair (anchor != pair_prefix) ============
+// The pair is a fact of the checkpoint a restore mounts, never of the deepest pair the generation happens to
+// advertise: here the pair at 500 is the one the prompt mounts, while pair_prefix points at 800.
+void test_best_older_paired_checkpoint() {
+    const fs::path d = dir("bestpair");
+    std::string why;
+    DiskCache c(opts(d, 256u << 20));
+    check(open(c, why), "bestpair: open");
+    const Spec s{1000, 12, {}, true, true, false, 1u << 13, 1, false, 0, {200, 500, 800}, {1, 2}};
+    Parked p;
+    check(park(c, s, why, &p), "bestpair: publish two paired checkpoints");
+    const DiskGeneration* g = c.find(p.serial);
+    check(g != nullptr && g->anchor == 800 && g->pair_prefix == 800, "bestpair: the deepest pair is the deeper one");
+    check(g != nullptr && g->ring_ids.size() == 2, "bestpair: both pairs are indexed");
+    const std::vector<int32_t> toks = tokens_of(s);
+    const std::vector<int32_t> prompt(toks.begin(), toks.begin() + 600);
+    check(c.best(prompt, {}, true).selected == 500, "bestpair: the prompt mounts the older checkpoint, pair and all");
+}
+
+// ============ the deep prompt inside a longer generation (what the two deepest scalars could not reach) ============
+// 16148 published tokens whose deepest checkpoint sits at 16015, and a prompt of 16133: 16015 is the deepest thing
+// mountable, and it is BOTH the deepest checkpoint and the paired one (anchor == pair_prefix: the pair must not be
+// lost to the tie).  Before the checkpoint list existed, this prompt - 15 tokens short of its own file - read all
+// 16133 of itself again.
+void test_best_deep_prompt_inside_generation() {
+    const fs::path d = dir("bestdeep");
+    std::string why;
+    DiskCache c(opts(d, 256u << 20));
+    check(open(c, why), "bestdeep: open");
+    const Spec t3{16148, 13, {}, true, true, true, 1u << 13, 1, false, 0, {200, 16015}, {1}};
+    Parked p;
+    check(park(c, t3, why, &p), "bestdeep: publish 16148 tokens with a paired checkpoint at 16015");
+    const DiskGeneration* g = c.find(p.serial);
+    check(g != nullptr && g->anchor == 16015 && g->pair_prefix == 16015,
+          "bestdeep: anchor and pair_prefix are the same checkpoint");
+    const std::vector<int32_t> toks = tokens_of(t3);
+    const std::vector<int32_t> prompt(toks.begin(), toks.begin() + 16133);
+    check(c.best(prompt, {}, true).selected == 16015, "bestdeep: the prompt inside its file mounts the paired 16015");
+    check(c.best(toks, {}, true).selected == 16015, "bestdeep: a prompt of the file's own length mounts it too");
+    std::vector<int32_t> longer = toks;
+    longer.push_back(999999);
+    check(c.best(longer, {}, true).selected == 16148, "bestdeep: past the file's end the full length answers");
+}
+
+// ============ the picture horizon: a checkpoint is judged by the pictures below IT ============
+void test_best_image_horizon() {
+    const fs::path d = dir("bestimg");
+    std::string why;
+    DiskCache c(opts(d, 256u << 20));
+    check(open(c, why), "bestimg: open");
+    // (a) the generation's only picture sits ABOVE its checkpoints: it is no part of a mount below it
+    const Spec above{400, 14, {{300, 0x1111ull}}, true, false, false, 0, 1, false, 0, {100, 200}};
+    Parked pa;
+    check(park(c, above, why, &pa), "bestimg: publish the picture above the checkpoints");
+    std::vector<int32_t> p250 = tokens_of(above);
+    p250.resize(250);
+    check(c.best(p250, {}, true).selected == 200, "bestimg: a checkpoint under the picture ignores it");
+    // the FULL length demands its picture; a prompt that carries a re-encoded one falls back BELOW it (#2228)
+    std::vector<int32_t> p401 = prompt_of(above);
+    check(c.best(p401, {{300, 0x1111ull}}, true).selected == 400, "bestimg: the same picture makes the full length match");
+    check(c.best(p401, {{300, 0x2222ull}}, true).selected == 200,
+          "bestimg: a re-encoded picture costs only the depth above the checkpoint");
+    // (b) a picture BELOW a checkpoint is part of that checkpoint's own match: lost, it takes the mount with it
+    const Spec below{400, 15, {{50, 0x1111ull}}, true, false, false, 0, 1, false, 0, {100, 200}};
+    Parked pb;
+    check(park(c, below, why, &pb), "bestimg: publish the picture below the checkpoints");
+    std::vector<int32_t> q250 = tokens_of(below);
+    q250.resize(250);
+    check(c.best(q250, {{50, 0x1111ull}}, true).selected == 200, "bestimg: the picture below the prefix matches");
+    check(c.best(q250, {}, true).gen == nullptr, "bestimg: a picture that vanished takes the checkpoints below it too");
+}
+
+// ============ the tie: depth first, and only then the use stamp ============
+void test_best_tie_and_depth() {
+    const fs::path d = dir("besttie");
+    std::string why;
+    DiskCache c(opts(d, 256u << 20));
+    check(open(c, why), "besttie: open");
+    // two generations over the SAME tokens (one conversation, published twice by different engines' turns), one
+    // with its deepest checkpoint at 500 and one at 300
+    const Spec deep{1000, 16, {}, true, false, false, 0, 1, false, 0, {300, 500}};
+    const Spec shallow{1000, 16, {}, true, false, false, 0, 1, false, 0, {300}};
+    Parked p1, p2;
+    check(park(c, deep, why, &p1), "besttie: publish the deeper checkpoint");
+    check(park(c, shallow, why, &p2), "besttie: publish the shallower one over the same tokens");
+    std::vector<int32_t> prompt = tokens_of(deep);
+    prompt.resize(600);
+    check(c.best(prompt, {}, true).selected == 500, "besttie: the deeper checkpoint wins over a shallower one");
+    // and the stamp decides only a genuine tie: with both generations answering at 300, the one this request
+    // mounted last is the one that answers - whichever of them was published first
+    prompt.resize(350);
+    check(c.best(prompt, {}, true).selected == 300, "besttie: both generations answer at the same depth");
+    c.use(p2.serial);
+    check(c.best(prompt, {}, true).gen->serial == p2.serial, "besttie: the most recently used answers the tie");
+    c.use(p1.serial);
+    check(c.best(prompt, {}, true).gen->serial == p1.serial, "besttie: and the stamp decides, not the publish order");
+}
+
+// ============ the restart rebuilds exactly what the publish wrote ============
+// The runtime publish fills the candidate list from the manifest's metas; the restart inventory reads them back off
+// the file.  A generation whose two paths disagree would mount a different prefix after a restart, so the tier's
+// own answers are compared across it: the list, the scalars and the selection at three depths.
+void test_best_survives_the_restart() {
+    const fs::path d = dir("bestscan");
+    std::string why;
+    uint64_t serial = 0;
+    std::vector<int64_t> prefixes;
+    {
+        DiskCache c(opts(d, 256u << 20));
+        check(open(c, why), "bestscan: open");
+        const Spec s{1000, 17, {}, true, true, false, 1u << 13, 3, false, 0, {200, 500, 800}, {1}};
+        Parked p;
+        check(park(c, s, why, &p), "bestscan: publish");
+        serial = p.serial;
+        prefixes = c.find(p.serial)->ckpt_prefixes;
+        check(prefixes == std::vector<int64_t>({200, 500, 800}), "bestscan: the publish indexed the list");
+        const std::vector<int32_t> all_toks = tokens_of(s);
+        const std::vector<int32_t> t600(all_toks.begin(), all_toks.begin() + 600);
+        check(c.best(t600, {}, true).selected == 500,
+              "bestscan: the fresh index answers at 500");
+    }
+    DiskCache r(opts(d, 256u << 20));
+    check(open(r, why), "bestscan: the restart opens");
+    const DiskGeneration* g = r.find(serial);
+    check(g != nullptr && g->ckpt_prefixes == prefixes, "bestscan: the scan rebuilt the same checkpoint list");
+    check(g != nullptr && g->anchor == 800 && g->pair_prefix == 500, "bestscan: and the same deepest scalars");
+    const std::vector<int32_t> toks = tokens_of(Spec{1000, 17, {}, true, true, false, 1u << 13, 3, false, 0,
+                                                    {200, 500, 800}, {1}});
+    check(r.best(std::vector<int32_t>(toks.begin(), toks.begin() + 600), {}, true).selected == 500,
+          "bestscan: the restarted index answers the same at 500");
+    check(r.best(std::vector<int32_t>(toks.begin(), toks.begin() + 400), {}, true).selected == 200,
+          "bestscan: ...at 200...");
+    check(r.best(std::vector<int32_t>(toks.begin(), toks.begin() + 1001), {}, true).selected == 1000,
+          "bestscan: ...and at the full length");
+}
+
+// ============ the region clip a prefix mount performs, per block ============
+// The restore walks a region in blocks and keeps each block's leading bytes at the mounted prefix; this is that
+// arithmetic, exercised over every shape the sink's blocks take: a block wholly inside, one that straddles the
+// boundary, the ones past it, an empty part, and a block larger than the whole prefix.
+void test_prefix_clip_blocks() {
+    const uint64_t upto = 1000;   // the part's bytes below the mounted prefix
+    check(disk_prefix_clip(upto, 0, 4096) == 1000, "clip: a block wider than the prefix keeps the prefix");
+    check(disk_prefix_clip(upto, 0, 1000) == 1000, "clip: a block exactly the prefix keeps all of it");
+    check(disk_prefix_clip(upto, 0, 100) == 100, "clip: a block wholly inside keeps all of it");
+    check(disk_prefix_clip(upto, 900, 100) == 100, "clip: a block ending exactly at the prefix keeps all of it");
+    check(disk_prefix_clip(upto, 900, 200) == 100, "clip: a block straddling the boundary keeps the leading part");
+    check(disk_prefix_clip(upto, 1000, 100) == 0, "clip: a block starting AT the prefix is dropped");
+    check(disk_prefix_clip(upto, 4096, 100) == 0, "clip: a block past the prefix is dropped");
+    check(disk_prefix_clip(0, 0, 4096) == 0, "clip: a part with no cells below the prefix is all dropped");
+    // the whole region: the blocks of a full-T region add up to exactly the prefix's bytes, once
+    for (const uint64_t block : {1u << 10, 1u << 12, 1u << 20, 997u}) {
+        uint64_t kept = 0, off = 0;
+        const uint64_t region = 64u << 20;
+        while (off < region) {
+            const size_t n = (size_t) std::min<uint64_t>(block, region - off);
+            kept += disk_prefix_clip(upto, off, n);
+            off += n;
+        }
+        check(kept == upto, "clip: every block layout lands the prefix's bytes exactly once");
+    }
+}
+
 }   // namespace
 
 int main() {
@@ -819,6 +1067,13 @@ int main() {
     fs::remove_all(g_tmp, ec);
     fs::create_directories(g_tmp, ec);
     test_lookup_and_supersession();
+    test_best_checkpoint_prefixes();
+    test_best_older_paired_checkpoint();
+    test_best_deep_prompt_inside_generation();
+    test_best_image_horizon();
+    test_best_tie_and_depth();
+    test_best_survives_the_restart();
+    test_prefix_clip_blocks();
     test_park_gain();
     test_owner_lock();
     test_quota_and_protections();

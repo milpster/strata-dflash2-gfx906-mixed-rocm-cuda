@@ -36,9 +36,9 @@ WRAPPER_PY = os.environ.get("STRATA_PROD_TREE", "/mnt/user/Strata") + "/.venv/bi
 WRAPPER_CWD = os.environ.get("STRATA_PROD_TREE", "/mnt/user/Strata") + ""
 TEMPLATE_EXE_ARGS = [
     "--gpu", "0,1",
-    "--pack", os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3xxs-15",
-    "--native", os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
-    "--native-dense-gguf", os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
+    "--pack", os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3xxs-ud",
+    "--native", os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3xxs-ud/Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00004.gguf",
+    "--native-dense-gguf", os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3xxs-ud/Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00004.gguf",
     "--ple-gguf", os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/Qwen3.8-Flash-Next-PLE-Q8_0.gguf",
     "--expert-profile", os.environ.get("STRATA_PROD_TREE", "/mnt/user/Strata") + "/data/expert-profile.bin",
     "--expert-cache", "auto", "--prefill", "8192", "--spec", "5",
@@ -146,7 +146,7 @@ def one_pair(fixture, layer, text, args, cfgdir, logdir):
         "sampling": {"min_p": 0.0, "presence_penalty": 0.0,
                      "repetition_penalty": 1.0, "temperature": 1.0,
                      "top_k": 20, "top_p": 0.95},
-        "tokenizer": os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3xxs-15/tokenizer",
+        "tokenizer": os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3xxs-ud/tokenizer",
     }
     with open(cfg, "w", encoding="utf-8") as fh:
         json.dump(config, fh, indent=1)

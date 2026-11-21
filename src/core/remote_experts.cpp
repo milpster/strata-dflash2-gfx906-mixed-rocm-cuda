@@ -277,14 +277,23 @@ bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
         const int32_t slot = cache_.admit(pair.first, pair.second);
         const uint8_t* blob = source.blob(pair.first, pair.second);
         if (slot < 0 || !blob || !cache_.fill_slot_blocking(slot, blob, err, (int64_t) lay.blob_bytes(pair.first))) {
+            // A borrow from a reference-counted source (the managed pool) is a lease even on this failure path.
+            if (blob != nullptr && source.lends()) source.release(pair.first, pair.second);
             err = "CUDA" + std::to_string(device) + " experts: " +
                   (err.empty() ? "cache fill failed" : err);
             close(); return false;
         }
+        // The fill blocked, so its copy of the bytes has landed: the loan is done with.  Before this, every
+        // expert a helper GPU's cache was filled with stayed borrowed from the pool for the rest of the process
+        // (one pinned pair per selected slot, per helper).
+        if (source.lends()) source.release(pair.first, pair.second);
     }
     const auto& first = selected.front();
-    if (!cache_.verify_slot(cache_.slot_of(first.first, first.second), source.blob(first.first, first.second),
-                            err, (int64_t) lay.blob_bytes(first.first))) {
+    const uint8_t* first_blob = source.blob(first.first, first.second);
+    const bool first_ok = cache_.verify_slot(cache_.slot_of(first.first, first.second), first_blob,
+                                            err, (int64_t) lay.blob_bytes(first.first));
+    if (first_blob != nullptr && source.lends()) source.release(first.first, first.second);   // compared on the host
+    if (!first_ok) {
         err = "CUDA" + std::to_string(device) + " experts: " + err;
         close(); return false;
     }

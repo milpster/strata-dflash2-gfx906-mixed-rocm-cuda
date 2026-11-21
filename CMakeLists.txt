@@ -517,6 +517,150 @@ if(STRATA_BUILD_TESTS)
   target_include_directories(cache_spill_test PRIVATE include)
   add_test(NAME cache_spill_test COMMAND cache_spill_test)
 
+  # STRATA_NATIVE_MLOCK: CPU-only mock/injection tests for the native file-map lock helper.
+  # OFF/no-syscall, success, first-chunk failure, later-chunk failure with already-locked
+  # bytes retained, truthful aggregate, knob=0 same as OFF, non-Linux no-op.  No GPU, no
+  # large RAM locks, no real RLIMIT changes; mlock/getrlimit/setrlimit are intercepted by
+  # this TU's own definitions which the linker prefers over libc's.  pin_budget.hpp includes
+  # <cuda_runtime.h> unconditionally, so a minimal test-only shim lives in tests/core and is
+  # provided on this target's include path; production builds use the real ROCm/CUDA headers.
+  # Each scenario runs as a separate CTest because native_mlock_detail::mode() (and on(), which reads it)
+  # caches the knob's value on first call (static local init).
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(native_mlock_test tests/core/native_mlock_test.cpp)
+    target_include_directories(native_mlock_test BEFORE PRIVATE tests/core include)
+    target_link_libraries(native_mlock_test PRIVATE ${CMAKE_DL_LIBS})
+    add_test(NAME native_mlock_test_off      COMMAND native_mlock_test off)
+    add_test(NAME native_mlock_test_success  COMMAND native_mlock_test success)
+    add_test(NAME native_mlock_test_empty    COMMAND native_mlock_test empty)
+    add_test(NAME native_mlock_test_first_fail COMMAND native_mlock_test first_fail)
+    add_test(NAME native_mlock_test_later_fail COMMAND native_mlock_test later_fail)
+    add_test(NAME native_mlock_test_mixed_span COMMAND native_mlock_test mixed_span)
+    add_test(NAME native_mlock_test_knob_zero COMMAND native_mlock_test knob_zero)
+    add_test(NAME native_mlock_test_arena_only COMMAND native_mlock_test arena_only)
+    add_test(NAME native_mlock_test_all_spans COMMAND native_mlock_test all_spans)
+    add_test(NAME native_mlock_test_word_all COMMAND native_mlock_test word_all)
+  endif()
+
+  # STRATA_RAM_POOL: deterministic CPU-only tests for the managed pre-locked RAM
+  # pool core (include/strata/core/ram_pool.hpp, src/core/ram_pool.cpp).  Opt-in
+  # via -DSTRATA_BUILD_RAM_POOL_TEST=ON; default OFF keeps the default path
+  # byte-identical and adds nothing to the default build.  No GPU, no large RAM
+  # locks (<= 16 MiB per scenario), no real RLIMIT changes in mock mode; a
+  # real_mock scenario exercises real mmap/mlock and /proc/self/status VmLck.
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    option(STRATA_BUILD_RAM_POOL_TEST "Build the ram_pool CPU test (opt-in)" OFF)
+    if(STRATA_BUILD_RAM_POOL_TEST)
+      add_executable(ram_pool_test tests/core/ram_pool_test.cpp src/core/ram_pool.cpp)
+      target_include_directories(ram_pool_test BEFORE PRIVATE tests/core include)
+      target_compile_definitions(ram_pool_test PRIVATE STRATA_RAM_POOL_TEST)
+      target_link_libraries(ram_pool_test PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
+      if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_link_options(ram_pool_test PRIVATE
+          -Wl,--wrap=mmap -Wl,--wrap=mlock -Wl,--wrap=munmap -Wl,--wrap=munlock)
+      endif()
+      add_test(NAME ram_pool_test_mock COMMAND ram_pool_test mock)
+      set_tests_properties(ram_pool_test_mock PROPERTIES TIMEOUT 15)
+      add_test(NAME ram_pool_test_real_mock COMMAND ram_pool_test real_mock)
+      set_tests_properties(ram_pool_test_real_mock PROPERTIES TIMEOUT 15 SKIP_RETURN_CODE 77)
+
+      # Simulated non-Linux guard probe: compiles the probe AND the core
+      # implementation with -U__linux__ to verify the __linux__-guarded code
+      # paths degrade to a self-contained refusal contract.  Simulated
+      # preprocessor coverage on a Linux CPU host, not a real
+      # Windows/macOS toolchain validation.  Inside the opt-in block so a
+      # default OFF build omits both pool targets/tests.
+      add_executable(ram_pool_nonlinux_probe tests/core/ram_pool_nonlinux_probe.cpp src/core/ram_pool.cpp)
+      target_include_directories(ram_pool_nonlinux_probe BEFORE PRIVATE tests/core include)
+      if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(ram_pool_nonlinux_probe PRIVATE -U__linux__)
+      endif()
+      target_link_libraries(ram_pool_nonlinux_probe PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
+      add_test(NAME ram_pool_nonlinux_probe COMMAND ram_pool_nonlinux_probe)
+      set_tests_properties(ram_pool_nonlinux_probe PROPERTIES TIMEOUT 15)
+
+      # CPU expert-cache foundation over the RAM pool (opt-in, same guard).
+      add_executable(pool_expert_cache_test tests/core/pool_expert_cache_test.cpp src/core/pool_expert_cache.cpp src/core/ram_pool.cpp)
+      target_include_directories(pool_expert_cache_test BEFORE PRIVATE tests/core include)
+      target_compile_definitions(pool_expert_cache_test PRIVATE STRATA_RAM_POOL_TEST)
+      target_link_libraries(pool_expert_cache_test PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
+      if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_link_options(pool_expert_cache_test PRIVATE
+          -Wl,--wrap=mmap -Wl,--wrap=mlock -Wl,--wrap=munmap -Wl,--wrap=munlock)
+      endif()
+      add_test(NAME pool_expert_cache_test COMMAND pool_expert_cache_test ${CMAKE_BINARY_DIR})
+      set_tests_properties(pool_expert_cache_test PROPERTIES TIMEOUT 15)
+
+      # BoundedDirectReader (O_DIRECT) + PoolExpertCache over the same RAM pool.
+      # Wraps pread (plus the pool's mmap/mlock/munmap/munlock) and preflights
+      # bare O_DIRECT; skips 77 only when the real filesystem lacks O_DIRECT.
+      add_executable(bounded_direct_reader_test
+                     tests/core/bounded_direct_reader_test.cpp
+                     src/platform/bounded_direct_reader.cpp
+                     src/core/pool_expert_cache.cpp
+                     src/core/ram_pool.cpp)
+      target_include_directories(bounded_direct_reader_test BEFORE PRIVATE tests/core include)
+      target_compile_definitions(bounded_direct_reader_test PRIVATE STRATA_RAM_POOL_TEST)
+      target_link_libraries(bounded_direct_reader_test PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
+      if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_link_options(bounded_direct_reader_test PRIVATE
+          -Wl,--wrap=mmap -Wl,--wrap=mlock -Wl,--wrap=munmap -Wl,--wrap=munlock -Wl,--wrap=pread)
+      endif()
+      add_test(NAME bounded_direct_reader_test COMMAND bounded_direct_reader_test ${CMAKE_BINARY_DIR})
+      set_tests_properties(bounded_direct_reader_test PROPERTIES TIMEOUT 15 SKIP_RETURN_CODE 77)
+
+      # PoolExpertStore over the same RAM pool (opt-in, same guard).  Wraps
+      # pread (plus the pool's mmap/mlock/munmap/munlock); real fixture I/O.
+      add_executable(pool_expert_store_test
+                     tests/core/pool_expert_store_test.cpp
+                     src/core/pool_expert_store.cpp
+                     src/core/pool_expert_cache.cpp
+                     src/platform/bounded_direct_reader.cpp
+                     src/core/ram_pool.cpp)
+      target_include_directories(pool_expert_store_test BEFORE PRIVATE tests/core include)
+      target_compile_definitions(pool_expert_store_test PRIVATE STRATA_RAM_POOL_TEST)
+      target_link_libraries(pool_expert_store_test PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
+      if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_link_options(pool_expert_store_test PRIVATE
+          -Wl,--wrap=mmap -Wl,--wrap=mlock -Wl,--wrap=munmap -Wl,--wrap=munlock -Wl,--wrap=pread)
+      endif()
+      add_test(NAME pool_expert_store_test COMMAND pool_expert_store_test ${CMAKE_BINARY_DIR})
+      set_tests_properties(pool_expert_store_test PROPERTIES TIMEOUT 15)
+
+      # PoolExpertSourceAdapter over the same RAM pool (opt-in, same guard).
+      # CPU-only TU: no CUDA headers; the async-note hook is injected (the CUDA
+      # event implementation comes with Task 2/engine wiring). Default OFF.
+      add_executable(pool_expert_source_adapter_test
+                     tests/core/pool_expert_source_adapter_test.cpp
+                     src/core/pool_expert_source_adapter.cpp
+                     src/core/pool_expert_store.cpp
+                     src/core/pool_expert_cache.cpp
+                     src/platform/bounded_direct_reader.cpp
+                     src/core/ram_pool.cpp)
+      target_include_directories(pool_expert_source_adapter_test BEFORE PRIVATE tests/core include)
+      target_compile_definitions(pool_expert_source_adapter_test PRIVATE STRATA_RAM_POOL_TEST)
+      target_link_libraries(pool_expert_source_adapter_test PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
+      if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_link_options(pool_expert_source_adapter_test PRIVATE
+          -Wl,--wrap=mmap -Wl,--wrap=mlock -Wl,--wrap=munmap -Wl,--wrap=munlock -Wl,--wrap=pread)
+      endif()
+      add_test(NAME pool_expert_source_adapter_test COMMAND pool_expert_source_adapter_test ${CMAKE_BINARY_DIR})
+      set_tests_properties(pool_expert_source_adapter_test PROPERTIES TIMEOUT 15)
+    endif()
+  endif()
+
+  # Simulated non-Linux guard probe: compiled with -U__linux__ to verify the
+  # __linux__-guarded code paths degrade to a self-contained OFF/no-op contract.
+  # This is simulated preprocessor coverage on a Linux CPU host, not a real
+  # Windows/macOS toolchain validation.
+  add_executable(native_mlock_nonlinux_probe tests/core/native_mlock_nonlinux_probe.cpp)
+  target_include_directories(native_mlock_nonlinux_probe BEFORE PRIVATE tests/core include)
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(native_mlock_nonlinux_probe PRIVATE -U__linux__)
+  endif()
+  target_link_libraries(native_mlock_nonlinux_probe PRIVATE ${CMAKE_DL_LIBS})
+  add_test(NAME native_mlock_nonlinux_probe COMMAND native_mlock_nonlinux_probe)
+
   # STRATA_PREFILL_ROUTED_STREAM: the prompt stream's issuer walk and route gate, on a simulated link and consumer
   # (header-only, no GPU)
   add_executable(routed_stream_test tests/prefill/routed_stream_test.cpp)
@@ -554,7 +698,8 @@ target_link_libraries(strata-plan PRIVATE strata_plan)
 # Only built when a GPU backend is on, so the Phase 1 targets keep working without a toolkit.
 if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   add_library(strata_core STATIC src/core/device.cu src/core/pinned.cu src/platform/memory.cpp src/platform/io_priority.cpp src/core/graph.cpp src/core/weights.cpp
-                               src/core/layout.cpp)
+                               src/core/layout.cpp
+                               src/core/ram_pool.cpp src/core/pool_expert_cache.cpp src/platform/bounded_direct_reader.cpp src/core/pool_expert_store.cpp src/core/pool_expert_source_adapter.cpp)
   target_include_directories(strata_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
   # the DFlash2 drafter (src/core/dflash2.cpp, src/kernels/cuda/dflash2.cu) exists in the CUDA and HIP builds; the Metal and SYCL builds compile without it.
   # It is now an option (STRATA_HAVE_DFLASH2), default ON exactly as upstream v0.2.3 had it, so the build can be made to carry exactly ONE tap producer:

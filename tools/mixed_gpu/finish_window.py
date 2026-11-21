@@ -50,8 +50,8 @@ import slots_window                                                    # noqa: E
 WORK = _HERE.parents[1]
 ROOT = Path(os.environ.get("STRATA_PROD_TREE", "/mnt/user/Strata") + "")
 EV_ROOT = WORK / "build-mixed-gpu/p2-finish"
-PACK = Path(os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3xxs-15")
-EXPERTS_GGUF = "../Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf"
+PACK = Path(os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3xxs-ud")
+EXPERTS_GGUF = "Qwen3.8-Flash-Next-UD-IQ3_XXS-00002-of-00004.gguf"
 DIAG_ENGINE = WORK / "build-mixed-gpu/rpcw-hip-nmse2/strata"
 CUDA_HELPER = WORK / "build-mixed-gpu/rpcw-cuda-nmse2/strata-expert-helper"
 HIP_REFERENCE = WORK / "build-mixed-gpu/rpcw-hip-nmse2/p2_measure_hip_reference"

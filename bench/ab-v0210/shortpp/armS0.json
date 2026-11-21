@@ -83,7 +83,7 @@
  "vision": {
   "exe": "/mnt/user/Strata/build-vision/bin/strata-vision",
   "mmproj": "/mnt/user/ai/mmproj-Swift-Qwen3.8-Flash-Next-BF16.gguf",
-  "model": "/mnt/user/ai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
+  "model": "/mnt/user/ai/iq3xxs-ud/Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00004.gguf",
   "gpu": false,
   "threads": 8,
   "max_tokens": 1024

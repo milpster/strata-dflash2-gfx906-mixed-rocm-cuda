@@ -1521,7 +1521,7 @@ bool FileExpertSource::open(const std::string& pack_dir, int64_t n_layers, int64
         err = "FileExpertSource: cannot size " + path;
         return false;
     }
-    if ((uint64_t) sz.QuadPart != want) {
+    if (!strata::kernels::cpu::expert_file_bytes_ok(layout, (uint64_t) sz.QuadPart)) {
         char buf[400];
         std::snprintf(buf, sizeof buf,
                       "FileExpertSource: %s is %llu B but the loaded expert layout requires %llu B - this is not "
@@ -1553,7 +1553,7 @@ bool FileExpertSource::open(const std::string& pack_dir, int64_t n_layers, int64
     if (fd < 0) { err = "FileExpertSource: cannot open " + path; return false; }
     struct stat st{};
     if (fstat(fd, &st) != 0) { ::close(fd); err = "FileExpertSource: cannot stat " + path; return false; }
-    if (st.st_size < 0 || (uint64_t) st.st_size != want) {
+    if (st.st_size < 0 || !strata::kernels::cpu::expert_file_bytes_ok(layout, (uint64_t) st.st_size)) {
         char buf[400];
         std::snprintf(buf, sizeof buf,
                       "FileExpertSource: %s is %llu B but the loaded expert layout requires %llu B - this is not "
@@ -1568,6 +1568,8 @@ bool FileExpertSource::open(const std::string& pack_dir, int64_t n_layers, int64
     if (view == MAP_FAILED) { ::close(fd); err = "FileExpertSource: mmap failed on " + path; return false; }
     fd_ = fd;
     base_ = (const uint8_t*) view;
+    native_mlock_span(view, (uint64_t) want, "FileExpertSource mapped pack");   // STRATA_NATIVE_MLOCK: keep the pack's clean pages out of reclaim
+    native_mlock_report(path.c_str());
     paths_.assign(1, path);   // #286: open_direct opens it again with O_DIRECT
 #endif
     blobs_ = (int64_t) blob_count;
@@ -1770,6 +1772,7 @@ bool FileExpertSource::open_gguf(std::string& err) {
                 m.fd = fd;
                 m.bytes = (uint64_t) st.st_size;
                 m.base = (const uint8_t*) view;
+                native_mlock_span(view, (uint64_t) st.st_size, "FileExpertSource GGUF shard");   // STRATA_NATIVE_MLOCK
 #endif
                 maps_.push_back(m);
                 paths_.push_back(path);
@@ -1787,6 +1790,7 @@ bool FileExpertSource::open_gguf(std::string& err) {
         }
     }
     base_ = maps_.front().base;       // "opened"; mapped_blob answers nullptr in this mode
+    native_mlock_report("FileExpertSource GGUF shards");   // STRATA_NATIVE_MLOCK: one line for all shards mapped above
     warm_stamp_.reset(new std::atomic<uint32_t>[(size_t) (n_layers_ * n_expert_)]());
     for (uint64_t b : layer_blob_bytes_) stage_blob_ = std::max(stage_blob_, b);
     return true;
@@ -4888,6 +4892,11 @@ void expert_pool_dispatch(void* user, const float* x_f, const int32_t* ids, cons
 
     using namespace strata::kernels::cpu;
     static thread_local std::vector<int32_t> helper_claims;   // R2 proxy claims (see the begin seam)
+    // The missed experts below come from d.src, and on the managed pool a blob() is a LEASE: pool->run() reads
+    // them on THIS thread and is done with them when it returns, so every borrow this call takes is given back
+    // as the call leaves - early returns included.  A source that answers lends() false (a mapping, the arena)
+    // is asked nothing, exactly as before.
+    BlobLoanBatch cpu_loans(*d.src, d.layers);
     // Clause 3: the blob's internal offsets are compile-time constants, so a mismatched geometry does not
     // produce a wrong answer - it produces a walk off the end of the blob into the next expert's bytes, which
     // is finite and plausible.  Refuse, name the number, and let the driver report it.
@@ -4958,7 +4967,36 @@ void expert_pool_dispatch(void* user, const float* x_f, const int32_t* ids, cons
             d.fail_expert = e;
             return;
         }
-        const uint8_t* b = d.src->blob(d.layers, e);
+        const uint8_t* b = nullptr;
+        // NO blob() above the hit test: neither path below uses the bytes, and a borrow is a reference-counted
+        // lease that only a completed async note or an explicit release() frees.  Neither path issues either -
+        // the note sites are the fill paths (expert_source.cpp:5525, peer_experts.cpp:230,
+        // remote_expert_opt.cu:190) - so asking here pinned one managed-pool pair for every HIT and every
+        // remote-owned expert for the rest of the request.  The pinned set grew until the pool refused, and the
+        // refusal surfaced at the next miss as "the expert source could not produce a blob" (measured
+        // 2026-11-21 on 53,717- and 64,507-token prompts).  Ask only for an expert that becomes a job.
+        // A hit's row was zeroed by `Launch` and belongs to the GPU; the pool must not touch it.
+        if (use_hits && (graph_hits ? d.host_res[(size_t) d.layers * (size_t) d.n_expert + (size_t) e] >= 0
+                                    : d.is_hit[(size_t) i] != 0)) {
+            if (graph_hits) ++d.cache_hits;
+            // The GPU owns this row and `hit_out` is zeroed, so the CPU's contribution is zero - but
+            // `y_miss` is a REUSED pinned buffer, so the row must be written, not merely skipped.
+            std::memset(out + (size_t) i * (size_t) n_embd, 0, (size_t) n_embd * sizeof(float));
+            d.src->note_routed(d.layers, e);   // the demand `blob()` used to record (the arena re-rank's heat)
+            continue;
+        }
+        if (graph_hits) ++d.cache_refused;   // token graph: a miss (nothing is admitted during a token)
+
+        bool remote_owns = false;
+        for (int r = 0; r < d.remote_count; ++r) remote_owns |= d.remote[r]->owns(i);
+        for (const int32_t hc : helper_claims) remote_owns |= (hc == i);   // R2 proxy claim (empty on a native pack: this path refuses it)
+        if (remote_owns) {
+            std::memset(out + (size_t) i * (size_t) n_embd, 0, (size_t) n_embd * sizeof(float));
+            d.src->note_routed(d.layers, e);   // as above: routed, but never copied from this source
+            continue;
+        }
+
+        b = d.src->blob(d.layers, e);
         if (b == nullptr) {
             // The one failure the loop cannot see.  Leaving `out` at its previous contents would feed the NEXT
             // layer a stale expert vector, which `moe_combine` would weight and add - the token would still be
@@ -4970,24 +5008,7 @@ void expert_pool_dispatch(void* user, const float* x_f, const int32_t* ids, cons
             ++d.missing;
             return;
         }
-        // A hit's row was zeroed by `Launch` and belongs to the GPU; the pool must not touch it.
-        if (use_hits && (graph_hits ? d.host_res[(size_t) d.layers * (size_t) d.n_expert + (size_t) e] >= 0
-                                    : d.is_hit[(size_t) i] != 0)) {
-            if (graph_hits) ++d.cache_hits;
-            // The GPU owns this row and `hit_out` is zeroed, so the CPU's contribution is zero - but
-            // `y_miss` is a REUSED pinned buffer, so the row must be written, not merely skipped.
-            std::memset(out + (size_t) i * (size_t) n_embd, 0, (size_t) n_embd * sizeof(float));
-            continue;
-        }
-        if (graph_hits) ++d.cache_refused;   // token graph: a miss (nothing is admitted during a token)
-
-        bool remote_owns = false;
-        for (int r = 0; r < d.remote_count; ++r) remote_owns |= d.remote[r]->owns(i);
-        for (const int32_t hc : helper_claims) remote_owns |= (hc == i);   // R2 proxy claim (empty on a native pack: this path refuses it)
-        if (remote_owns) {
-            std::memset(out + (size_t) i * (size_t) n_embd, 0, (size_t) n_embd * sizeof(float));
-            continue;
-        }
+        cpu_loans.took((int32_t) e);   // a lease (the managed pool): the pool's run below and this scope give it back
 
         // `njobs` indexes the JOB ARRAY and `i` indexes the OUTPUT - they are the same only when nothing is a
         // hit, and using one for the other is how a hit's row would get two experts summed into it.
@@ -5062,6 +5083,12 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     // when a proxy finish failed).  In-process tiers never fill it.
     static thread_local std::vector<int32_t> helper_claims;
     if (d.failed) return;
+    // As in expert_pool_dispatch: a blob() from a reference-counted source (the managed pool) is a lease, and
+    // the CPU batches below read it on THIS thread, so every borrow of this call is given back as the call
+    // leaves (early returns included).  Every other source answers lends() false and is asked nothing - before
+    // this, a pool borrow here was never noted and never released, so each pair a window computed on the CPU
+    // stayed pinned for the rest of the process: the 8k-pair leak the guard reports.
+    BlobLoanBatch cpu_loans(*d.src, d.layers);
     if (n_tok < 1 || n_tok > strata::kernels::kWindowMaxT) {
         d.failed = true;
         d.fail = "a verify window has more tokens than the multi-token expert kernel takes";
@@ -5201,7 +5228,12 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                 } else {
                     if (d.fs != nullptr) d.fs->note_miss(d.src, d.layers, e);
                     if (miss_rank >= nmiss - m && fetches < P.staging_cap && fetches < 64) {
-                        const uint8_t* src = d.src->pinned(d.layers, e) ? d.src->blob(d.layers, e) : nullptr;
+                        // pinned AND not transient: the managed pool answers pinned() true so that its
+                        // copy_blob path is chosen, but its bytes must never be DMA'd straight from a borrow
+                        // held here with no note - a transient source is copied by the source instead.
+                        const uint8_t* src = (d.src->pinned(d.layers, e) && !d.src->transient(d.layers, e))
+                                                 ? d.src->blob(d.layers, e)
+                                                 : nullptr;
                         if (src != nullptr) {
                             kd = 1;
                             dma_src[fetches] = src;
@@ -5414,6 +5446,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                     ++d.missing;
                     return;
                 }
+                if (!zc) cpu_loans.took((int32_t) e);   // a lease from the pool: given back when this call leaves
                 jo = (int16_t) njobs++;
                 ExpertJobMulti& nj = d.jobs_multi[(size_t) jo];
                 nj.blob = b;
@@ -6071,7 +6104,7 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
         std::ifstream f(path, std::ios::binary | std::ios::ate);
         if (!f) { err = "ArenaExpertSource: cannot open " + path; return false; }
         const uint64_t got = (uint64_t) f.tellg();
-        if (got != want && got != want + (uint64_t) blob) {   // + one blob: STRATA_ARENA_MMAP's padded file
+        if (!strata::kernels::cpu::expert_file_bytes_ok(lay, got)) {   // exact, or + one spare blob (STRATA_ARENA_MMAP's padded file)
             char buf[400];
             std::snprintf(buf, sizeof buf,
                           "ArenaExpertSource: %s is %llu B but %lld layers x %lld experts (blobs up to %lld B) "
@@ -6108,6 +6141,11 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
             map_ = v;
             map_bytes_ = file_bytes;
             base_ = (const uint8_t*) v;
+            // The arena's own mapping is the one this source reads the experts from, so it is the one span
+            // STRATA_NATIVE_MLOCK=arena locks; the pack and the shards ask as ordinary spans and are refused.
+            native_mlock_detail::Result mlock_r = native_mlock_span(v, file_bytes, "ArenaExpertSource shared expert arena",
+                                                                     NativeMlockScope::arena);   // STRATA_NATIVE_MLOCK
+            native_mlock_report(path.c_str());
             pinned_bytes_ = 0;
             dev_slice_.clear();
             slice_bytes_ = 0;
@@ -6115,7 +6153,17 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
             blobs_ = n_layers * n_expert;
             n_expert_ = n_expert;
             reads_ = 0;
-            note_ = "mapped read-only from " + path + " (STRATA_ARENA_MMAP: not locked, not pinned)";
+            if (native_mlock_detail::on()) {
+                if (mlock_r.complete) {
+                    note_ = "mapped read-only from " + path + " (STRATA_NATIVE_MLOCK: file pages locked, not pinned)";
+                } else {
+                    note_ = "mapped read-only from " + path + " (STRATA_NATIVE_MLOCK: "
+                        + std::to_string(mlock_r.locked >> 20) + " of " + std::to_string(mlock_r.requested >> 20)
+                        + " MiB locked, partial, not pinned)";
+                }
+            } else {
+                note_ = "mapped read-only from " + path + " (STRATA_ARENA_MMAP: not locked, not pinned)";
+            }
             gib_per_s_ = 0.0;
             load_seconds_ = load_read_s_ = load_copy_s_ = 0.0;
             record_inputs(path, gguf_, lay, from_gguf);   // session files: the mapped experts.bin is a model input
@@ -7867,7 +7915,10 @@ void ForesightSwap::predict(ExpertSource* src, int64_t layer, int32_t expert) {
 
 void ForesightSwap::request_locked(ExpertSource* src, int64_t layer, int32_t expert, bool predicted_copy) {
     if (!gates_pass_locked(layer, expert, predicted_copy, true)) return;
-    if (src == nullptr || !src->pinned(layer, expert)) return;   // async copies need the pinned arena
+    // pinned AND not transient: async copies need the pinned arena, and a transient (count-limited) source
+    // copies its own bytes - the managed pool answers pinned() too, and a borrow held here across the copy
+    // would never be noted or released.
+    if (src == nullptr || !src->pinned(layer, expert) || src->transient(layer, expert)) return;
     const uint8_t* b = src->blob(layer, expert);
     if (b == nullptr) return;
     (void) assign_locked(b, -1, layer, expert, predicted_copy);

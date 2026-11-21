@@ -1067,9 +1067,10 @@ void section_framing() {
 
 // ============================== (7) the pack's blob source ==============================
 //
-// The window-1 refusal of 2026-10-29 (`REFUSAL (pack): cannot open /mnt/user/ai/iq3xxs-15/experts.bin`)
-// is the case this section pins: a pack whose experts live in the model GGUF its header names, ONE LEVEL
-// UP - the layout the acceptance driver spells `--experts ../Swift-…gguf` (run_acceptance.py:70).  A mock
+// The window-1 refusal of 2026-10-29 (`REFUSAL (pack): cannot open /mnt/user/ai/iq3xxs-15/experts.bin`,
+// the pack of that day) is the case this section pins: a pack whose experts live in the model GGUF its
+// header names, ONE LEVEL UP - the layout the acceptance driver once spelled `--experts ../<model>.gguf`
+// and now spells `--experts Qwen3.8-Flash-Next-UD-IQ3_XXS-00002-of-00004.gguf` (run_acceptance.py:71).  A mock
 // pack dir, a mock GGUF-shaped blob, the whole resolution matrix (relative / absolute --experts,
 // experts.bin, the header's auto-resolve, every typed refusal) and every mapped (offset,size) window
 // against bytes the fixture wrote itself: the pattern is a function of the byte INDEX alone, so a row
@@ -1131,8 +1132,8 @@ void section_blob_source() {
     // ---- (7b) the header's name, every version's spelling (tools/iq_pack.py:479-486) ----
     check(header_blob_name("# strata native experts v3: layer gu_type d_type offset blob_bytes gate_off "
                            "up_off down_off [shard] (n_expert 512, total 42912972800; absolute offsets in "
-                           "Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf, or in the named shard beside it)")
-              == "Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
+                           "Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00004.gguf, or in the named shard beside it)")
+              == "Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00004.gguf",
           "v3 header: the named GGUF is the token after 'absolute offsets in'");
     check(header_blob_name("# strata native experts v2: layer gu_type d_type offset blob_bytes gate_off "
                            "up_off down_off (n_expert 512, total 42912972800; the last three are absolute "
@@ -1331,7 +1332,7 @@ void section_blob_source() {
     // Guarded: it SKIPs (and says so) where the pack is not present.  It reads the header and the file
     // name only - no model bytes are read, and the harness's window 32-47 role sums are checked.
     {
-        const std::string real_pack = "/mnt/user/ai/iq3xxs-15";
+        const std::string real_pack = "/mnt/user/ai/iq3xxs-ud";
         struct stat st;
         if (::stat((real_pack + "/native_experts.txt").c_str(), &st) != 0) {
             std::printf("      (7f) skip: %s/native_experts.txt is not on this machine\n", real_pack.c_str());
@@ -2508,7 +2509,7 @@ void section_gguf_truth() {
                 std::vector<LayerTruth> rt;
                 std::string terr;
                 const std::string rgguf = std::getenv("STRATA_PACK_GGUF") ? std::getenv("STRATA_PACK_GGUF")
-                                                                          : real_pack + "/../Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf";
+                                                                          : real_pack + "Qwen3.8-Flash-Next-UD-IQ3_XXS-00002-of-00004.gguf";
                 const bool ok = check_gguf_truth(rgguf, cpu::expert_layout(), 32, 47, rt, terr);
                 std::printf("      (13d) live pack: gate %s\n", ok ? "PASSES" : "REFUSES");
                 if (!ok) std::printf("      (13d) live: %s\n", terr.c_str());

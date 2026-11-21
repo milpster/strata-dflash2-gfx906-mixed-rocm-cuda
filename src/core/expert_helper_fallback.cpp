@@ -37,6 +37,10 @@ bool expert_helper_recompute_claimed(ExpertDispatch& d, const float* x_f, const 
     using namespace strata::kernels::cpu;
     const int64_t n = n_tok * k;
     if (n_claimed <= 0) return true;
+    // A blob() from a reference-counted source (the managed pool) is a LEASE: the pool's run below reads these
+    // on THIS thread and is done when it returns, so every borrow this call takes is given back as the call
+    // leaves, early returns included.  Every other source answers lends() false and is asked nothing.
+    BlobLoanBatch cpu_loans(*d.src, layer);
     if (n_tok < 1 || n_tok > MAXT || k != 10 || n > MAXT * 10) {
         d.failed = true;
         d.fail = "the helper fallback needs a verify window of at most 8 tokens of 10 experts";
@@ -101,6 +105,7 @@ bool expert_helper_recompute_claimed(ExpertDispatch& d, const float* x_f, const 
                     if (ids[claimed[q]] >= 0 && ids[claimed[q]] < d.n_expert) d.job_of[(size_t) ids[claimed[q]]] = -1;
                 return false;
             }
+            cpu_loans.took(e);   // a lease from the pool: the run below and the scope's exit give it back
             jo = (int16_t) njobs++;
             ExpertJobMulti& nj = d.jobs_multi[(size_t) jo];
             nj.blob = b;

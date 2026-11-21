@@ -261,7 +261,7 @@ boot_pair(){   # $1=arm name; exports STRATA_RPC_PROFILE/DBG; writes runtime cfg
   log "arm $arm: helper up slots=$hslots fill=$hfill reserve=$hreserve bin=$hbin engine=$ebin"
   env -i PATH="$PATH" HOME="$HOME" TERM="${TERM:-dumb}" LD_LIBRARY_PATH="$AB9_ROCM_LIBS" \
       STRATA_RPC_PROFILE=1 "$hbin" \
-    --pack /mnt/srcds/ai/iq3xxs-15 --experts ../Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf \
+    --pack /mnt/srcds/ai/iq3xxs-ud --experts Qwen3.8-Flash-Next-UD-IQ3_XXS-00002-of-00004.gguf \
     --device 0 --slots "$hslots" --reserve-mib "$hreserve" --timeout "$AB9_HELPER_TIMEOUT" \
     --begin-timeout "$AB9_HELPER_TIMEOUT" --socket "$AB9_SOCKET" --fill-mib "$hfill" \
     --socket2 "$AB9_SOCKET2" >>"$HLOG" 2>&1 </dev/null &

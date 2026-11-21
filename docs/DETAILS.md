@@ -269,6 +269,30 @@ When the RAM cannot hold them beside the system (the experts plus about 10 GB), 
   `STRATA_RESIDENT_PIN=0`) gives the mapped mode's exact tokens.
 - Linux, opt-in: `STRATA_ARENA_MMAP=1` maps a native pack's expert arena read-only from `experts.bin` instead of reading
   it into locked RAM (for example 2x 16 GB GPUs with 32 GB of RAM). Run it with `--pcie-frac 0`.
+- Managed RAM pool, opt-in: `STRATA_RAM_POOL_ADMIT_RETRY=1` waits for a pool admission that another copy is still
+  holding instead of failing the request at once, and frees the caller's own finished copies between attempts
+  (during single-threaded decode those are what pin the pool). Two limits: 8 attempts and 20 ms per admission, and
+  100 ms of waiting per second of wall clock for the whole process, so a long prompt sweep cannot add more than
+  10% to its own time. Only "the pool has no room because a lease is still out" is retried; a closed store, an
+  unknown layer or expert, and a blob the pool can never hold still fail at once. Unset (the default) is the old
+  behaviour, one attempt and no wait.
+- The managed pool is never borrowed just to ask a question: the adaptive planner's "is this pair there?" probe
+  takes a lease and drops it at once, and every borrow that feeds a copy is either noted on that copy's stream or
+  released once the copy has landed, so an expert the decode no longer needs stops pinning the pool. The prompt
+  path asks `pinned()` only together with `!transient()`: the pool reports both, and a prompt that borrowed a pool
+  blob would hold that lease for a whole DMA, so a pool pair takes the source's own copy instead. A path that
+  reads a blob on its own thread and is done when its call returns gives the loan back there and then: the CPU
+  dispatch of a verify window's misses (`expert_pool_dispatch_multi`), the helper's failed-claim recompute, a
+  blocking slot fill, and a helper GPU's cache fill at boot all release what they borrowed, early returns
+  included. Sources that do not lend (`ExpertSource::lends()` is false for a mapping and for the arena) are not
+  asked, so their behaviour is unchanged. If a caller ever borrows again without noting or releasing, the log
+  says so: `strata: managed pool: N live borrowers, M of them with no copy in flight and none completed (the
+  borrow that crossed the line: layer L expert E)`, at most one line per second, and only once more than 4,000
+  leases are in that state - a startup fill that holds thousands of leases is not reported, because its reads
+  have been issued. `STRATA_POOL_BORROW_TRACE=1` (opt-in) drops that threshold to one lease, so a small leak is
+  caught at its first crossing, and follows the line with a `strata: managed pool: borrow trace:` line and the
+  borrowing thread's return addresses (glibc `backtrace()`; other C libraries print the marker without frames).
+  It reads the environment once per process and costs nothing when unset.
 - Windows, opt-in: `STRATA_FILE_RELEASE=1` trims the file-backed pages of experts after their GPU uploads. It is a
   working-set hint, not an unmap, and it does not reduce committed memory or SSD reads
   ([measurements and limits](../bench/results/2026-10-04-windows-mapped-release/README.md)).

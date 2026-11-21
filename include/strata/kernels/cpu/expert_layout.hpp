@@ -41,6 +41,15 @@ struct ExpertLayout {
     }
 };
 
+/// Whether a `file_bytes`-sized experts.bin is the file this layout describes.  The packer (tools/iq_pack.py) writes exactly
+/// `total`; the engine's own STRATA_ARENA_MMAP writer (expert_source.cpp) pads the file with ONE spare blob (`max_blob`) so
+/// that a whole-slot copy may start at any expert, and maps that form back.  Both sizes are the same expert geometry, with
+/// the same layer offsets and blob sizes; anything else is not the pack the layout came from.  The spare blob is never read.
+inline bool expert_file_bytes_ok(const ExpertLayout& lay, uint64_t file_bytes) noexcept {
+    if (file_bytes == lay.total) return true;
+    return lay.max_blob != 0 && lay.total <= UINT64_MAX - lay.max_blob && file_bytes == lay.total + lay.max_blob;
+}
+
 /// Plan v0.3 P6: whether this CPU (and its OS) runs the AVX-512 kernels (F, BW, VL, VNNI, VBMI).  Probed in a
 /// file compiled without AVX-512, so asking is safe everywhere; STRATA_FORCE_AVX2=1 answers no (for tests).
 bool cpu_avx512_ok();

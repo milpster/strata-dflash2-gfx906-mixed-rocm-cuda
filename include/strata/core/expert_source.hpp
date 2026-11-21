@@ -200,6 +200,13 @@ public:
     /// A blob pointer that stays valid (not recycled) for as long as the source is open: for a copy that runs
     /// asynchronously long after the call (the adaptive tier's swap-ins).  Defaults to `blob`.
     virtual const uint8_t* blob_stable(int64_t layer, int64_t expert) { return blob(layer, expert); }
+    /// Whether `(layer, expert)`'s bytes can be had right now, asked as a plain yes/no question - the planner's
+    /// "is this pair there already?" (generate.cpp's swap_in_read), which needs no pointer and keeps nothing.
+    /// The default asks `blob_stable()`, so the legacy sources answer exactly as they did when the caller called
+    /// it itself; a source that hands out reference-counted loans overrides this so that a probe creates no
+    /// borrower and pins no lease.  May warm a cache (the managed pool reads a miss into its own cache and drops
+    /// its lease at once), but must never wait.
+    virtual bool available(int64_t layer, int64_t expert) { return blob_stable(layer, expert) != nullptr; }
     /// W1 lever (the relief's swap-ins): read a BATCH of blobs straight from the pack files into
     /// `dst[i]`, one unbuffered read batch (sorted, merged windows - the page cache stays out, so
     /// the host copies the relief gave back do not re-materialize).  `ok[i]` answers per pair;
@@ -229,6 +236,12 @@ public:
     /// asynchronous host-to-device copy can DMA it directly (no staging copy on the CPU).
     virtual bool pinned(int64_t layer, int64_t expert) const { (void) layer; (void) expert; return false; }
 
+    /// A routed expert whose row the CPU half skipped because it is already owned elsewhere (a GPU cache hit, or
+    /// another tier's claim): this source is never asked for its bytes on that path, so `blob()` is not called.
+    /// A source whose blob() records decode demand (the arena's re-rank heat) counts it here, so a hit still
+    /// counts as routed exactly as it did when blob() was called before the hit test.  Default: nothing.
+    virtual void note_routed(int64_t layer, int64_t expert) { (void) layer; (void) expert; }
+
     /// Called once before the first expert of a layer.  A source that reads from disk wants to start the read
     /// here so it overlaps the quantisation, and a prefetching source in Phase 3 wants the ids.
     virtual void begin_layer(int64_t layer, const int32_t* ids, int64_t k) { (void) layer; (void) ids; (void) k; }
@@ -239,6 +252,13 @@ public:
     /// A file-backed source: this expert lives in VRAM, so its pages need not stay in RAM - hand them back to the
     /// kernel (a later read re-reads the file; no result depends on it).  Returns the bytes released; 0 elsewhere.
     virtual uint64_t release(int64_t layer, int64_t expert) { (void) layer; (void) expert; return 0; }
+    /// Whether `blob()`/`blob_stable()` hands out a REFERENCE-COUNTED LOAN (the managed pool): the pointer pins a
+    /// pool lease until the caller either notes the async copy that reads it (`note_async_read`) or gives it back
+    /// with `release()`.  A caller that reads the bytes on its own thread and is done when the call returns must
+    /// do the second, and so must every early return of that call.  False for a source whose pointers live as long
+    /// as the source does (a mapping, the arena, a staging buffer recycled on the next call): those answer exactly
+    /// as they did before this predicate existed, so nothing is asked of them.
+    virtual bool lends() const { return false; }
     /// Whether the verify window may give the GPU a PCIe share of this layer's misses at all (each expert is still
     /// checked with `pinned`).  The arena answers per layer through its expert 0; the resident RAM mode's compact
     /// copy has no expert 0 when the GPU cache holds it, so it answers for the whole copy.
@@ -335,6 +355,31 @@ protected:
     void record_inputs(const std::string& pack_experts, const std::string& gguf,
                        const strata::kernels::cpu::ExpertLayout& lay, bool from_gguf);
     std::vector<std::pair<std::string, std::string>> inputs_;
+};
+
+/// Give back a reference-counted source's `blob()` loans when the enclosing scope leaves.  A source that answers
+/// `lends()` (the managed pool) pins a pool lease per borrowed pair until it is noted or released; a caller that
+/// reads the bytes on its own thread - the CPU expert pool's job loops, a blocking slot fill - is done with them
+/// when its run returns, and every early return must give them back too, which is what this scope guard does.
+/// A source that answers `lends()` false (a mapping, the arena, a staging buffer) is never asked, so its behaviour
+/// is exactly what it was: nothing is released for it.
+class BlobLoanBatch {
+public:
+    BlobLoanBatch(ExpertSource& src, int64_t layer) noexcept
+        : src_(src.lends() ? &src : nullptr), layer_(layer) {}
+    BlobLoanBatch(const BlobLoanBatch&) = delete;
+    BlobLoanBatch& operator=(const BlobLoanBatch&) = delete;
+    ~BlobLoanBatch() {
+        if (src_ == nullptr) return;
+        for (const int32_t e : experts_) src_->release(layer_, e);
+    }
+    /// Call once per `blob()`/`blob_stable()` borrow this scope took.
+    void took(int32_t expert) { if (src_ != nullptr) experts_.push_back(expert); }
+
+private:
+    ExpertSource* src_;
+    int64_t layer_;
+    std::vector<int32_t> experts_;
 };
 
 /// CS-T, routing-aware prefetch of the file tier: when the CPU pool starts layer `l`, a worker thread applies layer
@@ -1424,6 +1469,9 @@ public:
     bool mapped() const { return base_ != nullptr; }
     int64_t blobs() const { return blobs_; }
     const uint8_t* blob(int64_t layer, int64_t expert) override;
+    /// A hit or remote-owned row never asks for the blob any more (see ExpertSource::note_routed): count its
+    /// decode demand here, exactly as `blob()` used to before the hit test.
+    void note_routed(int64_t layer, int64_t expert) override { note_heat(layer, expert); }
     /// `blob` without the read counter: a pure pointer into the arena, safe from another thread (the async adaptive
     /// tier's job thread)
     const uint8_t* blob_at(int64_t layer, int64_t expert) const;

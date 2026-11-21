@@ -31,9 +31,9 @@
     "--kv",
     "int8",
     "--vram-reserve-mib",
-    "192",
+    "640",
     "--vram-reserve-later-mib",
-    "576",
+    "192",
     "--kv-resident",
     "262144",
     "--pcie-frac",
@@ -57,7 +57,7 @@
     "4600",
     "--expert-helper-ram-relief",
     "--conversation-cache-dir",
-    "/mnt/srcds/Strata-wt-helper-ipc/run/diet-soak-cache",
+    "/mnt/srcds/Strata-wt-helper-ipc/run/diet-prod-38g",
     "--conversation-cache-disk-mib",
     "24576",
     "--conversation-cache-disk-ram-mib",
@@ -70,9 +70,9 @@
     "--conversation-cache-evict-page-cache",
     "--expert-helper-ram-relief-packs",
     "--expert-helper-relief-hot-mib",
-    "15000",
+    "2048",
     "--expert-helper-relief-arena-cap-mib",
-    "22000"
+    "4096"
   ],
   "backend": "hip",
   "cwd": "/mnt/srcds/Strata",
@@ -100,10 +100,12 @@
     "STRATA_FS_ADMIT": "2",
     "STRATA_GRAPH_FAMILY_TRIM": "8",
     "STRATA_PREFILL_MMQ": "0",
-    "STRATA_AUX_CPUS": "3,5,7,9,11,13,15"
+    "STRATA_AUX_CPUS": "3,5,7,9,11,13,15",
+    "STRATA_RAM_BUDGET_MIB": "43008",
+    "STRATA_MMVF_ROWS": "1"
   },
   "env_to_user": true,
-  "exe": "/mnt/srcds/Strata/v0233/build-mixed-gpu/rpcw-hip/strata",
+  "exe": "/mnt/srcds/Strata/run/pool-admit-bin/rpcw-hip/strata",
   "expert_helper_slots": 4600,
   "expert_helper_socket": "/mnt/srcds/Strata/run/prod-iq3xxs-ud-mixed.sock",
   "expert_helper_socket2": "/mnt/srcds/Strata/run/prod-iq3xxs-ud-mixed2.sock",
@@ -141,16 +143,5 @@
     "model": "/mnt/srcds/ai/Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00004.gguf",
     "threads": 8
   },
-  "pack": "/mnt/srcds/ai/iq3s",
-  "mcp_servers": {
-    "docling": {
-      "command": "/home/srcds/.config/opencode2/bin/docling-mcp-local"
-    },
-    "markitdown": {
-      "command": "/home/srcds/.local/bin/markitdown-mcp"
-    },
-    "pandoc": {
-      "command": "/home/srcds/.local/bin/mcp-pandoc"
-    }
-  }
+  "pack": "/mnt/srcds/ai/iq3s"
 }
