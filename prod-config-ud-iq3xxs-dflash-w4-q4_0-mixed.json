@@ -102,8 +102,7 @@
     "STRATA_FS_ADMIT": "2",
     "STRATA_GRAPH_FAMILY_TRIM": "8",
     "STRATA_PREFILL_MMQ": "0",
-    "STRATA_AUX_CPUS": "3,5,7,9,11,13,15",
-    "STRATA_RAM_POOL_ADMIT_RETRY": "1"
+    "STRATA_AUX_CPUS": "3,5,7,9,11,13,15"
   },
   "env_to_user": true,
   "exe": "/mnt/srcds/Strata/run/pool-admit-bin/rpcw-hip/strata",
