@@ -125,3 +125,40 @@ started with.
   6.1.0's clang otherwise selects gcc-16 and cannot parse its libstdc++.
 
 Both are now in the tuning skill, along with the `ldd` soname check that catches a mislink.
+
+## The line that names the defect
+
+At margin 640, under one long request (4,000 tokens) and six concurrent helpers, the long
+request **completed** and then a helper died:
+
+```
+strata: managed pool: borrow refused layer 30 expert 201: borrowers=19053 completed=0 pending=0 resident_pairs=0 evictions=86460
+```
+
+- `borrowers=19053` — the pool's whole capacity in live leases (~1.95 MiB each);
+- `completed=0 pending=0` — **not one of them was ever handed to `note_async_read`**, so
+  `pending_event` was never set and the sweep had nothing to free;
+- `resident_pairs=0` after 86,460 evictions — the cache had already given up everything it
+  was allowed to evict.
+
+So the pool refusal is a lease-accounting defect with a named shape: the engine borrows
+`blob_stable` and never tells the adapter the copy finished. The biggest such site is the
+swap planner's availability probe (`generate.cpp:2626`), which borrows a lease for every
+pair it tests, on every planning pass, only to ask whether the pair is available.
+
+That also retires two earlier hypotheses honestly: the hit-path fix (`dca0e3cc93`) removed a
+real defect but was not the cause; and the retry cannot help, because it only sweeps
+borrowers that completed.
+
+## Margin ladder under overlap (all on `96a04be9`, retry armed from 576 on)
+
+| Margin | Leg | Long request | Outcome |
+|---|---|---|---|
+| 512 | 78k target, 1,500 wanted, 6 helpers | died `refilling a lent slot` | 7/7 failed, engine exited |
+| 576 | same | died at 273 s | 7/7 failed |
+| 576 | lighter (2,500 / 400 ×6) | ok in 102 s | passed, but with a 3x speed difference vs the failing leg, so not comparable |
+| 640 | 4,000 / 900 ×6, 289.7 s overlap | **4,000 tokens, completed** | VRAM held; failure moved to the **pool** class |
+
+So the VRAM ladder bought the overlap its headroom (640 holds a 4,000-token decode with six
+concurrent helpers), and what remains is the lease accounting above. The next change is code,
+not another 64 MiB.
