@@ -676,3 +676,30 @@ warning is non-fatal by design; only 300 s of *no progress* ends the engine.
 Open: why the merge engine stalls in the tail chunks when CUDA1 has 156 MiB free, and why 132 MiB more than
 planned is missing. The single largest merge-added VRAM consumer is the per-stage reserve/guard path in
 `generate.cpp` plus `vram_guard` (default off) and the prompt-path `fused_gr` scratch.
+
+#### Identified: the stall is VRAM starvation, and the engine says so (issue #2065)
+
+Reading the boot lines in full (earlier I had cut them at 135 characters):
+
+```
+strata serve: CUDA1: 156 MiB of VRAM free with everything loaded - LOW: its window graphs are captured on
+              first use and need room too, and a full card can stall a request; add --vram-reserve-later-mib 804
+              to the config's args (or lower --max-context)
+strata serve: CUDA1: the layer split planned to keep 288 MiB free here after loading; 156 MiB are free, so
+              132 MiB went to something the plan did not count
+strata serve: WARNING: only 278 MiB of VRAM free at the start of this request (below 512 MiB): when the card
+              is this full the driver can page GPU memory to system RAM, decode falls to a few tok/s and a
+              window may never finish (#2065). Add --vram-reserve-mib 512 to the config's args
+```
+
+`planned_vs_free_text` (new in the merge, `include/strata/program/gpu_report.hpp:106`) is a *report*, not a
+cause: 132 MiB is how far the split's own estimate was off, not a leak. The stall at 180,224 tokens is the
+documented full-card stall (#2065), and the engine recommends `--vram-reserve-later-mib 804` and
+`--vram-reserve-mib 512` for it.
+
+Why split 31 is starved and split 30 is not: with 17 layers on CUDA1 the cache is grown to 8.30 GiB (4180 slots)
+and leaves 156 MiB, where split 30 leaves 360 MiB and the passing branch engine ran the same 239,663 tokens at
+360 MiB. So the split move trades the layer-30 NaN for a starved card at long context.
+
+Consequence for the plan: the split is not a fix. The NaN has to be fixed at split 30, or the split moved with
+the reserves raised per the engine's own recommendation - and margins are the operator's call, not mine.
