@@ -5,6 +5,12 @@ decode, why the first fix attempt would not have helped, and what actually fixed
 series is one boot per leg; nothing here is a speed claim, and the sizes that matter are
 token counts, not rates.
 
+> **Read the correction at the end first.** Everything below that calls `refilling a lent slot
+> failed: No buffer space available` a *VRAM* death is wrong: that text is ENOBUFS from the RAM
+> pool, and the refill loop takes the store directly. The class column in the first table and
+> the sentence about "+64 rule" are kept as written on the night, with the correction named at
+> the foot of the file. The margin steps they justify are not to be continued.
+
 ## What died, and how the ladder split the deaths into two classes
 
 Four deaths on the pool champion in ninety minutes, all on agent-sized prompts:
