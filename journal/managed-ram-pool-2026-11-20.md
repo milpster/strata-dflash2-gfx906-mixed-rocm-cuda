@@ -1279,3 +1279,38 @@ How to read it, honestly:
   space, `parked=0 bytes=0`); whether 30 GiB revives it is being measured in row 5.
 - The 3080 tolerates a 128 MiB reserve (334 MiB free measured through a full 80k
   prefill and decode, `timeouts=0 fallbacks=0`). That risk is cleared.
+
+### docling, markitdown and pandoc: removed from strata's boot path (2026-11-21)
+
+Where they came from: the boot config's own `mcp_servers` block, not a hardcoded default.
+The managed trial config carried
+
+    "mcp_servers": {"docling": {"command": ".../docling-mcp-local"},
+                    "markitdown": {"command": ".../markitdown-mcp"},
+                    "pandoc": {"command": ".../mcp-pandoc"}}
+
+and every boot of `serve/server.py` with that config spawned the three (the serve log says
+`starting 3 MCP servers for the web app's chat: docling, markitdown, pandoc`). Why they kept
+coming back: setup treats any key it does not write as the user's and carries it over on
+every run (`setup.py:6912`: "a sampling or mcp_servers block ... is kept when setup runs
+again"), so any config derived from a prod config inherited the block, and every window
+spawned them again. Killing the server left them reparented and alive.
+
+What was done:
+
+- `mcp_servers` stripped from all bootable configs: 46 files (every `prod-config-*.json` and
+  every `bench/ab-v0210/rpcprof/*.json` that carried it). Main tree `07a6bc962b`. Historical
+  evidence JSONs under `out/` were deliberately left alone - they are records, not configs.
+- the three live children of the running test server were TERMed by explicit pid (their
+  parent was pid 1919261, the server, so they were strata's, not an editor's).
+- `stop-all.sh` now sweeps *orphaned* MCP servers (parent gone) at teardown, so a future
+  boot that does spawn them cannot leave them behind. It does not touch MCP servers whose
+  parent is alive, which is what an editor's own MCP client looks like. Main tree
+  `22fa7f15ad`.
+
+Consequence, stated so nobody is surprised: strata's web chat loses its document tools
+(docling for PDFs, markitdown, pandoc). That is the intent of the request. To bring them
+back, put the block back into a config - it is config-driven, nothing was hardcoded away.
+
+Verification for the next boot: the serve log must NOT contain `starting 3 MCP servers for
+the web app's chat`. The queued helper slot-cap window is the first boot that can prove it.
