@@ -754,3 +754,24 @@ CUDA0, with 284 MiB free, never corrupts.
    stall). One cause, two symptoms.
 
 Validation in flight: the 239,663-token leg at split 30 with `STRATA_FS_SLOTS=2`.
+
+### Validation: 239,663 tokens pass at split 30 with `STRATA_FS_SLOTS=2`
+
+Leg `fs2-240k`, 23:06 → 23:20, merge engine `5a699be1`, clean conversation cache:
+
+| | value |
+|---|---|
+| prompt | **239,663 tokens = 0 reused + 239,663 read in 814,622 ms (294.2 tok/s)** |
+| decode | 8 generated in 373 ms (21.4 tok/s), 5 of 8 drafts accepted |
+| non-finite lines | **0** |
+| watchdog / stall | none; the request finished in 820 s |
+| answer text | empty for the benign reason: `max_tokens 8` ran out inside thinking |
+
+Against the passing branch engine's own leg (239,663 tokens in 847-852 s, 281 tok/s, 4 tokens), the restored margin
+gives the same throughput and the same completion. One config value, two symptoms gone: the 3k NaN and the 240k
+no-output.
+
+Armed file for the operator's decision (not applied to prod): `prod-config-ud-iq3xxs-dflash-w4-q4_0-mixed-fs2.json`
+(byte copy of the tested generated config). No margin was changed: `--vram-reserve-mib 256` and
+`--vram-reserve-later-mib 192` stay exactly as championed; only `STRATA_FS_SLOTS` returns to the pre-merge
+behaviour.
