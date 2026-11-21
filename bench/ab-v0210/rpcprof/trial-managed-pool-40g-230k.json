@@ -31,7 +31,7 @@
     "--kv",
     "int8",
     "--vram-reserve-mib",
-    "192",
+    "256",
     "--vram-reserve-later-mib",
     "192",
     "--kv-resident",
@@ -146,5 +146,5 @@
   "trial_note": "managed-RAM-pool validation trial 2026-11-20; helper host arena capped low because the managed pool is the primary expert cache; VRAM margins left at the tuple's own 192/576",
   "managed_budget_mib": 40960,
   "derived_from": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/trial-managed-pool-40g.json",
-  "derived_note": "empty conversation cache for a genuinely cold prefill; single 230k-token fill then 10k generation on the prelim winner config: 40 GiB pool (budget 45056), UD helper reserve 0/fill 7400/slots 3700, dev1 192, fresh cold cache dir"
+  "derived_note": "empty conversation cache for a genuinely cold prefill; single 230k-token fill then 10k generation on the prelim winner config: 40 GiB pool (budget 45056), UD helper reserve 0/fill 7400/slots 3700, dev1 192, fresh cold cache dir | 2026-11-21 margin step: CUDA0 --vram-reserve-mib 192 -> 256 after the engine failed the 230k leg with `refilling a lent slot failed: No buffer space available` on a card at 7 MiB free (operator rule: +64 MiB per real exhaustion)."
 }
