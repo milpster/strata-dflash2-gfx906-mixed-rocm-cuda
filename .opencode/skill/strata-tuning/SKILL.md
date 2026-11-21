@@ -61,6 +61,20 @@ convenience, the rule wins. Numbers come from the engine's own lines, never from
   `managed pool: borrow refused layer L expert E: borrowers=N completed=N pending=N resident_pairs=N
   evictions=N`. `borrowers` near the pair count with `completed=0 pending=0` is a pin leak in the
   engine, not a budget problem. `STRATA_POOL_BORROW_TRACE=1` prints the borrowing caller's frames.
+- **The tuple is not one tuple (2026-11-21).** Two are proven, each on one workload, and neither on both:
+  A = engine `d534e72a` + helper `553f3bf4`, budget 40,960 — 239,663-token prompt read, decodes, 0
+  non-finite; B = engine `5a699be1` + helper `9d16742d`, budget 36,864 — survives a 138-request agent
+  session but goes `non-finite logits (#879)` on every 240k prompt. The regression window is the
+  seven-commit pool-admission suite; `a506e620` is the zero-build bisect point on disk
+  (`bench/ab-v0210/rpcprof/pool-a506-prod-test.json`). Do not claim 240k on B, and do not claim agent
+  stability on A (three prod deaths in ninety minutes on 2026-11-20).
+- **Never test by editing a champion file.** The launcher reads `prod-config-...json` in place, so a
+  margin or flag experiment rewrites the record you will need later. Boot the tuple through
+  `STRATA_PROD_BIN` / `STRATA_PROD_CONFIG` / `STRATA_PROD_HELPER_RESERVE_MIB` /
+  `STRATA_PROD_HELPER_FILL_MIB` with a `bench/ab-v0210/rpcprof/*-prod-test.json` config instead.
+- `STRATA_DBG_NAN=1` names the layer and tensor that go non-finite, but it syncs the stream and copies
+  the MoE working set to host per chunk: the prefill drops to ~65 tok/s from 150-260, i.e. an hour at
+  240k. Use it only where one leg is expected to finish in minutes.
 - A lane's build claim is two binaries, not one: the test binary that ran *and* the `strata` that
   will be booted. `ninja` can compile a TU and leave the engine unlinked - check
   `sha256sum build-*/strata` against the last staged sha before copying anything into `run/`.
