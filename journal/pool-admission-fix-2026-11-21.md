@@ -278,3 +278,36 @@ Caught by hashing the binary before staging it, not by distrust of the report as
 here on a lane's build claim counts only with **two** hashes: the test binary that ran and the
 `strata` binary that will be booted. I ran `ninja -C build-906-fixadmit strata` myself; it
 relinked in 8 steps (`a506e620`), and that is what is staged.
+
+## The leak closes: `9358921670` (`a506e620`), the first boot with a silent guard
+
+A lane that compiles a TU is not an engine link, so I relinked `strata` myself (`a506e620`) and
+staged that. The 6,000-token leg then ran on it, margin 640 unchanged, trace off:
+
+| | Engine's own line |
+|---|---|
+| long request, 53,175-token prompt, 6,000 asked | `done: 6000 tokens in 200 s (41.8 tok/s) (length), expert cache 98.5% hit (+11.5% of the routed experts over PCIe)` |
+| six helpers | 465-644 tokens in 16-33 s, 20.2-30.7 tok/s, 89.7-98.0% hit |
+| failures | 0 of 7; genuine overlap 174.8 s |
+| **guard lines this boot** | **0** |
+| refusal lines this boot (borrow / refill / at-the-refusal) | **0** |
+
+That is the measurement the previous three boots could not produce: the guard fires whenever more
+than 4,000 borrowers sit with no copy in flight and none completed, and this boot has eight request
+lines and not one guard line. The table that reached 7,959, then 9,053, then 11,465 on earlier
+builds no longer crosses the line at all. The fix was the lend/return contract: a CPU-thread lease
+in `expert_pool_dispatch`, `expert_pool_dispatch_multi`, `expert_helper_recompute_claimed`,
+`PeerExperts::adapt`, the blocking refills and the affinity probe is now given back through
+`BlobLoanBatch` when the call that read the bytes returns.
+
+## Evidence hygiene: an offset taken inside a backgrounded chain is not an offset
+
+One run's "this boot" numbers were meaningless because the command read
+`START=$(stat -c %s ...) && ... setsid nohup ./launch ... &` - the `&` backgrounds the whole
+`START=... && ...` list, so the parent's `START` was empty and `tail -c +1` printed six days of
+log. The arithmetic looked plausible (a 19,053-borrower line, guards at 6.7k) and was from
+earlier boots.
+
+Corrected practice, used since: slice by marker, not by offset -
+`grep -n "engine started:" | tail -1` gives the line where this boot begins, and every number is
+taken after it. The refusal line that appeared in the bad slice was the old 07:30 boot's.
