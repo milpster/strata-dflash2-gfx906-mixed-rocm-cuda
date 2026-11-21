@@ -3067,14 +3067,25 @@ strata::kernels::cpu::PoolAffinity measure_pool_affinity(strata::core::ExpertSou
     }
     constexpr int kExperts = 2, kTok = 4, kRounds = 10, kBlocks = 3;
     const int64_t nl = lay.n_layers;
+    // The measurement holds every sampled blob for all its rounds, so on a reference-counted source (the
+    // managed pool) each one is a lease held that long: the whole batch goes back as this function leaves,
+    // early returns included.  lends() is false for every other source, which is asked nothing.
+    std::vector<std::pair<int64_t, int64_t>> loan_pairs;
+    struct MeasureLoans {
+        strata::core::ExpertSource* src;
+        std::vector<std::pair<int64_t, int64_t>>& pairs;
+        ~MeasureLoans() { if (src != nullptr) for (const auto& p : pairs) src->release(p.first, p.second); }
+    } measure_loans{src != nullptr && src->lends() ? src : nullptr, loan_pairs};
     std::vector<const uint8_t*> blobs((size_t) nl * kExperts, nullptr);
     bool have = src != nullptr && lay.native && (int64_t) lay.fmt.size() >= nl && nl > 0;
     uint32_t seed = 12345u;
     for (int64_t l = 0; have && l < nl; ++l)
         for (int j = 0; j < kExperts; ++j) {
             seed = seed * 1664525u + 1013904223u;
-            const uint8_t* b = src->blob(l, (int64_t) ((seed >> 8) % (uint32_t) lay.n_expert));
+            const int64_t e = (int64_t) ((seed >> 8) % (uint32_t) lay.n_expert);
+            const uint8_t* b = src->blob(l, e);
             if (b == nullptr) { have = false; break; }
+            if (measure_loans.src != nullptr) loan_pairs.emplace_back(l, e);
             blobs[(size_t) l * kExperts + (size_t) j] = b;
         }
     if (!have) {
@@ -20684,10 +20695,18 @@ int main(int argc, char** argv) {
                             std::to_string(i % g.n_expert) + " (the pack-file read of the dropped blob failed)";
                         return false;
                     }
-                    if (!(refill_blocking() || arena_span ? p.cache->fill_slot_blocking(slot, b, e, nb)
-                                            : p.cache->fill_slot_queued_staged(slot, b, e, nb)))
+                    const bool blocking_fill = refill_blocking() || arena_span;
+                    if (!(blocking_fill ? p.cache->fill_slot_blocking(slot, b, e, nb)
+                                        : p.cache->fill_slot_queued_staged(slot, b, e, nb)))
                         return false;
-                    if (!(refill_blocking() || arena_span)) srcp->note_async_read(b, nullptr);   // #1237
+                    if (blocking_fill) {
+                        // The blocking fill has copied the bytes by the time it returns: a pool loan is done with
+                        // here, and nothing else would ever give it back (a note would wait for an event that has
+                        // already passed).  An arena span is a mapped pointer: lends() is false, asked nothing.
+                        if (srcp->lends()) srcp->release(i / g.n_expert, i % g.n_expert);
+                    } else {
+                        srcp->note_async_read(b, nullptr);   // #1237
+                    }
                     if (!(deferred && !refill_blocking())) host_res[(size_t) i] = slot;
                 }
                 return true;
@@ -24423,10 +24442,18 @@ int main(int argc, char** argv) {
                     const int64_t nb = (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(i / g.n_expert);
                     if (b == nullptr || !(refill_blocking() ? xcache.fill_slot_blocking(slot, b, err, nb)
                                                             : xcache.fill_slot_queued_staged(slot, b, err, nb))) {
+                        if (b != nullptr && srcp->lends())   // the fill never copied it: the loan goes back now
+                            srcp->release(i / g.n_expert, i % g.n_expert);
                         std::fprintf(stderr, "strata generate: refilling a lent slot failed: %s\n", err.c_str());
                         return 1;
                     }
-                    if (!refill_blocking()) srcp->note_async_read(b, nullptr);   // #1237
+                    if (refill_blocking()) {
+                        // A blocking fill has copied the bytes by the time it returns: a pool loan is done with
+                        // here (a note would wait for an event that has already passed).
+                        if (srcp->lends()) srcp->release(i / g.n_expert, i % g.n_expert);
+                    } else {
+                        srcp->note_async_read(b, nullptr);   // #1237
+                    }
                     host_res[(size_t) i] = slot;
                 }
                 if (!xcache.sync_queued(err)) {

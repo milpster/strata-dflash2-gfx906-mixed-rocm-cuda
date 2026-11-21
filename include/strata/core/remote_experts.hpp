@@ -433,6 +433,9 @@ public:
     uint64_t release(int64_t layer, int64_t expert) override {
         return from_helper(layer, expert) ? 0 : fallback_.release(layer, expert);
     }
+    /// A helper-held pair is a helper cache read, not a loan; everything else is the fallback's answer (the
+    /// managed pool says true, so a caller that borrows from this wrapper must give the loan back).
+    bool lends() const override { return fallback_.lends(); }
     bool pcie_layer(int64_t layer) const override { return fallback_.pcie_layer(layer); }
     /// True where a helper holds the blob: the prompt path's stager must then take the copy_blob(s) route,
     /// which is where the cache-to-host copy happens.  Everywhere else the fallback answers as it always did.

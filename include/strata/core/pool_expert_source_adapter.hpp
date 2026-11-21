@@ -146,6 +146,12 @@ public:
     /// Drop the borrower immediately (caller confirms the copy finished).
     uint64_t release(int64_t layer, int64_t expert) override;
 
+    /// YES: every blob()/blob_stable() here is a lease on the pool.  A caller that reads the bytes on its own
+    /// thread and is done when its call returns must give the loan back (`release`), and so must every early
+    /// return; one that queues an async copy notes it (`note_async_read`) instead.  A borrow that does neither
+    /// pins its pair until teardown - which is exactly what the leak guard reports.
+    bool lends() const override { return true; }
+
     /// Record async read on `stream`, mark pending-event, sweep completed,
     /// drop only completed borrowers. Never drops at issue time.
     void note_async_read(const uint8_t* blob, void* stream) override;
@@ -196,6 +202,9 @@ private:
     /// startup fill holds thousands of borrowers, and the adapt round marks its entries pending, so the guard
     /// counts the shape and not the size, prints what the table holds and the pair whose borrow crossed the
     /// line.  Cheap: one relaxed compare-exchange per borrow, and the scan runs only when that gate opens.
+    /// STRATA_POOL_BORROW_TRACE (opt-in, cached getenv, zero cost when unset) drops the threshold to one stale
+    /// borrower - so a small leak is caught at its own first crossing - and follows the line with the
+    /// borrowing thread's user-space return addresses (glibc's backtrace(); other libcs print a marker instead).
     void note_borrow_table(int64_t layer, int64_t expert) const;
 
     PoolExpertStore& store_;

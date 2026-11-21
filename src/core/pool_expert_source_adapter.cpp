@@ -17,6 +17,11 @@
 #include <thread>
 #include <utility>
 
+#if defined(__GLIBC__) && !defined(STRATA_POOL_NO_BACKTRACE)
+#include <execinfo.h>   // backtrace / backtrace_symbols_fd: glibc only, guarded so any other libc still compiles
+#define STRATA_POOL_HAVE_BACKTRACE 1
+#endif
+
 namespace strata::core {
 
 namespace {
@@ -38,6 +43,36 @@ bool admit_retry_from_env() {
     s = s.substr(b, e - b + 1);
     for (char& c : s) c = (char) std::tolower((unsigned char) c);
     return !(s == "0" || s == "off" || s == "false" || s == "no");
+}
+
+// ---- opt-in borrow trace (STRATA_POOL_BORROW_TRACE) ------------------------
+//
+// The leak guard names the PAIR whose borrow crossed the line; that is enough to know the pool is pinned and
+// not enough to know who pinned it.  With this variable set, the guard also prints the user-space return
+// addresses of the thread that just borrowed, immediately after its line.  No stack has to be stored per
+// borrower: note_borrow_table() runs INSIDE the borrowing thread (it is the last thing blob_stable() and
+// blob_parts() do), so a backtrace() taken there is the borrow that opened the gate, whoever the caller is.
+//
+// Read once per process (a cached getenv): unset, empty, `0`, `off`, `false` or `no` (any case, surrounding
+// blanks ignored) = OFF, and the only cost is the one relaxed load the guard already paid.  Any other value =
+// ON, and with it the threshold drops from 4,000 stale borrowers to ONE, so it can be armed on a quiet boot
+// and still catch a small leak at its own first crossing.  Rate: the same one-per-second gate; the scan runs
+// under mu_, the printing (fprintf and backtrace_symbols_fd) never does.  `1` is the intended value.
+bool borrow_trace_from_env() {
+    const char* v = std::getenv("STRATA_POOL_BORROW_TRACE");
+    if (v == nullptr) return false;
+    std::string s(v);
+    const size_t b = s.find_first_not_of(" \t");
+    const size_t e = s.find_last_not_of(" \t");
+    if (b == std::string::npos) return false;
+    s = s.substr(b, e - b + 1);
+    for (char& c : s) c = (char) std::tolower((unsigned char) c);
+    return !(s == "0" || s == "off" || s == "false" || s == "no");
+}
+
+bool borrow_trace_enabled() {
+    static const bool on = borrow_trace_from_env();   // one getenv per process
+    return on;
 }
 
 bool admit_retry_enabled() {
@@ -434,6 +469,10 @@ void PoolExpertSourceAdapter::note_borrow_table(int64_t layer, int64_t expert) c
     // entries that are in NO async cycle at all - no note ever issued (pending_event false) and not completed -
     // because a caller that borrows for a copy notes or releases, and one that does neither leaves exactly those.
     // One atomic per borrow; the scan (and the lock) run only when the one-second gate opens.
+    //
+    // STRATA_POOL_BORROW_TRACE: the threshold drops to one stale borrower and the line is followed by the
+    // borrowing thread's return addresses (see borrow_trace_enabled()).
+    const bool trace = borrow_trace_enabled();
     if (!g_borrow_table_gate.take()) return;
     size_t nb = 0, stale = 0;
     {
@@ -442,7 +481,14 @@ void PoolExpertSourceAdapter::note_borrow_table(int64_t layer, int64_t expert) c
         for (const auto& kv : borrowers_)
             if (!kv.second.pending_event && !kv.second.completed) ++stale;
     }
-    if (stale <= kManyStaleBorrowers) return;   // in or past an async cycle: not this shape
+    const size_t threshold = trace ? 0 : kManyStaleBorrowers;
+    if (stale <= threshold) return;   // in or past an async cycle: not this shape
+    // The frames are taken here, on the borrowing thread, and printed below outside mu_: backtrace() takes no
+    // lock of ours, and backtrace_symbols_fd() writes straight to fd 2 without allocating.
+#if defined(STRATA_POOL_HAVE_BACKTRACE)
+    void* frames[24];
+    const int nframes = trace ? ::backtrace(frames, (int) (sizeof(frames) / sizeof(frames[0]))) : 0;
+#endif
     const PoolExpertStore::Stats st = store_.stats();
     std::fprintf(stderr,
                  "strata: managed pool: %zu live borrowers, %zu of them with no copy in flight and none completed "
@@ -450,6 +496,26 @@ void PoolExpertSourceAdapter::note_borrow_table(int64_t layer, int64_t expert) c
                  "noting or releasing; resident_pairs=%llu evictions=%llu\n",
                  nb, stale, (long long) layer, (long long) expert,
                  (unsigned long long) st.resident_pairs, (unsigned long long) st.evictions);
+    if (!trace) return;
+    // Exactly one greppable line, then the frames of the borrow that opened the gate - the caller of blob_stable()
+    // or blob_parts() is the frame right above those two, and this function's own frame is dropped.
+    std::fprintf(stderr,
+                 "strata: managed pool: borrow trace: layer %lld expert %lld stale=%zu threshold=1 frames=%d "
+                 "(user-space return addresses of the borrowing thread, innermost first; the first frame is "
+                 "blob_stable/blob_parts and the one above it is the borrow's caller)\n",
+                 (long long) layer, (long long) expert, stale,
+#if defined(STRATA_POOL_HAVE_BACKTRACE)
+                 nframes);
+#else
+                 0);
+#endif
+#if defined(STRATA_POOL_HAVE_BACKTRACE)
+    if (nframes > 1) ::backtrace_symbols_fd(frames + 1, nframes - 1, 2);
+    else std::fprintf(stderr, "strata: managed pool: borrow trace: no frames collected\n");
+#else
+    std::fprintf(stderr, "strata: managed pool: borrow trace: this build has no backtrace() (non-glibc libc); "
+                         "layer %lld expert %lld\n", (long long) layer, (long long) expert);
+#endif
 }
 
 void PoolExpertSourceAdapter::borrow_locked(int64_t layer, int64_t expert) {

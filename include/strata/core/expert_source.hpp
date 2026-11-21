@@ -251,6 +251,13 @@ public:
     /// A file-backed source: this expert lives in VRAM, so its pages need not stay in RAM - hand them back to the
     /// kernel (a later read re-reads the file; no result depends on it).  Returns the bytes released; 0 elsewhere.
     virtual uint64_t release(int64_t layer, int64_t expert) { (void) layer; (void) expert; return 0; }
+    /// Whether `blob()`/`blob_stable()` hands out a REFERENCE-COUNTED LOAN (the managed pool): the pointer pins a
+    /// pool lease until the caller either notes the async copy that reads it (`note_async_read`) or gives it back
+    /// with `release()`.  A caller that reads the bytes on its own thread and is done when the call returns must
+    /// do the second, and so must every early return of that call.  False for a source whose pointers live as long
+    /// as the source does (a mapping, the arena, a staging buffer recycled on the next call): those answer exactly
+    /// as they did before this predicate existed, so nothing is asked of them.
+    virtual bool lends() const { return false; }
     /// Whether the verify window may give the GPU a PCIe share of this layer's misses at all (each expert is still
     /// checked with `pinned`).  The arena answers per layer through its expert 0; the resident RAM mode's compact
     /// copy has no expert 0 when the GPU cache holds it, so it answers for the whole copy.
@@ -334,6 +341,31 @@ protected:
     void record_inputs(const std::string& pack_experts, const std::string& gguf,
                        const strata::kernels::cpu::ExpertLayout& lay, bool from_gguf);
     std::vector<std::pair<std::string, std::string>> inputs_;
+};
+
+/// Give back a reference-counted source's `blob()` loans when the enclosing scope leaves.  A source that answers
+/// `lends()` (the managed pool) pins a pool lease per borrowed pair until it is noted or released; a caller that
+/// reads the bytes on its own thread - the CPU expert pool's job loops, a blocking slot fill - is done with them
+/// when its run returns, and every early return must give them back too, which is what this scope guard does.
+/// A source that answers `lends()` false (a mapping, the arena, a staging buffer) is never asked, so its behaviour
+/// is exactly what it was: nothing is released for it.
+class BlobLoanBatch {
+public:
+    BlobLoanBatch(ExpertSource& src, int64_t layer) noexcept
+        : src_(src.lends() ? &src : nullptr), layer_(layer) {}
+    BlobLoanBatch(const BlobLoanBatch&) = delete;
+    BlobLoanBatch& operator=(const BlobLoanBatch&) = delete;
+    ~BlobLoanBatch() {
+        if (src_ == nullptr) return;
+        for (const int32_t e : experts_) src_->release(layer_, e);
+    }
+    /// Call once per `blob()`/`blob_stable()` borrow this scope took.
+    void took(int32_t expert) { if (src_ != nullptr) experts_.push_back(expert); }
+
+private:
+    ExpertSource* src_;
+    int64_t layer_;
+    std::vector<int32_t> experts_;
 };
 
 /// CS-T, routing-aware prefetch of the file tier: when the CPU pool starts layer `l`, a worker thread applies layer
