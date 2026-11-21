@@ -57,9 +57,9 @@ PROD_CONFIG = {
     "exe": os.environ.get("STRATA_HELPER_WT", os.environ.get("STRATA_PROD_TREE", "/mnt/user/Strata") + "/worktrees/cuda-helper") + "/build-mixed-gpu/r4-dflash-after/bin/strata-hip",
     "args": [
         "--gpu", "0,1",
-        "--pack", os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3xxs-15",
-        "--native", os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
-        "--native-dense-gguf", os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
+        "--pack", os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3xxs-ud",
+        "--native", os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3xxs-ud/Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00004.gguf",
+        "--native-dense-gguf", os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3xxs-ud/Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00004.gguf",
         "--ple-gguf", os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/Qwen3.8-Flash-Next-PLE-Q8_0.gguf",
         "--expert-profile", os.environ.get("STRATA_PROD_TREE", "/mnt/user/Strata") + "/data/expert-profile.bin",
         "--expert-cache", "auto",
@@ -84,7 +84,7 @@ PROD_CONFIG = {
         "--expert-helper-slots", "4000",
     ],
     "cwd": os.environ.get("STRATA_PROD_TREE", "/mnt/user/Strata") + "",
-    "tokenizer": os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3xxs-15/tokenizer",
+    "tokenizer": os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3xxs-ud/tokenizer",
     "model_name": "swift-1.5-iq3_xxs",
     "log": os.environ.get("STRATA_PROD_TREE", "/mnt/user/Strata") + "/logs/engine-swift15-dflash-w4-q4_0-mixed.log",
     "lib_dirs": [os.environ.get("STRATA_ROCM_ROOT", "/home/user/rocm-gfx906-xnack") + "/lib", "/opt/rocm-6.1.0/lib"],
@@ -101,7 +101,7 @@ PROD_CONFIG = {
                  "presence_penalty": 0.0, "repetition_penalty": 1.0},
     "vision": {"exe": os.environ.get("STRATA_PROD_TREE", "/mnt/user/Strata") + "/build-vision/bin/strata-vision",
                "mmproj": os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/mmproj-Swift-Qwen3.8-Flash-Next-BF16.gguf",
-               "model": os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
+               "model": os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3xxs-ud/Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00004.gguf",
                "gpu": False, "threads": 8, "max_tokens": 1024},
     "env": {
         "STRATA_ENGINE_NICE": "0",
@@ -137,8 +137,8 @@ SUBS = {
 # The canonical launcher's helper line, verbatim in its flags (line 36-40 of the real file).
 LAUNCHER_TEXT = '''
 env -i PATH="$PATH" HOME="$HOME" TERM="${TERM:-dumb}" "$HELPER" \\
-  --pack /mnt/user/ai/iq3xxs-15 \\
-  --experts ../Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf \\
+  --pack /mnt/user/ai/iq3xxs-ud \\
+  --experts Qwen3.8-Flash-Next-UD-IQ3_XXS-00002-of-00004.gguf \\
   --device 0 --slots 4000 --reserve-mib 300 --timeout 7200000 \\
   --begin-timeout 1800000 --socket "$SOCKET" >>"$HLOG" 2>&1 < /dev/null &
 '''
@@ -192,7 +192,7 @@ class HelperLog:
         engine never creates the client, so the control sits at accept().  `fills` is the OFF-arm
         violation fixture; `on_fill=False` is the ON pair that never filled (finding 1 gate)."""
         mark = len(self.lines)
-        self.lines.append(f"expert-helper: listening on {socket} (device 0, pack /mnt/user/ai/iq3xxs-15, "
+        self.lines.append(f"expert-helper: listening on {socket} (device 0, pack /mnt/user/ai/iq3xxs-ud, "
                           f"48 layers x 512 experts)")
         if (arm == "on" and on_fill) or fills:
             self.lines.append("expert-helper: engine connected (peer uid 1000)")
