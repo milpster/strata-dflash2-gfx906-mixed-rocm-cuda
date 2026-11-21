@@ -6,6 +6,23 @@ If a lane needs a different setting, it changes one thing on top of this and say
 
 Last updated 2026-11-21. Supersedes every earlier "winner", "champion" or launcher default.
 
+## Resolved 2026-11-21 23:59: the 240k non-finite logits (`#879`)
+
+**Cause.** `STRATA_FS_SLOTS="2,8"` used to mean two slots on every card (`std::atoi`). The merge reads it as a
+per-card list, so the thin-VRAM card got 8 slots (~293 MiB). That allocation happens after the expert-cache fill
+and outside every reserve calculation, so CUDA1 loaded with 140 MiB free instead of 360. Below about 150 MiB free
+the first stage-2 GEMM emits scattered non-finite outputs and the request is refused. The same starvation is what
+stalled a 240k request at split 31 (156 MiB free, the full-card stall `#2065`).
+
+| Fix | Artifact | 3,058 tokens | 239,663 tokens |
+|---|---|---|---|
+| Config, no rebuild | `prod-config-ud-iq3xxs-dflash-w4-q4_0-mixed-fs2.json` (`STRATA_FS_SLOTS=2`, margins untouched at 256/192) | pass, 360 MiB free | pass, 814.6 s at 294.2 tok/s |
+| Code, `564e1dbbea` | `run/fsclamp-bin`, engine `4b8251e9e06334a8` | pass, 434 MiB free, swap clamped off | pass, 834.8 s at 287.1 tok/s |
+
+Both produce 0 non-finite lines and the same completion the branch engine produced at the same length. Nothing is
+promoted: prod's config and binary stay as they are until the operator decides. Full record:
+`journal/pool-admission-fix-2026-11-21.md`.
+
 ## What is serving
 
 | Part | Path | Identity |

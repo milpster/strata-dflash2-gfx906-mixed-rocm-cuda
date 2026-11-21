@@ -806,3 +806,18 @@ cache by it) — a larger change, not made, and not needed for correctness.
 
 Also worth recording: the config-side fix stays valid on the *old* engine (`run/pool-admit-bin`), and is
 redundant on a clamped engine.
+
+### 239,663 tokens on the clamped engine (the durable fix, merge's own config value)
+
+Leg `clamp28-240k`, 23:44 → 23:59, engine `4b8251e9`, `STRATA_FS_SLOTS=2,8`, split 30, clean conversation cache:
+
+| | value |
+|---|---|
+| prompt | **239,663 tokens = 0 reused + 239,663 read in 834,764 ms (287.1 tok/s)** |
+| decode | 8 generated in 359 ms, 5 of 8 drafts accepted, 6 checkpoints |
+| non-finite lines | **0** |
+| stall | none; finished in 841 s |
+| card1 margin | 434 MiB free, swap clamped off at boot |
+
+So the code fix closes the bug without touching the config, and the config fix closes it without a rebuild. Both
+land at the branch engine's own numbers (847-852 s, 281 tok/s). CHAMPION.md and CHAMPION.json carry the resolution.

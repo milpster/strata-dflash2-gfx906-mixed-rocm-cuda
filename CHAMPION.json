@@ -60,15 +60,22 @@
     }
   },
   "open_regression": {
-    "symptom": "non-finite logits (#879) in a prompt window at position ~239658 (row 0), first decode step",
-    "excluded": [
-      "VRAM margin (fails at 730 MiB free too)",
-      "the prompt path (batched-path second pass fails too)",
+    "state": "resolved 2026-11-21 23:59; measured at 3,058 and 239,663 prompt tokens",
+    "symptom": "non-finite logits (#879) in a prompt window at position N-5 (and N-1 on the first decode step); a 239,663-token prompt produced no output",
+    "cause": "STRATA_FS_SLOTS=\"2,8\" was read with std::atoi before the merge (2 slots on every card) and as a per-card comma list after it (card1: 8 slots, ~293 MiB). The ForesightSwap cudaMalloc lands after the expert-cache fill and outside every reserve calculation, so CUDA1 loaded with 140 MiB free instead of 360 MiB. Below about 150 MiB free the first stage-2 GEMM emits scattered non-finite outputs (the counts are not multiples of N, so its inputs are finite).",
+    "discriminator": "CUDA1 free VRAM, not layer count: 124 and 140 MiB fail; 156, 204, 348 and 360 MiB pass (split 29/30 fail, split 31/34 pass, FS_SLOTS=2 passes, FS 2,8 with --vram-reserve-later-mib 400 passes, the branch engine at 360 MiB passes).",
+    "fix_code": "commit 564e1dbbea on branch merge-helper-ipc-diet: ForesightSwap::init clamps each card's slots against cudaMemGetInfo, leaving vram_guard::kLowMib free; a card that can afford nothing gets no cudaMalloc; all cards clamped means the swap returns off. Built 4b8251e9e06334a8, staged in run/fsclamp-bin.",
+    "fix_config": "prod-config-ud-iq3xxs-dflash-w4-q4_0-mixed-fs2.json (STRATA_FS_SLOTS=2; margins untouched at 256/192) for the unclamped engine 5a699be1.",
+    "measurements": [
+      "5a699be1 + STRATA_FS_SLOTS=2, split 30: 3,058 tokens pass; 239,663 tokens = 0 reused + 239,663 read in 814,622 ms (294.2 tok/s), 0 non-finite",
+      "4b8251e9 + STRATA_FS_SLOTS=2,8, split 30: 3,058 tokens pass (CUDA1 434 MiB free, swap clamped off); 239,663 tokens read in 834,764 ms (287.1 tok/s), 0 non-finite"
+    ],
+    "caveat": "On this rig the engine loads every card below the 512 MiB low line by design, so the clamp makes the Foresight swap unaffordable (STRATA_FS_SLOTS=2 clamps to 0 too). Keeping the swap and the margin needs the planner to count the FS allocation; not done.",
+    "exclusions_kept": [
+      "the seven pool-admission commits (a506e620 passes at 239,663 tokens)",
       "the helper (helper=reqs=0 on a failing pass)",
       "the model, pack, KV settings and pool size"
     ],
-    "window": "engine changes between d534e72a (built 2026-11-20 23:47) and 5a699be1: the seven pool-admission commits 1ae83e157d, 7c2e76e71b, f65396a46a, dca0e3cc93, 5435391e3d, 716c3abee5, 9358921670",
-    "bisect_point": "a506e62008ba4bc4 (end of that suite), config bench/ab-v0210/rpcprof/pool-a506-prod-test.json, no verdict yet",
-    "instrument": "STRATA_DBG_NAN=1 names the layer and tensor, but costs a 4x slower prefill"
+    "journal": "journal/pool-admission-fix-2026-11-21.md"
   }
 }
