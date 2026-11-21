@@ -129,7 +129,11 @@ bool PoolExpertSourceAdapter::copy_blob(int64_t layer, int64_t expert, uint8_t* 
     // the bounded retry (see the header).  No adapter mutex is held here, so a
     // wait can never block the release that would clear the refusal.
     const std::error_code ec = acquire_admit(layer, expert, lease);
-    if (ec || !lease.valid()) { report_copy_refusal(layer, expert, ec); return false; }
+    if (ec || !lease.valid()) {
+        report_copy_refusal(layer, expert, ec);
+        note_refusal("copy_blob", layer, expert);
+        return false;
+    }
     std::memcpy(dst, lease.data(), (size_t) bytes);
     lease = PoolLease{};   // drop the pool reference at once: no borrower is created
     return true;
@@ -296,6 +300,11 @@ const uint8_t* PoolExpertSourceAdapter::borrow_admit(int64_t layer, int64_t expe
         auto it = borrowers_.find(key);
         if (it != borrowers_.end()) {
             ++it->second.count;
+            // Re-arm the async state for THIS lease: a borrow does not inherit an earlier one's completion,
+            // and a sweep from another thread must not erase a borrower whose copy is now in flight
+            // (note_async_read() re-arms the same way at issue time).
+            it->second.completed = false;
+            it->second.pending_event = false;
             return it->second.lease.valid()
                        ? static_cast<const uint8_t*>(it->second.lease.data()) : nullptr;
         }
@@ -305,7 +314,10 @@ const uint8_t* PoolExpertSourceAdapter::borrow_admit(int64_t layer, int64_t expe
     // that free the lease this refusal is waiting for.
     PoolLease lease;
     const std::error_code ec = acquire_admit(layer, expert, lease);
-    if (ec || !lease.valid()) return nullptr;
+    if (ec || !lease.valid()) {
+        note_refusal("borrow", layer, expert);
+        return nullptr;
+    }
     // Register and read the pointer under ONE lock: a sweep by another thread in
     // between must not turn a successful admission into a null pointer.
     std::lock_guard<std::mutex> lk(mu_);
@@ -314,12 +326,16 @@ const uint8_t* PoolExpertSourceAdapter::borrow_admit(int64_t layer, int64_t expe
         // Another thread admitted the same pair while this one waited: keep its
         // lease and let ours go.
         ++it->second.count;
+        it->second.completed = false;   // as above: this lease starts its own cycle
+        it->second.pending_event = false;
         return it->second.lease.valid()
                    ? static_cast<const uint8_t*>(it->second.lease.data()) : nullptr;
     }
     const uint8_t* p = static_cast<const uint8_t*>(lease.data());
     PoolBorrower b;
     b.count = 1;
+    b.completed = false;
+    b.pending_event = false;
     b.lease = std::move(lease);
     borrowers_.emplace(key, std::move(b));
     return p;
@@ -348,11 +364,41 @@ int64_t pool_expert_source_adapter_retry_used_us_for_test() {
 }
 #endif
 
+void PoolExpertSourceAdapter::note_refusal(const char* path, int64_t layer, int64_t expert) const {
+    // One line per second for the whole process: the rate gate is a single relaxed
+    // compare-exchange, so even a refusal storm pays one atomic per refusal.
+    static std::atomic<int64_t> last_evidence_us{0};
+    const int64_t now = now_us();
+    int64_t prev = last_evidence_us.load(std::memory_order_relaxed);
+    if (now - prev < 1000000) return;
+    if (!last_evidence_us.compare_exchange_strong(prev, now, std::memory_order_relaxed)) return;
+    // Snapshot under mu_, print outside it (fprintf may take a libc lock).
+    size_t nb = 0, nc = 0, np = 0;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        nb = borrowers_.size();
+        for (const auto& kv : borrowers_) {
+            if (kv.second.completed) ++nc;
+            if (kv.second.pending_event) ++np;
+        }
+    }
+    const PoolExpertStore::Stats st = store_.stats();
+    std::fprintf(stderr,
+                 "strata: managed pool: %s refused layer %lld expert %lld: borrowers=%zu completed=%zu "
+                 "pending=%zu resident_pairs=%llu evictions=%llu\n",
+                 path, (long long) layer, (long long) expert, nb, nc, np,
+                 (unsigned long long) st.resident_pairs, (unsigned long long) st.evictions);
+}
+
 void PoolExpertSourceAdapter::borrow_locked(int64_t layer, int64_t expert) {
     const int64_t key = key_of(layer, expert);
     auto it = borrowers_.find(key);
     if (it != borrowers_.end()) {
         ++it->second.count;
+        // Re-arm the async state for THIS lease (the twin of borrow_admit's): a borrow does not inherit an
+        // earlier one's completion, so a sweep cannot erase a borrower whose copy is in flight.
+        it->second.completed = false;
+        it->second.pending_event = false;
         return;
     }
     PoolLease lease;
@@ -360,6 +406,8 @@ void PoolExpertSourceAdapter::borrow_locked(int64_t layer, int64_t expert) {
     if (ec || !lease.valid()) return;  // no_buffer_space -> nullptr, no retry
     PoolBorrower b;
     b.count = 1;
+    b.completed = false;
+    b.pending_event = false;
     b.lease = std::move(lease);
     borrowers_.emplace(key, std::move(b));
 }

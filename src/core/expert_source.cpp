@@ -4885,7 +4885,36 @@ void expert_pool_dispatch(void* user, const float* x_f, const int32_t* ids, cons
             d.fail_expert = e;
             return;
         }
-        const uint8_t* b = d.src->blob(d.layers, e);
+        const uint8_t* b = nullptr;
+        // NO blob() above the hit test: neither path below uses the bytes, and a borrow is a reference-counted
+        // lease that only a completed async note or an explicit release() frees.  Neither path issues either -
+        // the note sites are the fill paths (expert_source.cpp:5525, peer_experts.cpp:230,
+        // remote_expert_opt.cu:190) - so asking here pinned one managed-pool pair for every HIT and every
+        // remote-owned expert for the rest of the request.  The pinned set grew until the pool refused, and the
+        // refusal surfaced at the next miss as "the expert source could not produce a blob" (measured
+        // 2026-11-21 on 53,717- and 64,507-token prompts).  Ask only for an expert that becomes a job.
+        // A hit's row was zeroed by `Launch` and belongs to the GPU; the pool must not touch it.
+        if (use_hits && (graph_hits ? d.host_res[(size_t) d.layers * (size_t) d.n_expert + (size_t) e] >= 0
+                                    : d.is_hit[(size_t) i] != 0)) {
+            if (graph_hits) ++d.cache_hits;
+            // The GPU owns this row and `hit_out` is zeroed, so the CPU's contribution is zero - but
+            // `y_miss` is a REUSED pinned buffer, so the row must be written, not merely skipped.
+            std::memset(out + (size_t) i * (size_t) n_embd, 0, (size_t) n_embd * sizeof(float));
+            d.src->note_routed(d.layers, e);   // the demand `blob()` used to record (the arena re-rank's heat)
+            continue;
+        }
+        if (graph_hits) ++d.cache_refused;   // token graph: a miss (nothing is admitted during a token)
+
+        bool remote_owns = false;
+        for (int r = 0; r < d.remote_count; ++r) remote_owns |= d.remote[r]->owns(i);
+        for (const int32_t hc : helper_claims) remote_owns |= (hc == i);   // R2 proxy claim (empty on a native pack: this path refuses it)
+        if (remote_owns) {
+            std::memset(out + (size_t) i * (size_t) n_embd, 0, (size_t) n_embd * sizeof(float));
+            d.src->note_routed(d.layers, e);   // as above: routed, but never copied from this source
+            continue;
+        }
+
+        b = d.src->blob(d.layers, e);
         if (b == nullptr) {
             // The one failure the loop cannot see.  Leaving `out` at its previous contents would feed the NEXT
             // layer a stale expert vector, which `moe_combine` would weight and add - the token would still be
@@ -4896,24 +4925,6 @@ void expert_pool_dispatch(void* user, const float* x_f, const int32_t* ids, cons
             d.fail_expert = e;
             ++d.missing;
             return;
-        }
-        // A hit's row was zeroed by `Launch` and belongs to the GPU; the pool must not touch it.
-        if (use_hits && (graph_hits ? d.host_res[(size_t) d.layers * (size_t) d.n_expert + (size_t) e] >= 0
-                                    : d.is_hit[(size_t) i] != 0)) {
-            if (graph_hits) ++d.cache_hits;
-            // The GPU owns this row and `hit_out` is zeroed, so the CPU's contribution is zero - but
-            // `y_miss` is a REUSED pinned buffer, so the row must be written, not merely skipped.
-            std::memset(out + (size_t) i * (size_t) n_embd, 0, (size_t) n_embd * sizeof(float));
-            continue;
-        }
-        if (graph_hits) ++d.cache_refused;   // token graph: a miss (nothing is admitted during a token)
-
-        bool remote_owns = false;
-        for (int r = 0; r < d.remote_count; ++r) remote_owns |= d.remote[r]->owns(i);
-        for (const int32_t hc : helper_claims) remote_owns |= (hc == i);   // R2 proxy claim (empty on a native pack: this path refuses it)
-        if (remote_owns) {
-            std::memset(out + (size_t) i * (size_t) n_embd, 0, (size_t) n_embd * sizeof(float));
-            continue;
         }
 
         // `njobs` indexes the JOB ARRAY and `i` indexes the OUTPUT - they are the same only when nothing is a

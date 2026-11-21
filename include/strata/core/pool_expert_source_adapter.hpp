@@ -168,6 +168,13 @@ private:
     void drop_all_locked();
     void sweep_completed_locked();
 
+    /// The refusal evidence line: at most one per second for the whole process, one fprintf, no allocation.
+    /// The snapshot (borrower counts, completion and pending flags) is taken under mu_ and printed after it
+    /// is released, so the line says what the pool held at the moment it refused.  Called on every refusal
+    /// of copy_blob()/borrow_admit(), gate ON or OFF: this is the measurement that tells a later death
+    /// whether the pool was still pinned by unswept borrowers.
+    void note_refusal(const char* path, int64_t layer, int64_t expert) const;
+
     PoolExpertStore& store_;
     AsyncNoteHook hook_;
     mutable std::mutex mu_;

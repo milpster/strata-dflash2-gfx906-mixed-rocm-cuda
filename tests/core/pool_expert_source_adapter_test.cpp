@@ -197,6 +197,55 @@ static std::error_code make_pool(Pool& out, uint64_t bytes) {
     return ec;
 }
 
+// ---- Change B: every borrow re-arms the async state ------------------------
+// A borrow must not inherit an earlier borrow's completion.  Otherwise a sweep from another thread (or the
+// retry's own sweep) erases a borrower whose copy is in flight, the store recycles the bytes under it, and
+// the tokens come out silently wrong.  Both borrow paths are covered: gate OFF (borrow_locked) and gate ON
+// (borrow_admit).
+static void check_borrow_rearms(const char* tag, int gate) {
+    char lbl[192];
+    auto tagcheck = [&](bool ok, const char* what) {
+        std::snprintf(lbl, sizeof lbl, "%s: %s", tag, what);
+        check(ok, lbl);
+    };
+    Pool pool;
+    std::error_code ec = make_pool(pool, 4 * kPage);
+    tagcheck(!ec, "create tight 16KiB pool");
+    ExpertLayout layout;
+    build_layout(layout);
+    PoolExpertStore store(pool);
+    ec = store.open(g_fixture_path.c_str(), layout);
+    tagcheck(!ec, "open store");
+    PoolExpertSourceAdapter adapter(store);
+    pool_expert_source_adapter_set_admit_retry_for_test(gate);
+    pool_expert_source_adapter_reset_retry_budget_for_test();
+
+    const uint8_t* p1 = adapter.blob_stable(0, 0);   // fills the pool
+    tagcheck(p1 != nullptr, "first borrow");
+    adapter.mark_completed(0, 0);                    // its copy landed
+    tagcheck(adapter.borrowed(0, 0), "first borrow completed");
+    std::vector<uint8_t> before(expert_bytes(0), 0);
+    std::memcpy(before.data(), p1, before.size());
+
+    const uint8_t* p2 = adapter.blob_stable(0, 0);   // count 2 - and a NEW copy cycle
+    tagcheck(p2 != nullptr && p2 == p1, "re-borrow returns the same lease");
+
+    // A second thread sweeps: a release() of a pair nobody borrowed does exactly that.
+    std::thread sweeper([&adapter] { adapter.release(1, 3); });
+    sweeper.join();
+    tagcheck(adapter.borrowed(0, 0), "a foreign sweep did not erase the re-borrowed pair");
+    tagcheck(region_matches(p1, expert_file_offset(0, 0), expert_bytes(0)),
+             "its bytes are unchanged");
+    tagcheck(std::memcmp(p1, before.data(), before.size()) == 0, "byte for byte the same payload");
+
+    // The second lease's copy is issued and lands: now the pair is recyclable again.
+    adapter.note_async_read(p1, nullptr);
+    adapter.mark_completed(0, 0);
+    adapter.release(1, 3);                           // any sweep trigger
+    tagcheck(!adapter.borrowed(0, 0), "freed once the last borrow's copy completed");
+    pool_expert_source_adapter_set_admit_retry_for_test(-1);
+}
+
 int main(int argc, char** argv) {
     const std::string build_dir = (argc > 1) ? argv[1] : ".";
     // The admission-retry gate is read ONCE per process, and this binary must
@@ -882,6 +931,10 @@ int main(int argc, char** argv) {
         check(buf[0] == 0x77, "19: default off: nothing copied");
         adapter.release(0, 0);
     }
+
+    // ============ 20/21. a borrow re-arms the async state (both borrow paths) ====
+    check_borrow_rearms("20 gate off", 0);
+    check_borrow_rearms("21 gate on", 1);
 
     std::fprintf(stderr, "pool_expert_source_adapter_test: %d checks, %d FAILURES\n",
                  checks, failures);

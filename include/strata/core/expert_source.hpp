@@ -228,6 +228,12 @@ public:
     /// asynchronous host-to-device copy can DMA it directly (no staging copy on the CPU).
     virtual bool pinned(int64_t layer, int64_t expert) const { (void) layer; (void) expert; return false; }
 
+    /// A routed expert whose row the CPU half skipped because it is already owned elsewhere (a GPU cache hit, or
+    /// another tier's claim): this source is never asked for its bytes on that path, so `blob()` is not called.
+    /// A source whose blob() records decode demand (the arena's re-rank heat) counts it here, so a hit still
+    /// counts as routed exactly as it did when blob() was called before the hit test.  Default: nothing.
+    virtual void note_routed(int64_t layer, int64_t expert) { (void) layer; (void) expert; }
+
     /// Called once before the first expert of a layer.  A source that reads from disk wants to start the read
     /// here so it overlaps the quantisation, and a prefetching source in Phase 3 wants the ids.
     virtual void begin_layer(int64_t layer, const int32_t* ids, int64_t k) { (void) layer; (void) ids; (void) k; }
@@ -1390,6 +1396,9 @@ public:
     bool mapped() const { return base_ != nullptr; }
     int64_t blobs() const { return blobs_; }
     const uint8_t* blob(int64_t layer, int64_t expert) override;
+    /// A hit or remote-owned row never asks for the blob any more (see ExpertSource::note_routed): count its
+    /// decode demand here, exactly as `blob()` used to before the hit test.
+    void note_routed(int64_t layer, int64_t expert) override { note_heat(layer, expert); }
     /// `blob` without the read counter: a pure pointer into the arena, safe from another thread (the async adaptive
     /// tier's job thread)
     const uint8_t* blob_at(int64_t layer, int64_t expert) const;
