@@ -30,6 +30,7 @@ OUT=/tmp/opencode/ctx-threshold-last.txt
 ss -H -ltn 'sport = :8009' | grep -q LISTEN || { echo "nothing is serving on :8009" >&2; exit 3; }
 
 S=$(tr -d '\0' < "$ELOG" | grep -n "engine started:" | tail -1 | cut -d: -f1)
+S=${S:-1}   # a console log with no 'engine started:' line still classifies from its first line
 START=$(date +%s)
 echo "=== leg: target $TARGET tokens, max_tokens $MAXTOK, seed $SEED, elog slice from line $S @ $(date +%H:%M:%S)"
 "$PY" --prompt-tokens "$TARGET" --max-tokens "$MAXTOK" --seed "$SEED" --timeout 5400 \
