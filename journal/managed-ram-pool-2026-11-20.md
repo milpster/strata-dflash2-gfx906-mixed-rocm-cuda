@@ -1247,3 +1247,35 @@ division predicts; whether a 128 MiB reserve survives a real paging squeeze (no 
 here, so the risk is untested, not cleared); the same slot count at 40,960 MiB; concurrency
 (every request serial); the origin of the 76,189-token follow-up requests; how much of the
 7.5 GiB of swap belongs to this boot.
+
+### The margin series in one table (2026-11-21, five windows, each one cold 80k)
+
+Every row below is the same payload (74,635 prompt tokens, max 2,048) on the same code
+(the streaming prefill fix), differing only in the locked pool, the device-1 VRAM reserve
+and the helper's allocation. All numbers are the engine's own `prompt ... read in ...` and
+`N generated in M ms` lines, not client arithmetic.
+
+| # | budget | pool | helper reserve/fill cap | dev1 reserve | cold prefill | decode | avail min | swap peak | hit / PCIe |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 | 40,960 | 36 GiB | 512 / 6,796 | 576 | 280.2 tok/s, 3.57 ms/tok | 20.2 | 8,252 | 2.6 GiB | 95.5% / 13.2% |
+| 2 | 43,008 | 38 GiB | 512 / 6,796 | 192 | 259.7, 3.85 | 19.8 | 7,932 | 7.7 GiB | 95.0% / 13.1% |
+| 3 | 43,008 | 38 GiB | 384 / 6,924 | 192 | 249.9, 4.00 | 20.1 | 7,236 | 7.2 GiB | 95.7% / 13.5% |
+| 4 | 43,008 | 38 GiB | 128 / 7,180 | 192 | 268.6, 3.72 | 20.5 | 7,892 | 7.5 GiB | 95.7% / 13.7% |
+| 5 | 34,816 | 30 GiB | 128 / 7,180 | 192 | pending | pending | pending | pending | pending |
+
+How to read it, honestly:
+
+- **No window repeated a cold 80k in the same boot.** The spread across rows 1-4 is
+  249.9-280.2 tok/s (12%), and it does not track any single knob: row 3 is the slowest
+  with the largest helper, row 4 the fastest of the 38 GiB rows with the smallest helper.
+  Treat 12% as this box's error bar until a window runs the same cold leg twice.
+- **Decode is flat** at 19.8-20.5 tok/s across a 2 GiB pool change and 384 MiB of helper
+  VRAM. Nothing in this series moved generation speed. The pool is not buying decode.
+- **Swap tracks the pool, not the margins.** 2.6 GiB at a 36 GiB pool, 7.2-7.7 GiB at 38 GiB.
+  An earlier note in this journal called the first window's slowness a VRAM-margin effect;
+  that attribution is refuted (see the correction above), and this table is the evidence
+  that the margin knobs move nothing while the pool moves swap.
+- **The 38 GiB pool kills the conversation-cache disk tier** (every park refused for free
+  space, `parked=0 bytes=0`); whether 30 GiB revives it is being measured in row 5.
+- The 3080 tolerates a 128 MiB reserve (334 MiB free measured through a full 80k
+  prefill and decode, `timeouts=0 fallbacks=0`). That risk is cleared.
