@@ -38,6 +38,8 @@ for kv in sys.argv[4:]:
     k, _, v = kv.partition('=')
     if k == 'EXE':          # a different run/ dir, e.g. run/pool-admit-a506 (the passing branch engine)
         d['exe'] = v.rstrip('/') + '/rpcw-hip/strata'
+    elif k == 'ARGS':       # extra engine arguments, space separated (e.g. ARGS="--layer-split 34")
+        d['args'] = list(d.get('args') or []) + v.split()
     else:
         d['env'][k] = v
 d['log'] = f'/mnt/srcds/Strata/logs/engine-{label}.log'
