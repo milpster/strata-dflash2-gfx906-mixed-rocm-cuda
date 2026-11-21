@@ -775,3 +775,34 @@ Armed file for the operator's decision (not applied to prod): `prod-config-ud-iq
 (byte copy of the tested generated config). No margin was changed: `--vram-reserve-mib 256` and
 `--vram-reserve-later-mib 192` stay exactly as championed; only `STRATA_FS_SLOTS` returns to the pre-merge
 behaviour.
+
+### The durable fix, built and measured: `564e1dbbea` clamps FS slots per card
+
+`ForesightSwap::init` (`src/core/expert_source.cpp:7655-7725`, branch `merge-helper-ipc-diet`) now sizes one
+slot (`per_slot` = the card's layers' blob bytes), queries `cudaMemGetInfo` under `OnDevice(devices[c])`, and
+clamps `card_slots[c]` so the `cudaMalloc` leaves at least `vram_guard::kLowMib` free. Card 0 slots are skipped,
+a card that can afford nothing gets no `cudaMalloc`, and if every card clamps to zero the swap returns off. One
+log line per clamped card; nothing printed when nothing clamps.
+
+Built `4b8251e9e06334a8…` (ldd: `libhipblas.so.2`/`libamdhip64.so.6` → `/opt/rocm-6.1.0/lib`,
+`librocblas.so.4` → `/home/srcds/rocm-gfx906-xnack/lib`, the expected set), staged in `run/fsclamp-bin/`.
+
+3,058-token leg at split 30 with the merge's own `STRATA_FS_SLOTS=2,8`, 23:40 → 23:43:
+
+```
+strata serve: foresight swap: card0 asked 2 slots (114 MiB) with 400 MiB free -> granted 0 slots (0 MiB), leaving 400 MiB
+strata serve: foresight swap: card1 asked 8 slots (293 MiB) with 434 MiB free -> granted 0 slots (0 MiB), leaving 434 MiB
+strata serve: foresight swap: every card's slots clamped to zero against the free-VRAM low line - swap space off
+strata serve: CUDA1: 434 MiB of VRAM free with everything loaded
+```
+
+**Result: pass, 0 non-finite, 8 tokens, 5 of 8 drafts accepted.**
+
+The honest consequence: on this rig the engine loads every card below the 512 MiB low line by design (reserve
+192-256 MiB), so `kLowMib` as an allocation floor means the swap is never affordable here — `STRATA_FS_SLOTS=2`
+clamps to zero just as `2,8` does. The clamp is therefore a safety valve that removes the failure, not a way to
+keep the swap. Keeping the swap *and* the margin needs the planner to count the FS allocation (reduce the expert
+cache by it) — a larger change, not made, and not needed for correctness.
+
+Also worth recording: the config-side fix stays valid on the *old* engine (`run/pool-admit-bin`), and is
+redundant on a clamped engine.
