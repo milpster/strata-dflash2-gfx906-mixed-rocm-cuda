@@ -269,6 +269,12 @@ When the RAM cannot hold them beside the system (the experts plus about 10 GB), 
   `STRATA_RESIDENT_PIN=0`) gives the mapped mode's exact tokens.
 - Linux, opt-in: `STRATA_ARENA_MMAP=1` maps a native pack's expert arena read-only from `experts.bin` instead of reading
   it into locked RAM (for example 2x 16 GB GPUs with 32 GB of RAM). Run it with `--pcie-frac 0`.
+- Managed RAM pool, opt-in: `STRATA_RAM_POOL_ADMIT_RETRY=1` waits for a pool admission that another copy is still
+  holding instead of failing the request at once. The wait is bounded per admission: 8 attempts, 20 ms in total.
+  Only "the pool has no room because a lease is still out" is retried; a closed store, an unknown layer or expert,
+  and a blob the pool can never hold still fail at once. Unset (the default) is the old behaviour, one attempt and
+  no wait. The cost is per refused pair, so a pool that genuinely cannot hold the working set pays the window on
+  every pair it refuses.
 - Windows, opt-in: `STRATA_FILE_RELEASE=1` trims the file-backed pages of experts after their GPU uploads. It is a
   working-set hint, not an unmap, and it does not reduce committed memory or SSD reads
   ([measurements and limits](../bench/results/2026-10-04-windows-mapped-release/README.md)).

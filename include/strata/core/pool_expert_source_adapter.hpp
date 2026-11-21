@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <functional>
 #include <mutex>
+#include <system_error>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -93,13 +94,33 @@ public:
     /// blob_stable() does.  The lease is dropped before this returns, so no borrower is created and no
     /// caller can make the pool run dry.  Thread-safe: the store serializes its own admission.
     /// False (with one stderr line) only when the store itself refuses - it has already run its own
-    /// eviction, which is the honest "no room" case.
+    /// eviction, which is the honest "no room" case.  With STRATA_RAM_POOL_ADMIT_RETRY set, a refusal
+    /// that another thread's release can clear is retried first, inside a fixed budget.
     bool copy_blob(int64_t layer, int64_t expert, uint8_t* dst) override;
 
     /// `n` blobs at once, byte-identical to `n` calls of copy_blob.  Uses the window above; a pair the
     /// pool refuses while the window is held is retried alone (the least the pool can be asked for)
     /// before this reports false.
     bool copy_blobs(const int32_t* layers, const int32_t* experts, uint8_t* const* dst, size_t n) override;
+
+    // ---- admission retry (OPT-IN, default OFF) ------------------------------
+    // Environment gate, read once per process: `STRATA_RAM_POOL_ADMIT_RETRY`.
+    // Unset, empty, `0`, `off`, `false` or `no` (any case, surrounding blanks ignored) = OFF, and
+    // then every admission is exactly one store_.acquire() with the refusal returned at once - the
+    // behaviour before this retry existed, no sleep and no extra lock.  Any other value = ON.
+    //
+    // Why it exists: a lease holder (a borrower's async DMA out of the pool) makes the store's own
+    // LRU unable to free that pair, and the pool refuses with no_buffer_space.  Measured on
+    // 2026-11-21: two long-context decodes (53,717 and 64,507 prompt tokens) died there with "the
+    // expert source could not produce a blob".  The holders in that failure are per-token DMA copies
+    // that finish in well under a millisecond, so a bounded wait turns the death into a slow token.
+    //
+    // The wait is bounded twice: kAdmitRetryAttempts acquire calls in total, and a hard
+    // kAdmitRetryDeadlineUs wall clock for the whole call.  Sleeps are clamped to the remaining
+    // budget and never happen under mu_ (see acquire_admit()).  The cost is per refused admission:
+    // a pool that genuinely cannot hold the working set pays the window on every pair it refuses.
+    static constexpr unsigned kAdmitRetryAttempts = 8;      // first try + 7 retries
+    static constexpr int64_t kAdmitRetryDeadlineUs = 20000; // 20 ms, the hard cap
 
     /// Pool memory is mlocked; returns true (UNMEASURED perf: no speed claim may cite this path).
     bool pinned(int64_t layer, int64_t expert) const override { (void)layer; (void)expert; return true; }
@@ -116,6 +137,20 @@ private:
         return (layer << 32) | (expert & 0xFFFFFFFFll);
     }
 
+    /// Admission behind the retry gate.  MUST be called with mu_ NOT held: the wait must never
+    /// block the release that would clear the refusal, and note_async_read() drops mu_ before its
+    /// hook for exactly the same reason.  With the gate OFF this is one store_.acquire() and
+    /// nothing else.
+    std::error_code acquire_admit(int64_t layer, int64_t expert, PoolLease& out) const;
+
+    /// Retry-gated twin of borrow_locked(): admits outside mu_, then registers the borrower.
+    /// True when a valid borrower for the pair exists afterwards.  mu_ must NOT be held.
+    bool borrow_admit(int64_t layer, int64_t expert);
+
+    /// Retry-gated twins of the blob_stable()/blob_parts() bodies (gate ON only).
+    const uint8_t* blob_stable_admit(int64_t layer, int64_t expert);
+    int blob_parts_admit(int64_t layer, int64_t expert, BlobPart* out);
+
     void borrow_locked(int64_t layer, int64_t expert);
     void drop_locked(int64_t key);
     void drop_all_locked();
@@ -126,5 +161,12 @@ private:
     mutable std::mutex mu_;
     std::unordered_map<int64_t, PoolBorrower> borrowers_;   // key -> borrower
 };
+
+#if defined(STRATA_RAM_POOL_TEST)
+/// Test hook, same convention as PoolExpertCache's pre-emplace fault hook: force
+/// the admission-retry gate without touching the process environment, which is
+/// otherwise read once per process.  -1 restores "follow the environment".
+void pool_expert_source_adapter_set_admit_retry_for_test(int enabled);
+#endif
 
 }  // namespace strata::core

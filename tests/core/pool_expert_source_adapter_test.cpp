@@ -16,13 +16,16 @@
 #undef STRATA_RAM_POOL_TEST
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <string>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -31,6 +34,7 @@ using strata::core::Pool;
 using strata::core::PoolLease;
 using strata::core::PoolExpertStore;
 using strata::core::PoolExpertSourceAdapter;
+using strata::core::pool_expert_source_adapter_set_admit_retry_for_test;
 using strata::kernels::cpu::ExpertLayout;
 
 int checks = 0;
@@ -193,6 +197,10 @@ static std::error_code make_pool(Pool& out, uint64_t bytes) {
 
 int main(int argc, char** argv) {
     const std::string build_dir = (argc > 1) ? argv[1] : ".";
+    // The admission-retry gate is read ONCE per process, and this binary must
+    // exercise the default (OFF): make sure the caller's environment cannot arm
+    // it by accident.  Cases 12-15 set it through the test hook instead.
+    ::unsetenv("STRATA_RAM_POOL_ADMIT_RETRY");
     if (!build_fixture(build_dir)) {
         std::fprintf(stderr, "FAIL: cannot write fixture\n");
         return 2;
@@ -543,6 +551,198 @@ int main(int argc, char** argv) {
         int32_t bl = 0, be = 99; uint8_t* bd = bad.data();
         check(!adapter.copy_blobs(&bl, &be, &bd, 1), "11: invalid expert refused");
         check(!adapter.borrowed(0, 99), "11: refusal left no borrower");
+    }
+
+    // ============ 12. admission retry: DEFAULT OFF is today's behaviour ============
+    {
+        // No test override: this is the real default path with
+        // STRATA_RAM_POOL_ADMIT_RETRY unset (case 0 of main unsets it).
+        Pool pool;
+        auto ec = make_pool(pool, 4 * kPage);
+        check(!ec, "12: create tight 16KiB pool");
+        ExpertLayout layout;
+        build_layout(layout);
+        PoolExpertStore store(pool);
+        ec = store.open(g_fixture_path.c_str(), layout);
+        check(!ec, "12: open store");
+        PoolExpertSourceAdapter adapter(store);
+
+        const uint8_t* live = adapter.blob_stable(0, 0);   // fills the pool
+        check(live != nullptr, "12: borrow (0,0) fills pool");
+
+        std::vector<uint8_t> buf(64, 0);
+        const uint64_t misses_before = store.stats().misses;
+        const auto t0 = std::chrono::steady_clock::now();
+        const bool ok = adapter.copy_blob(0, 1, buf.data());
+        const double ms = std::chrono::duration<double, std::milli>(
+                              std::chrono::steady_clock::now() - t0).count();
+        check(!ok, "12: default off: refusal is immediate false");
+        check(ms < 5.0, "12: default off: no wait");
+        check(store.stats().misses == misses_before + 1, "12: default off: exactly one acquire");
+        adapter.release(0, 0);
+    }
+
+    // ============ 13. retry ON: a competing lease released in the window ============
+    {
+        Pool pool;
+        auto ec = make_pool(pool, 4 * kPage);
+        check(!ec, "13: create tight 16KiB pool");
+        ExpertLayout layout;
+        build_layout(layout);
+        PoolExpertStore store(pool);
+        ec = store.open(g_fixture_path.c_str(), layout);
+        check(!ec, "13: open store");
+        PoolExpertSourceAdapter adapter(store);
+        pool_expert_source_adapter_set_admit_retry_for_test(1);
+
+        const uint8_t* live = adapter.blob_stable(0, 0);   // the competing lease
+        check(live != nullptr, "13: borrow (0,0) fills pool");
+
+        // The "DMA completion": released ~3 ms in, i.e. inside the retry window
+        // (backoff 0.5, 1, 2, 4 ... ms) and well inside the 20 ms deadline.
+        std::thread releaser([&adapter] {
+            std::this_thread::sleep_for(std::chrono::milliseconds(3));
+            adapter.release(0, 0);
+        });
+
+        std::vector<uint8_t> buf(64, 0xAB);
+        const uint64_t misses_before = store.stats().misses;
+        const auto t0 = std::chrono::steady_clock::now();
+        const bool ok = adapter.copy_blob(0, 1, buf.data());
+        const double ms = std::chrono::duration<double, std::milli>(
+                              std::chrono::steady_clock::now() - t0).count();
+        releaser.join();
+
+        check(ok, "13: retry succeeds once the lease is released");
+        check(region_matches(buf.data(), expert_file_offset(0, 1), 64),
+              "13: retried copy has the exact bytes");
+        check(ms >= 2.0, "13: it really waited for the release");
+        check(ms < 1000.0, "13: and the wait stayed bounded");
+        check(store.stats().misses >= misses_before + 2, "13: more than one acquire attempt");
+        check(!adapter.borrowed(0, 0) && !adapter.borrowed(0, 1), "13: no borrower left behind");
+        pool_expert_source_adapter_set_admit_retry_for_test(-1);
+    }
+
+    // ============ 14. retry ON: nothing released -> bounded failure ============
+    {
+        Pool pool;
+        auto ec = make_pool(pool, 4 * kPage);
+        check(!ec, "14: create tight 16KiB pool");
+        ExpertLayout layout;
+        build_layout(layout);
+        PoolExpertStore store(pool);
+        ec = store.open(g_fixture_path.c_str(), layout);
+        check(!ec, "14: open store");
+        PoolExpertSourceAdapter adapter(store);
+        pool_expert_source_adapter_set_admit_retry_for_test(1);
+
+        const uint8_t* live = adapter.blob_stable(0, 0);
+        check(live != nullptr, "14: borrow (0,0) fills pool, nothing will release it");
+
+        std::vector<uint8_t> buf(64, 0xCD);
+        const uint64_t misses_before = store.stats().misses;
+        const auto t0 = std::chrono::steady_clock::now();
+        const bool ok = adapter.copy_blob(0, 1, buf.data());
+        const double ms = std::chrono::duration<double, std::milli>(
+                              std::chrono::steady_clock::now() - t0).count();
+        const uint64_t attempts = store.stats().misses - misses_before;
+
+        check(!ok, "14: no release: refusal is still false");
+        check(ms >= 15.0, "14: it spent the window, did not fail early");
+        check(ms <= 500.0, "14: it failed by the deadline, not forever");
+        check(buf[0] == 0xCD, "14: nothing was copied into the caller's buffer");
+        check(attempts >= 2 && attempts <= PoolExpertSourceAdapter::kAdmitRetryAttempts,
+              "14: attempt count stayed within the fixed budget");
+        std::fprintf(stderr, "note: 14: %.2f ms, %llu acquire attempts\n",
+                     ms, (unsigned long long) attempts);
+        adapter.release(0, 0);
+        pool_expert_source_adapter_set_admit_retry_for_test(-1);
+    }
+
+    // ============ 15. retry ON: permanent causes are refused unretried ============
+    {
+        Pool pool;
+        auto ec = make_pool(pool, 4 * kPage);
+        check(!ec, "15: create tight 16KiB pool");
+        ExpertLayout layout;
+        build_layout(layout);
+        PoolExpertStore store(pool);
+        ec = store.open(g_fixture_path.c_str(), layout);
+        check(!ec, "15: open store");
+        PoolExpertSourceAdapter adapter(store);
+        store.stats();   // warm nothing; just make sure stats() is callable
+        const uint64_t usable = store.stats().usable_bytes;
+        check(usable > 0 && usable < 5000, "15: usable pool space is smaller than a layer-2 blob");
+        pool_expert_source_adapter_set_admit_retry_for_test(1);
+
+        // (a) bad geometry: unknown expert.  The store refuses with
+        // invalid_argument before any pool admission.
+        std::vector<uint8_t> bad(64, 0xEE);
+        uint64_t misses_before = store.stats().misses;
+        auto t0 = std::chrono::steady_clock::now();
+        check(!adapter.copy_blob(0, 99, bad.data()), "15: unknown expert refused");
+        double ms = std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - t0).count();
+        check(ms < 5.0, "15: unknown expert is not retried");
+        check(store.stats().misses == misses_before, "15: unknown expert never reached the cache");
+
+        // (b) a blob that can never fit this pool (5000 B > 4096 B usable):
+        // the pool reports no_buffer_space, but no release can ever make room.
+        std::vector<uint8_t> big(5000, 0xEE);
+        misses_before = store.stats().misses;
+        t0 = std::chrono::steady_clock::now();
+        check(!adapter.copy_blob(2, 0, big.data()), "15: blob larger than the usable pool refused");
+        ms = std::chrono::duration<double, std::milli>(
+                 std::chrono::steady_clock::now() - t0).count();
+        check(ms < 5.0, "15: oversized blob is not retried (geometry pre-check)");
+        check(store.stats().misses == misses_before + 1, "15: oversized blob tried exactly once");
+        pool_expert_source_adapter_set_admit_retry_for_test(-1);
+    }
+
+    // ============ 16. retry ON through blob_stable (the mu_-free wait) ============
+    {
+        Pool pool;
+        auto ec = make_pool(pool, 4 * kPage);
+        check(!ec, "16: create tight 16KiB pool");
+        ExpertLayout layout;
+        build_layout(layout);
+        PoolExpertStore store(pool);
+        ec = store.open(g_fixture_path.c_str(), layout);
+        check(!ec, "16: open store");
+        PoolExpertSourceAdapter adapter(store);
+        pool_expert_source_adapter_set_admit_retry_for_test(1);
+
+        const uint8_t* live = adapter.blob_stable(0, 0);
+        check(live != nullptr, "16: borrow (0,0) fills pool");
+
+        std::thread releaser([&adapter] {
+            std::this_thread::sleep_for(std::chrono::milliseconds(3));
+            adapter.release(0, 0);   // needs mu_: must not be blocked by the waiter
+        });
+        const auto t0 = std::chrono::steady_clock::now();
+        const uint8_t* p = adapter.blob_stable(0, 1);
+        const double ms = std::chrono::duration<double, std::milli>(
+                              std::chrono::steady_clock::now() - t0).count();
+        releaser.join();
+
+        check(p != nullptr, "16: blob_stable succeeds once the lease is released");
+        check(region_matches(p, expert_file_offset(0, 1), 64), "16: borrowed bytes are correct");
+        check(ms >= 2.0 && ms < 1000.0, "16: it waited, bounded");
+        check(adapter.borrowed(0, 1), "16: the borrower was registered");
+        adapter.release(0, 1);
+
+        // Nothing will release this one: bounded nullptr, not a hang.
+        const uint8_t* held = adapter.blob_stable(0, 2);
+        check(held != nullptr, "16: borrow (0,2) fills pool again");
+        const auto t1 = std::chrono::steady_clock::now();
+        const uint8_t* q = adapter.blob_stable(1, 1);
+        const double ms2 = std::chrono::duration<double, std::milli>(
+                               std::chrono::steady_clock::now() - t1).count();
+        check(q == nullptr, "16: held pool -> nullptr after the window");
+        check(ms2 >= 15.0 && ms2 <= 500.0, "16: bounded, not forever");
+        check(!adapter.borrowed(1, 1), "16: a refused pair registers no borrower");
+        adapter.release(0, 2);
+        pool_expert_source_adapter_set_admit_retry_for_test(-1);
     }
 
     std::fprintf(stderr, "pool_expert_source_adapter_test: %d checks, %d FAILURES\n",
