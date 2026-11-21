@@ -479,3 +479,31 @@ failures exist in any log in this tree. The prose was corrected to the measureme
 Staged in `run/pool-admit-bin` (helper `9d16742d`, `e3b14c0515`) with a byte-identical rollback copy
 of the previous helper in `run/helper-553f3bf4/`. Engine `5a699be1`, margins 256/192 and the 32 GiB
 pool unchanged throughout.
+
+## The 240k leg on the final helper: two prefills, no output (2026-11-21 14:44-15:21)
+
+Boot: engine `5a699be1`, helper `9d16742d` (reserve 0, no fill cap), `fill preflight: budget 7500.4 MiB
+(reserve 0 MiB ...)`, `fill stopped: budget; 3913 slots, 7.32 GiB`, 14 MiB free; pool 32 GiB; margins
+256/192. Leg: `longctx-stress.py --prompt-tokens 323200 --max-tokens 10000 --seed 7`.
+
+| Pass | Result | Notes |
+|---|---|---|
+| 1 | `prompt 239677 tokens = 0 reused + 239672 of 239677 read in 800129 ms (299.5 tok/s), 0 generated` | best prefill this box has recorded |
+| then | `WARNING: only 86 MiB of VRAM free at the start of this request (below 512 MiB) ... Add --vram-reserve-mib 704` | the engine's own #2065 warning fired before the failure |
+| then | `after non-finite logits (#879): dropped the live session, 6 checkpoints ... reading this prompt from token 0`; `(#3465) this request reads its whole prompt through the batched path` | the first decode step produced NaN/Inf |
+| 2 | `prompt 239677 tokens = 0 reused + 239677 read in 1408769 ms (170.1 tok/s), 0 generated in 134 ms, 6 checkpoints helper=reqs=33 rows=69 bytes=706560 timeouts=0` | clean read, same outcome |
+| end | `HTTP 503 ... the model's output became non-finite (NaN) twice in a row (#879); the engine has dropped its cached state` | leg exit 1, no tokens produced |
+
+Stability held otherwise: 0 refusals, 0 borrower-guard lines, no engine restart (the engine stayed up and
+dropped the session), 6 `engine started:` in the whole file but 1 in this boot's slice.
+
+**Where pass 2's 170.1 tok/s came from (measured, not inferred):** the counter froze on 16,384-token
+boundaries for 50-90 s and jumped 16,384 tokens in 4-9 s (2,000-3,000 tok/s instantaneous). During the
+freezes the engine read **329 MiB/s** from block devices (`/proc/<pid>/io` read_bytes delta), helper reads 0,
+swap in/out 0, GPUs 49/0/14% busy and the 3080 3%. So the replay is IO-bound on the expert pack; the warm pass
+(299.5) is the comparable prefill figure, the replay (170.1) is not.
+
+**Open question, honestly framed:** both passes failed at the same context, but both also ran under the same
+thin-margin state (86 MiB free, helper 14 MiB free). The two causes are not separated yet. The discriminating
+test is a boot with `--vram-reserve-mib 704` (the engine's own suggestion, at the cost of ~166 CUDA0 cache
+slots) running the same leg; if it still ends non-finite, the batched long-context path itself is the defect.
