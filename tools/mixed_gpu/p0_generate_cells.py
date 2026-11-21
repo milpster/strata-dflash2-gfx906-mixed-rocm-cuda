@@ -21,8 +21,8 @@ manifest and a `cells.json` record (exact token count, record count, fill lines,
 tokenizer/template hashes).  Re-running writes byte-identical files.
 
     python3 tools/mixed_gpu/p0_generate_cells.py \
-        --tokenizer /mnt/user/ai/iq3xxs-15/tokenizer \
-        --template /mnt/user/ai/iq3xxs-15/tokenizer/chat_template.jinja \
+        --tokenizer /mnt/user/ai/iq3xxs-ud/tokenizer \
+        --template /mnt/user/ai/iq3xxs-ud/tokenizer/chat_template.jinja \
         --out build-mixed-gpu/p0/cells
 """
 from __future__ import annotations

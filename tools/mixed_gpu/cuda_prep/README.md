@@ -118,8 +118,8 @@ experts are q4_K/q5_K/q8_0 (an Unsloth UD-Q4_K_XL form, docs/UNSLOTH_Q4.md) is n
 consumable real fixture needs such a pack, and that limit is recorded, not hidden.
 
 ```sh
-build-mixed-gpu/cuda-prep/cpu/fixture_export_real /mnt/user/ai/iq3xxs-15 \
-    /mnt/user/ai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf \
+build-mixed-gpu/cuda-prep/cpu/fixture_export_real /mnt/user/ai/iq3xxs-ud \
+    /mnt/user/ai/iq3xxs-ud/Qwen3.8-Flash-Next-UD-IQ3_XXS-00002-of-00004.gguf \
     build-mixed-gpu/cuda-prep/fixtures-real L0:0 L1:0 L11:0
 ```
 
@@ -135,8 +135,8 @@ expert, byte count, blob SHA-256, the checker's own verdict) and the per-class/p
 was measured on 2026-10-27 on this machine (Linux 7.3.0-x64v3-xanmod1, coreutils `sha256sum` 9.5):
 
 ```sh
-build-mixed-gpu/cuda-prep/cpu/fixture_export_real /mnt/user/ai/iq3xxs-15 \
-    /mnt/user/ai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf \
+build-mixed-gpu/cuda-prep/cpu/fixture_export_real /mnt/user/ai/iq3xxs-ud \
+    /mnt/user/ai/iq3xxs-ud/Qwen3.8-Flash-Next-UD-IQ3_XXS-00002-of-00004.gguf \
     build-mixed-gpu/cuda-prep/fixtures-real-r1 L0:0 L1:0 ... L47:0
 bash tools/mixed_gpu/cuda_prep/verify_real_bytes.sh build-mixed-gpu/cuda-prep/fixtures-real-r1
 ```
