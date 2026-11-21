@@ -340,3 +340,48 @@ Two things the run shows beside the stability:
 The stability claim this run supports is narrow and exact: the borrower table stays quiet and no
 request is refused on a parked multi-turn conversation that grows past the sizes that killed prod
 (53,717 and 64,507 tokens on 2026-11-21).
+
+## The park path, read properly: the 32 s per turn is prefill, not the disk restore
+
+Recon of the conversation cache (call it what it is: the engine's park/restore code, not a
+mystery) answered most of it, and the per-turn log settles the part it inferred wrongly.
+
+What the recon established in code, and I checked against the config:
+
+- The "512 MiB RAM ceiling" is not hidden or clamped: the prod config passes
+  `--conversation-cache-ram-mib 512` itself (a second knob next to
+  `--conversation-cache-mib 4096`, which is the cache's byte budget). Nothing ties it to the
+  38 GiB pool.
+- `parked to disk only` is the intended branch for a snapshot above that ceiling
+  (`generate.cpp:15328-15341`), taken before any allocation, and the disk tier streams first.
+- `park-gain: advanced 0 of 4096 past the published N` is benign: it is a re-park of a
+  conversation sitting exactly at its published depth. Every occurrence this boot says 0.
+- No pool lease is taken anywhere in park or restore, and the conversation cache is plain heap
+  outside both the pool and the budget arithmetic (`outside_owned = kv_cap_bytes`, headroom 0).
+  The 512 ceiling is currently the only bound on that heap.
+
+What the log corrects:
+
+| Turn | Engine's own line | Reused | Read | prompt_ms |
+|---|---|---|---|---|
+| 2 | `49340 = 45924 reused + 3416 read in 49600 ms (68.9 tok/s)` | 45,924 | 3,416 | 49.6 s |
+| 5 | `59983 = 56398 reused + 3585 read in 52607 ms (68.1 tok/s)` | 56,398 | 3,585 | 52.6 s |
+| 8 | `70486 = 67033 reused + 3453 read in 32084 ms (107.6 tok/s)` | 67,033 | 3,453 | 32.1 s |
+
+The per-turn mechanism is `the draft ring for the rewind to <M> restored from its pair`, with M
+exactly the previous turn's prompt depth - **not** a disk read. The only `restored ... from disk
+(checkpoint) in 11562.7 ms` in this boot belongs to the 6,000-token concurrency request, and the
+checkpoints at 16,384 / 32,768 / 49,152 are `target-only (no legal pair boundary ...)`, so the
+pair-based reuse only exists at the last boundary. So the recon's fit (~15 s restore inside the
+32 s at 68k, 47%) does not apply to these turns: here the 32 s is the **prefill of ~3.5k fresh
+tokens at 68-108 tok/s**, and a turn pays it because the new question is that large, not because
+the park failed.
+
+The real cost the log does show: the restore depth lags the published generation by exactly the
+previous answer's tokens (published 46,095 vs reused 45,924 = 171; 70,655 vs 67,033 = 275 among
+them), because the pair is captured at the prompt boundary and the answer sits after it. That is
+one answer re-read per turn, small next to the question, and the design intent of the pair mount.
+
+So: park/restore behaves as designed on the fixed build; the per-turn latency is prefill
+throughput; the 512 MiB ceiling is a deliberate setting that forces every 70k park to disk, and
+it is undocumented outside `--help` (a docs gap, queued).
