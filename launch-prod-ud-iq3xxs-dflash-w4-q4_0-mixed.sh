@@ -10,6 +10,9 @@
 # helper after every idle half-hour; engine death still exits at once on socket close), and prod
 # boots THROUGH the supervisor by default (--recover remains an alias),
 # any peer death restarts BOTH (either both run or both reset).
+# Champion (2026-11-21): this is the base every new window, trial or fix derives from.
+# See CHAMPION.md / CHAMPION.json. Pool 38 GiB, CUDA0 margin 320 (one +64 step past the
+# 256 that was measured), helper reserve 0 / fill 7400 / shard 00002 of the UD pack.
 set -euo pipefail
 ROOT=${STRATA_PROD_TREE:-/mnt/srcds/Strata}
 WORK="$ROOT/v0215"

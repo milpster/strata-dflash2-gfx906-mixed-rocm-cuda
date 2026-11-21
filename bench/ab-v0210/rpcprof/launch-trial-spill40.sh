@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# STALE 2026-11-21: this launcher pins an older build or helper reserve and must not be
+# the base for new work. Derive from the champion instead: ./launch-prod-ud-iq3xxs-dflash-w4-q4_0-mixed.sh
+# with prod-config-ud-iq3xxs-dflash-w4-q4_0-mixed.json (see CHAMPION.md / CHAMPION.json).
 # Trial launcher for the split-40 allocator/spill A/B (2026-11-10): exact copy of the
 # swift15 prod launcher shape, with BIN pinned to the spill-guard-fix build (v0217,
 # commit 089b6efcf on helper-ipc-diet), a TRIAL_CONFIG-selected config (spill40 off/on)

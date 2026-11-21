@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# STALE 2026-11-21: this launcher pins an older build or helper reserve and must not be
+# the base for new work. Derive from the champion instead: ./launch-prod-ud-iq3xxs-dflash-w4-q4_0-mixed.sh
+# with prod-config-ud-iq3xxs-dflash-w4-q4_0-mixed.json (see CHAMPION.md / CHAMPION.json).
 # Strata prod launcher - 2x Radeon VII (gfx906), Swift Qwen3.8 Flash Next IQ3_XXS.
 # Best measured config (bench/logs/2026-10-16-iq3xxs-2x-radeonvii): TG 27.1 t/s
 # @ 169k ctx, PP ~677 t/s, 262144 ctx, zero hangs.

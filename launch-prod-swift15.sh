@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# STALE 2026-11-21: this launcher pins an older build or helper reserve and must not be
+# the base for new work. Derive from the champion instead: ./launch-prod-ud-iq3xxs-dflash-w4-q4_0-mixed.sh
+# with prod-config-ud-iq3xxs-dflash-w4-q4_0-mixed.json (see CHAMPION.md / CHAMPION.json).
 # Strata prod launcher - Swift 1.5 Qwen3.8 Flash Next IQ3_XXS (ukisai GSQ-RCO, merged shards).
 # Same engine/flags as launch-prod.sh (2x Radeon VII gfx906, 262144 ctx, thinking "high",
 # sampling 0.6/0.95/20) plus CPU vision (mmproj-Swift-Qwen3.8-Flash-Next-BF16).

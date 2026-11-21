@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# STALE 2026-11-21: this launcher pins an older build or helper reserve and must not be
+# the base for new work. Derive from the champion instead: ./launch-prod-ud-iq3xxs-dflash-w4-q4_0-mixed.sh
+# with prod-config-ud-iq3xxs-dflash-w4-q4_0-mixed.json (see CHAMPION.md / CHAMPION.json).
 # Foreground mixed HIP/CUDA supervisor. Detach with setsid nohup when needed.
 # Uses the tested window helper and the opt-in prompt tier.
 # swift-iq3_s variant of the swift15 TUNED config. 2026-11-10 transfer: brought up to the

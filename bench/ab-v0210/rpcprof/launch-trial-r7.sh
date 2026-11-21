@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# STALE 2026-11-21: this launcher pins an older build or helper reserve and must not be
+# the base for new work. Derive from the champion instead: ./launch-prod-ud-iq3xxs-dflash-w4-q4_0-mixed.sh
+# with prod-config-ud-iq3xxs-dflash-w4-q4_0-mixed.json (see CHAMPION.md / CHAMPION.json).
 # Round-7 attribution trial launcher (2026-11-12): the v0225 V25I8 panel tuple on a
 # throwaway port (8021) with trial-own sockets/state/logs, shaped after
 # launch-trial-iq3s.sh. BIN stays pinned to the v0225 trees (hip engine + cuda helper).

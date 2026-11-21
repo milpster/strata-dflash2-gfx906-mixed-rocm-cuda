@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# STALE 2026-11-21: this launcher pins an older build or helper reserve and must not be
+# the base for new work. Derive from the champion instead: ./launch-prod-ud-iq3xxs-dflash-w4-q4_0-mixed.sh
+# with prod-config-ud-iq3xxs-dflash-w4-q4_0-mixed.json (see CHAMPION.md / CHAMPION.json).
 # Swift 1.5 IQ3_XXS production — MERGED v0.2.3 build (strata-v023-merge), Q4_0 draft.
 # Copied line-for-line from launch-prod-swift15-dflash-w4-q4_0.sh with:
 #   CLONE  -> the v023 merge worktree (serve code matched to the merged engine)

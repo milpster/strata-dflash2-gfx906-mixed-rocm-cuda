@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# STALE 2026-11-21: this launcher pins an older build or helper reserve and must not be
+# the base for new work. Derive from the champion instead: ./launch-prod-ud-iq3xxs-dflash-w4-q4_0-mixed.sh
+# with prod-config-ud-iq3xxs-dflash-w4-q4_0-mixed.json (see CHAMPION.md / CHAMPION.json).
 # Swift 1.5 IQ3_XXS production with DFlash2 width-4 settings, Q4_0 draft.
 # 2026-10-24: engine swapped to build-dfsample-1 (DFlash drafting for sampled
 # requests too); the config JSON's "env" block sets STRATA_DFLASH_SAMPLED=1.
