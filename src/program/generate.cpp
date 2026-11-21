@@ -2623,7 +2623,11 @@ void swap_in_read(SwapInFiles& sw, strata::core::ExpertSource* srcp,
     sw.pairs.clear(); sw.dst.clear(); sw.of_swap.clear();
     sw.n_pairs = 0; sw.n_failed = 0; sw.n_batch = 0; sw.bytes_io = 0; sw.ms_io = 0;
     for (size_t si = 0; si < wants.size(); ++si) {
-        if (srcp->blob_stable(wants[si].first, wants[si].second) != nullptr) continue;
+        // A yes/no question only - this used to call blob_stable(), which with a reference-counted source (the
+        // managed pool) borrowed a lease for EVERY pair the planner tested and never gave it back: the measured
+        // shape was 19,053 live borrowers with none completed.  available() asks the store and drops its lease
+        // at once, so the planner pins nothing.
+        if (srcp->available(wants[si].first, wants[si].second)) continue;
         sw.at[si] = sw.bytes_io;
         sw.pairs.push_back(wants[si]);
         sw.dst.push_back(nullptr);
@@ -9450,6 +9454,16 @@ int main(int argc, char** argv) {
                 return 1;
             }
         }
+        // Every blob_stable() below is a LOAN from a reference-counted source (the managed pool): it is recorded
+        // here and given back once the fill, the read-back and the 4-bit check have used the bytes.  Nothing is
+        // borrowed without being returned on this path - a startup fill that pinned would hold the pool forever.
+        // (fill_slot_blocking, verify_slot and NibbleCache::check/finish all sync before they return.)
+        std::vector<std::pair<int32_t, int32_t>> fill_loans;
+        auto loan = [&](int32_t l, int32_t e) -> const uint8_t* {
+            const uint8_t* p = srcp->blob_stable(l, e);
+            if (p != nullptr) fill_loans.emplace_back(l, e);
+            return p;
+        };
         for (int64_t i = 0; i < want; ++i) {
             if (!per_layer && srcp == &src && src.unbuffered() && i % 64 == 0) {
                 if (ahead.valid()) ahead.get();
@@ -9462,7 +9476,7 @@ int main(int argc, char** argv) {
                 if (per_layer) continue;
                 break;
             }
-            const uint8_t* b = srcp->blob_stable(profile[(size_t) i].first, profile[(size_t) i].second);
+            const uint8_t* b = loan(profile[(size_t) i].first, profile[(size_t) i].second);
             const bool nib_pair = nib_x.active() && nib::layer(profile[(size_t) i].first).on;   // STRATA_EXPERT_NIBBLE
             if (b == nullptr || !(nib_pair ? nib_x.add(profile[(size_t) i].first, profile[(size_t) i].second, slot, b, err)
                                            : xcache.fill_slot_blocking(slot, b, err,
@@ -9488,7 +9502,7 @@ int main(int argc, char** argv) {
         //  first pair THIS run prefilled, not profile[0] which may be the helper's now)
         if (prefilled > 0 && !nib::layer(verified_pair.first).on &&
             !xcache.verify_slot(xcache.slot_of(verified_pair.first, verified_pair.second),
-                                srcp->blob_stable(verified_pair.first, verified_pair.second), err,
+                                loan(verified_pair.first, verified_pair.second), err,
                                 (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(verified_pair.first))) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
@@ -9498,7 +9512,7 @@ int main(int argc, char** argv) {
             // rebuilt GGUF block of every converted slot was already checked on the device
             size_t c = 0;
             while (c < (size_t) want && !nib::layer(profile[c].first).on) ++c;
-            if (!nib_x.check(profile[c].first, profile[c].second, srcp->blob_stable(profile[c].first, profile[c].second),
+            if (!nib_x.check(profile[c].first, profile[c].second, loan(profile[c].first, profile[c].second),
                              err)) {
                 std::fprintf(stderr, "strata generate: STRATA_EXPERT_NIBBLE: CUDA0: %s\n", err.c_str());
                 return 1;
@@ -9510,6 +9524,7 @@ int main(int argc, char** argv) {
                                  "slot hashes recorded); layer %d expert %d read back\n", (long long) nib_x.n, ls.size(),
                          nib_x.seconds, (int) profile[c].first, (int) profile[c].second);
         }
+        for (const auto& lp : fill_loans) srcp->release(lp.first, lp.second);   // the fill has copied them: RAM not needed
         mem_mark("the profile fill");
         std::fprintf(stderr, "strata generate: pre-filled %lld of %lld slots from the profile in %.1f s (%.0f MB/s); "
                              "slot 0 verified\n",
@@ -9629,11 +9644,19 @@ int main(int argc, char** argv) {
                 return 1;
             }
         }
+        // The same loans as CUDA0's fill above, per stage: borrowed, recorded, given back once every use has
+        // synced (see that block's note).
+        std::vector<std::pair<int32_t, int32_t>> stage_loans;
+        auto stage_loan = [&](int32_t l, int32_t e) -> const uint8_t* {
+            const uint8_t* p = srcp->blob_stable(l, e);
+            if (p != nullptr) stage_loans.emplace_back(l, e);
+            return p;
+        };
         for (const auto& pr : st.profile) {
             if (filled >= st.cache.slots()) break;
             const int32_t slot = st.cache.admit(pr.first, pr.second);
             if (slot == strata::core::kNotResident) break;
-            const uint8_t* b = srcp->blob_stable(pr.first, pr.second);
+            const uint8_t* b = stage_loan(pr.first, pr.second);
             const bool nib_pair = nib_c.active() && nib::layer(pr.first).on;   // STRATA_EXPERT_NIBBLE
             if (b == nullptr || !(nib_pair ? nib_c.add(pr.first, pr.second, slot, b, err)
                                            : st.cache.fill_slot_blocking(slot, b, err, (int64_t) lay.blob_bytes(pr.first)))) {
@@ -9650,7 +9673,7 @@ int main(int argc, char** argv) {
         // (STRATA_EXPERT_NIBBLE: a converted slot holds 4-bit codes, not the blob's bytes - the 4-bit check below is its check)
         if (filled == 0 || (!nib::layer(st.profile[0].first).on &&
                             !st.cache.verify_slot(st.cache.slot_of(st.profile[0].first, st.profile[0].second),
-                                                  srcp->blob_stable(st.profile[0].first, st.profile[0].second), err,
+                                                  stage_loan(st.profile[0].first, st.profile[0].second), err,
                                                   (int64_t) lay.blob_bytes(st.profile[0].first)))) {
             std::fprintf(stderr, "strata generate: layer split, CUDA%d expert cache: %s\n", st.dev,
                          filled == 0 ? "nothing filled" : err.c_str());
@@ -9660,7 +9683,7 @@ int main(int argc, char** argv) {
             size_t c = 0;
             while (c < st.profile.size() && !nib::layer(st.profile[c].first).on) ++c;
             const auto& pc = st.profile[c];
-            if (!nib_c.check(pc.first, pc.second, srcp->blob_stable(pc.first, pc.second), err)) {
+            if (!nib_c.check(pc.first, pc.second, stage_loan(pc.first, pc.second), err)) {
                 std::fprintf(stderr, "strata generate: STRATA_EXPERT_NIBBLE: CUDA%d: %s\n", st.dev, err.c_str());
                 return 1;
             }
@@ -9671,6 +9694,7 @@ int main(int argc, char** argv) {
                                  "slot hashes recorded); layer %d expert %d read back\n", st.dev, (long long) nib_c.n,
                          ls.size(), nib_c.seconds, (int) pc.first, (int) pc.second);
         }
+        for (const auto& lp : stage_loans) srcp->release(lp.first, lp.second);   // copied into the stage's cache
         std::fprintf(stderr, "strata generate: layer split: CUDA%d runs layers %lld-%lld, expert cache %lld slots "
                              "(%.2f GiB), %lld of its %zu profiled pairs; slot 0 verified\n",
                      st.dev, (long long) st.lb, (long long) (st.le - 1), (long long) st.cache.slots(), st.cache.gib(),
@@ -11528,6 +11552,9 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata: refilling the expert cache failed: %s\n", cudaGetErrorString(cudaGetLastError()));
             return false;
         }
+        // the copies above have landed, so the loans that fed them are done with: a borrow left behind here held
+        // its pair in the host pool for the rest of the process (kvg_trim runs on every long decode)
+        for (const auto& [i, s] : filled) srcp->release((int64_t) i / g.n_expert, (int64_t) i % g.n_expert);
         for (const auto& [i, s] : filled) host_res[i] = s;
         kvg.refilled += (int64_t) filled.size();
         // res_put waits for its copy: the next reader can be a verify window (a non-blocking stream) right away
@@ -16277,6 +16304,10 @@ int main(int argc, char** argv) {
             if (!resident_stage_swaps(src, host_res, g.n_expert, swaps, home_of)) return false;
             adapt_nswaps += (int64_t) swaps.size();   // (read after the thread's join)
             if (pin_blobs_on()) {   // lock the batch's source pages (a file-backed arena on AMD; see pin_blobs)
+                // These blob_stable() calls borrow as well, and they are deliberately NOT released here: the
+                // pinned pages have to stay valid until the DMA reads them.  The copy loop below borrows the same
+                // pairs and notes each one on its copy's stream, which hands both borrows back to the pool once
+                // that copy has landed (a completed borrower is swept, count or not).
                 std::vector<std::pair<uintptr_t, uintptr_t>> spans;
                 for (const Swap& s : swaps)
                     if (const uint8_t* b = srcp->blob_stable(s.layer, s.in))
@@ -16341,6 +16372,11 @@ int main(int argc, char** argv) {
             std::vector<void*> cp_dst;
             std::vector<const void*> cp_src;
             std::vector<size_t> cp_bytes;
+            // The swap-ins borrowed from a reference-counted source (the managed pool), with the stream each copy
+            // was queued on.  They are handed to the source's async-note path once every copy is queued, just
+            // below: the pool must not recycle those bytes before their DMA has landed.  Before this, an adapt
+            // round borrowed its whole batch and noted nothing - a leak that grew with every round.
+            std::vector<std::pair<const uint8_t*, void*>> copy_notes;
             for (size_t si = 0; si < swaps.size(); ++si) {
                 const Swap& s = swaps[si];
                 if (aov && (si == 0 || swaps[si - 1].layer != s.layer)) {
@@ -16353,6 +16389,7 @@ int main(int argc, char** argv) {
                 const size_t in = (size_t) s.layer * g.n_expert + s.in, out = (size_t) s.layer * g.n_expert + s.out;
                 const int32_t slot = fenced_slots.empty() ? host_res[out] : fenced_slots[si];
                 const uint8_t* b = srcp->blob_stable(s.layer, s.in);
+                const bool pool_loan = (b != nullptr);   // a loan from a reference-counted source: must be given back
                 if (b == nullptr && swap_in.at[si] >= 0) b = swap_in.buf.data() + swap_in.at[si];   // the batch's staged bytes (W1 relief)
                 nib::guard_raw(s.layer, "the adaptive tier's copy in");
                 const int stn = multi_gpu ? stage_of(s.layer) : 0;   // the swap stays in the layer's own cache
@@ -16366,6 +16403,7 @@ int main(int argc, char** argv) {
                     host_res[out] = strata::core::kNotResident;
                     srcp->prefetch(s.layer, s.out);
                     pending.emplace_back((int32_t) in, slot);
+                    if (pool_loan) copy_notes.emplace_back(b, static_cast<void*>(adapt_stream));   // noted after the batch copy below
                     continue;
                 }
                 if (slot < 0 || b == nullptr ||
@@ -16376,6 +16414,7 @@ int main(int argc, char** argv) {
                                  (int) s.layer, (int) slot, pin_live.empty() ? 0 : 1, cudaGetErrorString(cudaGetLastError()));
                     return false;
                 }
+                if (pool_loan) copy_notes.emplace_back(b, static_cast<void*>(gs ? gs->adapt_stream : adapt_stream));
                 if (gs) gs->adapt_live = true;
                 else main_live = true;
                 host_res[out] = strata::core::kNotResident;   // evicted now: the CPU computes it meanwhile
@@ -16404,6 +16443,10 @@ int main(int argc, char** argv) {
                              cudaGetErrorString(cudaGetLastError()));
                 return false;
             }
+            // Every copy is queued now: hand the borrowed bytes to the async-note path, which records its
+            // completion event on the same stream the copy went to (a note recycles the loan when that event
+            // lands).  An unknown pointer is ignored by the source, so no check is needed here.
+            for (const auto& cn : copy_notes) srcp->note_async_read(cn.first, cn.second);
             if (!swaps.empty()) cudaEventRecord(adapt_ev, adapt_stream);
             // #2188: hand the copies and their landing signals to the GPU now.  WDDM batches a stream's work until a
             // driver call flushes it, and the verify window only spins on the pinned int (Linux submits at once: no-op)
@@ -20554,6 +20597,10 @@ int main(int argc, char** argv) {
                     const int np = refill_parts && !refill_blocking() ? srcp->blob_parts(i / g.n_expert, i % g.n_expert, parts) : 0;
                     if (np > 0) {   // the GGUF read in place: the tensors' pieces go from the mapping to the slot, no assembled copy
                         if (!p.cache->fill_slot_queued_parts(slot, parts, np, e)) return false;
+                        // The pieces are read by queued copies on stream 0 (fill_slot_queued_parts), so the loan
+                        // that produced them is noted there: the pool keeps those bytes until the copies land.
+                        // (A piece from another source is an unknown pointer to the pool and is ignored.)
+                        for (int k = 0; k < np; ++k) srcp->note_async_read(parts[k].p, nullptr);
                         if (!(deferred && !refill_blocking())) host_res[(size_t) i] = slot;
                         continue;
                     }
@@ -24859,6 +24906,8 @@ int main(int argc, char** argv) {
                         spans.emplace_back((uintptr_t) b,
                                            (uintptr_t) b + strata::kernels::cpu::expert_layout().blob_bytes(s.layer));
                 pin_blobs(std::move(spans), pin_live);
+                // As in the serve path's adapt: these borrows are held for the DMA and given back by the copy
+                // loop's notes below, not released here.
             }
             // STRATA_DMA_BATCH (F12): the round's copies as one cudaMemcpyBatchAsync; mode 0 is the loop of one copy each
             const int dma_mode = strata::core::dma_batch_mode();
@@ -24901,11 +24950,15 @@ int main(int argc, char** argv) {
             std::vector<void*> cp_dst;
             std::vector<const void*> cp_src;
             std::vector<size_t> cp_bytes;
+            // The swap-ins borrowed from a reference-counted source (the managed pool) are noted on their copy's
+            // stream once the copies are queued below (see the serve path's adapt).
+            std::vector<const uint8_t*> copy_loans;
             for (size_t si = 0; si < swaps.size(); ++si) {
                 const Swap& s = swaps[si];
                 const size_t in = (size_t) s.layer * g.n_expert + s.in, out = (size_t) s.layer * g.n_expert + s.out;
                 const int32_t slot = host_res[out];
                 const uint8_t* b = srcp->blob_stable(s.layer, s.in);
+                const bool pool_loan = (b != nullptr);   // a loan from a reference-counted source: must be given back
                 if (b == nullptr && swap_in_b.at[si] >= 0) b = swap_in_b.buf.data() + swap_in_b.at[si];   // the batch's staged bytes (W1 relief)
                 nib::guard_raw(s.layer, "the adaptive refill's copy in");
                 const size_t blob_n = (size_t) strata::kernels::cpu::expert_layout().blob_bytes(s.layer);
@@ -24922,6 +24975,7 @@ int main(int argc, char** argv) {
                     std::fprintf(stderr, "strata generate: an adaptive refill failed\n");
                     return false;
                 }
+                if (pool_loan) copy_loans.push_back(b);   // noted on adapt_stream after the batch copy below
                 host_res[out] = strata::core::kNotResident;   // evicted now: the CPU computes it meanwhile
                 srcp->prefetch(s.layer, s.out);   // a file-backed arena released its pages: read them back ahead
                 pending.emplace_back((int32_t) in, slot);      // resident once the copy has landed
@@ -24935,6 +24989,9 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "strata generate: an adaptive refill failed\n");
                 return false;
             }
+            // Every copy is queued now: note each borrowed blob on the stream its copy went to, so the pool keeps
+            // the bytes until that copy lands (see the serve path's adapt).
+            for (const uint8_t* p : copy_loans) srcp->note_async_read(p, adapt_stream);
             if (!swaps.empty()) cudaEventRecord(adapt_ev, adapt_stream);
             if (trace_adapt)
                 std::fprintf(stderr, "strata: ADAPT round=%lld swapped %zu of %d slots, usage decayed\n",

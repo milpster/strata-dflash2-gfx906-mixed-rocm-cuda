@@ -199,6 +199,13 @@ public:
     /// A blob pointer that stays valid (not recycled) for as long as the source is open: for a copy that runs
     /// asynchronously long after the call (the adaptive tier's swap-ins).  Defaults to `blob`.
     virtual const uint8_t* blob_stable(int64_t layer, int64_t expert) { return blob(layer, expert); }
+    /// Whether `(layer, expert)`'s bytes can be had right now, asked as a plain yes/no question - the planner's
+    /// "is this pair there already?" (generate.cpp's swap_in_read), which needs no pointer and keeps nothing.
+    /// The default asks `blob_stable()`, so the legacy sources answer exactly as they did when the caller called
+    /// it itself; a source that hands out reference-counted loans overrides this so that a probe creates no
+    /// borrower and pins no lease.  May warm a cache (the managed pool reads a miss into its own cache and drops
+    /// its lease at once), but must never wait.
+    virtual bool available(int64_t layer, int64_t expert) { return blob_stable(layer, expert) != nullptr; }
     /// W1 lever (the relief's swap-ins): read a BATCH of blobs straight from the pack files into
     /// `dst[i]`, one unbuffered read batch (sorted, merged windows - the page cache stays out, so
     /// the host copies the relief gave back do not re-materialize).  `ok[i]` answers per pair;

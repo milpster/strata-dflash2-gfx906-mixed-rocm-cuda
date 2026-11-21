@@ -68,6 +68,11 @@ public:
     /// Borrow (acquire + refcount) and return lease.data() (stable pointer).
     const uint8_t* blob_stable(int64_t layer, int64_t expert) override;
 
+    /// True when the store can produce the pair now, asked without a borrow: the lease is dropped the moment the
+    /// answer is known, so the store's own cache reference does the caching and nothing is pinned.  Never waits -
+    /// a planner probe must not spend the decode path's retry budget - so a refusal answers false at once.
+    bool available(int64_t layer, int64_t expert) override;
+
     /// Alias of blob_stable (pointer stable for async copy).
     const uint8_t* blob(int64_t layer, int64_t expert) override { return blob_stable(layer, expert); }
 
@@ -174,6 +179,13 @@ private:
     /// of copy_blob()/borrow_admit(), gate ON or OFF: this is the measurement that tells a later death
     /// whether the pool was still pinned by unswept borrowers.
     void note_refusal(const char* path, int64_t layer, int64_t expert) const;
+
+    /// The leak guard: once per second at most, and only when the borrower table has grown past 4,000 entries
+    /// and NOT ONE entry is completed or pending, print what it holds and the pair whose borrow
+    /// crossed the line.  That shape - a table far larger than a request's working set with no async state on
+    /// any entry - is a caller borrowing without ever noting or releasing, which is what emptied the pool.
+    /// Cheap: one relaxed compare-exchange per borrow, and the scan runs only when that gate opens.
+    void note_borrow_table(int64_t layer, int64_t expert) const;
 
     PoolExpertStore& store_;
     AsyncNoteHook hook_;

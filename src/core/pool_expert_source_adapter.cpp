@@ -86,6 +86,23 @@ int64_t now_us() {
                std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
+// One line per second per category: a single relaxed compare-exchange, no lock, no allocation.  Two separate
+// gates so the refusal line and the many-borrowers guard cannot starve each other.
+struct SecondGate {
+    std::atomic<int64_t> last_us{0};
+    bool take() {
+        const int64_t now = now_us();
+        int64_t prev = last_us.load(std::memory_order_relaxed);
+        if (now - prev < 1000000) return false;
+        return last_us.compare_exchange_strong(prev, now, std::memory_order_relaxed);
+    }
+};
+SecondGate g_refusal_gate;       // the refusal evidence line
+SecondGate g_borrow_table_gate;  // the many-borrowers guard
+
+// The guard's line: far more borrowers than a request's working set, and not one of them in an async cycle.
+constexpr size_t kManyBorrowers = 4000;
+
 std::atomic<int64_t> g_retry_window_start_us{0};
 std::atomic<int64_t> g_retry_used_us{0};
 
@@ -175,24 +192,47 @@ bool PoolExpertSourceAdapter::copy_blobs(const int32_t* layers, const int32_t* e
     return true;
 }
 
+bool PoolExpertSourceAdapter::available(int64_t layer, int64_t expert) {
+    // The planner asks a question, not for a loan: acquire and let the lease go at once.  The store's own cache
+    // reference keeps a hit cached and a miss it read stays cached too, so the answer is the same one a borrow
+    // would give - with no borrower and nothing pinned.  Deliberately NOT the retry path: a probe must never
+    // wait, and a refusal here is a plain "not now".
+    PoolLease lease;
+    const std::error_code ec = store_.acquire(layer, expert, lease);
+    return !ec && lease.valid();
+}
+
 const uint8_t* PoolExpertSourceAdapter::blob_stable(int64_t layer, int64_t expert) {
-    if (admit_retry_enabled()) return borrow_admit(layer, expert);
-    std::lock_guard<std::mutex> lk(mu_);
-    borrow_locked(layer, expert);
-    auto it = borrowers_.find(key_of(layer, expert));
-    if (it == borrowers_.end() || !it->second.lease.valid()) return nullptr;
-    return static_cast<const uint8_t*>(it->second.lease.data());
+    const uint8_t* p = nullptr;
+    if (admit_retry_enabled()) {
+        p = borrow_admit(layer, expert);
+    } else {
+        std::lock_guard<std::mutex> lk(mu_);
+        borrow_locked(layer, expert);
+        auto it = borrowers_.find(key_of(layer, expert));
+        if (it != borrowers_.end() && it->second.lease.valid())
+            p = static_cast<const uint8_t*>(it->second.lease.data());
+    }
+    note_borrow_table(layer, expert);
+    return p;
 }
 
 int PoolExpertSourceAdapter::blob_parts(int64_t layer, int64_t expert, BlobPart* out) {
-    if (admit_retry_enabled()) return blob_parts_admit(layer, expert, out);
-    std::lock_guard<std::mutex> lk(mu_);
-    borrow_locked(layer, expert);
-    auto it = borrowers_.find(key_of(layer, expert));
-    if (it == borrowers_.end() || !it->second.lease.valid() || out == nullptr) return 0;
-    const uint64_t bytes = store_.blob_bytes(layer);
-    out[0] = BlobPart{static_cast<const uint8_t*>(it->second.lease.data()), bytes, 0};
-    return 1;
+    int n = 0;
+    if (admit_retry_enabled()) {
+        n = blob_parts_admit(layer, expert, out);
+    } else {
+        std::lock_guard<std::mutex> lk(mu_);
+        borrow_locked(layer, expert);
+        auto it = borrowers_.find(key_of(layer, expert));
+        if (it != borrowers_.end() && it->second.lease.valid() && out != nullptr) {
+            out[0] = BlobPart{static_cast<const uint8_t*>(it->second.lease.data()),
+                              store_.blob_bytes(layer), 0};
+            n = 1;
+        }
+    }
+    note_borrow_table(layer, expert);
+    return n;
 }
 
 uint64_t PoolExpertSourceAdapter::release(int64_t layer, int64_t expert) {
@@ -367,11 +407,7 @@ int64_t pool_expert_source_adapter_retry_used_us_for_test() {
 void PoolExpertSourceAdapter::note_refusal(const char* path, int64_t layer, int64_t expert) const {
     // One line per second for the whole process: the rate gate is a single relaxed
     // compare-exchange, so even a refusal storm pays one atomic per refusal.
-    static std::atomic<int64_t> last_evidence_us{0};
-    const int64_t now = now_us();
-    int64_t prev = last_evidence_us.load(std::memory_order_relaxed);
-    if (now - prev < 1000000) return;
-    if (!last_evidence_us.compare_exchange_strong(prev, now, std::memory_order_relaxed)) return;
+    if (!g_refusal_gate.take()) return;
     // Snapshot under mu_, print outside it (fprintf may take a libc lock).
     size_t nb = 0, nc = 0, np = 0;
     {
@@ -387,6 +423,31 @@ void PoolExpertSourceAdapter::note_refusal(const char* path, int64_t layer, int6
                  "strata: managed pool: %s refused layer %lld expert %lld: borrowers=%zu completed=%zu "
                  "pending=%zu resident_pairs=%llu evictions=%llu\n",
                  path, (long long) layer, (long long) expert, nb, nc, np,
+                 (unsigned long long) st.resident_pairs, (unsigned long long) st.evictions);
+}
+
+void PoolExpertSourceAdapter::note_borrow_table(int64_t layer, int64_t expert) const {
+    // Guard against a silent return of the pin leak: a borrower table far larger than any request's working
+    // set whose entries are ALL in no async cycle means nobody is noting or releasing them.  One atomic per
+    // borrow; the scan (and the lock) run only when the one-second gate opens.
+    if (!g_borrow_table_gate.take()) return;
+    size_t nb = 0, nc = 0, np = 0;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        nb = borrowers_.size();
+        if (nb <= kManyBorrowers) return;
+        for (const auto& kv : borrowers_) {
+            if (kv.second.completed) ++nc;
+            if (kv.second.pending_event) ++np;
+        }
+    }
+    if (nc != 0 || np != 0) return;   // someone is driving the async cycle: not this shape
+    const PoolExpertStore::Stats st = store_.stats();
+    std::fprintf(stderr,
+                 "strata: managed pool: %zu live borrowers, none completed, none pending (the borrow that "
+                 "crossed the line: layer %lld expert %lld) - a caller is borrowing without noting or "
+                 "releasing; resident_pairs=%llu evictions=%llu\n",
+                 nb, (long long) layer, (long long) expert,
                  (unsigned long long) st.resident_pairs, (unsigned long long) st.evictions);
 }
 

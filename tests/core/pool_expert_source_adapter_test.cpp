@@ -936,6 +936,84 @@ int main(int argc, char** argv) {
     check_borrow_rearms("20 gate off", 0);
     check_borrow_rearms("21 gate on", 1);
 
+    // ============ 22. available(): answers without borrowing, pins nothing ========
+    {
+        Pool pool;
+        auto ec = make_pool(pool, 4 * kPage);
+        check(!ec, "22: create tight pool");
+        ExpertLayout layout;
+        build_layout(layout);
+        PoolExpertStore store(pool);
+        ec = store.open(g_fixture_path.c_str(), layout);
+        check(!ec, "22: open store");
+        PoolExpertSourceAdapter adapter(store);
+
+        check(adapter.available(0, 0), "22: available() true for a pair the pool can produce");
+        check(!adapter.borrowed(0, 0), "22: available() left no borrower");
+        // the probe may keep the pair cached (the store's own reference); the answer stays true and still
+        // no borrower appears
+        check(adapter.available(0, 0), "22: a second probe is still true");
+        check(!adapter.borrowed(0, 0), "22: a second probe left no borrower");
+
+        // the borrow that follows a probe works exactly as it did without one
+        const uint8_t* b = adapter.blob_stable(0, 0);
+        check(b != nullptr, "22: the borrow after a probe succeeds");
+        check(adapter.borrowed(0, 0), "22: and it does register a borrower");
+        check(region_matches(b, expert_file_offset(0, 0), expert_bytes(0)), "22: its bytes are the pair's");
+        adapter.release(0, 0);
+        check(!adapter.borrowed(0, 0), "22: released");
+    }
+
+    // ============ 23. available() on a pair that cannot be admitted ==============
+    {
+        Pool pool;
+        auto ec = make_pool(pool, 4 * kPage);
+        check(!ec, "23: create tight pool");
+        ExpertLayout layout;
+        build_layout(layout);
+        PoolExpertStore store(pool);
+        ec = store.open(g_fixture_path.c_str(), layout);
+        check(!ec, "23: open store");
+        PoolExpertSourceAdapter adapter(store);
+
+        const uint8_t* live = adapter.blob_stable(0, 0);   // fills the pool
+        check(live != nullptr, "23: the first borrow fills the pool");
+        check(!adapter.available(0, 1), "23: available() false when the pool cannot produce the pair");
+        check(!adapter.borrowed(0, 1), "23: a refused probe left no borrower");
+        check(adapter.borrowed(0, 0), "23: the live borrower was not disturbed");
+
+        // the probe must answer what a borrow answers
+        const bool probe = adapter.available(0, 1);
+        const uint8_t* got = adapter.blob_stable(0, 1);
+        check(probe == (got != nullptr), "23: available() and blob_stable() agree");
+        adapter.release(0, 1);
+        adapter.release(0, 0);
+    }
+
+    // ============ 24. release() removes the borrower, so a refusal goes away =====
+    {
+        Pool pool;
+        auto ec = make_pool(pool, 4 * kPage);
+        check(!ec, "24: create tight pool");
+        ExpertLayout layout;
+        build_layout(layout);
+        PoolExpertStore store(pool);
+        ec = store.open(g_fixture_path.c_str(), layout);
+        check(!ec, "24: open store");
+        PoolExpertSourceAdapter adapter(store);
+
+        const uint8_t* a = adapter.blob_stable(0, 0);
+        check(a != nullptr, "24: borrow (0,0)");
+        check(!adapter.available(0, 1), "24: while it is borrowed, (0,1) cannot be had");
+        adapter.release(0, 0);
+        check(!adapter.borrowed(0, 0), "24: release() removed the borrower");
+        check(adapter.available(0, 1), "24: the refused pair can be had once the borrower is released");
+        const uint8_t* b = adapter.blob_stable(0, 1);
+        check(b != nullptr, "24: and it can be borrowed");
+        check(region_matches(b, expert_file_offset(0, 1), expert_bytes(0)), "24: its bytes are the pair's");
+        adapter.release(0, 1);
+    }
+
     std::fprintf(stderr, "pool_expert_source_adapter_test: %d checks, %d FAILURES\n",
                  checks, failures);
     return failures == 0 ? 0 : 1;
