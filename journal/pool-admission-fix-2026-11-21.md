@@ -266,3 +266,15 @@ So the shape passes twice on this build with the overlap doubled over what was r
 one number that moves the wrong way is the borrower table: 7,959 after one leg, 9,053 after the
 second on the same boot. It does not fall back between requests - the leak is per request, which
 is why a longer agent session still ends in the refusal. Naming the caller is the next thing.
+
+## The staged binary that did not contain the fix (process note)
+
+`9358921670` reported "build of the six touched TUs ... warnings only" and the tests green. The
+engine binary did **not** change: `build-906-fixadmit/strata` still hashed `618689a5`, the
+`716c3abee5` build. A translation unit compiling is not the engine linking, and the lane's own
+validation line was honest about it ("built the six touched TUs") without me reading it that way.
+
+Caught by hashing the binary before staging it, not by distrust of the report as a whole. From
+here on a lane's build claim counts only with **two** hashes: the test binary that ran and the
+`strata` binary that will be booted. I ran `ninja -C build-906-fixadmit strata` myself; it
+relinked in 8 steps (`a506e620`), and that is what is staged.
