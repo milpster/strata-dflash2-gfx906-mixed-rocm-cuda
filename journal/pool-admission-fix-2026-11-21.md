@@ -538,3 +538,38 @@ Next instrument: `STRATA_DBG_NAN=1` in the engine's environment (config commit `
 `src/prefill/prefill.cpp` report, per chunk, `layer L (mmq N, types G/D, K experts): non-finite GU ... H ...
 Dm ... bo ... of T` for the first chunk that produces them, and at prompt end the non-finite count and
 max |x| of the last residual row, the PLE history and the GDN state.
+
+## The 230k-working tuple does not have the problem (2026-11-21 16:23-16:44)
+
+Booted the last tuple that produced tokens at 230k (journal `prod-champion-2026-11-21.md`): engine
+**`d534e72a7369fe5d`** (`run/trial-managed-bin/rpcw-hip/strata`), helper **`553f3bf48219c992`**, budget
+**40,960 MiB** (`pool_bytes=38,654,705,664`), CUDA0 **256** / CUDA1 192, helper reserve 64, fill 7,400, slot
+cap 4,600, kv-resident-mib 4,096, prefill 16,384, max-context 262,144. Both hashes verified from `/proc/<pid>/exe`
+before the leg. Config: `bench/ab-v0210/rpcprof/champion38g-prod-test.json` on `:8009`, champion files untouched.
+
+Same leg as the failing runs (`ctx-threshold.sh 323200 8`, 239,663-token prompt):
+
+| | champion tuple `d534e72a` + `553f3bf4` | merged tuple `5a699be1` + `9d16742d` |
+|---|---|---|
+| prompt read | 239,663, ~1,102 s (≈218 tok/s) | 239,658 / 239,663, 1,716 s and 918 s (139.6 and 261.2 tok/s) |
+| first decode step | **finite** | non-finite logits (#879) 4 times in 4 passes |
+| engine's own line | `done: 4 tokens in 1222 s (7.5 tok/s) (length, cancel=False), expert cache 95.7% hit (+7.4% of the routed experts over PCIe)` | `non-finite logits (#879) in a prompt window at position 239658 (row 0)` |
+| non-finite lines in the boot | **0** | 6 and 4 per slice |
+| answer text | empty, and for a benign reason: `the reply reached max tokens while still thinking, so it has no answer` (max_tokens 8 sat inside the thinking prelude) | none produced |
+
+So the failure is a **regression** relative to `d534e72a`, not a property of the model, the prompt, the pack,
+the KV settings, the margins or the pool size (40,960 vs 36,864 also differ, and the pool was larger here).
+
+The helper is not the suspect: the first failing pass on the merged tuple reported
+`helper=reqs=0 rows=0 bytes=0` — it produced the non-finite logits with the helper serving nothing. The
+remaining suspects are the engine changes between `d534e72a` and `5a699be1`: the merge `159e3097ef` and the
+prefill gates/pool-lease commits (`716c3abee5`, `5435391e3d`, `dca0e3cc93`, `9358921670`).
+
+Trade-off this leaves: `d534e72a` is the engine that died three times in ninety minutes on agent-sized prompts
+(pool admission), and `5a699be1` is the one that survived a 138-request agent session but cannot finish a
+240k prompt. Neither tuple is good for both workloads yet.
+
+Harness notes: `ctx-threshold.sh` now honours `STRATA_ELOG` (`dcc0f61973`) because this boot wrote its progress
+lines to the console log, not the `engine-prod-ud-iq3xxs-v0233.log` slice it assumed. Editing a shell script
+while a copy of it is running makes bash resume at a stale byte offset — the leg's tail then reports a bogus
+syntax error (seen here); the leg's own result lines were already complete and are what the table above uses.
