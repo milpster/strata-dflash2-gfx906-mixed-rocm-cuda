@@ -19,3 +19,14 @@ Thin-but-working is NOT exhaustion and does not change the margin: the 40 GiB wi
 
 Margins are edited in the window's config `args` (they are recorded there), never by editing
 the running binary or a booted process.
+
+## Which model a lane runs on (operator, 2026-11-21)
+
+- **One active subagent at a time.** Never two, never a second spawned to "speed things up".
+- **Work that can run while prod serves goes to swift** (`llamacpp/swift-1.5-iq3_xxs`, served by
+  this box's own engine on 8009). Code, tests, builds, docs: those lanes ride prod.
+- **Work that needs prod down goes to deepseek** (`tokenharbor/deepseek-v4.1-flash-1017`), never to
+  swift: a swift lane dies with the engine it is thinking on. Anything that stops, swaps or boots
+  the serving pair is a deepseek lane.
+- The parent decides the model per lane and states it when dispatching. A lane never restarts
+  prod itself; if a step inside it would take prod down, the lane stops and reports instead.
