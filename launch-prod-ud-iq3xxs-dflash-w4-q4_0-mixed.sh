@@ -20,7 +20,15 @@ WORK="$ROOT/v0215"
 # STRATA_SWAPIN_DEPTH=64) + helper reserve 512->320 (R3A: fill binds at 6796 either way).
 # Measured vs v0227 split pin (R3A lean panel): 180k warm TG 18.8-23.8 -> 29.0-31.5;
 # PP 64k 359.9 -> 521.5; PP 180k 529.5 -> 578.7.
-BIN="$ROOT/v0233/build-mixed-gpu"
+# 2026-11-21: pinned to the managed-host-pool build that set the UD-only series and the
+# 230k-token window (engine rpcw-hip/strata sha256 d534e72a7369..., helper
+# rpcw-cuda/strata-expert-helper-patient sha256 553f3bf48219...; both symlinks into the
+# helper-ipc-diet worktree build-906 and v0233). Pool config: STRATA_RAM_BUDGET_MIB 43008
+# -> 38 GiB pool + 4 GiB outside area, CUDA0 VRAM margin 256 (one +64 step after the
+# 40 GiB run exhausted the card at 7 MiB free), CUDA1 192, helper reserve 0 (the component
+# clamps it to 64), fill 7400 MiB, relief hot 2048 / arena cap 4096.
+BIN="$ROOT/run/trial-managed-bin"
+export STRATA_RAM_BUDGET_MIB=${STRATA_RAM_BUDGET_MIB:-43008}
 PY="$ROOT/.venv/bin/python"
 CONFIG="$ROOT/prod-config-ud-iq3xxs-dflash-w4-q4_0-mixed.json"
 SOCKET="$ROOT/run/prod-iq3xxs-ud-mixed.sock"
@@ -92,9 +100,9 @@ for v in STRATA_RPC_PROFILE STRATA_VERIFY_PROFILE STRATA_HELPER_REPLY_TIMEOUT_MS
 done
 env -i "${helper_env[@]}" "$HELPER" \
   --pack ${STRATA_AI_DIR:-/mnt/srcds/ai}/iq3xxs-ud \
-  --experts ../Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00004.gguf \
-  --device 0 --slots 4600 --reserve-mib 156 --timeout 63115200000 \
-  --begin-timeout 63115200000 --socket "$SOCKET" --fill-mib 7100 --socket2 "$SOCKET2" \
+  --experts ../Qwen3.8-Flash-Next-UD-IQ3_XXS-00002-of-00004.gguf \
+  --device 0 --slots 4600 --reserve-mib 0 --timeout 63115200000 \
+  --begin-timeout 63115200000 --socket "$SOCKET" --fill-mib 7400 --socket2 "$SOCKET2" \
   >>"$HLOG" 2>&1 < /dev/null &
 helper_pid=$!
 if [[ -n ${STRATA_PAIR_RECORD:-} ]]; then
