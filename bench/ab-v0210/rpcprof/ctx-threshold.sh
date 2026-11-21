@@ -22,7 +22,7 @@ TARGET=${1:?usage: ctx-threshold.sh TARGET_PROMPT_TOKENS [MAX_TOKENS] [SEED]}
 MAXTOK=${2:-8}
 SEED=${3:-7}
 PY=bench/ab-v0210/rpcprof/longctx-stress.py
-ELOG=logs/engine-prod-ud-iq3xxs-v0233.log
+ELOG=${STRATA_ELOG:-logs/engine-prod-ud-iq3xxs-v0233.log}   # override when the boot logs elsewhere
 OUT=/tmp/opencode/ctx-threshold-last.txt
 
 [[ -f $PY ]] || { echo "missing $PY" >&2; exit 3; }
