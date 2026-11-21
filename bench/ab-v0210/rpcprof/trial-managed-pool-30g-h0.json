@@ -157,5 +157,5 @@
   "trial_note": "managed-RAM-pool validation trial 2026-11-20; helper host arena capped low because the managed pool is the primary expert cache; VRAM margins left at the tuple's own 192/576",
   "managed_budget_mib": 40960,
   "derived_from": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/trial-managed-pool-30g.json",
-  "derived_note": "empty conversation cache for a genuinely cold prefill; budget 34816 (30 GiB pool), dev1 192, helper reserve 0 + fill-mib 7308 - the last cut the slot cap allows"
+  "derived_note": "empty conversation cache for a genuinely cold prefill; budget 34816 (30 GiB pool), dev1 192, helper reserve 0 + fill-mib 7400 (env, so the slot cap binds) - the last cut the slot cap allows; operator: just fill the slot cap. STRATA_HELPER_RESERVE=0 and STRATA_FILL_MIB=7400 at boot: 7400 MiB exceeds the 4,600-slot cost (7,313 MiB) so the fill stops on the slot cap, inside the 7,344 MiB budget."
 }
