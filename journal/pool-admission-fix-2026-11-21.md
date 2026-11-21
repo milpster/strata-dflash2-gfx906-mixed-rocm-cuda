@@ -703,3 +703,54 @@ and leaves 156 MiB, where split 30 leaves 360 MiB and the passing branch engine 
 
 Consequence for the plan: the split is not a fix. The NaN has to be fixed at split 30, or the split moved with
 the reserves raised per the engine's own recommendation - and margins are the operator's call, not mine.
+
+## Root cause found and confirmed by measurement: the per-card `STRATA_FS_SLOTS` parse starves card1
+
+### The source difference (proved by reading both trees)
+
+| tree | parse of `STRATA_FS_SLOTS="2,8"` | card1 Foresight slots |
+|---|---|---|
+| branch `9358921670` (`expert_source.cpp:7665`) | `const int slots = v ? std::atoi(v) : 0;` → **2** | ~55 MiB (the merge's own comment) |
+| merge `159e3097ef` (`expert_source.cpp:8018-8032`) | comma list, in card order → **card0:2, card1:8** | ~220 MiB |
+
+The merge's comment states the intent plainly: *"the split rigs' card1 sits on a thin VRAM margin, so it takes
+fewer; card0 at 2 slots is ~133 MiB, card1 at 2 is ~55 MiB"*. Our config carries `STRATA_FS_SLOTS=2,8`, a value
+that was harmless before the merge and now gives the thin-margin card **four times** card0's slots. The swap then
+serves nothing in these legs (`0 served / 0 copies`), so it buys no speed and costs the margin.
+
+### The measurement (merge engine `5a699be1`, 3,058-token oracle, split 30 unless stated)
+
+| leg | card1 FS slots | `--vram-reserve-later-mib` | CUDA1 free, loaded | outcome |
+|---|---|---|---|---|
+| `dbgnan` (baseline) | 8 | 192 | **140 MiB** | **FAIL** — layer-30 MoE all NaN |
+| `split29` | 8 | 192 | 124 MiB | FAIL |
+| `split31` | 8 | 192 | 156 MiB | PASS |
+| `split34` | 8 | 192 | 204 MiB | PASS |
+| **`fsslots2`** | **2** | 192 | **360 MiB** | **PASS**, no dbg line at all |
+| **`fs28-reserve`** | **8 (unchanged)** | **400** | **348 MiB** | **PASS** |
+| `ctl-a506` (branch engine) | 2 (atoi) | 192 | 360 MiB | PASS |
+
+`fsslots2` lands on exactly the branch's 360 MiB, and `fs28-reserve` keeps the merge's 8 slot1 slots yet passes by
+freeing the same margin from the cache. So the variable is **free VRAM on card1**, not the slot count and not the
+layer count — "18 or more layers on CUDA1" was only a proxy, because each extra layer also brings FS slots.
+
+### The mechanism (from the delegate's instrumentation argument)
+
+The non-finite counts are **not multiples of the GEMM's N**: `22268 = 69×320 + 188` bad outputs on layer 30 half-0
+(`T=3053 N=320 K=10240`), and 11149 on half-1. A non-finite *input* element would make whole output rows NaN and
+give counts that are exact multiples of N. Scattered counts mean the first stage-2 GEMM's own outputs go bad in
+place: below roughly 150 MiB free, card1's first-use allocations (rocBLAS workspace/kernel selection, window-graph
+capture) fail or page, which is exactly the regime the engine's own warning names (`#2065`, `kVramSafeMib`).
+CUDA0, with 284 MiB free, never corrupts.
+
+### Fixes, cheapest first
+
+1. **Config, no rebuild:** set `STRATA_FS_SLOTS=2` — restores the pre-merge behaviour exactly (atoi semantics) and
+   the 360 MiB margin. Measured: passes at 3k.
+2. **Code, durable:** in `ForesightSwap::init` (`expert_source.cpp:7609-7622`) clamp `card_slots[c]` with
+   `cudaMemGetInfo` so at least `vram_guard::kLowMib` stays free, and/or allocate the FS `cudaMalloc` before the
+   expert-cache fill so the cache absorbs it instead of the safety margin.
+3. Independent of both: the same starvation explains the 240k stall at split 31 (156 MiB free, `#2065` full-card
+   stall). One cause, two symptoms.
+
+Validation in flight: the 239,663-token leg at split 30 with `STRATA_FS_SLOTS=2`.
