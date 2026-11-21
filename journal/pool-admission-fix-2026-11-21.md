@@ -66,8 +66,24 @@ borrow so a foreign sweep cannot free an in-flight lease.
 | longctx-stress | 44,556 | 1,224 | completed, 23.7 tok/s decode, 95.9% hit, **no refusal line** |
 | longctx-stress | 95,000 target | 1,800 max | running at the time of writing |
 
-Not yet proven: no A/B of the *same* request against the old build, and no multi-turn agent
-lane on the new one. Both are owed before this is called closed.
+The A/B was run, and it came back **negative** — the honest result:
+
+| Build | Prompt | Generated | Result |
+|---|---|---|---|
+| `96a04be9` (hit-pin fix) | 65,341 | 2,200 (`length`) | completed, 25.5 tok/s, 96.4% hit, 0 refusals |
+| `d534e72a` (winner, old) | 65,341 | 2,200 (`length`) | **also completed**, 20.9 tok/s |
+
+So a single cold request of the death shape does not reproduce the death on either build, and
+the hit-path pin leak is therefore **not established as the cause of the 04:09/04:16 deaths**.
+What is established: the old path borrowed a pool lease for every hit, which pins pairs the
+cache could otherwise evict for the whole request; the new path does not. That is a real
+defect and a real improvement, but it is not proven to be the thing that killed prod — the
+deaths needed a shape a single request does not have: a live lane with a warm conversation
+cache (the engine restored 42,299 tokens from disk in 13.9 s and parked every turn), several
+requests in sequence, and a conversation cache that grows between them.
+
+The fix stays (it removes a defect and cannot be worse than the old path); the claim that it
+ends the prod deaths does not, until the multi-turn shape is reproduced on the old build.
 
 ## Two build traps that cost a cycle each
 
