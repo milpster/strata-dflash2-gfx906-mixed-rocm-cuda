@@ -10,14 +10,39 @@ Last updated 2026-11-21. Supersedes every earlier "winner", "champion" or launch
 
 | Part | Path | Identity |
 |---|---|---|
-| Prod launcher | `launch-prod-ud-iq3xxs-dflash-w4-q4_0-mixed.sh` | supervisor boot, 127.0.0.1:8009 |
-| Prod config | `prod-config-ud-iq3xxs-dflash-w4-q4_0-mixed.json` | see knobs below |
-| Engine | `run/pool-admit-bin/rpcw-hip/strata` (copy of `Strata-wt-helper-ipc/build-906-fixadmit/strata`) | sha256 `a506e62008ba...`, worktree `helper-ipc-diet` @ `9358921670` |
-| Engine rollback pin | `run/winner-pin-38g/strata-engine` | sha256 `d534e72a7369...` (`build-906/strata`, untouched) |
-| Helper | `run/trial-managed-bin/rpcw-cuda/strata-expert-helper-patient` | sha256 `553f3bf48219...` (v0233 pin) |
-| Winner fallback | `run/winner-pin-38g/strata-engine` | byte copy of the engine that ran the 38 GiB row |
+**Nothing is serving as of 2026-11-21 17:15** — prod was stopped, and no tuple is crowned for both
+workloads, because today's measurements split them:
+
+| Tuple | Engine | Helper | Budget | Proven on |
+|---|---|---|---|---|
+| A — 240k-proven | `run/trial-managed-bin/rpcw-hip/strata` = **`d534e72a7369fe5d`** | **`553f3bf48219c992`**, reserve 64, fill 7400 | 40,960 (`pool_bytes=38654705664`) | 239,663-token prompt: read in ~1,102 s (≈218 tok/s), decoded, **0 non-finite** |
+| B — agent-proven | `run/pool-admit-bin/rpcw-hip/strata` = **`5a699be15a515adc`** | **`9d16742d5f30e9c1`**, reserve 0, fill 0 | 36,864 (`pool_bytes=34359738368`) | a 138-request agent session, 100,291-token prompt, `timeouts=0 fallbacks=0`; **fails every 240k prompt** |
+
+| Part | Path | Identity |
+|---|---|---|
+| Prod launcher | `launch-prod-ud-iq3xxs-dflash-w4-q4_0-mixed.sh` | supervisor boot, 127.0.0.1:8009; `STRATA_PROD_BIN`, `STRATA_PROD_CONFIG`, `STRATA_PROD_HELPER_RESERVE_MIB`, `STRATA_PROD_HELPER_FILL_MIB` override the tuple without editing it |
+| Prod config | `prod-config-ud-iq3xxs-dflash-w4-q4_0-mixed.json` | tuple B (engine `5a699be1`, budget 36,864) |
+| 240k test config | `bench/ab-v0210/rpcprof/champion38g-prod-test.json` | tuple A on the prod port and sockets |
+| Bisect point | `bench/ab-v0210/rpcprof/pool-a506-prod-test.json` | engine `a506e62008ba...` (end of the pool-admission suite), no verdict |
 | Pack | `/mnt/srcds/ai/iq3xxs-ud` | UD, 48 layers x 512 experts, `native_experts.txt` v4 (gu 22 / d 20) |
 | Helper shard | `--experts ../Qwen3.8-Flash-Next-UD-IQ3_XXS-00002-of-00004.gguf` | the shard verified byte-equal to the UD `experts.bin` planes |
+
+## 2026-11-21: the 240k regression (open, blocks promoting tuple B for long prompts)
+
+Measured on the same 239,663-token prompt, same port, `max_tokens 8`:
+
+| Setting changed | Result |
+|---|---|
+| tuple A, budget 40,960, CUDA0 256 | prompt read, `done:`, **0 non-finite logits** |
+| tuple B, budget 36,864, CUDA0 256 | `non-finite logits (#879) in a prompt window at position 239658 (row 0)`, 4 of 4 passes |
+| tuple B, CUDA0 **704** (730 MiB free at request start) | still non-finite → VRAM is not the cause |
+| tuple B, second pass reading the whole prompt through the batched path (`0 reused`) | still non-finite → the prompt path is not the cause |
+
+The helper is not the source: the first failing pass reported `helper=reqs=0 rows=0 bytes=0`. The window is the
+seven-commit pool-admission suite between `d534e72a` (built 23:47, before `1ae83e157d`) and `5a699be1` (after
+`a2303f4021`); `a506e620` (end of that suite) is the zero-build bisect point and its leg was stopped at 81,920 of
+239,663 tokens with no verdict. `STRATA_DBG_NAN=1` localizes a bad chunk but costs a 4× slower prefill
+(65 tok/s vs 150–260), which is unaffordable at 240k.
 
 ## The knobs that make it the champion
 

@@ -29,5 +29,46 @@
   "rule": "no lane may boot an older build, pack or launcher; derive from the champion and state the delta",
   "engine_commit": "9358921670 (worktree helper-ipc-diet; lend/return contract for CPU pool loans)",
   "engine_note": "the previous engine d534e72a (build-906/strata) is still the rollback pin in run/winner-pin-38g; promotion of this engine and of the margin below is the operator's decision, and this file records what is actually serving until then",
-  "vram_reserve_mib_note": "provisional: raised 384->640 on 2026-11-21 on the belief that 'refilling a lent slot failed: No buffer space available' was VRAM. It is ENOBUFS from the RAM pool, so no margin step was ever justified by it. 640 is what is serving and what two clean legs passed on; a measurement back down (512, 448) is queued for the operator"
+  "vram_reserve_mib_note": "provisional: raised 384->640 on 2026-11-21 on the belief that 'refilling a lent slot failed: No buffer space available' was VRAM. It is ENOBUFS from the RAM pool, so no margin step was ever justified by it. 640 is what is serving and what two clean legs passed on; a measurement back down (512, 448) is queued for the operator",
+  "state": "prod down since 2026-11-21 17:15; no tuple crowned for both workloads",
+  "tuples": {
+    "A_240k_proven": {
+      "engine_path": "run/trial-managed-bin/rpcw-hip/strata",
+      "engine_sha256_prefix": "d534e72a7369fe5d",
+      "helper_sha256_prefix": "553f3bf48219c992",
+      "helper_reserve_mib": 64,
+      "helper_fill_mib": 7400,
+      "ram_budget_mib": 40960,
+      "pool_bytes_expected": 38654705664,
+      "vram_reserve_mib": 256,
+      "vram_reserve_later_mib": 192,
+      "test_config": "bench/ab-v0210/rpcprof/champion38g-prod-test.json",
+      "evidence": "239,663-token prompt read in ~1,102 s (~218 tok/s), done:, 0 non-finite logits (2026-11-21 16:23-16:44)"
+    },
+    "B_agent_proven": {
+      "engine_path": "run/pool-admit-bin/rpcw-hip/strata",
+      "engine_sha256_prefix": "5a699be15a515adc",
+      "helper_sha256_prefix": "9d16742d5f30e9c1",
+      "helper_reserve_mib": 0,
+      "helper_fill_mib": 0,
+      "ram_budget_mib": 36864,
+      "pool_bytes_expected": 34359738368,
+      "vram_reserve_mib": 256,
+      "vram_reserve_later_mib": 192,
+      "test_config": "prod-config-ud-iq3xxs-dflash-w4-q4_0-mixed.json",
+      "evidence": "138-request agent session, 100,291-token prompt, timeouts=0 fallbacks=0; non-finite logits on every 239,663-token prompt (4 of 4 passes)"
+    }
+  },
+  "open_regression": {
+    "symptom": "non-finite logits (#879) in a prompt window at position ~239658 (row 0), first decode step",
+    "excluded": [
+      "VRAM margin (fails at 730 MiB free too)",
+      "the prompt path (batched-path second pass fails too)",
+      "the helper (helper=reqs=0 on a failing pass)",
+      "the model, pack, KV settings and pool size"
+    ],
+    "window": "engine changes between d534e72a (built 2026-11-20 23:47) and 5a699be1: the seven pool-admission commits 1ae83e157d, 7c2e76e71b, f65396a46a, dca0e3cc93, 5435391e3d, 716c3abee5, 9358921670",
+    "bisect_point": "a506e62008ba4bc4 (end of that suite), config bench/ab-v0210/rpcprof/pool-a506-prod-test.json, no verdict yet",
+    "instrument": "STRATA_DBG_NAN=1 names the layer and tensor, but costs a 4x slower prefill"
+  }
 }
