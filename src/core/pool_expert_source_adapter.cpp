@@ -5,6 +5,7 @@
 #include "strata/core/pool_expert_source_adapter.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <cctype>
 #include <chrono>
@@ -72,6 +73,44 @@ bool admit_refusal_is_transient(const std::error_code& ec) {
     return ec == std::errc::no_buffer_space;
 }
 
+// ---- process-wide retry-sleep budget ---------------------------------------
+//
+// A fixed one-second window with at most kRetrySleepBudgetUsPerSecond of sleep spent in it, shared by
+// every thread and every adapter.  This is what turns "bounded per call" into "bounded by
+// construction": the prompt sweep can ask 24,576 times and still add at most 100 ms of sleep per
+// second of wall clock.  Two relaxed atomics, no lock: the refusal path is rare, and even a refusal
+// storm only does one CAS pair per admission - it never becomes a decode-hot-path contention point
+// (the gate-off path does not touch it at all).
+int64_t now_us() {
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+               std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+std::atomic<int64_t> g_retry_window_start_us{0};
+std::atomic<int64_t> g_retry_used_us{0};
+
+// Grants up to `want_us` of sleep, or 0 when this window's budget is gone (the caller must then fail
+// at once, having already made its one attempt).
+int64_t retry_take_budget_us(int64_t want_us) {
+    if (want_us <= 0) return 0;
+    const int64_t now = now_us();
+    int64_t start = g_retry_window_start_us.load(std::memory_order_relaxed);
+    if (now - start >= 1000000) {   // roll the window (one thread wins; the rest see the new start)
+        if (g_retry_window_start_us.compare_exchange_strong(start, now, std::memory_order_relaxed))
+            g_retry_used_us.store(0, std::memory_order_relaxed);
+    }
+    for (int spin = 0; spin < 8; ++spin) {
+        int64_t used = g_retry_used_us.load(std::memory_order_relaxed);
+        if (used >= PoolExpertSourceAdapter::kRetrySleepBudgetUsPerSecond) return 0;
+        const int64_t take = std::min(want_us,
+            PoolExpertSourceAdapter::kRetrySleepBudgetUsPerSecond - used);
+        if (g_retry_used_us.compare_exchange_weak(used, used + take,
+                                                  std::memory_order_relaxed))
+            return take;
+    }
+    return 0;   // lost every CAS race: treat as empty rather than spin on the decode path
+}
+
 void report_copy_refusal(int64_t layer, int64_t expert, const std::error_code& ec) {
     std::fprintf(stderr,
                  "strata: managed pool: no room to copy expert %lld of layer %lld (%s)\n",
@@ -133,7 +172,7 @@ bool PoolExpertSourceAdapter::copy_blobs(const int32_t* layers, const int32_t* e
 }
 
 const uint8_t* PoolExpertSourceAdapter::blob_stable(int64_t layer, int64_t expert) {
-    if (admit_retry_enabled()) return blob_stable_admit(layer, expert);
+    if (admit_retry_enabled()) return borrow_admit(layer, expert);
     std::lock_guard<std::mutex> lk(mu_);
     borrow_locked(layer, expert);
     auto it = borrowers_.find(key_of(layer, expert));
@@ -196,10 +235,11 @@ void PoolExpertSourceAdapter::mark_completed(int64_t layer, int64_t expert) {
 }
 
 std::error_code PoolExpertSourceAdapter::acquire_admit(int64_t layer, int64_t expert,
-                                                       PoolLease& out) const {
+                                                       PoolLease& out) {
     std::error_code ec = store_.acquire(layer, expert, out);
     // Gate OFF: exactly the one acquire() above, refusal returned at once.  This
-    // is the whole behaviour before the retry existed.
+    // is the whole behaviour before the retry existed: no sleep, no sweep, no
+    // store stats, no budget.
     if (!ec || !admit_retry_enabled()) return ec;
     if (!admit_refusal_is_transient(ec)) return ec;   // permanent cause: no retry
 
@@ -208,32 +248,46 @@ std::error_code PoolExpertSourceAdapter::acquire_admit(int64_t layer, int64_t ex
     // dropped every reference it owns).  Ask the store's own geometry once,
     // before spending the window: a blob larger than the usable pool is a
     // permanent refusal.
-    const PoolExpertStore::Stats s = store_.stats();
     const uint64_t bytes = store_.blob_bytes(layer);
-    if (bytes == 0 || (s.usable_bytes > 0 && bytes > s.usable_bytes)) return ec;
+    if (bytes == 0) return ec;
+    {
+        const PoolExpertStore::Stats s = store_.stats();
+        if (s.usable_bytes > 0 && bytes > s.usable_bytes) return ec;
+    }
 
-    // Bounded twice: kAdmitRetryAttempts acquire calls in total, and a hard
-    // kAdmitRetryDeadlineUs wall clock for the whole call.  The backoff doubles
-    // (0.5, 1, 2, 4, 8, 8 ... ms) and is clamped to the remaining budget, so the
-    // call never oversleeps its deadline and never sleeps without a bound.
+    // Bounded per admission (attempts + deadline), per process (the sleep budget)
+    // and per wait (every sleep is clamped to both).  The sweep between attempts
+    // is what actually frees a self-pinned pool: during single-threaded decode the
+    // pairs holding the pool are this caller's earlier borrowers, completed (their
+    // DMA event landed) but unswept, and a thread blocked here runs no
+    // note_async_read()/release() - nobody else would ever sweep them.  Recycling
+    // them is the documented contract: sweep_completed_locked() drops only
+    // completed borrowers, and callers re-borrow per use (see its comment and
+    // generate.cpp's blob_stable -> note_async_read per pair).
     const auto deadline = std::chrono::steady_clock::now() +
                           std::chrono::microseconds(kAdmitRetryDeadlineUs);
-    int64_t backoff_us = 500;
+    int64_t backoff_us = kAdmitRetryFirstBackoffUs;
     for (unsigned attempt = 1; attempt < kAdmitRetryAttempts; ++attempt) {
-        const auto now = std::chrono::steady_clock::now();
-        if (now >= deadline) break;
-        const auto left = std::chrono::duration_cast<std::chrono::microseconds>(deadline - now);
-        const auto wait = std::min(left, std::chrono::microseconds(backoff_us));
-        std::this_thread::sleep_for(wait);   // no adapter mutex is held here
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            sweep_completed_locked();   // free our own landed leases; never under a wait
+        }
         ec = store_.acquire(layer, expert, out);
         if (!ec) return ec;
         if (!admit_refusal_is_transient(ec)) return ec;
-        backoff_us = std::min<int64_t>(backoff_us * 2, 8000);
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= deadline) break;
+        const auto left = std::chrono::duration_cast<std::chrono::microseconds>(deadline - now);
+        const int64_t want = std::min<int64_t>(backoff_us, left.count());
+        const int64_t granted = retry_take_budget_us(want);
+        if (granted <= 0) break;   // this second's sleep budget is gone: fail at once
+        std::this_thread::sleep_for(std::chrono::microseconds(granted));   // no mu_ held
+        backoff_us = std::min<int64_t>(backoff_us * 2, kAdmitRetryMaxBackoffUs);
     }
     return ec;
 }
 
-bool PoolExpertSourceAdapter::borrow_admit(int64_t layer, int64_t expert) {
+const uint8_t* PoolExpertSourceAdapter::borrow_admit(int64_t layer, int64_t expert) {
     const int64_t key = key_of(layer, expert);
     {
         // Fast path under the lock: a live borrower needs no pool admission and
@@ -242,7 +296,8 @@ bool PoolExpertSourceAdapter::borrow_admit(int64_t layer, int64_t expert) {
         auto it = borrowers_.find(key);
         if (it != borrowers_.end()) {
             ++it->second.count;
-            return it->second.lease.valid();
+            return it->second.lease.valid()
+                       ? static_cast<const uint8_t*>(it->second.lease.data()) : nullptr;
         }
     }
     // Miss: admit with NO adapter mutex held, so a wait cannot block release(),
@@ -250,44 +305,46 @@ bool PoolExpertSourceAdapter::borrow_admit(int64_t layer, int64_t expert) {
     // that free the lease this refusal is waiting for.
     PoolLease lease;
     const std::error_code ec = acquire_admit(layer, expert, lease);
-    if (ec || !lease.valid()) return false;
+    if (ec || !lease.valid()) return nullptr;
+    // Register and read the pointer under ONE lock: a sweep by another thread in
+    // between must not turn a successful admission into a null pointer.
     std::lock_guard<std::mutex> lk(mu_);
     auto it = borrowers_.find(key);
     if (it != borrowers_.end()) {
         // Another thread admitted the same pair while this one waited: keep its
         // lease and let ours go.
         ++it->second.count;
-        return it->second.lease.valid();
+        return it->second.lease.valid()
+                   ? static_cast<const uint8_t*>(it->second.lease.data()) : nullptr;
     }
+    const uint8_t* p = static_cast<const uint8_t*>(lease.data());
     PoolBorrower b;
     b.count = 1;
     b.lease = std::move(lease);
     borrowers_.emplace(key, std::move(b));
-    return true;
-}
-
-const uint8_t* PoolExpertSourceAdapter::blob_stable_admit(int64_t layer, int64_t expert) {
-    if (!borrow_admit(layer, expert)) return nullptr;
-    std::lock_guard<std::mutex> lk(mu_);
-    auto it = borrowers_.find(key_of(layer, expert));
-    if (it == borrowers_.end() || !it->second.lease.valid()) return nullptr;
-    return static_cast<const uint8_t*>(it->second.lease.data());
+    return p;
 }
 
 int PoolExpertSourceAdapter::blob_parts_admit(int64_t layer, int64_t expert, BlobPart* out) {
     if (out == nullptr) return 0;
-    if (!borrow_admit(layer, expert)) return 0;
-    std::lock_guard<std::mutex> lk(mu_);
-    auto it = borrowers_.find(key_of(layer, expert));
-    if (it == borrowers_.end() || !it->second.lease.valid()) return 0;
-    out[0] = BlobPart{static_cast<const uint8_t*>(it->second.lease.data()),
-                      store_.blob_bytes(layer), 0};
+    const uint8_t* p = borrow_admit(layer, expert);
+    if (p == nullptr) return 0;
+    out[0] = BlobPart{p, store_.blob_bytes(layer), 0};
     return 1;
 }
 
 #if defined(STRATA_RAM_POOL_TEST)
 void pool_expert_source_adapter_set_admit_retry_for_test(int enabled) {
     g_admit_retry_override = (enabled < 0) ? -1 : (enabled != 0 ? 1 : 0);
+}
+
+void pool_expert_source_adapter_reset_retry_budget_for_test() {
+    g_retry_window_start_us.store(now_us(), std::memory_order_relaxed);
+    g_retry_used_us.store(0, std::memory_order_relaxed);
+}
+
+int64_t pool_expert_source_adapter_retry_used_us_for_test() {
+    return g_retry_used_us.load(std::memory_order_relaxed);
 }
 #endif
 

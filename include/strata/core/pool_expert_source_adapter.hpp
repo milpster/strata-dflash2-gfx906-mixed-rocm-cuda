@@ -107,20 +107,33 @@ public:
     // Environment gate, read once per process: `STRATA_RAM_POOL_ADMIT_RETRY`.
     // Unset, empty, `0`, `off`, `false` or `no` (any case, surrounding blanks ignored) = OFF, and
     // then every admission is exactly one store_.acquire() with the refusal returned at once - the
-    // behaviour before this retry existed, no sleep and no extra lock.  Any other value = ON.
+    // behaviour before this retry existed: no sleep, no sweep, no store stats, no extra lock.  Any
+    // other value = ON.
     //
-    // Why it exists: a lease holder (a borrower's async DMA out of the pool) makes the store's own
-    // LRU unable to free that pair, and the pool refuses with no_buffer_space.  Measured on
-    // 2026-11-21: two long-context decodes (53,717 and 64,507 prompt tokens) died there with "the
-    // expert source could not produce a blob".  The holders in that failure are per-token DMA copies
-    // that finish in well under a millisecond, so a bounded wait turns the death into a slow token.
+    // Why it exists: a lease holder makes the store's own LRU unable to free that pair, and the pool
+    // refuses with no_buffer_space.  Measured on 2026-11-21: two long-context decodes (53,717 and
+    // 64,507 prompt tokens) died there with "the expert source could not produce a blob".
     //
-    // The wait is bounded twice: kAdmitRetryAttempts acquire calls in total, and a hard
-    // kAdmitRetryDeadlineUs wall clock for the whole call.  Sleeps are clamped to the remaining
-    // budget and never happen under mu_ (see acquire_admit()).  The cost is per refused admission:
-    // a pool that genuinely cannot hold the working set pays the window on every pair it refuses.
-    static constexpr unsigned kAdmitRetryAttempts = 8;      // first try + 7 retries
-    static constexpr int64_t kAdmitRetryDeadlineUs = 20000; // 20 ms, the hard cap
+    // The holders that matter are the caller's OWN earlier borrowers: single-threaded decode leaves
+    // pairs completed (their DMA event landed) but unswept, because only that thread runs the sweep.
+    // A thread blocked in acquire_admit() runs no note_async_read()/release(), so the retry drives
+    // its own sweep between attempts instead of waiting for a release that will never come.
+    //
+    // Bounded three times:
+    //   * per admission: kAdmitRetryAttempts acquire calls in total and a hard
+    //     kAdmitRetryDeadlineUs wall clock;
+    //   * per process: at most kRetrySleepBudgetUsPerSecond of retry sleep in any one second of wall
+    //     clock (a fixed-window token bucket over all threads and all adapters), so the total added
+    //     stall cannot exceed 10% of wall clock however many pairs refuse - the prompt sweep's
+    //     24,576 pairs can no longer add 24,576 x 20 ms.  Once the bucket is empty an admission is
+    //     one acquire() and fails at once.
+    //   * every sleep is clamped to the deadline AND to what the bucket grants; no sleep happens
+    //     under mu_ (see acquire_admit()).
+    static constexpr unsigned kAdmitRetryAttempts = 8;         // first try + 7 retries
+    static constexpr int64_t kAdmitRetryDeadlineUs = 20000;    // 20 ms per admission, hard cap
+    static constexpr int64_t kAdmitRetryFirstBackoffUs = 500;  // doubling, capped below
+    static constexpr int64_t kAdmitRetryMaxBackoffUs = 8000;
+    static constexpr int64_t kRetrySleepBudgetUsPerSecond = 100000;  // 100 ms of sleep per second
 
     /// Pool memory is mlocked; returns true (UNMEASURED perf: no speed claim may cite this path).
     bool pinned(int64_t layer, int64_t expert) const override { (void)layer; (void)expert; return true; }
@@ -137,18 +150,17 @@ private:
         return (layer << 32) | (expert & 0xFFFFFFFFll);
     }
 
-    /// Admission behind the retry gate.  MUST be called with mu_ NOT held: the wait must never
-    /// block the release that would clear the refusal, and note_async_read() drops mu_ before its
-    /// hook for exactly the same reason.  With the gate OFF this is one store_.acquire() and
-    /// nothing else.
-    std::error_code acquire_admit(int64_t layer, int64_t expert, PoolLease& out) const;
+    /// Admission behind the retry gate.  MUST be called with mu_ NOT held: it takes mu_ for the
+    /// sweep between attempts, and no wait ever happens while holding it.  With the gate OFF this is
+    /// one store_.acquire() and nothing else.
+    std::error_code acquire_admit(int64_t layer, int64_t expert, PoolLease& out);
 
-    /// Retry-gated twin of borrow_locked(): admits outside mu_, then registers the borrower.
-    /// True when a valid borrower for the pair exists afterwards.  mu_ must NOT be held.
-    bool borrow_admit(int64_t layer, int64_t expert);
+    /// Retry-gated twin of borrow_locked(): admits outside mu_, then registers the borrower and
+    /// returns its data pointer under the same lock (a concurrent sweep must not turn a successful
+    /// admission into a null pointer).  nullptr when the admission failed.  mu_ must NOT be held.
+    const uint8_t* borrow_admit(int64_t layer, int64_t expert);
 
-    /// Retry-gated twins of the blob_stable()/blob_parts() bodies (gate ON only).
-    const uint8_t* blob_stable_admit(int64_t layer, int64_t expert);
+    /// Retry-gated twin of the blob_parts() body (gate ON only).
     int blob_parts_admit(int64_t layer, int64_t expert, BlobPart* out);
 
     void borrow_locked(int64_t layer, int64_t expert);
@@ -167,6 +179,12 @@ private:
 /// the admission-retry gate without touching the process environment, which is
 /// otherwise read once per process.  -1 restores "follow the environment".
 void pool_expert_source_adapter_set_admit_retry_for_test(int enabled);
+
+/// Test hooks for the process-wide retry-sleep budget: start a fresh one-second
+/// window (spend 0), and read how much of the current window's budget the process
+/// has used.  Neither touches production code paths.
+void pool_expert_source_adapter_reset_retry_budget_for_test();
+int64_t pool_expert_source_adapter_retry_used_us_for_test();
 #endif
 
 }  // namespace strata::core

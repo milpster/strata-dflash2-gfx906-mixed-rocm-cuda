@@ -34,6 +34,8 @@ using strata::core::Pool;
 using strata::core::PoolLease;
 using strata::core::PoolExpertStore;
 using strata::core::PoolExpertSourceAdapter;
+using strata::core::pool_expert_source_adapter_retry_used_us_for_test;
+using strata::core::pool_expert_source_adapter_reset_retry_budget_for_test;
 using strata::core::pool_expert_source_adapter_set_admit_retry_for_test;
 using strata::kernels::cpu::ExpertLayout;
 
@@ -594,6 +596,7 @@ int main(int argc, char** argv) {
         check(!ec, "13: open store");
         PoolExpertSourceAdapter adapter(store);
         pool_expert_source_adapter_set_admit_retry_for_test(1);
+        pool_expert_source_adapter_reset_retry_budget_for_test();
 
         const uint8_t* live = adapter.blob_stable(0, 0);   // the competing lease
         check(live != nullptr, "13: borrow (0,0) fills pool");
@@ -635,6 +638,7 @@ int main(int argc, char** argv) {
         check(!ec, "14: open store");
         PoolExpertSourceAdapter adapter(store);
         pool_expert_source_adapter_set_admit_retry_for_test(1);
+        pool_expert_source_adapter_reset_retry_budget_for_test();
 
         const uint8_t* live = adapter.blob_stable(0, 0);
         check(live != nullptr, "14: borrow (0,0) fills pool, nothing will release it");
@@ -674,6 +678,7 @@ int main(int argc, char** argv) {
         const uint64_t usable = store.stats().usable_bytes;
         check(usable > 0 && usable < 5000, "15: usable pool space is smaller than a layer-2 blob");
         pool_expert_source_adapter_set_admit_retry_for_test(1);
+        pool_expert_source_adapter_reset_retry_budget_for_test();
 
         // (a) bad geometry: unknown expert.  The store refuses with
         // invalid_argument before any pool admission.
@@ -711,6 +716,7 @@ int main(int argc, char** argv) {
         check(!ec, "16: open store");
         PoolExpertSourceAdapter adapter(store);
         pool_expert_source_adapter_set_admit_retry_for_test(1);
+        pool_expert_source_adapter_reset_retry_budget_for_test();
 
         const uint8_t* live = adapter.blob_stable(0, 0);
         check(live != nullptr, "16: borrow (0,0) fills pool");
@@ -743,6 +749,138 @@ int main(int argc, char** argv) {
         check(!adapter.borrowed(1, 1), "16: a refused pair registers no borrower");
         adapter.release(0, 2);
         pool_expert_source_adapter_set_admit_retry_for_test(-1);
+    }
+
+    // ============ 17. retry ON: SELF-PINNED pool, one thread, no helper ============
+    {
+        // The state the real failure is in: this thread's earlier borrower is
+        // completed (its DMA event landed) but unswept, and it still holds the
+        // pair.  Only this thread would ever sweep it - and it is here, blocked.
+        // The retry must free it by driving its own sweep.
+        Pool pool;
+        auto ec = make_pool(pool, 4 * kPage);
+        check(!ec, "17: create tight 16KiB pool");
+        ExpertLayout layout;
+        build_layout(layout);
+        PoolExpertStore store(pool);
+        ec = store.open(g_fixture_path.c_str(), layout);
+        check(!ec, "17: open store");
+        PoolExpertSourceAdapter adapter(store);
+        pool_expert_source_adapter_set_admit_retry_for_test(1);
+        pool_expert_source_adapter_reset_retry_budget_for_test();
+
+        const uint8_t* live = adapter.blob_stable(0, 0);   // fills the pool
+        check(live != nullptr, "17: borrow (0,0) fills pool");
+        adapter.mark_completed(0, 0);                      // the event landed, NOT swept
+        check(adapter.borrowed(0, 0), "17: completed-but-unswept borrower still pins the pool");
+        check(!adapter.borrowed(0, 1), "17: the pair we want is not borrowed");
+
+        std::vector<uint8_t> buf(64, 0x5A);
+        const auto t0 = std::chrono::steady_clock::now();
+        const bool ok = adapter.copy_blob(0, 1, buf.data());   // SAME thread, no helper
+        const double ms = std::chrono::duration<double, std::milli>(
+                              std::chrono::steady_clock::now() - t0).count();
+
+        check(ok, "17: the waiter freed its own landed borrower");
+        check(region_matches(buf.data(), expert_file_offset(0, 1), 64), "17: bytes are correct");
+        check(!adapter.borrowed(0, 0), "17: the waiter swept its own completed borrower");
+        check(ms < 20.0, "17: it did not need the whole window (no sleep to free its own)");
+        check(pool_expert_source_adapter_retry_used_us_for_test() == 0,
+              "17: and it spent no retry-sleep budget");
+        pool_expert_source_adapter_set_admit_retry_for_test(-1);
+    }
+
+    // ============ 18. retry ON: the process-wide sleep budget is bounded ============
+    {
+        Pool pool;
+        auto ec = make_pool(pool, 4 * kPage);
+        check(!ec, "18: create tight 16KiB pool");
+        ExpertLayout layout;
+        build_layout(layout);
+        PoolExpertStore store(pool);
+        ec = store.open(g_fixture_path.c_str(), layout);
+        check(!ec, "18: open store");
+        PoolExpertSourceAdapter adapter(store);
+        pool_expert_source_adapter_set_admit_retry_for_test(1);
+        pool_expert_source_adapter_reset_retry_budget_for_test();
+
+        const uint8_t* live = adapter.blob_stable(0, 0);   // never released, never completed
+        check(live != nullptr, "18: borrow (0,0) fills pool");
+        check(pool_expert_source_adapter_retry_used_us_for_test() == 0, "18: window starts empty");
+
+        // Each refusing call may spend up to its 20 ms window; keep asking until the
+        // one-second sleep budget is gone.
+        std::vector<uint8_t> buf(64, 0);
+        int calls = 0;
+        double last_ms = 0.0;
+        while (calls < 10) {
+            const auto t0 = std::chrono::steady_clock::now();
+            (void) adapter.copy_blob(0, 1, buf.data());
+            last_ms = std::chrono::duration<double, std::milli>(
+                          std::chrono::steady_clock::now() - t0).count();
+            ++calls;
+            if (last_ms < 5.0) break;
+        }
+        const int64_t used = pool_expert_source_adapter_retry_used_us_for_test();
+        std::fprintf(stderr, "note: 18: %d calls until fail-fast, %lld us of budget spent, last %.2f ms\n",
+                     calls, (long long) used, last_ms);
+        check(used >= PoolExpertSourceAdapter::kRetrySleepBudgetUsPerSecond - 20000,
+              "18: the whole second's budget was consumed by the refusals");
+        check(last_ms < 5.0, "18: bucket empty -> the next call fails fast, no sleep");
+
+        // The bucket refills over the following second: the same call sleeps again.
+        // (0,0) stays a LIVE borrower on purpose - a completed one would be freed by
+        // the retry's own sweep instead of waiting.
+        std::this_thread::sleep_for(std::chrono::milliseconds(1050));
+        const auto t1 = std::chrono::steady_clock::now();
+        (void) adapter.copy_blob(0, 1, buf.data());
+        const double after_ms = std::chrono::duration<double, std::milli>(
+                                    std::chrono::steady_clock::now() - t1).count();
+        check(after_ms >= 15.0 && after_ms <= 500.0,
+              "18: a fresh window grants the wait again, still bounded");
+        check(pool_expert_source_adapter_retry_used_us_for_test() > 0, "18: budget spent again");
+
+        // Worst case this test has proven: two refusals per window cost at most the
+        // budget, never 20 ms x the number of refusing pairs.
+        check(PoolExpertSourceAdapter::kRetrySleepBudgetUsPerSecond <= 200000,
+              "18: the budget stays at or below 200 ms per second of wall clock");
+        adapter.release(0, 0);
+        pool_expert_source_adapter_set_admit_retry_for_test(-1);
+    }
+
+    // ============ 19. DEFAULT OFF: one acquire, no stats, no sweep, no budget =====
+    {
+        Pool pool;
+        auto ec = make_pool(pool, 4 * kPage);
+        check(!ec, "19: create tight 16KiB pool");
+        ExpertLayout layout;
+        build_layout(layout);
+        PoolExpertStore store(pool);
+        ec = store.open(g_fixture_path.c_str(), layout);
+        check(!ec, "19: open store");
+        PoolExpertSourceAdapter adapter(store);   // no override: the real default
+        pool_expert_source_adapter_reset_retry_budget_for_test();
+
+        const uint8_t* live = adapter.blob_stable(0, 0);
+        check(live != nullptr, "19: borrow (0,0) fills pool");
+        adapter.mark_completed(0, 0);             // a sweep would free it
+        check(adapter.borrowed(0, 0), "19: completed borrower in place");
+
+        std::vector<uint8_t> buf(64, 0x77);
+        const uint64_t misses_before = store.stats().misses;
+        const auto t0 = std::chrono::steady_clock::now();
+        const bool ok = adapter.copy_blob(0, 1, buf.data());
+        const double ms = std::chrono::duration<double, std::milli>(
+                              std::chrono::steady_clock::now() - t0).count();
+
+        check(!ok, "19: default off: refusal returned at once");
+        check(ms < 5.0, "19: default off: no wait");
+        check(store.stats().misses == misses_before + 1, "19: default off: exactly one acquire");
+        check(adapter.borrowed(0, 0), "19: default off: no sweep ran (the borrower is still there)");
+        check(pool_expert_source_adapter_retry_used_us_for_test() == 0,
+              "19: default off: the retry budget was never touched");
+        check(buf[0] == 0x77, "19: default off: nothing copied");
+        adapter.release(0, 0);
     }
 
     std::fprintf(stderr, "pool_expert_source_adapter_test: %d checks, %d FAILURES\n",
