@@ -1,0 +1,69 @@
+# Trial window — managed RAM pool, live measurement — 2026-11-20
+Engine: /mnt/srcds/Strata-wt-helper-ipc/build-906/strata --serve --gpu 0,1 (helper-ipc-diet, commit 1c83893327)
+Port 8019, managed mode, pack /mnt/srcds/ai/iq3xxs-ud (Qwen3.8-Flash-Next UD IQ3_XXS), 2x Radeon VII + RTX 3080 helper.
+Production (:8009) untouched and down throughout. No push.
+
+## Leg A — STRATA_RAM_BUDGET_MIB=40960 (boot 22:25:45, engine 3064553)
+boot line : strata generate: STRATA_RAM_BUDGET_MIB=40960: outside_owned=4294967296 pool_bytes=38654705664 store open
+            (the preceding 22:05 boot failed: store.open(.../experts.bin): Invalid argument — the padded-arena bug, fixed by 1c83893327)
+pool      : 38,654,705,664 B = 36,864 MiB
+VmLck     : 37,912,576 kB = 37,024 MiB  (pool + 160 MiB)   smaps_rollup Locked: 37,912,576 kB  (agree)
+VmRSS     : 42,203,456 kB = 41,214 MiB at rest; 42,612 MiB after requests
+MemAvailable: 9,362 MiB before requests, 9,067 MiB after; sampler min 8,529 MiB (22:43:57, mem.csv n=473)
+swap used : 1,381 MiB -> 2,564 MiB (+1,183 MiB) across the requests
+VRAM      : 220 MiB free (CUDA0, LOW) / 744 MiB (CUDA1); 63-166 MiB at request start -> WARNING logged
+
+requests (curl --max-time 120; wall = date +%s.%N around curl; tok/s = usage.completion_tokens / wall):
+| id    | http | wall s | prompt_tok | compl_tok | tok/s wall | server log tok/s | expert cache hit |
+| short | 200  | 26.25  | 59         | 16        | 0.61       | 2.2              | 84.3% |
+| long#1| 000  | 120.02 | 74         | 241 (cancel by client timeout) | 2.01 | 6.2 | 83.8% |
+| tool  | 200  | 28.86  | 305        | 52        | 1.80       | 8.1              | 88.9% |
+| long#2| 200  | 16.93  | 74         | 256       | 15.12      | 21.1             | 93.5% |
+short : finish_reason length, content null, 16 tokens all reasoning ("thinking capped at 16 of max_tokens 32").
+long#1: cancelled by the client at 120 s while the engine was still answering -> no body. NOT a server failure.
+long#2: identical payload re-sent, complete in 16.93 s, content 447 chars, finish_reason length.
+tool  : finish_reason tool_calls, tool_calls [{name get_time, arguments {}}] — a tool call came back.
+
+## Leg B — STRATA_RAM_BUDGET_MIB=45056 (boot 22:46:48, engine 3539640)
+boot line : strata generate: STRATA_RAM_BUDGET_MIB=45056: outside_owned=4294967296 pool_bytes=42949672960 store open
+pool      : 42,949,672,960 B = 40,960 MiB
+VmLck     : 42,106,880 kB = 41,120 MiB (pool + 160 MiB) — same +160 MiB over the pool as leg A
+VmRSS     : 45,420 MiB at rest, 47,957,204 kB = 46,832 MiB after requests
+MemAvailable: 8,325 MiB pre-short, 8,314 MiB after long; 55,867 MiB after teardown
+swap used : 4,129 MiB at start (residue from leg A, not reclaimed), 5,536 MiB after long
+VRAM      : same 220/744 MiB free, same request-start WARNING (4 occurrences in the elog)
+load time : health ok after ~130 s (bounded poll, 10 s steps)
+
+| id    | http | wall s | prompt_tok | compl_tok | tok/s wall | server log tok/s | expert cache hit |
+| short | 200  | 23.34  | 59         | 16        | 0.69       | 2.5              | 84.3% |
+| long  | 200  | 105.02 | 74         | 256       | 2.44       | 7.5              | 83.6% |
+| tool  | 200  | 34.24  | 305        | 65        | 1.90       | 9.5              | 89.6% |
+Leg B prompt processing was 984.8 ms/token on the long request vs 76.2 ms/token in leg A long#2
+(cold page cache after the reboot + 4.1 GiB swap residue). Leg B is SLOWER on every request.
+
+## Expert-store / foresight-swap log evidence (engine elog, null bytes stripped)
+Whole elog, both legs: 'foresight swap' 7, 'served from the swap' 6, 'no free slot' 6,
+'over budget' 6, 'decode expert cache hit rate' 6, 'read by the GPU over PCIe' 6.
+Two quoted lines (leg A):
+  strata serve: foresight swap: 837 experts served from the swap space, 2952 copies (2554 from the router look-ahead), 402 not landed yet, 40730 no free slot, 6993 over budget
+  strata serve: decode expert cache hit rate: 96.6% (63285 hits / 65479 lookups); 12761 more read by the GPU over PCIe or from another GPU (16.3% of all 78240 routed)
+Leg B first request:
+  strata serve: foresight swap: 72 experts served from the swap space, 94 copies (72 from the router look-ahead), 34 not landed yet, 1726 no free slot, 6534 over budget
+No 'no_buffer_space' string exists in either build's output; the pool-full seam is logged as 'no free slot'.
+
+## Teardown
+stop-all.sh, twice (leg A 22:46, leg B 22:53). Both times the script's own pattern sweep matched its
+own shell: leg A logged "Killed by SIGTERM" mid-run, leg B finished but printed
+"before=0 after=1 — STILL ALIVE, RUN AGAIN" (false positive — the 1 is its own bash -c). Verified
+independently: no strata/expert-helper process, port 8019 free, 20 s of quiet (4x5 s samples, all 0).
+The sampler (2608304) was left running as instructed; its CSV ends at 22:53:44 with a bogus engine_pid
+row (it matched a shell, vmlck 0) — rows before that are leg B.
+
+## Still UNMEASURED
+- Peak throughput of the managed path beyond 256 tokens (no long-context or multi-request run).
+- Concurrency: every request was serial; no --parallel / batched window.
+- Memory cost of a real workload (only idle + 4 requests sampled; no sustained load curve).
+- Why long#1 stalled at ~2 tok/s and long#2 did not (same payload, 2 min apart) — variance unexplained.
+- Whether the VRAM-low WARNING (220 MiB free) causes the stall: not isolated, args were not changed.
+- Pool vs non-pool (STRATA_RAM_BUDGET_MIB unset) speed on the same box, same window — no baseline leg.
+- Total-budget enforcement (L4) and the adapter under real traffic; helper counters only.

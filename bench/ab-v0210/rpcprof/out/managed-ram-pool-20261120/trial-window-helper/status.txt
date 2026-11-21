@@ -1,0 +1,59 @@
+Window: helper allocation 512/6796 -> 384/6924 (pool 43,008 MiB, reserves 192/192)
+Tree: /mnt/srcds/Strata   engine: /mnt/srcds/Strata-wt-helper-ipc/build-906/strata   port: 8009
+Config: bench/ab-v0210/rpcprof/trial-managed-pool-cold-3g.json (unmodified)
+Date: 2026-11-21 00:42:30 .. 00:56 CET
+
+BEFORE
+  check-quiet.sh rc=0 "QUIET"
+  port 8009 free, port 8019 free, no run/*.sock
+  cache dir /mnt/srcds/Strata-wt-helper-ipc/run/diet-cache-cold-3g empty
+  MemAvailable 53,828,756 kB; swap used 3,177 MiB (residue present before boot)
+  RTX 3080 (device 0) used 66 MiB
+
+BOOT
+  env STRATA_PORT=8009 STRATA_BIN=/mnt/srcds/Strata/run/trial-managed-bin \
+      TRIAL_CONFIG=.../trial-managed-pool-cold-3g.json STRATA_RAM_BUDGET_MIB=43008 \
+      STRATA_HELPER_RESERVE=384 STRATA_FILL_MIB=6924 \
+      setsid nohup bench/ab-v0210/rpcprof/launch-trial-managed.sh --single-run
+  boot-helper.log -> logs/trial-managed-20261121-004230-4057941.log (+ -helper.log)
+  launcher pid 4057941, server 4058714, engine 4059529, helper 4057957
+  /health 200 after ~90 s of polling (polls 1-8 = 000)
+
+IDENTITY (confirmed before any leg)
+  elog:27  strata generate: STRATA_RAM_BUDGET_MIB=43008: outside_owned=4294967296 pool_bytes=40802189312 store open
+  elog:26  RAM pool store: pool_bytes=40802189312 scratch_bytes=2666496 usable_bytes=40799522816 ...
+  helper: fill preflight: device free 7516 MiB of 7842 MiB, budget 6944.2 MiB (reserve 384 MiB, ...), slots cap 4600, fill-mib cap 6924
+  helper: filled 4377 slots (6.76 GiB), scratch 672000 B, buffers 180098776 B
+  helper: fill stopped: fill-mib; device free now 590 MiB of 7842 MiB (4377 slots, 6.76 GiB uploaded)
+  (previous 512/6796 boots: budget 6816.2 MiB, fill-mib cap 6796, filled 4250 slots 6.64 GiB, free now 718 MiB)
+  -> env reached the helper; +127 slots, the freed 128 MiB is actually resident.
+
+LEGS (client: bench/ab-v0210/rpcprof/infill_measure.py; stdout legs-helper.log)
+  H1  prompt-h1.txt 32 tok   client rc=0  prompt 59 = 0 reused; 16 generated 1236 ms (12.9 tok/s)
+  H2  infill80k_prompt.txt 2048 tok  client rc=0  wall 387.77 s; COLD: 0 reused + 74635 read
+  H3  infill80k_prompt.txt 2048 tok  client rc=0  wall 83.44 s; warm: 74630 reused + 5 read
+  probe (59 tok) rc=0, after H3
+  Unrelated: two 76,189-token follow-up requests (elog:115, elog:129) that no client of this
+  window issued; the same shape appears in the cold-2g and pool windows' logs, and an ss
+  sample during the probe showed only this window's client connected. Treated as a
+  pre-existing window artifact, not an effect of the helper change.
+
+TEARDOWN
+  sampler (trial-managed-sampler.sh, pid 4139432) TERM'd by explicit pid, csv frozen at 114 lines
+  stop-all.sh (alone): TERM 4057939 4057941 4057957 4058714 4059529; KILL 4057941 4058714;
+    "before=0 after=0 - ALL STOPPED"
+  check-quiet.sh (separate invocation): rc=0 "QUIET: no engine, helper, server or listening port"
+  AFTER: port 8009 free, port 8019 free, no run/trial-managed*.sock, no /mnt/srcds/Strata/run/*.sock
+
+MEMORY (mem-helper.csv, 113 samples 00:44:19..00:55:13, 5 s)
+  VmLck peak 39,072 MiB (pool mlock, flat for the whole window)
+  VmRSS peak 47,780 MiB
+  MemAvailable min 7,236 MiB
+  swap used start 4,771 / end 7,157 / peak 7,161 MiB (pre-boot residue 3,177 MiB already present)
+
+VRAM warnings (quoted, not acted on)
+  elog:76  220 MiB of VRAM free with everything loaded - LOW (suggests --vram-reserve-mib 484)
+  elog:77  CUDA1: 360 MiB of VRAM free with everything loaded - LOW (suggests 600)
+  elog:78  WARNING: only 220 MiB of VRAM free at the start of this request (below 512 MiB)
+  elog:112 WARNING: only 8 MiB of VRAM free at the start of this request (below 512 MiB) -> 704
+  verify window captures succeeded on both cards (77.2/87.0/14.4/8.7/17.0/8.0 ms, no error)

@@ -1,0 +1,1 @@
+{"label": "t2-pressure", "turn": 2, "n_messages": 4, "wall_s": 12.844, "usage": {"prompt_tokens": 16053, "completion_tokens": 195, "total_tokens": 16248, "prompt_tokens_details": {"cached_tokens": 16015}}, "chars_out": 262, "ts": "2026-11-19T17:39:25"}

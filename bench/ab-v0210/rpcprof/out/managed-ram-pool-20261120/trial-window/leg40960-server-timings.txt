@@ -1,0 +1,8 @@
+[strata] thinking capped at 16 of max_tokens 32 to leave room for the answer (budget 55000)
+[strata] done: 16 tokens in 26 s (2.2 tok/s) (length, cancel=False), expert cache 84.3% hit (+16.9% of the routed experts over PCIe)
+[strata] thinking capped at 128 of max_tokens 256 to leave room for the answer (budget 55000)
+[strata] thinking capped at 64 of max_tokens 128 to leave room for the answer (budget 55000)
+[strata] done: 241 tokens in 120 s (6.2 tok/s) (cancel, cancel=True), expert cache 83.8% hit (+15.6% of the routed experts over PCIe)
+[strata] done: 52 tokens in 29 s (8.1 tok/s) (stop, cancel=False), expert cache 88.9% hit (+15.5% of the routed experts over PCIe)
+[strata] thinking capped at 128 of max_tokens 256 to leave room for the answer (budget 55000)
+[strata] done: 256 tokens in 17 s (21.1 tok/s) (length, cancel=False), expert cache 93.5% hit (+15.4% of the routed experts over PCIe) helper=reqs=1067 rows=7744 bytes=79298560 timeouts=0 fallbacks=0

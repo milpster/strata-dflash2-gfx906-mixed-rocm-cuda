@@ -1,0 +1,1 @@
+{"label": "t1-baseline", "turn": 1, "n_messages": 2, "wall_s": 84.558, "usage": {"prompt_tokens": 16020, "completion_tokens": 148, "total_tokens": 16168, "prompt_tokens_details": {"cached_tokens": 0}}, "chars_out": 6, "ts": "2026-11-19T17:31:27"}

@@ -1,0 +1,19 @@
+EVIDENCE_DIR=out/ram-raw-wire-20261119-072307
+base_HEAD=6e2707850b16fd8bdb7193ff52e35719a90d2a7f
+=== py_compile ===
+py_compile_rc=0
+=== bash -n ===
+bash_n_rc=0
+=== new tests (full tail) ===
+test_rc=0
+----------------------------------------------------------------------
+Ran 42 tests in 0.015s
+
+OK
+lsp: ram_raw.py + test_ram_raw_cpu.py clean (pyright)
+=== git diff --check ===
+diffcheck_rc=0
+=== owned status ===
+160b97321cd69ce346a31830169e4d2dafe6863a5f05ebefca5b383914f7d519  bench/ab-v0210/rpcprof/gpu-rounds/ram_raw.py
+8f4a620eced94a6a956e69b401c4aa4c763609ed9d5b7cb228416f68914be1b9  bench/ab-v0210/rpcprof/gpu-rounds/ram_raw_launch.sh
+08105255430c2818b914c8610189d2c920b232f9dbae37d36775a648534100d8  bench/ab-v0210/rpcprof/tests/test_ram_raw_cpu.py

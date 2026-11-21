@@ -1,0 +1,11 @@
+=== before-state 2026-11-21T00:13:29+01:00 ===
+check-quiet exit: 0 (QUIET)
+ports 8009/8019: none listening
+sockets in run/: none
+MemTotal:       65171984 kB
+MemFree:        43628836 kB
+MemAvailable:   54272296 kB
+SwapTotal:      201326568 kB
+SwapFree:       197727664 kB
+swap_used_mib: 3514
+engine/helper/server counts: 0 0 0

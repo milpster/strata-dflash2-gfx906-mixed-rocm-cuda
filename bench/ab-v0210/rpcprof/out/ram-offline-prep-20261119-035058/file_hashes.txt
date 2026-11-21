@@ -1,0 +1,2 @@
+da91cd8fe0115b390e4545afd3ccd2975aec5d0c74c5fb9144416f6ef51ade0d  gpu-rounds/ram_acceptance.py
+c8a1ade0a3ee03c3058f21482be49cd786e02fffd26b5566b37ea26ca816f6d3  tests/test_ram_acceptance_cpu.py

@@ -1,0 +1,15 @@
+--- verdict: parking validation ---
+T1 baseline park/restore: PASS (conv-48/49; restore 12.0 s, 16015 reused + 38 read; no stall)
+T2 park/restore under 24 GiB held pressure (MemAvailable ~7.5 GiB, swap active): PASS
+    (conv-50/51; restore 12.8 s unchanged, full prefix reuse; prefill -40% = 144.8 tok/s is the memory cost;
+     swappable pressure floors at ~7.5 GiB MemAvailable on this box - floor band needs mlock'd pressure)
+T3 checkpoint restart recovery: FAIL on the restore guarantee
+    (boot disk-tier scan clean: generations=4 corrupt=0; new parks flow: conv-52; no crash/corruption;
+     BUT the first continuation after restart was served COLD: prompt 16133 = 0 reused + 16133 read, 67 s,
+     despite a published compatible-looking anchor (conv-50: 16015/16148 tokens) - no restore attempt,
+     no compatibility refusal, no parktrace logged. Violates the documented guarantee at
+     generate.cpp:1113 'a restart reuses the latest compatible PUBLISHED checkpoint'.)
+Organically observed pre-test: over-ceiling park -> disk only (line 35735), park-gain gate,
+min-token gate, supersede chain, draft-ring restore (all within-boot, all correct).
+Operator decision 2026-11-19: parking adopted as production standard (already live; no deployment
+action); the cross-restart restore gap stays on record as a known limitation.

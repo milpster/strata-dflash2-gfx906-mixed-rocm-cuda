@@ -1,0 +1,29 @@
+RAM acceptance — offline foundations validation (2026-11-19)
+=============================================================
+Branch: tg-stall-cause
+Owner: fixer subagent (offline foundations only; no GPU/launch/network/production change)
+
+Commands run (from bench/ab-v0210/rpcprof):
+  1. python3 -m py_compile gpu-rounds/ram_acceptance.py tests/test_ram_acceptance_cpu.py
+     -> exit 0 (py_compile.log)
+  2. python3 tests/test_ram_acceptance_cpu.py
+     -> exit 0, "Ran 35 tests ... OK" (test_run.log)
+
+LSP diagnostics: gpu-rounds/ram_acceptance.py and tests/test_ram_acceptance_cpu.py -> No diagnostics.
+
+Final artifact SHA256 (see file_hashes.txt):
+  gpu-rounds/ram_acceptance.py        da91cd8fe0115b390e4545afd3ccd2975aec5d0c74c5fb9144416f6ef51ade0d
+  tests/test_ram_acceptance_cpu.py    c8a1ade0a3ee03c3058f21482be49cd786e02fffd26b5566b37ea26ca816f6d3
+
+Scope: two NEW source files + small mechanical status/correction edits to
+gpu-rounds/ram-parking-gpu-test-plan.md and gpu-rounds/ram-parking-gpu-fixtures.md,
+plus a journal append. No engine/serve import, no helper/engine start, no endpoint
+request, no production cache/socket write, no build/GPU/pressure calibration.
+out/tests-tmp scratch was cleaned by the test teardown (empty after run).
+
+Commit: 5b939685eaefeefa69cccdbb8dd1dd05a9479c1a on branch tg-stall-cause
+  (5 files: 2 new source, 2 doc edits, 1 journal append; no push)
+  Committed blob ids: ram_acceptance.py 4c99f0b121e36a8b14e29cb27fedcb9a9901f405,
+  test_ram_acceptance_cpu.py f4b85aacb0ea996b0447765bfbf7689d541b51a9
+Pre-existing unrelated change run/prod-swift15-f16kv-mixed-supervisor.json (live
+supervisor state) was intentionally left unstaged and out of the commit.

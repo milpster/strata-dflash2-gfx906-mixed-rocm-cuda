@@ -1,0 +1,37 @@
+{
+  "parameters": {
+    "duration_s": 0.0,
+    "interval_s": 30.0,
+    "state": "/mnt/srcds/Strata/run/prod-swift15-f16kv-mixed-supervisor.json",
+    "proc_root": "/proc",
+    "sys_root": "/sys"
+  },
+  "started_wall": 1795105126.3795676,
+  "started_at": "2026-11-19T17:18:46+01:00",
+  "initial_identity": {
+    "supervisor_pid": 3206874,
+    "generation": 1,
+    "engine_pid": 3207836,
+    "declared_start": "1366692",
+    "proc_start": "1366692",
+    "log_path": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/logs/default_after.engine.log",
+    "wrapper_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/logs/default_after-boot-20261119-171539-3206981.log"
+  },
+  "initial_identity_valid": true,
+  "initial_identity_error": null,
+  "initial_log": {
+    "source_path": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/logs/default_after.engine.log",
+    "observed_at": "2026-11-19T17:18:46+01:00",
+    "inode": 21136806,
+    "device": 66305,
+    "from": 21078,
+    "to": 21078,
+    "new_bytes": 0,
+    "backlog_bytes": 0,
+    "reset": null,
+    "prompt_lines": [],
+    "error": null,
+    "capture_from": 0,
+    "capture_to": 0
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "outcome": "completed",
+  "error": null,
+  "samples": 1,
+  "invalid_identity_samples": 0,
+  "prompt_rows_observed": 0,
+  "started_wall": 1795104348.8566473,
+  "ended_wall": 1795104348.859222,
+  "ended_at": "2026-11-19T17:05:48+01:00",
+  "elapsed_s": 0.0025838359997578664
+}

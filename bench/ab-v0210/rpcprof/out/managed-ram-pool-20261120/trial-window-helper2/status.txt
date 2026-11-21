@@ -1,0 +1,23 @@
+Trial window helper2 — 2026-11-21 00:59-01:10 (managed RAM pool 43,008 MiB, dev0/dev1 reserve 192,
+helper reserve 128 / fill-mib 7180 / slots 4600, cold conversation cache run/diet-cache-cold-4g)
+
+Exit statuses
+  boot launcher (pids 693386 launcher, 693402 server)  : started 00:59:25, health ok 01:00:53
+  X1 (32 max, short prompt) infill_measure            : rc=0 (engine served 16 tokens; client SSE counters null)
+  X2 (2048 max, infill80k_prompt.txt) infill_measure  : rc=0, cold (0 reused + 74635 read)
+  X3 (2048 max, same file, warm)                      : rc=0, 74630 reused + 5 read
+  nvidia-smi sampler (200x5 s)                        : stopped by hand after 98 samples
+  memory sampler                                      : stopped by hand at 01:10:05 (91 data rows)
+  stop-all.sh                                         : rc=0, "before=0 after=0 — ALL STOPPED"
+  check-quiet.sh                                      : rc=0, "QUIET: no engine, helper, server or listening port"
+
+Before boot  : check-quiet QUIT rc=0 (nothing running), 8009/8019 free, no run/*.sock, run/diet-cache-cold-4g empty
+After stop   : check-quiet rc=0, 8009/8019 not listening, no run/*.sock
+System after : MemAvailable 55.5 GiB; swap used back to 5.7 GiB of 192 GiB
+Disk         : /mnt 100% used, 6.3 GiB free -> engine refused the conversation-cache idle save
+               ("free-space refusal (3411 MiB plus a floor of 4096 MiB needed, 6391 MiB free)")
+Cache dir    : 42 MiB of draft rings (ring-1/ring-2.dring) + owner.lock; no saved prompt cache
+
+Prod        : never touched, never started. All engine work on 8009 trial launcher.
+Engine log  : logs/engine-trial-managed-pool-cold-4g.log
+Launcher log: logs/trial-managed-20261121-005925-693386.log (+ -helper.log)

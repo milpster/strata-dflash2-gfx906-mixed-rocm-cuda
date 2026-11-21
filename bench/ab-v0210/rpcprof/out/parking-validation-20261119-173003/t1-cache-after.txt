@@ -1,0 +1,4 @@
+-rw------- 1 srcds srcds 3.1G Nov 19 16:26 /home/srcds/strata-conv-cache/conv-41.sess
+-rw------- 1 srcds srcds 3.4G Nov 19 16:50 /home/srcds/strata-conv-cache/conv-46.sess
+-rw------- 1 srcds srcds 3.4G Nov 19 16:52 /home/srcds/strata-conv-cache/conv-47.sess
+-rw------- 1 srcds srcds 507M Nov 19 17:31 /home/srcds/strata-conv-cache/conv-48.sess

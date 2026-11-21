@@ -1,0 +1,663 @@
+{
+ "arm_order": [
+  "default_before",
+  "optimized",
+  "default_after"
+ ],
+ "arms": {
+  "default_after": {
+   "boot_log_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/logs",
+   "config_deltas": [
+    {
+     "field": "exe",
+     "from": "/mnt/srcds/Strata/v0238p0/rpcw-hip/strata",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/slots/default_after/rpcw-hip/strata"
+    },
+    {
+     "field": "log",
+     "from": "/mnt/srcds/Strata/logs/engine-prod-ud-iq3xxs-v0233.log",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/logs/default_after.engine.log"
+    },
+    {
+     "field": "expert_helper_socket",
+     "from": "/mnt/srcds/Strata/run/prod-iq3xxs-ud-mixed.sock",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/run/default_after.sock"
+    },
+    {
+     "field": "expert_helper_socket2",
+     "from": "/mnt/srcds/Strata/run/prod-iq3xxs-ud-mixed2.sock",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/run/default_after2.sock"
+    },
+    {
+     "field": "args/--conversation-cache-dir",
+     "from": "/home/srcds/strata-conv-cache",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/cache/default_after"
+    },
+    {
+     "field": "args/--vram-reserve-mib",
+     "from": "256",
+     "kind": "profile",
+     "to": "700"
+    },
+    {
+     "field": "args/--vram-reserve-later-mib",
+     "from": "448",
+     "kind": "profile",
+     "to": "700"
+    }
+   ],
+   "config_snapshot": {
+    "blob": "b21ff4ff18c1ca6306a7df4c271b32a7a6cacb1b",
+    "git_ref": "3ad3b700341650349762b6c126b5701984bf003b:prod-config-v0238.json",
+    "sha256_literal": "95ef3693b3f598e6bdbe534ef7a9b195e13b9e1705acc0cad2d414db09f21852"
+   },
+   "conversation_cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/cache/default_after",
+   "engine": {
+    "bytes": 50255000,
+    "mtime_epoch": 1794858717,
+    "path": "/mnt/srcds/Strata/v0238p0/rpcw-hip/strata",
+    "sha256": "b0ec0109ebc50c982512c371d81b2c15a8f72c70edf8a461a4ff10337da52f02"
+   },
+   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/logs/default_after.engine.log",
+   "frozen_config": {
+    "path": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/configs/default_after.json",
+    "sha256": "15a88f5f81b83beb85e6a908c50745c18cfbcc4b6cf8e3df2b58eb0c8742ac06"
+   },
+   "frozen_launcher": {
+    "path": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/bin/champs-default_after.sh",
+    "sha256": "b63944541d471c4b53e00aac3b789597ef6286f873f27e6f9d2b5527125318df"
+   },
+   "helper": {
+    "path": "/mnt/srcds/Strata/v0238p0/rpcw-cuda/strata-expert-helper-patient",
+    "sha256": "553f3bf48219c99298e4620547507eac7eefa29d660ee32e806bb9780a9ab361"
+   },
+   "label": "engine default reserves 700/700, repeated last",
+   "launcher_deltas": [
+    {
+     "field": "launcher/BIN",
+     "from": "BIN=\"/mnt/srcds/Strata/v0238p0\"",
+     "kind": "harness",
+     "to": "BIN=\"/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/slots/default_after\""
+    },
+    {
+     "field": "launcher/CONFIG",
+     "from": "CONFIG=\"/mnt/srcds/Strata/prod-config-v0238.json\"",
+     "kind": "harness",
+     "to": "CONFIG=\"/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/configs/default_after.json\""
+    },
+    {
+     "field": "launcher/SOCKET",
+     "from": "SOCKET=\"$ROOT/run/prod-iq3xxs-ud-mixed.sock\"",
+     "kind": "harness",
+     "to": "SOCKET=\"/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/run/default_after.sock\""
+    },
+    {
+     "field": "launcher/SOCKET2",
+     "from": "SOCKET2=\"$ROOT/run/prod-iq3xxs-ud-mixed2.sock\"",
+     "kind": "harness",
+     "to": "SOCKET2=\"/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/run/default_after2.sock\""
+    },
+    {
+     "field": "launcher/LOG",
+     "from": "LOG=\"$ROOT/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-$(date +%Y%m%d-%H%M%S)-$$.log\"",
+     "kind": "harness",
+     "to": "LOG=\"/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/logs/default_after-boot-$(date +%Y%m%d-%H%M%S)-$$.log\""
+    }
+   ],
+   "launcher_snapshot": {
+    "blob": "5a735f97341f572dfca68bbd751b7e34a88ddd0d",
+    "git_ref": "3ad3b700341650349762b6c126b5701984bf003b:launch-v0238.sh",
+    "sha256_literal": "03535a66bdc6b72d26164619b920b5f30e24b1e01382085b36bf34db9761352c"
+   },
+   "lineage": "v0238p0 (source 42cb41b314)",
+   "links": {
+    "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/slots/default_after/rpcw-cuda/strata-expert-helper-patient": "/mnt/srcds/Strata/v0238p0/rpcw-cuda/strata-expert-helper-patient",
+    "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/slots/default_after/rpcw-hip/strata": "/mnt/srcds/Strata/v0238p0/rpcw-hip/strata"
+   },
+   "notes": [
+    "Engine, helper, serving wrapper and config are byte-identical in every arm of this profile; only the two VRAM reserves differ.",
+    "Drift bracket: identical bytes to default_before, run last. Its spread against default_before is the noise floor every arm-to-arm delta is read against \u2014 a delta inside it is not a speed effect."
+   ],
+   "profile_arg_overrides": {
+    "--vram-reserve-later-mib": "700",
+    "--vram-reserve-mib": "700"
+   },
+   "quality_identity": {
+    "--conversation-cache-disk-mib": "24576",
+    "--conversation-cache-mib": "4096",
+    "--conversation-cache-ram-mib": "512",
+    "--expert-helper-slots": "4600",
+    "--kv": "int8",
+    "--kv-resident": "262144",
+    "--max-context": "262144",
+    "--prefill": "16384",
+    "--spec": "5",
+    "backend": "hip",
+    "dflash": "/mnt/srcds/dflash2/artifacts/inco-dflash2-q4_0.gguf",
+    "env": {
+     "CUDA_VISIBLE_DEVICES": "0,1",
+     "HIP_FORCE_P2P": "1",
+     "HSA_ENABLE_SDMA": "1",
+     "HSA_OVERRIDE_GFX_VERSION": "9.0.6",
+     "STRATA_AUX_CPUS": "3,5,7,9,11,13,15",
+     "STRATA_CACHE_SPILL": "0",
+     "STRATA_DFLASH_SAMPLED": "1",
+     "STRATA_ENGINE_NICE": "0",
+     "STRATA_FS_ADMIT": "2",
+     "STRATA_FS_HELPER_SHADOW": "1",
+     "STRATA_FS_SLOTS": "2,8",
+     "STRATA_GFX906_TOPK_FIT17": "1",
+     "STRATA_GFX906_TOPK_REG": "2",
+     "STRATA_GRAPH_FAMILY_TRIM": "8",
+     "STRATA_HIP_PROMPT_F16": "1",
+     "STRATA_MMVF_ROWS": "1",
+     "STRATA_NO_PCIE_GROUP": "1",
+     "STRATA_PREFILL_CPU_SHARE": "auto",
+     "STRATA_PREFILL_HELPER": "1",
+     "STRATA_PREFILL_HELPER_TIMEOUT_MS": "600000",
+     "STRATA_PREFILL_MMQ": "0",
+     "STRATA_PRIMARY_COMMIT_OVERLAP": "1",
+     "STRATA_PROMPT_STAGE_MEMO": "1",
+     "STRATA_SWAPIN_DEPTH": "64",
+     "STRATA_WATCHDOG_S": "900"
+    },
+    "gpu": [
+     0,
+     1
+    ],
+    "model_name": "ud-iq3_xxs",
+    "native": "/mnt/srcds/ai/Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00004.gguf",
+    "pack": "/mnt/srcds/ai/iq3xxs-ud",
+    "ple": "/mnt/srcds/ai/Qwen3.8-Flash-Next-PLE-Q8_0.gguf"
+   },
+   "request_date": "2026-11-19",
+   "server": {
+    "path": "/mnt/srcds/Strata/v0215/serve/server.py",
+    "sha256": "b6463e7b99a0d74cb5bee783e41e401bb5728abccf8870fea13f5c44951c1182"
+   },
+   "slot": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/slots/default_after",
+   "sockets": [
+    "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/run/default_after.sock",
+    "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/run/default_after2.sock"
+   ],
+   "source_commit": "42cb41b314"
+  },
+  "default_before": {
+   "boot_log_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/logs",
+   "config_deltas": [
+    {
+     "field": "exe",
+     "from": "/mnt/srcds/Strata/v0238p0/rpcw-hip/strata",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/slots/default_before/rpcw-hip/strata"
+    },
+    {
+     "field": "log",
+     "from": "/mnt/srcds/Strata/logs/engine-prod-ud-iq3xxs-v0233.log",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/logs/default_before.engine.log"
+    },
+    {
+     "field": "expert_helper_socket",
+     "from": "/mnt/srcds/Strata/run/prod-iq3xxs-ud-mixed.sock",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/run/default_before.sock"
+    },
+    {
+     "field": "expert_helper_socket2",
+     "from": "/mnt/srcds/Strata/run/prod-iq3xxs-ud-mixed2.sock",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/run/default_before2.sock"
+    },
+    {
+     "field": "args/--conversation-cache-dir",
+     "from": "/home/srcds/strata-conv-cache",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/cache/default_before"
+    },
+    {
+     "field": "args/--vram-reserve-mib",
+     "from": "256",
+     "kind": "profile",
+     "to": "700"
+    },
+    {
+     "field": "args/--vram-reserve-later-mib",
+     "from": "448",
+     "kind": "profile",
+     "to": "700"
+    }
+   ],
+   "config_snapshot": {
+    "blob": "b21ff4ff18c1ca6306a7df4c271b32a7a6cacb1b",
+    "git_ref": "3ad3b700341650349762b6c126b5701984bf003b:prod-config-v0238.json",
+    "sha256_literal": "95ef3693b3f598e6bdbe534ef7a9b195e13b9e1705acc0cad2d414db09f21852"
+   },
+   "conversation_cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/cache/default_before",
+   "engine": {
+    "bytes": 50255000,
+    "mtime_epoch": 1794858717,
+    "path": "/mnt/srcds/Strata/v0238p0/rpcw-hip/strata",
+    "sha256": "b0ec0109ebc50c982512c371d81b2c15a8f72c70edf8a461a4ff10337da52f02"
+   },
+   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/logs/default_before.engine.log",
+   "frozen_config": {
+    "path": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/configs/default_before.json",
+    "sha256": "578f07a71e7086ad0d007f8555b85d9cafb061e54ea031f7ec47f841e99dba36"
+   },
+   "frozen_launcher": {
+    "path": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/bin/champs-default_before.sh",
+    "sha256": "6eea1b51c0aa0bf42cf9e3275b6b6a19f0c1650d3d12d7bece23be0105e1bcbe"
+   },
+   "helper": {
+    "path": "/mnt/srcds/Strata/v0238p0/rpcw-cuda/strata-expert-helper-patient",
+    "sha256": "553f3bf48219c99298e4620547507eac7eefa29d660ee32e806bb9780a9ab361"
+   },
+   "label": "engine default reserves 700/700",
+   "launcher_deltas": [
+    {
+     "field": "launcher/BIN",
+     "from": "BIN=\"/mnt/srcds/Strata/v0238p0\"",
+     "kind": "harness",
+     "to": "BIN=\"/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/slots/default_before\""
+    },
+    {
+     "field": "launcher/CONFIG",
+     "from": "CONFIG=\"/mnt/srcds/Strata/prod-config-v0238.json\"",
+     "kind": "harness",
+     "to": "CONFIG=\"/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/configs/default_before.json\""
+    },
+    {
+     "field": "launcher/SOCKET",
+     "from": "SOCKET=\"$ROOT/run/prod-iq3xxs-ud-mixed.sock\"",
+     "kind": "harness",
+     "to": "SOCKET=\"/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/run/default_before.sock\""
+    },
+    {
+     "field": "launcher/SOCKET2",
+     "from": "SOCKET2=\"$ROOT/run/prod-iq3xxs-ud-mixed2.sock\"",
+     "kind": "harness",
+     "to": "SOCKET2=\"/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/run/default_before2.sock\""
+    },
+    {
+     "field": "launcher/LOG",
+     "from": "LOG=\"$ROOT/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-$(date +%Y%m%d-%H%M%S)-$$.log\"",
+     "kind": "harness",
+     "to": "LOG=\"/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/logs/default_before-boot-$(date +%Y%m%d-%H%M%S)-$$.log\""
+    }
+   ],
+   "launcher_snapshot": {
+    "blob": "5a735f97341f572dfca68bbd751b7e34a88ddd0d",
+    "git_ref": "3ad3b700341650349762b6c126b5701984bf003b:launch-v0238.sh",
+    "sha256_literal": "03535a66bdc6b72d26164619b920b5f30e24b1e01382085b36bf34db9761352c"
+   },
+   "lineage": "v0238p0 (source 42cb41b314)",
+   "links": {
+    "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/slots/default_before/rpcw-cuda/strata-expert-helper-patient": "/mnt/srcds/Strata/v0238p0/rpcw-cuda/strata-expert-helper-patient",
+    "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/slots/default_before/rpcw-hip/strata": "/mnt/srcds/Strata/v0238p0/rpcw-hip/strata"
+   },
+   "notes": [
+    "Engine, helper, serving wrapper and config are byte-identical in every arm of this profile; only the two VRAM reserves differ.",
+    "Both cards named explicitly: the later card would otherwise inherit the first through the auto path, which is not what is being measured."
+   ],
+   "profile_arg_overrides": {
+    "--vram-reserve-later-mib": "700",
+    "--vram-reserve-mib": "700"
+   },
+   "quality_identity": {
+    "--conversation-cache-disk-mib": "24576",
+    "--conversation-cache-mib": "4096",
+    "--conversation-cache-ram-mib": "512",
+    "--expert-helper-slots": "4600",
+    "--kv": "int8",
+    "--kv-resident": "262144",
+    "--max-context": "262144",
+    "--prefill": "16384",
+    "--spec": "5",
+    "backend": "hip",
+    "dflash": "/mnt/srcds/dflash2/artifacts/inco-dflash2-q4_0.gguf",
+    "env": {
+     "CUDA_VISIBLE_DEVICES": "0,1",
+     "HIP_FORCE_P2P": "1",
+     "HSA_ENABLE_SDMA": "1",
+     "HSA_OVERRIDE_GFX_VERSION": "9.0.6",
+     "STRATA_AUX_CPUS": "3,5,7,9,11,13,15",
+     "STRATA_CACHE_SPILL": "0",
+     "STRATA_DFLASH_SAMPLED": "1",
+     "STRATA_ENGINE_NICE": "0",
+     "STRATA_FS_ADMIT": "2",
+     "STRATA_FS_HELPER_SHADOW": "1",
+     "STRATA_FS_SLOTS": "2,8",
+     "STRATA_GFX906_TOPK_FIT17": "1",
+     "STRATA_GFX906_TOPK_REG": "2",
+     "STRATA_GRAPH_FAMILY_TRIM": "8",
+     "STRATA_HIP_PROMPT_F16": "1",
+     "STRATA_MMVF_ROWS": "1",
+     "STRATA_NO_PCIE_GROUP": "1",
+     "STRATA_PREFILL_CPU_SHARE": "auto",
+     "STRATA_PREFILL_HELPER": "1",
+     "STRATA_PREFILL_HELPER_TIMEOUT_MS": "600000",
+     "STRATA_PREFILL_MMQ": "0",
+     "STRATA_PRIMARY_COMMIT_OVERLAP": "1",
+     "STRATA_PROMPT_STAGE_MEMO": "1",
+     "STRATA_SWAPIN_DEPTH": "64",
+     "STRATA_WATCHDOG_S": "900"
+    },
+    "gpu": [
+     0,
+     1
+    ],
+    "model_name": "ud-iq3_xxs",
+    "native": "/mnt/srcds/ai/Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00004.gguf",
+    "pack": "/mnt/srcds/ai/iq3xxs-ud",
+    "ple": "/mnt/srcds/ai/Qwen3.8-Flash-Next-PLE-Q8_0.gguf"
+   },
+   "request_date": "2026-11-19",
+   "server": {
+    "path": "/mnt/srcds/Strata/v0215/serve/server.py",
+    "sha256": "b6463e7b99a0d74cb5bee783e41e401bb5728abccf8870fea13f5c44951c1182"
+   },
+   "slot": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/slots/default_before",
+   "sockets": [
+    "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/run/default_before.sock",
+    "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/run/default_before2.sock"
+   ],
+   "source_commit": "42cb41b314"
+  },
+  "optimized": {
+   "boot_log_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/logs",
+   "config_deltas": [
+    {
+     "field": "exe",
+     "from": "/mnt/srcds/Strata/v0238p0/rpcw-hip/strata",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/slots/optimized/rpcw-hip/strata"
+    },
+    {
+     "field": "log",
+     "from": "/mnt/srcds/Strata/logs/engine-prod-ud-iq3xxs-v0233.log",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/logs/optimized.engine.log"
+    },
+    {
+     "field": "expert_helper_socket",
+     "from": "/mnt/srcds/Strata/run/prod-iq3xxs-ud-mixed.sock",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/run/optimized.sock"
+    },
+    {
+     "field": "expert_helper_socket2",
+     "from": "/mnt/srcds/Strata/run/prod-iq3xxs-ud-mixed2.sock",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/run/optimized2.sock"
+    },
+    {
+     "field": "args/--conversation-cache-dir",
+     "from": "/home/srcds/strata-conv-cache",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/cache/optimized"
+    }
+   ],
+   "config_snapshot": {
+    "blob": "b21ff4ff18c1ca6306a7df4c271b32a7a6cacb1b",
+    "git_ref": "3ad3b700341650349762b6c126b5701984bf003b:prod-config-v0238.json",
+    "sha256_literal": "95ef3693b3f598e6bdbe534ef7a9b195e13b9e1705acc0cad2d414db09f21852"
+   },
+   "conversation_cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/cache/optimized",
+   "engine": {
+    "bytes": 50255000,
+    "mtime_epoch": 1794858717,
+    "path": "/mnt/srcds/Strata/v0238p0/rpcw-hip/strata",
+    "sha256": "b0ec0109ebc50c982512c371d81b2c15a8f72c70edf8a461a4ff10337da52f02"
+   },
+   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/logs/optimized.engine.log",
+   "frozen_config": {
+    "path": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/configs/optimized.json",
+    "sha256": "df05ba2ea04ee77f80625b934b42f3aec9100a3a20835ea0f6c0a49533c9d293"
+   },
+   "frozen_launcher": {
+    "path": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/bin/champs-optimized.sh",
+    "sha256": "0f7972bc5b89ed35c36880233a08c7f7933ebcd4f0ccbb03dbc327bab0de8ae3"
+   },
+   "helper": {
+    "path": "/mnt/srcds/Strata/v0238p0/rpcw-cuda/strata-expert-helper-patient",
+    "sha256": "553f3bf48219c99298e4620547507eac7eefa29d660ee32e806bb9780a9ab361"
+   },
+   "label": "adopted reserves 256/448 (prod config 95ef3693)",
+   "launcher_deltas": [
+    {
+     "field": "launcher/BIN",
+     "from": "BIN=\"/mnt/srcds/Strata/v0238p0\"",
+     "kind": "harness",
+     "to": "BIN=\"/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/slots/optimized\""
+    },
+    {
+     "field": "launcher/CONFIG",
+     "from": "CONFIG=\"/mnt/srcds/Strata/prod-config-v0238.json\"",
+     "kind": "harness",
+     "to": "CONFIG=\"/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/configs/optimized.json\""
+    },
+    {
+     "field": "launcher/SOCKET",
+     "from": "SOCKET=\"$ROOT/run/prod-iq3xxs-ud-mixed.sock\"",
+     "kind": "harness",
+     "to": "SOCKET=\"/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/run/optimized.sock\""
+    },
+    {
+     "field": "launcher/SOCKET2",
+     "from": "SOCKET2=\"$ROOT/run/prod-iq3xxs-ud-mixed2.sock\"",
+     "kind": "harness",
+     "to": "SOCKET2=\"/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/run/optimized2.sock\""
+    },
+    {
+     "field": "launcher/LOG",
+     "from": "LOG=\"$ROOT/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-$(date +%Y%m%d-%H%M%S)-$$.log\"",
+     "kind": "harness",
+     "to": "LOG=\"/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/logs/optimized-boot-$(date +%Y%m%d-%H%M%S)-$$.log\""
+    }
+   ],
+   "launcher_snapshot": {
+    "blob": "5a735f97341f572dfca68bbd751b7e34a88ddd0d",
+    "git_ref": "3ad3b700341650349762b6c126b5701984bf003b:launch-v0238.sh",
+    "sha256_literal": "03535a66bdc6b72d26164619b920b5f30e24b1e01382085b36bf34db9761352c"
+   },
+   "lineage": "v0238p0 (source 42cb41b314)",
+   "links": {
+    "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/slots/optimized/rpcw-cuda/strata-expert-helper-patient": "/mnt/srcds/Strata/v0238p0/rpcw-cuda/strata-expert-helper-patient",
+    "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/slots/optimized/rpcw-hip/strata": "/mnt/srcds/Strata/v0238p0/rpcw-hip/strata"
+   },
+   "notes": [
+    "Engine, helper, serving wrapper and config are byte-identical in every arm of this profile; only the two VRAM reserves differ.",
+    "These are production's current values, so a win here is a win the box is already meant to be getting."
+   ],
+   "profile_arg_overrides": {
+    "--vram-reserve-later-mib": "448",
+    "--vram-reserve-mib": "256"
+   },
+   "quality_identity": {
+    "--conversation-cache-disk-mib": "24576",
+    "--conversation-cache-mib": "4096",
+    "--conversation-cache-ram-mib": "512",
+    "--expert-helper-slots": "4600",
+    "--kv": "int8",
+    "--kv-resident": "262144",
+    "--max-context": "262144",
+    "--prefill": "16384",
+    "--spec": "5",
+    "backend": "hip",
+    "dflash": "/mnt/srcds/dflash2/artifacts/inco-dflash2-q4_0.gguf",
+    "env": {
+     "CUDA_VISIBLE_DEVICES": "0,1",
+     "HIP_FORCE_P2P": "1",
+     "HSA_ENABLE_SDMA": "1",
+     "HSA_OVERRIDE_GFX_VERSION": "9.0.6",
+     "STRATA_AUX_CPUS": "3,5,7,9,11,13,15",
+     "STRATA_CACHE_SPILL": "0",
+     "STRATA_DFLASH_SAMPLED": "1",
+     "STRATA_ENGINE_NICE": "0",
+     "STRATA_FS_ADMIT": "2",
+     "STRATA_FS_HELPER_SHADOW": "1",
+     "STRATA_FS_SLOTS": "2,8",
+     "STRATA_GFX906_TOPK_FIT17": "1",
+     "STRATA_GFX906_TOPK_REG": "2",
+     "STRATA_GRAPH_FAMILY_TRIM": "8",
+     "STRATA_HIP_PROMPT_F16": "1",
+     "STRATA_MMVF_ROWS": "1",
+     "STRATA_NO_PCIE_GROUP": "1",
+     "STRATA_PREFILL_CPU_SHARE": "auto",
+     "STRATA_PREFILL_HELPER": "1",
+     "STRATA_PREFILL_HELPER_TIMEOUT_MS": "600000",
+     "STRATA_PREFILL_MMQ": "0",
+     "STRATA_PRIMARY_COMMIT_OVERLAP": "1",
+     "STRATA_PROMPT_STAGE_MEMO": "1",
+     "STRATA_SWAPIN_DEPTH": "64",
+     "STRATA_WATCHDOG_S": "900"
+    },
+    "gpu": [
+     0,
+     1
+    ],
+    "model_name": "ud-iq3_xxs",
+    "native": "/mnt/srcds/ai/Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00004.gguf",
+    "pack": "/mnt/srcds/ai/iq3xxs-ud",
+    "ple": "/mnt/srcds/ai/Qwen3.8-Flash-Next-PLE-Q8_0.gguf"
+   },
+   "request_date": "2026-11-19",
+   "server": {
+    "path": "/mnt/srcds/Strata/v0215/serve/server.py",
+    "sha256": "b6463e7b99a0d74cb5bee783e41e401bb5728abccf8870fea13f5c44951c1182"
+   },
+   "slot": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/slots/optimized",
+   "sockets": [
+    "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/run/optimized.sock",
+    "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/run/optimized2.sock"
+   ],
+   "source_commit": "42cb41b314"
+  }
+ },
+ "config_identical_across_arms": true,
+ "corpus": [
+  {
+   "bytes": 88400,
+   "head_tag": "[champs work=short16k pair=0 ctx=88400]",
+   "measured": false,
+   "pair": 0,
+   "path": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/corpus/short16k-p0.ctx88400.bin",
+   "sha256": "254a0cdb42056ec6112643d0732e084065ed159569a7314feece0c7e6bf8160a",
+   "shape": "short16k"
+  },
+  {
+   "bytes": 88400,
+   "head_tag": "[champs work=short16k pair=1 ctx=88400]",
+   "measured": true,
+   "pair": 1,
+   "path": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/corpus/short16k-p1.ctx88400.bin",
+   "sha256": "014c6b5e6b1d59192cce5654aed1c026e54c5e65ff03ceae38fbf5b168940d1c",
+   "shape": "short16k"
+  },
+  {
+   "bytes": 88400,
+   "head_tag": "[champs work=short16k pair=2 ctx=88400]",
+   "measured": true,
+   "pair": 2,
+   "path": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/corpus/short16k-p2.ctx88400.bin",
+   "sha256": "53f5bd774f87008135ff723639425bd63e771534ca59da78dadd8d2d17d3356f",
+   "shape": "short16k"
+  },
+  {
+   "bytes": 88400,
+   "head_tag": "[champs work=short16k pair=3 ctx=88400]",
+   "measured": true,
+   "pair": 3,
+   "path": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/corpus/short16k-p3.ctx88400.bin",
+   "sha256": "66ab27cbe9ef183b7a84e5dbd94761452ebc1cda496aebf5a0d8f84b66b68a67",
+   "shape": "short16k"
+  }
+ ],
+ "deviations": [
+  "the only settings that move are --vram-reserve-mib and --vram-reserve-later-mib; a dry-run refuses the run if any other field differs once the harness paths are blanked.",
+  "all three arms symlink the SAME engine, helper and serving wrapper; no binary, build or precision differs, so nothing here is a quality claim \u2014 the unchanged binary and the matched sampling settings prove no intentional quality reduction, nothing more.",
+  "conversation-cache-dir is retargeted to a per-arm empty directory: every arm boots cold and the production cache inventory is never mutated. Identical treatment for all arms.",
+  "requests pin production's sampling and reasoning effort through the frozen request template, not the driver's temperature-0 parity defaults; enable_thinking and anything else unlisted is left to the current server. Hashes are recorded, completions are not compared.",
+  "one stack at a time on 127.0.0.1:8009, the launcher's own port: production must be down before --run and comes back through the restore step, never as a second stack.",
+  "the boot log, engine log, sockets and driver records are per-arm, so no gate can read a stale shared log and no arm can write another arm's evidence."
+ ],
+ "effective_deltas": {
+  "engine_binary": {
+   "default_after": "b0ec0109ebc50c982512c371d81b2c15a8f72c70edf8a461a4ff10337da52f02",
+   "default_before": "b0ec0109ebc50c982512c371d81b2c15a8f72c70edf8a461a4ff10337da52f02",
+   "optimized": "b0ec0109ebc50c982512c371d81b2c15a8f72c70edf8a461a4ff10337da52f02"
+  },
+  "engine_binary_identical": true,
+  "engine_source": {
+   "default_after": "42cb41b314",
+   "default_before": "42cb41b314",
+   "optimized": "42cb41b314"
+  },
+  "shared_unchanged": {
+   "helper": "553f3bf48219c99298e4620547507eac7eefa29d660ee32e806bb9780a9ab361",
+   "quality_bearing_config": "identical across all 3 arms",
+   "server": "b6463e7b99a0d74cb5bee783e41e401bb5728abccf8870fea13f5c44951c1182"
+  }
+ },
+ "git_head_at_prepare": "a9cc483b3067bed6af7172b77637372e0dd32c02",
+ "plan": "Reserve-only TG/PP comparison: engine default 700/700 vs adopted 256/448, with the default repeated last as the drift bracket (requested 2026-11-19)",
+ "plan_document": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/gpu-rounds/serving-plan-current.md",
+ "profile": "reserve-only-20261119",
+ "profile_delta": {
+  "--vram-reserve-later-mib": {
+   "default_after": "700",
+   "default_before": "700",
+   "optimized": "448"
+  },
+  "--vram-reserve-mib": {
+   "default_after": "700",
+   "default_before": "700",
+   "optimized": "256"
+  }
+ },
+ "quality_key_deltas": {},
+ "request_model": "one driver call per pair, ab9 kind=tg: request 0 fresh prefill (PP + TG), request 1 cached re-run (TG only); pair 0 excluded",
+ "request_template": {
+  "path": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/request-template.json",
+  "settings": {
+   "min_p": 0.0,
+   "model": "ud-iq3_xxs",
+   "presence_penalty": 0.0,
+   "reasoning_effort": "high",
+   "repetition_penalty": 1.0,
+   "stream": false,
+   "temperature": 1.0,
+   "top_k": 20,
+   "top_p": 0.95
+  },
+  "sha256": "ac4a6fb2e3f15e7e77a4b5dd70de090e840d80927d97275613bfb4203ce563ed"
+ },
+ "restore": {
+  "config": "/mnt/srcds/Strata/prod-config-v0238.json",
+  "config_sha256": "b221140fc394957d9a52cf475d1539340d42edc859ff7ce8e4d06d8d6bf35df8",
+  "engine": "/mnt/srcds/Strata/v0238p0/rpcw-hip/strata",
+  "engine_sha": "b0ec0109ebc50c982512c371d81b2c15a8f72c70edf8a461a4ff10337da52f02",
+  "launcher": "/mnt/srcds/Strata/launch-v0238.sh",
+  "launcher_sha256": "03535a66bdc6b72d26164619b920b5f30e24b1e01382085b36bf34db9761352c",
+  "poll_s": 5,
+  "supervisor_state": "/mnt/srcds/Strata/run/prod-swift15-f16kv-mixed-supervisor.json",
+  "timeout_s": 1800
+ },
+ "shapes": [
+  {
+   "ctx_bytes": 88400,
+   "max_tokens": 256,
+   "measured_pairs": 3,
+   "name": "short16k",
+   "pairs": 4,
+   "request_timeout_s": 2400,
+   "warmup_pairs": 1
+  }
+ ]
+}

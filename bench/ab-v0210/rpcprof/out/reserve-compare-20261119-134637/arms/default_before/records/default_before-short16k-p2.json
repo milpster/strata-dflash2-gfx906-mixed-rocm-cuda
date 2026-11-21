@@ -1,0 +1,88 @@
+{
+ "arm": "default_before",
+ "leg": "short16k-p2",
+ "kind": "tg",
+ "ctx": 88400,
+ "max_tokens": 256,
+ "ts": 1795104243.615,
+ "walls": [
+  80.991,
+  8.037
+ ],
+ "wall_s": 89.029,
+ "content_from": "content",
+ "prompt_bytes": 88400,
+ "prompt_sha256": "53f5bd774f87008135ff723639425bd63e771534ca59da78dadd8d2d17d3356f",
+ "requests": [
+  {
+   "index": 0,
+   "wall_s": 80.991,
+   "content_from": "content",
+   "response_sha256": "b9326e7450eabb4632bce2c3a5800b9f620d45e748e1092e0aff48643307110d",
+   "elog_start": 29118,
+   "elog_end": 32191,
+   "hlog_start": 1752,
+   "hlog_end": 1752,
+   "model": "ud-iq3_xxs"
+  },
+  {
+   "index": 1,
+   "wall_s": 8.037,
+   "content_from": "content",
+   "response_sha256": "3c469e9d6c5875d37a43f353d4f88e61fcf812c66eee3457465a40b0da4153e0",
+   "elog_start": 32191,
+   "elog_end": 35378,
+   "hlog_start": 1752,
+   "hlog_end": 1752,
+   "model": "ud-iq3_xxs"
+  }
+ ],
+ "sha256": "3c469e9d6c5875d37a43f353d4f88e61fcf812c66eee3457465a40b0da4153e0",
+ "elog": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/logs/default_before.engine.log",
+ "elog_start": 29118,
+ "elog_end": 35378,
+ "hlog": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/logs/default_before-boot-20261119-165734-2945336-helper.log",
+ "hlog_start": 1752,
+ "hlog_end": 1752,
+ "mem": {
+  "max_rss_mib": 39072,
+  "min_avail_mib": 9919,
+  "max_swap_used_mib": 8098,
+  "max_vram_mib": {
+   "card3": 15980,
+   "card4": 433,
+   "card2": 15897,
+   "nvidia0": 7474
+  }
+ },
+ "request": {
+  "template_path": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/request-template.json",
+  "template_sha256": "ac4a6fb2e3f15e7e77a4b5dd70de090e840d80927d97275613bfb4203ce563ed",
+  "settings": {
+   "min_p": 0.0,
+   "model": "ud-iq3_xxs",
+   "presence_penalty": 0.0,
+   "reasoning_effort": "high",
+   "repetition_penalty": 1.0,
+   "stream": false,
+   "temperature": 1.0,
+   "top_k": 20,
+   "top_p": 0.95,
+   "messages": [
+    {
+     "role": "user",
+     "content_sha256": "53f5bd774f87008135ff723639425bd63e771534ca59da78dadd8d2d17d3356f"
+    }
+   ],
+   "max_tokens": 256
+  },
+  "settings_sha256": "bbcf202a1634641a09731866837b584bac926e284ef66d05c83790e8fafbec8e",
+  "url": "http://127.0.0.1:8009/v1/chat/completions"
+ },
+ "champs": {
+  "shape": "short16k",
+  "pair": 2,
+  "measured": true,
+  "retries": 0
+ }
+}

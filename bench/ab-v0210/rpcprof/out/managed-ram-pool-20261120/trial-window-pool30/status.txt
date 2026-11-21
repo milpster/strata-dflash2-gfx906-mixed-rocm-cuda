@@ -1,0 +1,31 @@
+window: trial-window-pool30 (managed RAM pool 30 GiB, budget 34,816 MiB) 2026-11-21
+config: bench/ab-v0210/rpcprof/trial-managed-pool-30g.json (unmodified)
+env: STRATA_PORT=8009 STRATA_RAM_BUDGET_MIB=34816 STRATA_HELPER_RESERVE=128 STRATA_FILL_MIB=7180
+bin: /mnt/srcds/Strata/run/trial-managed-bin (helper) + worktree build-906/strata (engine)
+
+before boot: check-quiet.sh -> QUIET exit 0; 8009/8019 not listening; cache dir
+/mnt/srcds/Strata-wt-helper-ipc/run/diet-cache-pool30 empty.
+
+RUN 1 (boot 01:13:06, launcher log trial-managed-20261121-011303-1376027.log, engine pid 1378266)
+  P1  exit 0   59 tokens = 0 reused + 59 read in 3592 ms, 16 generated in 1421 ms
+  P2  exit 0   74635 tokens = 0 reused + 74635 read in 264202 ms (282.5 tok/s),
+               1536 generated in 74634 ms (20.6 tok/s)
+  P3  exit 1   ENGINE ABORTED: "[strata] the engine reported an error: the expert source
+               could not produce a blob"; launcher logged
+               "done: 831 tokens in 35 s (23.9 tok/s) (error, cancel=False)".
+               Engine process gone; serve front-end stayed up (health loaded=false).
+  stop-all.sh alone: TERM 1376027 1376794 -> before=0 after=0 - ALL STOPPED
+  check-quiet.sh alone: QUIET, exit 0
+
+RUN 2 (boot 01:24:32, launcher log trial-managed-20261121-012430-1918498.log, engine pid 1920735)
+  fresh empty cache dir (run 1's ring files moved to run1-cache-dir/)
+  P1  exit 0   59 tokens = 0 reused + 59 read in 3562 ms, 16 generated in 1257 ms
+  P2  exit 0   74635 tokens = 0 reused + 74635 read in 270580 ms (275.8 tok/s),
+               1537 generated in 77284 ms (19.9 tok/s)
+  P3  exit 1   ENGINE ABORTED again, same message; launcher logged
+               "done: 180 tokens in 12 s (15.6 tok/s) (error, cancel=False)"
+  stop-all.sh alone: TERM 1918498 1919261 -> before=0 after=0 - ALL STOPPED
+  check-quiet.sh alone: QUIET, exit 0
+
+after: 8009/8019 not listening; no run/trial-managed*.sock; both samplers stopped by explicit pid.
+prod was never started and never touched.

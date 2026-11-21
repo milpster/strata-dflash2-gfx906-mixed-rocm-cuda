@@ -1,0 +1,19 @@
+Sat Nov 21 03:05:08 AM CET 2026
+== meminfo
+MemTotal:       65171984 kB
+MemFree:         1893684 kB
+MemAvailable:   10936840 kB
+SwapTotal:      201326568 kB
+SwapFree:       194790840 kB
+== nvidia
+0, NVIDIA GeForce RTX 3080 Laptop GPU, 7592 MiB, 251 MiB
+== rocm
+device,VRAM Total Memory (B),VRAM Total Used Memory (B)
+card0,17163091968,16977137664
+card1,17163091968,16897417216
+card2,536870912,444207104
+== health
+{"status": "ok", "max_context": 262144, "model": "swift-1.5-ud-iq3xxs-managed", "images": true, "api_key": false, "image_generation": false, "loaded": true, "service": "strata"}
+== pids
+2462726 strata-expert-helper-patient /mnt/srcds/Strata/run/trial-managed-bin/rpcw-cuda/strata-expert-helper-patient -
+2464947 strata /mnt/srcds/Strata-wt-helper-ipc/build-906/strata --serve --gpu 0,1 --pack /mnt/s

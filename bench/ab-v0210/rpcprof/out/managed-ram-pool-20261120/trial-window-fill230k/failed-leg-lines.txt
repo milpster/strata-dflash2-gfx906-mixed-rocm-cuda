@@ -1,0 +1,1 @@
+foresight swap: 2 slots per layer on 2 card(s), up to 32 copies per card and window, admit after 2 miss(es), reuse after 4 windows

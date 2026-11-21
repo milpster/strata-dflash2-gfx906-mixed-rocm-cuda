@@ -1,0 +1,3 @@
+95ef3693b3f598e6bdbe534ef7a9b195e13b9e1705acc0cad2d414db09f21852  /mnt/srcds/Strata/prod-config-v0238.json
+b0ec0109ebc50c982512c371d81b2c15a8f72c70edf8a461a4ff10337da52f02  /mnt/srcds/Strata/v0238p0/rpcw-hip/strata
+03535a66bdc6b72d26164619b920b5f30e24b1e01382085b36bf34db9761352c  /mnt/srcds/Strata/launch-v0238.sh

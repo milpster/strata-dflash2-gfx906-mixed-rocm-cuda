@@ -1,0 +1,4 @@
+MemAvailable:   19299748 kB
+SwapFree:       192394808 kB
+[pressure] holding 24576 MiB (MemAvailable 7729 MiB); stop by removing bench/ab-v0210/rpcprof/out/parking-validation-20261119-173003/pressure.hold or SIGTERM
+[pressure] releasing 24576 MiB and exiting

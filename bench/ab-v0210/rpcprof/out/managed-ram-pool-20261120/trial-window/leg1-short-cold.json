@@ -1,0 +1,10 @@
+{
+  "wall_s": 5.12,
+  "http": 200,
+  "prompt_tokens": 59,
+  "completion_tokens": 16,
+  "tok_s_wall": 3.12,
+  "finish_reason": "length",
+  "reply_chars": 0,
+  "failed": null
+}

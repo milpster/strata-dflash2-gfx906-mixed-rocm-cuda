@@ -1,0 +1,3 @@
+[strata] done: 16 tokens in 23 s (2.5 tok/s) (length, cancel=False), expert cache 84.3% hit (+16.8% of the routed experts over PCIe)
+[strata] done: 256 tokens in 105 s (7.5 tok/s) (length, cancel=False), expert cache 83.6% hit (+15.6% of the routed experts over PCIe) helper=reqs=1024 rows=7634 bytes=78172160 timeouts=0 fallbacks=0
+[strata] done: 65 tokens in 34 s (9.5 tok/s) (stop, cancel=False), expert cache 89.6% hit (+15.1% of the routed experts over PCIe) helper=reqs=1024 rows=7634 bytes=78172160 timeouts=0 fallbacks=0

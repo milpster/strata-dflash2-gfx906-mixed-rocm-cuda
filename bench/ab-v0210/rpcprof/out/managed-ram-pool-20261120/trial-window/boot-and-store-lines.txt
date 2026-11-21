@@ -1,0 +1,51 @@
+[strata] 2026-11-20 22:05:33 engine started: /mnt/srcds/Strata-wt-helper-ipc/build-906/strata --serve --gpu 0,1 --pack /mnt/srcds/ai/iq3xxs-ud --native /mnt/srcds/ai/Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00004.gguf --na
+strata generate: native pack: /mnt/srcds/ai/iq3xxs-ud experts (largest blob 2.66 MB), token embedding Q6_K in mapped host memory (497 MiB, 0.2 s)
+strata generate: STRATA_RAM_BUDGET_MIB=40960: store.open(/mnt/srcds/ai/iq3xxs-ud/experts.bin): Invalid argument
+[strata] 2026-11-20 22:25:47 engine started: /mnt/srcds/Strata-wt-helper-ipc/build-906/strata --serve --gpu 0,1 --pack /mnt/srcds/ai/iq3xxs-ud --native /mnt/srcds/ai/Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00004.gguf --na
+strata generate: native pack: /mnt/srcds/ai/iq3xxs-ud experts (largest blob 2.66 MB), token embedding Q6_K in mapped host memory (497 MiB, 0.4 s)
+strata generate: STRATA_RAM_BUDGET_MIB=40960: outside_owned=4294967296 pool_bytes=38654705664 store open
+strata generate: file tier (experts.bin): io prefetch stays off by default here: the page cache has room for 25% of the experts (it helps from 55%: 32 GB-class RAM, decode +20..34% measured); STRATA_IO_PREFETCH=1 turns i
+strata serve: foresight swap: 2 slots per layer on 2 card(s), up to 32 copies per card and window, admit after 2 miss(es), reuse after 4 windows
+strata serve: 220 MiB of VRAM free with everything loaded - LOW: requests may stall; add --vram-reserve-mib 484 to the config's args (or lower --max-context)
+strata serve: CUDA1: 744 MiB of VRAM free with everything loaded
+strata serve: WARNING: only 220 MiB of VRAM free at the start of this request (below 512 MiB): when the card is this full the driver can page GPU memory to system RAM, decode falls to a few tok/s and a window may never f
+strata verify: capturing the 5-token window (220 MiB of VRAM free)
+strata verify: capturing the 5-token window (744 MiB of VRAM free)
+strata verify: capturing the 4-token window (166 MiB of VRAM free)
+strata verify: capturing the 4-token window (692 MiB of VRAM free)
+strata verify: capturing the 1-token window (166 MiB of VRAM free)
+strata verify: capturing the 1-token window (692 MiB of VRAM free)
+strata serve: foresight swap: 61 experts served from the swap space, 95 copies (80 from the router look-ahead), 36 not landed yet, 1725 no free slot, 6696 over budget
+strata verify: capturing the 3-token window (63 MiB of VRAM free)
+strata verify: capturing the 3-token window (587 MiB of VRAM free)
+strata verify: capturing the 2-token window (63 MiB of VRAM free)
+strata verify: capturing the 2-token window (587 MiB of VRAM free)
+strata serve: foresight swap: 292 experts served from the swap space, 1110 copies (889 from the router look-ahead), 152 not landed yet, 11671 no free slot, 6954 over budget
+strata serve: WARNING: only 63 MiB of VRAM free at the start of this request (below 512 MiB): when the card is this full the driver can page GPU memory to system RAM, decode falls to a few tok/s and a window may never fi
+strata serve: foresight swap: 703 experts served from the swap space, 1492 copies (1191 from the router look-ahead), 244 not landed yet, 26036 no free slot, 6954 over budget
+strata serve: foresight swap: 800 experts served from the swap space, 1849 copies (1473 from the router look-ahead), 321 not landed yet, 30827 no free slot, 6993 over budget
+strata serve: foresight swap: 837 experts served from the swap space, 2952 copies (2554 from the router look-ahead), 402 not landed yet, 40730 no free slot, 6993 over budget
+strata serve: foresight swap: 944 experts served from the swap space, 3475 copies (3045 from the router look-ahead), 484 not landed yet, 52439 no free slot, 6993 over budget
+[strata] 2026-11-20 22:46:50 engine started: /mnt/srcds/Strata-wt-helper-ipc/build-906/strata --serve --gpu 0,1 --pack /mnt/srcds/ai/iq3xxs-ud --native /mnt/srcds/ai/Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00004.gguf --na
+strata generate: native pack: /mnt/srcds/ai/iq3xxs-ud experts (largest blob 2.66 MB), token embedding Q6_K in mapped host memory (497 MiB, 0.4 s)
+strata generate: STRATA_RAM_BUDGET_MIB=45056: outside_owned=4294967296 pool_bytes=42949672960 store open
+strata generate: file tier (experts.bin): io prefetch stays off by default here: the page cache has room for 20% of the experts (it helps from 55%: 32 GB-class RAM, decode +20..34% measured); STRATA_IO_PREFETCH=1 turns i
+strata serve: foresight swap: 2 slots per layer on 2 card(s), up to 32 copies per card and window, admit after 2 miss(es), reuse after 4 windows
+strata serve: 220 MiB of VRAM free with everything loaded - LOW: requests may stall; add --vram-reserve-mib 484 to the config's args (or lower --max-context)
+strata serve: CUDA1: 744 MiB of VRAM free with everything loaded
+strata serve: WARNING: only 220 MiB of VRAM free at the start of this request (below 512 MiB): when the card is this full the driver can page GPU memory to system RAM, decode falls to a few tok/s and a window may never f
+strata verify: capturing the 5-token window (220 MiB of VRAM free)
+strata verify: capturing the 5-token window (744 MiB of VRAM free)
+strata verify: capturing the 4-token window (166 MiB of VRAM free)
+strata verify: capturing the 4-token window (692 MiB of VRAM free)
+strata verify: capturing the 1-token window (166 MiB of VRAM free)
+strata verify: capturing the 1-token window (692 MiB of VRAM free)
+strata serve: foresight swap: 72 experts served from the swap space, 94 copies (72 from the router look-ahead), 34 not landed yet, 1726 no free slot, 6534 over budget
+strata verify: capturing the 3-token window (63 MiB of VRAM free)
+strata verify: capturing the 3-token window (587 MiB of VRAM free)
+strata verify: capturing the 2-token window (63 MiB of VRAM free)
+strata verify: capturing the 2-token window (587 MiB of VRAM free)
+strata serve: foresight swap: 301 experts served from the swap space, 1124 copies (936 from the router look-ahead), 161 not landed yet, 11852 no free slot, 6534 over budget
+strata serve: WARNING: only 63 MiB of VRAM free at the start of this request (below 512 MiB): when the card is this full the driver can page GPU memory to system RAM, decode falls to a few tok/s and a window may never fi
+strata serve: foresight swap: 728 experts served from the swap space, 1533 copies (1247 from the router look-ahead), 241 not landed yet, 27460 no free slot, 6534 over budget
+strata serve: foresight swap: 860 experts served from the swap space, 1936 copies (1565 from the router look-ahead), 318 not landed yet, 33627 no free slot, 6534 over budget

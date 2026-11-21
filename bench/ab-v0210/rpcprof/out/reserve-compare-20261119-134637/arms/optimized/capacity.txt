@@ -1,0 +1,85 @@
+[optimized-boot-20261119-170614-3070508.log] [strata] loading the experts into RAM (tens of GB) and locking part of them for the GPU.
+[optimized-boot-20261119-170614-3070508.log] [strata] filling the GPU's expert cache (4951 experts, 9.17 GiB of VRAM) ...
+[optimized-boot-20261119-170614-3070508.log] [strata] note: 284 MiB of VRAM free with the model loaded. If this AMD card also drives your desktop and the desktop or apps crash after the start (the driver moves the expert cache to RAM and the OOM killer ends the session), keep more VRAM free: ./setup.sh --vram-reserve-mib 3072 (remembered; the expert cache gets 2.8 GB less, a few % of speed)
+[optimized-boot-20261119-170614-3070508.log] [strata] MCP server 'docling': 21 tools (check_document_in_local_cache, remove_document_from_local_cache, convert_document_into_docling_document, convert_directory_files_into_docling_document, list_cached_documents, create_new_docling_document, export_docling_document_to_markdown, save_docling_document, ...)
+[optimized-boot-20261119-170614-3070508-helper.log] expert-helper: --reserve-mib 156 MiB is below the recommended 256: the fill has little room to survive the card's other users
+[optimized-boot-20261119-170614-3070508-helper.log] expert-helper: reply write deadlines overridden to 600000 ms (STRATA_HELPER_REPLY_TIMEOUT_MS)
+[optimized-boot-20261119-170614-3070508-helper.log] expert-helper: listening on /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/run/optimized.sock (device 0, pack /mnt/srcds/ai/iq3xxs-ud, 48 layers x 512 experts)
+[optimized-boot-20261119-170614-3070508-helper.log] expert-helper: second channel listening on /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/run/optimized2.sock (the engine's prompt tier rides it; the window tier stays on /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/run/optimized.sock)
+[optimized-boot-20261119-170614-3070508-helper.log] expert-helper: engine connected (peer uid 1000)
+[optimized-boot-20261119-170614-3070508-helper.log] expert-helper: helper socket buffers achieved snd=212992 rcv=212992
+[optimized-boot-20261119-170614-3070508-helper.log] expert-helper: fill preflight: device free 7470 MiB of 7842 MiB, budget 7126.5 MiB (reserve 156 MiB, scratch 672000 B, buffers 180098776 B), slots cap 4600, fill-mib cap 7100
+[optimized-boot-20261119-170614-3070508-helper.log] expert-helper: warmup fmt L16: gu_type=18 d_type=20 n_embd=2560 n_ff=640 L.bytes=2176000 blob_bytes=2176000
+[optimized-boot-20261119-170614-3070508-helper.log] expert-helper: warmup blob@ptr[0] 8804a4c96ad20337 vs pack 8804a4c96ad20337 (ptr matches the pack)
+[optimized-boot-20261119-170614-3070508-helper.log] expert-helper: warmup meta: groups=1 entries=[0,1) dst0=0 tok0=0 | out[0..3]=0 0 0 0
+[optimized-boot-20261119-170614-3070508-helper.log] expert-helper: warmup launch done on zero activations: output finite - the kernel, the slot bytes and the row layout are sane
+[optimized-boot-20261119-170614-3070508-helper.log] expert-helper: filled 3703 slots (6.93 GiB), scratch 672000 B, buffers 180098776 B
+[optimized-boot-20261119-170614-3070508-helper.log] expert-helper: fill stopped: fill-mib; device free now 368 MiB of 7842 MiB (3703 slots, 6.93 GiB uploaded)
+[optimized-boot-20261119-170614-3070508-helper.log] expert-helper: second-channel engine connected (peer uid 1000)
+[optimized-boot-20261119-170614-3070508-helper.log] expert-helper: helper socket buffers achieved snd=212992 rcv=212992
+[optimized.engine.log] [strata] 2026-11-19 17:06:16 engine started: /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/slots/optimized/rpcw-hip/strata --serve --gpu 0,1 --pack /mnt/srcds/ai/iq3xxs-ud --native /mnt/srcds/ai/Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00004.gguf --native-dense-gguf /mnt/srcds/ai/Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00004.gguf --native-dense-gguf /mnt/srcds/ai/Qwen3.8-Flash-Next-UD-IQ3_XXS-00002-of-00004.gguf --native-dense-gguf /mnt/srcds/ai/Qwen3.8-Flash-Next-UD-IQ3_XXS-00003-of-00004.gguf --native-dense-gguf /mnt/srcds/ai/Qwen3.8-Flash-Next-UD-IQ3_XXS-00004-of-00004.gguf --ple-gguf /mnt/srcds/ai/Qwen3.8-Flash-Next-PLE-Q8_0.gguf --expert-profile /mnt/srcds/Strata/data/expert-profile.bin --expert-cache auto --prefill 16384 --spec 5 --spec-min-p 0.5 --max-context 262144 --kv int8 --vram-reserve-mib 256 --vram-reserve-later-mib 448 --kv-resident 262144 --pcie-frac 0 --expert-cache-cpu-order --prompt-cache-spread --conversation-cache-mib 4096 --conversation-cache-min-tokens 2048 --conversation-cache-park-gain 4096 --vision --dflash /mnt/srcds/dflash2/artifacts/inco-dflash2-q4_0.gguf --dflash-block 7 --suffix-draft 0 --expert-helper-slots 4600 --expert-helper-ram-relief --conversation-cache-dir /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/cache/optimized --conversation-cache-disk-mib 24576 --conversation-cache-disk-ram-mib 64 --conversation-cache-disk-idle-save --conversation-cache-ram-mib 512 --kv-resident-mib 4096 --conversation-cache-evict-page-cache --expert-helper-ram-relief-packs --expert-helper-relief-hot-mib 15000 --expert-helper-relief-arena-cap-mib 22000 --layer-split 30 --expert-helper-socket /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/run/optimized.sock --expert-helper-socket2 /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/run/optimized2.sock --expert-helper-timeout-ms 10000
+[optimized.engine.log] strata: a model with K-quant experts (Unsloth UD-Q4/Q5/Q6_K_XL) reads its prompt on llama.cpp's MMQ kernels (STRATA_MMQ_KQ=0 or STRATA_NV_KQ_DEFAULT=0 turns it off)
+[optimized.engine.log] strata generate: memory guard: limit 50.0 GiB (source: flag), current 14.7 GiB, reclaimable cache credited 0.0 GiB; available 35.3 GiB (MemAvailable 47.5 GiB, --memory-limit-mib 51200), floor 2560 MiB
+[optimized.engine.log] strata generate: this CPU has no AVX-512: the expert kernels run on AVX-2 (multi-token for the i-quant gate/up rows)
+[optimized.engine.log] strata generate: --kv-resident-mib 4096: 12864 bytes per resident KV cell over 12 QSA layers -> resident 262144 of 262144 asked cells (3.1 GiB resident of the 262144-token context, the rest streams; --kv-resident 262144)
+[optimized.engine.log] strata generate: native pack: /mnt/srcds/ai/iq3xxs-ud experts (largest blob 2.66 MB), token embedding Q6_K in mapped host memory (497 MiB, 0.3 s)
+[optimized.engine.log] strata generate: the SSD is kept awake while rows are read: one page of the table after 100 ms without a read, until 60 s after the last request (STRATA_SSD_KEEPALIVE=0 turns it off)
+[optimized.engine.log] strata generate: profile /mnt/srcds/Strata/data/expert-profile.bin: 24576 ranked pairs, built for 24576 slots
+[optimized.engine.log] dflash: /mnt/srcds/dflash2/artifacts/inco-dflash2-q4_0.gguf: 5 layers, hidden 2560, 32Q/8KV x 128, MLP 7680, taps [5,15,25,35,45], trained block 8, pass K=4, mask 248077, rope theta 1e+04, 521.4 MiB of weights
+[optimized.engine.log] dflash: 580.6 MiB of VRAM held (weights, pools, scratch)
+[optimized.engine.log] strata generate: the expert arena needs 46.84 GiB of RAM and 46.21 GiB is available; waiting up to 20 s for it (another engine still exiting?) - 0 s so far (STRATA_ARENA_RAM_WAIT_S changes this)
+[optimized.engine.log] strata generate: the expert arena needs 46.84 GiB of RAM and 46.21 GiB is available; waiting up to 20 s for it (another engine still exiting?) - 5 s so far (STRATA_ARENA_RAM_WAIT_S changes this)
+[optimized.engine.log] strata generate: the expert arena needs 46.84 GiB of RAM and 46.23 GiB is available; waiting up to 20 s for it (another engine still exiting?) - 10 s so far (STRATA_ARENA_RAM_WAIT_S changes this)
+[optimized.engine.log] strata generate: the expert arena needs 46.84 GiB of RAM and 46.27 GiB is available; waiting up to 20 s for it (another engine still exiting?) - 15 s so far (STRATA_ARENA_RAM_WAIT_S changes this)
+[optimized.engine.log] strata generate: not enough RAM for the expert arena (it needs 46.84 GiB and 46.31 GiB is available (0.53 GiB short, after waiting)): this run reads the experts from the file, like --mmap-experts (slower; the answers are the same). To get the arena back, free that RAM and start again
+[optimized.engine.log] strata generate: experts via mmap (not enough RAM for the expert arena: the same source as --mmap-experts; the GGUF shards in place, no experts.bin)
+[optimized.engine.log] strata generate: the file tier reads unbuffered (46.3 GiB available, 30.2 GiB of it still to be taken by the RAM copy, 16.7 GiB of experts read from the files: the file cache cannot keep the ones that come back)
+[optimized.engine.log] strata generate: expert cache auto: 9.67 GiB free, 256 MiB reserved (+0 MiB for the draft head, +256 MiB for what is allocated after the cache) -> 3699 slots
+[optimized.engine.log] strata generate: expert cache 4951 slots, 9.17 GiB of VRAM; policy is
+[optimized.engine.log] strata generate: the GPU computes the experts in the cache; it rounds differently from the CPU,
+[optimized.engine.log] so a reply can differ slightly from a run without the cache (same quality:
+[optimized.engine.log] bench/results/2026-09-27-cache-parity).
+[optimized.engine.log] strata generate: pre-filled 4951 of 4951 slots from the profile in 15.8 s (625 MB/s); slot 0 verified; pack_read_s 12.6 h2d_s 3.2 pinned_mb 9847 phases=arena:12.6s lot:3.2s
+[optimized.engine.log] strata generate: layer split, CUDA1: 8.83 GiB free of 15.98, room for experts 8.04 GiB
+[optimized.engine.log] strata generate: layer split: CUDA1 runs layers 30-47, expert cache 4049 slots (8.04 GiB), 4049 of its 9216 profiled pairs; slot 0 verified; pack_read_s 5.6 h2d_s 10.9 pinned_mb 8638 phases=arena:5.6s lot:10.9s
+[optimized.engine.log] strata generate: expert-helper: 15576 of 24576 ranked pairs eligible in layers 0..47 (9000 held by a cache, 0 outside the window, 0 outside the geometry, 0 repeated, 0 Hadamard-folded)
+[optimized.engine.log] strata generate: expert-helper: asking 4600 slots = 9290342400 B aligned of 15576 eligible (no byte cap: AUTO, bounded by --expert-helper-slots); the helper's own free-VRAM budget decides the fill and its report is authoritative
+[optimized.engine.log] expert-helper: engine socket buffers achieved snd=8388608 rcv=8388608
+[optimized.engine.log] expert-helper: 3703 rows on /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/run/optimized.sock (mirrored 3703/4600 slots, 6.93 GiB, device free at hello 7470 MiB) helper_fill_s 7.7
+[optimized.engine.log] expert-helper: engine socket buffers achieved snd=8388608 rcv=8388608
+[optimized.engine.log] expert-helper: two channels on /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/run/optimized.sock + /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/run/optimized2.sock: the window tier (and the drafter lane) on the first, the prompt tier on the second - each channel fails on its own, the other keeps serving
+[optimized.engine.log] strata generate: expert-helper proxy: 3703 experts on /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/run/optimized.sock, 6.93 GiB (fill report)
+[optimized.engine.log] strata generate: --expert-helper-ram-relief: nothing dropped: this run's expert source is not the arena (--mmap-experts / --resident-experts read the files and keep no arena copy)
+[optimized.engine.log] strata generate: R4 hit path ON - resident experts are computed on the GPU
+[optimized.engine.log] strata generate: 7 expert-pool workers + the host thread
+[optimized.engine.log] strata generate: token graph hit path: 9000 resident experts, decided on the device
+[optimized.engine.log] FileExpertSource: RAM budget 30.15 GiB: 15576 of the 29.62 GiB of experts the GPU cache does not hold, by profile rank; the rest are read from the files
+[optimized.engine.log] FileExpertSource: allocating 30.15 GiB page-locked cache complement
+[optimized.engine.log] FileExpertSource: 29.21 GiB really free for a 30.15 GiB page-locked complement; the model files' cached pages were released: 35.53 GiB free
+[optimized.engine.log] FileExpertSource: copied cache complement through layer 8/48 (6.98 GiB, 3 s)
+[optimized.engine.log] FileExpertSource: copied cache complement through layer 16/48 (11.18 GiB, 5 s)
+[optimized.engine.log] FileExpertSource: copied cache complement through layer 24/48 (16.97 GiB, 8 s)
+[optimized.engine.log] FileExpertSource: copied cache complement through layer 32/48 (21.71 GiB, 10 s)
+[optimized.engine.log] FileExpertSource: copied cache complement through layer 40/48 (26.63 GiB, 12 s)
+[optimized.engine.log] FileExpertSource: copied cache complement through layer 48/48 (30.15 GiB, 14 s)
+[optimized.engine.log] FileExpertSource: mapped pinned cache complement ready: resident 30.15 GiB, pinned 30.15 GiB in 20 s; page-locked and mapped
+[optimized.engine.log] FileExpertSource: the split stages lend 6622 slots to the prompt path: 286 keep their experts in RAM too (0.53 GiB) (the rest are read from the file when lent: not enough RAM for them)
+[optimized.engine.log] FileExpertSource: 4049 verified additional-GPU experts remain on the mmap fallback
+[optimized.engine.log] strata generate: WARNING: a prompt chunk of 16384 tokens lends 3432 cache slots to the prompt path, but only 286 of their experts fit in RAM: the others are read from the SSD on every chunk, and prompts can read ~3x slower than with --prefill auto (#669). A larger --resident-budget-gib (the lend region comes after the ranked experts), or a smaller --prefill, keeps them all in RAM
+[optimized.engine.log] strata generate: resident RAM mode: 30.15 GiB of experts in RAM (page-locked), 4951 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)
+[optimized.engine.log] strata generate: the file tier reads unbuffered (re-checked with the RAM copy built (30.15 GiB): 14.8 GiB available, 0.0 GiB of it still to be taken by the RAM copy, 16.7 GiB of experts read from the files: the file cache cannot keep the ones that come back)
+[optimized.engine.log] strata generate: the mapped view of the experts stays open (not Windows)
+[optimized.engine.log] strata serve: the prompt path borrows 3645 CUDA0 cache slots (6.73 GiB)
+[optimized.engine.log] strata serve:   CUDA1 prompt path borrows 3385 of its 4049 slots (6.73 GiB)
+[optimized.engine.log] strata serve: lend sizing: the prompt path borrows 7030 slots (ring 96 slots at chunk 16384), 286 of them keep their experts in RAM too
+[optimized.engine.log] strata serve: WARNING: 6744 of the 7030 borrowed slots have no RAM copy: their experts are streamed from the model file during every chunk
+[optimized.engine.log] prefill: STRATA_SWAPIN_DEPTH=64: the stager's pack-file runs read up to 64 experts per batch (ring 128, ~162 MiB of staging in flight per run)
+[optimized.engine.log] prefill: STRATA_SWAPIN_DEPTH=64: the stager's pack-file runs read up to 64 experts per batch (ring 128, ~162 MiB of staging in flight per run)
+[optimized.engine.log] strata serve: conversation cache: RAM ceiling 512 MiB (parked snapshots plus the retained K/V); a snapshot over it parks to disk only, and over it the least recently active conversations the disk tier published drop to disk (the active conversation is never dropped)
+[optimized.engine.log] strata serve: conversation cache: file page-cache release ON (park writes, restore reads and ring sidecars hand their cached pages back after their flush; the parked file's page-cache footprint stays ~0)
+[optimized.engine.log] strata serve: conversation cache: disk tier ON at /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/cache/optimized (direct I/O, budget 24576 MiB): generations=0 bytes=0 sidecars=0 orphan temps=0 orphan sidecars=0 corrupt=0 foreign=0
+[optimized.engine.log] strata serve: foresight swap: slots per layer per card: card0:2, card1:8 on 2 card(s), up to 32 copies per card and window, admit after 2 miss(es), reuse after 4 windows, helper shadow ON (a landed slot serves a helper-held pair), 16-entry pinned staging ring
+[optimized.engine.log] strata serve: STRATA_ROUTE_TAIL_SKIP=7 is suspended: a helper expert tier is registered and the skip would zero its rows; STRATA_TAIL_SKIP_HELPER=1 skips only the misses no tier holds (the CPU-bound ones), exactly a rig without a helper
+[optimized.engine.log] strata serve: 284 MiB of VRAM free with everything loaded
+[optimized.engine.log] strata serve: CUDA1: 396 MiB of VRAM free with everything loaded - LOW: its window graphs are captured on first use and need room too, and a full card can stall a request; add --vram-reserve-later-mib 820 to the config's args (or lower --max-context)
+[optimized.engine.log] strata serve: CUDA1: the layer split planned to keep 544 MiB free here after loading; 396 MiB are free, so 148 MiB went to something the plan did not count

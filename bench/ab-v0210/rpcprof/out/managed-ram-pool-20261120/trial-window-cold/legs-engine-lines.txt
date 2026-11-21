@@ -1,0 +1,40 @@
+# per-leg engine lines, split by prompt token count
+
+=== L1-cold-short (prompt 59 tokens, elog line 91) ===
+strata serve: prompt 59 tokens = 0 reused + 59 read in 3780 ms (15.6 tok/s), 16 generated in 1458 ms (11.0 tok/s), drafts accepted 12 of 12, 1 checkpoints helper=reqs=176 rows=1246 bytes=12759040 timeouts=0 fallbacks=0
+strata serve: decode expert cache hit rate: 85.9% (5525 hits / 6434 lookups); 1246 more read by the GPU over PCIe or from another GPU (16.2% of all 7680 routed)
+strata serve: conversation cache: skip parking (74 tokens, below the 2048 minimum; parked=0)
+strata serve: conversation cache: checkpoint at 16384 is target-only (no legal pair boundary at 16384 (confirmed end 74, horizon 79))
+strata serve: conversation cache: checkpoint at 32768 is target-only (no legal pair boundary at 32768 (confirmed end 16384, horizon 16384))
+strata serve: conversation cache: checkpoint at 49152 is target-only (no legal pair boundary at 49152 (confirmed end 32768, horizon 32768))
+strata serve: conversation cache: checkpoint at 65536 is target-only (no legal pair boundary at 65536 (confirmed end 49152, horizon 49152))
+strata serve: foresight swap: 1002 experts served from the swap space, 13652 copies (13027 from the router look-ahead), 1311 not landed yet, 115342 no free slot, 6463 over budget
+strata serve: conversation cache: idle save skipped (disk cache: free-space refusal (3408 MiB plus a floor of 4096 MiB needed, 6477 MiB free))
+
+=== L2-cold-80k (prompt 74635 tokens, elog line 109) ===
+strata serve: prompt 74635 tokens = 0 reused + 74635 read in 287366 ms (259.7 tok/s), 1537 generated in 77734 ms (19.8 tok/s), drafts accepted 881 of 1189, 5 checkpoints helper=reqs=23383 rows=116334 bytes=1191260160 timeouts=0 fallbacks=0
+strata serve: decode expert cache hit rate: 95.0% (730739 hits / 769266 lookups); 116334 more read by the GPU over PCIe or from another GPU (13.1% of all 885600 routed)
+strata serve: WARNING: only 8 MiB of VRAM free at the start of this request (below 512 MiB): when the card is this full the driver can page GPU memory to system RAM, decode falls to a few tok/s and a window may never finish (#2065). Add --vram-reserve-mib 704 to the config's args, or lower --max-context / --batch
+strata serve: foresight swap: 1089 experts served from the swap space, 13963 copies (13314 from the router look-ahead), 1375 not landed yet, 121375 no free slot, 6463 over budget
+strata serve: conversation cache: idle save skipped (disk cache: free-space refusal (3410 MiB plus a floor of 4096 MiB needed, 6477 MiB free))
+strata serve: prompt 76189 tokens = 76171 reused + 18 read in 454 ms (39.6 tok/s), 43 generated in 1934 ms (22.2 tok/s), drafts accepted 28 of 37, 5 checkpoints helper=reqs=600 rows=3470 bytes=35532800 timeouts=0 fallbacks=0
+strata serve: decode expert cache hit rate: 88.8% (19075 hits / 21490 lookups); 3470 more read by the GPU over PCIe or from another GPU (13.9% of all 24960 routed)
+strata serve: conversation cache: disk park skipped (disk cache: free-space refusal (3410 MiB plus a floor of 4096 MiB needed, 6477 MiB free))
+strata serve: conversation cache: parked to disk only (76231 tokens, snapshot 1753 MiB over the 512 MiB RAM ceiling; the published generation serves the next restore; parked=0 bytes=0)
+strata serve: foresight swap: 1904 experts served from the swap space, 29152 copies (28259 from the router look-ahead), 2753 not landed yet, 253470 no free slot, 6488 over budget
+strata serve: conversation cache: idle save skipped (disk cache: free-space refusal (3408 MiB plus a floor of 4096 MiB needed, 6477 MiB free))
+
+=== L3-warm-80k (prompt 74635 tokens, elog line 121) ===
+strata serve: prompt 74635 tokens = 74630 reused + 5 read in 281 ms (17.8 tok/s), 1537 generated in 62214 ms (24.7 tok/s), drafts accepted 822 of 1145, 5 checkpoints helper=reqs=25054 rows=118214 bytes=1210511360 timeouts=0 fallbacks=0
+strata serve: decode expert cache hit rate: 95.3% (738175 hits / 774586 lookups); 118214 more read by the GPU over PCIe or from another GPU (13.2% of all 892800 routed)
+strata serve: foresight swap: 1951 experts served from the swap space, 29332 copies (28429 from the router look-ahead), 2791 not landed yet, 257668 no free slot, 6488 over budget
+strata serve: conversation cache: idle save skipped (disk cache: free-space refusal (3409 MiB plus a floor of 4096 MiB needed, 6477 MiB free))
+strata serve: prompt 76189 tokens = 76171 reused + 18 read in 304 ms (59.3 tok/s), 28 generated in 919 ms (30.5 tok/s), drafts accepted 20 of 20, 5 checkpoints helper=reqs=310 rows=1853 bytes=18974720 timeouts=0 fallbacks=0
+strata serve: decode expert cache hit rate: 89.0% (10312 hits / 11587 lookups); 1853 more read by the GPU over PCIe or from another GPU (13.8% of all 13440 routed)
+strata serve: conversation cache: disk park skipped (disk cache: free-space refusal (3409 MiB plus a floor of 4096 MiB needed, 6477 MiB free))
+strata serve: conversation cache: parked to disk only (76216 tokens, snapshot 1752 MiB over the 512 MiB RAM ceiling; the published generation serves the next restore; parked=0 bytes=0)
+strata serve: foresight swap: 1975 experts served from the swap space, 29423 copies (28514 from the router look-ahead), 2819 not landed yet, 265188 no free slot, 6488 over budget
+
+=== L4-warm-short (prompt 59 tokens, elog line 130) ===
+strata serve: prompt 59 tokens = 0 reused + 59 read in 1515 ms (39.0 tok/s), 16 generated in 467 ms (34.3 tok/s), drafts accepted 12 of 12, 1 checkpoints helper=reqs=177 rows=1246 bytes=12759040 timeouts=0 fallbacks=0
+strata serve: decode expert cache hit rate: 94.9% (6104 hits / 6434 lookups); 1246 more read by the GPU over PCIe or from another GPU (16.2% of all 7680 routed)

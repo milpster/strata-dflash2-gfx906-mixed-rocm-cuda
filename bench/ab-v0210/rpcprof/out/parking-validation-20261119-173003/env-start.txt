@@ -1,0 +1,25 @@
+evidence: bench/ab-v0210/rpcprof/out/parking-validation-20261119-173003
+start: 2026-11-19T17:30:03+01:00
+MemAvailable/SwapFree: MemAvailable:   18612144 kB SwapFree:       194473668 kB 
+engine pid 3320537 rss 38744640 KiB
+conv-cache before:
+-rw------- 1 srcds srcds 2.4G Nov 19 16:03 conv-39.sess
+-rw------- 1 srcds srcds 3.1G Nov 19 16:26 conv-41.sess
+-rw------- 1 srcds srcds 3.4G Nov 19 16:50 conv-46.sess
+-rw------- 1 srcds srcds 3.4G Nov 19 16:52 conv-47.sess
+-rw------- 1 srcds srcds    8 Nov 19 17:24 owner.lock
+-rw------- 1 srcds srcds  41M Nov 19 15:57 ring-111.dring
+-rw------- 1 srcds srcds  41M Nov 19 16:02 ring-112.dring
+-rw------- 1 srcds srcds  41M Nov 19 16:19 ring-119.dring
+-rw------- 1 srcds srcds  41M Nov 19 16:23 ring-120.dring
+-rw------- 1 srcds srcds  41M Nov 19 16:24 ring-121.dring
+-rw------- 1 srcds srcds  41M Nov 19 16:24 ring-122.dring
+-rw------- 1 srcds srcds  41M Nov 19 16:25 ring-123.dring
+-rw------- 1 srcds srcds  41M Nov 19 16:25 ring-124.dring
+-rw------- 1 srcds srcds  41M Nov 19 16:38 ring-136.dring
+-rw------- 1 srcds srcds  41M Nov 19 16:42 ring-137.dring
+-rw------- 1 srcds srcds  41M Nov 19 16:44 ring-140.dring
+-rw------- 1 srcds srcds  41M Nov 19 16:45 ring-141.dring
+-rw------- 1 srcds srcds  41M Nov 19 16:51 ring-142.dring
+-rw------- 1 srcds srcds 1.1M Nov 19 17:24 ring-1.dring
+engine log lines before: 35926

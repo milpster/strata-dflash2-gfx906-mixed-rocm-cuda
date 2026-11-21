@@ -1,0 +1,3 @@
+192b1178b9592275562b704f6e4c1dbf11d67e4dfae2a53510c928015220a8b9  gpu-rounds/ram_raw.py
+7f92fea49f16ca656db8e59238b6dd4830eb05d94f5666eb03f9523564778235  gpu-rounds/ram_raw_launch.sh
+1f5cf09c15447d925d480996ff9ed1d9c671c4f8eb2c4d3bb2eea8350eb96dc1  tests/test_ram_raw_cpu.py

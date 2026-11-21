@@ -1,0 +1,36 @@
+RAM acceptance — bounded defect-repair validation (2026-11-19)
+===============================================================
+Amendment of 5b939685ea. Branch: tg-stall-cause. Offline only: no engine/serve import,
+no helper/engine start, no endpoint request, no network/GPU, no build/calibration, no
+process control, no production write. Parent kept production UP; no push.
+
+Repaired false-PASS defects in gpu-rounds/ram_acceptance.py (each with regression tests):
+  1) classify_turn FALLBACK + pressure_engagement (real byte-eviction evidence required;
+     boot-band / plain admit are diagnostics, not pressure)
+  2) evaluate_restore / RestoreExpectation (nonempty file + positive exact depth required
+     -> BLOCKED otherwise; exact draft-class string, not substring; reject ambiguous rows
+     when reused/read asserted)
+  3) gpu_eviction_guard (check ALL clients per PCI: any positive -> ABORT, missing gauge ->
+     BLOCKED; fixtures carry resident VRAM/GTT gauges; duplicate-FD same-client collapse kept)
+  4) verify_test_pair / _arg_view (exact argv-sequence compare after replacing only the
+     cache-dir value slot; direct duplicate floor/cap/cache checks; missing value is a
+     problem, not an IndexError)
+  5) provenance_manifest -> new verify_provenance(expected, actual) drift rejection
+  Wording: raw-transport choice settled (raw IDs/state required, HTTP not equivalent; only
+     the lifecycle adapter gated); checker false-timeout bug phrased historical (95b99a7).
+
+Commands (from bench/ab-v0210/rpcprof):
+  python3 -m py_compile gpu-rounds/ram_acceptance.py tests/test_ram_acceptance_cpu.py  -> rc 0
+  python3 tests/test_ram_acceptance_cpu.py  -> rc 0  "Ran 48 tests ... OK" (35 -> 48)
+  LSP diagnostics on both Python files -> none
+  git diff --check on owned docs/journal -> clean
+  out/tests-tmp scratch cleaned by teardown
+
+Final SHA256:
+  gpu-rounds/ram_acceptance.py      59fe13eb898d08b92d1204996db1c8df9ef4fc135c271a505214553bd925b61c
+  tests/test_ram_acceptance_cpu.py  991641e644d2d03897f9c99a482b6f72c09fe566637a57ef6af8668c328b763d
+
+Owned files in the amendment commit (5): the two Python files, ram-parking-gpu-test-plan.md,
+ram-parking-gpu-fixtures.md, journal/serving-tg-reeval-split-retest-2026-11-11.md.
+Pre-existing unrelated change run/prod-swift15-f16kv-mixed-supervisor.json (live supervisor
+state) intentionally excluded from staging.

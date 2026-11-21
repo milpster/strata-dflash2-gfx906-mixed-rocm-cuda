@@ -1,0 +1,10 @@
+No explicit question was included, but the text appears to contain structured records.
+
+Extracted records:
+
+| Line | Measurement window | Reserve (MiB) |
+|---:|---:|---:|
+| 0000 | 20 | 704 |
+| 0001 | 10 | 896 |
+| 0002 | 47 | 896 |
+| 0003 | 65 | 25

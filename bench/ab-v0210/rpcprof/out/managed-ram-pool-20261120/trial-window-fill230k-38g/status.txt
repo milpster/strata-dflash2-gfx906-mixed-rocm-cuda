@@ -1,0 +1,65 @@
+# 38 GiB pool rerun — 230k cold prefill + max_tokens 10000 (2026-11-21)
+
+Engine /mnt/srcds/Strata-wt-helper-ipc/build-906/strata (0.1.57), port 8009, --single-run.
+Prompt prompt-230k.txt, 1,050,980 chars, sha256 23b2d656f8347d905126329cf828b717ff02fd068c466f9439ac8b2eaeb07645, 226,967 tokens.
+Config trial-managed-pool-38g-230k.json (budget env 43,008). Cold cache dir diet-cache-fill230k-38g (empty at boot).
+
+## Boot (verbatim)
+strata generate: STRATA_RAM_BUDGET_MIB=43008: outside_owned=4294967296 pool_bytes=40802189312 store open
+strata generate: RAM pool store: pool_bytes=40802189312 scratch_bytes=2666496 usable_bytes=40799522816 blob_max=2662400 io_window=2666496 preads_per_blob=1 resident_pairs=0 hits=0 misses=0
+strata generate: --kv-resident-mib 4096: 12864 bytes per resident KV cell over 12 QSA layers -> resident 262144 of 262144 asked cells (3.1 GiB resident of the 262144-token context, the rest streams; --kv-resident 262144)
+strata generate: expert cache auto: 9.67 GiB free, 256 MiB reserved (+0 MiB for the draft head, +256 MiB for what is allocated after the cache) -> 3699 slots
+strata generate: expert cache 4951 slots, 9.17 GiB of VRAM
+strata generate: layer split: CUDA1 runs layers 30-47, expert cache 4174 slots (8.29 GiB), 4174 of its 9216 profiled pairs; slot 0 verified
+expert-helper: fill preflight: device free 7516 MiB of 7842 MiB, budget 7264.2 MiB (reserve 64 MiB, scratch 672000 B, buffers 180098776 B), slots cap 4600, fill-mib cap 7400
+expert-helper: filled 3785 slots (7.09 GiB), scratch 672000 B, buffers 180098776 B
+expert-helper: fill stopped: budget; device free now 250 MiB of 7842 MiB (3785 slots, 7.09 GiB uploaded)
+expert-helper: 3785 rows on /mnt/srcds/Strata/run/trial-managed.sock (mirrored 3785/4600 slots, 7.09 GiB, device free at hello 7516 MiB)
+strata serve: 284 MiB of VRAM free with everything loaded
+strata serve: CUDA1: 360 MiB of VRAM free with everything loaded - LOW: ...
+strata serve: WARNING: only 284 MiB of VRAM free at the start of this request (below 512 MiB): ... (#2065). Add --vram-reserve-mib 512 to the config's args, or lower --max-context / --batch
+No "starting 3 MCP servers" line in the elog (0 matches).
+
+## The one leg (engine lines are the measurement)
+strata serve: prompt 226967 tokens = 0 reused + 226967 read in 930474 ms (243.9 tok/s), 2000 generated in 97596 ms (20.5 tok/s), drafts accepted 1378 of 1643, 6 checkpoints helper=reqs=23736 rows=139420 bytes=1427660800 timeouts=0 fallbacks=0
+strata serve: decode expert cache hit rate: 93.0% (881727 hits / 947780 lookups); 139420 more read by the GPU over PCIe or from another GPU (12.8% of all 1087200 routed)
+strata serve: foresight swap: 1658 experts served from the swap space, 13277 copies (12269 from the router look-ahead), 1928 not landed yet, 162138 no free slot, 250 over budget
+strata serve: conversation cache: disk park streamed 228966 tokens idle to .../diet-cache-fill230k-38g/conv-1.sess in 4663.8 ms; generations=1 bytes=3755 evicted=0 superseded=0 sidecars=0 anchor=226962 pair=226962 tail-draft=1 pages-released=2 (3755 MiB released)
+strata serve: WARNING: only 71 MiB of VRAM free at the start of this request (below 512 MiB): ...
+strata generate: expert-helper: channel closed after 37285 requests / 222871 rows (timeouts 0, CPU fallbacks 0)
+strata generate: expert-helper: the prompt tier's channel (/mnt/srcds/Strata/run/trial-managed-2.sock) closed after 420 prompt requests / 103353 prompt rows
+
+Server side:
+[strata] thinking budget: 2000 tokens (reasoning_budget_tokens; a request can set its own)
+[strata] thinking budget reached (2000 tokens): wrapping up the thinking
+[strata] answering: 2031 of max 10000 tokens, 19.5 tok/s, 1035 s
+...
+[strata] answering: 3399 of max 10000 tokens, 22.7 tok/s, 1080 s
+[strata] the engine reported an error: the expert source could not produce a blob
+[strata] done: 3437 tokens in 1089 s (20.5 tok/s) (error, cancel=False), expert cache 93.0% hit (+12.8% of the routed experts over PCIe)
+
+## Outcome
+FAILED at 3,437 tokens (2,000 thinking + 1,437 answer) in 1,089 s. Prefill complete and fast
+(243.9 tok/s), the first answer segment started, then the engine reported the source failure.
+Engine process gone at 03:24:31; server stayed up (health loaded:false).
+
+## Memory + VRAM (samplers 10 s; mem-230k.csv, vram-230k.csv)
+MemAvailable before boot 55.2 GiB; after pool lock 10.6 GiB (VmLck 39,072 MiB); min in leg 8,211 MiB.
+MemFree min 1,425 MiB. Swap used 6,381 -> peak 7,734 -> 7,170 MiB. VmRSS peak 46,943 MiB.
+RTX 3080 free: 251..7,777 MiB (2,251 kept after fill). RVII0 used max 16,365 of 16,368 (3 MiB free);
+RVII1 used max 16,295 of 16,368 (73 MiB free).
+
+## Client
+infill_measure.py: wall 1089.01 s, TTFT 1033.69 s, 1,400 stream chunks, prompt_tokens/completion_tokens
+null (no usage chunk on the failed stream), decode_tok_s withheld. Reply text L1-230k.txt = 3,990 chars,
+109 lines; it is a coherent report, cut off by the error.
+
+## Files
+boot-38g-230k.sh, boot-38g.log, before-state.txt, elog-clean.txt (null bytes stripped), elog-38g-raw.log,
+serve-38g.log, helper-38g.log, leg-230k.log, L1-230k.{txt,json}, out-head.txt, out-tail.txt,
+mem-230k.csv, vram-230k.csv, start-samplers.sh, leg-230k.sh, vram-sample.sh, reap-orphan-samplers.sh
+
+## Teardown
+Samplers TERM by explicit pid 2,574,337 / 2,574,338 (both gone). Orphan samplers from the cancelled
+40 GiB lane (2,093,400 / 2,093,401) reaped. ./stop-all.sh alone: before=0 after=0 - ALL STOPPED, exit 0.
+check-quiet.sh alone: "QUIET: no engine, helper, server or listening port", rc=0.

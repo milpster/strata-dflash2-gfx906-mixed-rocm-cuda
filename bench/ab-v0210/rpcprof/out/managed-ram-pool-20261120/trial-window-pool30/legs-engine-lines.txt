@@ -1,0 +1,47 @@
+### POOL + BOOT (both boots)
+26:strata generate: RAM pool store: pool_bytes=32212254720 scratch_bytes=2666496 usable_bytes=32209588224 blob_max=2662400 io_window=2666496 preads_per_blob=1 resident_pairs=0 hits=0 misses=0
+71:strata serve: conversation cache: file page-cache release ON (park writes, restore reads and ring sidecars hand their cached pages back after their flush; the parked file's page-cache footprint stays ~0)
+72:strata serve: conversation cache: disk tier ON at /mnt/srcds/Strata-wt-helper-ipc/run/diet-cache-pool30 (direct I/O, budget 24576 MiB): generations=0 bytes=0 sidecars=0 orphan temps=0 orphan sidecars=0 corrupt=0 foreign=0
+76:strata serve: 220 MiB of VRAM free with everything loaded - LOW: requests may stall; add --vram-reserve-mib 484 to the config's args (or lower --max-context)
+77:strata serve: CUDA1: 360 MiB of VRAM free with everything loaded - LOW: its window graphs are captured on first use and need room too, and a full card can stall a request; add --vram-reserve-later-mib 600 to the config's args (or lower --max-context)
+147:strata generate: RAM pool store: pool_bytes=32212254720 scratch_bytes=2666496 usable_bytes=32209588224 blob_max=2662400 io_window=2666496 preads_per_blob=1 resident_pairs=0 hits=0 misses=0
+192:strata serve: conversation cache: file page-cache release ON (park writes, restore reads and ring sidecars hand their cached pages back after their flush; the parked file's page-cache footprint stays ~0)
+193:strata serve: conversation cache: disk tier ON at /mnt/srcds/Strata-wt-helper-ipc/run/diet-cache-pool30 (direct I/O, budget 24576 MiB): generations=0 bytes=0 sidecars=0 orphan temps=0 orphan sidecars=0 corrupt=0 foreign=0
+197:strata serve: 220 MiB of VRAM free with everything loaded - LOW: requests may stall; add --vram-reserve-mib 484 to the config's args (or lower --max-context)
+198:strata serve: CUDA1: 360 MiB of VRAM free with everything loaded - LOW: its window graphs are captured on first use and need room too, and a full card can stall a request; add --vram-reserve-later-mib 600 to the config's args (or lower --max-context)
+
+### PER-REQUEST LINES (whole elog, both boots)
+73:strata serve: foresight swap: 2 slots per layer on 2 card(s), up to 32 copies per card and window, admit after 2 miss(es), reuse after 4 windows
+78:strata serve: WARNING: only 220 MiB of VRAM free at the start of this request (below 512 MiB): when the card is this full the driver can page GPU memory to system RAM, decode falls to a few tok/s and a window may never finish (#2065). Add --vram-reserve-mib 512 to the config's args, or lower --max-context / --batch
+91:strata serve: foresight swap: 69 experts served from the swap space, 94 copies (76 from the router look-ahead), 32 not landed yet, 1555 no free slot, 6366 over budget
+92:strata serve: prompt 59 tokens = 0 reused + 59 read in 3592 ms (16.4 tok/s), 16 generated in 1421 ms (11.3 tok/s), drafts accepted 12 of 12, 1 checkpoints helper=reqs=175 rows=1310 bytes=13414400 timeouts=0 fallbacks=0
+93:strata serve: decode expert cache hit rate: 87.0% (5541 hits / 6370 lookups); 1310 more read by the GPU over PCIe or from another GPU (17.1% of all 7680 routed)
+108:strata serve: foresight swap: 826 experts served from the swap space, 15163 copies (14534 from the router look-ahead), 1098 not landed yet, 108525 no free slot, 6406 over budget
+109:strata serve: conversation cache: idle save skipped (disk cache: free-space refusal (3408 MiB plus a floor of 4096 MiB needed, 6350 MiB free))
+110:strata serve: prompt 74635 tokens = 0 reused + 74635 read in 264202 ms (282.5 tok/s), 1536 generated in 74634 ms (20.6 tok/s), drafts accepted 795 of 1104, 5 checkpoints helper=reqs=26831 rows=121982 bytes=1249095680 timeouts=0 fallbacks=0
+111:strata serve: decode expert cache hit rate: 95.7% (730889 hits / 763618 lookups); 121982 more read by the GPU over PCIe or from another GPU (13.8% of all 885600 routed)
+112:strata serve: WARNING: only 8 MiB of VRAM free at the start of this request (below 512 MiB): when the card is this full the driver can page GPU memory to system RAM, decode falls to a few tok/s and a window may never finish (#2065). Add --vram-reserve-mib 704 to the config's args, or lower --max-context / --batch
+113:strata serve: foresight swap: 1101 experts served from the swap space, 17617 copies (16845 from the router look-ahead), 1429 not landed yet, 143996 no free slot, 6441 over budget
+114:strata serve: conversation cache: idle save skipped (disk cache: free-space refusal (3418 MiB plus a floor of 4096 MiB needed, 6350 MiB free))
+115:strata serve: prompt 76189 tokens = 76170 reused + 19 read in 403 ms (47.2 tok/s), 357 generated in 14752 ms (24.2 tok/s), drafts accepted 244 of 321, 5 checkpoints helper=reqs=4692 rows=32914 bytes=337039360 timeouts=0 fallbacks=0
+116:strata serve: decode expert cache hit rate: 92.5% (162189 hits / 175406 lookups); 32914 more read by the GPU over PCIe or from another GPU (15.8% of all 208320 routed)
+117:strata serve: conversation cache: disk park skipped (disk cache: free-space refusal (3418 MiB plus a floor of 4096 MiB needed, 6350 MiB free))
+118:strata serve: conversation cache: parked to disk only (76545 tokens, snapshot 1757 MiB over the 512 MiB RAM ceiling; the published generation serves the next restore; parked=0 bytes=0)
+119:strata serve: conversation cache: the draft ring for the rewind to 74630 restored from its pair (captured at 74630 tokens)
+194:strata serve: foresight swap: 2 slots per layer on 2 card(s), up to 32 copies per card and window, admit after 2 miss(es), reuse after 4 windows
+199:strata serve: WARNING: only 220 MiB of VRAM free at the start of this request (below 512 MiB): when the card is this full the driver can page GPU memory to system RAM, decode falls to a few tok/s and a window may never finish (#2065). Add --vram-reserve-mib 512 to the config's args, or lower --max-context / --batch
+212:strata serve: foresight swap: 61 experts served from the swap space, 94 copies (79 from the router look-ahead), 33 not landed yet, 1520 no free slot, 6394 over budget
+213:strata serve: prompt 59 tokens = 0 reused + 59 read in 3562 ms (16.6 tok/s), 16 generated in 1257 ms (12.7 tok/s), drafts accepted 12 of 12, 1 checkpoints helper=reqs=175 rows=1310 bytes=13414400 timeouts=0 fallbacks=0
+214:strata serve: decode expert cache hit rate: 86.6% (5516 hits / 6370 lookups); 1310 more read by the GPU over PCIe or from another GPU (17.1% of all 7680 routed)
+229:strata serve: foresight swap: 888 experts served from the swap space, 14237 copies (13494 from the router look-ahead), 1082 not landed yet, 114400 no free slot, 6394 over budget
+230:strata serve: conversation cache: idle save skipped (disk cache: free-space refusal (3408 MiB plus a floor of 4096 MiB needed, 6308 MiB free))
+231:strata serve: prompt 74635 tokens = 0 reused + 74635 read in 270580 ms (275.8 tok/s), 1537 generated in 77284 ms (19.9 tok/s), drafts accepted 839 of 1201, 5 checkpoints helper=reqs=25562 rows=122382 bytes=1253191680 timeouts=0 fallbacks=0
+232:strata serve: decode expert cache hit rate: 95.4% (752587 hits / 789138 lookups); 122382 more read by the GPU over PCIe or from another GPU (13.4% of all 911520 routed)
+233:strata serve: WARNING: only 8 MiB of VRAM free at the start of this request (below 512 MiB): when the card is this full the driver can page GPU memory to system RAM, decode falls to a few tok/s and a window may never finish (#2065). Add --vram-reserve-mib 704 to the config's args, or lower --max-context / --batch
+234:strata serve: foresight swap: 1193 experts served from the swap space, 16059 copies (15159 from the router look-ahead), 1357 not landed yet, 143304 no free slot, 6438 over budget
+235:strata serve: conversation cache: idle save skipped (disk cache: free-space refusal (3416 MiB plus a floor of 4096 MiB needed, 6308 MiB free))
+236:strata serve: prompt 76189 tokens = 76171 reused + 18 read in 672 ms (26.8 tok/s), 282 generated in 12566 ms (22.4 tok/s), drafts accepted 197 of 271, 5 checkpoints helper=reqs=3575 rows=26115 bytes=267417600 timeouts=0 fallbacks=0
+237:strata serve: decode expert cache hit rate: 91.9% (133099 hits / 144765 lookups); 26115 more read by the GPU over PCIe or from another GPU (15.3% of all 170880 routed)
+238:strata serve: conversation cache: disk park skipped (disk cache: free-space refusal (3416 MiB plus a floor of 4096 MiB needed, 6308 MiB free))
+239:strata serve: conversation cache: parked to disk only (76470 tokens, snapshot 1756 MiB over the 512 MiB RAM ceiling; the published generation serves the next restore; parked=0 bytes=0)
+240:strata serve: conversation cache: the draft ring for the rewind to 74630 restored from its pair (captured at 74630 tokens)

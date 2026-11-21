@@ -1,0 +1,15 @@
+EVIDENCE_DIR=out/ram-raw-prep-20261119-062640
+=== py_compile ===
+py_compile_rc=0
+=== bash -n ===
+bash_n_rc=0
+=== new tests ===
+test_rc=0
+----------------------------------------------------------------------
+Ran 32 tests in 0.008s
+
+OK
+=== git diff --check (staged scope) ===
+diffcheck_rc=0
+py_compile_rc=0 bash_n_rc=0 test_rc=0 (32 tests OK)
+lsp: ram_raw.py clean; test_ram_raw_cpu.py clean (pyright, no diagnostics)

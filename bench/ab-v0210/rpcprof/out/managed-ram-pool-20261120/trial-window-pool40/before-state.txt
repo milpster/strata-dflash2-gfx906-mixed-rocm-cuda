@@ -1,0 +1,43 @@
+=== date
+2026-11-21T02:04:24+01:00
+=== check-quiet
+QUIET: no engine, helper, server or listening port
+rc=0
+=== meminfo
+MemTotal:       65171984 kB
+MemAvailable:   53170432 kB
+SwapTotal:      201326568 kB
+SwapFree:       198067868 kB
+=== df /mnt
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/nvme0n1p2  938G  814G   77G  92% /mnt
+=== nvidia
+index, name, memory.total [MiB], memory.used [MiB], memory.free [MiB]
+0, NVIDIA GeForce RTX 3080 Laptop GPU, 8192 MiB, 66 MiB, 7777 MiB
+=== rocm
+
+
+============================ ROCm System Management Interface ============================
+================================== Memory Usage (Bytes) ==================================
+GPU[0]		: VRAM Total Memory (B): 17163091968
+GPU[0]		: VRAM Total Used Memory (B): 10854400
+GPU[1]		: VRAM Total Memory (B): 17163091968
+GPU[1]		: VRAM Total Used Memory (B): 10952704
+GPU[2]		: VRAM Total Memory (B): 536870912
+GPU[2]		: VRAM Total Used Memory (B): 453607424
+==========================================================================================
+================================== End of ROCm SMI Log ===================================
+=== cachedir
+total 8
+drwxrwxr-x  2 srcds srcds 4096 Nov 21 01:38 .
+drwxrwxr-x 19 srcds srcds 4096 Nov 21 01:38 ..
+=== bins
+-rwxrwxr-x 1 srcds srcds 50116544 Nov 20 23:47 /mnt/srcds/Strata-wt-helper-ipc/build-906/strata
+lrwxrwxrwx 1 srcds srcds       78 Nov 20 22:05 run/trial-managed-bin/rpcw-cuda/strata-expert-helper-patient -> /mnt/srcds/Strata/v0233/build-mixed-gpu/rpcw-cuda/strata-expert-helper-patient
+lrwxrwxrwx 1 srcds srcds       48 Nov 20 22:05 run/trial-managed-bin/rpcw-hip/strata -> /mnt/srcds/Strata-wt-helper-ipc/build-906/strata
+=== sha
+553f3bf48219c99298e4620547507eac7eefa29d660ee32e806bb9780a9ab361  run/trial-managed-bin/rpcw-cuda/strata-expert-helper-patient
+d534e72a7369fe5d14248a1b581e0ba645a359c073c951499aaeef91077b5fae  /mnt/srcds/Strata-wt-helper-ipc/build-906/strata
+d534e72a7369fe5d14248a1b581e0ba645a359c073c951499aaeef91077b5fae  run/trial-managed-bin/rpcw-hip/strata
+=== git
+1f05fd0e84 [Benchmark] note that the UD pack clears the helper's own layout gates

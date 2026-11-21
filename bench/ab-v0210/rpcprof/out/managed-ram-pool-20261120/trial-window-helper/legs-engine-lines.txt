@@ -1,0 +1,34 @@
+# Window 2026-11-20/21 helper-allocation trial (pool 43008, reserve 192/192, helper reserve 384 fill-mib 6924)
+# source: logs/engine-trial-managed-pool-cold-3g.log (line numbers kept)
+
+== identity ==
+26:strata generate: RAM pool store: pool_bytes=40802189312 scratch_bytes=2666496 usable_bytes=40799522816 blob_max=2662400 io_window=2666496 preads_per_blob=1 resident_pairs=0 hits=0 misses=0
+53:strata generate: expert-helper proxy: 4377 experts on /mnt/srcds/Strata/run/trial-managed.sock, 6.76 GiB (fill report)
+helper boot: fill preflight: device free 7516 MiB of 7842 MiB, budget 6944.2 MiB (reserve 384 MiB, scratch 672000 B, buffers 180098776 B), slots cap 4600, fill-mib cap 6924
+helper boot: filled 4377 slots (6.76 GiB), scratch 672000 B, buffers 180098776 B
+helper boot: fill stopped: fill-mib; device free now 590 MiB of 7842 MiB (4377 slots, 6.76 GiB uploaded)
+
+== H1 short cold (59 tok, 32 max) ==
+92:strata serve: prompt 59 tokens = 0 reused + 59 read in 3691 ms (16.0 tok/s), 16 generated in 1236 ms (12.9 tok/s), drafts accepted 12 of 12, 1 checkpoints helper=reqs=176 rows=1258 bytes=12881920 timeouts=0 fallbacks=0
+strata serve: decode expert cache hit rate: 85.7% (5503 hits / 6422 lookups); 1258 more read by the GPU over PCIe or from another GPU (16.4% of all 7680 routed)
+strata serve: WARNING: only 220 MiB of VRAM free at the start of this request (below 512 MiB): when the card is this full the driver can page GPU memory to system RAM, decode falls to a few tok/s and a window may never finish (#2065). Add --vram-reserve-mib 512 to the config's args, or lower --max-context / --batch
+
+== H2 cold 80k (THE ROW) ==
+strata serve: prompt 74635 tokens = 0 reused + 74635 read in 298634 ms (249.9 tok/s), 1536 generated in 76464 ms (20.1 tok/s), drafts accepted 818 of 1131, 5 checkpoints helper=reqs=25132 rows=119406 bytes=1222717440 timeouts=0 fallbacks=0
+strata serve: decode expert cache hit rate: 95.7% (735143 hits / 768114 lookups); 119406 more read by the GPU over PCIe or from another GPU (13.5% of all 887520 routed)
+strata serve: WARNING: only 8 MiB of VRAM free at the start of this request (below 512 MiB): when the card is this full the driver can page GPU memory to system RAM, decode falls to a few tok/s and a window may never finish (#2065). Add --vram-reserve-mib 704 to the config's args, or lower --max-context / --batch
+
+== H3 warm repeat ==
+strata serve: prompt 74635 tokens = 74630 reused + 5 read in 252 ms (19.9 tok/s), 1540 generated in 59786 ms (25.8 tok/s), drafts accepted 891 of 1176, 5 checkpoints helper=reqs=23389 rows=115807 bytes=1185863680 timeouts=0 fallbacks=0
+strata serve: decode expert cache hit rate: 95.3% (724650 hits / 760193 lookups); 115807 more read by the GPU over PCIe or from another GPU (13.2% of all 876000 routed)
+
+== unrelated 76189-token follow-ups (pre-existing artifact; also in cold-2g and pool logs) ==
+strata serve: prompt 76189 tokens = 76170 reused + 19 read in 496 ms (38.3 tok/s), 260 generated in 12055 ms (21.6 tok/s), drafts accepted 173 of 241, 5 checkpoints helper=reqs=3471 rows=24359 bytes=249436160 timeouts=0 fallbacks=0
+strata serve: prompt 76189 tokens = 74630 reused + 1559 read in 19347 ms (80.6 tok/s), 84 generated in 3930 ms (21.4 tok/s), drafts accepted 50 of 76, 5 checkpoints helper=reqs=1260 rows=7673 bytes=78571520 timeouts=0 fallbacks=0
+
+== rewind / cache lines ==
+118:strata serve: conversation cache: parked to disk only (76448 tokens, snapshot 1756 MiB over the 512 MiB RAM ceiling; the published generation serves the next restore; parked=0 bytes=0)
+119:strata serve: conversation cache: the draft ring for the rewind to 74630 restored from its pair (captured at 74630 tokens)
+125:strata serve: conversation cache: parked to disk only (76174 tokens, snapshot 1752 MiB over the 512 MiB RAM ceiling; the published generation serves the next restore; parked=0 bytes=0)
+126:strata serve: conversation cache: the draft ring for the rewind to 74630 restored from its pair (captured at 74630 tokens)
+132:strata serve: conversation cache: parked to disk only (76272 tokens, snapshot 1753 MiB over the 512 MiB RAM ceiling; the published generation serves the next restore; parked=0 bytes=0)

@@ -1,0 +1,9 @@
+IDENTITY-OK
+generation=1
+pid=3538773
+start=2740680
+log=/mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261119-210438-3537307.log
+exe=/mnt/srcds/Strata/v0238p0/rpcw-hip/strata
+sha=b0ec0109ebc50c98…
+ready=ready: http://127.0.0.1:8009/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, context 262144 tokens, images on)
+token=1:3538773:2740680:/mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261119-210438-3537307.log

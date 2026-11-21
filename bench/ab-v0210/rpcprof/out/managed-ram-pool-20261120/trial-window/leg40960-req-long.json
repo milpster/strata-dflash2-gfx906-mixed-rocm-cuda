@@ -1,0 +1,1 @@
+{"model": "swift-1.5-ud-iq3xxs-managed", "messages": [{"role": "user", "content": "Count from 1 to 120 in English words, all on one line, separated by commas."}], "max_tokens": 256, "temperature": 0}

@@ -1,0 +1,1 @@
+Now focus specifically on the concurrency protocol: explain latch coupling and crabbing in detail, including how a search acquires and releases latches top-down, how insertions handle splits without deadlocking, and what happens during a concurrent page split when another transaction is traversing the same path. Include recovery implications.

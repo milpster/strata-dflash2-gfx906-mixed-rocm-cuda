@@ -1,0 +1,65 @@
+# Trial window 2g — managed RAM pool, STRATA_RAM_BUDGET_MIB=43008 — 2026-11-21
+Engine: /mnt/srcds/Strata-wt-helper-ipc/build-906/strata --serve --gpu 0,1
+Config: bench/ab-v0210/rpcprof/trial-managed-pool.json, unmodified
+        (--vram-reserve-mib 192 and --vram-reserve-later-mib 576 left as they were)
+Port 8009 per operator directive. Production down before, during and after.
+Helper: /mnt/srcds/Strata/v0233/build-mixed-gpu/rpcw-cuda/strata-expert-helper-patient (pid 2664394)
+Engine pid 2666191. Launcher 2663959. Sampler 2716076.
+
+## Before / after
+| item | before (00:13:29) | after (00:23) |
+|---|---|---|
+| check-quiet.sh | exit 0, "QUIET: no engine, helper, server or listening port" | exit 0, same |
+| port 8009 | not listening | not listening |
+| port 8019 | not listening | not listening |
+| run/*.sock | none | none |
+| engines / helpers / servers | 0 / 0 / 0 | 0 / 0 / 0 |
+| MemAvailable | 52,999 MiB | 55,024 MiB |
+| swap used | 3,514 MiB | 5,157 MiB (1,643 MiB residue, not reclaimed) |
+
+## Command exit statuses
+| command | exit |
+|---|---|
+| launch-trial-managed.sh --single-run (backgrounded, setsid) | ran; port guard + prod-pair guard passed |
+| curl /health x6 (bounded 8 s steps) | loaded:true at +40 s |
+| trial-managed-sampler.sh mem-2g.csv 5 (pid 2716076) | ran 00:14:45-00:22:32, 86 rows |
+| infill_measure.py leg1 (short cold, 32) | 0 |
+| infill_measure.py leg2 (80k, 2048) | 0 |
+| infill_measure.py leg3 (80k warm, 256) | 0 |
+| infill_measure.py leg4 (80k warm second, 2048) | 0 |
+| kill -TERM 2716076 (sampler, by explicit pid) | 0, "sampler gone" |
+| ./stop-all.sh (alone) | 0, "before=0 after=0 — ALL STOPPED" |
+| check-quiet.sh (separate invocation) | 0, QUIET |
+| ss -ltn 8009 / 8019 | no output (both free) |
+
+stop-all.sh TERMed 2663959 2664394 2665155 2666191 and this time did NOT match its own shell.
+
+## Identity check (elog lines from this boot only)
+strata generate: STRATA_RAM_BUDGET_MIB=43008: outside_owned=4294967296 pool_bytes=40802189312 store open
+strata generate: RAM pool store: pool_bytes=40802189312 scratch_bytes=2666496 usable_bytes=40799522816
+                 blob_max=2662400 io_window=2666496 preads_per_blob=1 resident_pairs=0 hits=0 misses=0
+strata generate: --expert-helper-ram-relief: nothing dropped: this run's expert source is not the arena
+engine started: /mnt/srcds/Strata-wt-helper-ipc/build-906/strata --serve ... (full args in engine-elog-2g.txt)
+
+pool_bytes 40,802,189,312 B = 38,912 MiB = 43,008 - 4,096 MiB outside-owned. Budget took.
+
+## Memory (mem-2g.csv, 86 samples, 5 s)
+VmLck 39,072 MiB flat for the whole window (pool 38,912 + 160)
+VmRSS peak 45,912 MiB; Anonymous peak 45,229 MiB
+MemAvailable min 8,222 MiB (00:15:12, during leg 2's disk restore)
+swap 3,527 -> 6,285 MiB end (peak 6,297)
+
+## Deviation
+Leg 2 was NOT cold. The config's disk conversation cache
+(/mnt/srcds/Strata-wt-helper-ipc/run/diet-soak-cache, 3.4 GiB, written by the 40,960 window)
+held this exact prompt, so the engine logged
+  "conversation cache: restored 74630 tokens from disk (checkpoint) in 15652.2 ms"
+and the request line reads "74635 tokens = 74630 reused + 5 read in 15914 ms".
+Only 5 tokens were embedded; 15,652 of the 15,914 ms is disk restore at ~109 MiB/s.
+No cold 80k prefill exists in this window, so the 40,960 window's 280.2 tok/s / 3.57 ms
+per token has no comparable row here. Reported to the parent; the cache dir is the
+worktree soak lane's and was not touched.
+
+Every 80k request also restarted once mid-generation (5 checkpoints, "rewind to 74630"):
+part 1 at the cap's 1,536 tokens (or 128 for the 256-token cap), part 2 re-reading
+1,559 / 19 tokens. Totals match the client's completion counts.

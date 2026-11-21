@@ -1,0 +1,8 @@
+stop-prod: TERM supervisor 3572998
+stop-prod: done — 0 strata prod processes remain
+switch to 700/700 at 2026-11-19T17:50:06+01:00
+boot (700/700) start: 2026-11-19T17:50:10+01:00
+Starting mixed backend on 127.0.0.1:8009; log: /mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261119-175010-3709344.log; helper: /mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261119-175010-3709344-helper.log
+mixed-pair: generation 1: engine exited; restart/refill in 2s
+Starting mixed backend on 127.0.0.1:8009; log: /mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261119-185506-706266.log; helper: /mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261119-185506-706266-helper.log
+launcher_exit=0

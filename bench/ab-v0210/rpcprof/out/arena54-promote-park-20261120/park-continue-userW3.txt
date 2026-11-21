@@ -1,0 +1,1 @@
+Thanks. In one short paragraph, contrast that invariant with how a log-structured merge tree handles the same point.

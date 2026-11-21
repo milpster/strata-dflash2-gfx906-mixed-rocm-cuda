@@ -1,0 +1,34 @@
+== before-state 2026-11-21 02:29:01 ==
+-- meminfo
+MemTotal:       65171984 kB
+MemFree:        49064616 kB
+MemAvailable:   56527396 kB
+SwapTotal:      201326568 kB
+SwapFree:       195001324 kB
+-- nvidia-smi
+0, NVIDIA GeForce RTX 3080 Laptop GPU, 8192 MiB, 66 MiB, 7777 MiB
+-- rocm-smi vram
+device,VRAM Total Memory (B),VRAM Total Used Memory (B)
+card0,17163091968,10854400
+card1,17163091968,10952704
+card2,536870912,453607424
+
+-- df /mnt
+/dev/nvme0n1p2  938G  817G   74G  92% /mnt
+-- cache dir
+total 8
+drwxrwxr-x  2 srcds srcds 4096 Nov 21 02:26 .
+drwxrwxr-x 20 srcds srcds 4096 Nov 21 02:26 ..
+-- elog exists?
+ls: cannot access '/mnt/srcds/Strata/logs/engine-fill230k.log': No such file or directory
+-- prompt sha
+23b2d656f8347d905126329cf828b717ff02fd068c466f9439ac8b2eaeb07645  prompt-230k.txt
+1050980 prompt-230k.txt
+-- engine binary
+d534e72a7369fe5d14248a1b581e0ba645a359c073c951499aaeef91077b5fae  /mnt/srcds/Strata-wt-helper-ipc/build-906/strata
+5a4c8057ca0872d47efc153cfc254957246471c8
+-- helper binary
+553f3bf48219c99298e4620547507eac7eefa29d660ee32e806bb9780a9ab361  /mnt/srcds/Strata/v0233/build-mixed-gpu/rpcw-cuda/strata-expert-helper-patient
+-- check-quiet
+QUIET: no engine, helper, server or listening port
+quiet_rc=0

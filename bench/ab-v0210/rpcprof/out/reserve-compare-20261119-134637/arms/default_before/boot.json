@@ -1,0 +1,19 @@
+{
+ "arm": "default_before",
+ "ready_line": "ready: http://127.0.0.1:8009/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, context 262144 tokens, images on)",
+ "engine": {
+  "pid": 2946057,
+  "exe": "/mnt/srcds/Strata/v0238p0/rpcw-hip/strata"
+ },
+ "boot_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/logs/default_before-boot-20261119-165734-2945336.log",
+ "helper_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/logs/default_before-boot-20261119-165734-2945336-helper.log",
+ "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/logs/default_before.engine.log",
+ "supervisor_out": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/arms/default_before/supervisor.out",
+ "sockets": [
+  "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/run/default_before.sock",
+  "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/run/default_before2.sock"
+ ],
+ "conversation_cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/cache/default_before",
+ "supervisor_state": "/mnt/srcds/Strata/run/prod-swift15-f16kv-mixed-supervisor.json",
+ "changed_path_evidence": []
+}

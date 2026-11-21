@@ -1,0 +1,2 @@
+stop-prod: TERM supervisor 3320026
+stop-prod: done — 0 strata prod processes remain

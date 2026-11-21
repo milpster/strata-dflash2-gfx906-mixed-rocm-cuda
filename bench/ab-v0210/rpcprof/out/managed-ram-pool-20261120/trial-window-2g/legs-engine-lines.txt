@@ -1,0 +1,23 @@
+92:strata serve: prompt 59 tokens = 0 reused + 59 read in 3788 ms (15.6 tok/s), 16 generated in 1306 ms (12.2 tok/s), drafts accepted 12 of 12, 1 checkpoints helper=reqs=177 rows=1244 bytes=12738560 timeouts=0 fallbacks=0
+93:strata serve: decode expert cache hit rate: 84.8% (5459 hits / 6436 lookups); 1244 more read by the GPU over PCIe or from another GPU (16.2% of all 7680 routed)
+94:strata serve: conversation cache: skip parking (74 tokens, below the 2048 minimum; parked=0)
+95:strata serve: conversation cache: restored 74630 tokens from disk (checkpoint) in 15652.2 ms: checkpoint mount at 74630 of 76170 tokens (target+draft: the mounted checkpoint's own pair)
+105:strata serve: conversation cache: disk park streamed 76172 tokens idle to /mnt/srcds/Strata-wt-helper-ipc/run/diet-soak-cache/conv-2.sess in 2106.8 ms; generations=2 bytes=3448 evicted=0 superseded=0 sidecars=1 anchor=74630 pair=74630 tail-draft=1 pages-released=3 (3409 MiB released)
+106:strata serve: prompt 74635 tokens = 74630 reused + 5 read in 15914 ms (0.3 tok/s), 1538 generated in 73083 ms (21.0 tok/s), drafts accepted 766 of 1169, 5 checkpoints helper=reqs=27895 rows=123264 bytes=1262223360 timeouts=0 fallbacks=0
+107:strata serve: decode expert cache hit rate: 95.2% (769238 hits / 808416 lookups); 123264 more read by the GPU over PCIe or from another GPU (13.2% of all 931680 routed)
+108:strata serve: conversation cache: disk park skipped (park-gain: advanced 0 of 4096 tokens past the published 76172; the published file stays)
+109:strata serve: conversation cache: parked to disk only (76172 tokens, snapshot 1752 MiB over the 512 MiB RAM ceiling; the published generation serves the next restore; parked=0 bytes=0)
+114:strata serve: prompt 76189 tokens = 74630 reused + 1559 read in 17065 ms (91.4 tok/s), 152 generated in 5826 ms (26.1 tok/s), drafts accepted 110 of 134, 5 checkpoints helper=reqs=1780 rows=12106 bytes=123965440 timeouts=0 fallbacks=0
+115:strata serve: decode expert cache hit rate: 89.9% (65032 hits / 72374 lookups); 12106 more read by the GPU over PCIe or from another GPU (14.3% of all 84480 routed)
+117:strata serve: conversation cache: disk park skipped (disk cache: free-space refusal (3412 MiB plus a floor of 4096 MiB needed, 6518 MiB free))
+118:strata serve: conversation cache: parked to disk only (76340 tokens, snapshot 1754 MiB over the 512 MiB RAM ceiling; the published generation serves the next restore; parked=0 bytes=0)
+122:strata serve: prompt 74635 tokens = 74630 reused + 5 read in 275 ms (18.2 tok/s), 128 generated in 4337 ms (29.5 tok/s), drafts accepted 86 of 107, 5 checkpoints helper=reqs=1636 rows=9652 bytes=98836480 timeouts=0 fallbacks=0
+123:strata serve: decode expert cache hit rate: 94.2% (58307 hits / 61868 lookups); 9652 more read by the GPU over PCIe or from another GPU (13.5% of all 71520 routed)
+126:strata serve: prompt 74781 tokens = 74762 reused + 19 read in 360 ms (52.8 tok/s), 110 generated in 4398 ms (25.0 tok/s), drafts accepted 79 of 95, 5 checkpoints helper=reqs=1297 rows=8814 bytes=90255360 timeouts=0 fallbacks=0
+127:strata serve: decode expert cache hit rate: 89.5% (46228 hits / 51666 lookups); 8814 more read by the GPU over PCIe or from another GPU (14.6% of all 60480 routed)
+128:strata serve: conversation cache: disk park skipped (disk cache: free-space refusal (3376 MiB plus a floor of 4096 MiB needed, 6518 MiB free))
+129:strata serve: conversation cache: parked to disk only (74890 tokens, snapshot 1735 MiB over the 512 MiB RAM ceiling; the published generation serves the next restore; parked=0 bytes=0)
+133:strata serve: prompt 74635 tokens = 74630 reused + 5 read in 250 ms (20.0 tok/s), 1536 generated in 55716 ms (27.6 tok/s), drafts accepted 896 of 1202, 5 checkpoints helper=reqs=23892 rows=119634 bytes=1225052160 timeouts=0 fallbacks=0
+134:strata serve: decode expert cache hit rate: 94.3% (721069 hits / 764526 lookups); 119634 more read by the GPU over PCIe or from another GPU (13.5% of all 884160 routed)
+137:strata serve: prompt 76189 tokens = 76170 reused + 19 read in 365 ms (52.0 tok/s), 213 generated in 8257 ms (25.8 tok/s), drafts accepted 144 of 208, 5 checkpoints helper=reqs=2874 rows=20476 bytes=209674240 timeouts=0 fallbacks=0
+138:strata serve: decode expert cache hit rate: 91.6% (103008 hits / 112484 lookups); 20476 more read by the GPU over PCIe or from another GPU (15.4% of all 132960 routed)

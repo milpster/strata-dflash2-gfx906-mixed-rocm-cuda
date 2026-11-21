@@ -1,0 +1,2 @@
+boot start: 2026-11-19T17:40:47+01:00
+Starting mixed backend on 127.0.0.1:8009; log: /mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261119-174047-3573133.log; helper: /mnt/srcds/Strata/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-20261119-174047-3573133-helper.log

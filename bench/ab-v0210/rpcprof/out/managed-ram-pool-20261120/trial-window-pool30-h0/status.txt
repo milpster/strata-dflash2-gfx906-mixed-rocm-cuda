@@ -1,0 +1,11 @@
+=== window: row 6 (pool 30 GiB, reserve 0, fill 7400) - BOOT REFUSED, no measurement ===
+2026-11-21T01:44:42+01:00
+
+--- launcher console (boot-console.log)
+Helper exited; see /mnt/srcds/Strata/logs/trial-managed-20261121-014119-2724648-helper.log
+
+--- helper log (stripped)
+expert-helper: --reserve-mib 0 outside 64..4096, clamped to 64
+expert-helper: --reserve-mib 64 MiB is below the recommended 256: the fill has little room to survive the card's other users
+expert-helper: reply write deadlines overridden to 600000 ms (STRATA_HELPER_REPLY_TIMEOUT_MS)
+expert-helper: pack: cannot open /mnt/srcds/ai/iq3xxs-15/../Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf

@@ -1,0 +1,12 @@
+{
+  "wall_s": 1089.01,
+  "ttft_s": 1033.69,
+  "prompt_tokens": null,
+  "completion_tokens": null,
+  "prefill_tok_s": null,
+  "prefill_ms_per_token": null,
+  "decode_tok_s": null,
+  "decode_tok_s_client_unreliable": false,
+  "decode_window_s": 55.31,
+  "stream_chunks": 1400
+}

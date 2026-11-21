@@ -1,0 +1,40 @@
+# Technical Report: Reserve-Value and Measurement-Window Record Analysis
+
+## Part 1: Reserve Counts and Exact First/Last Records
+
+Using only the sections provided above, the records are distributed across reserve values as follows:
+
+- 192 MiB: 220 records
+- 256 MiB: 220 records
+- 384 MiB: 219 records
+- 512 MiB: 220 records
+- 704 MiB: 219 records
+- 896 MiB: 219 records
+- 1024 MiB: 220 records
+- 1280 MiB: 219 records
+
+The first record, quoted exactly, is:
+
+Section 0000. The serving stack keeps expert weights in a bounded host pool and streams them to the graphics cards as the router asks for them. The serving stack keeps expert weights in a bounded host pool and streams them to the graphics cards as the router asks for them. The serving stack keeps expert weights in a bounded host pool and streams them to the graphics cards as the router asks for them. The serving stack keeps expert weights in a bounded host pool and streams them to the graphics cards as the router asks for them. Line 0000 records measurement window 3 with reserve 256 MiB.
+
+The last record, quoted exactly, is:
+
+Section 1755. The serving stack keeps expert weights in a bounded host pool and streams them to the graphics cards as the router asks for them. The serving stack keeps expert weights in a bounded host pool and streams them to the graphics cards as the router asks for them. The serving stack keeps expert weights in a bounded host pool and streams them to the graphics cards as the router asks for them. The serving stack keeps expert weights in a bounded host pool and streams them to the graphics cards as the router asks for them. Line 1755 records measurement window 0 with reserve 192 MiB.
+
+---
+
+## Part 2: Records by Reserve Value, in Order, with Measurement Window
+
+The following lists use the line identifier from each record and the measurement window recorded on that line. The records are listed in ascending line order within each reserve value.
+
+### Reserve 192 MiB
+
+Line 0003 — window 24  
+Line 0011 — window 16  
+Line 0019 — window 8  
+Line 0027 — window 0  
+Line 0035 — window 56  
+Line 0043 — window 48  
+Line 0051 — window 40  
+Line 0059 — window 32  
+Line 0067 — window 24  

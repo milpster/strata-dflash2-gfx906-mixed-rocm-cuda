@@ -1,0 +1,149 @@
+Window: baseline row 1 of the UD-only managed-pool series — 2026-11-21 02:05..02:15
+Box: GUAM, 2x Radeon VII gfx906 (engine CUDA0/CUDA1) + RTX 3080 (expert helper, engine CUDA1 helper)
+Engine: /mnt/srcds/Strata-wt-helper-ipc/build-906/strata (sha256 d534e72a7369fe5d14248a1b581e0ba645a359c073c951499aaeef91077b5fae),
+        worktree HEAD 1f05fd0e84; helper /mnt/srcds/Strata/v0233/build-mixed-gpu/rpcw-cuda/strata-expert-helper-patient
+        (sha256 553f3bf48219c99298e4620547507eac7eefa29d660ee32e806bb9780a9ab361)
+Config: bench/ab-v0210/rpcprof/trial-managed-pool-40g.json (unmodified), launcher bench/ab-v0210/rpcprof/launch-trial-managed.sh --single-run
+Env (boot-pool40.sh): STRATA_PORT=8009 STRATA_RAM_BUDGET_MIB=45056 STRATA_HELPER_RESERVE=0
+        STRATA_FILL_MIB=7400 STRATA_HELPER_SLOTS=3700
+Production: down the whole window, never started, never touched (the launcher's prod-pair guard passed).
+Port: 8009 (operator directive). Conversation cache dir: empty at boot (only . and ..).
+80k prompt fixture: infill80k_prompt.txt, sha256 9ae4791195992396ddeb2bcf17ec10f7eb6c08069f99c95d4d1f9fc1eaf3f82d
+        (the same bytes every earlier row used).
+
+RE-BASELINE NOTICE
+This row is NOT comparable to the series rows measured before 2026-11-21 02:00. Those rows ran
+the helper on the iq3xxs-15 container (v3, gu/d 17/16); that file was deleted from the box and
+the helper now reads the same UD container the engine reads. Every row before this one is
+superseded as a baseline; this is row 1 of the UD-only series.
+
+QUIET BEFORE BOOT
+  check-quiet.sh: rc=0 "QUIET: no engine, helper, server or listening port" (02:04:24)
+  MemAvailable 50.7 GiB, swap used 3.18 GiB (residue), /mnt 77 GiB free, RTX 3080 66 MiB used,
+  run/*.sock absent, cache dir empty, engine elog absent.
+
+BOOT IDENTITY (verbatim)
+  elog:5   engine started: .../build-906/strata --serve --gpu 0,1 --pack /mnt/srcds/ai/iq3xxs-ud ... (02:05:21)
+  elog:25  strata generate: STRATA_RAM_BUDGET_MIB=45056: outside_owned=4294967296 pool_bytes=42949672960 store open
+  elog:26  strata generate: RAM pool store: pool_bytes=42949672960 scratch_bytes=2666496 usable_bytes=42947006464
+                   blob_max=2662400 io_window=2666496 preads_per_blob=1 resident_pairs=0 hits=0 misses=0
+  elog:53  strata generate: expert-helper proxy: 3787 experts on /mnt/srcds/Strata/run/trial-managed.sock, 7.09 GiB (fill report)
+  elog:54  strata generate: --expert-helper-ram-relief: nothing dropped: this run's expert source is not the arena
+  helper cmdline (verbatim): --pack /mnt/srcds/ai/iq3xxs-ud --experts Qwen3.8-Flash-Next-UD-IQ3_XXS-00002-of-00004.gguf
+                   --device 0 --slots 3700 --reserve-mib 0 --fill-mib 7400
+  health: loaded:true on the first probe 02:06:53 (94 s after launch)
+  MCP servers: "starting 3 MCP servers for the web app's chat" -> 0 occurrences in the elog (confirmed absent).
+
+HELPER, VERBATIM
+  --reserve-mib 0 outside 64..4096, clamped to 64
+  --reserve-mib 64 MiB is below the recommended 256: the fill has little room to survive the card's other users
+  listening on /mnt/srcds/Strata/run/trial-managed.sock (device 0, pack /mnt/srcds/ai/iq3xxs-ud, 48 layers x 512 experts)
+  fill preflight: device free 7516 MiB of 7842 MiB, budget 7264.2 MiB (reserve 64 MiB, scratch 672000 B,
+                   buffers 180098776 B), slots cap 4600, fill-mib cap 7400
+  warmup fmt L1: gu_type=22 d_type=20 n_embd=2560 n_ff=640 L.bytes=1971200 blob_bytes=1971200
+  warmup blob@ptr[0] 210b0f41788f7f01 vs pack 210b0f41788f7f01 (ptr matches the pack)
+  warmup launch done on zero activations: output finite - the kernel, the slot bytes and the row layout are sane
+  filled 3787 slots (7.09 GiB), scratch 672000 B, buffers 180098776 B
+  fill stopped: budget; device free now 250 MiB of 7842 MiB (3787 slots, 7.09 GiB uploaded)
+  exit: SIGTERM/SIGINT during the begin-wait; exiting cleanly / 51980 windows served, 150 prompt row requests; releasing the card
+
+  UD BYTES, NOT JUST "LISTENING": gu_type=22 d_type=20, blob_bytes=1971200 for layer 1, and the
+  blob pointer digest equals the pack's. The old container would have read gu 17 / d 16. It is UD.
+
+  DEVIATION (recorded, not corrected by a re-boot): STRATA_HELPER_SLOTS=3700 reached the helper
+  (cmdline shows --slots 3700) but did not bind. The helper's effective slot cap is set by the
+  engine's hello and the config's --expert-helper-slots 4600, so the preflight reads "slots cap 4600"
+  and the fill ran on to 3787 slots where the budget stopped it. Gap against the planned 3,700:
+  87 slots (~0.16 GiB), with 250 MiB left free on the card - the tighter of the two stops and inside
+  the intent of the row ("helper filled to its UD capacity, lowest workable margin"). No corrective
+  re-boot was made.
+
+LEGS (client bench/ab-v0210/rpcprof/infill_measure.py; engine lines are the measurement)
+  P1  02:07:19  prompt-short.txt, max 32  (warm-up)
+      prompt 59 tokens = 0 reused + 59 read in 4001 ms (14.7 tok/s), 16 generated in 1451 ms (11.0 tok/s),
+      drafts accepted 12 of 12, 1 checkpoints  helper=reqs=171 rows=1143 bytes=11704320 timeouts=0 fallbacks=0
+      decode expert cache hit rate: 84.6% (5531/6537); 1143 more read by the GPU over PCIe (14.9% of 7680)
+      client: wall 5.53 s, 16 completion tokens, 0 content deltas (the known "thinking capped at 16" artefact)
+  P2  02:07:22..02:13:40  infill80k_prompt.txt, max 2048  (COLD)
+      prompt 74635 tokens = 0 reused + 74635 read in 289056 ms (258.2 tok/s, 3.87 ms/token),
+      1536 generated in 76313 ms (20.1 tok/s), drafts accepted 888 of 1208, 5 checkpoints
+      helper=reqs=22051 rows=109495 bytes=1121228800 timeouts=0 fallbacks=0
+      decode expert cache hit rate: 93.8% (733199/781385); 109495 read over PCIe (12.3% of 890880 routed)
+      client: wall 378.37 s, ttft 368.09 s, completion_tokens 1784
+      (the client's 1,784 carries the serve layer's continuation; the engine logged the request as
+       1,536 and a SEPARATE 76,189-token continuation line as 230 - see "window artefact" below)
+  P3  02:13:59..02:15:12  same file, max 2048  (warm repeat)
+      prompt 74635 tokens = 74630 reused + 5 read in 240 ms (20.8 tok/s),
+      1537 generated in 61702 ms (24.9 tok/s), drafts accepted 833 of 1183, 5 checkpoints
+      helper=reqs=23332 rows=108273 bytes=1108715520 timeouts=0 fallbacks=0
+      decode expert cache hit rate: 94.8% (755619/797487); 108273 read over PCIe (12.0% of 905760 routed)
+      client: wall 72.53 s, ttft 64.53 s, completion_tokens 1775
+
+WINDOW ARTEFACT (same shape as every earlier row, now larger)
+  After each 80k leg the serve layer ran a second, internal request whose prompt is the leg's own
+  prompt plus what it generated. Both restore warm:
+    elog:115  prompt 76189 tokens = 76170 reused + 19 read in 549 ms, 230 generated in 10318 ms (22.3 tok/s)
+    elog:126  prompt 76189 tokens = 76171 reused + 18 read in 279 ms, 221 generated in 8034 ms (27.5 tok/s)
+  No other client was connected. The client's completion count for a leg includes this continuation;
+  P2's 1,784 does not equal 1,536 + 230 exactly (difference 18) - recorded as measured, unexplained.
+
+CONVERSATION-CACHE DISK TIER: PARK IS NEW IN THIS WINDOW
+  Two parks SUCCEEDED (every earlier window refused on free space at ~6 GiB free; /mnt now had 77 GiB):
+    elog:113? disk park streamed 76170 tokens idle to .../run/diet-cache-pool40/conv-1.sess in 2002.5 ms;
+              generations=1 bytes=1744 evicted=0 superseded=0 sidecars=1 anchor=74630 pair=74630
+              tail-draft=1 pages-released=3 (1745 MiB released)
+    elog:124  disk park streamed 76171 tokens idle to .../conv-2.sess in 2204.1 ms; generations=2 bytes=3448
+              evicted=0 superseded=0 sidecars=0 anchor=74630 pair=74630 tail-draft=1
+              pages-released=4 (3450 MiB released)
+  On disk afterwards: conv-1.sess 1704.4 MB, conv-2.sess 1704.4 MB, ring-2.dring 40.2 MB, owner.lock.
+  /mnt avail 77 GiB -> 74 GiB.
+  Zero "free-space refusal" lines this window (the 38 GiB windows had six).
+  Zero "restored ... from disk" lines: P3's 74,630 reused came from RAM/ring, not from a disk restore,
+  so P3 is NOT the disk-warm shape that spoiled the 43,008 window's leg 2.
+  CONFOUND: 1,745 + 3,450 MiB of page cache were handed back mid-window by these parks. No earlier
+  row had a park at all, so this is a new confound versus every earlier row (and moot only because
+  the series is re-baselined anyway).
+  Reporting defect reconfirmed: "parked to disk only (76418 tokens, snapshot 1755 MiB over the 512 MiB
+  RAM ceiling; ... parked=0 bytes=0)" prints bytes=0 while a park to disk is what happened.
+
+MEMORY (mem-40g.csv, 97 samples, 5 s, 02:06:08..02:15:25; sampler pid 3869971)
+  VmLck 41,120 MiB flat after the first 20 s (first 3 rows 40,960 -> the lock still landing)
+        = pool 40,960 MiB + 160 MiB, the same constant overhead the 36/38 GiB windows showed.
+  VmRSS peak 48,357 MiB at 02:11:27 (inside P2's decode)
+  MemAvailable start 9,016 / min 8,253 (02:10:35, inside P2's prefill) / end 8,492 MiB
+  swap used start 3,181 / peak 9,247 (02:14:03, P3's start) / end 9,228 MiB
+        pre-boot residue 3,181 MiB (already there at 02:04), so this window added ~6.1 GiB.
+        The sampler start row is after the boot, so the share attributable to the boot itself is
+        not separable from the pre-boot residue; named, not explained.
+
+VRAM (vram-40g.csv, 51 samples, 10 s, 02:06:53..02:15:22; sampler pid 3909594)
+  RTX 3080 (helper): used 7,592 / free 251 MiB - IDENTICAL in every one of the 51 samples, covering
+        P1, P2's prefill, P2's decode and P3. No driver paging event, timeouts=0 throughout.
+  Radeon VII CUDA0: used 16,254 -> 16,366 MiB of 16,368 (free 114 -> 2 MiB)
+  Radeon VII CUDA1: used 16,114 -> 16,320 MiB of 16,368 (free 254 -> 48 MiB)
+  Engine's own words: "220 MiB of VRAM free with everything loaded - LOW (suggests 484)",
+        "CUDA1: 360 MiB of VRAM free with everything loaded - LOW (suggests 600)",
+        "WARNING: only 8 MiB of VRAM free at the start of this request (below 512 MiB) ... (suggests 704)".
+        Margins were set by the operator and not adjusted; the 2 MiB free reading on CUDA0 is the
+        thinnest this box has logged, and P2 still decoded at 20.1 tok/s through it.
+
+HYGIENE (elog counted with null bytes stripped)
+  "no blob" 0, "refill failed" 0, "No buffer space" 0, "no_buffer_space" 0,
+  "the expert source could not produce a blob" 0. No engine abort of any kind.
+  "no free slot" 312,839 / "over budget" 6,813 (flat) at window end - the VRAM-side slot counters, not refusals.
+  P3 ran a clean warm repeat, so no dependent retry was needed.
+
+TEARDOWN
+  samplers TERM'd by explicit pid (mem 3869971, vram 3909594; both verified gone), CSVs frozen.
+  ./stop-all.sh alone: "TERM 3833229 3833245 3834194 3834741", "before=0 after=0 - ALL STOPPED" (exit 0)
+  check-quiet.sh in its own invocation: rc=0 "QUIET: no engine, helper, server or listening port"
+  Ports 8009/8019 free, no run/*.sock.
+
+DEVIATIONS
+  1. Helper slot cap: see above (env 3,700 vs effective 4,600; stopped on budget at 3,787). No re-boot.
+  2. The vram-sample.sh launch in the first shell line lost $EV to a background-subshell scoping slip
+     and wrote nothing; it was started again immediately with an absolute path at 02:06:53, so VRAM
+     sampling begins 3.5 min before P1 and covers every leg. Two earlier samples do not exist.
+  3. Two successful disk parks (new vs every earlier row), plus the "parked=0 bytes=0" reporting defect.
+  4. Client completion count for P2 (1,784) does not decompose into the engine's logged segments
+     (1,536 + 230); recorded, not explained.

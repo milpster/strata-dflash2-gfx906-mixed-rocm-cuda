@@ -1,0 +1,45 @@
+trial-window-cold — exit statuses and state, 2026-11-21 (GUAM, 2x Radeon VII + RTX 3080 helper)
+
+before boot
+  check-quiet.sh                      rc=0  QUIET (no engine/helper/server/port)
+  ss :8009 / :8019                    no listener
+  prod supervisor state files         prod*-supervisor.json present but state=stopped / no live pids
+  conversation cache dir (cold one)   empty
+  /tmp/opencode/infill80k_prompt.txt  341345 bytes
+
+boot
+  launch-trial-managed.sh --single-run  rc=n/a (backgrounded, still serving at teardown time)
+    STRATA_PORT=8009 STRATA_BIN=run/trial-managed-bin
+    TRIAL_CONFIG=bench/ab-v0210/rpcprof/trial-managed-pool-cold-2g.json
+    STRATA_RAM_BUDGET_MIB=43008
+  /health                             ok after 80 s (loaded=true, max_context=262144, api_key=false)
+  launcher log                        logs/trial-managed-20261121-002508-3221104.log
+  engine log                          logs/engine-trial-managed-pool-cold-2g.log
+
+sampler
+  trial-managed-sampler.sh mem-cold.csv 5   started 00:26:53, stopped 00:37:26 (TERM), rc=0
+  rows                                 113 (engine_pid 3223334 in every row)
+
+legs (client = .venv/bin/python infill_measure.py, seeded directly because the file is mode 664)
+  L1-cold-short    rc=0  json+txt written, no "REQUEST FAILED"
+  L2-cold-80k      rc=0  json+txt written, no "REQUEST FAILED"
+  L3-warm-80k      rc=0  json+txt written, no "REQUEST FAILED"
+  L4-warm-short    rc=0  json+txt written, no "REQUEST FAILED"
+  (a first L1 attempt under `timeout 1800 infill_measure.py` returned rc=126 EACCES: the
+   script is not executable; rerun through the interpreter. No measurement was taken then.)
+
+teardown
+  stop-all.sh                         rc=0  TERM 3221104 3221122 3221867 3223334, KILL 3221104 3221867,
+                                            "before=0 after=0 - ALL STOPPED"
+  check-quiet.sh (separate call)      rc=0  QUIET: no engine, helper, server or listening port
+  run/trial-managed*.sock             gone
+  conversation cache dir after        owner.lock + ring-1/2/3.dring only (43 MiB), no generation files
+                                      (every disk park was refused: free-space floor 4096 MiB + 3410 MiB
+                                      needed, 6477 MiB free)
+
+deviations
+  - boot-cold.log holds only the launcher's first line: the redirect target resolved to the
+    evidence dir but the pre-boot `EVD=` assignment did not survive the tool's shell wrapper on
+    the first attempt; the launcher itself started normally and its own log is the one above.
+  - infill_measure.py not executable (664) -> run through the python interpreter.
+  - no STRATA_PORT override was needed (launcher default is already 8009).

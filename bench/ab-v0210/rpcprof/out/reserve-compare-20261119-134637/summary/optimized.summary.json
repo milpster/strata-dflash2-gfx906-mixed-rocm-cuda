@@ -1,0 +1,354 @@
+{
+ "arm": "optimized",
+ "boot": {
+  "arm": "optimized",
+  "boot_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/logs/optimized-boot-20261119-170614-3070508.log",
+  "changed_path_evidence": [],
+  "conversation_cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/cache/optimized",
+  "engine": {
+   "exe": "/mnt/srcds/Strata/v0238p0/rpcw-hip/strata",
+   "pid": 3071245
+  },
+  "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/logs/optimized.engine.log",
+  "helper_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/logs/optimized-boot-20261119-170614-3070508-helper.log",
+  "ready_line": "ready: http://127.0.0.1:8009/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, context 262144 tokens, images on)",
+  "sockets": [
+   "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/run/optimized.sock",
+   "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/run/optimized2.sock"
+  ],
+  "supervisor_out": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/reserve-compare-20261119-134637/arms/optimized/supervisor.out",
+  "supervisor_state": "/mnt/srcds/Strata/run/prod-swift15-f16kv-mixed-supervisor.json"
+ },
+ "complete": true,
+ "finite_only": true,
+ "legs": [
+  {
+   "arm": "optimized",
+   "cached": {
+    "fallbacks": 0,
+    "gen_ms": 7650.0,
+    "generated": 128,
+    "line": "serve: prompt 16020 tokens = 16015 reused + 5 read in 276 ms (18.1 tok/s), 128 generated in 7650 ms (16.7 tok/s), drafts accepted 61 of 129, 1 checkpoints helper=reqs=2067 rows=10697 bytes=109537280 timeouts=0 fallbacks=0 windows 68 ms_wait 18.39 ms_pool 6.94 ms_host 0.06 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 0.0",
+    "pp_tps": 18.1,
+    "prompt_ms": 276.0,
+    "read": 5,
+    "reused": 16015,
+    "tg_tps": 16.7,
+    "timeouts": 0,
+    "tokens": 16020
+   },
+   "cached_reason": "ok",
+   "content_sha256": [
+    "a1dddc3189599362bfa4cfc05bd119c2578815bc80189abcf2ea7ce4af7914e7",
+    "50f3d6e0f58e672fb8b5b819d2ca32bc304fdc14d7a09e5ac4a31046bb65bd88"
+   ],
+   "engine_retries": 0,
+   "fresh": {
+    "fallbacks": 0,
+    "gen_ms": 9054.0,
+    "generated": 132,
+    "line": "serve: prompt 16020 tokens = 0 reused + 16020 read in 73658 ms (217.5 tok/s), 132 generated in 9054 ms (14.6 tok/s), drafts accepted 56 of 116, 1 checkpoints helper=reqs=2261 rows=10624 bytes=108789760 timeouts=0 fallbacks=0 windows 77 ms_wait 17.78 ms_pool 7.00 ms_host 0.03 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 0.0",
+    "pp_tps": 217.5,
+    "prompt_ms": 73658.0,
+    "read": 16020,
+    "reused": 0,
+    "tg_tps": 14.6,
+    "timeouts": 0,
+    "tokens": 16020
+   },
+   "fresh_reason": "ok",
+   "intended_bytes": 88400,
+   "leg": "short16k-p0",
+   "max_tokens": 256,
+   "measured": false,
+   "mem": {
+    "max_rss_mib": 39934,
+    "max_swap_used_mib": 8218,
+    "max_vram_mib": {
+     "card2": 16344,
+     "card3": 16236,
+     "card4": 440,
+     "nvidia0": 7474
+    },
+    "min_avail_mib": 8154
+   },
+   "pair": 0,
+   "problems": [],
+   "prompt_bytes": 88400,
+   "prompt_sha256": "254a0cdb42056ec6112643d0732e084065ed159569a7314feece0c7e6bf8160a",
+   "shape": "short16k",
+   "unmatched": [
+    "serve: prompt 16166 tokens = 16015 reused + 151 read in 11309 ms (13.4 tok/s), 38 generated in 2816 ms (13.5 tok/s), drafts accepted 2 of 5, 1 checkpoints helper=reqs=823 rows=1819 bytes=18626560 timeouts=0 fallbacks=0 windows 36 ms_wait 14.28 ms_pool 5.02 ms_host 0.01 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 0.0",
+    "serve: prompt 16166 tokens = 16147 reused + 19 read in 312 ms (60.9 tok/s), 5 generated in 460 ms (10.9 tok/s), drafts accepted 2 of 8, 1 checkpoints helper=reqs=108 rows=818 bytes=8376320 timeouts=0 fallbacks=0 windows 7 ms_wait 21.74 ms_pool 9.02 ms_host 0.02 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 0.0"
+   ],
+   "walls": [
+    98.166,
+    9.366
+   ]
+  },
+  {
+   "arm": "optimized",
+   "cached": {
+    "fallbacks": 0,
+    "gen_ms": 7932.0,
+    "generated": 132,
+    "line": "serve: prompt 16020 tokens = 16015 reused + 5 read in 240 ms (20.8 tok/s), 132 generated in 7932 ms (16.6 tok/s), drafts accepted 54 of 128, 1 checkpoints helper=reqs=2287 rows=11401 bytes=116746240 timeouts=0 fallbacks=0 windows 79 ms_wait 18.04 ms_pool 6.20 ms_host 0.03 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 0.0",
+    "pp_tps": 20.8,
+    "prompt_ms": 240.0,
+    "read": 5,
+    "reused": 16015,
+    "tg_tps": 16.6,
+    "timeouts": 0,
+    "tokens": 16020
+   },
+   "cached_reason": "ok",
+   "content_sha256": [
+    "1a00bd407f2ace8a69e1866b6f8539a74f4ee71eb0d355a35f354bf6840f8074",
+    "fd1a1464a4b28ca2a0d1009eabd4889a0193c100e31f7b5de821ee7c8217ceb0"
+   ],
+   "engine_retries": 0,
+   "fresh": {
+    "fallbacks": 0,
+    "gen_ms": 7399.0,
+    "generated": 129,
+    "line": "serve: prompt 16020 tokens = 0 reused + 16020 read in 71151 ms (225.2 tok/s), 129 generated in 7399 ms (17.4 tok/s), drafts accepted 60 of 124, 1 checkpoints helper=reqs=2090 rows=11074 bytes=113397760 timeouts=0 fallbacks=0 windows 70 ms_wait 18.27 ms_pool 6.61 ms_host 0.03 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 0.0",
+    "pp_tps": 225.2,
+    "prompt_ms": 71151.0,
+    "read": 16020,
+    "reused": 0,
+    "tg_tps": 17.4,
+    "timeouts": 0,
+    "tokens": 16020
+   },
+   "fresh_reason": "ok",
+   "intended_bytes": 88400,
+   "leg": "short16k-p1",
+   "max_tokens": 256,
+   "measured": true,
+   "mem": {
+    "max_rss_mib": 40350,
+    "max_swap_used_mib": 8205,
+    "max_vram_mib": {
+     "card2": 16344,
+     "card3": 16236,
+     "card4": 440,
+     "nvidia0": 7474
+    },
+    "min_avail_mib": 8129
+   },
+   "pair": 1,
+   "problems": [],
+   "prompt_bytes": 88400,
+   "prompt_sha256": "014c6b5e6b1d59192cce5654aed1c026e54c5e65ff03ceae38fbf5b168940d1c",
+   "shape": "short16k",
+   "unmatched": [
+    "serve: prompt 16166 tokens = 16148 reused + 18 read in 302 ms (59.6 tok/s), 106 generated in 5196 ms (20.4 tok/s), drafts accepted 59 of 97, 1 checkpoints helper=reqs=1439 rows=7932 bytes=81223680 timeouts=0 fallbacks=0 windows 51 ms_wait 19.08 ms_pool 7.75 ms_host 0.04 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 0.0",
+    "serve: prompt 16166 tokens = 16015 reused + 151 read in 11375 ms (13.3 tok/s), 110 generated in 6176 ms (17.8 tok/s), drafts accepted 54 of 133, 1 checkpoints helper=reqs=1752 rows=9740 bytes=99737600 timeouts=0 fallbacks=0 windows 56 ms_wait 19.54 ms_pool 7.63 ms_host 0.04 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 0.0"
+   ],
+   "walls": [
+    84.719,
+    27.073
+   ]
+  },
+  {
+   "arm": "optimized",
+   "cached": {
+    "fallbacks": 0,
+    "gen_ms": 6682.0,
+    "generated": 130,
+    "line": "serve: prompt 16020 tokens = 16015 reused + 5 read in 279 ms (17.9 tok/s), 130 generated in 6682 ms (19.5 tok/s), drafts accepted 57 of 106, 1 checkpoints helper=reqs=2137 rows=9937 bytes=101754880 timeouts=0 fallbacks=0 windows 74 ms_wait 17.41 ms_pool 6.01 ms_host 0.02 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 0.0",
+    "pp_tps": 17.9,
+    "prompt_ms": 279.0,
+    "read": 5,
+    "reused": 16015,
+    "tg_tps": 19.5,
+    "timeouts": 0,
+    "tokens": 16020
+   },
+   "cached_reason": "ok",
+   "content_sha256": [
+    "978af6a1128af518c9609d6a2e4eb4b6bf3d59e9023b8b0aa6f5a746ffd7652a",
+    "57bf34565be1e1c83c7678408fe9315f384ab58e66c98f7186a457f7f47d1852"
+   ],
+   "engine_retries": 0,
+   "fresh": {
+    "fallbacks": 0,
+    "gen_ms": 7063.0,
+    "generated": 128,
+    "line": "serve: prompt 16020 tokens = 0 reused + 16020 read in 71214 ms (225.0 tok/s), 128 generated in 7063 ms (18.1 tok/s), drafts accepted 51 of 109, 1 checkpoints helper=reqs=2157 rows=10319 bytes=105666560 timeouts=0 fallbacks=0 windows 78 ms_wait 17.57 ms_pool 6.36 ms_host 0.03 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 0.0",
+    "pp_tps": 225.0,
+    "prompt_ms": 71214.0,
+    "read": 16020,
+    "reused": 0,
+    "tg_tps": 18.1,
+    "timeouts": 0,
+    "tokens": 16020
+   },
+   "fresh_reason": "ok",
+   "intended_bytes": 88400,
+   "leg": "short16k-p2",
+   "max_tokens": 256,
+   "measured": true,
+   "mem": {
+    "max_rss_mib": 40864,
+    "max_swap_used_mib": 7434,
+    "max_vram_mib": {
+     "card2": 16344,
+     "card3": 16236,
+     "card4": 250,
+     "nvidia0": 7474
+    },
+    "min_avail_mib": 9641
+   },
+   "pair": 2,
+   "problems": [],
+   "prompt_bytes": 88400,
+   "prompt_sha256": "53f5bd774f87008135ff723639425bd63e771534ca59da78dadd8d2d17d3356f",
+   "shape": "short16k",
+   "unmatched": [
+    "serve: prompt 16166 tokens = 16147 reused + 19 read in 322 ms (59.1 tok/s), 110 generated in 4912 ms (22.4 tok/s), drafts accepted 67 of 87, 1 checkpoints helper=reqs=1335 rows=5931 bytes=60733440 timeouts=0 fallbacks=0 windows 47 ms_wait 18.66 ms_pool 7.80 ms_host 0.17 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 0.0",
+    "serve: prompt 16166 tokens = 16015 reused + 151 read in 11360 ms (13.3 tok/s), 3 generated in 223 ms (13.4 tok/s), drafts accepted 1 of 4, 1 checkpoints helper=reqs=70 rows=375 bytes=3840000 timeouts=0 fallbacks=0 windows 2 ms_wait 19.13 ms_pool 7.99 ms_host 0.02 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 0.0"
+   ],
+   "walls": [
+    84.206,
+    19.875
+   ]
+  },
+  {
+   "arm": "optimized",
+   "cached": {
+    "fallbacks": 0,
+    "gen_ms": 7614.0,
+    "generated": 128,
+    "line": "serve: prompt 16020 tokens = 16015 reused + 5 read in 275 ms (18.2 tok/s), 128 generated in 7614 ms (16.8 tok/s), drafts accepted 47 of 97, 1 checkpoints helper=reqs=2301 rows=9775 bytes=100096000 timeouts=0 fallbacks=0 windows 82 ms_wait 16.64 ms_pool 6.34 ms_host 0.02 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 0.0",
+    "pp_tps": 18.2,
+    "prompt_ms": 275.0,
+    "read": 5,
+    "reused": 16015,
+    "tg_tps": 16.8,
+    "timeouts": 0,
+    "tokens": 16020
+   },
+   "cached_reason": "ok",
+   "content_sha256": [
+    "372f7e2fd2d01ce2a1d71dc072acbba4c6fd25a1087cd7f153f4ec0ce37e1ede",
+    "57bf34565be1e1c83c7678408fe9315f384ab58e66c98f7186a457f7f47d1852"
+   ],
+   "engine_retries": 0,
+   "fresh": {
+    "fallbacks": 0,
+    "gen_ms": 6971.0,
+    "generated": 130,
+    "line": "serve: prompt 16020 tokens = 0 reused + 16020 read in 71743 ms (223.3 tok/s), 130 generated in 6971 ms (18.6 tok/s), drafts accepted 62 of 114, 1 checkpoints helper=reqs=2074 rows=9634 bytes=98652160 timeouts=0 fallbacks=0 windows 69 ms_wait 17.54 ms_pool 8.02 ms_host 0.03 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 0.0",
+    "pp_tps": 223.3,
+    "prompt_ms": 71743.0,
+    "read": 16020,
+    "reused": 0,
+    "tg_tps": 18.6,
+    "timeouts": 0,
+    "tokens": 16020
+   },
+   "fresh_reason": "ok",
+   "intended_bytes": 88400,
+   "leg": "short16k-p3",
+   "max_tokens": 256,
+   "measured": true,
+   "mem": {
+    "max_rss_mib": 40963,
+    "max_swap_used_mib": 7420,
+    "max_vram_mib": {
+     "card2": 16344,
+     "card3": 16236,
+     "card4": 268,
+     "nvidia0": 7474
+    },
+    "min_avail_mib": 9302
+   },
+   "pair": 3,
+   "problems": [],
+   "prompt_bytes": 88400,
+   "prompt_sha256": "66ab27cbe9ef183b7a84e5dbd94761452ebc1cda496aebf5a0d8f84b66b68a67",
+   "shape": "short16k",
+   "unmatched": [
+    "serve: prompt 16166 tokens = 16015 reused + 151 read in 11488 ms (13.1 tok/s), 2 generated in 267 ms (7.5 tok/s), drafts accepted 0 of 4, 1 checkpoints helper=reqs=73 rows=483 bytes=4945920 timeouts=0 fallbacks=0 windows 2 ms_wait 19.21 ms_pool 9.56 ms_host 0.11 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 0.0",
+    "serve: prompt 16166 tokens = 16147 reused + 19 read in 315 ms (60.3 tok/s), 3 generated in 209 ms (14.4 tok/s), drafts accepted 1 of 4, 1 checkpoints helper=reqs=68 rows=404 bytes=4136960 timeouts=0 fallbacks=0 windows 6 ms_wait 21.04 ms_pool 9.16 ms_host 0.02 helper_begin_ms 0.0 helper_finish_ms 0.0 pcie_fetch_ms 0.0"
+   ],
+   "walls": [
+    91.831,
+    9.088
+   ]
+  }
+ ],
+ "pairs_complete": 4,
+ "pairs_planned": 4,
+ "shapes": {
+  "short16k": {
+   "cached_reused": [
+    16015
+   ],
+   "cold_tg_tok_s": {
+    "max": 18.6,
+    "median": 18.1,
+    "min": 17.4,
+    "n": 3,
+    "spread": 1.2
+   },
+   "context_tokens": [
+    16020
+   ],
+   "fallbacks": 0,
+   "fresh_read": {
+    "max": 16020,
+    "median": 16020,
+    "min": 16020,
+    "n": 3,
+    "spread": 0
+   },
+   "fresh_reused": [
+    0
+   ],
+   "generated": {
+    "max": 132,
+    "median": 130,
+    "min": 128,
+    "n": 3,
+    "spread": 4
+   },
+   "max_rss_mib": 40963,
+   "max_vram_mib": {
+    "card2": 16344,
+    "card3": 16236,
+    "card4": 440,
+    "nvidia0": 7474
+   },
+   "min_mem_available_mib": 8129,
+   "pairs_accepted": 3,
+   "pairs_dropped": [],
+   "pairs_excluded_warmup": 1,
+   "pairs_measured": 3,
+   "pairs_total": 4,
+   "pp_tok_s": {
+    "max": 225.2,
+    "median": 225.0,
+    "min": 223.3,
+    "n": 3,
+    "spread": 1.9
+   },
+   "tg_tok_s": {
+    "max": 19.5,
+    "median": 16.8,
+    "min": 16.6,
+    "n": 3,
+    "spread": 2.9
+   },
+   "timeouts": 0,
+   "walls_s": {
+    "max": 91.831,
+    "median": 84.719,
+    "min": 84.206,
+    "n": 3,
+    "spread": 7.625
+   }
+  }
+ }
+}

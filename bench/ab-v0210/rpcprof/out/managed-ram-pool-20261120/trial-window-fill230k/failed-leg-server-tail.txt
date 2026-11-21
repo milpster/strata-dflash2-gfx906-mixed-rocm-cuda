@@ -1,0 +1,3 @@
+[strata] thinking budget reached (7500 tokens): wrapping up the thinking
+[strata] the engine reported an error: refilling a lent slot failed: No buffer space available
+[strata] done: 7518 tokens in 1363 s (29.8 tok/s) (error, cancel=False), expert cache 92.8% hit (+12.3% of the routed experts over PCIe)
