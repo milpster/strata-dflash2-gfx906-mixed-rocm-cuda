@@ -652,3 +652,27 @@ layers. Unexcluded candidates are the per-card expert slot/layer tables (`card_s
 input buffer, and pool/helper row addressing for stage-2 layers. A build bisect of the merge is the remaining
 instrument: no intermediate merge builds exist because the conflict resolution was never committed separately.
 
+
+### The 240k leg at `--layer-split 31`: no NaN, but a hard stall at 180,224 tokens
+
+Measured 21:57 → 22:13 on the merge engine (`5a699be1`) with a cleared conversation cache:
+
+| signal | value |
+|---|---|
+| non-finite lines in the engine log | **0** (the layer-30 NaN is gone at split 31) |
+| server's progress ticks | `reading the prompt: 180,224 of 239,663 tokens` repeated from 612 s to 902 s |
+| watchdog | `the engine said nothing for 300 s during the request; the server ended the engine` |
+| outcome | `done: 0 tokens in 912 s (no speed) (error, cancel=False)` |
+| VRAM at request start | `CUDA1: 156 MiB of VRAM free` against `the layer split planned to keep 288 MiB free here`, i.e. **132 MiB went to something the plan did not count** (a merge-added warning) |
+
+So the split move trades one failure for another: at 240k the engine stops advancing in the 11th 16,384-token
+chunk (180,224 = 11 × 16,384) and never resumes. It is a stall, not slowness: chunk 1-11 ran at ~300 tok/s, then
+zero progress for 300 s.
+
+Contrast with the passing branch engine at 240k: its server log carries 13 `said nothing for 90 s` warnings, but
+each was followed by new progress and the request finished (`prompt 239,663 tokens ... in 847,394 ms`). The 90 s
+warning is non-fatal by design; only 300 s of *no progress* ends the engine.
+
+Open: why the merge engine stalls in the tail chunks when CUDA1 has 156 MiB free, and why 132 MiB more than
+planned is missing. The single largest merge-added VRAM consumer is the per-stage reserve/guard path in
+`generate.cpp` plus `vram_guard` (default off) and the prompt-path `fused_gr` scratch.
