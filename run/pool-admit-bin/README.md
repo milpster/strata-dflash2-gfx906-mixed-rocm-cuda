@@ -1,0 +1,11 @@
+# pool-admit-bin — the build prod runs after the 2026-11-21 hit-pin fix
+
+Engine: `rpcw-hip/strata` = worktree `helper-ipc-diet` @ `dca0e3cc93`, built in
+`build-906-fixadmit` with the four flags a fresh gfx906 dir needs (see the
+strata-tuning skill: DFlash on, HIP include, gcc-14, tests). sha256 in SHA256SUMS.
+
+Helper: symlink to `v0233/build-mixed-gpu/rpcw-cuda/strata-expert-helper-patient`
+(the frozen `553f3bf4…` winner helper).
+
+Rollback: `run/winner-pin-38g` (`d534e72a…`) in the worktree, plus the config
+and launcher one commit back (they name this directory only).
