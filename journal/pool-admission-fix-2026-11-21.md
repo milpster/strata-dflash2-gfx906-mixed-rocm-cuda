@@ -840,3 +840,32 @@ So a 240k conversation is not kept in RAM: with the 512 MiB ceiling its snapshot
 tier and a matching request is restored straight into the live pools. The host side costs 64 MiB of buffers
 plus whatever the active conversation's K/V needs. Box: 62 GiB total, ~50 GiB available before the window;
 `/mnt` has 96 GiB free against the 24 GiB tier (90% used, worth watching).
+
+## The park-and-restore window on the clamped champion (fsclamp-champion, 00:15–00:33)
+
+Boot: engine `4b8251e9` from `run/fsclamp-bin`, helper `9d16742d` from the same dir, champion config unchanged
+(`STRATA_FS_SLOTS=2,8` → clamp granted 0 on both cards, swap off; CUDA0 400 / CUDA1 434 MiB free; pool 36,864 MiB).
+Cache cleared before boot. One request at a time. 0 non-finite lines, no stall, 6 checkpoints per request.
+
+| Request | Prompt | Decode | Answer |
+|---|---|---|---|
+| 1 — cold infill | 239,646 = 0 reused + 239,646 read in 842,742 ms (**284.4 tok/s**) | 513 generated in 25,384 ms (**20.2 tok/s**), drafts 314/540 (58%) | 678 chars, coherent |
+| 2 — same boot, same prompt | 240,158 reused + 18 read in **393 ms**; then a rewind pass 239,641 reused + 5 read in 275 ms | 174 at 25.1 tok/s, then 406 at **30.7 tok/s** | 573 chars, coherent |
+
+Client side: request 1 took 880.5 s end-to-end (704 completion tokens incl. reasoning); request 2 took **18.3 s
+end-to-end** (406 tokens, 22.1 tok/s overall including the restore mount). The draft ring for the rewind to 239,641
+restored from its pair.
+
+**The park itself is real.** At idle the disk tier streamed 240,158 tokens to `conv-1.sess` in 4,884 ms — the file is
+**3,854.8 MiB** (~810 MB/s, direct I/O); a second generation `conv-2.sess` (3,853.5 MiB) plus `ring-1.dring`
+(40.2 MiB) make **7,748 MiB of the 24,576 MiB disk budget**; the log's `bytes=` counter is MiB. The 4,097 MiB
+snapshot is over the 512 MiB RAM ceiling, so no host copy was built; park-gain correctly refused the re-publish
+(advanced 191 of 4,096 tokens) and page-cache pages were handed back after each flush.
+
+What this window does NOT prove: request 2 ran on the same boot, where the active conversation is never dropped.
+A cross-boot restore (fresh engine, cache kept on disk) is the remaining leg — running next as
+`fsclamp-champion-xboot` (`NOCLEAR=1 ONE=1`). Memory gap named: no per-process RSS sampler ran beside this window;
+VRAM and pool budgets are from the engine's own boot lines.
+
+One pre-existing, non-fatal warning seen once: `--ple-io direct measures slow here (12,863 rows/s, ~53 MB/s of
+random 4 KiB reads)`.
