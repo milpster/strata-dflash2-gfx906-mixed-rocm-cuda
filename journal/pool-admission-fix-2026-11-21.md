@@ -507,3 +507,34 @@ swap in/out 0, GPUs 49/0/14% busy and the 3080 3%. So the replay is IO-bound on 
 thin-margin state (86 MiB free, helper 14 MiB free). The two causes are not separated yet. The discriminating
 test is a boot with `--vram-reserve-mib 704` (the engine's own suggestion, at the cost of ~166 CUDA0 cache
 slots) running the same leg; if it still ends non-finite, the batched long-context path itself is the defect.
+
+## Separating the 240k non-finite logits: VRAM is innocent, the prompt path is innocent (2026-11-21 15:26-16:10)
+
+Test A/B: CUDA0 margin `--vram-reserve-mib` 256 -> **704** (the number the engine's own #2065 warning
+prints), everything else identical. Engine `5a699be1`, helper `9d16742d`, pool 32 GiB.
+
+`strata generate: expert cache auto: 9.67 GiB free, 704 MiB reserved (+0 MiB for the draft head,
++256 MiB for what is allocated after the cache) -> 3523 slots` — the margin costs 176 CUDA0 slots
+(3,699 -> 3,523, ~0.34 GiB of expert cache).
+
+| Pass | Free VRAM at request start | Result |
+|---|---|---|
+| margin 256, pass 1 | 284 MiB | read 239,672 in 800,129 ms (299.5 tok/s), 0 generated, then non-finite at position 239,672 |
+| margin 256, pass 2 (batched path) | 86 MiB | read all in 1,408,769 ms (170.1 tok/s), 0 generated in 134 ms, non-finite again |
+| margin 704, pass 1 | **730 MiB**, no #2065 warning | read 239,658 of 239,663 in 1,716,709 ms (139.6 tok/s), 0 generated, then `non-finite logits (#879) in a prompt window at position 239658 (row 0)` |
+| margin 704, pass 2 (#3465: whole prompt through the batched path) | — | read all 239,663 in 917,580 ms (261.2 tok/s), 0 generated in 110 ms, non-finite again -> `non-finite (NaN) twice in a row` |
+
+Conclusion: the margin does not change the outcome (284 -> 730 MiB free, same failure), and the path does
+not either (the second pass reads the prompt from token 0 through the batched path, `0 reused`, and fails
+the same way). The failure is deterministic at ~239,660 tokens, at the first decode step, `row 0` of the
+window that ends there. The 6 non-finite lines in the 704 slice and the 4 in the 256 slice are all on the
+same two requests, not on independent ones.
+
+Both margin 704 passes were slower than the 256 warm pass (139.6 and 261.2 tok/s vs 299.5) because the
+page cache was cold after the reboot: the engine read the pack itself at up to 329 MiB/s during the
+window gaps (measured via /proc/<pid>/io). Speed is not the variable under test here.
+
+Next instrument: `STRATA_DBG_NAN=1` in the engine's environment (config commit `b0f21dd600`), which makes
+`src/prefill/prefill.cpp` report, per chunk, `layer L (mmq N, types G/D, K experts): non-finite GU ... H ...
+Dm ... bo ... of T` for the first chunk that produces them, and at prompt end the non-finite count and
+max |x| of the last residual row, the PLE history and the GDN state.
