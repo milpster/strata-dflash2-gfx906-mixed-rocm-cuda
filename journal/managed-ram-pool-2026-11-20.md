@@ -1248,7 +1248,12 @@ here, so the risk is untested, not cleared); the same slot count at 40,960 MiB; 
 (every request serial); the origin of the 76,189-token follow-up requests; how much of the
 7.5 GiB of swap belongs to this boot.
 
-### The margin series in one table (2026-11-21, five windows, each one cold 80k)
+### The margin series in one table (2026-11-21, five windows, each one cold 80k) — SUPERSEDED
+
+**Superseded 2026-11-21 02:20.** Every row in the table below ran the helper on the `iq3xxs-15`
+expert container (v3, `gu/d 17/16`). That container was deleted from the box; the helper now reads
+the same UD container as the engine, and the series was re-baselined by the operator. The table is
+kept as history and must not be compared with the UD-only rows further down.
 
 Every row below is the same payload (74,635 prompt tokens, max 2,048) on the same code
 (the streaming prefill fix), differing only in the locked pool, the device-1 VRAM reserve
@@ -1584,3 +1589,147 @@ four helper lines above), `status.txt`. Launcher/helper logs
 Next: operator decides between restoring the -15 container (42.9 GB; `/mnt` has 77 GB free) and
 re-running row 6 as specified, accepting a UD-bytes row that stops on `fill-mib`, or re-testing
 the slot cap at a slot request the 3080 can actually hold.
+
+## UD-only series, row 1: 40 GiB pool, helper reserve 0 (clamped 64), fill stopped on budget — 2026-11-21 (measured)
+
+This is **row 1 of a new series**. Everything above the `SUPERSEDED` label is not comparable to
+it: those rows ran the helper on the `iq3xxs-15` container (v3, `gu/d 17/16`), which was deleted
+from the box today. The helper now reads the same UD container the engine reads, so the baseline
+had to be re-measured. Nothing in this section may be compared with rows 1-5 of the old table.
+
+Window: pool 40 GiB (budget 45,056 MiB), helper `STRATA_HELPER_RESERVE=0`, `STRATA_FILL_MIB=7400`,
+`STRATA_HELPER_SLOTS=3700`, device margins 192/192 in the config, engine
+`/mnt/srcds/Strata-wt-helper-ipc/build-906/strata` at `1f05fd0e84`, config
+`bench/ab-v0210/rpcprof/trial-managed-pool-40g.json` unmodified, port 8009, empty conversation
+cache dir. Production down for the whole window; nothing pushed.
+
+### Boot identity, verbatim
+
+    strata generate: STRATA_RAM_BUDGET_MIB=45056: outside_owned=4294967296 pool_bytes=42949672960 store open
+    strata generate: RAM pool store: pool_bytes=42949672960 scratch_bytes=2666496 usable_bytes=42947006464
+                     blob_max=2662400 io_window=2666496 preads_per_blob=1 resident_pairs=0 hits=0 misses=0
+    strata generate: expert-helper proxy: 3787 experts on /mnt/srcds/Strata/run/trial-managed.sock, 7.09 GiB (fill report)
+
+40,960 MiB pool as specified. No `starting 3 MCP servers for the web app's chat` line (the
+`mcp_servers` strip of `07a6bc962b` holds). Health `loaded: true` on the first probe, 94 s after
+launch.
+
+### The helper is on UD bytes
+
+    expert-helper: listening on /mnt/srcds/Strata/run/trial-managed.sock (device 0, pack /mnt/srcds/ai/iq3xxs-ud, 48 layers x 512 experts)
+    expert-helper: fill preflight: device free 7516 MiB of 7842 MiB, budget 7264.2 MiB (reserve 64 MiB,
+                     scratch 672000 B, buffers 180098776 B), slots cap 4600, fill-mib cap 7400
+    expert-helper: warmup fmt L1: gu_type=22 d_type=20 n_embd=2560 n_ff=640 L.bytes=1971200 blob_bytes=1971200
+    expert-helper: warmup blob@ptr[0] 210b0f41788f7f01 vs pack 210b0f41788f7f01 (ptr matches the pack)
+    expert-helper: filled 3787 slots (7.09 GiB), scratch 672000 B, buffers 180098776 B
+    expert-helper: fill stopped: budget; device free now 250 MiB of 7842 MiB (3787 slots, 7.09 GiB uploaded)
+
+`gu_type=22 d_type=20`, `blob_bytes=1971200` on layer 1 and a matching pointer digest: the helper
+holds UD bytes, not the old container. `--reserve-mib 0` was clamped to 64, as expected, and the
+preflight budget is the clamped 7,264.2 MiB.
+
+**The fill stopped on `budget`, not on `slots cap`.** `STRATA_HELPER_SLOTS=3700` did reach the
+helper (its command line reads `--slots 3700`), but the effective cap is the engine's hello, and
+the config's `--expert-helper-slots 4600` sets it - so the preflight reads `slots cap 4600` and the
+fill ran past 3,700 to 3,787 where the budget stopped it, leaving 250 MiB free on the 3080. That is
+the tighter of the two possible outcomes and matches the row's intent (helper filled to its UD
+capacity, lowest workable margin). No corrective re-boot was made; the gap is 87 slots (~0.16 GiB).
+
+### UD-only series table (new; row 1)
+
+| # | budget | pool | helper reserve / fill cap / stop | dev1 reserve | cold 80k prefill | decode | avail min | swap peak | hit / PCIe | helper slots |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | 45,056 | 40 GiB | 0 (clamped 64) / 7,400 / **budget**, 3,787 slots | 192 | 258.2 tok/s, 3.87 ms/tok | 20.1 | 8,253 | 9.25 GiB | 93.8% / 12.3% | 3,787 (7.09 GiB) |
+
+Legs (engine lines; the client's decode figure is never used when the deltas burst):
+
+| leg | request | engine prompt | engine decode | hit | PCIe | helper on that leg |
+|---|---|---|---|---|---|---|
+| P1 | short, cold, max 32 | 59 = 0 reused, 4,001 ms (14.7 tok/s) | 16 in 1,451 ms (11.0) | 84.6% | 14.9% | reqs=171 rows=1,143 bytes=11,704,320 |
+| P2 | **cold 80k, max 2,048** | 74,635 = **0 reused + 74,635 read**, 289,056 ms (258.2 tok/s) | 1,536 in 76,313 ms (**20.1**) | **93.8%** | **12.3%** | reqs=22,051 rows=109,495 bytes=1,122,128,800 |
+| P3 | warm repeat, max 2,048 | 74,630 reused + 5 read, 240 ms | 1,537 in 61,702 ms (24.9) | 94.8% | 12.0% | reqs=23,332 rows=108,273 bytes=1,108,715,520 |
+
+P2's cold proof is exact: `0 reused + 74635 read`, no `restored ... from disk`, cache dir empty at
+boot, `drafts accepted 888 of 1208, 5 checkpoints`, `timeouts=0 fallbacks=0` on every leg. P1 again
+returned 16 reasoning tokens and no content ("thinking capped at 16 of max_tokens 32"), the same
+artefact every earlier row showed.
+
+### Park now succeeds - a new confound
+
+Two parks wrote real files this window, where every earlier window refused on free space:
+
+    conversation cache: disk park streamed 76170 tokens idle to .../run/diet-cache-pool40/conv-1.sess
+      in 2002.5 ms; generations=1 bytes=1744 ... pages-released=3 (1745 MiB released)
+    conversation cache: disk park streamed 76171 tokens idle to .../conv-2.sess in 2204.1 ms;
+      generations=2 bytes=3448 ... pages-released=4 (3450 MiB released)
+
+`/mnt` had 77 GiB free at boot (74 GiB after), so the 3.4 GiB snapshot plus the 4 GiB floor fits.
+Zero `free-space refusal` lines (the 38 GiB windows had six). Zero `restored ... from disk` lines:
+P3's 74,630-token reuse came from RAM/ring state, not a disk restore, so P3 is not the disk-warm
+shape that spoiled the 43,008 window's leg 2. The 5.2 GiB of page cache handed back mid-window is a
+confound no earlier row had. The reporting defect stands: `parked to disk only (... parked=0
+bytes=0)` prints zero bytes while a park to disk is exactly what happened.
+
+### Memory
+
+| figure | this row (40 GiB, helper 64/7,400) |
+|---|---|
+| VmLck | **41,120 MiB flat** (pool 40,960 + 160 MiB, the same constant as every earlier window) |
+| VmRSS peak | 48,357 MiB (inside P2's decode) |
+| MemAvailable | start 9,016 / **min 8,253** (02:10:35, P2 prefill) / end 8,492 MiB |
+| swap | start 3,181 / **peak 9,247** / end 9,228 MiB - 3,181 MiB was pre-boot residue, so ~6.1 GiB is this window's |
+
+### VRAM, measured through the legs
+
+| card | before | P2 decode | free at the thinnest |
+|---|---|---|---|
+| RTX 3080 (helper) | 7,592 used / 251 free | 7,592 / 251, identical in all 51 samples | 251 MiB (flat, no paging event) |
+| Radeon VII CUDA0 | 16,254 used | 16,366 used of 16,368 | **2 MiB** |
+| Radeon VII CUDA1 | 16,114 used | 16,320 used of 16,368 | 48 MiB |
+
+The engine's own warnings were logged and not acted on: 220 MiB CUDA0 at load, CUDA1 360 MiB,
+and `only 8 MiB of VRAM free at the start of this request (below 512 MiB)` during P2. The
+rocm-smi reading of 2 MiB free on CUDA0 is below that warning and is the thinnest this box has
+logged; P2 still decoded at 20.1 tok/s through it, so no paging cost was observed (not isolated,
+margins untouched by directive).
+
+### Hygiene
+
+Zero `no blob`, `refill failed`, `No buffer space`, `no_buffer_space` and `could not produce a
+blob` in the elog; no abort of any kind, so the warm repeat ran without a dependent retry. Window-end
+VRAM-side counters: 312,839 `no free slot`, 6,813 `over budget` (flat) - slot pressure, not refusals.
+
+### Deviations
+
+1. Slot cap: env 3,700 did not bind (engine hello sets 4,600); the fill stopped on `budget` at
+   3,787 slots. Recorded, not chased with a re-boot.
+2. `vram-sample.sh` was first launched with a lost `$EV` (background-subshell scoping) and wrote
+   nothing; restarted with an absolute path at 02:06:53, so VRAM sampling covers every leg but
+   starts 3.5 min before P1.
+3. Two successful parks, a new confound versus every earlier row.
+4. P2's client completion count (1,784) does not decompose into the engine's logged segments
+   (1,536 + 230); recorded, not explained. The serve layer's separate 76,189-token continuation
+   requests are the pre-existing window artefact, not a client of this window.
+
+### Teardown
+
+Samplers TERM'd by explicit pid (mem 3,869,971; vram 3,909,594), CSVs frozen; `./stop-all.sh` alone
+(`TERM 3833229 3833245 3834194 3834741`, `before=0 after=0 - ALL STOPPED`, exit 0); `check-quiet.sh`
+in its own invocation (QUIET, rc=0). Ports 8009/8019 free, no sockets left. The helper exited on
+`SIGTERM/SIGINT during the begin-wait; exiting cleanly` after `51980 windows served, 150 prompt row
+requests`.
+
+### Evidence
+
+`bench/ab-v0210/rpcprof/out/managed-ram-pool-20261120/trial-window-pool40/` (main tree):
+`status.txt` (every number above), `before-state.txt`, `boot-40g.log`, `elog-raw.txt`, `legs-40g.log`,
+`mem-40g.csv`, `vram-40g.csv`, `P{1,2,3}.{json,txt}`, `prompt-short.txt`, `infill80k_prompt.txt`
+(sha256 `9ae47911...`, the same bytes every row used), `boot-pool40.sh`, `vram-sample.sh`.
+
+Still UNMEASURED: a second cold 80k in this boot (one cold leg per row is the series' standing
+limitation); repeatability of 258.2 tok/s against the 249.9-280.2 band the old code showed - that
+band belongs to the superseded rows and must not be reused as this series' error bar; the same
+40 GiB pool with a smaller slot request, to measure a `slots cap` stop on the UD container; whether
+the two parks' page-cache release costs anything on a following cold prefill; concurrency (every
+request serial); the origin of the 76,189-token continuation requests; the ~6.1 GiB of swap this
+window added.
