@@ -101,11 +101,15 @@ helper_env=(STRATA_HELPER_REPLY_TIMEOUT_MS=600000 PATH="$PATH" HOME="$HOME" TERM
 for v in STRATA_RPC_PROFILE STRATA_VERIFY_PROFILE STRATA_HELPER_REPLY_TIMEOUT_MS; do
   [[ -n ${!v:-} ]] && helper_env+=("$v=${!v}")
 done
+# 2026-11-21: fill-mib 0 = no cap, the helper's own budget governs (free − reserve − 16 MiB
+# context headroom), and reserve-mib 0 is now honoured literally (the helper's 64 MiB floor was
+# removed): the 3080 is dedicated to the helper, so the fill is expected to end with ~16 MiB free.
+# Measured before this change: budget 7436.4 MiB, fill stopped on the 7400 cap at 3861 slots.
 env -i "${helper_env[@]}" "$HELPER" \
   --pack ${STRATA_AI_DIR:-/mnt/srcds/ai}/iq3xxs-ud \
   --experts ../Qwen3.8-Flash-Next-UD-IQ3_XXS-00002-of-00004.gguf \
   --device 0 --slots 4600 --reserve-mib 0 --timeout 63115200000 \
-  --begin-timeout 63115200000 --socket "$SOCKET" --fill-mib 7400 --socket2 "$SOCKET2" \
+  --begin-timeout 63115200000 --socket "$SOCKET" --fill-mib 0 --socket2 "$SOCKET2" \
   >>"$HLOG" 2>&1 < /dev/null &
 helper_pid=$!
 if [[ -n ${STRATA_PAIR_RECORD:-} ]]; then
