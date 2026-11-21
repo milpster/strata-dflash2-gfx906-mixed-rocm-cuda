@@ -4,11 +4,11 @@
   "--gpu",
   "0,1",
   "--pack",
-  "/mnt/srcds/ai/iq3xxs-15",
+  "/mnt/srcds/ai/iq3xxs-ud",
   "--native",
-  "/mnt/srcds/ai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
+  "/mnt/srcds/ai/iq3xxs-ud/Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00004.gguf",
   "--native-dense-gguf",
-  "/mnt/srcds/ai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
+  "/mnt/srcds/ai/iq3xxs-ud/Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00004.gguf",
   "--ple-gguf",
   "/mnt/srcds/ai/Qwen3.8-Flash-Next-PLE-Q8_0.gguf",
   "--expert-profile",
@@ -45,7 +45,7 @@
   "0"
  ],
  "cwd": "/home/srcds/dev/strata-stock-v0210",
- "tokenizer": "/mnt/srcds/ai/iq3xxs-15/tokenizer",
+ "tokenizer": "/mnt/srcds/ai/iq3xxs-ud/tokenizer",
  "model_name": "swift-1.5-iq3_xxs",
  "log": "/mnt/srcds/Strata/bench/ab-v0210/logs/C-r1-engine.log",
  "lib_dirs": [

@@ -6,7 +6,7 @@ Four arms, everything constant except the lineage/pack under test:
   REF  Swift-IQ3_S GGUF, no pack        (live-lineage weights anchor)
   A    pack iq3s                        (live prod's pack)   -> REF vs A = pack fidelity (live)
   C    Swift-1.5-IQ3_XXS GGUF, no pack  (swift15-lineage anchor)
-  B    pack iq3xxs-15                   (swift15's pack)     -> C vs B = pack fidelity (swift15); REF vs C = quant delta
+  B    pack iq3xxs-ud                   (swift15's pack)     -> C vs B = pack fidelity (swift15); REF vs C = quant delta
 
 The harness pins the serving layer (expert-cache 1 on CPU, fp16 kv, --serve over stdio,
 no helper, no drafts, fixed prefill/short-read), so dflash/helper/suffix-draft args are
@@ -17,7 +17,7 @@ import pathlib
 
 BASE = pathlib.Path(os.environ.get("STRATA_DEV_TREE", "/home/user/dev/Strata") + "/bench/ab-v0210/quality")
 GGUF_IQ3S = os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S.gguf"
-GGUF_XXS15 = os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf"
+GGUF_XXS15 = os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3xxs-ud/Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00004.gguf"
 PLE = os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/Qwen3.8-Flash-Next-PLE-Q8_0.gguf"  # constant PLE source in every arm
 PROFILE = os.environ.get("STRATA_PROD_TREE", "/mnt/user/Strata") + "/data/expert-profile.bin"   # same profile file both lineages use
 
@@ -81,8 +81,8 @@ ARMS = {
     # S vs A = the share's own delta (expect upstream-documented KL~0.004 class); S vs REF = stack+share vs stock.
     "qqS": {**cfg(GGUF_IQ3S, os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3s", os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3s/tokenizer", "qq-s-relief-cpushare-iq3s"),
             "env": {**ENV, "STRATA_PREFILL_CPU_SHARE": "auto"}},
-    "qqC": cfg(GGUF_XXS15, os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3xxs-15", os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3xxs-15/tokenizer", "qq-c-stock-pack-iq3xxs15", exe=STOCK_EXE, cwd=STOCK_CWD),
-    "qqB": cfg(GGUF_XXS15, os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3xxs-15", os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3xxs-15/tokenizer", "qq-b-relief-pack-iq3xxs15"),
+    "qqC": cfg(GGUF_XXS15, os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3xxs-ud", os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3xxs-ud/tokenizer", "qq-c-stock-pack-iq3xxs15", exe=STOCK_EXE, cwd=STOCK_CWD),
+    "qqB": cfg(GGUF_XXS15, os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3xxs-ud", os.environ.get("STRATA_AI_DIR", "/mnt/user/ai") + "/iq3xxs-ud/tokenizer", "qq-b-relief-pack-iq3xxs15"),
 }
 
 # M-lane quality gate (2026-11-05 evening): quant_quality.py PROMPT mode is the memo-exercising

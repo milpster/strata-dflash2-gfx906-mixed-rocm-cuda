@@ -4,11 +4,11 @@
   "--gpu",
   "0,1",
   "--pack",
-  "/mnt/user/ai/iq3xxs-15",
+  "/mnt/user/ai/iq3xxs-ud",
   "--native",
-  "/mnt/user/ai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
+  "/mnt/user/ai/iq3xxs-ud/Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00004.gguf",
   "--native-dense-gguf",
-  "/mnt/user/ai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
+  "/mnt/user/ai/iq3xxs-ud/Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00004.gguf",
   "--ple-gguf",
   "/mnt/user/ai/Qwen3.8-Flash-Next-PLE-Q8_0.gguf",
   "--expert-profile",
@@ -47,7 +47,7 @@
   "4200"
  ],
  "cwd": "/home/user/dev/Strata",
- "tokenizer": "/mnt/user/ai/iq3xxs-15/tokenizer",
+ "tokenizer": "/mnt/user/ai/iq3xxs-ud/tokenizer",
  "model_name": "swift-1.5-iq3_xxs",
  "log": "logs/E-rROUND-engine.log",
  "lib_dirs": [

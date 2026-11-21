@@ -4,11 +4,11 @@
   "--gpu",
   "0,1",
   "--pack",
-  "/mnt/srcds/ai/iq3xxs-15",
+  "/mnt/srcds/ai/iq3xxs-ud",
   "--native",
-  "/mnt/srcds/ai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
+  "/mnt/srcds/ai/iq3xxs-ud/Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00004.gguf",
   "--native-dense-gguf",
-  "/mnt/srcds/ai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
+  "/mnt/srcds/ai/iq3xxs-ud/Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00004.gguf",
   "--ple-gguf",
   "/mnt/srcds/ai/Qwen3.8-Flash-Next-PLE-Q8_0.gguf",
   "--expert-profile",
@@ -50,7 +50,7 @@
   "0"
  ],
  "cwd": "/mnt/srcds/Strata",
- "tokenizer": "/mnt/srcds/ai/iq3xxs-15/tokenizer",
+ "tokenizer": "/mnt/srcds/ai/iq3xxs-ud/tokenizer",
  "model_name": "swift-1.5-iq3_xxs",
  "log": "/mnt/srcds/Strata/logs/engine-swift15-dflash-w4-q4_0-sampled.log",
  "lib_dirs": [
@@ -80,7 +80,7 @@
  "vision": {
   "exe": "/mnt/srcds/Strata/build-vision/bin/strata-vision",
   "mmproj": "/mnt/srcds/ai/mmproj-Swift-Qwen3.8-Flash-Next-BF16.gguf",
-  "model": "/mnt/srcds/ai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf",
+  "model": "/mnt/srcds/ai/iq3xxs-ud/Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00004.gguf",
   "gpu": false,
   "threads": 8,
   "max_tokens": 1024
