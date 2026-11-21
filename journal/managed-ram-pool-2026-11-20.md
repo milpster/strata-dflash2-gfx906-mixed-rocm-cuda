@@ -1314,3 +1314,191 @@ back, put the block back into a config - it is config-driven, nothing was hardco
 
 Verification for the next boot: the serve log must NOT contain `starting 3 MCP servers for
 the web app's chat`. The queued helper slot-cap window is the first boot that can prove it.
+
+## Row 5: the 30 GiB pool — cold 80k at 282.5 / 275.8 tok/s, and a reproducible engine abort on the warm repeat — 2026-11-21
+
+### The hypothesis this window exists to test
+
+Everything matched the last window except the locked pool. The 38 GiB windows measured cold
+80k prefill at 249.9-280.2 tok/s while evicting the OS page cache to hold the same expert
+bytes for a decode path that is already ~95% VRAM-served (decode flat at ~20 tok/s in every
+window). If a cold 80k prefill is bound by reading 46.84 GiB of expert files from disk, and
+if the page cache is what makes those reads cheap, then a 30 GiB pool (6 GiB handed back to
+the page cache) should raise the cold prefill rate. It was stated so that it could fail.
+
+### Boot (two identical boots, one window)
+
+Config `bench/ab-v0210/rpcprof/trial-managed-pool-30g.json`, unmodified (its `args` are
+byte-identical to `trial-managed-pool-cold-4g.json`; only the cache dir, the log path and the
+provenance notes differ). `STRATA_PORT=8009 STRATA_RAM_BUDGET_MIB=34816
+STRATA_HELPER_RESERVE=128 STRATA_FILL_MIB=7180`, launcher on disk, `--single-run`.
+
+    strata generate: STRATA_RAM_BUDGET_MIB=34816: outside_owned=4294967296 pool_bytes=32212254720 store open
+    strata generate: RAM pool store: pool_bytes=32212254720 scratch_bytes=2666496 usable_bytes=32209588224 blob_max=2662400 io_window=2666496 preads_per_blob=1 resident_pairs=0 hits=0 misses=0
+    strata serve: 220 MiB of VRAM free with everything loaded - LOW ... add --vram-reserve-mib 484 ...
+    strata serve: CUDA1: 360 MiB of VRAM free with everything loaded - LOW ... add --vram-reserve-later-mib 600 ...
+    expert-helper: fill preflight: device free 7516 MiB of 7842 MiB, budget 7200.2 MiB (reserve 128 MiB, scratch 672000 B, buffers 180098776 B), slots cap 4600, fill-mib cap 7180
+    expert-helper: filled 4515 slots (7.01 GiB), scratch 672000 B, buffers 180098776 B
+    expert-helper: fill stopped: fill-mib; device free now 334 MiB of 7842 MiB (4515 slots, 7.01 GiB uploaded)
+
+`VmLck` = 31,621,120 kB = 30,880 MiB, exactly the pool plus its 128 MiB reserve, in both
+boots. `resident_pairs=0 hits=0 misses=0` at open, so the pool starts empty and fills on use.
+The helper's preflight, slot count and stop reason are the same as row 4's 128/7180 tuple,
+so the 3080 side of the comparison is unchanged by construction.
+
+### The legs (two boots; cache dir emptied between them)
+
+Both boots: `check-quiet.sh` QUIET before, empty
+`run/diet-cache-pool30`, sampler `trial-managed-sampler.sh <csv> 5` for the whole window.
+
+| leg | run | request | engine line |
+|---|---|---|---|
+| P1 | 1 | 32 tok | `prompt 59 tokens = 0 reused + 59 read in 3592 ms (16.4 tok/s), 16 generated in 1421 ms (11.3 tok/s)` — hit 87.0%, PCIe 17.1% |
+| **P2** | **1** | **80k, max 2048** | **`prompt 74635 tokens = 0 reused + 74635 read in 264202 ms (282.5 tok/s), 1536 generated in 74634 ms (20.6 tok/s), drafts accepted 795 of 1104, 5 checkpoints helper=reqs=26831 rows=121982 bytes=1249095680 timeouts=0 fallbacks=0`** |
+| P2 hit | 1 | | `decode expert cache hit rate: 95.7% (730889 hits / 763618 lookups); 121982 more read ... (13.8% of all 885600 routed)` |
+| P1 | 2 | 32 tok | `prompt 59 tokens = 0 reused + 59 read in 3562 ms (16.6 tok/s), 16 generated in 1257 ms (12.7 tok/s)` — hit 86.6%, PCIe 17.1% |
+| **P2** | **2** | **80k, max 2048** | **`prompt 74635 tokens = 0 reused + 74635 read in 270580 ms (275.8 tok/s), 1537 generated in 77284 ms (19.9 tok/s), drafts accepted 839 of 1201, 5 checkpoints helper=reqs=25562 rows=122382 bytes=1253191680 timeouts=0 fallbacks=0`** |
+| P2 hit | 2 | | `decode expert cache hit rate: 95.4% (752587 hits / 789138 lookups); 122382 more read ... (13.4% of all 911520 routed)` |
+| P3 | 1 | warm repeat | **engine aborted** (see below), no request line written |
+| P3 | 2 | warm repeat | **engine aborted** (see below), no request line written |
+
+Both P2 legs are cold by the protocol's own test: `0 reused + 74635 read`. Neither shows a
+`restored ... from disk`, and the disk tier held `generations=0 bytes=0` at boot. Zero
+`no blob`, zero `refill failed`, zero `no_buffer_space` in either boot's elog.
+
+### The warm repeat kills the engine, twice out of two
+
+P2 ends, P2's own 76,189-token follow-up runs (the pre-existing protocol artifact: 357 and
+282 tokens, 24.2 and 22.4 tok/s), and then the conversation cache parks:
+
+    strata serve: conversation cache: disk park skipped (disk cache: free-space refusal (3418 MiB plus a floor of 4096 MiB needed, 6350 MiB free))
+    strata serve: conversation cache: parked to disk only (76545 tokens, snapshot 1757 MiB over the 512 MiB RAM ceiling; the published generation serves the next restore; parked=0 bytes=0)
+    strata serve: conversation cache: the draft ring for the rewind to 74630 restored from its pair (captured at 74630 tokens)
+
+P3's request starts, decodes for 831 tokens (run 1) / 180 tokens (run 2), and the engine
+aborts:
+
+    [strata] the engine reported an error: the expert source could not produce a blob
+    [strata] done: 831 tokens in 35 s (23.9 tok/s) (error, cancel=False)   (run 1)
+    [strata] done: 180 tokens in 12 s (15.6 tok/s) (error, cancel=False)   (run 2)
+
+The message is `src/core/expert_source.cpp:5316`: the file tier's `blob()` returned nullptr
+for a routed expert. The engine process exits; `serve/server.py` stays up and keeps 8009 with
+`"loaded": false`, which is why the port had to be freed with `stop-all.sh` before boot 2.
+The elog ends on the helper's side of the goodbye (`the engine said bye; exiting`), so the
+failure text exists only in the launcher log.
+
+This is new relative to the 38 GiB windows. The cold-4g window has the same `args`, the same
+`parked to disk only (... parked=0 bytes=0)` line, and the same 76k restore step, and its
+warm repeat ran through (`prompt 74635 tokens = 74630 reused + 5 read in 281 ms`,
+1537 generated in 62,214 ms). It is unconfirmed static analysis, not a diagnosis, but the
+shape points at the 30 GiB pool: the pool holds ~15.8 GiB fewer expert bytes than the 38 GiB
+rows, so a restore that used to find its blob resident has to produce it from the file tier,
+and that path returned nullptr. Nothing on this box was paged out at the time (swap did not
+move, see below), so an I/O error caused by memory pressure is not the explanation either.
+
+Consequence for the series: this build cannot run a warm repeat at a 30 GiB pool, so the
+"same cold leg twice in one boot" question the margin table asks is still open.
+
+### Disk tier: still refused, and now for a reason that has nothing to do with the pool
+
+4 x `idle save skipped (disk cache: free-space refusal ...)`, 2 x the `parked to disk only
+... parked=0 bytes=0` line above, **0** x `restored ... tokens from disk`. The refusals read
+`3408-3418 MiB plus a floor of 4096 MiB needed, 6308-6350 MiB free`.
+
+So the 6 GiB given back to RAM did not revive the disk tier, because what refuses the park is
+`/mnt`'s free space, not RAM: `/mnt` is 100% used with 6.3 GiB free against a 3.4 GiB
+snapshot plus a 4 GiB floor. That is a disk-space fact and it holds for every pool size on
+this box. The margin table's "the 38 GiB pool kills the conversation-cache disk tier" needs
+correcting: the disk tier is refused at 30 GiB too, for the same free-space reason, and it
+would be refused with no pool at all.
+
+### Memory
+
+| | run 1 | run 2 |
+|---|---|---|
+| MemAvailable start / min | 18,137 / **14,559** MiB (01:20:37) | 18,184 / **14,729** MiB (01:30:38) |
+| swap used start / peak / end | 5,633 / 5,633 / 5,620 MiB | 5,619 / 5,627 / 5,621 MiB |
+| engine VmLck | 30,880 MiB | 30,880 MiB |
+| engine VmRSS peak | 39,010 MiB | 39,024 MiB |
+
+The swap column is the striking one: **swap did not move at all** — 5.6 GiB was already in
+use when the sampler started (residue from earlier windows), and the 80k prefill and its
+decode added zero to it. Compare rows 1-4: 2.6 GiB was added at a 36 GiB pool and 7.2-7.7 GiB
+at 38 GiB. Available memory bottomed at 14,559 MiB against 7,236-8,252 MiB in the four 38 GiB
+rows, i.e. roughly 6-7 GiB more headroom, which is the pool difference and nothing else.
+
+### The 3080 through P2's decode
+
+`nvidia-smi --query-gpu=memory.free`, 6 samples taken 10 s apart during each P2:
+**335 MiB free, twelve times out of twelve**, both runs, while the helper sustained
+`timeouts=0 fallbacks=0` over 122k expert rows. The 128 MiB reserve is as tight as row 4
+reported and no tighter; the fill still stops on `fill-mib` with 334 MiB left.
+
+### Where row 5 sits
+
+| # | budget | pool | helper reserve/fill cap | dev1 reserve | cold prefill | decode | avail min | swap peak | hit / PCIe |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 | 40,960 | 36 GiB | 512 / 6,796 | 576 | 280.2 tok/s, 3.57 ms/tok | 20.2 | 8,252 | 2.6 GiB | 95.5% / 13.2% |
+| 2 | 43,008 | 38 GiB | 512 / 6,796 | 192 | 259.7, 3.85 | 19.8 | 7,932 | 7.7 GiB | 95.0% / 13.1% |
+| 3 | 43,008 | 38 GiB | 384 / 6,924 | 192 | 249.9, 4.00 | 20.1 | 7,236 | 7.2 GiB | 95.7% / 13.5% |
+| 4 | 43,008 | 38 GiB | 128 / 7,180 | 192 | 268.6, 3.72 | 20.5 | 7,892 | 7.5 GiB | 95.7% / 13.7% |
+| 5a | 34,816 | 30 GiB | 128 / 7,180 | 192 | **282.5, 3.54** | 20.6 | 14,559 | **0 added** | 95.7% / 13.8% |
+| 5b | 34,816 | 30 GiB | 128 / 7,180 | 192 | **275.8, 3.63** | 19.9 | 14,729 | **0 added** | 95.4% / 13.4% |
+
+Six cold 80k samples now exist. The spread across all six is 249.9-282.5 tok/s (13%); across
+the two 30 GiB samples it is 6.7 tok/s (2.4%); the best 38/36 GiB row (280.2) is inside that
+2.4%. Two legs is not a distribution, and this window repeated a cold leg only under a
+restart, not twice in one boot.
+
+**Verdict: the hypothesis survived, weakly.** Both 30 GiB legs are at or above the fastest
+of the four larger-pool rows, and the mechanism it names shows up in the memory column (no
+swap added at all, 6-7 GiB more available). But 282.5 against 280.2 tok/s is 0.8%, well
+inside the 13% band the four earlier rows already set, so the honest reading is "not slower,
+probably a little faster" and not "6 GiB of page cache bought 2%". What the window does
+establish cleanly is the other half: the 38 GiB pool's swap traffic (7.2-7.7 GiB) is gone at
+30 GiB, and decode is unchanged at 19.9-20.6 tok/s, so the pool's locked bytes were paying
+for swap, not for speed. The earlier "less available memory means slower prefill" reading
+stays dead: row 5 has the most available memory and only ties the best row of the series.
+
+### Deviations
+
+- P3 (warm repeat) could not be completed: the engine aborted both times, as recorded above.
+  The two cold rows come from two separate boots, not one boot with a repeat.
+- Run 2's P2 ran with a warm OS page cache (run 1 had just streamed the same expert files);
+  run 1 was the first boot after a quiet box. The 275.8 vs 282.5 gap is not evidence either
+  way, and the four earlier rows carry the same possible confound between windows.
+- The elog is appended, not truncated, across boots: run 1 occupies lines 1-121, run 2
+  lines 122-247 of `logs/engine-trial-managed-pool-30g.log`.
+- Run 1's cache dir left two draft rings (`ring-1.dring` 1.1M, `ring-2.dring` 40.2M); they
+  were moved to `run1-cache-dir/` in the evidence dir so run 2 started empty. No generation
+  snapshot was ever written (`parked=0 bytes=0`), so the directory held no parked state.
+- The first boot attempt's evidence redirect ran through a stale shell chain: the boot itself
+  was correct (its log lines name the launcher), but the first `tail` printed nothing. No
+  measurement was affected.
+- A `kill` sweep matched its own shell while looking for the sampler (the pattern sat in the
+  command line, as `stop-all.sh`'s comment warns). The sampler was still stopped correctly by
+  pid; the shell died, nothing else did.
+
+### Evidence
+
+`bench/ab-v0210/rpcprof/out/managed-ram-pool-20261120/trial-window-pool30/` (main tree):
+`boot-pool30.log`, `boot-pool30-r2.log`, `legs-pool30.log`, `legs-engine-lines.txt`,
+`mem-pool30.csv`, `mem-pool30-r2.csv`, `mem-summary.txt`, `nvidia-smi-p2.txt`,
+`nvidia-smi-p2-r2.txt`, `leg-P{1,2}.{json,txt}`, `leg-P{1,2}-r2.{json,txt}`,
+`leg-P3-r2.json`, `p1-prompt.txt`, `run1-cache-dir/`, `status.txt`.
+Engine log `logs/engine-trial-managed-pool-30g.log` (both boots); launcher logs
+`logs/trial-managed-20261121-011303-1376027.log` and `-012430-1918498.log`; helper logs
+`...-1376027-helper.log` and `...-1918498-helper.log`.
+
+Teardown, twice: samplers TERM'd by explicit pid; `./stop-all.sh` alone (run 1
+`TERM 1376027 1376794`, run 2 `TERM 1918498 1919261`, both "before=0 after=0 - ALL
+STOPPED"); `check-quiet.sh` in its own invocation each time (QUIET, exit 0). 8009 and 8019
+not listening, no `run/trial-managed*.sock`. Prod was never started and never touched.
+
+Still UNMEASURED: a warm 80k repeat on this build at any pool size (the abort blocks it);
+why `blob()` returns nullptr on the restore path at 30 GiB while 38 GiB survives; whether
+the 30 GiB pool changes decode under a longer generation (both decode figures here are
+75-77 s windows); how much of the 5.6 GiB of swap belongs to this box's other work; whether
+the 282.5/275.8 pair holds on a third boot; concurrency (every request serial); and the
+origin of the 76,189-token follow-up requests.
