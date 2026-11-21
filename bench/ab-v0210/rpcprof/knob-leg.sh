@@ -35,7 +35,11 @@ base, out, label = sys.argv[1], sys.argv[2], sys.argv[3]
 d = json.loads(pathlib.Path(base).read_text())
 d['env'] = dict(d.get('env', {}))
 for kv in sys.argv[4:]:
-    k, _, v = kv.partition('='); d['env'][k] = v
+    k, _, v = kv.partition('=')
+    if k == 'EXE':          # a different run/ dir, e.g. run/pool-admit-a506 (the passing branch engine)
+        d['exe'] = v.rstrip('/') + '/rpcw-hip/strata'
+    else:
+        d['env'][k] = v
 d['log'] = f'/mnt/srcds/Strata/logs/engine-{label}.log'
 d['trial_note'] = f'knob leg {label}: ' + (' '.join(sys.argv[4:]) or 'no override (baseline)')
 pathlib.Path(out).write_text(json.dumps(d, indent=2) + '\n')
@@ -49,6 +53,15 @@ EXPECT=$(sha256sum "$EXE" | cut -c1-16)
 
 echo "=== stop ==="
 ./stop-all.sh | tail -1
+
+# Clear the conversation cache the config names. It outlives the boot, so a leg can otherwise start
+# from a checkpoint an earlier leg wrote and take the 5-row incremental path instead of reading the
+# prompt - which flips the 3k outcome (measured 2026-11-21). Cleared only inside a run/ directory.
+CONVDIR=$(python3 -c "import json;a=json.load(open('$CFG')).get('args') or [];print(a[a.index('--conversation-cache-dir')+1] if '--conversation-cache-dir' in a else '')")
+case "$CONVDIR" in
+  */run/*) echo "clearing the conversation cache: $CONVDIR"; rm -rf "$CONVDIR"; mkdir -p "$CONVDIR" ;;
+  *) echo "no conversation cache dir in the config - nothing cleared" ;;
+esac
 
 echo "=== boot $LABEL ($(date +%H:%M:%S)) ==="
 setsid nohup env STRATA_PROD_CONFIG="$PWD/$CFG" ./launch-prod-ud-iq3xxs-dflash-w4-q4_0-mixed.sh \
