@@ -251,3 +251,18 @@ It did not cost this leg. It is the next cause of death, and the reason the cach
 the pack's 24,576 pairs. The fixer lane is naming the caller with an opt-in borrow trace rather
 than guessing: the guard reports the pair that crossed the line, not the code that borrowed it,
 and a backtrace at that moment is the shortest honest route to the site.
+
+### Repeat (n=2), same boot, seed 43
+
+| Request | Result |
+|---|---|
+| long, 53,137-token prompt, 6,000 asked | ok, alive 446.3 s |
+| six helpers, 900 each | 461-710 tokens, alive 475.0-583.3 s |
+| failures | 0 of 7; genuine overlap **421.3 s** |
+| refusal-class lines | 0 |
+| borrower peak | **9,053** (was 7,959 on the first leg) |
+
+So the shape passes twice on this build with the overlap doubled over what was required, and the
+one number that moves the wrong way is the borrower table: 7,959 after one leg, 9,053 after the
+second on the same boot. It does not fall back between requests - the leak is per request, which
+is why a longer agent session still ends in the refusal. Naming the caller is the next thing.
