@@ -98,9 +98,23 @@ identity, same libs:
 
 So the ingredient the earlier shapes lacked is overlap: a second request in flight while the
 first is decoding. Both earlier single-request results (one cold 65k/2,200 and eight turns
-with parks) survived on the old build; only with concurrent traffic does the old build lose
-the card and take the engine down with it, and the fixed build under the same load answers
-everything. n=1 per arm at the time of writing; the repeat is recorded below.
+with parks) survived on the old build; only with concurrent traffic does the card go.
+
+**The repeat killed the arm, not the claim.** The fixed build under the same load, different
+seed:
+
+| Build | Long request | Six parallel | Engine |
+|---|---|---|---|
+| `96a04be9` (fix), seed 29 | `refilling a lent slot failed` after 273.4 s | 1 × exit-code-1 error, 5 × dropped | **exited, code 1** |
+| `d534e72a` (old), seed 23 | same | same | exited, code 1 |
+
+So concurrency reproduces the death on **both** builds, and the hit-path fix does not change
+it. The 96a04be9 pass above was luck, not margin. What is established: the failure is VRAM
+headroom under overlap (`refilling a lent slot`), not the host pool; the engine exits with
+code 1 instead of failing the request, which is why every concurrent request dies with it;
+and margin 512 is not enough for two requests at once. The lever is the margin ladder
+(512 → 576 → …), applied and re-tested, which is a different fix from the one this window
+started with.
 
 ## Two build traps that cost a cycle each
 
