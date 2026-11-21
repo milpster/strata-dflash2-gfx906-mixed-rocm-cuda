@@ -444,3 +444,38 @@ through it, and the pool never refused.
 Context to read it against: the deaths on 2026-11-21 were at 53,717 and 64,507 tokens, and the
 largest prompt here is 100,291. That is not a proof for every future session, but it is the first
 time this configuration has carried a real agent past the sizes that used to end it.
+
+## The helper card's last spare MiB (2026-11-21, after the 240k infill)
+
+The operator judged the 239,677-token prefill (`259.5 tok/s`) abysmal and ordered the pool down
+4 GiB (`dfd0600117`: budget 40,960 → 36,864, pool 36 → 32 GiB), then asked why the 3080 still had
+spare memory. The answer was in the helper, not the config.
+
+**The double count.** `serve_fill` read `cudaMemGetInfo` (already net of every startup
+`cudaMalloc`) and then subtracted `scratch_bytes + buffers_bytes` again — 172.4 MiB, part of it
+pinned host memory that was never VRAM. The tell was arithmetic: after the fill the card was left
+with exactly `reserve 64 + buffers 172 + scratch 0.7 + headroom 16`. Fixed in `3d1e031f37`
+(`fill_budget_bytes(free, reserve_mib, late_bytes)`), ordering verified first: no tier, graph, or
+relief buffer allocates device memory after the probe.
+
+**Then the reserve floor.** The launcher already asks `--reserve-mib 0`; the helper silently raised
+that to a 64 MiB floor introduced in `c7be950984` while fixing a dead-argument bug — a round number,
+never a survived failure. Floor set to 0 (`7d3230c316`) and the fill cap removed (`--fill-mib 0`,
+`c98273b1bf`).
+
+| Boot | Budget | Fill stop | Slots | 3080 free after |
+|---|---|---|---|---|
+| `553f3bf4`, reserve 64, cap 7400 | 7,264.2 MiB | `budget` | 3,785 | 250 MiB |
+| `0c87a16d`, reserve 64, cap 7400 | 7,436.4 MiB | `fill-mib` | 3,861 | 114 MiB |
+| `9d16742d`, reserve 0, cap 0 | **7,500.4 MiB** | `budget` | **3,913** | **14 MiB** |
+
+**The "late module load" claim, checked rather than repeated.** The lane's prose said the 16 MiB
+headroom protects a late CUDA module load, without a size. Measured: the helper's device code is
+14 sm_86 cubins totalling **1.08 MiB** (largest 0.21 MiB), and the prod fill's post-arena work —
+warmup launch included — cost **2 MiB** of the 116 MiB its arithmetic left. Zero module-load
+failures exist in any log in this tree. The prose was corrected to the measurement
+(`a2303f4021`); the headroom stays at 16 MiB, which is ~15x the process's entire kernel code.
+
+Staged in `run/pool-admit-bin` (helper `9d16742d`, `e3b14c0515`) with a byte-identical rollback copy
+of the previous helper in `run/helper-553f3bf4/`. Engine `5a699be1`, margins 256/192 and the 32 GiB
+pool unchanged throughout.
