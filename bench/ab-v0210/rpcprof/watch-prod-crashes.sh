@@ -46,20 +46,17 @@ while (( $(date +%s) < end )); do
 
   # A bump means the previous generation ended. The boot log of the generation that just
   # died is the newest prod log older than the one holding the current generation.
-  cur_log=$(python3 - "$STATE" <<'PY' 2>/dev/null
-import json, sys
-try:
-    d = json.load(open(sys.argv[1]))
-except Exception:
-    sys.exit(1)
-print(d.get("log", ""))
-PY
-)
+  # The supervisor rewrites its state without a "log" key, so identify the dead boot by
+  # order instead: the newest log belongs to the boot that just started, the one below it
+  # is the generation that died.
   dead_log=$(ls -t "$ROOT"/logs/prod-swift15-f16kv-dflash-w4-q4_0-mixed-*.log 2>/dev/null \
-             | grep -v helper | grep -v -F "${cur_log##*/}" | head -1)
+             | grep -v helper | sed -n 2p)
   err=""; prompt=""; vram=""; park=""; restore=""; gen_txt=""
   if [[ -n $dead_log && -f $dead_log ]]; then
     err=$(tr -d '\0' < "$dead_log" | grep -m1 -E 'the engine reported an error|refilling a lent slot failed|No buffer space available|the expert source could not produce a blob|SIGABRT|Aborted' | sed 's/^\[strata\] //')
+    # the fatal line can sit anywhere in the dead boot; keep the last one seen
+    err_last=$(tr -d '\0' < "$dead_log" | grep -E 'the engine reported an error|refilling a lent slot|No buffer space available|could not produce a blob' | tail -1 | sed 's/^\[strata\] //')
+    [[ -n $err_last ]] && err=$err_last
     prompt=$(tr -d '\0' < "$dead_log" | grep -m1 -E 'reading the prompt: [0-9,]+ tokens' | sed 's/^\[strata\] //')
     gen_txt=$(tr -d '\0' < "$dead_log" | grep -m1 -E 'done: [0-9]+ tokens.*error' | sed 's/^\[strata\] //')
   fi
