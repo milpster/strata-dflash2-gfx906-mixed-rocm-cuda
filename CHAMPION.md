@@ -12,7 +12,8 @@ Last updated 2026-11-21. Supersedes every earlier "winner", "champion" or launch
 |---|---|---|
 | Prod launcher | `launch-prod-ud-iq3xxs-dflash-w4-q4_0-mixed.sh` | supervisor boot, 127.0.0.1:8009 |
 | Prod config | `prod-config-ud-iq3xxs-dflash-w4-q4_0-mixed.json` | see knobs below |
-| Engine | `run/trial-managed-bin/rpcw-hip/strata` → `build-906/strata` | sha256 `d534e72a7369...` |
+| Engine | `run/pool-admit-bin/rpcw-hip/strata` (copy of `Strata-wt-helper-ipc/build-906-fixadmit/strata`) | sha256 `a506e62008ba...`, worktree `helper-ipc-diet` @ `9358921670` |
+| Engine rollback pin | `run/winner-pin-38g/strata-engine` | sha256 `d534e72a7369...` (`build-906/strata`, untouched) |
 | Helper | `run/trial-managed-bin/rpcw-cuda/strata-expert-helper-patient` | sha256 `553f3bf48219...` (v0233 pin) |
 | Winner fallback | `run/winner-pin-38g/strata-engine` | byte copy of the engine that ran the 38 GiB row |
 | Pack | `/mnt/srcds/ai/iq3xxs-ud` | UD, 48 layers x 512 experts, `native_experts.txt` v4 (gu 22 / d 20) |
@@ -24,7 +25,7 @@ Last updated 2026-11-21. Supersedes every earlier "winner", "champion" or launch
 |---|---|---|
 | `STRATA_RAM_BUDGET_MIB` | 43008 | 38 GiB pool + 4 GiB outside area |
 | RAM pool store | `pool_bytes=40802189312` | must appear in the boot lines |
-| `--vram-reserve-mib` (CUDA0) | 256 measured, **320 on prod** | one +64 step per real exhaustion (40 GiB run died at 0 MiB, prod died at 127 MiB free) |
+| `--vram-reserve-mib` (CUDA0) | **640, provisional** | raised 384→448→512→576→640 on 2026-11-21 on a misread failure: `refilling a lent slot failed: No buffer space available` is errno ENOBUFS from the RAM pool (`ram_pool.cpp` pool_alloc), not a card out of VRAM, and the refill loop takes the store directly. No margin step was ever justified by it, and a larger margin shrinks the GPU expert cache, which sends more pairs to the pool. It is kept because two clean legs passed on it; the measurement back down is queued for the operator, not taken unilaterally |
 | `--vram-reserve-later-mib` (CUDA1) | 192 | never ran low |
 | `--expert-helper-slots` | 4600 | the engine's hello is authoritative; the helper's `--slots` is inert |
 | helper `--reserve-mib` | 0 | the component clamps it to 64 |
@@ -36,18 +37,31 @@ Last updated 2026-11-21. Supersedes every earlier "winner", "champion" or launch
 ## Known behaviour to expect
 
 - Boot identity: `RAM pool store: pool_bytes=40802189312 ... usable_bytes=40799522816`.
-- CUDA0 expert cache 4,951 slots (margin 256) or 4,917 (margin 320), CUDA1 4,174 slots.
+- CUDA0 expert cache 4,951 slots (margin 256) or 4,917 (margin 320); at margin 640 it is smaller
+  again. CUDA1 4,174 slots.
 - "VRAM free with everything loaded": 284 MiB at 256, 348 MiB at 320.
-- The pool can refuse a blob under transient pressure (`the expert source could not produce
-  a blob`) and the engine can fail a lent-slot refill (`No buffer space available`); both
-  are measured failures of this configuration at 230k context, not of an older build.
+- **The three failure classes, with the text that identifies each** (2026-11-21; the second was
+  mislabelled "VRAM" for a whole night):
+  | Text | Class | Answer |
+  |---|---|---|
+  | `the expert source could not produce a blob` | host pool admission | code (a lease that was never given back), never a margin |
+  | `refilling a lent slot failed: No buffer space available` | host pool refill — ENOBUFS only comes from `ram_pool.cpp`/the pool cache; the refill loop takes `g_pool_expert_store->acquire()` directly | code, never a margin |
+  | `exit code -6` / SIGABRT | engine abort (OOM hint in the harness text) | separate investigation |
+- The pool's own evidence line at a refusal:
+  `managed pool: borrow refused layer L expert E: borrowers=N completed=N pending=N
+  resident_pairs=N evictions=N`. `borrowers` near the pair count with `completed=0 pending=0` is a
+  pin leak in the engine. `STRATA_POOL_BORROW_TRACE=1` prints the borrowing caller's frames.
+- A request-level pool failure currently ends the **engine process** (`refill_issue` prints and
+  returns 1), so one bad request takes every concurrent request with it. That is a defect of its
+  own and is on the backlog; the fix above removes the trigger, not the amplification.
 
 ## How a new window starts
 
 1. Derive the config from the champion with `bench/ab-v0210/rpcprof/make-cold-config.py`,
    which writes a fresh empty conversation-cache dir and a per-window elog.
 2. Boot with `bench/ab-v0210/rpcprof/launch-trial-managed.sh` and the env it documents
-   (`STRATA_RAM_BUDGET_MIB=43008 STRATA_HELPER_RESERVE=0 STRATA_FILL_MIB=7400`).
+   (`STRATA_RAM_BUDGET_MIB=43008 STRATA_HELPER_RESERVE=0 STRATA_FILL_MIB=7400`). The 8019
+   trial port is retired: tests run on 8009, one at a time.
 3. Do not run prod and a window at the same time: both use 8009, the launcher refuses.
 4. Record numbers only from the engine's own lines, with the memory cost beside them.
 
