@@ -218,3 +218,36 @@ The classifier is corrected (`host-pool-refill`) and the ledger re-derived with
 `bench/ab-v0210/rpcprof/reclassify-ledger.py`: 9 entries reclassified, and the ledger now holds
 no `vram-exhaustion` entry at all - 5 pool admissions, 7 pool refills, the rest empty or
 SIGABRT.
+
+## The leg that passed: 6,000 tokens with six helpers, on `716c3abee5`
+
+Same shape that had just killed 7 of 7 on the previous build, same margin (640), same seed,
+retry unarmed:
+
+| Request | Engine's own line |
+|---|---|
+| long, 53,175-token prompt, 6,000 asked | `done: 6000 tokens in 347 s (39.6 tok/s) (length), expert cache 96.6% hit (+12.0% of the routed experts over PCIe)` |
+| six helpers, 900 asked each | 424-707 tokens in 14-29 s, 27.0-32.4 tok/s, 86.0-98.4% hit |
+| failures | none - 0 of 7; genuine overlap 321.5 s (needed 150 s) |
+| refusal-class lines this boot | 0 (`borrow refused` / `refilling a lent slot` / `managed pool at the refusal`) |
+
+Memory beside the speed, from the same run: `resident_pairs=19143`, `evictions=62373`, and the
+borrower table peaked at **7,959**.
+
+## What the guard says is left
+
+```
+strata: managed pool: 6368 live borrowers, 6368 of them with no copy in flight and none completed
+(the borrow that crossed the line: layer 46 expert 408) - a caller is borrowing without noting or
+releasing; resident_pairs=19143 evictions=62373
+```
+
+- Before the prefill fix the same measurement was **19,053** borrowers with the cache at zero.
+- Now it is **7,959** at the peak, the cache holding 19,143 pairs, and every borrower idle.
+- So the prefill gate closed roughly 11,000 of them; about 8,000 remain - ~15 GiB of a 38 GiB
+  pool pinned by callers that still neither note nor release.
+
+It did not cost this leg. It is the next cause of death, and the reason the cache cannot reach
+the pack's 24,576 pairs. The fixer lane is naming the caller with an opt-in borrow trace rather
+than guessing: the guard reports the pair that crossed the line, not the code that borrowed it,
+and a backtrace at that moment is the shortest honest route to the site.
