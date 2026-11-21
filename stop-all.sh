@@ -39,6 +39,32 @@ if [ ${#pids[@]} -gt 0 ]; then
   [ ${#still[@]} -gt 0 ] && { echo "  KILL ${still[*]}"; kill -KILL "${still[@]}" 2>/dev/null || true; sleep 2; }
 fi
 
+echo "stop-all: orphaned chat MCP servers (docling, markitdown, pandoc)"
+# A strata server spawns the chat's MCP servers as its own children; killing the server
+# leaves them reparented and alive forever. Sweep only the ORPHANS (parent gone), so an
+# editor's own MCP client, whose parent is alive, is untouched. The patterns live in this
+# file on purpose: an inline pgrep -f would match the invoking shell's own command line.
+mcp_orphans=()
+for d in /proc/[0-9]*; do
+  pid=${d#/proc/}
+  [ "$pid" = "$$" ] && continue
+  cmd=$(tr '\0' ' ' < "$d/cmdline" 2>/dev/null) || continue
+  case "$cmd" in
+    *docling-mcp*|*markitdown-mcp*|*mcp-pandoc*) ;;
+    *) continue ;;
+  esac
+  ppid=$(awk '/^PPid:/{print $2}' "$d/status" 2>/dev/null)
+  [ "${ppid:-1}" = "1" ] && mcp_orphans+=("$pid")
+done
+if [ ${#mcp_orphans[@]} -gt 0 ]; then
+  echo "  TERM ${mcp_orphans[*]}"
+  kill -TERM "${mcp_orphans[@]}" 2>/dev/null || true
+  sleep 2
+  for pid in "${mcp_orphans[@]}"; do
+    [ -d "/proc/$pid" ] && { echo "  KILL $pid"; kill -KILL "$pid" 2>/dev/null || true; }
+  done
+fi
+
 rm -f run/prod-swift15-f16kv-mixed.sock run/prod-swift15-f16kv-mixed2.sock \
       run/prod-iq3xxs-ud-mixed.sock run/prod-iq3xxs-ud-mixed2.sock \
       run/trial-spill40.sock run/trial-spill40-2.sock \
