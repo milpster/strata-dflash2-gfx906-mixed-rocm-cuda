@@ -1116,3 +1116,134 @@ the same helper allocation at 40,960 MiB, so pool size and helper slots stay mut
 confounded; whether the 127 extra slots change steady-state hit rate over a longer run than
 one leg; concurrency (every request serial); the origin of the 76,189-token follow-up
 requests; the ~4.0 GiB of swap this window added.
+
+## Helper reserve 128 MiB, same 43,008 MiB pool — 2026-11-21 (measured)
+
+Window: pool 43,008 MiB and the config unchanged (device reserves 192/192, kv-resident-mib
+4096); the helper's RTX 3080 margin cut once more, with the fill cap raised by the same 256 MiB
+so the space is actually used:
+
+    STRATA_HELPER_RESERVE=128    (reserve 384 -> 128)
+    STRATA_FILL_MIB=7180         (cap 6924 -> 7180)
+
+Config `bench/ab-v0210/rpcprof/trial-managed-pool-cold-4g.json`, empty conversation-cache dir
+(`run/diet-cache-cold-4g`), port 8009, engine `/mnt/srcds/Strata-wt-helper-ipc/build-906/strata`.
+The helper warns about the setting itself: `--reserve-mib 128 MiB is below the recommended 256:
+the fill has little room to survive the card's other users`.
+
+### The helper's own lines prove the env arrived
+
+    fill preflight: device free 7516 MiB of 7842 MiB, budget 7200.2 MiB (reserve 128 MiB,
+      scratch 672000 B, buffers 180098776 B), slots cap 4600, fill-mib cap 7180
+    filled 4515 slots (7.01 GiB), scratch 672000 B, buffers 180098776 B
+    fill stopped: fill-mib; device free now 334 MiB of 7842 MiB (4515 slots, 7.01 GiB uploaded)
+
+The engine agrees: `expert-helper proxy: 4515 experts ... 7.01 GiB (fill report)`, and the pool
+opened as `STRATA_RAM_BUDGET_MIB=43008: outside_owned=4294967296 pool_bytes=40802189312 store
+open`, then `RAM pool store: pool_bytes=40802189312 scratch_bytes=2666496
+usable_bytes=40799522816` - the same pool as the other 43,008 windows. Against the 384/6924
+boot: +138 slots, +0.25 GiB resident, and the freed 256 MiB is genuinely occupied (free after
+fill 590 -> 334 MiB).
+
+Two numbers did not land on a straight-line extrapolation and are left as measured: the
+preflight budget is 7200.2 MiB where the same free/reserve/scratch/buffers arithmetic gives
+~7215.6, and the fill stopped at 4,515 slots where cap-over-slot-size gives ~4,540. The
+helper's own reason is `fill-mib`, not `slots cap`, so the 4,600 slot cap did not bind and was
+not touched.
+
+### Three legs
+
+| leg | what | prompt tokens | prefill | decode | hit | PCIe | helper on that leg |
+|---|---|---|---|---|---|---|---|
+| X1 | cold, 32 max | 59 = 0 reused | 3617 ms (16.3 tok/s) | 16 gen in 1486 ms (10.8 tok/s) | 87.0% | 17.1% | reqs=175 rows=1313 bytes=13,445,120 |
+| X2 | **cold 80k, 2048 max** | 74,635 = **0 reused** + 74,635 read | **277,904 ms (268.6 tok/s, 3.72 ms/token)** | 1539 gen in 74,912 ms (**20.5 tok/s**) | **95.7%** | **13.7%** | reqs=26,022 rows=123,743 bytes=1,267,128,320 |
+| X3 | warm repeat | 74,635 = 74,630 reused + 5 read | 276 ms | 1539 gen in 58,680 ms (26.2 tok/s) | 95.6% | 13.6% | reqs=24,464 rows=118,544 bytes=1,213,890,560 |
+
+X2's cold proof is exact: `prompt 74635 tokens = 0 reused + 74635 read in 277904 ms`, no
+`restored ... from disk`, empty cache dir (only draft rings), `drafts accepted 830 of 1178,
+5 checkpoints, timeouts=0 fallbacks=0`. Every leg carries `timeouts=0 fallbacks=0`.
+
+### Comparison, and what is comparable
+
+| row | prefill | ms/token | decode | hit | PCIe | helper rows / bytes | MemAvailable min |
+|---|---|---|---|---|---|---|---|
+| 40,960, helper 512/6796, dev1 576 | 280.2 tok/s | 3.57 | 20.2 | 95.5% | 13.2% | 122,350 / 1,252,864,000 | 8,252 MiB |
+| 43,008, helper 512/6796, dev1 192 | 259.7 | 3.85 | 19.8 | 95.0% | 13.1% | 116,334 / 1,191,260,160 | 7,932 MiB |
+| 43,008, helper 384/6924, dev1 192 | 249.9 | 4.00 | 20.1 | 95.7% | 13.5% | 119,406 / 1,222,717,440 | 7,236 MiB |
+| **43,008, helper 128/7180 (this)** | **268.6** | **3.72** | **20.5** | **95.7%** | **13.7%** | **123,743 / 1,267,128,320** | **7,892 MiB** |
+
+Same protocol throughout (chat, `infill_measure.py`, 74,635-token prompt, 2048 max, cold
+cache), so comparable. This row sits **second of four on prefill**, 3.4% above the 259.7 row and
+4.1% below the 280.2 row, inside the 249.9-280.2 spread the same 43,008 budget has already
+produced. Decode is flat at the top of the observed band (20.5 vs 19.8-20.2). Hit rate ties the
+384 row (+0.0 pt) and PCIe share is +0.2 pt; helper work is the **highest of the four** in both
+rows (+3.6% over 119,406, +3.7% over bytes), consistent with 138 more resident slots - more
+expert reads served by the 3080, not fewer. No speed claim is made from anything but the
+engine's own lines, and one leg cannot separate a 3-4% move from noise.
+
+The previous three rows fell monotonically in available memory (8,252 -> 7,932 -> 7,236 MiB)
+with prefill falling alongside. **That pattern does not continue here**: this window's
+MemAvailable minimum is 656 MiB *above* the 384 row's and its prefill is 7.5% *faster*, so
+either the 4% band is noise or available-memory was never the cause. Recorded as a
+counter-example, not an explanation.
+
+### Memory (sampler, 5 s, 91 samples, 01:01:09-01:10:05)
+
+VmLck 39,072 MiB flat (the pool lock; `pool_bytes` 38,912 MiB plus overhead), VmRSS peak
+47,295 MiB (X2 window 47,284, X3 window 47,295), MemAvailable min 7,892 MiB at 01:05:38 (inside
+X2's prefill; X3's own minimum 7,934 MiB). Swap: 5,568 MiB at sampler start, 7,514 at the end,
+peak 7,514 - the CSV's first sample is already after the boot, so the share this boot added
+cannot be separated from residue. Compare 7,236/47,780/7,161 for the 384 row; nothing here
+moves outside the boot-to-boot spread.
+
+### RTX 3080 headroom, measured during decode
+
+`nvidia-smi --query-gpu=memory.free,memory.used`, every 5 s, 98 samples 01:02:00-01:10:00
+covering X2's prefill, its decode and X3: **free 335 MiB / used 7,508 MiB, identical in every
+sample** - the boot's own `CUDA1: 360 MiB of VRAM free with everything loaded` is the higher of
+the two readings. No driver paging event: decode held 20.5 tok/s through X2 (22.7 in the
+follow-up segment), `timeouts=0` in every helper tail, no VRAM warning naming the CUDA card,
+and the badge never reported a stall. The margin was not adjusted to work around anything; it
+was set by the operator and left alone.
+
+### Hygiene
+
+Zero `no blob`, zero `refill failed`, zero `no_buffer_space` in the boot's elog. Three rewind
+lines, all benign: `the draft ring for the rewind to 74630 restored from its pair (captured at
+74630 tokens)` (elog:115, 122, 129). VRAM warnings quoted and not acted on: 220 MiB at load and
+at X1's start (suggests 484/512), CUDA1 360 MiB (suggests 600), and **8 MiB at the start of the
+76,189-token follow-up after X2** (suggests 704) - the thinnest reading any of these windows has
+logged, yet X2 still decoded at 20.5 tok/s and the follow-up at 22.7 tok/s.
+
+### Deviations worth recording
+
+- The 76,189-token follow-up requests reappear (elog:118, 284 tokens; elog:132, 89 tokens),
+  same shape as in the cold-2g, pool and 384 windows. X2's continuation is counted there, not
+  in X2's own 20.5 tok/s line; combined, 1,823 tokens in 87.4 s = 20.9 tok/s. Pre-existing
+  protocol artifact, not an effect of this change.
+- `conversation cache: idle save skipped (disk cache: free-space refusal (3411 MiB plus a floor
+  of 4096 MiB needed, 6391 MiB free))`. /mnt is 100% used (6.3 GiB free), so the disk tier
+  saved nothing this window. It does not affect X2, which was cold by construction.
+- The boot was launched with the evidence redirect through a subshell and the first `tail`
+  used an unset `$EV`; the boot itself was unaffected (its own log line names the launcher log).
+
+### Evidence
+
+Raw files, main tree
+`/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/managed-ram-pool-20261120/trial-window-helper2/`:
+`boot-helper2.log`, `legs-helper2.log`, `legs-engine-lines.txt`, `mem-helper2.csv`,
+`nvidia-smi-x2.txt`, `leg-X{1,2,3}.{json,txt}`, `x1-prompt.txt`, `stop-all.log`, `status.txt`.
+Engine log `logs/engine-trial-managed-pool-cold-4g.log`; helper log
+`logs/trial-managed-20261121-005925-693386-helper.log`.
+
+Teardown: samplers TERM'd by explicit pid (from `/proc/<pid>/cmdline`), csv and nvidia files
+frozen; `./stop-all.sh` alone (`TERM 693386 693402 694149 695624`, "before=0 after=0 - ALL
+STOPPED"); `check-quiet.sh` in its own invocation (QUIET, exit 0). No sockets left, 8009 and
+8019 not listening, engine log ends on X3's lines. Prod never started, never touched.
+
+Still UNMEASURED: repeatability of the 268.6 tok/s prefill (one leg only); why the preflight
+budget reads 7200.2 instead of ~7215.6 and why the fill stopped 25 slots before the cap
+division predicts; whether a 128 MiB reserve survives a real paging squeeze (no event occurred
+here, so the risk is untested, not cleared); the same slot count at 40,960 MiB; concurrency
+(every request serial); the origin of the 76,189-token follow-up requests; how much of the
+7.5 GiB of swap belongs to this boot.
