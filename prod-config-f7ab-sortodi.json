@@ -144,16 +144,5 @@
     "model": "/mnt/srcds/ai/Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00004.gguf",
     "threads": 8
   },
-  "pack": "/mnt/srcds/ai/iq3s",
-  "mcp_servers": {
-    "docling": {
-      "command": "/home/srcds/.config/opencode2/bin/docling-mcp-local"
-    },
-    "markitdown": {
-      "command": "/home/srcds/.local/bin/markitdown-mcp"
-    },
-    "pandoc": {
-      "command": "/home/srcds/.local/bin/mcp-pandoc"
-    }
-  }
+  "pack": "/mnt/srcds/ai/iq3s"
 }

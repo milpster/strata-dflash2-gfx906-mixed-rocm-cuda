@@ -99,17 +99,6 @@
     "/opt/rocm-6.1.0/lib"
   ],
   "log": "/mnt/srcds/Strata/logs/engine-swift-iq3s-f16kv-dflash-w4-q4_0-mixed.log",
-  "mcp_servers": {
-    "docling": {
-      "command": "/home/srcds/.config/opencode2/bin/docling-mcp-local"
-    },
-    "markitdown": {
-      "command": "/home/srcds/.local/bin/markitdown-mcp"
-    },
-    "pandoc": {
-      "command": "/home/srcds/.local/bin/mcp-pandoc"
-    }
-  },
   "model_name": "swift-iq3_s-f16kv",
   "port": 8019,
   "reasoning_budget_tokens": 55000,

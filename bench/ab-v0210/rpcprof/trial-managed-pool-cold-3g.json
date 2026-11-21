@@ -143,17 +143,6 @@
     "threads": 8
   },
   "pack": "/mnt/srcds/ai/iq3s",
-  "mcp_servers": {
-    "docling": {
-      "command": "/home/srcds/.config/opencode2/bin/docling-mcp-local"
-    },
-    "markitdown": {
-      "command": "/home/srcds/.local/bin/markitdown-mcp"
-    },
-    "pandoc": {
-      "command": "/home/srcds/.local/bin/mcp-pandoc"
-    }
-  },
   "trial_note": "managed-RAM-pool validation trial 2026-11-20; helper host arena capped low because the managed pool is the primary expert cache; VRAM margins left at the tuple's own 192/576",
   "managed_budget_mib": 40960,
   "derived_from": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/trial-managed-pool-cold-2g.json",

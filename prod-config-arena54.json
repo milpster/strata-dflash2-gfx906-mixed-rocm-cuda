@@ -145,6 +145,5 @@
     "model": "/mnt/srcds/ai/Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00004.gguf",
     "threads": 8
   },
-  "pack": "/mnt/srcds/ai/iq3s",
-  "mcp_servers": {}
+  "pack": "/mnt/srcds/ai/iq3s"
 }
