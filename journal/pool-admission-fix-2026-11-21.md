@@ -416,3 +416,31 @@ revert. Prod has **not** been switched: the merge brings `main`'s tail-skip, `ST
 and helper-IPC work together with the pool work for the first time, and a build that passes the
 pool tests is not the same claim as an engine that has carried an agent leg. Promotion is the
 operator's call; the directory is ready for one command.
+
+## The real agent lane: 138 requests, a 100k-token prompt, no refusal
+
+The merge lane above ran on **swift**, i.e. on prod's engine, for its whole session: a real
+code-reading agent whose context grows turn by turn. That accidentally delivered the strongest
+evidence of the window, because it is the shape the operator actually runs - not a stress script.
+
+One boot (`a506e620`), everything below from the engine's own lines:
+
+| | |
+|---|---|
+| Requests served on this boot | **138** |
+| Largest prompt | `prompt 100291 tokens = 100032 reused + 259 read in 12624 ms ... 1860 generated in 77069 ms (24.1 tok/s)` |
+| Next largest | 99,386 / 99,193 / 98,197 / 97,859 tokens, 20.8-24.8 tok/s |
+| Expert-cache hit rate | lowest 52.2%, highest 99.1% |
+| Helper health, every request | `timeouts=0 fallbacks=0` - all 138 of them |
+| Borrower-guard lines | **0** |
+| Refusal-class lines (borrow / refill / at-the-refusal) | **0** |
+| Engine restarts | **0** (one `engine started:` in the slice) |
+| Crash-ledger entries since | none |
+
+The merge lane's build also pinned every CPU core for the better part of an hour *while* prod
+served those requests - the host-load shape that killed earlier boots. The guard stayed silent
+through it, and the pool never refused.
+
+Context to read it against: the deaths on 2026-11-21 were at 53,717 and 64,507 tokens, and the
+largest prompt here is 100,291. That is not a proof for every future session, but it is the first
+time this configuration has carried a real agent past the sizes that used to end it.
