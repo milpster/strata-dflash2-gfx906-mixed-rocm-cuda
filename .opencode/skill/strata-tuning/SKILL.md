@@ -24,6 +24,18 @@ convenience, the rule wins. Numbers come from the engine's own lines, never from
   `PATH=/opt/rocm-6.1.0/bin cmake -S . -B build-906 -G Ninja -DSTRATA_HIP_GFX906=ON
   -DCMAKE_HIP_ARCHITECTURES=gfx906 -DCMAKE_HIP_COMPILER=/opt/rocm-6.1.0/llvm/bin/clang++
   -DCMAKE_PREFIX_PATH=/opt/rocm-6.1.0`.
+- **A fresh build directory needs four things `build-906` only has because it was configured
+  years ago** (all four cost a cycle if missed): `-DSTRATA_ENABLE_DFLASH2=ON
+  -DSTRATA_HAVE_DFLASH2=OFF` (without them the engine exits at startup with `dflash2: rebuild
+  with -DSTRATA_ENABLE_DFLASH2=ON`), `-DCMAKE_HIP_FLAGS="--gcc-install-dir=/usr/lib/gcc/x86_64-linux-gnu/14
+  -isystem /opt/rocm-6.1.0/include"` (the include is what stops the kernels from picking up
+  `/usr/include/hip`; the gcc pin is what stops ROCm's clang from auto-selecting gcc-16's
+  libstdc++ and failing on `__normal_iterator`), `-DCMAKE_C_COMPILER=gcc-14 -DCMAKE_CXX_COMPILER=g++-14`,
+  and `-DSTRATA_BUILD_TESTS=ON` if you want the pool tests (the pool test option is silently
+  ignored without it). Diff the new cache against `build-906/CMakeCache.txt` for `STRATA_` keys
+  before building, and check `ldd` under the runtime library path afterwards: `libhipblas.so.2`
+  and `libamdhip64.so.6` must land in `/opt/rocm-6.1.0/lib` and `librocblas.so.4` in
+  `/home/srcds/rocm-gfx906-xnack/lib`.
 - Runtime: `LD_LIBRARY_PATH=/home/srcds/rocm-gfx906-xnack/lib:/opt/rocm-6.1.0/lib`,
   `HSA_OVERRIDE_GFX_VERSION=9.0.6`. The real xnack tree is `/home/srcds/rocm-gfx906-xnack`.
 - Card names in the engine: `CUDA0` = Radeon VII #0 (layers 0-29), `CUDA1` = Radeon VII #1
