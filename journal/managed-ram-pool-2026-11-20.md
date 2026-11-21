@@ -1502,3 +1502,72 @@ the 30 GiB pool changes decode under a longer generation (both decode figures he
 75-77 s windows); how much of the 5.6 GiB of swap belongs to this box's other work; whether
 the 282.5/275.8 pair holds on a third boot; concurrency (every request serial); and the
 origin of the 76,189-token follow-up requests.
+
+## Row 6 — blocked before boot: the helper's expert container was deleted — 2026-11-21
+
+Row 6 was meant to be row 5 with one delta: helper reserve 0 and `STRATA_FILL_MIB=7400`, so that
+the 4,600-slot cap (`slots cap 4600`) is what stops the fill instead of `fill-mib`. It never
+booted. The helper refused its pack before the engine was started:
+
+    expert-helper: --reserve-mib 0 outside 64..4096, clamped to 64
+    expert-helper: --reserve-mib 64 MiB is below the recommended 256: the fill has little room to survive the card's other users
+    expert-helper: reply write deadlines overridden to 600000 ms (STRATA_HELPER_REPLY_TIMEOUT_MS)
+    expert-helper: pack: cannot open /mnt/srcds/ai/iq3xxs-15/../Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf
+    Helper exited
+
+`check-quiet.sh` was QUIET (exit 0) before the boot and QUIET (exit 0) after it; no socket was
+left, no port is listening, and nothing was rebuilt. No request was sent, so the window has no
+numbers and no row in the series table.
+
+### The missing file
+The launcher's helper defaults are `--pack /mnt/srcds/ai/iq3xxs-15 --experts
+../Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf`, and `iq3xxs-15/native_experts.txt` (v3,
+total 42,912,972,800 B) resolves its blob offsets in exactly that file, one directory up. Row 5's
+helper logged `pack /mnt/srcds/ai/iq3xxs-15, 48 layers x 512 experts` and filled 4,515 slots at
+01:13 today, so the file was readable then. `/mnt/srcds/ai` now carries an mtime of 01:37:12 and
+the file is on neither the root filesystem nor `/mnt`:
+
+| search | result |
+|---|---|
+| `find / -xdev -name 'Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS.gguf'` | nothing |
+| `find /mnt -xdev -type f -size +35G` | `PLE-Q8_0.gguf` 54.4 GB, `UD-...-00002-of-00004.gguf` 49.9 GB, `iq3xxs-ud/experts.bin` 50,294,988,800 B |
+
+### The substitute that would have been a second delta, and why it does not work
+The only complete expert container left is `iq3xxs-ud/experts.bin` (v4 layout, total
+50,292,326,400 B, gu/d types 22/20 against the -15 pack's 17/16, which are different
+quantizations of the same model, not the same bytes). Swapping the helper to it would already be
+a second delta, and it cannot reproduce the window's premise either. Summed from
+`native_experts.txt` in layer order:
+
+| pack | avg blob | total | slots a `fill-mib 7400` cap allows | 4,600 slots need |
+|---|---|---|---|---|
+| iq3xxs-15 (v3, row 5) | 1,746,133 B | 39.97 GiB | ~4,989 in layer order; 4,515 in the routing order the helper actually used | ~7,313 MiB (fits 7,400) |
+| iq3xxs-ud (v4) | 2,046,400 B | 46.84 GiB | ~3,936 in layer order | >= 8,977 MiB |
+
+8,977 MiB is more than the 3080's whole 7,842 MiB, so **`slots cap 4600` cannot bind with the UD
+expert bytes on this card at any reserve**. The slot-cap experiment needs the -15 container back,
+or a lower slot request (a different tuple).
+
+### Second finding: "reserve 0" is not 0
+The helper clamps `--reserve-mib` to its own range: `--reserve-mib 0 outside 64..4096, clamped to
+64`. A row measured with reserve 0 must therefore read "reserve 0 (clamped to 64)", and its
+budget is 7,842 - 64 = 7,778 MiB, not 7,842. This is harmless for the slot-cap premise (4,600
+slots at -15 blob sizes are ~7,313 MiB, under both 7,400 and 7,778), but it is not a silent
+detail.
+
+### Cross-pack note for rows 1-5 (static read, unconfirmed)
+Every row recorded so far ran the engine on the UD pack (`--pack /mnt/srcds/ai/iq3xxs-ud`,
+`--native Qwen3.8-Flash-Next-UD-IQ3_XXS-*.gguf`) while the helper was given the -15 pack. If the
+3080's MoE work is computed from the helper's own blob bytes, those rows mix two quantizations in
+one request. Nothing was measured to settle it; the two `native_experts.txt` files are the only
+evidence quoted here, and this note is a reading of them, not a result.
+
+### Evidence
+`bench/ab-v0210/rpcprof/out/managed-ram-pool-20261120/trial-window-pool30-h0/` (main tree):
+`boot-console.log` (launcher stdout: `Helper exited; see ...`), `boot-helper-refusal.log` (the
+four helper lines above), `status.txt`. Launcher/helper logs
+`logs/trial-managed-20261121-014119-2724648.log` and `-helper.log`.
+
+Next: operator decides between restoring the -15 container (42.9 GB; `/mnt` has 77 GB free) and
+re-running row 6 as specified, accepting a UD-bytes row that stops on `fill-mib`, or re-testing
+the slot cap at a slot request the 3080 can actually hold.
