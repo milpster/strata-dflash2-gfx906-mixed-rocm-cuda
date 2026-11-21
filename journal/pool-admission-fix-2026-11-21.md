@@ -85,6 +85,23 @@ requests in sequence, and a conversation cache that grows between them.
 The fix stays (it removes a defect and cannot be worse than the old path); the claim that it
 ends the prod deaths does not, until the multi-turn shape is reproduced on the old build.
 
+## What does reproduce it: concurrency
+
+`bench/ab-v0210/rpcprof/concurrent-stress.py` — one long request (78k target, 1,500 tokens
+wanted) with six short requests arriving 40 s later, both arms at margin 512, same boot
+identity, same libs:
+
+| Build | Long request | Six parallel | Engine |
+|---|---|---|---|
+| `d534e72a` (old) | `refilling a lent slot failed: No buffer space available` after 247.6 s | 1 × `the engine stopped unexpectedly (exit code 1)`, 5 × connection dropped | **exited, code 1** |
+| `96a04be9` (fix) | ok, 1,500 tokens, prompt 53,047, 268.6 s | all six answered (16-19 tokens each) | alive |
+
+So the ingredient the earlier shapes lacked is overlap: a second request in flight while the
+first is decoding. Both earlier single-request results (one cold 65k/2,200 and eight turns
+with parks) survived on the old build; only with concurrent traffic does the old build lose
+the card and take the engine down with it, and the fixed build under the same load answers
+everything. n=1 per arm at the time of writing; the repeat is recorded below.
+
 ## Two build traps that cost a cycle each
 
 - A fresh build directory needs `-DSTRATA_ENABLE_DFLASH2=ON -DSTRATA_HAVE_DFLASH2=OFF`; without
