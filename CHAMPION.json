@@ -5,9 +5,9 @@
   "prod_config": "prod-config-ud-iq3xxs-dflash-w4-q4_0-mixed.json",
   "measurement_config": "bench/ab-v0210/rpcprof/trial-managed-pool-38g-230k.json",
   "measurement_launcher": "bench/ab-v0210/rpcprof/launch-trial-managed.sh",
-  "engine_path": "run/trial-managed-bin/rpcw-hip/strata",
-  "engine_real_path": "build-906/strata",
-  "engine_sha256": "d534e72a7369fe5d14248a1b581e0ba645a359c073c951499aaeef91077b5fae",
+  "engine_path": "run/pool-admit-bin/rpcw-hip/strata",
+  "engine_real_path": "Strata-wt-helper-ipc/build-906-fixadmit/strata (copied, not a symlink)",
+  "engine_sha256": "a506e62008ba4bc4c767f2368c5ca6ace757567b1b186dee579a796c36ecf382",
   "helper_path": "run/trial-managed-bin/rpcw-cuda/strata-expert-helper-patient",
   "helper_sha256": "553f3bf48219c99298e4620547507eac7eefa29d660ee32e806bb9780a9ab361",
   "winner_pin_dir": "run/winner-pin-38g",
@@ -16,7 +16,7 @@
   "ram_budget_mib": 43008,
   "pool_bytes_expected": 40802189312,
   "vram_reserve_mib_measured": 256,
-  "vram_reserve_mib_prod": 320,
+  "vram_reserve_mib_prod": 640,
   "vram_reserve_later_mib": 192,
   "expert_helper_slots": 4600,
   "helper_reserve_mib": 0,
@@ -26,5 +26,8 @@
   "relief_arena_cap_mib": 4096,
   "kv_resident_mib": 4096,
   "max_context": 262144,
-  "rule": "no lane may boot an older build, pack or launcher; derive from the champion and state the delta"
+  "rule": "no lane may boot an older build, pack or launcher; derive from the champion and state the delta",
+  "engine_commit": "9358921670 (worktree helper-ipc-diet; lend/return contract for CPU pool loans)",
+  "engine_note": "the previous engine d534e72a (build-906/strata) is still the rollback pin in run/winner-pin-38g; promotion of this engine and of the margin below is the operator's decision, and this file records what is actually serving until then",
+  "vram_reserve_mib_note": "provisional: raised 384->640 on 2026-11-21 on the belief that 'refilling a lent slot failed: No buffer space available' was VRAM. It is ENOBUFS from the RAM pool, so no margin step was ever justified by it. 640 is what is serving and what two clean legs passed on; a measurement back down (512, 448) is queued for the operator"
 }
