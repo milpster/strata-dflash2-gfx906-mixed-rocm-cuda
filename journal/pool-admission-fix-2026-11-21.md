@@ -573,3 +573,82 @@ Harness notes: `ctx-threshold.sh` now honours `STRATA_ELOG` (`dcc0f61973`) becau
 lines to the console log, not the `engine-prod-ud-iq3xxs-v0233.log` slice it assumed. Editing a shell script
 while a copy of it is running makes bash resume at a stale byte offset — the leg's tail then reports a bogus
 syntax error (seen here); the leg's own result lines were already complete and are what the table above uses.
+
+## The merge is the cause, and the failure reproduces at 3k (evening window, 21 Nov 20:20 → )
+
+### What the bisect settled
+
+| binary | built | tree | 239,663-token leg |
+|---|---|---|---|
+| `d534e72a` | 20 Nov 23:47 | worktree, before the pool suite | **passes** |
+| `a506e620` | 21 Nov 08:18 | worktree, tip of the pool suite | **passes**: prompt read in 852 s (281 tok/s), `done: 4 tokens`, 0 non-finite |
+| `5a699be1` | 21 Nov 10:14 | merge `159e3097ef` | **fails**, 4 of 4 |
+
+The seven pool-admission commits are exonerated. The regression is in the merge.
+
+Correction to an earlier claim of this window: `run/bisect-db6d/` was populated from
+`/mnt/srcds/Strata-wt-merge-ipc/bin/strata`, which is the `#!/bin/sh` Strata Terminal launcher, not an engine —
+it exits with `cannot find strata.py next to …`. There is no fourth engine on disk. The bisect points are
+`d534e72a` and `a506e620` (pass) against `5a699be1` (fail).
+
+### The failure is not about 240k
+
+It reproduces **deterministically at a 3,058-token prompt** (3 of 3, 17 s of prefill), on a clean conversation
+cache. Every failure lands in the same place: the last window — `position N-5` in the prompt window and
+`position N-1` in the first decode window — at 3,058, 6,029, 60,153 and 239,663 tokens alike.
+
+### The engine's own instrumentation (`STRATA_DBG_NAN=1` at 3k, merge engine)
+
+```
+strata dbg: layer 30 (mmq 0, types 18/20, 75 experts): non-finite GU 6790726 H -1 Dm 16529553 bo 7815680 of T 3053
+```
+
+`bo` is `T × 2560` floats, so **every token's layer-30 MoE output is NaN**. Layer 30 is the first layer of the
+second GPU's stage (`layer split: CUDA0 runs 0-29, CUDA1 runs 30-47`). The branch engine at the same 3,058
+tokens reports 0 non-finite. So the data dies at the stage-2 entry, not in the experts and not in the helper.
+
+### Moving the split (decisive)
+
+| `--layer-split` | stage 2 | 3k leg |
+|---|---|---|
+| 29 | layers 29-47, 19 layers, 4165 slots | NaN at **layer 29** |
+| 30 (the auto choice) | layers 30-47, 18 layers, 4174 slots | NaN at **layer 30** |
+| 31 | layers 31-47, 17 layers, 4180 slots | **clean** |
+| 34 | layers 34-47, 14 layers, 4322 slots | **clean** |
+
+The NaN always sits at the first stage-2 layer, and it disappears once CUDA1 holds 17 layers or fewer.
+
+### Candidates tested and excluded
+
+All still NaN at 3k with split 30: `STRATA_GRAPH_FAMILY_TRIM=0`, `STRATA_GR_FAST=0`, `STRATA_QFUSE=0`,
+`STRATA_DFLASH_SAMPLED=0`. Excluded by reading: `STRATA_ROUTE_TAIL_SKIP` is suspended on this rig (a helper
+tier is registered) and would zero rows rather than produce non-finites; `STRATA_REGISTER_LAST` is inert under
+`--mmap-experts` (both boots print identical memory lines); `STRATA_GFX906_TOPK_FIT17/REG` are read by neither
+tree (dead config keys); the `expert_source.cpp` resolution keeps every guard (`where[key]`, admission, and the
+per-card budget — `++card_used` moved into `assign_locked`); `hc_bf16_view_pair` is inert on gfx906
+(`STRATA_HC_Q8` is off outside gfx12/gfx1151); `batch_rows_error` refuses hard instead of handing on garbage.
+
+### Two measurement traps found
+
+1. **The conversation cache outlives the boot.** `--conversation-cache-dir …/run/diet-prod-38g` persists, so a
+   leg can restore 3,053 tokens and take the 5-row incremental path, passing where a full read fails. The
+   harness now clears that directory before each boot.
+2. **`ctx-threshold.sh` classifies from `$STRATA_ELOG`.** Pointed at the console log it counts 0 non-finite lines
+   and prints "finite output produced" for a request that returned HTTP 503 (#879). Point it at the engine log
+   the config names.
+
+### Harness added
+
+`bench/ab-v0210/rpcprof/knob-leg.sh LABEL TARGET [MAXTOK] [KEY=VALUE …]`: one stop → boot → leg cycle; the
+config is generated into `bench/ab-v0210/rpcprof/gen/<LABEL>.json`, the running engine's sha is verified against
+the config before the leg fires, the conversation cache is cleared, and teardown goes through `stop-all.sh`.
+`EXE=` points at another `run/` directory, `ARGS=` appends engine arguments.
+
+### Mitigation and what is still open
+
+`--layer-split 31` instead of the auto 30 makes the 3k repro clean; a 239,663-token leg at split 31 is the open
+test. **Not yet explained:** why the first stage-2 layer's input is garbage only when CUDA1 holds 18 or more
+layers. Unexcluded candidates are the per-card expert slot/layer tables (`card_slots`/`layer_card`), the stage-2
+input buffer, and pool/helper row addressing for stage-2 layers. A build bisect of the merge is the remaining
+instrument: no intermediate merge builds exist because the conflict resolution was never committed separately.
+
