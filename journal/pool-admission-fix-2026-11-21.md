@@ -909,3 +909,29 @@ all clean (conv-1/2/3, 11,608 MiB tier, park-gain skip, disk-only snapshot).
 (0 from the router look-ahead), 0 not landed yet, 0 no free slot, 0 over budget`. The 240k prefill and short
 draft-verified decodes never trip the admit path (admit after 2 misses per window; the expert cache plus the
 helper cover the misses). Awaiting the same-reserve control before any speed verdict.
+
+### The A/B verdict: expert trail on vs off, reserves 600/600 both arms (01:00–01:18)
+
+`fson-rsv600` (`STRATA_FS_SLOTS=2,8`, clamp granted the full ask, CUDA1 548 MiB free after the 293 MiB allocation)
+against `fsoff-rsv600` (swap off, CUDA1 842 MiB free). Same engine `4b8251e9`, same window script, same 239,646-token
+prompt, caches cleared per arm. Both arms 0 non-finite, no stall, park/restore clean.
+
+| Metric | FS ON | FS OFF | Delta |
+|---|---|---|---|
+| Cold prefill | 824,150 ms = 290.8 tok/s | 829,759 ms = 288.8 tok/s | +0.7%, inside noise |
+| Cold decode (first pass) | 22.2 tok/s | 21.4 tok/s | +3.7%, small-N |
+| Restored turn, decode | 30.2 / 32.1 tok/s | 29.0 / 29.8 tok/s | +2–4%, small-N |
+| Second turn, client end-to-end | 41.6 s | 30.3 s | different completion lengths, not comparable |
+| Swap service | **0 experts, 0 copies, 0 look-ahead** | n/a | — |
+| Card1 free VRAM | 548 MiB | 842 MiB | the swap costs 293 MiB |
+
+**Verdict: the Foresight expert trail is a wash in this workload.** Speed differences are inside run-to-run noise
+(boot-to-boot fill-wall bimodality alone is larger, journal 2026-11-11 round 18ag), and the swap served zero experts
+in every pass of every arm — the expert cache plus the helper cover all misses before the admit path (2 misses per
+window) triggers. Its 293 MiB on card1 is pure cost. On this rig the swap has never been observed doing work:
+`0 served / 0 copies` in the 3k oracle legs, the 240k legs, and now both A/B arms.
+
+Recommendation (operator to decide): ship the clamp `564e1dbbea` and leave `STRATA_FS_SLOTS` at the champion's
+`2,8` — the clamp self-disables it at 256/192 where it cannot fit, and grants it where it can, so no config change
+is needed either way. A planner change that counts the FS allocation is only worth a window if a workload that
+actually trips the swap (multi-conversation churn with cold experts) is ever in scope; none is measured today.
