@@ -1023,3 +1023,23 @@ at tag `v0.2.18` (tip `6e38f588a6`, engine 0.1.64), both `engine/src/core/expert
 `llamacpp/swift-1.5-iq3_xxs` entry (prod :8009): 140-file port manifest, the two hand-merges, CMake wiring, fork
 dflash2 flag rename, then the gfx906 build — commits local and incremental, no boots, no GPU runs, nothing on :8009.
 Plan of record: docs/PLAN-UPSTREAM-0218.md (approved, f10c877634).
+
+## Port 0.2.18, Phases 1-2 done as far as this box allows (2026-11-22, fixer on the engine)
+
+Branch `port-0218` (worktree `Strata-wt-0218`), commits `5f2ed47aaf`, `d3392fa1a6`, `5a9a262c24`, `43ff7f30bd`,
+pushed to fork. Parent-verified: `PORT-MANIFEST.txt` = 140 lines exactly; the `564e1dbbea` clamp is in
+`engine/src/core/expert_source.cpp`; `build-906/strata` sha `36f8a503b79c19fc…`, `ldd` the AGENTS.md trio; tree
+clean. The fork's server behaviors were replayed onto upstream's split server (`server_parts/engines.py` carries the
+expert-helper config keys) — not a line-merge into the old single file. Serve tests: 94 passed / 6 failed, the same 6
+on clean upstream (no regression). DFlash2 flags: upstream's `STRATA_HAVE_DFLASH2` is now a real option (default ON,
+byte-identical default), the lane's `STRATA_ENABLE_DFLASH2` added (default OFF), both-on refused.
+
+Named gaps (all in `PORT-NOTES.md`):
+1. **`generate.cpp` + `prefill.cpp` keep upstream's version** — the fork's 55 pieces sit inside upstream's rewritten
+   decode dispatch loop and no merge could be shown correct by reading. Consequence: the engine cannot attach to the
+   helper (the two call sites are missing) and the fork's DFlash2 runtime cannot be switched on. The port is
+   engine-complete but not yet mixed-lane-functional.
+2. **The helper binary is not built**: the fork refuses the CUDA-only helper under `STRATA_HIP_GFX906` by design, and
+   a CUDA configure fails on this box (nvcc 13.1 vs glibc 2.43 `rsqrt` clash in `math_functions.h`) — a
+   box/toolkit problem, unconfirmed beyond the one-line repro.
+3. **DeepSeek V4.1 sources are in the tree but wired to no target** — decision needed: wire or leave the family out.
