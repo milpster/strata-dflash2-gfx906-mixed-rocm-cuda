@@ -372,6 +372,25 @@ sha256), never as a hash alone. The two earlier hashes of this session - `a37933
 Logs: `logs-port/lane-tests-run.log` (the lane pair, `PAIR=lane`) and the same path after the default
 run, with `logs-port/configure-lane-pair-2.log` and `logs-port/configure-default-2.log` beside them.
 
+### The default-pair engine after the guard trio (2026-11-22)
+
+Reconfigured with `tools-port/configure-906.sh` (the resting pair, `STRATA_ENABLE_DFLASH2=OFF` /
+`STRATA_HAVE_DFLASH2=ON`) and rebuilt at the branch tip, after the three gfx906 guard commits
+(`de422ee1f5` / `d63ff871f1` / `ef61c81bd8`) and the config/notes commits:
+
+| | |
+| --- | --- |
+| commit | `4fde0cf2b6` |
+| sha256 | `e6ce1720f4fb22a1228f608d961c9b4c0ad68911db1dddb055402cac92afab7b` (31528984 B, `ninja -C build-906 strata` exit 0) |
+| `ldd` (launcher's `LD_LIBRARY_PATH`) | `libhipblas.so.2` and `libamdhip64.so.6` -> `/opt/rocm-6.1.0/lib`, `librocblas.so.4` -> `/home/srcds/rocm-gfx906-xnack/lib`; nothing `not found` |
+
+A correction to the paragraph above it: the engine does not stamp the commit into the `strata` binary.
+The only git stamp is `STRATA_BUILD_ID` -> `DS4_BUILD_ID`, and it lands in `strata-dsv41` alone
+(`cmake/strata_gpu_engine.cmake:672`), a target a gfx906 configure never builds
+(`STRATA_BUILD_DSV41=OFF`). `build-906/strata --version` prints `strata 0.1.64` with no build id, and
+its strings carry no 9-hex commit. So a rebuilt sha256 moves for link-time reasons, not for a stamp;
+quoting a build as (commit, sha256) stays the habit either way.
+
 ### What is NOT verified
 
 **The merged decode loop has never run.** No boot, no prompt, no GPU work went into this - it is static
