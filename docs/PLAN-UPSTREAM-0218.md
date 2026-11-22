@@ -29,13 +29,11 @@ We want the engine, server and terminal code this box builds and serves to come 
 
 **Fork-only engine surface is bounded.** Mapping every fork `src/`+`include/` path into the new layout and comparing against `engine/src`+`engine/include` at `origin/main`: **124 files exist only in the fork**. The lane-critical ones: `core/expert_helper_{candidates,protocol,reserve,socket}` (+`expert_helper_fallback.cpp`) — the helper-IPC lane; `core/{ram_pool,pool_expert_store,pool_expert_cache,pool_expert_source_adapter}` — the pool suite; `dflash*` (`dflash.hpp`, `dflash_runtime.cpp`, `dflash_ring.hpp`, `dflash_tap_*`, `kernels/dflash_inco.*`, `spec/dflash_policy`) — the fork DFlash2 runtime; plus `dsv41/ds4_pool.hpp`.
 
-The full port surface is larger than that count: mapping `sycl/` and `serve/` too, the fork-only surface is
-**168 files** (44 beyond the 124, `metal/` 0 ahead). Phase 1 ports all 168; upstream's `engine/sycl/` and
-`terminal/serve/` files are NOT taken wholesale.
+The full port surface is larger than 124: mapping `sycl/`→`engine/sycl/` and `serve/`→`terminal/serve/` too, then `LC_ALL=C comm -23` of the mapped fork path list against `origin/main`'s `engine/src`+`engine/include`+`engine/sycl`+`terminal/serve` (measured 2026-11-22, re-run under two upstream scopes): **140 files exist only in the fork** — 124 + `sycl/` 6 + `serve/` 10; `metal/` 0 ahead. (An earlier review count of 168 included 28 `metal/` mapping artifacts: fork paths with zero fork commits behind them, orphaned by upstream's restructure of `engine/metal/`. §7 takes upstream's metal wholesale, so they are not port surface. Reconciled 2026-11-22: **140 is the port surface**.) Phase 1 ports every listed file; upstream's `engine/sycl/` and `terminal/serve/` files are NOT taken wholesale (decision: port, not replace; the risk is re-implementing a fork-only serve/sycl behavior — §6 covers the check).
 
-**Hard spots on shared files (two-dot content diffs).** `expert_source.cpp`: fork +1,556/−56 lines vs merge-base, upstream +594/−54; fork vs upstream tip differ by +1,571/−639 (`git diff origin/main:engine/src/core/expert_source.cpp HEAD:src/core/expert_source.cpp`) on a ~8,000-line file. `serve/server.py`: upstream rewrote it (−2,583/+1,296 since merge-base: `git diff 54828c7efb:serve/server.py origin/main:terminal/serve/server.py`); the fork changed it +217/−14. These two files must be hand-merged, not patch-applied.
+**Hard spots on shared files (two-dot content diffs).** `expert_source.cpp`: fork +1,556/−56 lines vs merge-base, upstream +594/−54; fork vs upstream tip differ by +1,606/−646 (`git diff --stat origin/main:engine/src/core/expert_source.cpp HEAD:src/core/expert_source.cpp`, reproduced twice 2026-11-22, raw +/- line counts agree; a review pass measured +1,571/−639 with `grep -c "^+[^+]"`, which undercounts empty added lines — reviewer method error, reconciled) on a ~8,000-line file. `serve/server.py`: upstream rewrote it (+1,324/−2,941 since merge-base: `git diff --stat 54828c7efb:serve/server.py origin/main:terminal/serve/server.py`, reproduced; a review pass measured +1,296/−2,583 with the same undercounting grep — reviewer method error, reconciled); the fork changed it +217/−14. These two files must be hand-merged, not patch-applied.
 
-**Fork-only behaviors re-confirmed at the upstream tip.** `git grep origin/main`: STRATA_FS_SLOTS is still parsed with `std::atoi` in `foresight_swap_from_env` (`engine/src/core/expert_source.cpp`; `expert_nibble.hpp:290` is only the env-lever help list, not the parse), `foresight_swap.hpp` has no `card_slots` (no per-card comma list — ours is "2,8"), and there is no VRAM clamp; the clamp from `564e1dbbea` lives in `src/core/expert_source.cpp` (+37/−3). Note: upstream 0.2.18 *does* ship its own `dflash2.*` runtime and a `STRATA_HAVE_DFLASH2` flag (`engine/cmake/strata_gpu_engine.cmake`) — the flag name collides with ours but gates upstream's runtime, not the fork's. Treat as a semantics-collision risk, not a win.
+**Fork-only behaviors re-confirmed at the upstream tip.** `git grep origin/main`: STRATA_FS_SLOTS is still parsed with `std::atoi` in `foresight_swap_from_env` — `getenv` at `engine/src/core/expert_source.cpp:7128`, `std::atoi` into one scalar `slots` for all cards at :7129 (`expert_nibble.hpp:290` is only the env-lever help list, not the parse); `foresight_swap.hpp` has no `card_slots` (no per-card comma list — ours is "2,8"), and there is no VRAM clamp; the clamp from `564e1dbbea` lives in `src/core/expert_source.cpp` (+37/−3). Note: upstream 0.2.18 *does* ship its own `dflash2.*` runtime and a `STRATA_HAVE_DFLASH2` flag (`engine/cmake/strata_gpu_engine.cmake`) — the flag name collides with ours but gates upstream's runtime, not the fork's. Treat as a semantics-collision risk, not a win.
 
 **What 0.2.18 actually changed.** 299 upstream commits touch `engine/src|include|sycl` since the merge-base. Sampling the HIP/MoE/expert/foresight keyword list: the wave is the Hy4-Flash family (`engine/src/hy4flash/` runner, RDNA2/3/4 WMMA on gfx103x/11xx/12xx, sm_120/121, Xe2, Metal). No gfx906-named change appeared in that sampled list. Upstream's `AdaptiveExpertCache` and CPU/SSD expert tiering are conceptually adjacent to our pool suite but are a different implementation (unconfirmed static analysis — no boot-level comparison run).
 
@@ -43,13 +41,13 @@ The full port surface is larger than that count: mapping `sycl/` and `serve/` to
 
 ## 4. Recommended strategy: (b) fresh upstream checkout + port the lane
 
-**Do (b): start from tag `v0.2.18` in a new worktree, port the 168 fork-only engine files (124 from `src/`+`include/`, 44 from `sycl/`+`serve/`) plus the hand-merged shared-file deltas and the deployment stack, build offline, prove with the existing harnesses, and arm — never rebase, never promote yourself.**
+**Do (b): start from tag `v0.2.18` in a new worktree, port the full fork-only engine surface (140 files measured — 124 from `src/`+`include/`, 6 from `sycl/`, 10 from `serve/`) plus the hand-merged shared-file deltas and the deployment stack, build offline, prove with the existing harnesses, and arm — never rebase, never promote yourself.**
 
 Why not (a) rebase onto `engine/src`: 6,608 commits including 736 merge commits would be rewritten, and 2,368 of 2,710 engine subjects duplicate upstream already — a rebase moves nothing and risks the whole tree for zero content gain.
 
 Why not (c) stay forked and cherry-pick: it keeps today's risk of upstream drift, and it never reaches the stated goal of 0.2.18. If the port fails validation twice, fall back to (c) as the contingency, not the plan.
 
-Why (b) is bounded and safe: the fork-only surface is 168 engine files (≈34 lane-critical) plus 2 hard files (`expert_source.cpp`, `server.py`), everything else is new code upstream-side that we inherit for free. The serving lane is untouched until the operator opens a window.
+Why (b) is bounded and safe: the fork-only surface is 140 engine files (measured; the review's 168 was 28 `metal/` mapping artifacts, reconciled — §3) with ≈34 lane-critical, plus 2 hard files (`expert_source.cpp`, `server.py`); everything else is new code upstream-side that we inherit for free. The serving lane is untouched until the operator opens a window.
 
 ## 5. Phases
 
@@ -63,7 +61,7 @@ Confirm the tree: `ls /mnt/srcds/Strata-wt-0218/engine/src/core/expert_source.cp
 Proves: tree identity only. Could break: nothing live.
 
 **Phase 1 — file-level port (source only).**
-Copy all 168 fork-only files (src+include+sycl+serve, mapped) to their new-layout paths. Then carry the fork's edits on shared engine files as a reviewable patch series:
+Copy all fork-only files that the §3 command lists (140 measured; the checklist is the command output, not a hand count) to their new-layout paths, including the 6 `sycl/` and 10 `serve/` files. Then carry the fork's edits on shared engine files as a reviewable patch series:
 ```
 git -C /mnt/srcds/Strata-wt-merge-ipc diff 54828c7efb..HEAD -- \
   src/core/foresight_swap.hpp include/strata/core/foresight_swap.hpp \
@@ -77,10 +75,11 @@ Proves: none yet; Phase 2/3 gate it. Could break: silent loss of a shared-file h
 ```
 PATH=/opt/rocm-6.1.0/bin:$PATH cmake -S . -B build-906 -G Ninja -DSTRATA_HIP_GFX906=ON \
   -DCMAKE_HIP_ARCHITECTURES=gfx906 -DCMAKE_HIP_COMPILER=/opt/rocm-6.1.0/llvm/bin/clang++ \
-  -DCMAKE_PREFIX_PATH=/opt/rocm-6.1.0 -DSTRATA_ENABLE_DFLASH2=ON -DSTRATA_HAVE_DFLASH2=OFF
+  -DCMAKE_PREFIX_PATH=/opt/rocm-6.1.0 -DSTRATA_ENABLE_DFLASH2=ON -DSTRATA_HAVE_DFLASH2=OFF \
+  -DSTRATA_HAVE_FORK_DFLASH2=ON
 ninja -C build-906 rpcw-hip rpcw-cuda
 ```
-(AGENTS.md recipe; never `/opt/rocm`. `STRATA_HAVE_DFLASH2` now gates upstream's own dflash2 runtime and stays OFF; after the Phase 1 rename the fork runtime answers to `-DSTRATA_HAVE_FORK_DFLASH2=ON`, which the port's build adds to this line.) Verify the expected `ldd`: `libhipblas.so.2`, `libamdhip64.so.6` → `/opt/rocm-6.1.0/lib`; `librocblas.so.4` → `/home/srcds/rocm-gfx906-xnack/lib`. Record sha256 of both binaries (same practice as `run/fsclamp-bin/SHA256SUMS`).
+(AGENTS.md recipe; never `/opt/rocm`. `STRATA_HAVE_DFLASH2=OFF` keeps upstream's own dflash2 runtime gated off; after the Phase 1 rename the fork runtime answers to `-DSTRATA_HAVE_FORK_DFLASH2=ON`, already on the line above.) Verify the expected `ldd`: `libhipblas.so.2`, `libamdhip64.so.6` → `/opt/rocm-6.1.0/lib`; `librocblas.so.4` → `/home/srcds/rocm-gfx906-xnack/lib`. Record sha256 of both binaries (same practice as `run/fsclamp-bin/SHA256SUMS`).
 Could break: upstream CMake drift changing link assumptions; flag collision mis-gating the drafter build.
 
 **Phase 3 — CPU/parity tests (no GPU, no boot).**
@@ -108,16 +107,16 @@ Journal entry per the repo convention; update `docs/` style per CONTRIBUTING (pl
 | Feature | Where it can die | Check that proves it survived |
 |---|---|---|
 | FS per-card slots ("2,8") + VRAM clamp `564e1dbbea` | upstream `foresight_swap.hpp` has no `card_slots`; `atoi` parse would silently flatten it to one count | grep for `card_slots` in port tree (must exist); trial boot line showing per-card slots; tight-VRAM leg showing the clamp elog; `knob-leg.sh` tps parity |
-| Helper-IPC lane (49 subjects, 7 files) | dropped CMake wiring; protocol drift vs helper `9d16742d`; second socket flag lost | boot line shows helper attach + `--socket2`; `test_gpu_roles`-style check; launcher's socket-pair assertion at boot |
+| Helper-IPC lane (49 subjects — `git log --format=%s origin/main..HEAD -- src include sycl \| grep -ci helper`, 2026-11-22; 7 files: `expert_helper_{candidates,protocol,reserve,socket}` + `expert_helper_fallback.cpp`) | dropped CMake wiring; protocol drift vs helper `9d16742d`; second socket flag lost | boot line shows helper attach + `--socket2`; `test_gpu_roles`-style check; launcher's socket-pair assertion at boot |
 | Pool-admission suite (90 subjects, shared-file hunks in `conversation_*`, `expert_cache`, `mtp`, `read_once`, `session_save_reclaim`) | the biggest hunk-loss risk — edits sit on upstream-rewritten files | `park-restore-window.sh` pass + admission unit targets; oracle verdict unchanged |
 | Fork DFlash2 runtime (135 subjects; upstream has a *different* dflash2 + same flag name) | flag-gates upstream's runtime instead of ours → wrong drafter, silent | drafter GGUF load line (`inco-dflash2-q4_0.gguf`), `dflash2_parity` CPU test, 240k leg reply hash parity |
-| Prod server behaviors (+217 lines on a file upstream rewrote, −2,583/+1,296 since merge-base: `git diff 54828c7efb:serve/server.py origin/main:terminal/serve/server.py`) | patch will not apply; hand-re-implementation can miss a line | line-by-line review of the old fork diff vs the new server; launcher socket/refuse guards pass on trial boot |
+| Prod server behaviors (+217 lines on a file upstream rewrote: +1,324/−2,941 since merge-base, `git diff --stat 54828c7efb:serve/server.py origin/main:terminal/serve/server.py`, reproduced 2026-11-22) | patch will not apply; hand-re-implementation can miss a line | line-by-line review of the old fork diff vs the new server; launcher socket/refuse guards pass on trial boot |
 | gfx906 link recipe | upstream CMake drift links `/opt/rocm` by default | `ldd` equals the AGENTS.md expected trio; soname check fails the build in CI-less flow — do it by hand |
 | Deployment scripts on old layout | hardcoded `src/`/`serve/` paths | grep `bench/`, `launch-*.sh`, `stop-*.sh` for old top-level paths before Phase 4 |
 
 ## 7. Explicitly NOT carried over
 
-- No history: the 6,608 fork commits (736 merges) are not rebased, cherry-picked wholesale, or grafted. Their content moves as the 168 files + hand-merged hunks.
+- No history: the 6,608 fork commits (736 merges) are not rebased, cherry-picked wholesale, or grafted. Their content moves as the 140 fork-only files (§3) + hand-merged hunks.
 - The 2,368 upstream-duplicate engine subjects — upstream 0.2.18 already contains that work.
 - Fork top-level legacy: `README-upstream.*`, root `CMakeLists.txt`, old `apps/` naming, `bench.sh`, `JOURNAL.md` top level — not moved into the `engine/`/`terminal/` layout except journals/bench records, which stay in the fork tree as records.
 - The Hy4-Flash family (`engine/src/hy4flash/`) — inherited by the tree but not enabled, tested, or served; irrelevant to this deployment's models.
@@ -143,3 +142,20 @@ session could not land the edits (two revision turns returned without file chang
 twelve exact pairs and verified each. Every load-bearing fact was independently reproduced by the reviewer,
 including the 2,368-of-2,710 subject overlap, the 124-file scoped count, the FS parse behavior at the upstream tip,
 the dflash2 flag collision, and the launcher's server path.
+
+Pass 2 (the plan's author, 2026-11-22, commands re-run in `/mnt/srcds/Strata-wt-merge-ipc`): defects 2–5 fixed and
+Phase 1/2 made consistent (fork flag `-DSTRATA_HAVE_FORK_DFLASH2=ON` in the build line; `STRATA_HAVE_DFLASH2=OFF`
+gates upstream's runtime). Three pass-1 numbers did NOT reproduce on this tree and are now written with their exact
+commands and both values: fork-only surface with `sycl/`+`serve/` mapped = **140** (124+6+10); `expert_source.cpp`
+fork-vs-tip = **+1,606/−646** (review: +1,571/−639); `server.py` upstream rewrite = **+1,324/−2,941** (review:
++1,296/−2,583).
+
+Reconciliation (the reviewer, 2026-11-22, same worktree, same day): **the author's three numbers stand.** The
+review's 168 was its own mapping artifact — it counted 28 `metal/` files whose fork paths have zero fork commits
+behind them (fork `metal/` is the merge-base content; upstream restructured `engine/metal/`), and §7 already takes
+upstream's metal wholesale, so 140 is the port surface. The review's diff counts used `grep -c "^+[^+]"`, which
+undercounts empty added lines and lines starting with `+`; `git diff --stat` (1,606/−646 and +1,324/−2,941) is
+authoritative. The author's suspicion that the review ran from another tree was wrong — both sessions ran in
+`/mnt/srcds/Strata-wt-merge-ipc`; the discrepancies were method, not tree. The FS citation at
+`engine/src/core/expert_source.cpp:7128-7129` was confirmed at the upstream tip. All three numbers are now
+reconciled in the body; nothing is left open from the review.
