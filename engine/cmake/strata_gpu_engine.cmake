@@ -508,7 +508,14 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_link_libraries(conversation_validation_test PRIVATE strata_engine)
     add_test(NAME conversation_validation_test COMMAND conversation_validation_test)
     set_tests_properties(conversation_validation_test PROPERTIES ENVIRONMENT "CUDA_VISIBLE_DEVICES=-1" TIMEOUT 120)
-    if(NOT STRATA_ENABLE_HIP AND UNIX AND NOT APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    # TEMPORARY LOCAL GUARD (this port, 2026-11-22) for an upstream defect: upstream gates this
+    # CUDA-only test on NOT STRATA_ENABLE_HIP, and a gfx906 configure forces STRATA_ENABLE_CUDA ON
+    # while STRATA_ENABLE_HIP stays OFF (CMakeLists.txt:98-103), so the old test admitted it and it
+    # died on cudaErrorInvalidValue / cudaErrorUnknown. Gate on the real CUDA backend instead
+    # (`NOT STRATA_HIP_GFX906` is the gate upstream itself uses for the same reason at
+    # cmake/backends/cuda.cmake:231).
+    # REMOVE when upstream gates this on the backend that actually owns cudaMemcpy.
+    if(STRATA_ENABLE_CUDA AND NOT STRATA_HIP_GFX906 AND UNIX AND NOT APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
       add_executable(conversation_transfer_test src/core/conversation_validation_test.cpp)
       target_compile_definitions(conversation_transfer_test PRIVATE CONVERSATION_TEST_TRANSFERS)
       target_link_options(conversation_transfer_test PRIVATE
