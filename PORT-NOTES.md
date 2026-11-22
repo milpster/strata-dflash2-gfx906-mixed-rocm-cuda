@@ -385,17 +385,17 @@ Reconfigured with `tools-port/configure-906.sh` (the resting pair, `STRATA_ENABL
 | `ldd` (launcher's `LD_LIBRARY_PATH`) | `libhipblas.so.2` and `libamdhip64.so.6` -> `/opt/rocm-6.1.0/lib`, `librocblas.so.4` -> `/home/srcds/rocm-gfx906-xnack/lib`; nothing `not found` |
 | lane suite after the guards | default pair **43/43 passed, 0 failed** (2 honest device skips); `PAIR=lane` **47/47 passed, 0 failed** (5 honest device skips) - `logs-port/lane-suite-default-3.log`, `logs-port/lane-suite-lane-3.log` |
 
-A correction to the paragraph above it: the `strata` binary DOES carry a configure-time git stamp -
-
-through the vendored ggml: `engine/third_party/strata-ggml/ggml/CMakeLists.txt` runs
+A correction to the paragraph above it: the `strata` binary DOES carry a configure-time git stamp - through the vendored ggml: `engine/third_party/strata-ggml/ggml/CMakeLists.txt` runs
 `git rev-parse --short HEAD` (this repo abbreviates to 10 hex) and writes it into
 `build-906/ggml/src/ggml-version.h` as `GGML_COMMIT`, compiled into `ggml.c` (verified in
 `build-906/strata` at file offset 380498; oracle review 2026-11-22). The `DS4_BUILD_ID` stamp is separate
 and lands in `strata-dsv41` alone (never built on gfx906). `--version` prints `strata 0.1.64`.
 
-The two shas recorded above differ for that reason, not link nondeterminism: the mid-sequence build was
-configured 16 s after commit `3e83be2b71` (stamp `3e83be2b71` in its ggml-version.h), the resting relink
-kept the same stamp (file content-identical, not rewritten). Engine SOURCE is identical across
+The two shas recorded above differ for that reason, not link nondeterminism: the mid-sequence build
+(sha `e6ce1720f4`, recorded in `3e83be2b71`'s own tree, 23:12:18) was configured at HEAD `4fde0cf2b6`
+(stamp `4fde0cf2b6`); the resting binary's configure ran 16 s after commit `3e83be2b71`
+(`ggml-version.h` 23:12:34, stamp `3e83be2b71`), and the 23:15:44 restore kept it (content-identical,
+not rewritten). Engine SOURCE is identical across
 `4fde0cf2b6`/`3e83be2b71`/`e0d35839f6` (only this file differs), so (commit, sha) provenance stands - but
 the diagnostic for any future same-source-different-sha question is the `GGML_COMMIT` string: read it
 before blaming the linker. Configure-time commit of the resting binary: `3e83be2b71`.
