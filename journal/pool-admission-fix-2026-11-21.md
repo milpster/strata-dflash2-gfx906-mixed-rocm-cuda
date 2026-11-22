@@ -935,3 +935,20 @@ Recommendation (operator to decide): ship the clamp `564e1dbbea` and leave `STRA
 `2,8` — the clamp self-disables it at 256/192 where it cannot fit, and grants it where it can, so no config change
 is needed either way. A planner change that counts the FS allocation is only worth a window if a workload that
 actually trips the swap (multi-conversation churn with cold experts) is ever in scope; none is measured today.
+
+## Operator order 2026-11-22: the Foresight swap stays always on (quality first)
+
+After the A/B wash the operator chose to keep the expert trail on as a quality safeguard rather than treat its
+293 MiB as waste. The armed tuple is the measured `fson-rsv600` leg, promoted to the prod defaults:
+
+| Part | Value |
+|---|---|
+| Engine | `run/fsclamp-bin/rpcw-hip/strata` = `4b8251e9e06334a8` (clamp `564e1dbbea`) |
+| Helper | `run/fsclamp-bin/rpcw-cuda/strata-expert-helper-patient` = `9d16742d` (unchanged) |
+| Config | `prod-config-ud-iq3xxs-dflash-w4-q4_0-mixed-fson.json` — reserves **600/600**, `STRATA_FS_SLOTS=2,8` |
+| Launcher | default `STRATA_PROD_BIN` → `run/fsclamp-bin`, default `STRATA_PROD_CONFIG` → the `-fson` config |
+
+Why the reserves moved: at 256/192 the clamp correctly refuses the swap (434 MiB free < 512 low line + 293 MiB);
+600/600 leaves CUDA1 at 548 MiB free after the full allocation, so the swap is *always granted*, and the clamp
+remains the safety valve for any future tighter load. Cost measured: none outside noise (prefill 290.8 vs 288.8
+tok/s, decode in noise, 240k + park/restore + 1k-decode all clean, 0 non-finite).

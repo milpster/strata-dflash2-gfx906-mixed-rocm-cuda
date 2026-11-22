@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Foreground mixed HIP/CUDA supervisor. Detach with setsid nohup when needed.
-# Uses the tested window helper and the opt-in prompt tier.
+# 2026-11-22: always-on Foresight swap (operator order, quality first): clamped engine
+# 4b8251e9 in run/fsclamp-bin, reserves 600/600 so the clamp grants the full 2,8 ask
+# (CUDA1 548 MiB free after the 293 MiB allocation; measured end-to-end at 240k in the
+# fson-rsv600 window, 0 non-finite). Default BIN and CONFIG moved to the -fson tuple.
 # TUNED config (ab2-r1 PASS verdict 2026-10-31: long decode +7.7%, xl +6.5%, prompt tier live):
 # rpcw candidate engine+helper, helper second channel (--socket2), prompt tier on
 # (STRATA_PREFILL_HELPER=1 via the config env), occupancy pinned (slots4c sweep
@@ -30,10 +33,10 @@ WORK="$ROOT/v0215"
 # -> 38 GiB pool + 4 GiB outside area, CUDA0 VRAM margin 256 (one +64 step after the
 # 40 GiB run exhausted the card at 7 MiB free), CUDA1 192, helper reserve 0 (the component
 # clamps it to 64), fill 7400 MiB, relief hot 2048 / arena cap 4096.
-BIN=${STRATA_PROD_BIN:-"$ROOT/run/pool-admit-bin"}
+BIN=${STRATA_PROD_BIN:-"$ROOT/run/fsclamp-bin"}
 export STRATA_RAM_BUDGET_MIB=${STRATA_RAM_BUDGET_MIB:-43008}
 PY="$ROOT/.venv/bin/python"
-CONFIG=${STRATA_PROD_CONFIG:-"$ROOT/prod-config-ud-iq3xxs-dflash-w4-q4_0-mixed.json"}
+CONFIG=${STRATA_PROD_CONFIG:-"$ROOT/prod-config-ud-iq3xxs-dflash-w4-q4_0-mixed-fson.json"}
 SOCKET="$ROOT/run/prod-iq3xxs-ud-mixed.sock"
 SOCKET2="$ROOT/run/prod-iq3xxs-ud-mixed2.sock"
 HELPER="$BIN/rpcw-cuda/strata-expert-helper-patient"
