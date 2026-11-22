@@ -222,12 +222,13 @@ Run:
 * `ldd build-906/strata` with `LD_LIBRARY_PATH=/home/srcds/rocm-gfx906-xnack/lib:/opt/rocm-6.1.0/lib`:
   `libhipblas.so.2` and `libamdhip64.so.6` from `/opt/rocm-6.1.0/lib`, `librocblas.so.4` from
   `/home/srcds/rocm-gfx906-xnack/lib` - what `AGENTS.md` says a correct gfx906 link looks like.
-* The lane's own tests (`logs-port/lane-tests-build-3.log`, `logs-port/lane-tests-run-3.log`,
+* The lane's own tests - reproduce with `sh tools-port/lane-tests.sh build-906` (it configures the two
+  opt-ins, builds the lane's programs with `-k 0`, and runs them under `HIP_VISIBLE_DEVICES=-1`). Recorded
+  run (`logs-port/lane-tests-build-3.log`, `logs-port/lane-tests-run-3.log`,
   `logs-port/lane-tests-fail-1.log`; `logs-port/` is gitignored by upstream's `*.log` rule, so these are
-  on this box, not in the branch). Configure as for the engine, plus the two opt-ins ON
-  (`-DSTRATA_BUILD_RAM_POOL_TEST=ON -DSTRATA_BUILD_CONVERSATION_TESTS=ON`), and every program run under
-  `HIP_VISIBLE_DEVICES=-1 CUDA_VISIBLE_DEVICES=-1` so nothing can touch the cards the serving engine
-  holds: **43 test cases - 39 passed, 2 skipped by the test itself for want of a device, 2 failed.** The
+  on this box, not in the branch). Nothing in the run may touch the cards the serving engine holds, so
+  every program runs with both `HIP_VISIBLE_DEVICES=-1` and `CUDA_VISIBLE_DEVICES=-1` set. The result:
+  **43 test cases - 39 passed, 2 skipped by the test itself for want of a device, 2 failed.** The
   two failures are the static text contracts on `src/program/generate.cpp`, the un-carried file (item 1);
   nothing failed that indicates a wrong algorithm or a bad merge.
 
