@@ -1178,3 +1178,13 @@ honest (not run). Six unverifiable claims from the old README dropped (incl. the
 record). Oracle (GLM 5.3, iterative): 36 numbers spot-checked, one minor defect (stale OS row: 25.04 -> 26.04.1,
 kernel 7.3.4-x64v3) found and fixed; RAM cell updated for today's 40960 budget raise. Verdict APPROVED.
 Committed d82b14c9a6 and pushed.
+
+## Engine generation died on the #267 wedge; supervisor respawned (2026-11-22 ~22:05)
+
+The 21:36 boot's engine self-stopped (exit -15) on "Unrecoverable native verification failure:
+verify: timed out at layer 37; its GPU waits were released and the GPU finished (#267)" — the known transient
+gfx906 verify-wait wedge (README defect table; also seen on old stock). It fired mid-fixer-turn (28,468-token
+request at 2,507 tokens, speed decaying 8.1 -> 7.1 tok/s). Not OOM (kernel log clean), not host RAM, not the
+ssh/gcr churn. The pair supervisor respawned as designed; health ok and probe finish=stop "probe-ok" verified on
+the new generation (22:05 log, 288 MiB card0 free). New datapoint for the #267 rate: first occurrence today after
+many long fixer turns (old note: ~1 in 20 long drives).
