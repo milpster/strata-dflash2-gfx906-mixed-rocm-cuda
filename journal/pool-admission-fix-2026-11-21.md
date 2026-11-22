@@ -1161,3 +1161,11 @@ use `TESTS=ON` exactly as build-906/build-lane do. Parent-verified: sha `58c3ae0
 (RUNPATH pinned to cuda-13.1, not the alternatives symlink), `--help` exit 0 device-free, `build-906/strata`
 untouched (`17f64305…`), prod :8009 healthy throughout. Commit `8dd40c9a98`, pushed.
 Compiled ≠ run: start, fill-under-reserve, and sm_86 execution are unproven until a :8019-class window.
+
+## Prod restart with +4 GiB RAM (2026-11-22, operator order, post host-restart)
+
+The host restarted (both lanes cancelled; a stale 2026-11-20 ram-pool lane also revived with a dead shell tool —
+its code work sits in Strata-wt-helper-ipc, unverified). Prod was down. Operator order: restart prod with 4 GiB
+more RAM. STRATA_RAM_BUDGET_MIB 36864 -> 40960 (36 -> 40 GiB; box has 62 GiB, 48 available pre-boot). First boot
+refused on stale sockets (supervisor: "Refusing existing socket path") - cleared after verifying no live binder;
+stop-prod.sh needs bash, not sh (noted for the fix list). Boot: health ok at ~70 s, probe finish=stop "probe-ok".
