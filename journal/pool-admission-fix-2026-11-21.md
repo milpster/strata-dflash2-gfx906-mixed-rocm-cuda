@@ -1106,3 +1106,15 @@ When the ported 0.2.18 engine is tested (trial legs on :8019 and later windows),
 the `STRATA_ROUTE_TAIL_SKIP=7` key** that the current prod `-fson` config carries: 0.2.18 defaults the route
 tail skip to OFF on every backend (owner decision upstream 2026-11-19, engine 0.1.63), and our operator keeps
 quality-first, no tail routing skipped. The key must not ride along in a generated config as a stale override.
+
+## The decode loop is merged (2026-11-22, fixer lane on the engine, parent-verified)
+
+`generate.cpp` + `prefill.cpp` merged by real 3-way (`git merge-file --diff3`, base `54828c7efb`): 41 + 16
+conflicts resolved. The naive `patch(1)` result was **discarded** after it silently deleted upstream's BSlot
+members, 5 includes, the park-pool block, the SSD tier and `STRATA_FOLLOW` — the method finding of the window.
+Parent-verified: 4 commits (`10009d3eaf`..`03600590fb`), tree clean, both DFlash2 pairs compile and link, lane
+suite **47/47 (100%, 5 device skips)**, default pair 43/43, the 28 static checks green
+(`expert_helper_candidates_test` + `dflash_refusal_test` Passed), default-pair `strata` sha `17f643054bf42e…`
+(31,528,984 B; a strata hash is not a content hash — quote (commit, sha)). Upstream's SSD tier and the lane's
+DISK tier coexist; runtime correctness UNVERIFIED without a boot — the :8019 compare is the only proof.
+Branch pushed. Helper CUDA build dispatched next (toolkit fixed this morning).
