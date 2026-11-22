@@ -1356,11 +1356,18 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   add_test(NAME route_prior_parity COMMAND route_prior_parity)
   set_tests_properties(route_prior_parity PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
   # the gated combine (STRATA_LFUSE) rounds the shared expert row's product on its own, bitwise the scale-rows-then-add path (#5100; GPU, synthetic, no model)
-  add_executable(native_moe_gated_test tests/cuda/native_moe_gated_test.cu)
-  target_include_directories(native_moe_gated_test PRIVATE ${_strata_gpu_include_directories})
-  target_link_libraries(native_moe_gated_test PRIVATE strata_kernels ${_strata_gpu_runtime_target})
-  add_test(NAME native_moe_gated_test COMMAND native_moe_gated_test)
-  set_tests_properties(native_moe_gated_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+  # TEMPORARY LOCAL GUARD (this port, 2026-11-22) for an upstream defect: the gfx906 configure
+  # compiles every src/*.cu as HIP, but it gives no compile rule to a source under tests/cuda/, so
+  # this target would link strata_kernels with no object of its own and die on "undefined symbol:
+  # main" (reproduced on the untouched v0.2.18 tag). Excluded here, not skipped at run time.
+  # REMOVE when upstream teaches the gfx906 configure to compile a tests/cuda/ source.
+  if(NOT STRATA_HIP_GFX906)
+    add_executable(native_moe_gated_test tests/cuda/native_moe_gated_test.cu)
+    target_include_directories(native_moe_gated_test PRIVATE ${_strata_gpu_include_directories})
+    target_link_libraries(native_moe_gated_test PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+    add_test(NAME native_moe_gated_test COMMAND native_moe_gated_test)
+    set_tests_properties(native_moe_gated_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+  endif()
 
   add_executable(router_top10_parity src/kernels/router_top10_parity.cpp)
   target_include_directories(router_top10_parity PRIVATE ${_strata_gpu_include_directories})
