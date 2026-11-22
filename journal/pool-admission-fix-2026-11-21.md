@@ -1229,3 +1229,16 @@ ALREADY COMMITTED in the era's own commits (managed pool lend/return, helper res
 suite verified by the parent: ctest 3/3 passed (ram_pool, real_mock, nonlinux probe) and ram_pool_nonlinux_probe
 11/11 checks, exit 0. Nothing was lost; "edits may have been lost" was a zombie misread. Both zombie sessions
 cancelled (retained, not resumed). Oracle review of that era's commits remains open, low priority.
+
+## The 0.2.18 port's static work is COMPLETE and oracle-approved (2026-11-22, 23:5x)
+
+The loose-end pass (fixer on surplus GLM 5.3, remote - off the ailing engine) closed the last static items:
+configs-port/trial-8019-spill-off.json (champion base, spill 0, port 8019, fork worktrees de-referenced,
+key-reach 9/9 verified via serve.engine_args), PORT-NOTES strikes with journal pointers, resting engine
+rebuild (sha 572284db, ldd trio correct), suites 43/43 and 47/47. Oracle review: 3 rounds, 2 substantive
+defects caught and fixed (both docs-only): (1) strata DOES embed the configure-time GGML_COMMIT stamp via
+vendored ggml - the lane's no-stamp claim was wrong and its 9-hex search missed the 10-hex abbreviation;
+(2) the sha-movement timeline was inverted; corrected to: mid-sequence configured at 4fde0cf2b6, resting
+at 3e83be2b71. Verdict APPROVED at 6c4621e522. Nine port commits unpushed (SSH cooldown holds them).
+Static phase closed; what remains is runtime: the :8009 validation window (bars pending operator) and the
+host-RAM squeeze question (5.2 GiB java at 153% CPU) that kills 52k-token prompts.
