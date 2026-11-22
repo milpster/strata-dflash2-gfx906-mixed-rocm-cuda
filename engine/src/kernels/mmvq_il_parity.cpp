@@ -106,6 +106,9 @@ struct Case {
 };
 // the engine's dense shapes: qkv 10240 / gate 6144 / out 2560 (GDN), q 12288 / k,v 512 / o 2560 (QSA), the head
 const Case CASES[] = {
+    {"Q8_0 head 2560x248320", 8, 2560, 248320, 32, 34, {0, -1}},
+    {"Q8_0 2560x12288", 8, 2560, 12288, 32, 34, {0, -1}},
+    {"Q8_0 odd rows 2560x2051", 8, 2560, 2051, 32, 34, {0, -1}},
     {"IQ4_XS 2560x10240", 23, 2560, 10240, 256, 136, {0, -1}},
     {"IQ4_XS 2560x6144", 23, 2560, 6144, 256, 136, {0, -1}},
     {"IQ4_XS 6144x2560", 23, 6144, 2560, 256, 136, {0, -1}},
@@ -404,6 +407,17 @@ int check_tables() {
     const char* e89 = std::getenv("STRATA_MMVQ_IL_89");
     // sm_89's own tables are ON by default (#3453, 0.2.7) unless STRATA_MMVQ_IL_89=0 or STRATA_DEFAULTS=026
     const bool opt89 = strata::mmvq_il_89_resolve(e89, false, 89, strata::qwen_defaults_026());
+
+    const char* q8_env = std::getenv("STRATA_MMVQ_IL_Q8_HEAD");
+    const bool q8_head = q8_env && q8_env[0] == '1';
+    for (int nc = 1; nc <= 8; ++nc) {
+        if (native_mmvq_il_rows_for(89, 8, nc, 248320) != (q8_head && nc >= 3 ? 2 : 0) ||
+            native_mmvq_il_rows_for(89, 8, nc, 12288) != 0 ||
+            native_mmvq_il_rows_for(86, 8, nc, 248320) != 0) {
+            ++bad;
+            std::printf("FAIL Q8_0 head opt-in/shape/architecture guard at %d columns\n", nc);
+        }
+    }
     for (int type : {23, 12, 13, 14, 11})
         for (int nc = 2; nc <= 4; ++nc)
             for (int n_out : {512, 2560, 6144, 10240, 12288, 248320}) {

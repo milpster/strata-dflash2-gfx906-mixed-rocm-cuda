@@ -1,3 +1,6 @@
+#ifdef STRATA_ENABLE_DFLASH2
+#include "strata/kernels/dflash_inco.hpp"
+#endif
 // src/core/verify.cpp - see include/strata/core/verify.hpp.
 // HostGraphLaunch (the graph launched by the calling thread, or by a helper thread so this one can serve the doorbells): CUDA builds,
 // and the Windows HIP build (STRATA_VERIFY_ASYNC_LAUNCH=1 launches from a helper thread; STRATA_LAUNCH_PROBE=1 logs the launch timing).
@@ -15,6 +18,7 @@
 #include "strata/core/window_evict.hpp"
 #include "strata/core/expert_nibble.hpp"
 #include "strata/core/pin_budget.hpp"
+#include "strata/core/vram_guard.hpp"
 #if defined(STRATA_VERIFY_HGL)
 #include "strata/core/host_graph_launch.hpp"
 #endif
@@ -625,18 +629,20 @@ std::string released_note(bool drained) {
     return drained ? "; its GPU waits were released and the GPU finished (#267)"
                    : "; its GPU waits were released but the GPU did not finish within 5 s (#267)";
 }
+constexpr auto kGpuProgressTimeout = std::chrono::seconds(40);
+constexpr double kGpuProgressTimeoutMs = std::chrono::duration<double, std::milli>(kGpuProgressTimeout).count();
 // #267 test hook: STRATA_TEST_VERIFY_STALL=N withholds the last layer's flag in the N-th window (1-based), so the
 // GPU spins on a flag nobody raises - the bounded window wait and the release are then what ends it.  Unset: never.
 const int64_t g_test_stall = [] {
     const char* e = std::getenv("STRATA_TEST_VERIFY_STALL");
     return e != nullptr ? (int64_t) std::atoll(e) : (int64_t) 0;
 }();
-// The overlapped split's hand-off wait on the GPU is bounded: STRATA_SPLIT_WAIT_MS (default 30000, 0 = no bound).
-// The host's own per-layer wait (20 s, #267) normally ends a stalled window first; this bound is the backstop for
+// The overlapped split's hand-off wait on the GPU is bounded: STRATA_SPLIT_WAIT_MS (default 50000, 0 = no bound).
+// The host's own per-layer wait (40 s, #267) and 5 s cleanup normally end a stalled window first; this is the backstop for
 // a host that is gone (a killed process must not leave a kernel spinning on its card).
 const unsigned long long g_split_wait_ns = [] {
     const char* e = std::getenv("STRATA_SPLIT_WAIT_MS");
-    return (unsigned long long) (e != nullptr ? std::atoll(e) : 30000) * 1000000ull;
+    return (unsigned long long) (e != nullptr ? std::atoll(e) : 50000) * 1000000ull;
 }();
 // test hook: STRATA_TEST_HANDOFF_DROP=N - the writing stage's N-th window (1-based) leaves its hand-off flag down, as
 // if the publish were lost; the reading stage's bounded wait (or the host's) must then end the window cleanly.
@@ -1155,12 +1161,14 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         const auto& lay = strata::kernels::cpu::expert_layout();
         for (size_t l = 0; lay.native && l < lay.fmt.size(); ++l) had_gu_any = had_gu_any || lay.fmt[l].had_gu;
     }
+    tap_stride_ = (int64_t) max_t_ * (int64_t) g.n_embd;
     // ---- the device arena: the same sequence counted, then carved
     auto carve = [&](Bump& b) {
         tok_ = b.take<int32_t>(T); step_ = b.take<int32_t>(T * strata::kernels::kStepCount);
         pos_ = b.take<int32_t>(T * (NH + NKV + IQ)); commit_ = b.take<int32_t>(2 + T);
         ple_ = b.take<float>(T * N); emb_ = b.take<float>(T * N); R_ = b.take<float>(T * HC * N);
         mixed_ = b.take<float>(T * N); bo_ = b.take<float>(T * N);
+        if (n_taps_ > 0) taps_ = b.take<float>((uint64_t) n_taps_ * T * N);
         inj_ = b.take<float>(T * HC); inj2_ = b.take<float>(T * HC);
         lo_ = b.take<float>(T * (uint64_t) g.hc_lr); rs_ = b.take<float>(T * HC); xn_ = b.take<float>(T * HC * N);
         // the q8_1 activations of one token group (or one column chunk of the head): at most kVerifyMaxT columns
@@ -1782,6 +1790,29 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             join(1);
             inputs_pending = false;
         }
+        // OUR stage-range tap writer (docs/DFLASH.md): compiled only under its authority macro,
+        // STRATA_ENABLE_DFLASH2.  Before the merge the `cudaMemcpyAsync(taps_, mixed_ ...)` copy below
+        // sat OUTSIDE the #ifdef, so every configuration whose gate was off wrote a tap whose definition
+        // was the attn-half residual without the HC mean - the silent tap-semantics swap the upstream
+        // integration review ranks as its top material risk.  A build with the gate off now compiles no
+        // writer at all (our runtime refuses at its own gate, src/core/dflash.cpp:365; upstream's taps in
+        // a build with STRATA_HAVE_DFLASH2 come from the in-verify producer below, full-layer verifiers
+        // only), and the deleted fallback can only be restored deliberately: defining the macro below
+        // fails the compile with the refusal at the bottom of this block.
+#if defined(STRATA_ENABLE_DFLASH2)
+        for (int ti = 0; ti < n_taps_; ++ti)
+            if (l == dflash_tap_layers_[ti]) {   // DFlash tap: the attn-half read's contracted residual (docs/DFLASH.md)
+                if (tap_hc_mean_)
+                    strata::kernels::dflash2_hc_mean(Rt(tb),
+                        taps_ + ((size_t) ti * max_t_ + tb) * N, nullptr, n, N, HC, cs);
+                else
+                    cudaMemcpyAsync(taps_ + ((size_t) ti * (size_t) max_t_ + (size_t) tb) * N,
+                                    mixed_ + (size_t) tb * N, (size_t) (te - tb) * N * sizeof(float),
+                                    cudaMemcpyDeviceToDevice, cs);
+            }
+#elif defined(STRATA_ENABLE_DFLASH2_UNGATED_TAP_FALLBACK)
+#error "the ungated mixed_ tap copy is removed: STRATA_ENABLE_DFLASH2 is the authority macro of this tap writer, and a verifier has exactly one tap producer (upstream-integration gate 1). Enable the runtime, or write the taps in a producer of their own - do not restore an ungated copy."
+#endif
         stamp(l, 1, grp);
         float* xm = mixed_ + tb * N;
         bool il_ready = false;   // xil_ holds xq_'s interleaved copy (reset whenever xq_ is rewritten)
@@ -2935,10 +2966,69 @@ void Verifier::refresh_ar() {
     const bool off = lo < 0;
     if (off != ar_off_) {
         ar_off_ = off;
+        ar_stable_ = 0;
+        ar_trimmed_ = false;
         std::fprintf(stderr, "strata verify: layers [%lld, %lld) %s\n", (long long) lb_, (long long) (le_ < 0 ? g_->n_layers : le_),
                      off ? "have experts out of VRAM (a prompt loan, a shrink or a swap): the doorbell graph runs the windows"
                          : "are 100% VRAM resident again: the zero-doorbell graph");
+        return;
     }
+    // STRATA_GRAPH_FAMILY_TRIM = N windows (unset / 0: off, both families stay instantiated for the process's life,
+    // as before): a stage that boots all-resident and is then loaned away captures both graph families, so once the
+    // flag has held for N windows the family it left behind is freed.
+    static const int trim_windows = [] {
+        const char* v = std::getenv("STRATA_GRAPH_FAMILY_TRIM");
+        const int n = v != nullptr ? std::atoi(v) : 0;
+        return n > 0 ? n : 0;
+    }();
+    if (trim_windows > 0 && !ar_trimmed_ && ++ar_stable_ >= trim_windows) trim_stale_family();
+}
+
+// The exec pools a graph family leaves behind when ar_off_ settles the other way (#2065: a card resting a few hundred
+// MiB short hangs at a capture; the freed pools are headroom for the expert cache).  Every refresh_ar caller sits at a
+// window boundary of this stage, so the stream sync evict_window_graph makes before its destroy is enough here too,
+// and a flip back re-captures lazily (one 5-56 ms capture per size).  A flag that oscillates faster than the
+// hysteresis count never frees anything: both families stay live, exactly as before.
+void Verifier::trim_stale_family() {
+    if (no_window_eviction_ || !pl_ple_rows_.empty() || released_.load()) {   // capture_all wants every size at once; pl_launch reads exec_ itself
+        ar_trimmed_ = true;
+        return;
+    }
+    constexpr int top = strata::kernels::kVerifyLongT;
+    auto stale = ar_off_ ? exec_ : exec_nr_;
+    auto stale_launched = ar_off_ ? launched_ : launched_nr_;
+    int pools = 0;
+    for (int sl = 0; sl < 2; ++sl)
+        for (int t = 0; t <= top; ++t) pools += stale[sl][t] != nullptr;
+    if (pools == 0) {
+        ar_trimmed_ = true;
+        return;
+    }
+    size_t free_b = 0, total = 0;
+    if (cudaMemGetInfo(&free_b, &total) != cudaSuccess) (void) cudaGetLastError();
+    // a window the flipped flag abandoned may still be draining on the stream (evict_window_graph's rule)
+    if (cudaStreamSynchronize(cs_) != cudaSuccess) {
+        (void) cudaGetLastError();   // a pending error would end the engine at the next wrapper call (#3702)
+        std::fprintf(stderr, "strata verify: the %s window graph family was kept (its stream did not sync)\n",
+                     ar_off_ ? "all-resident" : "doorbell");
+        return;   // not marked trimmed: the next window tries again
+    }
+    for (int sl = 0; sl < 2; ++sl)
+        for (int t = 0; t <= top; ++t)
+            if (stale[sl][t] != nullptr) {
+                cudaGraphExecDestroy(stale[sl][t]);
+                stale[sl][t] = nullptr;
+                stale_launched[sl][t] = false;   // a re-captured graph of that size is a cold first launch again
+            }
+    ar_trimmed_ = true;
+    size_t free_a = free_b;
+    char delta[64] = "";
+    if (cudaMemGetInfo(&free_a, &total) == cudaSuccess)
+        std::snprintf(delta, sizeof delta, ", free VRAM %zu -> %zu MiB", free_b >> 20, free_a >> 20);
+    else
+        (void) cudaGetLastError();
+    std::fprintf(stderr, "strata verify: freed the %s window graph family (%d exec pools%s); a residency flip back captures it again\n",
+                 ar_off_ ? "all-resident" : "doorbell", pools, delta);
 }
 
 bool Verifier::capture(int T, std::string& err) {
@@ -2947,9 +3037,13 @@ bool Verifier::capture(int T, std::string& err) {
     if (exec_t != nullptr) return true;
     {   // said before the capture: a process that exits inside it (#1275: Windows, 313 MiB free) leaves this line as the trace
         size_t free_b = 0, total_b = 0;
-        if (cudaMemGetInfo(&free_b, &total_b) == cudaSuccess)
+        if (cudaMemGetInfo(&free_b, &total_b) == cudaSuccess) {
+            // 18o: this card is about to capture while a few hundred MiB short - the exact #2065 hang - so the
+            // per-GPU guard gets the figure it needs to step THIS card's reserve floor first (inert unless
+            // STRATA_VRAM_GUARD=1); the capture line below stays the trace either way
+            vram_guard::check(device_, (int64_t) (free_b >> 20));
             std::fprintf(stderr, "strata verify: capturing the %d-token window (%zu MiB of VRAM free)\n", T, free_b >> 20);
-        else
+        } else
             (void) cudaGetLastError();
     }
 #if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906) && !defined(STRATA_GPU_METAL)
@@ -3343,7 +3437,7 @@ void Verifier::accumulate_profile_inner(const unsigned long long* stamps) {
 }
 
 // 0.1.43 (STRATA_ADAPT_OVERLAP): hold the host until the adaptive tier's copies up to `layer` have landed.  The wait
-// is a spin on an atomic the copy stream's host functions raise (no driver call here); 20 s is the window's own limit.
+// is a spin on an atomic the copy stream's host functions raise (no driver call here); it shares the window's 40 s limit.
 bool Verifier::adapt_gate_wait(int32_t layer, std::string& err) {
     const Clock::time_point t0 = Clock::now();
     uint32_t spins = 0;
@@ -3706,7 +3800,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
                     return false;
                 }
             }
-            if (now - a > std::chrono::seconds(20)) {
+            if (now - a > kGpuProgressTimeout) {
                 // #267: the caller ends the engine; no spin kernel may outlive it
 #if defined(STRATA_VERIFY_HGL)
                 trace_ev("TIMEOUT", k, l, (int64_t) (launch_o ? launch_o->query() : cudaStreamQuery(cs_)));
@@ -5028,7 +5122,7 @@ bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, cons
     // #646: a stage whose every expert is resident plans on the device and raises no host doorbells, so the
     // per-layer spin below has nothing to wait for: without the PLE flag the graph finishes with the ring silent
     // ("verify batch: layer K never rang (graph finished)" - K is that stage's first layer), and with it the graph
-    // sits on the PLE wait until the 20 s timeout.  As run() does: raise the PLE flag the graph's first wait reads,
+    // sits on the PLE wait until the 40 s timeout.  As run() does: raise the PLE flag the graph's first wait reads,
     // let the graph run to the end, and skip the host's per-layer service (there is nothing to serve).
     // #646 + #871: the skip is per-window (ar_on), not per-process (all_resident_): a stage that was 100%
     // resident at init takes the doorbell graph while a prompt loan/shrink/swap is in flight (ar_off_), and that
@@ -5072,7 +5166,7 @@ bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, cons
                     return false;
                 }
             }
-            if (now - a > std::chrono::seconds(20)) {
+            if (now - a > kGpuProgressTimeout) {
                 err = "verify batch: timed out at layer " + std::to_string(l) + released_note(release_gpu_waits(5000));
                 return false;
             }
@@ -5331,7 +5425,7 @@ int Verifier::batch_serve(PoolMultiFn pool, void* user) {
 int Verifier::batch_poll(PoolMultiFn pool, void* user, std::string& err) {
     if (!b_running_) return 1;
     // set_external_serve: another thread serves the doorbells (batch_serve) and this one only checks for a window that
-    // will not finish, as below: its graph ended (or failed) with a layer still to ring, or no layer rang for 20 s.
+    // will not finish, as below: its graph ended (or failed) with a layer still to ring, or no layer rang for 40 s.
     // The stream query can wait for the driver's lock while a read's call holds it; the doorbells go on meanwhile.
     // The served count is read before the query and the ring count after it: a layer served in between rang first.
     if (ext_serve_.load(std::memory_order_acquire) && !ar_on()) {
@@ -5349,7 +5443,7 @@ int Verifier::batch_poll(PoolMultiFn pool, void* user, std::string& err) {
                 b_running_ = false;
                 return -1;
             }
-            if (now - last_ring() > std::chrono::seconds(20)) {
+            if (now - last_ring() > kGpuProgressTimeout) {
                 err = "verify batch: timed out at layer " + std::to_string(lb_ + k) +
                       released_note(release_gpu_waits(5000));
                 b_running_ = false;
@@ -5372,7 +5466,7 @@ int Verifier::batch_poll(PoolMultiFn pool, void* user, std::string& err) {
                 b_running_ = false;
                 return -1;
             }
-            if (now - last_ring() > std::chrono::seconds(20)) {
+            if (now - last_ring() > kGpuProgressTimeout) {
                 err = "verify batch: timed out at layer " + std::to_string(lb_ + b_k_) +
                       released_note(release_gpu_waits(5000));
                 b_running_ = false;
@@ -5608,7 +5702,7 @@ int Verifier::service(PoolMultiFn pool, void* user, std::string& err) {
     // on it (0.1.41, Windows, an RTX 3060 + RTX 5070 Ti split).  The same answer as the loop below gives.
     if (!ar_on() && *(volatile uint32_t*) h_seq_ < (uint32_t) (fl_k_ + 1)) {
         const double now = now_ms();
-        if (now - fl_flush_ms_ <= 2.0 && now - fl_since_ms_ <= 20000.0) return 0;
+        if (now - fl_flush_ms_ <= 2.0 && now - fl_since_ms_ <= kGpuProgressTimeoutMs) return 0;
     }
     const OnDevice on_device(device_);
     const ModelGeometry& g = *g_;
@@ -5650,7 +5744,7 @@ int Verifier::service(PoolMultiFn pool, void* user, std::string& err) {
                 }
                 (void) cudaStreamQuery(cs_);
             }
-            if (now - fl_since_ms_ > 20000.0) {   // #267: no spin kernel may outlive the engine
+            if (now - fl_since_ms_ > kGpuProgressTimeoutMs) {   // #267: no spin kernel may outlive the engine
                 trace_ev("TIMEOUT", fl_k_, l, 0);
                 err = "verify: timed out at layer " + std::to_string(l) + released_note(release_gpu_waits(5000));
                 return -1;
@@ -5698,7 +5792,7 @@ bool Verifier::done(std::string& err) {
     if (q == cudaErrorNotReady) {
         const double now = now_ms();
         if (now - fl_flush_ms_ > 2.0) { fl_flush_ms_ = now; (void) cudaStreamQuery(cs_); }
-        if (now - fl_since_ms_ > 20000.0) {   // every layer served, and the graph still runs: #267 as above
+        if (now - fl_since_ms_ > kGpuProgressTimeoutMs) {   // every layer served, and the graph still runs: #267 as above
             err = "verify: the window never finished" + released_note(release_gpu_waits(5000));
         }
         return false;

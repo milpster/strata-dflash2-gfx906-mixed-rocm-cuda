@@ -407,13 +407,20 @@ bool PeerExperts::adapt(const float* usage, const int32_t* res0, int max_swaps, 
         if (slot < 0 || b == nullptr) continue;
         if (gated && issued_layer >= 0 && issued_layer != s.layer) tick(issued_layer);
         if (!ck(cudaMemcpyAsync(cache_.device_slot(slot), b, (size_t) lay.blob_bytes(s.layer), cudaMemcpyHostToDevice,
-                                refill_), "refill", err))
+                                refill_), "refill", err)) {
+            if (src_->lends()) src_->release(s.layer, s.in);   // the copy never queued: give the loan back now
             return false;
+        }
         if (gated) {
             (*gate_has_)[(size_t) s.layer] = 1;
             *gate_last_ = std::max(*gate_last_, s.layer);
             issued_layer = s.layer;
         }
+        // The copy above reads the bytes asynchronously, so the loan is NOTED, not released: the source records
+        // its completion on this copy's own stream and recycles the lease when that event lands (generate.cpp's
+        // refill does the same).  Before this, a borrow here was never noted and never released, so every expert
+        // the peer swapped in stayed pinned in the pool for the rest of the process.
+        src_->note_async_read(b, refill_);
         res_[out] = kNotResident;              // evicted now: the CPU computes it meanwhile
         pending_.emplace_back((int32_t) in, slot);
         ++swaps_;

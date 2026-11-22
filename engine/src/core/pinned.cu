@@ -23,6 +23,7 @@
 #include <map>
 #include <mutex>
 #include <thread>
+#include <chrono>
 
 // Loader fix: `fseek`/`ftell` are 32-bit on Windows by default (and the pack is 42.9 GB), and the 64-bit
 // spelling is not the same on the two platforms the engine builds for.
@@ -496,7 +497,13 @@ void* reserve(uint64_t bytes, PageBacking& got, std::string& note, const std::st
     // skips the request on any device (as before).
     const char* no_thp = std::getenv("STRATA_NO_ARENA_THP");
     const bool user_no_thp = no_thp != nullptr && no_thp[0] != '0';
-    const bool skip_thp_request = arena_skip_thp_request(no_thp, thp_mode == "always", arena_no_thp_flag().load(std::memory_order_relaxed));
+    // W2a (opt-in, STRATA_ARENA_COLLAPSE=1): with THP "always" the mapping is huge-backed where the kernel can get a 2 MiB
+    // block, and MADV_HUGEPAGE is skipped because it adds reclaim and compaction on every fault.  The post-fill collapse sweep
+    // (expert_source.cpp, the arena's own loader) asks for those blocks ONCE, after the bytes are written, where there is no
+    // fault cost - so the request is worth making even under "always", and only then.  Unset: today's rule, byte for byte.
+    const bool collapse = std::getenv("STRATA_ARENA_COLLAPSE") != nullptr;
+    const bool skip_thp_request = arena_skip_thp_request(no_thp, thp_mode == "always" && !collapse,
+                                                          arena_no_thp_flag().load(std::memory_order_relaxed));
     if (std::getenv("STRATA_NO_LARGEPAGES") == nullptr && skip_thp_request) {
         const std::string four_k = "; using 4 KB pages";
         if (note.size() >= four_k.size() && note.compare(note.size() - four_k.size(), four_k.size(), four_k) == 0)
@@ -760,6 +767,7 @@ cudaError_t register_range(PinnedArena& arena, void* p, uint64_t n) {
 #else
     (void) arena;
 #endif
+    if (e == cudaSuccess) arena_mlock_span(p, n);   // STRATA_ARENA_MLOCK: a registered span must never move (KFD userptr)
     return e;
 }
 }  // namespace
@@ -838,8 +846,18 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds,
             cap_why = "by STRATA_ARENA_PIN_GIB";
         }
         const bool capped = cap > 0 && cap < bytes && bounds.size() >= 2;
-        const cudaError_t e = capped ? cudaSuccess :
-            register_range(*this, base, bytes);
+        cudaError_t e = cudaSuccess;
+        if (!capped) {
+            // boot-progress visibility (journal 2026-11-13 round 18k): this ONE driver call pins the whole arena -
+            // tens of seconds on a 46 GiB THP-backed arena - and ran in silence between the model's boot lines
+            std::fprintf(stderr, "strata pin: registering the whole arena (%.1f GiB) for DMA before the fill ...\n",
+                         (double) bytes / 1073741824.0);
+            const auto t0 = std::chrono::steady_clock::now();
+            e = register_range(*this, base, bytes);
+            std::fprintf(stderr, "strata pin: whole-arena registration %s in %.1f s\n",
+                         e == cudaSuccess ? "ok" : cudaGetErrorString(e),
+                         std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+        }
         if (!capped && e == cudaSuccess) {
             note = "cudaHostRegister PORTABLE ok; " + note;
             registered_bytes = bytes;
@@ -916,6 +934,7 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds,
             }
         }
     }
+    arena_mlock_report(registered_bytes < bytes ? bytes - registered_bytes : 0);
 }
 
 PinnedArena::PinnedArena(uint64_t bytes, ByNeed, const std::vector<std::pair<uint64_t, uint64_t>>& ranges,
@@ -953,7 +972,11 @@ PinnedArena::PinnedArena(uint64_t bytes, ByNeed, const std::vector<std::pair<uin
     int refused = 0;
     bool capped = false;
     const bool none = arena_no_register();   // 153-igpu UMA mode: register no range at all; every byte is a locked "hole" below
+    const size_t n_rng = ranges.size();
+    const size_t rng_step = n_rng >= 10 ? n_rng / 10 : n_rng;   // one line per ~10%: a slow boot stays visible
+    size_t rng_i = 0;
     for (const auto& rg : ranges) {
+        ++rng_i;
         if (none) break;
         if (rg.second == 0 || rg.first >= bytes) continue;
         // INWARD: a registered page holds no byte of an unpinned neighbour blob (a copy that STARTS in a registered page
@@ -977,6 +1000,9 @@ PinnedArena::PinnedArena(uint64_t bytes, ByNeed, const std::vector<std::pair<uin
         }
         done[a] = b;
         total += b - a;
+        if (rng_step > 0 && rng_i % rng_step == 0 && rng_i < n_rng)
+            std::fprintf(stderr, "strata pin: pin by need: %zu of %zu ranges registered (%.1f GiB)\n",
+                         rng_i, n_rng, (double) total / 1073741824.0);
     }
     for (const auto& d : done) pin_ranges.emplace_back(d.first, d.second - d.first);
     registered_bytes = total;
@@ -1011,6 +1037,7 @@ PinnedArena::PinnedArena(uint64_t bytes, ByNeed, const std::vector<std::pair<uin
         // a partial lock is unlocked region by region in the destructor; what it did not reach was never locked
         // (VirtualUnlock/munlock of an unlocked page is harmless), so the list is kept whole
     }
+    arena_mlock_report(hole_bytes);
 }
 
 PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds, Deferred)
@@ -1051,7 +1078,97 @@ void PinnedArena::register_slices(std::atomic<int>& ready) {
             note = lr.note + "; " + note;
         }
     }
+    arena_mlock_report(capacity - registered_bytes);
     ready.store(INT_MAX, std::memory_order_release);   // every slice done (or given up on)
+}
+
+PinnedArena::PinnedArena(uint64_t bytes, ReserveOnly) : capacity(bytes) {
+    by_need = true;
+    if (bytes == 0) return;
+    base = reserve(bytes, backing, note, std::string{}, 0, mapping_base, mapping_bytes);
+    if (base != nullptr && mapping_base == nullptr) {
+        mapping_base = base;
+        mapping_bytes = bytes;
+    }
+    // Nothing registered, nothing locked: the fill writes plain anonymous pages.  W1's MADV_DONTNEED
+    // and W2's MADV_COLLAPSE both refuse driver-pinned memory - measured the hard way: the whole-arena
+    // registration made the relief guard refuse all 4116 helper-held pairs, and every one of the
+    // sweep's 20462 collapse chunks EINVAL'd.  register_after_fill() restores DMA where it must be.
+    note = "reserve only (nothing registered, nothing locked yet); " + note;
+}
+
+uint64_t PinnedArena::register_after_fill(const std::vector<std::pair<uint64_t, uint64_t>>& ranges, bool lock_rest) {
+    if (base == nullptr || !by_need) return 0;   // only the ReserveOnly arena registers late
+    constexpr uint64_t kPage = 4096;
+    const auto t0 = std::chrono::steady_clock::now();   // the per-~10% progress lines carry elapsed seconds (18t)
+    uint64_t total = 0;
+    bool refused = false;
+    const size_t n_rng = ranges.size();
+    const size_t rng_step = n_rng >= 10 ? n_rng / 10 : n_rng;   // one line per ~10%: a slow boot stays visible
+    size_t rng_i = 0;
+    for (const auto& rg : ranges) {
+        ++rng_i;
+        if (rg.second == 0 || rg.first >= capacity) continue;
+        // OUTWARD, page-granular: a span's first/last page is shared with a DROPPED blob's tail -
+        // that page stays mapped (only wholly-inside pages were given back) and its kept bytes must
+        // be DMA-able, so the registration covers it.  V4-r3: the inward rounding left every
+        // span-edge blob's partial page outside the alias window, and the first cache fill of such
+        // a pair ran past its registered range and died with "invalid argument" (the same error
+        // V4-r2 was mis-blamed on held-undropped pairs for).  Wholly-dropped pages are never
+        // reached: the spans stop at kept-blob boundaries and the round reaches at most the one
+        // shared page.
+        uint64_t a = rg.first & ~(kPage - 1);
+        uint64_t b = std::min<uint64_t>((rg.first + rg.second + kPage - 1) & ~(kPage - 1), capacity);
+        // ranges arrive sorted and non-overlapping; trim the head against the previous tail
+        if (!pin_ranges.empty()) {
+            const uint64_t last_end = pin_ranges.back().first + pin_ranges.back().second;
+            if (a < last_end) a = last_end;
+        }
+        if (a >= b) continue;
+        if (register_range(*this, (uint8_t*) base + a, b - a) != cudaSuccess) {
+            (void) cudaGetLastError();
+            refused = true;
+            break;   // pin-by-need's rule: the first refusal ends the registration
+        }
+        pin_ranges.emplace_back(a, b - a);
+        registered_bytes += b - a;
+        ++registered_slices;
+        total += b - a;
+        if (rng_step > 0 && rng_i % rng_step == 0 && rng_i < n_rng)
+            std::fprintf(stderr, "strata pin: registered after the fill: %zu of %zu ranges (%.1f GiB, %.0f s)\n",
+                         rng_i, n_rng, (double) registered_bytes / 1073741824.0,
+                         std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+        if (refused) break;
+    }
+    note = "registered after the fill: " + std::to_string(pin_ranges.size()) + " ranges (" +
+           std::to_string(registered_bytes >> 20) + " MiB)" +
+           (refused ? ", the driver refused the next one" : "") + "; " + note;
+    if (lock_rest) {
+        // the complement stays resident through the working-set lock, exactly like pin-by-need's holes
+        locked_ranges.clear();
+        uint64_t cur = 0, hole_bytes = 0;
+        for (const auto& r : pin_ranges) {
+            if (r.first > cur) { locked_ranges.emplace_back(cur, r.first - cur); hole_bytes += r.first - cur; }
+            cur = r.first + r.second;
+        }
+        if (cur < capacity) { locked_ranges.emplace_back(cur, capacity - cur); hole_bytes += capacity - cur; }
+        const char* env = std::getenv("STRATA_ARENA_LOCK");
+        if (backing == PageBacking::LargePages) {
+            note = "large pages are resident without a lock; " + note;   // #779
+            locked_ranges.clear();
+        } else if (env != nullptr && std::string(env) == "0") {
+            note = "arena lock disabled (STRATA_ARENA_LOCK=0); " + note;
+            locked_ranges.clear();
+        } else {
+            std::vector<std::pair<void*, uint64_t>> holes;
+            for (const auto& r : locked_ranges) holes.emplace_back((uint8_t*) base + r.first, r.second);
+            const strata::platform::LockResult lr = strata::platform::lock_resident_ranges(holes);
+            locked_bytes = lr.locked_bytes;
+            note = lr.note + " (" + std::to_string(hole_bytes >> 20) + " MiB of holes); " + note;
+        }
+    }
+    arena_mlock_report(capacity - registered_bytes);
+    return total;
 }
 
 PinnedArena::~PinnedArena() {

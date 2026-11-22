@@ -3067,7 +3067,49 @@ __global__ void __launch_bounds__(256) gr_quantize_q8_0_kernel(const uint16_t* _
     o[2 + lane] = (uint8_t) (int8_t) lrintf(roundf(v * id));
 }
 
-__global__ void __launch_bounds__(256) gr_dequant_q8_0_kernel(const uint8_t* __restrict__ q8, uint16_t* __restrict__ out, int64_t nb) {
+__device__ __forceinline__ uint32_t bf16x2_from_f32_finite(float f0, float f1) {
+    uint32_t i0 = __float_as_uint(f0);
+    uint32_t i1 = __float_as_uint(f1);
+    i0 = i0 + ((i0 >> 16) & 1u) + 0x7FFFu;
+    i1 = i1 + ((i1 >> 16) & 1u) + 0x7FFFu;
+    return (i0 >> 16) | (i1 & 0xFFFF0000u);
+}
+
+__device__ __forceinline__ void dequant_q8_0_vec8_item(const uint8_t* __restrict__ q8, uint16_t* __restrict__ out,
+                                                       int64_t b, int sub) {
+    const uint8_t* p = q8 + b * 34;
+    const uint16_t d_u16 = *(const uint16_t*) p;
+    const float d = __half2float(__ushort_as_half(d_u16));
+    const uint8_t* qs = p + 2 + 8 * sub;
+    const uint32_t q01 = *(const uint16_t*) (qs + 0);
+    const uint32_t q23 = *(const uint16_t*) (qs + 2);
+    const uint32_t q45 = *(const uint16_t*) (qs + 4);
+    const uint32_t q67 = *(const uint16_t*) (qs + 6);
+    const float f0 = d * (float) (int8_t) (q01 & 0xFFu);
+    const float f1 = d * (float) (int8_t) (q01 >> 8);
+    const float f2 = d * (float) (int8_t) (q23 & 0xFFu);
+    const float f3 = d * (float) (int8_t) (q23 >> 8);
+    const float f4 = d * (float) (int8_t) (q45 & 0xFFu);
+    const float f5 = d * (float) (int8_t) (q45 >> 8);
+    const float f6 = d * (float) (int8_t) (q67 & 0xFFu);
+    const float f7 = d * (float) (int8_t) (q67 >> 8);
+    uint4 packed;
+    if (__builtin_expect((d_u16 & 0x7C00u) != 0x7C00u, 1)) {
+        packed.x = bf16x2_from_f32_finite(f0, f1);
+        packed.y = bf16x2_from_f32_finite(f2, f3);
+        packed.z = bf16x2_from_f32_finite(f4, f5);
+        packed.w = bf16x2_from_f32_finite(f6, f7);
+    } else {
+        packed.x = (uint32_t) bf16_from_f32(f0) | ((uint32_t) bf16_from_f32(f1) << 16);
+        packed.y = (uint32_t) bf16_from_f32(f2) | ((uint32_t) bf16_from_f32(f3) << 16);
+        packed.z = (uint32_t) bf16_from_f32(f4) | ((uint32_t) bf16_from_f32(f5) << 16);
+        packed.w = (uint32_t) bf16_from_f32(f6) | ((uint32_t) bf16_from_f32(f7) << 16);
+    }
+    reinterpret_cast<uint4*>(out)[b * 4 + sub] = packed;
+}
+
+__global__ void __launch_bounds__(256) gr_dequant_q8_0_scalar_kernel(const uint8_t* __restrict__ q8,
+                                                                     uint16_t* __restrict__ out, int64_t nb) {
     const int64_t b = (int64_t) blockIdx.x * 8 + (threadIdx.x >> 5);
     const int lane = threadIdx.x & 31;
     if (b >= nb) return;
@@ -3076,8 +3118,196 @@ __global__ void __launch_bounds__(256) gr_dequant_q8_0_kernel(const uint8_t* __r
     out[b * 32 + lane] = bf16_from_f32(d * (float) (int8_t) p[2 + lane]);
 }
 
+__global__ void __launch_bounds__(256) gr_dequant_q8_0_kernel(const uint8_t* __restrict__ q8,
+                                                              uint16_t* __restrict__ out, int64_t nb) {
+    const int64_t b = (int64_t) blockIdx.x * 64 + (threadIdx.x >> 2);
+    if (b >= nb) return;
+    dequant_q8_0_vec8_item(q8, out, b, threadIdx.x & 3);
+}
+
+__global__ void __launch_bounds__(256) gr_dequant_q8_0_pair_kernel(const uint8_t* __restrict__ q8_0,
+                                                                   uint16_t* __restrict__ out_0,
+                                                                   const uint8_t* __restrict__ q8_1,
+                                                                   uint16_t* __restrict__ out_1, int64_t nb) {
+    const int64_t b = (int64_t) blockIdx.x * 64 + (threadIdx.x >> 2);
+    if (b >= nb) return;
+    const uint8_t* __restrict__ q8 = blockIdx.y ? q8_1 : q8_0;
+    uint16_t* __restrict__ out = blockIdx.y ? out_1 : out_0;
+    dequant_q8_0_vec8_item(q8, out, b, threadIdx.x & 3);
+}
+
+// gfx906 tuning (STRATA_HC_Q8_TUNE, default on; "0" restores the upstream kernels above verbatim):
+// the 8 quant bytes one vec8 thread owns are contiguous, so a single 8 B uint2 load replaces the
+// four uint16 loads.  Byte extraction is the same shift/mask per byte, so the packed words are
+// bit-identical to the upstream item.  gfx906 flat/global loads take arbitrary byte addresses
+// (the ISA manual's "two LSBs ignored" dword rule covers buffer/scratch ops only, not flat/global
+// pointer derefs), so the 2 B base guarantee the launcher already checks carries these loads.
+__device__ __forceinline__ void dequant_q8_0_vec8_wide_item(const uint8_t* __restrict__ q8, uint16_t* __restrict__ out,
+                                                            int64_t b, int sub) {
+    const uint8_t* p = q8 + b * 34;
+    const uint16_t d_u16 = *(const uint16_t*) p;
+    const float d = __half2float(__ushort_as_half(d_u16));
+    const uint2 v = *(const uint2*) (p + 2 + 8 * sub);
+    const float f0 = d * (float) (int8_t) (v.x & 0xFFu);
+    const float f1 = d * (float) (int8_t) (v.x >> 8);
+    const float f2 = d * (float) (int8_t) (v.x >> 16);
+    const float f3 = d * (float) (int8_t) (v.x >> 24);
+    const float f4 = d * (float) (int8_t) (v.y & 0xFFu);
+    const float f5 = d * (float) (int8_t) (v.y >> 8);
+    const float f6 = d * (float) (int8_t) (v.y >> 16);
+    const float f7 = d * (float) (int8_t) (v.y >> 24);
+    uint4 packed;
+    if (__builtin_expect((d_u16 & 0x7C00u) != 0x7C00u, 1)) {
+        packed.x = bf16x2_from_f32_finite(f0, f1);
+        packed.y = bf16x2_from_f32_finite(f2, f3);
+        packed.z = bf16x2_from_f32_finite(f4, f5);
+        packed.w = bf16x2_from_f32_finite(f6, f7);
+    } else {
+        packed.x = (uint32_t) bf16_from_f32(f0) | ((uint32_t) bf16_from_f32(f1) << 16);
+        packed.y = (uint32_t) bf16_from_f32(f2) | ((uint32_t) bf16_from_f32(f3) << 16);
+        packed.z = (uint32_t) bf16_from_f32(f4) | ((uint32_t) bf16_from_f32(f5) << 16);
+        packed.w = (uint32_t) bf16_from_f32(f6) | ((uint32_t) bf16_from_f32(f7) << 16);
+    }
+    reinterpret_cast<uint4*>(out)[b * 4 + sub] = packed;
+}
+
+// gfx906 tuning: one thread per Q8_0 block -- the scale is converted once (the vec8 items redo it
+// in all 4 threads), the 32 quants come in as two 16 B loads, and the thread writes its whole
+// contiguous 64 B of bf16 as four uint4 stores.  Alignment choice: the 34 B stride leaves
+// q8 + b*34 at 2 B alignment in general (34 = 2 mod 16), so no base-pointer check can make every
+// block's uint4 loads naturally aligned; the launcher therefore selects this variant only when
+// the q8 base itself is 16 B aligned (the allocator-canonical case, mirroring the out-pointer
+// check) and the wide loads ride, like the uint2 loads above, on gfx906 flat/global loads
+// accepting arbitrary byte addresses -- misalignment costs sectors, never correctness, on GCN
+// flat/global; only buffer/scratch ops force dword alignment.  Group g below reads the same 8
+// bytes as sub = g in the vec8 item and packs them with the same helpers, so the output is
+// bit-identical.
+__device__ __forceinline__ void dequant_q8_0_ld32_item(const uint8_t* __restrict__ q8, uint16_t* __restrict__ out,
+                                                       int64_t b) {
+    const uint8_t* p = q8 + b * 34;
+    const uint16_t d_u16 = *(const uint16_t*) p;
+    const float d = __half2float(__ushort_as_half(d_u16));
+    const uint4 lo = *(const uint4*) (p + 2);
+    const uint4 hi = *(const uint4*) (p + 18);
+    const uint32_t qw[8] = {lo.x, lo.y, lo.z, lo.w, hi.x, hi.y, hi.z, hi.w};
+    uint4* o = reinterpret_cast<uint4*>(out) + b * 4;
+    #pragma unroll
+    for (int g = 0; g < 4; ++g) {
+        const uint32_t w0 = qw[2 * g];
+        const uint32_t w1 = qw[2 * g + 1];
+        const float f0 = d * (float) (int8_t) (w0 & 0xFFu);
+        const float f1 = d * (float) (int8_t) (w0 >> 8);
+        const float f2 = d * (float) (int8_t) (w0 >> 16);
+        const float f3 = d * (float) (int8_t) (w0 >> 24);
+        const float f4 = d * (float) (int8_t) (w1 & 0xFFu);
+        const float f5 = d * (float) (int8_t) (w1 >> 8);
+        const float f6 = d * (float) (int8_t) (w1 >> 16);
+        const float f7 = d * (float) (int8_t) (w1 >> 24);
+        uint4 packed;
+        if (__builtin_expect((d_u16 & 0x7C00u) != 0x7C00u, 1)) {
+            packed.x = bf16x2_from_f32_finite(f0, f1);
+            packed.y = bf16x2_from_f32_finite(f2, f3);
+            packed.z = bf16x2_from_f32_finite(f4, f5);
+            packed.w = bf16x2_from_f32_finite(f6, f7);
+        } else {
+            packed.x = (uint32_t) bf16_from_f32(f0) | ((uint32_t) bf16_from_f32(f1) << 16);
+            packed.y = (uint32_t) bf16_from_f32(f2) | ((uint32_t) bf16_from_f32(f3) << 16);
+            packed.z = (uint32_t) bf16_from_f32(f4) | ((uint32_t) bf16_from_f32(f5) << 16);
+            packed.w = (uint32_t) bf16_from_f32(f6) | ((uint32_t) bf16_from_f32(f7) << 16);
+        }
+        o[g] = packed;
+    }
+}
+
+__global__ void __launch_bounds__(256) gr_dequant_q8_0_wide_kernel(const uint8_t* __restrict__ q8,
+                                                                   uint16_t* __restrict__ out, int64_t nb) {
+    const int64_t b = (int64_t) blockIdx.x * 64 + (threadIdx.x >> 2);
+    if (b >= nb) return;
+    dequant_q8_0_vec8_wide_item(q8, out, b, threadIdx.x & 3);
+}
+
+__global__ void __launch_bounds__(256) gr_dequant_q8_0_wide_pair_kernel(const uint8_t* __restrict__ q8_0,
+                                                                        uint16_t* __restrict__ out_0,
+                                                                        const uint8_t* __restrict__ q8_1,
+                                                                        uint16_t* __restrict__ out_1, int64_t nb) {
+    const int64_t b = (int64_t) blockIdx.x * 64 + (threadIdx.x >> 2);
+    if (b >= nb) return;
+    const uint8_t* __restrict__ q8 = blockIdx.y ? q8_1 : q8_0;
+    uint16_t* __restrict__ out = blockIdx.y ? out_1 : out_0;
+    dequant_q8_0_vec8_wide_item(q8, out, b, threadIdx.x & 3);
+}
+
+__global__ void __launch_bounds__(256) gr_dequant_q8_0_ld32_kernel(const uint8_t* __restrict__ q8,
+                                                                   uint16_t* __restrict__ out, int64_t nb) {
+    const int64_t b = (int64_t) blockIdx.x * 256 + threadIdx.x;
+    if (b >= nb) return;
+    dequant_q8_0_ld32_item(q8, out, b);
+}
+
+__global__ void __launch_bounds__(256) gr_dequant_q8_0_ld32_pair_kernel(const uint8_t* __restrict__ q8_0,
+                                                                        uint16_t* __restrict__ out_0,
+                                                                        const uint8_t* __restrict__ q8_1,
+                                                                        uint16_t* __restrict__ out_1, int64_t nb) {
+    const int64_t b = (int64_t) blockIdx.x * 256 + threadIdx.x;
+    if (b >= nb) return;
+    const uint8_t* __restrict__ q8 = blockIdx.y ? q8_1 : q8_0;
+    uint16_t* __restrict__ out = blockIdx.y ? out_1 : out_0;
+    dequant_q8_0_ld32_item(q8, out, b);
+}
+
+// gfx906 tuning gate, read once. Default-on only where misaligned flat/global vector loads are
+// architecturally safe (AMD GCN3+: FLAT/GLOBAL ops are byte-addressed, no alignment trap). Under
+// nvcc a misaligned ld.global.v4 is PTX-level UB, so CUDA builds default OFF and opt in with "1".
+static bool gr_q8_tune_env_on() {
+    const char* e = std::getenv("STRATA_HC_Q8_TUNE");
+#if defined(__HIP__)
+    return e == nullptr || e[0] != '0' || e[1] != '\0';
+#else
+    return e != nullptr && e[0] == '1' && e[1] == '\0';
+#endif
+}
+static const bool gr_q8_tune = gr_q8_tune_env_on();
+
 void fused_gr_dequant_q8_0(const uint8_t* q8, uint16_t* bf16, int64_t n_blocks, void* stream) {
-    gr_dequant_q8_0_kernel<<<(unsigned) ((n_blocks + 7) / 8), 256, 0, (cudaStream_t) stream>>>(q8, bf16, n_blocks);
+    if (n_blocks <= 0) return;
+    const bool vec_ok = (((uintptr_t) q8 & 1u) | ((uintptr_t) bf16 & 15u)) == 0u;
+    if (!vec_ok || !gr_q8_tune) {
+        if (vec_ok) {
+            gr_dequant_q8_0_kernel<<<(unsigned) ((n_blocks + 63) / 64), 256, 0, (cudaStream_t) stream>>>(q8, bf16, n_blocks);
+        } else {
+            gr_dequant_q8_0_scalar_kernel<<<(unsigned) ((n_blocks + 7) / 8), 256, 0, (cudaStream_t) stream>>>(q8, bf16, n_blocks);
+        }
+        return;
+    }
+    if (((uintptr_t) q8 & 15u) == 0u) {
+        gr_dequant_q8_0_ld32_kernel<<<(unsigned) ((n_blocks + 255) / 256), 256, 0, (cudaStream_t) stream>>>(q8, bf16, n_blocks);
+    } else {
+        gr_dequant_q8_0_wide_kernel<<<(unsigned) ((n_blocks + 63) / 64), 256, 0, (cudaStream_t) stream>>>(q8, bf16, n_blocks);
+    }
+}
+
+void fused_gr_dequant_q8_0_pair(const uint8_t* q8_0, uint16_t* bf16_0, const uint8_t* q8_1, uint16_t* bf16_1,
+                                int64_t n_blocks, void* stream) {
+    if (n_blocks <= 0) return;
+    const bool vec_ok = ((((uintptr_t) q8_0 & 1u) | ((uintptr_t) q8_1 & 1u) | ((uintptr_t) bf16_0 & 15u) |
+                          ((uintptr_t) bf16_1 & 15u)) == 0u);
+    if (vec_ok && gr_q8_tune) {
+        if ((((uintptr_t) q8_0 & 15u) | ((uintptr_t) q8_1 & 15u)) == 0u) {
+            const dim3 grid((unsigned) ((n_blocks + 255) / 256), 2);
+            gr_dequant_q8_0_ld32_pair_kernel<<<grid, 256, 0, (cudaStream_t) stream>>>(q8_0, bf16_0, q8_1, bf16_1, n_blocks);
+        } else {
+            const dim3 grid((unsigned) ((n_blocks + 63) / 64), 2);
+            gr_dequant_q8_0_wide_pair_kernel<<<grid, 256, 0, (cudaStream_t) stream>>>(q8_0, bf16_0, q8_1, bf16_1, n_blocks);
+        }
+        return;
+    }
+    if (vec_ok) {
+        const dim3 grid((unsigned) ((n_blocks + 63) / 64), 2);
+        gr_dequant_q8_0_pair_kernel<<<grid, 256, 0, (cudaStream_t) stream>>>(q8_0, bf16_0, q8_1, bf16_1, n_blocks);
+        return;
+    }
+    fused_gr_dequant_q8_0(q8_0, bf16_0, n_blocks, stream);
+    fused_gr_dequant_q8_0(q8_1, bf16_1, n_blocks, stream);
 }
 
 void fused_gr_quantize_q8_0(const uint16_t* bf16, uint8_t* out, int64_t n_blocks, void* stream) {
