@@ -24,33 +24,11 @@ the fork tree. Re-running it refreshes the copies.
 
 ## What is NOT carried, and why
 
-1. **`engine/src/prefill/prefill.cpp` and `engine/src/program/generate.cpp` keep upstream v0.2.18's
-   version unchanged.** The fork changes them by 15 and 40 pieces. Those pieces sit inside the dispatch
-   loop that upstream rewrote in 0.2.18 (the request-owned decode path), and after several attempts no
-   merge could be shown correct by reading. A half-merged decode loop is a worse outcome than a named
-   missing feature, so the two files stayed upstream's. Measured 2026-11-22 to size the job: against
-   v0.2.18 the fork's `generate.cpp` differs by 397 hunks (+5645 / -4107 lines; upstream's file is
-   24627 lines, the fork's 26165) and `prefill.cpp` by 175 hunks (+1319 / -2081). Most of that is
-   upstream's own movement and features this port does not carry, not the lane's.
-   `tools-port/port-worklist.py` splits it by feature and writes the lane's own pieces, with their
-   code, into `PORT-WORKLIST-UNPORTED.md` - in `generate.cpp`: 15 expert-helper hunks, 6 CPU-pool,
-   6 VRAM-clamp, 59 drafter; in `prefill.cpp`: 6 expert-helper, 53 prompt-kernel. That is the list to
-   work from, one feature at a time, with a boot and an output comparison after each.
-   *What this costs:* the prompt tier does not hand claimed expert rows to the helper, and the decode
-   loop does not attach to a running helper. Everything the lane needs *inside* the engine's other files
-   is in place (the client, the frame transport, the eligibility rules, the wire protocol), but the two
-   call sites are not. End-to-end helper serving is therefore not reachable on this port yet.
-   *How close the fork's own build pair is, measured 2026-11-22 in `build-lane-check` (a scratch
-   configure, deleted afterwards; the logs are in `logs-port/`): with
-   `-DSTRATA_ENABLE_DFLASH2=ON -DSTRATA_HAVE_DFLASH2=OFF` - the pair this box's production build uses -
-   `strata_kernels` (with the lane's `dflash_inco.cu`) and `strata_engine` (with `dflash.cpp`,
-   `dflash_runtime.cpp`, `dflash_tap_collect.cpp`) **compile clean**, and `strata` fails at one file:
-   `generate.cpp`, five error sites, all one cause - upstream's `generate.cpp` names
-   `strata::core::Dflash2Drafter` and `defer_df2`, and those exist only when upstream's drafter is
-   compiled. One verifier may have only one tap producer, so the two cannot both be compiled
-   (engine/CMakeLists.txt refuses that pair by name). In other words: the lane's DFlash2 runtime and the
-   rest of the lane are buildable today; `generate.cpp` is the single file in the way, and it is one of
-   the two un-ported ones. That also means the same file holds both remaining gaps.
+1. **`engine/src/prefill/prefill.cpp` and `engine/src/program/generate.cpp` were left as upstream
+   v0.2.18's from 2026-11-22 until the same day's evening.** They are no longer: both files are now a
+   three-way merge that carries the lane's behaviour beside upstream's, and the section
+   "The decode loop is merged" below replaces this item. The reason the first pass left them - and the
+   measurement behind it - is kept there, because it explains why the merge is a merge and not a patch.
 2. **The DeepSeek V4.1 engine (`engine/src/dsv41/`, 51 files in the manifest) is now in the build, under
    the fork's own switch and the fork's own guard.** `option(STRATA_BUILD_DSV41 ... OFF)`, and the whole
    block is inside `if(STRATA_BUILD_DSV41 AND NOT STRATA_HIP_GFX906)` - which is how the fork builds it:
@@ -80,7 +58,7 @@ the fork tree. Re-running it refreshes the copies.
    `engine/cmake/strata_lane_tests.cmake` now registers **34 of the lane's test programs**, 25 of them
    added in this pass. With the two opt-ins ON, 33 compile and link (`dflash_head_bf16_test` does not -
    item 7); those 33 make **43 ctest cases** (`native_mlock_test` runs as ten, `ram_pool_test` as two),
-   and **39 passed, 2 skipped themselves for want of a device, 2 failed**.
+   and **39 passed, 2 skipped themselves for want of a device, 2 failed** (that pass's numbers; see the note above).
    The exceptions, with the reason each:
 
    * `dflash_head_bf16_test` - wired but `EXCLUDE_FROM_ALL`; it does not compile, for a reason that is a
@@ -201,6 +179,10 @@ The source directory is `engine/`, not the tree root (v0.2.18 moved the engine b
 
 ## Verification
 
+> The runs in this section are the ones taken **before** the decode loop was merged. They are kept
+> as measured. The current numbers - lane suite 47 cases, 100% passed, both DFlash2 pairs - are in
+> "The decode loop is merged" below, and the two failures named here are closed.
+
 Run:
 
 * `sh tools-port/configure-906.sh build-906` - clean configure; prints
@@ -230,7 +212,7 @@ Run:
   `logs-port/lane-tests-fail-1.log`; `logs-port/` is gitignored by upstream's `*.log` rule, so these are
   on this box, not in the branch). Nothing in the run may touch the cards the serving engine holds, so
   every program runs with both `HIP_VISIBLE_DEVICES=-1` and `CUDA_VISIBLE_DEVICES=-1` set. The result:
-  **43 test cases - 39 passed, 2 skipped by the test itself for want of a device, 2 failed.** The
+  **43 test cases - 39 passed, 2 skipped by the test itself for want of a device, 2 failed** (this pass's numbers; see the note above). The
   two failures are the static text contracts on `src/program/generate.cpp`, the un-carried file (item 1);
   nothing failed that indicates a wrong algorithm or a bad merge.
 
@@ -271,7 +253,8 @@ Run:
 
   Both failures therefore say the same thing as item 1, in the two programs that check for it - which makes
   them the acceptance test for porting `generate.cpp`: `expert_helper_candidates_test`'s 12 and
-  `dflash_refusal_test`'s 16 are the count of what that file still owes.
+  `dflash_refusal_test`'s 16 are the count of what that file still owes. **They went green when the file
+  was merged (2026-11-22, same day) - that is the closure of this item, not a still-open count.**
 * The server's own tests (`terminal/serve`): 94 passed, 6 failed; the same 6 fail on clean upstream
   (`test_dflash_engine_args.py` mocks a name that no longer exists upstream), so the port adds no failure.
 * Not run: any boot, any model, any GPU work, any bench. Those are the operator's windows. Two lane
@@ -279,15 +262,131 @@ Run:
   under `HIP_VISIBLE_DEVICES=-1` they exit with the fork's own skip code 77, which is why they are recorded
   as skipped rather than passed.
 
+## The decode loop is merged (2026-11-22): `generate.cpp` and `prefill.cpp`
+
+Both files now carry the lane's behaviour and upstream's, in one file each. The fork's content is not
+pasted over upstream's and upstream's is not trimmed to make room: each file is a three-way merge of
+
+  * **ours** - upstream v0.2.18's file,
+  * **base** - the same file at the fork's branch point `54828c7efb` (21139 lines),
+  * **theirs** - the fork's file at `564e1dbbea`,
+
+run with `git merge-file --diff3`. That is the only method that could tell "the fork changed this line"
+apart from "upstream wrote this line after the fork left", and it is the reason `git merge-base` of the
+two trees (also `54828c7efb`, pre-layout-split) was finally used as the file's base rather than ignored.
+
+| file | upstream's | the fork's | merged | conflicts |
+| --- | --- | --- | --- | --- |
+| `engine/src/program/generate.cpp` | 24627 | 26165 | 29633 | 41 |
+| `engine/src/prefill/prefill.cpp` | 9549 | 8787 | 10525 | 16 |
+
+### Why the hunk patch was thrown away
+
+The first attempt applied the fork's hunks onto upstream's file with `patch(1)`, filtered by feature. It
+applied - and it was wrong. Applied with fuzz, the lane's own hunks deleted upstream code the fork never
+had: `BSlot`'s members (`hold`, `w_n`, `w_lk`, `lk_n`, `lk_m`, `lk_at`, `caps`, `rounds`, `t_round`,
+`drafts_off`, `drafts_acc`), five of upstream's includes (`prefill/equal_cut_rule.hpp`,
+`prefill/fit_out_rule.hpp`, `prefill/loan_rules.hpp`, `program/bdone_drafts.hpp`,
+`program/reply_branch.hpp`), the park-pool block, the SSD conversation tier and the `STRATA_FOLLOW`
+token-forcing block. The file got smaller in exactly the places upstream had grown. Nothing but the
+compiler caught it, and only some of it. So the method changed, and everything the patch had done was
+discarded (the 33 add-only hunks it applied safely are inside the merged result too - the merge produced
+the same content there).
+
+### How the 57 conflicts were resolved
+
+Sixteen in `generate.cpp` and six in `prefill.cpp` were plain add/add (both sides wrote new lines in the
+same place); both sides were kept. The rest were read. Where both sides changed the same line, upstream's
+newer decision wins and the lane's behaviour is added beside it, not instead of it:
+
+| the line both sides wrote | what stands |
+| --- | --- |
+| `STRATA_ROUTE_TAIL_SKIP` default (fork: rank 7 on CUDA/gfx1200; upstream: off, owner decision 2026-11-19) | upstream's - the fork's is the older default |
+| `STRATA_MTP_BATCH_F16` default (fork: MMQ unless `=1`; upstream: FP16 unless `=0`) | upstream's |
+| the conversation spill tier (fork: `--conversation-cache-dir` DISK tier; upstream: the SSD tier) | **both**, side by side: upstream's SSD tier, plus the fork's disk tier with its `disk_start` / `disk_wins` lookup restored and its own condition. The two are now asked the same question; the RAM entry is only taken when neither wins. Interaction untested - see the risks below |
+| the free-VRAM note, the GPU-pause lines, the `kfd_quiet` warm-up, `kv_grow_start` / `kv_grow_target`, `lm_streamed_experts`, `serve_stop_bound` with the GEN hold, `mmq_resident_sort_eligible`, `g_gpu_pause_idle`, the `READY ... stop hold holdb` protocol line | upstream's, unchanged - the lane's block is inserted around them (the register-last arena pin now runs just before upstream's READY print) |
+| the elastic-KV ceiling (fork adds the drafter's scratch chunks; upstream wraps the rule in `kv_grow_*`) | upstream's rule, plus the drafter's terms guarded by `!o.dflash.empty()` so a run without `--dflash` asks the same question as before |
+| the drafter latch in the decode condition (fork `!(draft_on || (has_dflash && req_dflash && dflash_ready))`, upstream `!draft_on`) | the fork's condition - the lane's drafter needs it |
+| the CPU expert share's blob test (fork: `!transient`; upstream: `pinned || !transient`) | **the fork's `!transient`** - see the one default-path change below |
+
+The merged `generate.cpp` parses the lane's options again: `--dflash`, `--dflash-head`,
+`--dflash-vocab`, `--dflash-mask-token`, `--dflash-block`, `--dflash-remote-only`,
+`--prompt-window-retry`, `--conversation-cache-dir`, `--conversation-cache-disk-mib`,
+`--conversation-cache-disk-ram-mib`, `--conversation-cache-disk-io`, `--conversation-cache-ram-mib`.
+They were not in upstream 0.2.18 at all, so this is new CLI surface, all of it inert until asked for.
+
+### The one thing that changes the default path
+
+`prefill.cpp`'s CPU-share test: upstream admits a blob the CPU can read from RAM when
+`pinned || !transient`; the merged file admits it when `!transient` (the lane's CS-T rule,
+`prefill.cpp:6466`). The difference is a source that is BOTH mlocked and assembles on demand - which is
+what the managed RAM pool answers - and upstream has no such source today, so today the two tests pick
+the same experts. It is kept because the lane's managed pool would otherwise hand a pool loan to a share
+that holds it for a whole layer. Recorded here because it is the only default-path behaviour this merge
+changes.
+
+### The four DFlash programs, and two corrections that came with them
+
+`dflash_taps_test`, `dflash_rope_parity`, `dflash_inco_parity` and `dflash_load_test` are wired in
+`engine/cmake/strata_lane_tests.cmake` under `if(STRATA_ENABLE_DFLASH2)` - the fork's own blocks, which
+are the first place this port had to fix two things the fork assumes:
+
+1. `_strata_gpu_runtime_target` and `_strata_gpu_include_directories` come out of this box's configure
+   as `CUDA::cudart` and `include/strata/platform/hip_compat`, while the engine this box builds is the
+   HIP backend. `CUDA::cudart` carries no include directory, so `dflash.cpp`'s `#include
+   <cuda_runtime.h>` found `tests/core`'s CPU-only stub, which has no `cudaStream_t`. The lane's blocks
+   resolve to `strata_hip_runtime` and `include/strata/hip_compat` - the pair `strata_kernels` itself
+   compiles with.
+2. `tests/core/gguf_fixture.hpp` could not write what `dflash_load_test` asks for: GGUF types 10 / 11 /
+   12 were missing, and its array branch hardcoded `elem = 4` while the test writes an F32 array
+   (`elem = 6`). Both widened so the caller states the type; every caller that worked before writes the
+   same bytes. The throw now names the type it refused.
+
+`tools-port/lane-tests.sh` takes `PAIR=lane` now: it configures the pair this box serves with and adds
+those four to the case set. Without it the script still configures upstream's pair and asks for the same
+32 programs as before, because the four are not built there.
+
+### Verification, both pairs, this box (2 x Radeon VII, gfx906), no device touched
+
+| | the lane's pair | the default pair |
+| --- | --- | --- |
+| configure prints | `DFlash2 runtimes compiled: the serving lane's (dflash_inco: src/kernels/cuda/dflash_inco.cu, include/strata/kernels/dflash_inco.hpp)` | `DFlash2 runtimes compiled: upstream (src/core/dflash2.cpp, src/kernels/cuda/dflash2.cu)` |
+| `strata` compiles and links | yes | yes |
+| sha256 | `a37933fa9c61a0b9fecda701de5a06940ea37d87d1a0c353c7ddcfa84cea6b03` (30555416 B) | `fde1f5ff49a2e819eb8976dcd3cdef0f31cf64a4218c64c4e8d3d35f9e57b746` (31528984 B) |
+| `ldd` (with the launcher's `LD_LIBRARY_PATH`) | `libhipblas.so.2` and `libamdhip64.so.6` -> `/opt/rocm-6.1.0/lib`, `librocblas.so.4` -> `/home/srcds/rocm-gfx906-xnack/lib` | same three sonames, same three paths |
+| lane suite, devices hidden | **47 cases, 100% passed, 0 failed**, 5 SKIPPED at exit 77 (`dflash_tap_collect_test`, `dflash_owned_kv_test`, `dflash_inco_parity`, `dflash_taps_test`, `dflash_rope_parity`) | **43 cases, 100% passed, 0 failed**, 2 SKIPPED at exit 77 |
+| the suite's build step | nothing failed to build | nothing failed to build |
+
+Before this merge the same suite was 43 cases with 2 failures: `expert_helper_candidates_test` (its 12
+static checks on `generate.cpp`) and `dflash_refusal_test` (16). Both pass now, and 4 programs joined the
+run. The 5 skips are the honest kind: they need a device, they exit 77, and the box hides its devices
+from them (`HIP_VISIBLE_DEVICES=-1 CUDA_VISIBLE_DEVICES=-1`) so they cannot take VRAM from the engine
+this box serves from.
+
+Logs: `logs-port/lane-tests-run.log` (the lane pair, `PAIR=lane`) and the same path after the default
+run, with `logs-port/configure-lane-pair-2.log` and `logs-port/configure-default-2.log` beside them.
+
+### What is NOT verified
+
+**The merged decode loop has never run.** No boot, no prompt, no GPU work went into this - it is static
+analysis and a compiler. Specifically unproven:
+
+* that the merged loop answers like the fork's build (the boot-and-compare on :8019 is still the next
+  step, and it is the only thing that can show it);
+* the two conversation tiers living together (SSD and DISK) - each was tested alone, never as a pair;
+* that upstream's `--batch`, GEN `hold`, the checkpoint pool and the piped-lookup path still behave,
+  now that the fork's decode-loop hunks sit among them (they compile, and the static pins hold);
+* the lane's `--dflash` request path, which upstream 0.2.18 does not contain at all, so nothing of it is
+  covered by an upstream test - the three device-parity programs skip without a device.
+
+
 ## Open decisions for the operator
 
-1. `prefill.cpp` and `generate.cpp`: port the fork's pieces by hand against upstream's rewritten dispatch
-   loop (the list with its code is in `PORT-WORKLIST-UNPORTED.md`: 15 expert-helper, 6 CPU-pool and 6
-   VRAM-clamp hunks in `generate.cpp`, 6 expert-helper in `prefill.cpp`), or accept a port without helper
-   serving. It needs a boot to prove, so it is a joint window, not a Fixer job. Two lane tests now say
-   when it is done, without any extra work: `expert_helper_candidates_test` (12 static checks) and
-   `dflash_refusal_test` (16) fail today on exactly the `generate.cpp` call sites that are missing, and
-   they go green as the hunks land.
+1. ~~`prefill.cpp` and `generate.cpp`: port the fork's pieces by hand ... or accept a port without
+   helper serving.~~ **Decided and done 2026-11-22**: the two files are merged (see "The decode loop is
+   merged"). Both tests it named are green: `expert_helper_candidates_test` and `dflash_refusal_test`.
+   What is still the operator's call is the one thing a merge cannot give - a boot on :8019 to compare
+   the merged decode loop against the fork's build, since everything below is static analysis.
 2. Wire the DeepSeek V4.1 engine target, or record the family as out of this port. *The target is wired
    (item 2 of "What is NOT carried") and a gfx906 build compiles none of it; the decision left is whether
    to open a CUDA configure to build and run it, which this box cannot do today (item 3 below).*
