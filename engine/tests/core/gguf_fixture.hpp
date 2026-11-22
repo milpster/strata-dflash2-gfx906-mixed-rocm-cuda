@@ -39,6 +39,8 @@ inline Kv i32(const std::string& k, uint64_t v) { Kv r = make_kv(k, 5); r.u = v;
 inline Kv u32(const std::string& k, uint64_t v) { Kv r = make_kv(k, 4); r.u = v; return r; }
 inline Kv f32(const std::string& k, float v) { Kv r = make_kv(k, 6); r.f = v; return r; }
 inline Kv u32s(const std::string& k, std::vector<uint64_t> v) { Kv r = make_kv(k, 9); r.arr = std::move(v); return r; }
+// the fork's dflash_load_test spells the array form arr_u32(); it is u32s() under another name
+inline Kv arr_u32(const std::string& k, const std::vector<uint64_t>& v) { return u32s(k, v); }
 inline Kv strs(const std::string& k, std::vector<std::string> v) {
     Kv r = make_kv(k, 9);
     r.elem = 8;
@@ -86,15 +88,21 @@ inline Written write(const std::filesystem::path& path, const std::vector<Kv>& k
         else if (k.type == 2) { const uint16_t v = (uint16_t) k.u; put(&v, 2); }
         else if (k.type == 4 || k.type == 5) { const uint32_t v = (uint32_t) k.u; put(&v, 4); }
         else if (k.type == 6) put(&k.f, 4);
-        else if (k.type == 9 && k.elem == 4) {
-            put32(4);
+        // 10 INT64 / 11 FLOAT64 / 12 BOOL: the fork's dflash_load_test writes them; the caller keeps
+        // the bits in `u`.  Additive: every type that worked before writes the same bytes.
+        else if (k.type == 10 || k.type == 11 || k.type == 12) put64(k.u);
+        else if (k.type == 9 && k.elem != 8) {
+            // the element type is the caller's, not hardcoded: dflash_load_test writes an F32
+            // array (elem 6) of bit patterns.  elem is 4 for every other caller, so those
+            // bytes are unchanged.
+            put32(k.elem);
             put64(k.arr.size());
             for (uint64_t x : k.arr) put32((uint32_t) x);
         } else if (k.type == 9 && k.elem == 8) {
             put32(8);
             put64(k.sarr.size());
             for (const auto& x : k.sarr) puts(x);
-        } else throw std::runtime_error("fixture: unsupported metadata type");
+        } else throw std::runtime_error("fixture: unsupported metadata type " + std::to_string(k.type));
     }
     Written w;
     std::vector<uint64_t> bytes;

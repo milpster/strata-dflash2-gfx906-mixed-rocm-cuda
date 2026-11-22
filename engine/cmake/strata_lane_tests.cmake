@@ -420,3 +420,64 @@ endif()
 # upstream v0.2.18 itself (cmake/backends/cpu.cmake), and the conversation snapshot, validation and
 # transfer tests by cmake/strata_gpu_engine.cmake. They are not repeated here - an attempt to add any
 # of them failed the configure on the duplicate target name, which is the proof.
+
+# ---------------------------------------------------------------------------
+# The four device-parity programs of the lane's DFlash runtime (2026-11-22).
+#
+# They were not wired in the first pass of this port: the pair this box builds
+# with (STRATA_ENABLE_DFLASH2=ON, STRATA_HAVE_DFLASH2=OFF) is the only one they
+# need, and the guard below is why a default configure still compiles none of
+# them.  Their sources are the fork's own (src/kernels/dflash_taps_test.cpp,
+# src/kernels/dflash_rope_parity.cpp, src/kernels/dflash2_parity.cpp - built
+# here under the name dflash_inco_parity, so it never collides with upstream's
+# EXCLUDE_FROM_ALL dflash2_parity bench - and src/core/dflash_load_test.cpp
+# with src/core/dflash.cpp).  Three of them run tap kernels: on a box with no
+# device they exit 77, which ctest counts SKIPPED.
+# ---------------------------------------------------------------------------
+if(STRATA_ENABLE_DFLASH2)
+  # Which GPU runtime and which cuda_runtime.h shim directory these four compile against.  They
+  # cannot just read _strata_gpu_runtime_target / _strata_gpu_include_directories: on this box's
+  # configure those come out as CUDA::cudart and platform/hip_compat (the tree's CUDA branch fills
+  # them) while the engine itself is the HIP backend, and CUDA::cudart has no include dirs at all -
+  # dflash.cpp's `#include <cuda_runtime.h>` then landed on tests/core's stub, which has no
+  # cudaStream_t.  The HIP runtime interface target is what strata_kernels compiles with, so it is
+  # what these get; its compat directory (include/strata/hip_compat, the full shim, NOT the 37-byte
+  # platform one) is listed first so tests/core's minimal CPU-only stub cannot shadow it.
+  set(_lane_gpu_runtime ${_strata_gpu_runtime_target})
+  if(TARGET strata_hip_runtime)
+    set(_lane_gpu_runtime strata_hip_runtime)
+  endif()
+  set(_lane_hip_compat ${CMAKE_CURRENT_SOURCE_DIR}/include/strata/hip_compat)
+  if(NOT EXISTS ${_lane_hip_compat}/cuda_runtime.h)
+    set(_lane_hip_compat ${_strata_gpu_include_directories})
+  endif()
+  add_executable(dflash_inco_parity src/kernels/dflash2_parity.cpp)
+  target_link_libraries(dflash_inco_parity PRIVATE strata_kernels ${_lane_gpu_runtime})
+  add_test(NAME dflash_inco_parity COMMAND dflash_inco_parity)
+  set_tests_properties(dflash_inco_parity PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+
+  # DFlash tap packing: padded planes, 1..8 rows, BF16 and F32 sources.
+  add_executable(dflash_taps_test src/kernels/dflash_taps_test.cpp)
+  target_include_directories(dflash_taps_test PRIVATE ${_lane_hip_compat})
+  target_link_libraries(dflash_taps_test PRIVATE strata_kernels ${_lane_gpu_runtime})
+  add_test(NAME dflash_taps_test COMMAND dflash_taps_test)
+  set_tests_properties(dflash_taps_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+
+  # the DFlash drafter's full-head (256-dim) NeoX RoPE against a host reference (docs/DFLASH.md)
+  add_executable(dflash_rope_parity src/kernels/dflash_rope_parity.cpp)
+  target_include_directories(dflash_rope_parity PRIVATE ${_lane_hip_compat})
+  target_link_libraries(dflash_rope_parity PRIVATE strata_kernels ${_lane_gpu_runtime})
+  add_test(NAME dflash_rope_parity COMMAND dflash_rope_parity)
+  set_tests_properties(dflash_rope_parity PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+
+  # the drafter's artifact loader: no device work, but the runtime header needs the toolkit headers
+  add_executable(dflash_load_test src/core/dflash_load_test.cpp src/core/dflash.cpp)
+  # The fork's own block relies on the GPU runtime target's INTERFACE include dirs to fill the CUDA
+  # header slots; in this tree the runtime target does not export them, so hip_compat's dir (the same
+  # one the three kernel programs above get) is listed here.  Same headers, same order of precedence.
+  # dflash.cpp includes <cuda_runtime.h>; the compat directory above fills that slot.
+  target_include_directories(dflash_load_test PRIVATE ${_lane_hip_compat} include
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/core ${CUDAToolkit_INCLUDE_DIRS})
+  target_link_libraries(dflash_load_test PRIVATE ${_lane_gpu_runtime})
+  add_test(NAME dflash_load_test COMMAND dflash_load_test)
+endif()
