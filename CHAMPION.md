@@ -67,8 +67,8 @@ seven-commit pool-admission suite between `d534e72a` (built 23:47, before `1ae83
 |---|---|---|
 | `STRATA_RAM_BUDGET_MIB` | 43008 | 38 GiB pool + 4 GiB outside area |
 | RAM pool store | `pool_bytes=40802189312` | must appear in the boot lines |
-| `--vram-reserve-mib` (CUDA0) | **640, provisional** | raised 384→448→512→576→640 on 2026-11-21 on a misread failure: `refilling a lent slot failed: No buffer space available` is errno ENOBUFS from the RAM pool (`ram_pool.cpp` pool_alloc), not a card out of VRAM, and the refill loop takes the store directly. No margin step was ever justified by it, and a larger margin shrinks the GPU expert cache, which sends more pairs to the pool. It is kept because two clean legs passed on it; the measurement back down is queued for the operator, not taken unilaterally |
-| `--vram-reserve-later-mib` (CUDA1) | 192 | never ran low |
+| `--vram-reserve-mib` (CUDA0) | 256 (tuple B, measured); **640 provisional (tuple A, misread)** | the optimized pair is **256/192**: round 18ag cut 384→256 clean (card0 cache 4885→4951 slots), round 18ah pushed 256→192 with TG judges 32.0/28.7/29.4 and no shrink/LOW/stall (journal `serving-tg-reeval-split-retest-2026-11-11.md`). Tuple A's 640 was raised 384→448→512→576→640 on 2026-11-21 on a misread failure: `refilling a lent slot failed: No buffer space available` is errno ENOBUFS from the RAM pool (`ram_pool.cpp` pool_alloc), not a card out of VRAM. No margin step was ever justified by it, and a larger margin shrinks the GPU expert cache, which sends more pairs to the pool. Backing tuple A down to the measured pair is queued for the operator, not taken unilaterally |
+| `--vram-reserve-later-mib` (CUDA1) | 192 | never ran low; 18ah measured it, and the FS 2,9 falsification showed 13 MiB short of the staging ring collapses a leg to 12.2 tok/s |
 | `--expert-helper-slots` | 4600 | the engine's hello is authoritative; the helper's `--slots` is inert |
 | helper `--reserve-mib` | 0 | the component clamps it to 64 |
 | helper `--fill-mib` | 7400 | fills 3,785 slots / 7.09 GiB, `fill stopped: budget`, 250 MiB left |
