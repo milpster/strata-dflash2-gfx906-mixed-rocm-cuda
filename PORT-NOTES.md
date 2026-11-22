@@ -65,9 +65,10 @@ the fork tree. Re-running it refreshes the copies.
    this card, so nothing in it is proven by this port - it needs a CUDA build, and this box cannot make
    one today (item 5).
 3. **The lane's own test programs are wired and run.** `PORT-MANIFEST.txt` covers `src/`, `include/`,
-   `sycl/` and `serve/` - the plan's count - so the lane's tests under `tests/` were nobody's: 49 files,
-   24 test programs and their fixtures and stubs, copied (`PORT-MANIFEST-TESTS.txt`). Copying their build
-   blocks wholesale is wrong: the blocks name different libraries, and some link with
+   `sycl/` and `serve/` - the plan's count - so the lane's tests under `tests/` were nobody's: 49
+   fork-only `.cpp` files under `tests/` (programs, fixtures and stubs), copied as
+   `PORT-MANIFEST-TESTS.txt`. Copying their build blocks wholesale is wrong: the blocks name different
+   libraries, and some link with
    `-Wl,--wrap=mmap,mlock,munmap,munlock` (plus `--wrap=pread`) with a `STRATA_RAM_POOL_TEST` define - the
    shims *are* the test, since they answer the syscalls and count them. So each was transplanted with its
    own fork block read, into `engine/cmake/strata_lane_tests.cmake` (included from `CMakeLists.txt` under
@@ -76,8 +77,10 @@ the fork tree. Re-running it refreshes the copies.
    guards it, and whether this tree already builds that name - which matters because a duplicate
    `add_executable` fails the whole configure (CMP0002), not just that program.
 
-   24 of the fork's lane programs are now in a target: 22 built and 23 of their 34 test cases ran
-   (counts and results in Verification; the group is one program with ten cases and one with two).
+   `engine/cmake/strata_lane_tests.cmake` now registers **34 of the lane's test programs**, 25 of them
+   added in this pass. With the two opt-ins ON, 33 compile and link (`dflash_head_bf16_test` does not -
+   item 7); those 33 make **43 ctest cases** (`native_mlock_test` runs as ten, `ram_pool_test` as two),
+   and **39 passed, 2 skipped themselves for want of a device, 2 failed**.
    The exceptions, with the reason each:
 
    * `dflash_head_bf16_test` - wired but `EXCLUDE_FROM_ALL`; it does not compile, for a reason that is a
