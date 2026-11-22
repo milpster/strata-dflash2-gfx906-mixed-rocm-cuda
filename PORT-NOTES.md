@@ -386,6 +386,88 @@ analysis and a compiler. Specifically unproven:
   covered by an upstream test - the three device-parity programs skip without a device.
 
 
+## The expert helper builds: `strata-expert-helper` from the CUDA tree (2026-11-22)
+
+The sidecar that owns the RTX 3080 in this box's mixed-GPU lane. `engine/cmake/strata_gpu_engine.cmake:610`
+refuses it under `STRATA_HIP_GFX906` by design ("the sidecar is CUDA-only (NVIDIA). Build it in a CUDA
+tree; the HIP engine runs its proxy client unchanged"), so it was never buildable in `build-906` or
+`build-lane`. It now builds in its own tree.
+
+**A separate configure, scripted:** `tools-port/configure-cuda-helper.sh` (new), run as
+
+```
+sh tools-port/configure-cuda-helper.sh build-cuda-helper        # exit 0
+ninja -C build-cuda-helper strata-expert-helper                 # exit 0
+```
+
+| option | why |
+| --- | --- |
+| `STRATA_ENABLE_CUDA=ON`, `STRATA_HIP_GFX906=OFF`, `STRATA_ENABLE_HIP=OFF` | the NVIDIA toolchain, no ROCm; nothing here touches the gfx906 engine or its cards |
+| `CMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc` (13.1.115), `CMAKE_CUDA_HOST_COMPILER=/usr/bin/g++`, `CMAKE_CXX_COMPILER=/usr/bin/g++` | g++ as nvcc's host, always - clang-as-nvcc-host is separately broken on this box (unrelated to this port) |
+| `CMAKE_CUDA_ARCHITECTURES=86` | the RTX 3080. CMake's own CUDA 13 default is sm_75, so it is named |
+| `STRATA_NATIVE_EXPERTS=ON` | CMake refuses the helper without it (the helper computes native IQ blobs) |
+| `STRATA_BUILD_EXPERT_HELPER=ON` | the opt-in itself |
+| `STRATA_ENABLE_DFLASH2=ON`, `STRATA_HAVE_DFLASH2=OFF` | **the lane's pair**, the same one `build-lane` and this box's serving engine use, so the libraries the helper links are configured as they are in the process it talks to. Both ON is a `FATAL_ERROR` by design (one verifier, one tap producer), and neither is not what the lane runs |
+| `STRATA_BUILD_TESTS=ON` | **not** for the tests - for ggml. See below |
+
+### The one thing that had to change, and why
+
+The first configure asked for the release shape (`STRATA_BUILD_TESTS=OFF`, Strata's own CPU pool). That
+shape makes upstream's own rule drop ggml entirely - `if(STRATA_BUILD_TESTS OR NOT
+STRATA_OWN_CPU_QUANT)`, `engine/CMakeLists.txt:681`, printing "Strata: no ggml in this build (own CPU
+pool, no MMQ, tests off)" - and the build died three times on `fatal error: ggml.h: No such file or
+directory`:
+
+```
+src/core/remote_experts.cpp:6                 GGML_TYPE_Q8_K (the Q8_K wire's per-layer pack-format gate)
+src/core/expert_helper_socket.cpp:9           the fp16 contract of the q8_1 activation blocks
+tools/mixed_gpu/sidecar/helper_main.cpp:62    the same q8_1 contract
+```
+
+The CMake rule is upstream's; those three `#include "ggml.h"` lines are not (upstream's copies of these
+files include ggml nowhere) - they came with the lane's files. So it is the lane's code that needs
+ggml's headers, and the fix is to configure ggml in, exactly as `build-906` and `build-lane` already do
+(`STRATA_BUILD_TESTS=ON`). The alternative `-DSTRATA_OWN_CPU_QUANT=OFF` would move the CPU
+quantisation path this box serves with, so it was not used. With that, the target compiled with **no
+port-side source change at all** - the three sidecar files are byte-identical to the fork's
+(`helper_main.cpp`, `helper_frame.cpp`, `helper_microbench.cpp`; `diff -q` clean).
+
+The CUDA precondition was the operator's: `/usr/local/cuda-13.1/targets/x86_64-linux/include/crt/math_functions.h`
+patched for glibc 2.43 (`rsqrt` / `rsqrtf` colliding with the C++ standard's names). Checked before
+configuring, not assumed: a one-line `.cu` through the real nvcc with `-ccbin /usr/bin/g++` compiled,
+exit 0. Before that patch this configure died in `enable_language(CUDA)`'s own compiler-id test (the
+half-written `build-cuda/` cache is that earlier attempt).
+
+### The binary
+
+| | |
+| --- | --- |
+| path | `build-cuda-helper/strata-expert-helper` |
+| built at commit | `03600590f` (a `strata`-family hash is not a content hash: the engine stamps `git rev-parse --short=9 HEAD` at configure time) |
+| sha256 | `58c3ae020a7479a13c622627544507f5b43f284f9be4b5222ac90c3421b88bb2` |
+| size | 55541552 bytes |
+| device code | 38 cubins, all `sm_86` (`cuobjdump -lelf`) |
+| `NEEDED` | `libcudart.so.13`, `libstdc++`, `libm`, `libgcc_s`, `libc` - no BLAS, no HIP |
+| `ldd` | `libcudart.so.13 => /usr/local/cuda/lib64/libcudart.so.13` (that symlink chain is `/usr/local/cuda` -> `/etc/alternatives/cuda` -> `/usr/local/cuda-13.1`) |
+| `RUNPATH` | `/usr/local/cuda-13.1/targets/x86_64-linux/lib` - the versioned toolkit path, so the binary follows `cuda-13.1` itself, not the `/etc/alternatives` symlink. Worth knowing if the box's toolkit default is ever repointed |
+| `libcuda.so.1` (the driver) | not in `NEEDED` and not in `ldd`. That is normal, not a defect: cudart dlopens the driver on the first CUDA call, so `ldd` cannot show it |
+
+**What was run:** `strata-expert-helper --help` with `CUDA_VISIBLE_DEVICES=-1 HIP_VISIBLE_DEVICES=-1` -
+it prints its usage and exits 0. It is the first statement of `main` (`helper_main.cpp:2141`, before
+`parse()` and before any CUDA call), so nothing was attached. There is no `--version` or `--info`
+switch in this binary; `--help` is the only informational output it has.
+
+**What was NOT done, on purpose:** no socket bind, no attach, no `--pack`, no fill, no window, no
+draft, no `--persist`, no device work of any kind, nothing on `:8009`. What is therefore still
+unproven: that this binary starts on the 3080, that its fill fits the card's budget with this box's
+`--reserve-mib`, and that the `sm_86` device code runs (it was compiled, never executed).
+
+Logs: `logs-port/configure-cuda-helper-1.log` (the release-shape configure that printed "no ggml"),
+`logs-port/build-cuda-helper-1.log` (the three `ggml.h` failures),
+`logs-port/configure-cuda-helper-2.log` and `logs-port/build-cuda-helper-3.log` (the good pair, both
+exit 0).
+
+
 ## Open decisions for the operator
 
 1. ~~`prefill.cpp` and `generate.cpp`: port the fork's pieces by hand ... or accept a port without
