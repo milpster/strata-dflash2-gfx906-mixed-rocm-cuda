@@ -890,3 +890,22 @@ and the park/restore story are both closed on the clamped engine.
 Next, per operator order "turn the expert trail back on and measure again": clean A/B at reserves 600/600
 (cache size held constant), arm `fson-rsv600` with `STRATA_FS_SLOTS=2,8` (the clamp grants what fits) against arm
 `fsoff-rsv600` with the swap off, same window script.
+
+### Expert trail back ON under the clamp (fson-rsv600, 00:41–00:59)
+
+Reserves raised 256/192 → 600/600 so both cards clear the 512 MiB low line; `STRATA_FS_SLOTS=2,8`. The clamp
+granted the full ask (no clamp line): `slots per layer per card: card0:2, card1:8`, CUDA1 548 MiB free with
+everything loaded (after the 293 MiB allocation). Control arm `fsoff-rsv600` (swap off, same reserves) follows.
+
+| Leg | Prompt | Decode | Drafts |
+|---|---|---|---|
+| 1 — cold infill | 239,646 read in 824,150 ms (**290.8 tok/s**) | 699 in 31,513 ms (**22.2 tok/s**) | 427/709 (60%) |
+| 2 — same boot | 239,641 reused + 5 read in 250 ms; rewind pass re-read 535 at 51.8 tok/s | 514 at **30.2**, 136 at **32.1 tok/s** | 325/506, 84/134 |
+
+Client: request 1 860.7 s end-to-end; request 2 41.6 s (16.0 tok/s overall). 0 non-finite, no stall, park/restore
+all clean (conv-1/2/3, 11,608 MiB tier, park-gain skip, disk-only snapshot).
+
+**The swap is inert in this workload**: every pass reports `0 experts served from the swap space, 0 copies
+(0 from the router look-ahead), 0 not landed yet, 0 no free slot, 0 over budget`. The 240k prefill and short
+draft-verified decodes never trip the admit path (admit after 2 misses per window; the expert cache plus the
+helper cover the misses). Awaiting the same-reserve control before any speed verdict.
