@@ -2,3 +2,4 @@ tests/core/cuda_runtime.h	engine/tests/core/cuda_runtime.h
 tools/mixed_gpu/p2_measure/p2_measure.cpp	engine/tools/mixed_gpu/p2_measure/p2_measure.cpp
 tools/mixed_gpu/p2_measure/p2_measure.hpp	engine/tools/mixed_gpu/p2_measure/p2_measure.hpp
 tools/mixed_gpu/p2_measure/p2_measure_test.cpp	engine/tools/mixed_gpu/p2_measure/p2_measure_test.cpp
+tools/mixed_gpu/p2_measure/p2_measure_main.cpp	engine/tools/mixed_gpu/p2_measure/p2_measure_main.cpp
