@@ -1079,3 +1079,12 @@ health ok after ~50 s, card0 288 MiB free with the model loaded, then a real-com
 (`finish: stop`, "probe-ok") — serving verified before the subagent lane resumes. The merge fixer
 (ses_dfefcd88…) survived the outage on host retries and is actively working again (last activity seconds
 after the probe).
+
+## Park/restore verified after the restart (2026-11-22, surplus DeepSeek 1017 lane)
+
+Works. Parent-verified from the engine's own elog (`logs/engine-prod-ud-iq3xxs-v0233.log`, boot region from
+line 53079): 7 RAM parks, 7 restores, 3 disk parks, 0 non-finite/NaN/ERR. A 2,279-token test conversation
+restored in 185.9 ms (prefill 31,571 ms → 370 ms). Cross-boot disk restore proven live in production: the merge
+fixer's own 192,840-token conversation restored from the previous boot's disk cache in 31.4 s at boot, before any
+request of this boot wrote anything; a 210,015-token disk-only snapshot restored in 29.6 s same-boot. RAM tier
+holds ~one 2.3k-token conversation (311 MB GDN checkpoint) under the 512 MiB ceiling; larger ones go disk-only.
