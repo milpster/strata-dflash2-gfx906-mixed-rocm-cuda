@@ -4,3 +4,5 @@ third_party/antirez-ds4/LICENSE	engine/third_party/antirez-ds4/LICENSE
 third_party/antirez-ds4/NOTICE.md	engine/third_party/antirez-ds4/NOTICE.md
 tests/dsv41/ds4_gguf_test.cu	engine/tests/dsv41/ds4_gguf_test.cu
 tests/dsv41/ds4_route_guard_test.cu	engine/tests/dsv41/ds4_route_guard_test.cu
+tools/trellis/tqenc.cpp	engine/tools/trellis/tqenc.cpp
+tools/trellis/tqenc.hpp	engine/tools/trellis/tqenc.hpp
