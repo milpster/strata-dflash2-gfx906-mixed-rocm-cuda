@@ -1132,3 +1132,9 @@ Branch pushed. Helper CUDA build dispatched next (toolkit fixed this morning).
    two disk tiers (up to 32 + 24 GiB).
 4. `conversation_transfer_test`: upstream guard bug (admits a CUDA-only test when `NOT STRATA_ENABLE_HIP`,
    true on a gfx906 configure); source byte-identical to v0.2.18. Third such target — reportable, not ours.
+
+### Operator decisions on the merge items (2026-11-22)
+
+- CPU-share blob rule: **keep the fork's `pinned && !transient`** (correctness for pool loans + measurement
+  provenance; the loan-leak is upstreamable later as a pool-aware release patch, parked for the held report).
+- Upstream SSD spill tier: pros/cons of config-entry vs code-default presented; operator choice pending.
