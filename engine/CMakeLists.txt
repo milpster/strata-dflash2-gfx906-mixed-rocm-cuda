@@ -325,6 +325,8 @@ target_link_libraries(strata-dequant PRIVATE strata_artifact)
 # this file is now nothing but the CLI entry point, and its inherited guard spells that as a "selftest"
 target_compile_definitions(strata-dequant PRIVATE STRATA_DEQUANT_SELFTEST)
 if(STRATA_BUILD_TESTS)
+  # the serving lane's own CPU tests, transplanted block by block from the fork (cmake/strata_lane_tests.cmake)
+  include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/strata_lane_tests.cmake)
   add_executable(batch_telemetry_test src/core/batch_telemetry_test.cpp)
   target_include_directories(batch_telemetry_test PRIVATE include)
   add_test(NAME batch_telemetry_test COMMAND batch_telemetry_test)
