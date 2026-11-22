@@ -131,6 +131,12 @@ macro(strata_cuda_prompt_tests)
       # (moe_fused_iq.cu's __CUDA_ARCH__ >= 750 sections), so a list with an older architecture (STRATA_EXPERIMENTAL_SM60) does not build it
       if(_strata_cuda_below75)
         message(STATUS "Strata: prefill_decode_golden not built: ${CMAKE_CUDA_ARCHITECTURES} has an architecture below sm_75")
+      elseif(STRATA_HIP_GFX906)
+        # TEMPORARY LOCAL GUARD (this port, 2026-11-22) for an upstream defect: the gfx906 configure
+        # compiles every src/*.cu as HIP but gives no compile rule to a source under tests/cuda/, so
+        # this target would link with no object of its own and die on "undefined symbol: main"
+        # (reproduced on the untouched v0.2.18 tag). REMOVE when upstream fixes the rule.
+        message(STATUS "Strata: prefill_decode_golden not built: the gfx906 configure compiles no source under tests/cuda/")
       else()
         add_executable(prefill_decode_golden tests/cuda/prefill_decode_golden.cu)
         target_include_directories(prefill_decode_golden PRIVATE $<TARGET_PROPERTY:strata_pf_own,INCLUDE_DIRECTORIES>)
