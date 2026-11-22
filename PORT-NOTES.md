@@ -381,15 +381,19 @@ Reconfigured with `tools-port/configure-906.sh` (the resting pair, `STRATA_ENABL
 | | |
 | --- | --- |
 | commit | `4fde0cf2b6` |
-| sha256 | `e6ce1720f4fb22a1228f608d961c9b4c0ad68911db1dddb055402cac92afab7b` (31528984 B, `ninja -C build-906 strata` exit 0) |
+| sha256 | `572284db0f107cb470dfaf0a76a5f592fb1a9bf81e84c23d84e84a7e716331ee` (31528984 B, `ninja -C build-906 strata` exit 0; the resting build after the lane suite re-run, cache restored with the opt-ins OFF) |
 | `ldd` (launcher's `LD_LIBRARY_PATH`) | `libhipblas.so.2` and `libamdhip64.so.6` -> `/opt/rocm-6.1.0/lib`, `librocblas.so.4` -> `/home/srcds/rocm-gfx906-xnack/lib`; nothing `not found` |
+| lane suite after the guards | default pair **43/43 passed, 0 failed** (2 honest device skips); `PAIR=lane` **47/47 passed, 0 failed** (5 honest device skips) - `logs-port/lane-suite-default-3.log`, `logs-port/lane-suite-lane-3.log` |
 
 A correction to the paragraph above it: the engine does not stamp the commit into the `strata` binary.
 The only git stamp is `STRATA_BUILD_ID` -> `DS4_BUILD_ID`, and it lands in `strata-dsv41` alone
 (`cmake/strata_gpu_engine.cmake:672`), a target a gfx906 configure never builds
 (`STRATA_BUILD_DSV41=OFF`). `build-906/strata --version` prints `strata 0.1.64` with no build id, and
 its strings carry no 9-hex commit. So a rebuilt sha256 moves for link-time reasons, not for a stamp;
-quoting a build as (commit, sha256) stays the habit either way.
+quoting a build as (commit, sha256) stays the habit either way. Measured on this very tree: two
+relinks from identical source, identical options and the same commit `4fde0cf2b6` produced different
+sha256s (`e6ce1720f4...` mid-sequence, `572284db0f...` after the cache restore) - the movement is
+link-time nondeterminism, not a stamp.
 
 ### What is NOT verified
 
