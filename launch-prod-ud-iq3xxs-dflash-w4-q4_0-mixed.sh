@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Foreground mixed HIP/CUDA supervisor. Detach with setsid nohup when needed.
 # 2026-11-22: always-on Foresight swap (operator order, quality first): clamped engine
-# 4b8251e9 in run/fsclamp-bin, reserves 600/600 so the clamp grants the full 2,8 ask
-# (CUDA1 548 MiB free after the 293 MiB allocation; measured end-to-end at 240k in the
+# 4b8251e9 in run/fsclamp-bin, reserves 344/344 (operator order 2026-11-22: -256 MiB; the clamp then grants card0:0, card1:2)
+# CUDA1 512 MiB free, swap mostly off; 240k + 1k decode + park/restore all clean, 0 non-finite (fson-rsv344-240k)
 # fson-rsv600 window, 0 non-finite). Default BIN and CONFIG moved to the -fson tuple.
 # TUNED config (ab2-r1 PASS verdict 2026-10-31: long decode +7.7%, xl +6.5%, prompt tier live):
 # rpcw candidate engine+helper, helper second channel (--socket2), prompt tier on

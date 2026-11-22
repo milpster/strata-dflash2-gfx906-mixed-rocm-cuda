@@ -976,3 +976,16 @@ So −256 MiB of margin buys bigger expert caches, and costs most of the swap: `
 `card0:2, card1:8`. The two operator orders now pull against each other — "always on for quality" needs ~600/600,
 "reduce margins" lands the cards just under the low line. The 240k window (fson-rsv344-240k) is running to confirm
 long-context safety before any prod default moves.
+
+### 240k + 1k decode at 344/344 (fson-rsv344-240k, 01:34–01:52) — clean
+
+| | value |
+|---|---|
+| cold prefill | 239,646 read in 841,420 ms (**284.8 tok/s**) |
+| cold decode | 651 in 28,586 ms (**22.8 tok/s**), drafts 399/670 (60%) |
+| restored turn | 239,641 reused + 5 read in 244 ms; 405 at **32.2 tok/s**; client 17.8 s |
+| non-finite | **0**; park/restore clean (conv-1/conv-2, 7,750 MiB tier) |
+| clamp | card0:0, card1:2; CUDA1 512 MiB free; swap served 0 experts even with its 2 slots |
+
+Speed sits inside the noise band of every measured tuple (prefill 284.4–290.8 tok/s, decode 20.2–32.2). Applied to
+the prod `-fson` config (reserves 344/344) per the operator order; prod rebooted on it.
