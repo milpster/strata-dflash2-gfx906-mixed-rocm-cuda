@@ -23,6 +23,13 @@ Both produce 0 non-finite lines and the same completion the branch engine produc
 promoted: prod's config and binary stay as they are until the operator decides. Full record:
 `journal/pool-admission-fix-2026-11-21.md`.
 
+**The swap itself, measured 2026-11-22 (A/B at equal reserves 600/600): a wash.** FS on (clamp granted the full
+`2,8`, CUDA1 548 MiB free) vs FS off (CUDA1 842 MiB): prefill 290.8 vs 288.8 tok/s, decode within noise — and the
+swap served **0 experts, 0 copies, 0 look-ahead landings in every pass of every arm**. It has never been observed
+doing work on this rig (3k oracle legs, 240k legs, both A/B arms); its 293 MiB is pure cost. With the clamp
+shipped, `STRATA_FS_SLOTS` needs no config change: it self-disables where it cannot fit and grants slots where it
+can.
+
 ## What is serving
 
 | Part | Path | Identity |
