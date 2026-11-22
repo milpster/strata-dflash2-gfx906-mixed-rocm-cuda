@@ -1188,3 +1188,18 @@ request at 2,507 tokens, speed decaying 8.1 -> 7.1 tok/s). Not OOM (kernel log c
 ssh/gcr churn. The pair supervisor respawned as designed; health ok and probe finish=stop "probe-ok" verified on
 the new generation (22:05 log, 288 MiB card0 free). New datapoint for the #267 rate: first occurrence today after
 many long fixer turns (old note: ~1 in 20 long drives).
+
+## The RAM-raise experiment is measured and reverted (2026-11-22, operator order)
+
+amdgpu XDMA no-retry page faults (GPU 0000:09:00.0, host pages of the strata process, PERMISSION_FAULTS)
+appeared ONLY under the raised budgets, then killed generations:
+- 21:10:47, 4 faults, pid 421021 (+4 GiB generation, 40960): survived.
+- 22:16:31, 20 faults, pid 3553374 (+2 GiB generation, 38960): engine SIGABRT (exit -6, the "usual cause is
+  running out of RAM" hint was the engine's generic abort text; the kernel shows XDMA permission faults, no OOM).
+- 22:22:20, 20 faults, pid 4068909 (auto-respawn, still 38960): faulted immediately.
+- 21:36's #267 verify wedge at layer 37 was also within the raised era.
+Mechanism read (unconfirmed static analysis): XDMA (the cross-card DMA client) touching host pinned pages whose
+GPU VM mappings went stale when the pool grew into new locked ranges. Operator order executed: budget reverted
+to 36864, proper stop + fresh boot at 22:24. Current generation (pid 215138): health ok, probe finish=stop
+"probe-ok", 288 MiB card0, ZERO XDMA faults so far. Watch: any fault at 36864 means the cause is elsewhere
+(and #267 may share this root).
