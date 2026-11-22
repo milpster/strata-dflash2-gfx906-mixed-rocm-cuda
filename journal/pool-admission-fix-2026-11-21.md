@@ -1209,3 +1209,14 @@ to 36864, proper stop + fresh boot at 22:24. Current generation (pid 215138): he
 Operator rebooted the box (post XDMA-fault era; the reboot also cleared the gcr/ssh-add mess at the system
 level). Fresh boot at the reverted 36864 budget: health ok ~N/A s, probe finish=stop "probe-ok", zero amdgpu
 XDMA faults in the boot's kernel log so far.
+
+## CORRECTION: the XDMA faults are not budget-dependent (2026-11-22 22:40)
+
+The RAM-raise correlation is DISPROVEN: 10 more XDMA no-retry page faults on GPU 09:00.0 (CUDA1, the card with
+the 2026-10-22 hard-wedge history per gpu-crash-attribution-2026-10-26.md) at the reverted 36864 budget after a
+full machine reboot, same kernel (7.3.4-xanmod). All faults: vmid 8, XDMA client, permission faults on the
+engine's host pages. The 21:36 #267 verify wedge at layer 37 also sat in card1's layer range (32-47). Pattern:
+card1's cross-card DMA faulting on host pinned pages at ANY budget; kills the generation ~5-15 min in
+(supervisor keeps respawning). Card temps currently nominal (42/63C junction, mclk 1000). Prior art: card1
+needed an SBR (gpu-sbr.sh) to recover from its Oct-22 SMU-dead wedge. Next lever if it recurs: short-bottom
+reset of card1, then the amdgpu/kernel angle. Fixer lane HELD until the engine holds a generation.
