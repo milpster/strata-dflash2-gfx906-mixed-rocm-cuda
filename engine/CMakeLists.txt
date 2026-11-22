@@ -102,6 +102,52 @@ if(STRATA_HIP_GFX906)
   set(STRATA_ENABLE_CUDA ON CACHE BOOL "" FORCE)
 endif()
 option(STRATA_ENABLE_HIP "Build the HIP targets for wave32 AMD GPUs (gfx1100, gfx1201; gfx1012/gfx1030 unvalidated)" OFF)
+# DFlash2 compiles the CUDA-shaped kernels: on NVIDIA CUDA directly, and on the gfx906 build, which compiles
+# every src/*.cu as HIP through the wave64 compat layer (the shuffles keep their 32-lane semantics there, and
+# dflash2.cu uses no cuBLAS, no WMMA, no packed-byte SIMD - audit: docs/DFLASH2_INCO.md).  The wave32 HIP
+# backend has no DFlash2 runtime and stays refused.
+if(STRATA_ENABLE_DFLASH2 AND (NOT STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP))
+  message(FATAL_ERROR "DFlash2 requires the CUDA sources: NVIDIA CUDA, or the gfx906 (HIP wave64) build that compiles them as HIP")
+endif()
+# There are two DFlash2 drafters in this tree.  Upstream v0.2.18's is src/core/dflash2.cpp with
+# src/kernels/cuda/dflash2.cu and include/strata/kernels/dflash2.hpp, whose taps the in-verify producer of
+# src/core/verify.cpp writes (the full-layer verifiers only); the serving lane's own is
+# src/kernels/cuda/dflash_inco.cu with src/core/dflash.cpp, dflash_runtime.cpp and dflash_tap_collect.cpp, whose
+# taps the serve / layer-split path reads.  Upstream defined its macro unconditionally in the CUDA and HIP builds;
+# it is an option here so the two runtimes can be switched apart, with the default kept exactly as upstream has it
+# (ON, and Metal / SYCL never define it - the same sources upstream skips).
+# One tap definition per verifier per build is the invariant the upstream-integration review fixed
+# (docs/DFLASH.md: the lane's stage-range taps from the tap plan, docs/DFLASH2.md: upstream's in-verify taps), so a
+# build that compiles both tap producers is refused at configure time rather than resolved by include order.
+option(STRATA_HAVE_DFLASH2 "Build upstream's DFlash2 drafter (src/core/dflash2.cpp): ON in the CUDA and HIP builds, as upstream v0.2.18" ON)
+option(STRATA_ENABLE_DFLASH2 "Build the serving lane's DFlash2 runtime (src/kernels/cuda/dflash_inco.cu, src/core/dflash.cpp): the serve / layer-split taps" OFF)
+if(STRATA_HAVE_DFLASH2 AND STRATA_ENABLE_DFLASH2)
+  message(FATAL_ERROR "Two DFlash2 runtimes in one build: STRATA_ENABLE_DFLASH2 (the serving lane's: src/kernels/cuda/dflash_inco.cu, the serve / layer-split taps) and STRATA_HAVE_DFLASH2 (upstream's: src/core/dflash2.cpp, the in-verify taps) both write taps, and a verifier may have exactly one tap producer. Keep STRATA_HAVE_DFLASH2=ON for the upstream drafter, or set STRATA_HAVE_DFLASH2=OFF with STRATA_ENABLE_DFLASH2=ON for the gfx906 serve / layer-split runtime.")
+endif()
+# Printed for every configure, so the built runtime is never inferred from a flag file: the gate-1 matrix
+# reads this line (and the two options) to prove which producer a build compiled.  Upstream's runtime counts
+# as compiled only where its sources and its macro are compiled (the CUDA and HIP builds), exactly as the
+# define below does; Metal and SYCL compile neither.
+if(STRATA_ENABLE_DFLASH2)
+  set(_strata_dflash2_runtimes "the serving lane's (dflash_inco: src/kernels/cuda/dflash_inco.cu, include/strata/kernels/dflash_inco.hpp)")
+else()
+  set(_strata_dflash2_runtimes "none")
+endif()
+if((STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP) AND STRATA_HAVE_DFLASH2)
+  if(STRATA_ENABLE_DFLASH2)
+    set(_strata_dflash2_runtimes "${_strata_dflash2_runtimes} + upstream (src/core/dflash2.cpp, src/kernels/cuda/dflash2.cu)")
+  else()
+    set(_strata_dflash2_runtimes "upstream (src/core/dflash2.cpp, src/kernels/cuda/dflash2.cu)")
+  endif()
+endif()
+message(STATUS "DFlash2 runtimes compiled: ${_strata_dflash2_runtimes}")
+# R2 (opt-in, docs/MIXED_GPU_HELPER.md): build the CUDA-only `strata-expert-helper` sidecar next to the
+# engine.  OFF (the default) compiles NOTHING of it: no extra target, no extra TU, the engine's own
+# binary keeps its sidecar-free shape - the proxy client inside the engine is always compiled (CPU-only
+# code, no device call), the helper is a separate process a user starts by hand.  The helper is CUDA
+# only: under the gfx906 HIP scheme it is refused with a named reason (the sidecar owns all NVIDIA
+# memory; the HIP engine process runs the client with no CUDA runtime mapped at all).
+option(STRATA_BUILD_EXPERT_HELPER "Build the CUDA-only strata-expert-helper sidecar (opt-in; docs/MIXED_GPU_HELPER.md)" OFF)
 # llama.cpp's MMQ prompt kernels are no longer in the tree (0.2.16): every CUDA and HIP build compiles Strata's own prompt kernels (strata_pf_own)
 # and the FP16 path.  MMQ comparison builds come from the v0.2.15 tag.
 # The community-made AMD changes (include/strata/core/amd_community.hpp): on by default.  This option is the build half of the one

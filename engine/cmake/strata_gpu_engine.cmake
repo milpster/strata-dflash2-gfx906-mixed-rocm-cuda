@@ -7,10 +7,25 @@
 macro(strata_gpu_engine)
 if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   add_library(strata_core STATIC src/core/device.cu src/core/pinned.cu src/platform/memory.cpp src/platform/io_priority.cpp src/core/graph.cpp src/core/weights.cpp
-                               src/core/layout.cpp)
+                               src/core/layout.cpp
+                               # --- ported serving lane (PORT-MANIFEST.txt; upstream v0.2.18 has none of these) ---
+                               # the CPU expert pool: a locked RAM arena (ram_pool) that holds the resident
+                               # experts, the O_DIRECT reader that streams into it, and the slot store and
+                               # source adapter on top of it (docs/EXPERT_POOL.md).
+                               src/core/ram_pool.cpp src/core/pool_expert_cache.cpp src/platform/bounded_direct_reader.cpp
+                               src/core/pool_expert_store.cpp src/core/pool_expert_source_adapter.cpp)
   target_include_directories(strata_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-  # the DFlash2 drafter (src/core/dflash2.cpp, src/kernels/cuda/dflash2.cu) exists in the CUDA and HIP builds; the Metal and SYCL builds compile without it
-  target_compile_definitions(strata_core PUBLIC STRATA_HAVE_DFLASH2=1)
+  # the DFlash2 drafter (src/core/dflash2.cpp, src/kernels/cuda/dflash2.cu) exists in the CUDA and HIP builds; the Metal and SYCL builds compile without it.
+  # It is an option (STRATA_HAVE_DFLASH2), default ON exactly as v0.2.18 compiled it, so the build can be made to carry exactly ONE tap producer: this
+  # macro gates upstream's in-verify tap capture, and STRATA_ENABLE_DFLASH2 gates the serving lane's own runtime; both ON is refused at configure time.
+  # The option also gates the two SOURCES (src/kernels/cuda/dflash2.cu in strata_kernels, src/core/dflash2.cpp in strata_engine), so with it OFF the tree
+  # compiles no translation unit of that runtime at all, and the configure-time runtime print is exactly what the build contains.
+  if(STRATA_HAVE_DFLASH2)
+    target_compile_definitions(strata_core PUBLIC STRATA_HAVE_DFLASH2=1)
+  endif()
+  if(STRATA_ENABLE_DFLASH2)
+    target_compile_definitions(strata_core PUBLIC STRATA_ENABLE_DFLASH2=1)
+  endif()
   if(STRATA_ENABLE_CUDA AND STRATA_EXPERIMENTAL_SM60)
     # the runtime device check (src/core/device.cu) admits the cards this build was made for (#236)
     target_compile_definitions(strata_core PRIVATE STRATA_EXPERIMENTAL_SM60=1)
@@ -94,11 +109,20 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
                           src/kernels/cuda/qsa_select.cu
                           src/kernels/cuda/qsa_pattn.cu
                           src/kernels/cuda/verify_kernels.cu
-                          src/kernels/cuda/dflash2.cu
                           src/kernels/cuda/iq_kernels.cu
                           src/kernels/ngram.cpp
                           src/ngram/ple_reader.cpp
                           src/platform/direct_file.cpp)
+  # Upstream's drafter kernels enter the build only under their own option (STRATA_HAVE_DFLASH2): with it OFF not one
+  # translation unit of upstream's runtime is compiled, which is exactly what the configure-time runtime print says.
+  if(STRATA_HAVE_DFLASH2)
+    target_sources(strata_kernels PRIVATE src/kernels/cuda/dflash2.cu)
+  endif()
+  # The serving lane's own runtime, renamed dflash_inco (src/kernels/cuda/dflash_inco.cu,
+  # include/strata/kernels/dflash_inco.hpp): the taps the serve / layer-split path reads.  OFF by default.
+  if(STRATA_ENABLE_DFLASH2)
+    target_sources(strata_kernels PRIVATE src/kernels/cuda/dflash_inco.cu)
+  endif()
   if(STRATA_ISA_FLOOR STREQUAL "avx")
     if(MSVC)
       set_source_files_properties(src/kernels/ngram.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX")
@@ -298,9 +322,42 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   # about arithmetic, and this one knows the ORDER the arithmetic happens in.
   add_library(strata_engine STATIC src/core/layer.cpp src/core/session.cpp src/core/expert_source.cpp src/core/remote_experts.cpp
     src/core/remote_expert_opt.cu
-    src/core/expert_cache.cpp src/core/native_head.cpp src/core/native_dense.cpp src/core/verify.cpp src/core/mtp.cpp src/core/dflash2.cpp
+    src/core/expert_cache.cpp src/core/native_head.cpp src/core/native_dense.cpp src/core/verify.cpp src/core/mtp.cpp
     src/core/conversation_snapshot.cpp src/core/conversation_state.cpp src/core/conversation_memory.cpp src/core/peer_experts.cpp
-    src/core/arch_defaults.cpp src/core/nv_defaults.cpp src/core/vmm.cpp src/core/conversation_file.cpp)
+    src/core/arch_defaults.cpp src/core/nv_defaults.cpp src/core/vmm.cpp src/core/conversation_file.cpp
+    # --- ported serving lane (PORT-MANIFEST.txt; upstream v0.2.18 has none of these) ---
+    # the serving lane's DFlash2 runtime: the taps the serve / layer-split path reads, produced by
+    # src/kernels/cuda/dflash_inco.cu (STRATA_ENABLE_DFLASH2); the three sources stay compiled so the
+    # lane's symbols resolve either way, and their bodies are inside the macro's guard.
+    src/core/dflash.cpp src/core/dflash_runtime.cpp src/core/dflash_tap_collect.cpp
+    # the conversation cache's per-stream state and its disk tier (docs/CONV_CACHE.md): the SAVE / RESTORE
+    # watcher's own translation units, which the server's disk tier drives.
+    src/core/conversation_stream_state.cpp src/core/conversation_disk_cache.cpp
+    # R2 (opt-in CUDA helper): the engine-side proxy client and the CPU recompute of the helper's
+    # claimed rows.  Both are CPU-only sources - no device call, no CUDA kernel - and the frame
+    # transport is the SAME file the CUDA helper compiles (tools/mixed_gpu/sidecar/helper_frame.cpp),
+    # shared verbatim: one transport, two processes.
+    # M1 (capacity): expert_helper_candidates.cpp is the same kind of source - the helper's eligibility,
+    # its byte-budget arithmetic and the promotion gate, over masks and profile data, with no device call.
+    src/core/expert_helper_socket.cpp src/core/expert_helper_fallback.cpp
+    src/core/expert_helper_candidates.cpp
+    # v0233 round 18o (per-GPU VRAM guard): the per-card reserve floor the #2065 check sites step
+    # in 64 MiB increments (STRATA_VRAM_GUARD).  CPU-only by construction, like the two helpers
+    # above: no device call, no CUDA include.
+    src/core/vram_guard.cpp
+    tools/mixed_gpu/sidecar/helper_frame.cpp)
+  # Upstream's drafter, same rule as its kernels above: OFF means the TU is not compiled at all (see the runtime print).
+  if(STRATA_HAVE_DFLASH2)
+    target_sources(strata_engine PRIVATE src/core/dflash2.cpp)
+  endif()
+  # The gfx906 scheme is STRATA_ENABLE_CUDA=ON with STRATA_ENABLE_HIP=OFF, so - unlike the wave32 HIP build, whose
+  # strata_hip_runtime INTERFACE target (cmake/hip_backend.cmake:98) carries STRATA_USE_HIP - nothing defines that macro
+  # here, and src/core/dflash2.cpp took CUDA's branch for the stream-priority and stream-fork code (its :198 and :446).
+  # On this card the HIP branch is the true one: priority streams only with STRATA_DF2_PRIO=1, one stream by default
+  # (the file's own measurement note). Applied to that one source only; nothing in its include closure gates on the macro.
+  if(STRATA_HAVE_DFLASH2 AND STRATA_HIP_GFX906)
+    set_property(SOURCE src/core/dflash2.cpp APPEND PROPERTY COMPILE_DEFINITIONS STRATA_USE_HIP=1)
+  endif()
   target_include_directories(strata_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_link_libraries(strata_engine PUBLIC strata_core strata_kernels strata_kernels_cpu ${_strata_gpu_runtime_target})
   if(STRATA_BUILD_TESTS AND STRATA_ENABLE_CUDA AND NOT STRATA_HIP_GFX906)
@@ -544,6 +601,37 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     # C++ runtime sit beside the exe (tools/hip/package_windows.py) and stay normal imports.
     target_link_libraries(strata PRIVATE delayimp)
     target_link_options(strata PRIVATE "LINKER:/DELAYLOAD:hipblas.dll" "LINKER:/DELAYLOAD:libhipblaslt.dll" "LINKER:/DELAYLOAD:rocblas.dll")
+  endif()
+
+  # R2 (opt-in, default OFF: engine/CMakeLists.txt): the CUDA-only expert helper.  A SEPARATE PROCESS that owns all
+  # NVIDIA memory; the engine talks to it over the framed AF_UNIX channel only.  CUDA builds with the
+  # native-expert pack (the helper computes native blobs, the same kernels strata_kernels carries);
+  # refused under the gfx906 HIP scheme with a named reason, never silently skipped.
+  if(STRATA_BUILD_EXPERT_HELPER)
+    if(STRATA_HIP_GFX906)
+      message(FATAL_ERROR "STRATA_BUILD_EXPERT_HELPER is refused under STRATA_HIP_GFX906: the sidecar is CUDA-only (NVIDIA). Build it in a CUDA tree; the HIP engine runs its proxy client unchanged.")
+    endif()
+    if(NOT STRATA_NATIVE_EXPERTS)
+      message(FATAL_ERROR "STRATA_BUILD_EXPERT_HELPER requires STRATA_NATIVE_EXPERTS=ON: the helper computes native (IQ) expert blobs.")
+    endif()
+    add_executable(strata-expert-helper
+      tools/mixed_gpu/sidecar/helper_main.cpp
+      tools/mixed_gpu/sidecar/helper_frame.cpp)
+    # helper_main.cpp includes <cuda_runtime.h>: compile it with the CUDA language (nvcc), exactly
+    # as remote_expert_opt.cu is compiled.  helper_frame.cpp stays plain C++ - it links no GPU
+    # runtime; the CUDA runtime symbols arrive through ${_strata_gpu_runtime_target}.
+    set_property(SOURCE tools/mixed_gpu/sidecar/helper_main.cpp PROPERTY LANGUAGE CUDA)
+    set_property(SOURCE tools/mixed_gpu/sidecar/helper_main.cpp PROPERTY CUDA_STANDARD 17)
+    # helper-ipc-diet: -mavx2 for helper_main.cpp's HOST code (the prompt path's finite-row scan,
+    # include/strata/core/finite_rows.hpp).  The file is host-only; nvcc forwards the flag through
+    # -Xcompiler, x86 non-MSVC only - everywhere else the header's scalar loop compiles and runs.
+    if(STRATA_CPU_X86 AND NOT MSVC)
+      set_property(SOURCE tools/mixed_gpu/sidecar/helper_main.cpp APPEND PROPERTY
+                   COMPILE_OPTIONS $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-mavx2>)
+    endif()
+    target_include_directories(strata-expert-helper PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(strata-expert-helper PRIVATE
+      strata_engine strata_kernels_cpu strata_warnings ${_strata_gpu_runtime_target})
   endif()
 
   # NEW-MODELS-PLAN.md T1: Qwen3.6-35B-A3B's reference path (one GPU, the model resident, plain kernels), checked

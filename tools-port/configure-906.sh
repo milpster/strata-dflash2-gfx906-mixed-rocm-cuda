@@ -19,9 +19,11 @@
 #
 # 0.2.18 moved the engine build under engine/, so the source dir is engine/, not the tree root.
 #
-# The DFlash2 options follow docs/PLAN-UPSTREAM-0218.md: the fork's runtime answers to
-# STRATA_ENABLE_DFLASH2, upstream's own drafter to STRATA_HAVE_DFLASH2 (which 0.2.18 does not offer
-# as an option - it sets the definition directly, so passing it is a no-op; see PORT-NOTES.md).
+# The DFlash2 options: upstream v0.2.18's drafter (STRATA_HAVE_DFLASH2) is ON and the serving lane's own
+# runtime (STRATA_ENABLE_DFLASH2) is OFF, which is the only pair this tree compiles today - the lane's
+# runtime needs the fork's hunks in src/program/generate.cpp and src/prefill/prefill.cpp, which are not
+# carried yet (PORT-NOTES.md), and upstream's generate.cpp needs its own drafter. The fork's production
+# pair is the opposite (ENABLE=ON, HAVE=OFF); it becomes reachable with those two files.
 #
 # Usage: sh tools-port/configure-906.sh [BUILD_DIR] [-- extra cmake options]
 set -eu
@@ -30,14 +32,14 @@ BUILD="build-906"
 EXTRA=""
 while [ $# -gt 0 ]; do
 	case "$1" in
-	--) EXTRA="${EXTRA# }$2"; shift 2 ;;
+	--) shift; EXTRA="$*"; break ;;
 	*)  BUILD="$1"; shift ;;
 	esac
 done
 ROCM=/opt/rocm-6.1.0
 GCCDIR=/usr/lib/gcc/x86_64-linux-gnu/15
 
-[ -n "$EXTRA" ] || EXTRA="-DSTRATA_ENABLE_DFLASH2=ON -DSTRATA_HAVE_DFLASH2=OFF"
+[ -n "$EXTRA" ] || EXTRA="-DSTRATA_ENABLE_DFLASH2=OFF -DSTRATA_HAVE_DFLASH2=ON"
 
 echo "configuring $PORT/engine -> $BUILD"
 PATH="$ROCM/bin:$PATH" exec cmake -S "$PORT/engine" -B "$BUILD" -G Ninja \

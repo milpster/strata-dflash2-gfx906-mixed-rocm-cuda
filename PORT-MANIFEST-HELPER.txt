@@ -1,0 +1,3 @@
+tools/mixed_gpu/sidecar/helper_frame.cpp	engine/tools/mixed_gpu/sidecar/helper_frame.cpp
+tools/mixed_gpu/sidecar/helper_main.cpp	engine/tools/mixed_gpu/sidecar/helper_main.cpp
+tools/mixed_gpu/sidecar/helper_microbench.cpp	engine/tools/mixed_gpu/sidecar/helper_microbench.cpp
