@@ -952,3 +952,11 @@ Why the reserves moved: at 256/192 the clamp correctly refuses the swap (434 MiB
 600/600 leaves CUDA1 at 548 MiB free after the full allocation, so the swap is *always granted*, and the clamp
 remains the safety valve for any future tighter load. Cost measured: none outside noise (prefill 290.8 vs 288.8
 tok/s, decode in noise, 240k + park/restore + 1k-decode all clean, 0 non-finite).
+
+### Prod boot on the always-on tuple (01:26–01:28)
+
+Booted through the launcher with the new defaults. Engine log tail: `foresight swap: slots per layer per card:
+card0:2, card1:8` — full grant, no clamp line — and `CUDA1: 548 MiB of VRAM free with everything loaded`
+(the 140 MiB LOW lines earlier in the same file are older boots). Health `ok`, `loaded: true`. One real
+completion: HTTP 200 in 0.5 s, 8 tokens, 8/8 drafts accepted, 28.2 tok/s; the probe's first `content: null`
+was `finish_reason: length` inside reasoning, the known benign class. Prod serves on `127.0.0.1:8009`.
