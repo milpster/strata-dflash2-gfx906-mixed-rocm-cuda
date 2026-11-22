@@ -1070,3 +1070,12 @@ Two defects measured in other people's code, both write-ups in `PORT-NOTES.md`:
   with `-I tests/core`: 37 errors with the dir, 0 without, on the fork's own tree.
 - upstream v0.2.18 `native_moe_gated_test` / `prefill_decode_golden` do not link on gfx906: no `.cu` under
   `tests/cuda/` gets a compile rule (verified on a clean tag in a scratch worktree).
+
+## Prod restart window (2026-11-22, operator order)
+
+Prod was found fully down (nothing on 8009/8019; cause not named by the operator). Booted through the prod
+launcher only (detached `setsid nohup`, engine `run/fsclamp-bin` 4b8251e9, config `-fson.json` 144/144):
+health ok after ~50 s, card0 288 MiB free with the model loaded, then a real-completion probe
+(`finish: stop`, "probe-ok") — serving verified before the subagent lane resumes. The merge fixer
+(ses_dfefcd88…) survived the outage on host retries and is actively working again (last activity seconds
+after the probe).
