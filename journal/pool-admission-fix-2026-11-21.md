@@ -1055,3 +1055,18 @@ the trellis encoder its tests need came with it. Engine rebuilt at commit `52053
 sha `40c5018813740097a66a…`, ldd the AGENTS.md trio. 15 lane-test programs remain unwired (documented in
 `engine/cmake/strata_lane_tests.cmake`), 15+6+6 generate.cpp and 6 prefill.cpp hunks listed in
 `PORT-WORKLIST-UNPORTED.md`. Branch pushed to fork at `ad12c0cc31`. Prod `:8009` untouched throughout.
+
+### Port 0.2.18, all lane tests wired and run device-free (2026-11-22)
+
+34 lane test programs registered (25 wired this round, each block copied from the fork), 33 build on gfx906.
+43 ctest cases: **39 passed / 2 skipped (no device, exit 77) / 2 failed** — the two failures
+(`expert_helper_candidates_test`, `dflash_refusal_test`) are 28 static text checks that all pin the
+`generate.cpp` call sites: the automatic acceptance measure for the still-unported decode-loop merge. Everything
+that executes passes (100/100 and 64/64+19/19 executed checks). Engine at `e5651d66b`, sha
+`4149966aea6c100a…`, ldd the AGENTS.md trio. 22 commits on `port-0218`, pushed.
+
+Two defects measured in other people's code, both write-ups in `PORT-NOTES.md`:
+- fork `tests/core/cuda_runtime.h` (7baf1501c3, 2026-11-19) shadows `hip_compat/cuda_runtime.h` for any target
+  with `-I tests/core`: 37 errors with the dir, 0 without, on the fork's own tree.
+- upstream v0.2.18 `native_moe_gated_test` / `prefill_decode_golden` do not link on gfx906: no `.cu` under
+  `tests/cuda/` gets a compile rule (verified on a clean tag in a scratch worktree).
