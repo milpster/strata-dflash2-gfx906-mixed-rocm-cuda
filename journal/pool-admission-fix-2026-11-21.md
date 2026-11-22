@@ -1178,3 +1178,12 @@ honest (not run). Six unverifiable claims from the old README dropped (incl. the
 record). Oracle (GLM 5.3, iterative): 36 numbers spot-checked, one minor defect (stale OS row: 25.04 -> 26.04.1,
 kernel 7.3.4-x64v3) found and fixed; RAM cell updated for today's 40960 budget raise. Verdict APPROVED.
 Committed d82b14c9a6 and pushed.
+
+## Fork README rewritten, oracle-approved (2026-11-22)
+
+DeepSeek 1017 lane rewrote README.md from the repo's own records (journal, PORT-NOTES, manifests, CHAMPION,
+bench RESULTS): table-first, every number with its measurement context, static analysis labeled, port status
+honest (not run). Six unverifiable claims from the old README dropped (incl. the old "+49% pooled median", in no
+record). Oracle (GLM 5.3, iterative): 36 numbers spot-checked, one minor defect found (stale OS row: 25.04 ->
+26.04.1, kernel 7.3.4-x64v3) and fixed; RAM cell updated for today's 40960 budget raise. Verdict APPROVED.
+Committed and pushed.
