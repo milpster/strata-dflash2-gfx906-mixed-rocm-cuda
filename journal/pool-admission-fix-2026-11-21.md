@@ -1043,3 +1043,15 @@ Named gaps (all in `PORT-NOTES.md`):
    a CUDA configure fails on this box (nvcc 13.1 vs glibc 2.43 `rsqrt` clash in `math_functions.h`) — a
    box/toolkit problem, unconfirmed beyond the one-line repro.
 3. **DeepSeek V4.1 sources are in the tree but wired to no target** — decision needed: wire or leave the family out.
+
+### Port 0.2.18, lane tests run for the first time (2026-11-22)
+
+The port lane (on the engine) wired and ran the fork's CPU lane tests on the port tree: **8 passed, 1 failed**.
+The failing one, `expert_helper_candidates_test`, is the automatic acceptance check for the missing merge: its 100
+*executed* checks (slot arithmetic, eligibility, exclusions, byte budgets, CLI parsing) all pass; its 12 failing
+text checks all look for the helper call sites in `generate.cpp`. Arithmetic correct, call sites absent — the
+port's exact state in one test result. DeepSeek V4.1 was wired behind the fork's own switch (`da454cf45f`), and
+the trellis encoder its tests need came with it. Engine rebuilt at commit `520532ca54`:
+sha `40c5018813740097a66a…`, ldd the AGENTS.md trio. 15 lane-test programs remain unwired (documented in
+`engine/cmake/strata_lane_tests.cmake`), 15+6+6 generate.cpp and 6 prefill.cpp hunks listed in
+`PORT-WORKLIST-UNPORTED.md`. Branch pushed to fork at `ad12c0cc31`. Prod `:8009` untouched throughout.
