@@ -352,7 +352,7 @@ those four to the case set. Without it the script still configures upstream's pa
 | --- | --- | --- |
 | configure prints | `DFlash2 runtimes compiled: the serving lane's (dflash_inco: src/kernels/cuda/dflash_inco.cu, include/strata/kernels/dflash_inco.hpp)` | `DFlash2 runtimes compiled: upstream (src/core/dflash2.cpp, src/kernels/cuda/dflash2.cu)` |
 | `strata` compiles and links | yes | yes |
-| sha256 | `a37933fa9c61a0b9fecda701de5a06940ea37d87d1a0c353c7ddcfa84cea6b03` (30555416 B) | `fde1f5ff49a2e819eb8976dcd3cdef0f31cf64a4218c64c4e8d3d35f9e57b746` (31528984 B) |
+| sha256 | `936efcc798aab3952551281f2f328c1b8b19311fee9d0298142e702809a58394` (30555416 B) | `17f643054bf42e44714658971b2a1fe9b0855efbc9c0ef37b5ff8012df5065a7` (31528984 B) |
 | `ldd` (with the launcher's `LD_LIBRARY_PATH`) | `libhipblas.so.2` and `libamdhip64.so.6` -> `/opt/rocm-6.1.0/lib`, `librocblas.so.4` -> `/home/srcds/rocm-gfx906-xnack/lib` | same three sonames, same three paths |
 | lane suite, devices hidden | **47 cases, 100% passed, 0 failed**, 5 SKIPPED at exit 77 (`dflash_tap_collect_test`, `dflash_owned_kv_test`, `dflash_inco_parity`, `dflash_taps_test`, `dflash_rope_parity`) | **43 cases, 100% passed, 0 failed**, 2 SKIPPED at exit 77 |
 | the suite's build step | nothing failed to build | nothing failed to build |
@@ -362,6 +362,12 @@ static checks on `generate.cpp`) and `dflash_refusal_test` (16). Both pass now, 
 run. The 5 skips are the honest kind: they need a device, they exit 77, and the box hides its devices
 from them (`HIP_VISIBLE_DEVICES=-1 CUDA_VISIBLE_DEVICES=-1`) so they cannot take VRAM from the engine
 this box serves from.
+
+Both binaries above were configured and built at commit `f4f024749`, and a sha256 of a `strata`
+binary is not a content hash on this engine: `v0.2.18` stamps `git rev-parse --short=9 HEAD` into it at
+configure time, so the same source hashes differently after any commit. Quote a build as (commit,
+sha256), never as a hash alone. The two earlier hashes of this session - `a37933fa9c...` and
+`fde1f5ff49...` - are the same source at earlier commits, kept here so the logs still read true.
 
 Logs: `logs-port/lane-tests-run.log` (the lane pair, `PAIR=lane`) and the same path after the default
 run, with `logs-port/configure-lane-pair-2.log` and `logs-port/configure-default-2.log` beside them.
@@ -396,6 +402,19 @@ analysis and a compiler. Specifically unproven:
    and the untouched tag. Decide whether the port should carry a local guard that skips them on this card
    (a build change this port does not want to make silently), or whether this goes to the upstream
    maintainers as a bug report - the evidence for the second is already written.
+
+   **A third target of the same class (measured 2026-11-22, after the decode-loop merge).** With
+   `STRATA_BUILD_CONVERSATION_TESTS=ON`, a gfx906 configure also builds upstream's
+   `conversation_transfer_test` and it does not compile: `src/core/conversation_validation_test.cpp`
+   asks for `cudaErrorInvalidValue` and `cudaErrorUnknown`, which the HIP layer spells
+   `hipErrorInvalidValue` / `hipErrorUnknown`. The cause is an option, not the merge: upstream guards
+   that target `if(NOT STRATA_ENABLE_HIP AND UNIX ...)` (`cmake/strata_gpu_engine.cmake:511`), and this
+   box's documented configure sets `STRATA_HIP_GFX906=ON` without `STRATA_ENABLE_HIP`, which stays
+   `OFF` - so a CUDA-only test (it links with `-Wl,--wrap=cudaMemcpy`) is admitted on the HIP backend.
+   Proved inherited, not caused here: `conversation_validation_test.cpp` is byte-identical to upstream
+   v0.2.18, and the lane suite does not ask for this target (its 43 / 47 cases are unaffected). It
+   surfaced only because `tools-port/lane-tests.sh` leaves the conversation opt-in `ON` in the build
+   directory's cache. Same decision as item 4: local guard here, or upstream report.
 5. The fork's `tests/core/cuda_runtime.h` shadows the HIP compatibility header for every test target whose
    include path contains `tests/core` (item 7). One lane program (`dflash_head_bf16_test`) does not compile
    because of it and is `EXCLUDE_FROM_ALL` here. Decide the repair in the fork - move the shim out of
