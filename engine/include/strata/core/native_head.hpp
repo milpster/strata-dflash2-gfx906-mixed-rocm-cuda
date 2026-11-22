@@ -19,7 +19,8 @@ public:
     NativeHead(const NativeHead&) = delete;
     NativeHead& operator=(const NativeHead&) = delete;
 
-    bool load(const std::vector<std::string>& shards, int64_t n_in, int64_t n_out, std::string& err);
+    /// allow_bf16 is for a private DFlash head; other callers retain the quantized-only guard.
+    bool load(const std::vector<std::string>& shards, int64_t n_in, int64_t n_out, std::string& err, bool allow_bf16 = false);
     void unload();
     /// Moves the loaded weights from VRAM to mapped pinned host memory (a card too short for it: every logits row then reads them over PCIe).  False: not loaded, already
     /// on the host, or a repacked layout that stays in VRAM.

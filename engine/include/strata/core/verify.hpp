@@ -233,6 +233,22 @@ public:
     /// window that advanced the state itself (see commit), and on every stage of a chain.  serve_skip_stopped_window asks this
     /// before it drops a window nobody will read.
     bool commit_deferred() const;
+    // ---- DFlash FEATURE TAPS (docs/DFLASH.md) ------------------------------------------
+    // At each listed layer the window graph copies the ATTN-HALF HC read's contracted residual
+    // (n_embd f32 per row) into the tap buffer: the boundary `tap + 1`, i.e. the contracted
+    // residual AFTER layer `tap` including its FFN write-back - what the DFlash drafter's fusion
+    // consumes. With hc_mean=true, capture the completed raw HC stream mean instead.
+    // Before init(); a layer-split stage captures only the taps inside [lb_, le_).
+    // Layout: tap t's rows [0, last window's T) at taps() + t * tap_stride(), row-major; rows
+    // [T, max_t) are stale from an earlier window.
+    void set_tap_layers(const int* layers, int n, bool hc_mean = false) {
+        tap_hc_mean_ = hc_mean;
+        n_taps_ = n > 8 ? 8 : n;
+        for (int i = 0; i < n_taps_; ++i) dflash_tap_layers_[i] = layers[i];
+    }
+    int n_taps() const { return n_taps_; }
+    const float* taps() const { return taps_; }
+    int64_t tap_stride() const { return tap_stride_; }   // floats per tap (max_t * n_embd); 0 until init
 
     // ================================ SEVERAL SEQUENCES IN ONE WINDOW ================================
     //
@@ -596,6 +612,9 @@ private:
     bool ar_off_ = false;
     bool ar_on() const { return all_resident_ && !ar_off_; }
     void refresh_ar();
+    int ar_stable_ = 0;        ///< windows watched since the last ar_off_ flip (STRATA_GRAPH_FAMILY_TRIM's hysteresis)
+    bool ar_trimmed_ = false;  ///< the family the settled flag left behind was freed, or there was none to free
+    void trim_stale_family();
     uint32_t* h_plan_err_ = nullptr; uint32_t* m_plan_err_ = nullptr;   // set by resident_plan on a -1 (all-resident graph)
     const int32_t* h_res_ = nullptr;      ///< the host residency table (VerifyHits::h_res)
     bool device_plan_ = false;            ///< E-6: resident-only layers planned on the device (STRATA_VERIFY_DEVICE_PLAN)
@@ -654,6 +673,11 @@ private:
     VerifyHits hits_;
     const NativeHead* head_ = nullptr;
     int max_t_ = 0;
+    bool tap_hc_mean_ = false;
+    int dflash_tap_layers_[8] = {};         ///< set_tap_layers: the boundary layers to capture (ours; upstream's own taps use the vector tap_layers_ below)
+    int n_taps_ = 0;
+    float* taps_ = nullptr;                  ///< n_taps_ x max_t_ x n_embd f32 (the DFlash taps)
+    int64_t tap_stride_ = 0;
     float* ple_key_ = nullptr;   ///< STRATA_PLE_BATCH: the window rows' PLE key / value projections
     float* ple_val_ = nullptr;
     int last_t_ = 0;

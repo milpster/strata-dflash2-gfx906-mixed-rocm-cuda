@@ -25,6 +25,7 @@
 #include "strata/core/pinned.hpp"
 #include "strata/core/exchange_storage.hpp"
 #include "strata/core/hit_hook.hpp"
+#include "strata/core/read_once.hpp"
 #include "strata/kernels/cpu/pool.hpp"
 
 #include <algorithm>
@@ -211,6 +212,24 @@ public:
     /// A blob pointer that stays valid (not recycled) for as long as the source is open: for a copy that runs
     /// asynchronously long after the call (the adaptive tier's swap-ins).  Defaults to `blob`.
     virtual const uint8_t* blob_stable(int64_t layer, int64_t expert) { return blob(layer, expert); }
+    /// Whether `(layer, expert)`'s bytes can be had right now, asked as a plain yes/no question - the planner's
+    /// "is this pair there already?" (generate.cpp's swap_in_read), which needs no pointer and keeps nothing.
+    /// The default asks `blob_stable()`, so the legacy sources answer exactly as they did when the caller called
+    /// it itself; a source that hands out reference-counted loans overrides this so that a probe creates no
+    /// borrower and pins no lease.  May warm a cache (the managed pool reads a miss into its own cache and drops
+    /// its lease at once), but must never wait.
+    virtual bool available(int64_t layer, int64_t expert) { return blob_stable(layer, expert) != nullptr; }
+    /// W1 lever (the relief's swap-ins): read a BATCH of blobs straight from the pack files into
+    /// `dst[i]`, one unbuffered read batch (sorted, merged windows - the page cache stays out, so
+    /// the host copies the relief gave back do not re-materialize).  `ok[i]` answers per pair;
+    /// true only when every pair was read.  Sources that cannot batch answer false with `err`;
+    /// the caller then falls back to per-pair `blob()`.
+    virtual bool swap_blobs_batch(const std::vector<std::pair<int32_t, int32_t>>& pairs,
+                                  const std::vector<uint8_t*>& dst, std::vector<uint8_t>& ok, std::string& err) {
+        (void) pairs; (void) dst; (void) ok;
+        err = "the expert source has no batched pack-file read";
+        return false;
+    }
     /// The pieces (up to 3) a blob consists of when the source can hand them out where they already are - the GGUF
     /// mapped in place keeps an expert's gate, up and down in three tensors - so the caller can copy each straight to
     /// its destination instead of `blob_stable` assembling a staging copy first.  0: not available for this
@@ -229,6 +248,12 @@ public:
     /// asynchronous host-to-device copy can DMA it directly (no staging copy on the CPU).
     virtual bool pinned(int64_t layer, int64_t expert) const { (void) layer; (void) expert; return false; }
 
+    /// A routed expert whose row the CPU half skipped because it is already owned elsewhere (a GPU cache hit, or
+    /// another tier's claim): this source is never asked for its bytes on that path, so `blob()` is not called.
+    /// A source whose blob() records decode demand (the arena's re-rank heat) counts it here, so a hit still
+    /// counts as routed exactly as it did when blob() was called before the hit test.  Default: nothing.
+    virtual void note_routed(int64_t layer, int64_t expert) { (void) layer; (void) expert; }
+
     /// Called once before the first expert of a layer.  A source that reads from disk wants to start the read
     /// here so it overlaps the quantisation, and a prefetching source in Phase 3 wants the ids.
     virtual void begin_layer(int64_t layer, const int32_t* ids, int64_t k) { (void) layer; (void) ids; (void) k; }
@@ -239,6 +264,13 @@ public:
     /// A file-backed source: this expert lives in VRAM, so its pages need not stay in RAM - hand them back to the
     /// kernel (a later read re-reads the file; no result depends on it).  Returns the bytes released; 0 elsewhere.
     virtual uint64_t release(int64_t layer, int64_t expert) { (void) layer; (void) expert; return 0; }
+    /// Whether `blob()`/`blob_stable()` hands out a REFERENCE-COUNTED LOAN (the managed pool): the pointer pins a
+    /// pool lease until the caller either notes the async copy that reads it (`note_async_read`) or gives it back
+    /// with `release()`.  A caller that reads the bytes on its own thread and is done when the call returns must
+    /// do the second, and so must every early return of that call.  False for a source whose pointers live as long
+    /// as the source does (a mapping, the arena, a staging buffer recycled on the next call): those answer exactly
+    /// as they did before this predicate existed, so nothing is asked of them.
+    virtual bool lends() const { return false; }
     /// Whether the verify window may give the GPU a PCIe share of this layer's misses at all (each expert is still
     /// checked with `pinned`).  The arena answers per layer through its expert 0; the resident RAM mode's compact
     /// copy has no expert 0 when the GPU cache holds it, so it answers for the whole copy.
@@ -269,6 +301,27 @@ public:
     /// blob of (layers[i], experts[i]).  A source that reads a drive may merge neighbouring blobs into one request.
     /// Default: copy_blob one by one.
     virtual bool copy_blobs(const int32_t* layers, const int32_t* experts, uint8_t* const* dst, size_t n);
+    /// W1 lever (--expert-helper-ram-relief-packs): the prefill's batched swap-in counters - pairs
+    /// read, batches issued, bytes, and file-read ms, cumulative over the process.  Nonzero only on
+    /// a source that reads the pack files unbuffered (the arena's relief drops); 0 elsewhere.  The
+    /// prompt path prints them as its "adapt swap-in" line at the request's end.
+    virtual int64_t swap_in_pairs() const { return 0; }
+    virtual int64_t swap_in_batches() const { return 0; }
+    virtual int64_t swap_in_bytes() const { return 0; }
+    virtual int64_t swap_in_ms() const { return 0; }
+    /// Round-17 design A ("read-once prefill"): arm/disarm the file tier's REQUEST-scoped LRU of
+    /// blob images (see ReadOnceWindow) for this prefill - the caller brackets its run_impl with
+    /// the pair, and a split's overlapping stages nest (refcounted; the last one out frees every
+    /// image).  The meter counters below are cumulative over the process, as the swap-in counters;
+    /// the prompt path prints their per-request deltas as its "read-once reuse" line.
+    virtual void begin_read_once() {}
+    virtual void end_read_once() {}
+    virtual int64_t read_once_hits() const { return 0; }
+    virtual int64_t read_once_reads() const { return 0; }
+    virtual int64_t read_once_hit_bytes() const { return 0; }
+    virtual int64_t read_once_admitted() const { return 0; }
+    virtual int64_t read_once_evicted() const { return 0; }
+    virtual int64_t read_once_refused() const { return 0; }
     /// The `n` experts of `layer` the CPU is about to ask `blob` for, all at once: a source that reads a file may
     /// fetch them in parallel.  The bytes `blob` then returns are the same.  Default: nothing.
     virtual void prefetch(int64_t layer, const int64_t* experts, int64_t n) { (void) layer; (void) experts; (void) n; }
@@ -314,6 +367,31 @@ protected:
     void record_inputs(const std::string& pack_experts, const std::string& gguf,
                        const strata::kernels::cpu::ExpertLayout& lay, bool from_gguf);
     std::vector<std::pair<std::string, std::string>> inputs_;
+};
+
+/// Give back a reference-counted source's `blob()` loans when the enclosing scope leaves.  A source that answers
+/// `lends()` (the managed pool) pins a pool lease per borrowed pair until it is noted or released; a caller that
+/// reads the bytes on its own thread - the CPU expert pool's job loops, a blocking slot fill - is done with them
+/// when its run returns, and every early return must give them back too, which is what this scope guard does.
+/// A source that answers `lends()` false (a mapping, the arena, a staging buffer) is never asked, so its behaviour
+/// is exactly what it was: nothing is released for it.
+class BlobLoanBatch {
+public:
+    BlobLoanBatch(ExpertSource& src, int64_t layer) noexcept
+        : src_(src.lends() ? &src : nullptr), layer_(layer) {}
+    BlobLoanBatch(const BlobLoanBatch&) = delete;
+    BlobLoanBatch& operator=(const BlobLoanBatch&) = delete;
+    ~BlobLoanBatch() {
+        if (src_ == nullptr) return;
+        for (const int32_t e : experts_) src_->release(layer_, e);
+    }
+    /// Call once per `blob()`/`blob_stable()` borrow this scope took.
+    void took(int32_t expert) { if (src_ != nullptr) experts_.push_back(expert); }
+
+private:
+    ExpertSource* src_;
+    int64_t layer_;
+    std::vector<int32_t> experts_;
 };
 
 /// CS-T, routing-aware prefetch of the file tier: when the CPU pool starts layer `l`, a worker thread applies layer
@@ -719,6 +797,65 @@ void set_tail_skip_rank(int r);
 void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32_t* ids, int64_t n_tok, int64_t k,
                                 float* out, strata::kernels::cpu::NativeArithmetic arithmetic = strata::kernels::cpu::NativeArithmetic::Default);
 
+/// R2 (opt-in, the out-of-process CUDA expert helper; src/core/expert_helper_fallback.cpp): recompute
+/// EXACTLY the claimed (token,k) rows on the CPU after the helper's finish failed.  `claimed` lists
+/// routing indices in (0, n_tok*k); `x_f` is the window's (n_tok, n_embd) activation the dispatch
+/// already holds.  The quantizer choice and the pool call are the dispatch's own (act_quant_any /
+/// native_quant_act / act_quant_q8_1 + run_split_multi[_native]) - no new semantics: a recomputed row
+/// is what a CPU-served row always was.  Quantizes the activations of the tokens that own claimed
+/// rows EVEN when the window had no CPU work at all.  True when every claimed row was written; false
+/// names the failure in `d.fail` (a source failure latches `d.failed` as the dispatch's own paths do).
+bool expert_helper_recompute_claimed(ExpertDispatch& d, const float* x_f, const int32_t* ids, int64_t n_tok,
+                                      int64_t k, const int32_t* claimed, int64_t n_claimed, bool native,
+                                      int64_t layer, float* out);
+
+/// R5 P1 (r5-three-gpu-design.md §2, "Same-layer fallback, bounded"): the tile state - the staged rows
+/// of one ≤MAXT-token tile (owned, allocated once) and the budget counters the caps are checked
+/// against.  `rows_layer` is per-layer (the caller resets it at each layer), `rows_total` per request.
+struct ExpertHelperPromptFallback {
+    std::vector<float> stage;    // MAXT*10 rows of the tile's staged output (the shipped contract's window)
+    int64_t rows_layer = 0;
+    int64_t rows_total = 0;
+    void start_layer() { rows_layer = 0; }
+};
+
+/// R5 P1: the MAXT=8 tiling as a REUSABLE library path for the PROMPT tier's deficit - the rows a
+/// kBeginP reply did not answer.  This is the design's requirement stated in code: the shipped window
+/// contract (n_tok ≤ 8, k = 10, ≤ 80 entries, per-expert nt ≤ 8) is NEVER widened; the deficit's
+/// SELECTED tokens partition into tiles of ≤ cpu::MAXT tokens, each tile is ONE exact call of
+/// expert_helper_recompute_claimed - per-expert nt ≤ tile size ≤ 8, so the job-slot guard at
+/// expert_helper_fallback.cpp's :111 (the `jb.nt >= MAXT` skip) cannot fire and no row is dropped -
+/// and the tile's rows land at the caller's per-entry destinations.
+///
+/// Contract:
+///   * `x_sel` is the TIER'S OWN pinned activation buffer (the design's `ext_x`; never the engine's
+///     `cpu_x`, which does not exist on the canonical stream_all path): `n_sel` fp32 rows of n_embd,
+///     in the SAME ascending token order as `sel` (the prompt plan's token list).
+///   * `sel` is that ascending token list; `ids` the FULL layer's routing ids (T*k, routing order);
+///     `claims` the FULL-window entry indices (t*k + j) the helper did not answer - exactly the
+///     deficit, one entry per row, no duplicates.  A tile is a contiguous slice of `sel` (≤ MAXT
+///     positions), so its window is real: the shipped function's `x_f + t*H` and `out + i*H` indexing
+///     lands on the right rows with NO contiguity assumption on the tokens themselves.
+///   * `dst[c]` is the destination row of `claims[c]` (the Dm row for that entry).  The tile writes
+///     into the library's own stage; each row is then copied out to its own `dst[c]` - one row, once.
+///   * Budget: a tile that would breach `max_rows_per_layer` (rows_layer) or `max_rows_total`
+///     (rows_total) is NOT run: returns false with `budget_exceeded = true` and `d.failed` NOT set -
+///     the request keeps its local compute and the caller disables the tier for the rest of the
+///     request (the design's notice policy; P2's call site prints it).  Rows already written stay:
+///     complete, correct, CPU-served rows.
+///   * A blob the source cannot produce is the shipped function's own failure (d.failed with the
+///     source's message, exactly the CPU share's `err` at the combine join): never a silent zero,
+///     never a partial block.
+///   * Threading: this calls `d.src->blob` per tile and the prefill source is not thread-safe
+///     (prefill.cpp:3915-3920) - the caller runs the whole call on the prefill caller thread with no
+///     other source call interleaved, the shipped function's own rule inherited unchanged.
+bool expert_helper_recompute_prompt_rows(ExpertDispatch& d, const float* x_sel, const int32_t* sel,
+                                          int64_t n_sel, const int32_t* ids, int64_t k,
+                                          const int32_t* claims, int64_t n_claims, float* const* dst,
+                                          bool native, int64_t layer, int64_t max_rows_per_layer,
+                                          int64_t max_rows_total, ExpertHelperPromptFallback& fb,
+                                          bool& budget_exceeded);
+
 /// **THE HITS, LAUNCHED AFTER THE MISSES ARE STAGED AND BEFORE `post[l]`.**  Same shape as `PoolFn` and for the
 /// same reason: `session_loop` owns the ORDER and this owns the work, so the loop needs to know nothing about
 /// expert caches.  Returns immediately when there are no hits, which is every layer until the cache is warm.
@@ -917,10 +1054,26 @@ public:
     /// expert bytes outside it; switches either way (startup only, nothing reading).  Returns whether unbuffered.
     bool recheck_unbuffered(std::string& why);
     bool unbuffered() const { return !direct_.empty(); }
+    /// W1 lever: a BATCH of blobs read straight from the pack files into `dst[i]` - read_direct's
+    /// unbuffered windows (Linux: O_DIRECT + io_submit, sorted by file offset and merged where they
+    /// touch, so the page cache the relief emptied stays empty).  A failed window falls back to
+    /// copy_from_files per blob.  `ok[i]` answers per pair; true only when every pair was read.
+    bool read_blobs_batch(const std::vector<std::pair<int32_t, int32_t>>& pairs,
+                          const std::vector<uint8_t*>& dst, std::vector<uint8_t>& ok, std::string& err);
     /// MODEL-UPDATE round 2 (Linux, opt-in STRATA_PROMPT_DIRECT=1): with the file tier read through the file cache (the
     /// decode's choice: re-routed experts come back from it), the prompt path's batched stager reads (copy_blobs) go
     /// unbuffered instead - the same bytes, read in merged O_DIRECT requests.  False when not opened (and why).
     bool open_prompt_direct(std::string& why);
+    /// W1 lever (--expert-helper-ram-relief-packs): arm the unbuffered fds the swap-in batch
+    /// (read_direct) needs WITHOUT flipping the file tier to full unbuffered mode - the normal
+    /// blob() reads keep the mapped view / the file cache.  open_prompt_direct's pdirect_ fds
+    /// are exactly this: read_direct takes them when the tier reads buffered (direct_ empty).
+    /// A no-op when direct fds are already present (a full unbuffered tier has direct_).
+    /// False with a named `why` when the platform/filesystem cannot open O_DIRECT.
+    bool arm_swap_reads(std::string& why);
+    /// The swap-in batch's capability: direct fds present (a full unbuffered tier's direct_,
+    /// or the prompt-direct pdirect_ armed by arm_swap_reads).
+    bool swap_reads_ready() const { return !direct_.empty() || !pdirect_.empty(); }
     /// pp-opt (Windows, experts.bin, unbuffered): close the mapped view once startup no longer needs it.  NTFS runs
     /// the unbuffered reads of a mapped file one at a time - on a PCIe 4 NVMe (WD SN580) 2 MiB reads at queue depth
     /// 32 measured 2.35 GB/s with experts.bin mapped and 3.57 GB/s without.  After this every file read goes through
@@ -969,7 +1122,24 @@ public:
     bool transient(int64_t layer, int64_t expert) const override;
     double cached_share(int64_t samples) const override;
     bool copy_blob(int64_t layer, int64_t expert, uint8_t* dst) override;
-    /// pp-opt, unbuffered: the file-tier blobs of the run in one read_direct batch (neighbours merged into one request)
+    /// W1 lever: the prefill's batched swap-in counters (see ExpertSource).  Metered in copy_blobs
+    /// when the swap-in meter is armed (arm_swap_reads); read by the prompt path's request-end line.
+    int64_t swap_in_pairs() const override { return swap_pairs_.load(std::memory_order_relaxed); }
+    int64_t swap_in_batches() const override { return swap_batches_.load(std::memory_order_relaxed); }
+    int64_t swap_in_bytes() const override { return swap_bytes_.load(std::memory_order_relaxed); }
+    int64_t swap_in_ms() const override { return swap_ms_.load(std::memory_order_relaxed); }
+    /// Round-17 design A: the request-scoped read-once window (read_once.hpp).  begin/end bracket
+    /// a prefill - refcounted, so a split's overlapping stages share one armed window - and the
+    /// counters are the window's, cumulative as the swap-in counters (the prompt path prints
+    /// per-request deltas as its "read-once reuse" line).
+    void begin_read_once() override;
+    void end_read_once() override;
+    int64_t read_once_hits() const override { return (int64_t) read_once_.counters().hits; }
+    int64_t read_once_reads() const override { return (int64_t) read_once_.counters().reads; }
+    int64_t read_once_hit_bytes() const override { return (int64_t) read_once_.counters().hit_bytes; }
+    int64_t read_once_admitted() const override { return (int64_t) read_once_.counters().admitted; }
+    int64_t read_once_evicted() const override { return (int64_t) read_once_.counters().evicted; }
+    int64_t read_once_refused() const override { return (int64_t) read_once_.counters().refused; }
     bool copy_blobs(const int32_t* layers, const int32_t* experts, uint8_t* const* dst, size_t n) override;
     /// CS-T: advances the assembled blobs' age (see staged_blob).
     void begin_layer(int64_t layer, const int32_t* ids, int64_t k) override;
@@ -1116,6 +1286,16 @@ private:
     /// #286: the blobs from the drive, unbuffered: every role's 4 KiB-aligned window is read at once (overlapped on
     /// Windows, io_submit on Linux) into this thread's aligned buffer, then copied into place.  False when a read fails.
     bool read_direct(const Fill* fills, size_t n) const;
+    /// STRATA_SWAPIN_DEPTH (round 15): a batch past the per-thread scratch cap (swapin_depth.hpp's
+    /// swapin_shared_window; the default stager run is ~16 MiB, the biggest non-depth run ~64 MiB)
+    /// reads through ONE shared window instead of growing every calling thread's retained scratch
+    /// to the deep run's bytes (a 128-deep run is ~256 MiB; thirty stager threads keeping one each
+    /// would be gigabytes).  The guard spans the whole batch; the arena's file batches already
+    /// serialize on file_mu_, so it rarely contends; the buffer is allocated once at its
+    /// high-water mark and reused.
+    mutable std::mutex deep_win_mu_;
+    mutable uint8_t* deep_win_ = nullptr;
+    mutable size_t deep_win_cap_ = 0;
     bool open_direct(std::string& why);
     /// Windows: experts.bin mapped again as `open` maps it (begin/end_startup_unbuffered).
     bool map_view(std::string& why);
@@ -1136,6 +1316,18 @@ private:
     std::vector<std::string> paths_;          ///< the mapped files, as maps_
     std::vector<void*> pdirect_;              ///< open_prompt_direct: O_DIRECT fds for copy_blobs only
     std::vector<void*> direct_;               ///< #286: per file, an unbuffered handle (Windows) or O_DIRECT fd (Linux)
+    /// W1 lever: the prefill's batched swap-in meter.  armed by arm_swap_reads (the relief's packs
+    /// lever); copy_blobs' unbuffered read_direct window counts a batch into these when armed.
+    std::atomic<int64_t> swap_pairs_{0}, swap_batches_{0}, swap_bytes_{0}, swap_ms_{0};
+    bool swap_meter_ = false;
+    /// Round-17 design A ("read-once prefill"): the REQUEST-scoped LRU of blob images copy_blobs
+    /// consults before read_direct (see read_once.hpp).  `read_once_depth_` nests a split's
+    /// overlapping prefill stages - the first one in arms the window (min(knob, free - reserve)),
+    /// the last one out frees every image wholesale; `read_once_room_` is the admission guard
+    /// (each admit only while the RAM available covers it above STRATA_PIN_RESERVE_GIB).
+    ReadOnceWindow read_once_;
+    std::atomic<int> read_once_depth_{0};
+    std::function<bool(uint64_t)> read_once_room_;
     std::vector<int> role_file_;              ///< 3 x n_layers: index into maps_ / direct_
     /// blobs assembled in the stage buffers (`blob` hands those out): the GGUF in place, or any unbuffered source
     bool staged() const { return !role_ptr_.empty() || !direct_.empty() || io_pf_; }
@@ -1340,9 +1532,42 @@ public:
     bool mapped() const { return base_ != nullptr; }
     int64_t blobs() const { return blobs_; }
     const uint8_t* blob(int64_t layer, int64_t expert) override;
+    /// A hit or remote-owned row never asks for the blob any more (see ExpertSource::note_routed): count its
+    /// decode demand here, exactly as `blob()` used to before the hit test.
+    void note_routed(int64_t layer, int64_t expert) override { note_heat(layer, expert); }
     /// `blob` without the read counter: a pure pointer into the arena, safe from another thread (the async adaptive
     /// tier's job thread)
     const uint8_t* blob_at(int64_t layer, int64_t expert) const;
+    /// W1: a dropped pair has no stable blob (its pages are gone), is not pinned, has no device alias, and its
+    /// `blob` is a short-lived staged read from the pack files - so `transient` is true for it and `copy_blob`
+    /// reads it straight into the caller's buffer.  Nothing changes for a pair that is not dropped.
+    const uint8_t* blob_stable(int64_t layer, int64_t expert) override;
+    bool transient(int64_t layer, int64_t expert) const override;
+    bool copy_blob(int64_t layer, int64_t expert, uint8_t* dst) override;
+    /// W1 lever: the prompt stager's batched copy.  A dropped pair has no arena bytes (its copy was
+    /// given back), so a batch of dropped pairs is read from the pack files in ONE unbuffered window
+    /// (FileExpertSource::copy_blobs -> read_direct) - the prefill's batched swap-in - while resident
+    /// pairs copy from the arena as usual.  Without a relief drop this is the base per-pair copy.
+    bool copy_blobs(const int32_t* layers, const int32_t* experts, uint8_t* const* dst, size_t n) override;
+    int64_t swap_in_pairs() const override { return file_ ? file_->swap_in_pairs() : 0; }
+    int64_t swap_in_batches() const override { return file_ ? file_->swap_in_batches() : 0; }
+    int64_t swap_in_bytes() const override { return file_ ? file_->swap_in_bytes() : 0; }
+    int64_t swap_in_ms() const override { return file_ ? file_->swap_in_ms() : 0; }
+    /// Round-17 design A: the read-once window lives on the file source this arena reads its
+    /// dropped pairs through (the same lock-free pointer discipline as the swap-in counters).
+    void begin_read_once() override { if (file_) file_->begin_read_once(); }
+    void end_read_once() override { if (file_) file_->end_read_once(); }
+    int64_t read_once_hits() const override { return file_ ? file_->read_once_hits() : 0; }
+    int64_t read_once_reads() const override { return file_ ? file_->read_once_reads() : 0; }
+    int64_t read_once_hit_bytes() const override { return file_ ? file_->read_once_hit_bytes() : 0; }
+    int64_t read_once_admitted() const override { return file_ ? file_->read_once_admitted() : 0; }
+    int64_t read_once_evicted() const override { return file_ ? file_->read_once_evicted() : 0; }
+    int64_t read_once_refused() const override { return file_ ? file_->read_once_refused() : 0; }
+    void note_async_read(const uint8_t* blob, void* stream) override;
+    void begin_layer(int64_t layer, const int32_t* ids, int64_t k) override;
+    void prefetch(int64_t layer, const int64_t* experts, int64_t n) override;
+    void warm(int64_t layer, const int64_t* experts, int64_t n) override;
+    bool warms() const override { return unfilled_.load(std::memory_order_relaxed) > 0; }
     int64_t reads() const { return reads_.load(std::memory_order_relaxed); }
     bool pinned(int64_t layer, int64_t expert) const override;
     const uint8_t* device_alias(int64_t layer, int64_t expert) const override;
@@ -1364,6 +1589,168 @@ public:
     }
     /// Pin by need, after open(): the registered ranges (0 when the prefix rule, or nothing, is in force)
     size_t pin_ranges() const { return pin_start_.size(); }
+
+    /// W1 (--expert-helper-ram-relief, opt-in): the (layer, expert) pairs the out-of-process expert
+    /// helper holds, given to the source ONCE, after the helper's fill report.  The host arena keeps a
+    /// copy of every expert, the helper's pairs included, so a pair the helper computes rows for sits in
+    /// RAM twice; this gives those pages back to the OS and keeps the addresses (the arena's address
+    /// space is never given back).  A dropped pair is then:
+    ///   - no stable blob (`blob_stable`, `blob_at`), not pinned, no device alias;
+    ///   - `blob` reads it from the pack files into a short-lived buffer, so `transient` is true for it
+    ///     and every consumer copies it (the CPU windows, the cache fill, the prompt path's stager);
+    ///   - its rows come from the helper while the channel is open.
+    /// A pair inside a registered range is left alone: the driver pins those pages and the GPU has an
+    /// alias into them, so releasing them is not safe.  Under the flag the arena is built WITHOUT the
+    /// whole-arena registration and `register_complement()` registers everything but the held pairs
+    /// first, so the held pages are plain and this drops them (measured without that order: all 4116
+    /// held pairs sat inside the registration and nothing could be dropped).
+    /// Never called without the flag: today's behaviour, byte for byte.
+    void set_unfilled(std::vector<std::pair<int32_t, int32_t>> pairs);
+    /// W1 lever: the adaptive tier's swap-ins of dropped pairs, batched through the pack file
+    /// (FileExpertSource::read_blobs_batch under file_mu_).  The arena's own pages stay dropped:
+    /// the bytes go file -> the caller's staging buffer -> the slot, never back into RAM.
+    bool swap_blobs_batch(const std::vector<std::pair<int32_t, int32_t>>& pairs,
+                          const std::vector<uint8_t*>& dst, std::vector<uint8_t>& ok,
+                          std::string& err) override;
+    /// W1 lever: the packs lever's capability - arm and report the arena's unbuffered swap-in fds
+    /// (FileExpertSource::arm_swap_reads: pdirect_ without flipping the tier unbuffered).  True
+    /// when direct fds are ready for the swap-in batch; false with a named `why` (no pack file,
+    /// or the filesystem/platform cannot open O_DIRECT) so the caller prints the refusal.
+    bool swap_files_ready(std::string& why);
+    /// STRATA_WINDOW_POPULATE=1 (opt-in, the per-pair inverse of set_unfilled): a dropped pair a window read
+    /// (`blob` took its pack-file path, note_dropped_read) is read back from the pack files into its arena
+    /// address, its range registered (V4-r2's rule: a pair that is neither dropped nor registered has no
+    /// DMA-legal address) and its flag cleared, so the next refill takes the fast arena path instead of the
+    /// pack files — exactly what refill_run's relief no-op (the documented helper-loss degrade) never does.
+    /// SAFE ONLY on a single-reader call point: the request's serial path (no batch, no pipeline windows, no
+    /// peer/remote/swap caches, single stage, no async tier) at the request's end, the sole reader of the
+    /// pin/alias tables it rebuilds.  A pair the driver refuses to register stays dropped and file-served,
+    /// today's degrade.  Returns the pairs refilled.  Without ram-relief: a no-op (nothing is dropped).
+    int64_t refill_recorded_pairs();
+    /// STRATA_WINDOW_POPULATE=1: record a dropped pair whose `blob` took the pack-file path (file_mu_ HELD).
+    /// Bounded: an overflow loses records, never serves a wrong pair.  A pair the prompt path re-reads in
+    /// every chunk was recorded every time (measured 2026-11-05: a 10.1k-token prompt, ~300 chunks on the
+    /// same pairs), so the 8192 cap filled with duplicates and kept the early chunks.  The seen map records
+    /// a pair once per request cycle: it swaps empty with dropped_reads_ in refill_recorded_pairs, where
+    /// refill's own flag check stays the backstop.
+    void note_dropped_read(int64_t layer, int64_t expert) {
+        note_heat(layer, expert);   // helper-ipc-diet: a dropped pair a window read demands - the re-rank's promote signal
+        if (dropped_reads_.size() >= 8192) return;   // overflow loses records, as before
+        const int64_t key = layer * n_expert_ + expert;
+        if (dropped_reads_seen_.find(key) != dropped_reads_seen_.end()) return;
+        dropped_reads_seen_.emplace(key, 0);
+        dropped_reads_.emplace_back((int32_t) layer, (int32_t) expert);
+    }
+
+    /// helper-ipc-diet round 4: the runtime re-rank of the arena's keep set by DECODE heat.
+    /// The boot cap (--expert-helper-relief-arena-cap-mib) decides the keep set from the PROMPT-trace
+    /// profile; decode wants the pairs ITS walk touches.  set_arena_reorder() arms the re-rank with the
+    /// cap's arithmetic inputs - the untouchable sets (the hot budget's pairs and the tier-served drops:
+    /// the helper's rows, the spill tier's, the stage caches'), the cap, the decode floor, the profile
+    /// (the plan's tie-break) - and starts the per-pair heat counters.  At a safe boundary (the request's
+    /// serial path, the sole reader of the pin tables - refill_recorded_pairs' gate),
+    /// reorder_arena_by_heat() plans relief_arena_reorder_plan over the CURRENT keep set and applies it:
+    /// refill the demanding dropped pairs in (the promote, refill_recorded_pairs' mechanism), release the
+    /// cold resident pairs out (the demote, the registered range split around them), then halve the
+    /// counters so heat ages.  The cap stays the ceiling and the floor the guarantee: the re-rank decides
+    /// only WHICH pairs fill the band, never how big the band is.
+    ///
+    /// HEAT (the near-free signal, no locks and no device calls on the walk): a relaxed per-pair counter
+    /// bumped on blob()'s resident path (a decode touch of a resident pair - the demote signal) and on
+    /// every request that serves a dropped pair from the pack files (swap_blobs_batch and blob's file
+    /// path via note_dropped_read - the promote signal).  One fetch_add per lookup, the same class of
+    /// cost as the reads_ counter it sits beside; empty counters (never armed) cost one branch.
+    void set_arena_reorder(std::vector<uint8_t> hot, std::vector<uint8_t> tier_served,
+                           std::vector<std::pair<int32_t, int32_t>> profile,
+                           uint64_t cap_bytes, uint64_t decode_floor_bytes);
+    /// Applies one re-rank at the safe boundary; returns the net swaps applied (0: nothing moved).
+    /// Call it ONLY where refill_recorded_pairs may run: the request has stopped, the serial request
+    /// path is the source's only reader of pin_start_/pin_end_/pin_dev_/layer_pcie_, no async tier, no
+    /// batch/pipeline windows, no peer/remote/swap caches, no refill in flight.  Under the cap a split is
+    /// required and the async tier never runs with one; the stages' swap-ins of dropped pairs go through
+    /// swap_blobs_batch (file_mu_, the pack files), never the arena's pin tables, so the boundary's
+    /// sole-reader rule holds with stages present.
+    /// STRATA_ARENA_RERANK_MAX=N raises the per-boundary bound (64 pairs a side by default): after a
+    /// fresh long-context read the plan's swaps cover thousands of pairs, and a deployment that can
+    /// spend a few seconds between requests converges on decode's set in a handful of boundaries.
+    int64_t reorder_arena_by_heat();
+    bool arena_reorder_armed() const { return reorder_armed_; }
+    /// helper-ipc-diet round 8: the serving phase note_heat banks into (0: the request is reading
+    /// its prompt or parked at a boundary, 1: the decode loop runs).  The request thread sets it at
+    /// the phase boundaries; the tier's swap-in threads read it relaxed at note time.
+    void set_heat_phase(int phase) { heat_phase_.store(phase, std::memory_order_relaxed); }
+
+  private:
+    /// The heat counter of one pair: bumped on the decode walk.  No-op while unarmed.
+    /// helper-ipc-diet round 8 - PHASE TAG: `heat_phase_` (set_heat_phase) splits the counters into
+    /// the read's demand and the decode's.  The re-rank's round-7 finding: the plan's heat mixed
+    /// both phases and the read's swap-in demand (the boot profile's universe, thousands of pairs a
+    /// long prompt reads) drowned the decode window's, so the strict-win rule stopped early and the
+    /// band never converged on decode's set.  STRATA_ARENA_RERANK_PHASE_TAG=1 (default 0: today's
+    /// mixed heat) makes reorder_arena_by_heat plan on the decode bank alone: a pair earns
+    /// promotion only by DECODE demand, and a resident pair decode never touches is demote-first -
+    /// decode-window demand outranks read-phase heat by construction.  Round 9 adds =2 (arena_rerank_heat):
+    /// the decode bank plus read_weight/8 of the read bank, so the promote follows decode's set while a
+    /// read-hot resident keeps a floor the promote must strictly beat - the round-8 panel showed tag 1
+    /// recovers the warm continuations of the same conversation and pays for it on the first-pass
+    /// long-context gens, whose wide read set tag 1 demotes.
+    void note_heat(int64_t layer, int64_t expert) {
+        if (heat_.empty() || layer < 0 || expert < 0 || expert >= n_expert_) return;
+        const size_t i = (size_t) (layer * n_expert_ + expert);
+        if (i >= heat_.size()) return;
+        heat_[i].fetch_add(1, std::memory_order_relaxed);
+        if (heat_phase_.load(std::memory_order_relaxed) != 0 && i < decode_heat_.size())
+            decode_heat_[i].fetch_add(1, std::memory_order_relaxed);
+    }
+    /// refill_recorded_pairs' per-pair mechanism, reused by the re-rank's promote: read the pair's bytes
+    /// from the pack files into a private staging copy, register its page range, take the device alias,
+    /// insert the range into the sorted pin tables, write the bytes, clear the flag.  A driver refusal
+    /// leaves the pair dropped (today's file-served degrade) and says false.  `filled_bytes` reports the
+    /// pair's bytes when it lands.
+    bool refill_pair(int32_t layer, int32_t expert, uint64_t& filled_bytes);
+    /// The re-rank's demote: the per-pair inverse of refill_pair for a RESIDENT pair - unregister its
+    /// registered range, give the pair's wholly-interior pages back (MADV_DONTNEED), re-register the
+    /// span's remainders, rebuild the pin tables, set the flag.  Any failure restores the original range
+    /// and the pair stays resident.  Safe only at reorder_arena_by_heat's boundary (no DMA in flight).
+    /// `freed_bytes` reports the pages given back.
+    bool release_pair(int32_t layer, int32_t expert, uint64_t& freed_bytes);
+
+  public:
+    /// W1 (--expert-helper-ram-relief): build the arena without the whole-arena registration (and
+    /// without the working-set lock), so the fill writes plain pages.  Call before open().
+    void set_ram_relief(bool on) { ram_relief_ = on; }
+    /// W1: after the helper's fill report, register everything EXCEPT the pairs set_unfilled()
+    /// actually gave back (a pair that is neither dropped nor registered has no DMA-legal address;
+    /// V4-r2), then rebuild the alias tables over the registered complement.  No working-set lock:
+    /// the registration pins what it covers, and locking the dropped holes would fault them back
+    /// (or, before the drop, refuse the MADV_DONTNEED itself - unlimited mlock boxes).
+    /// Call after set_unfilled().
+    void register_complement(const std::vector<std::pair<int32_t, int32_t>>& held);
+    /// W1: rebuild pin_start_/pin_end_/pin_dev_/layer_pcie_ from the arena's registered ranges -
+    /// the same build open() does for a pin-by-need arena, run again after register_complement().
+    void apply_registration();
+    /// register-last (the whole-arena pin without relief, opt-out STRATA_REGISTER_LAST=0): open() built the
+    /// arena RESIDENT-BUT-UNREGISTERED (the fill writes plain pages; nothing evicts them during boot).
+    /// This is the whole-span cudaHostRegister plus the alias tables, and the caller runs it as the LAST
+    /// boot step - after the pools, the cache fills, the warm-ups, the graph captures and the helper
+    /// handshake - immediately before serve's READY: the last point where a request's DMA can read the
+    /// arena.  On a ROCm box every boot-time driver sync over a live whole-span registration (12.3M pinned
+    /// 4 KiB pages) spins at 100% of one core and hangs the boot (journal 2026-11-13 rounds 18k/18l);
+    /// the relief path's late registration is the working shape this generalizes.  A no-op when open()
+    /// took any other pinning (capped, by-need, deferred, shared, relief, UMA).
+    void register_whole();
+    /// True when open() armed the register-last shape: the caller MUST call register_whole() before
+    /// anything can DMA from the arena (serve's READY, the one-shot request loop).
+    bool register_last() const { return register_last_; }
+    /// How many pairs are dropped, and the bytes given back (0: the flag did nothing on this source)
+    int64_t unfilled_pairs() const { return unfilled_.load(std::memory_order_relaxed); }
+    uint64_t unfilled_bytes() const { return unfilled_bytes_; }
+    /// W1, the channel-loss path: read the dropped pairs back into the reserved addresses from the pack
+    /// files, clearing them as each lands.  This runs when the helper's residency is RELEASED - the
+    /// helper died mid-run - and the CPU has to serve their rows: with no host copy there would be
+    /// nothing to serve them from, so the run re-reads them and degrades exactly as a no-helper run.
+    /// Asks a background thread; never blocks the thread that noticed the loss.
+    void refill_unfilled();
 
     /// What backing was obtained and why, for the startup print.  "The engine adapts to the machine it is on" is
     /// only true if the engine says what it got.
@@ -1433,6 +1820,47 @@ private:
     /// index of the registered range holding [off, off + len), or -1
     int64_t pin_range_of(uint64_t off, uint64_t len) const;
     std::string gguf_;
+
+    // ---- W1 (--expert-helper-ram-relief): the pairs dropped out of the arena, and the pack files they
+    // come back from.  Empty `unfilled_flag_` (never set) is today's source, byte for byte.
+    std::vector<uint8_t> unfilled_flag_;      ///< (layers x experts): 1 = the pages are given back
+    /// helper-ipc-diet round 4: the decode-heat re-rank's state.  heat_ is the per-pair decode counter
+    /// (empty = unarmed: blob()/swap_blobs_batch pay one branch); the rest are set_arena_reorder's copy
+    /// of the cap's arithmetic inputs (untouchable sets, profile tie-break, cap ceiling, decode floor).
+    std::vector<std::atomic<int64_t>> heat_;
+    /// helper-ipc-diet round 8: the DECODE-phase bank (set_heat_phase phases note_heat; the re-rank's
+    /// STRATA_ARENA_RERANK_PHASE_TAG=1 plans on it instead of the mixed heat_ total).
+    std::vector<std::atomic<int64_t>> decode_heat_;
+    std::atomic<int> heat_phase_{0};            ///< 0: the read/boundary phase, 1: the decode loop
+    std::vector<uint8_t> reorder_hot_, reorder_tier_;
+    std::vector<std::pair<int32_t, int32_t>> reorder_profile_;
+    uint64_t reorder_cap_bytes_ = 0, reorder_floor_bytes_ = 0;
+    bool reorder_armed_ = false;
+    std::vector<std::pair<int32_t, int32_t>> dropped_reads_;   ///< STRATA_WINDOW_POPULATE: dropped pairs a window read (see refill_recorded_pairs)
+    std::unordered_map<int64_t, char> dropped_reads_seen_;     ///< note_dropped_read's dedup: pairs recorded this cycle, swapped empty with dropped_reads_ at refill_recorded_pairs
+    bool ram_relief_ = false;                 ///< W1: open() builds the arena with nothing registered
+    bool register_last_ = false;              ///< register-last: open() left the whole span unregistered; register_whole() is the caller's last boot step
+    std::atomic<int64_t> unfilled_{0};
+    uint64_t unfilled_bytes_ = 0;
+    uint64_t arena_capacity_ = 0;             ///< open()'s arena bytes (the spare blob on top)
+    bool shared_backing_ = false;             ///< a shared-file arena: MADV_DONTNEED would zero the FILE
+    std::string pack_dir_;                    ///< open()'s pack dir, for the file fallback
+    mutable std::unique_ptr<FileExpertSource> file_;  ///< the pack files: opened on the first dropped-pair read
+    mutable std::mutex file_mu_;
+    std::thread refill_;                      ///< refill_unfilled()'s background read
+    std::atomic<bool> refill_running_{false};
+    /// The pack files, opened on demand (W1).  `file_mu_` HELD by the caller.  Null when they cannot be
+    /// opened: a dropped pair then has no blob and every caller refuses that window with its existing
+    /// named failure.
+    FileExpertSource* file_source() const;
+    /// The refill thread's body: re-read every dropped pair into its arena address, clearing it as it
+    /// lands.  Runs on `refill_`, joined by close().
+    void refill_run();
+    bool unfilled_at(int64_t layer, int64_t expert) const {
+        const size_t i = (size_t) (layer * n_expert_ + expert);
+        return !unfilled_flag_.empty() && layer >= 0 && expert >= 0 && expert < n_expert_ &&
+               i < unfilled_flag_.size() && unfilled_flag_[i] != 0;
+    }
 };
 
 /// Plan v0.3 P6: checks native_experts.txt's GGUF spans against the files, before anything is read: each layer's
