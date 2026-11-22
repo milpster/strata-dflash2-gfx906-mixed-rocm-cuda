@@ -1099,3 +1099,10 @@ idempotent, anchored on lines+text, auto-restores on anchor miss). Operator appl
 through the real toolkit (default and `-ccbin g++`). Clang-host caveat did not reproduce; clang-as-nvcc-host is
 separately broken on this box (clang 21 vs libstdc++ 16, unrelated). Helper CUDA build now unblocked, queued
 behind the merge lane.
+
+## Operator order for the port's test windows (2026-11-22)
+
+When the ported 0.2.18 engine is tested (trial legs on :8019 and later windows), the test configs must **drop
+the `STRATA_ROUTE_TAIL_SKIP=7` key** that the current prod `-fson` config carries: 0.2.18 defaults the route
+tail skip to OFF on every backend (owner decision upstream 2026-11-19, engine 0.1.63), and our operator keeps
+quality-first, no tail routing skipped. The key must not ride along in a generated config as a stale override.
