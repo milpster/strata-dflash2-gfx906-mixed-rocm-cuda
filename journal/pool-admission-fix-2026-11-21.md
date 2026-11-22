@@ -995,3 +995,13 @@ the prod `-fson` config (reserves 344/344) per the operator order; prod rebooted
 Health `ok`, `loaded: true`; one real completion: HTTP 200 in 6.6 s (first request pays window capture),
 `finish=stop`, content `ready`. Clamp lines identical to the measured leg: card0 0, card1 2 slots, CUDA1
 512 MiB free. Prod serves on `127.0.0.1:8009` with reserves 344/344, engine `4b8251e9`, helper `9d16742d`.
+
+### Operator order 2026-11-22 (~01:58): ROCm card margins down another ~200 MiB (344/344 → 144/144)
+
+Ordered with an engine restart, and with the upstream-plan subagent paused for the window (operator: "pause agent,
+restart engine, resume agent" — session ses_dff35027cffemi359djp64GuRW cancelled, to be resumed on the same session
+after prod is back). The 3k oracle leg runs before the prod boot, per the measure-first discipline.
+
+Expected landing: free-before-FS ≈ 386 MiB on card1, so the clamp grants 0 slots everywhere (swap off) and the card
+loads at ~386 MiB free — the same free-VRAM class as the measured 360 MiB tuple (`fs2-240k`: 239,663 tokens clean),
+and above the 156 MiB full-card-stall line.
