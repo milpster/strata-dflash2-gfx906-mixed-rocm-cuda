@@ -1203,3 +1203,9 @@ GPU VM mappings went stale when the pool grew into new locked ranges. Operator o
 to 36864, proper stop + fresh boot at 22:24. Current generation (pid 215138): health ok, probe finish=stop
 "probe-ok", 288 MiB card0, ZERO XDMA faults so far. Watch: any fault at 36864 means the cause is elsewhere
 (and #267 may share this root).
+
+## Machine rebooted; prod booted clean at 36864 (2026-11-22 22:35)
+
+Operator rebooted the box (post XDMA-fault era; the reboot also cleared the gcr/ssh-add mess at the system
+level). Fresh boot at the reverted 36864 budget: health ok ~N/A s, probe finish=stop "probe-ok", zero amdgpu
+XDMA faults in the boot's kernel log so far.
