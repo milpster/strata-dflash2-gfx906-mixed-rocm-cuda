@@ -30,21 +30,40 @@ the fork tree. Re-running it refreshes the copies.
    loop does not attach to a running helper. Everything the lane needs *inside* the engine's other files
    is in place (the client, the frame transport, the eligibility rules, the wire protocol), but the two
    call sites are not. End-to-end helper serving is therefore not reachable on this port yet.
-   *Knock-on:* the fork's own DFlash2 runtime cannot be switched on either, because upstream's
-   `generate.cpp` needs upstream's drafter, and one verifier may have only one tap producer (see the
-   DFlash2 note below).
-2. **The DeepSeek V4.1 engine (`engine/src/dsv41/`, 51 files in the manifest) is in the tree but not in
-   any build target.** v0.2.18 has no DeepSeek code of its own, so nothing in upstream's CMake refers to
-   these files; the fork's `strata-dsv41` target and its kernel library were not ported. Decision needed:
-   wire them (a separate target block, and its own tests) or leave the family out of this port.
-3. **The CUDA-only MMQ libraries are not wired** (`strata_mmq`, `strata_mmq_w4a4`, `strata_kq`: the
+   *How close the fork's own build pair is, measured 2026-11-22 in `build-lane-check` (a scratch
+   configure, deleted afterwards; the logs are in `logs-port/`): with
+   `-DSTRATA_ENABLE_DFLASH2=ON -DSTRATA_HAVE_DFLASH2=OFF` - the pair this box's production build uses -
+   `strata_kernels` (with the lane's `dflash_inco.cu`) and `strata_engine` (with `dflash.cpp`,
+   `dflash_runtime.cpp`, `dflash_tap_collect.cpp`) **compile clean**, and `strata` fails at one file:
+   `generate.cpp`, five error sites, all one cause - upstream's `generate.cpp` names
+   `strata::core::Dflash2Drafter` and `defer_df2`, and those exist only when upstream's drafter is
+   compiled. One verifier may have only one tap producer, so the two cannot both be compiled
+   (engine/CMakeLists.txt refuses that pair by name). In other words: the lane's DFlash2 runtime and the
+   rest of the lane are buildable today; `generate.cpp` is the single file in the way, and it is one of
+   the two un-ported ones. That also means the same file holds both remaining gaps.
+2. **The DeepSeek V4.1 engine (`engine/src/dsv41/`, 51 files in the manifest) is now in the build, under
+   the fork's own switch and the fork's own guard.** `option(STRATA_BUILD_DSV41 ... OFF)`, and the whole
+   block is inside `if(STRATA_BUILD_DSV41 AND NOT STRATA_HIP_GFX906)` - which is how the fork builds it:
+   the family needs the vendored EXL3 decode kernels, and a gfx906 card does not get them. Its tests and
+   the two vendored attribution trees (`third_party/project-maya`, `third_party/antirez-ds4`) came across
+   with `PORT-MANIFEST-DSV41.txt`. One path is this tree's: the fork's `third_party/ggml` include is
+   `STRATA_GGML_DIR` here, which is what v0.2.18 uses for the vendored ggml.
+   *What this means for verification:* a gfx906 build compiles none of it, exactly as the fork's build on
+   this card, so nothing in it is proven by this port - it needs a CUDA build, and this box cannot make
+   one today (item 5).
+3. **The lane's own test programs are in the tree but not in any build target.** `PORT-MANIFEST.txt`
+   covers `src/`, `include/`, `sycl/` and `serve/` - the plan's count - so the lane's tests under `tests/`
+   were nobody's: 49 files, 24 test programs and their fixtures and stubs, copied now
+   (`PORT-MANIFEST-TESTS.txt`, `tools-port/lane-tests.py` prints that list again). What is missing is
+   their wiring: each needs its `add_executable`, the libraries it links (some with
+   `-Wl,--wrap=mmap,mlock,...` and a `STRATA_RAM_POOL_TEST` define), its `add_test` and its timeout. The
+   fork has all of that; transplanted mechanically it produces a block that looks right and is not, so
+   it is left to do one test program at a time with its own block read. Consequence today: `ctest` on
+   this port covers upstream's suite, not the ported lane.
+4. **The CUDA-only MMQ libraries are not wired** (`strata_mmq`, `strata_mmq_w4a4`, `strata_kq`: the
    `mmq_*.cu`, `moe_mmq.cu`, `moe_ws*.cu`, `ggml_cuda_host.cu` sources). The fork does not build them for
    a HIP card either (`moe_mmq.cu` drops its symbols when `GGML_USE_HIP` is defined), so the gfx906 engine
    is complete without them. On a CUDA build of this port they would be missing.
-4. **The lane's own tests are not wired.** Nine manifest entries are `_test.cpp` / `_parity.cpp` /
-   `bench.cpp` files (pool, slots, helper socket, helper candidates, dflash taps, conversation stream
-   state, and so on). The fork has `add_executable` and `add_test` for them; upstream's CMake has no idea
-   they exist. `ctest` on this port runs upstream's suite only.
 5. **The expert helper binary was not built here.** The target is wired (see below) and refused under
    `STRATA_HIP_GFX906` with a named reason, exactly as the fork's build does, because the sidecar is
    CUDA-only. It also could not be built in a CUDA configure on this box: `nvcc` 13.1 fails on this
