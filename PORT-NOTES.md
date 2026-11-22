@@ -217,7 +217,9 @@ Run:
   `aa3c67a3154c93a33a5466ebf26e0d719a86af54da23876f76b96627c4499375`; reconfigured and rebuilt at
   `84d066665` it is `7d6873e5e435960399dbd5853e62e4e9feb8056ce20a17c5dd0f0f6877a8035c`; at `520532ca5`
   `40c5018813740097a66a1042f4457fea4a185fdae5b587a627c6988c6b7ccdf4`; at `ac71c8dab` (the lane's test
-  programs wired, default options) `b634e1471017005c4ff5fe5657487cdd43663675c47bbe41e44dde8a7fa2c076`.
+  programs wired, default options) `b634e1471017005c4ff5fe5657487cdd43663675c47bbe41e44dde8a7fa2c076`;
+  at `e5651d66b` (the state this branch rests in: default options, everything above wired)
+  `4149966aea6c100a5dbbcd3486eb408008b4bbbc7a2bb05af537e36e55a46a9e`.
   `strings` finds the stamped commit inside the binary.
 * `ldd build-906/strata` with `LD_LIBRARY_PATH=/home/srcds/rocm-gfx906-xnack/lib:/opt/rocm-6.1.0/lib`:
   `libhipblas.so.2` and `libamdhip64.so.6` from `/opt/rocm-6.1.0/lib`, `librocblas.so.4` from
