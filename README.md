@@ -34,7 +34,7 @@ Serving on `127.0.0.1:8009`, launcher only, config `prod-config-ud-iq3xxs-dflash
 | Helper | `run/fsclamp-bin/rpcw-cuda/strata-expert-helper-patient`, sha `9d16742d`, reserve 0, no fill cap — **3,913 slots / 7.32 GiB**, **14 MiB** free | journal |
 | Reserves | `--vram-reserve-mib 144` / `--vram-reserve-later-mib 144` → card0 288, card1 **386 MiB** free loaded | journal |
 | Foresight swap | `STRATA_FS_SLOTS=2,8`; clamp grants **0 slots → swap off** at these margins | journal |
-| RAM pool | `STRATA_RAM_BUDGET_MIB=40960` (36 GiB pool + 4 GiB outside area; raised from 36864 on 2026-11-22 by operator order) | config |
+| RAM pool | `STRATA_RAM_BUDGET_MIB=38960` (34 GiB pool + 4 GiB outside area; raised from 36864 on 2026-11-22 by operator order, first to 40960 then settled at +2 GiB) | config |
 | Context, KV, drafter | `--max-context 262144`, `--kv int8`, `--kv-resident-mib 4096`, `--prefill 16384`; `--dflash …/inco-dflash2-q4_0.gguf --dflash-block 7 --spec 5` | config |
 | Speed | prefill **284.4–290.8 tok/s** (239,646–239,663-token prompt); decode **20.2–32.2 tok/s** (cold infill 20.2–22.8, restored turns 30.2–32.2) | journal, `fson-rsv600` / `fson-rsv344-240k` |
 

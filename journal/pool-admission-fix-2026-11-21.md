@@ -1187,3 +1187,10 @@ honest (not run). Six unverifiable claims from the old README dropped (incl. the
 record). Oracle (GLM 5.3, iterative): 36 numbers spot-checked, one minor defect found (stale OS row: 25.04 ->
 26.04.1, kernel 7.3.4-x64v3) and fixed; RAM cell updated for today's 40960 budget raise. Verdict APPROVED.
 Committed and pushed.
+
+## Prod budget settled at +2 GiB (2026-11-22, operator order)
+
+The earlier +4 GiB raise (36864 -> 40960) was reduced to +2 GiB: STRATA_RAM_BUDGET_MIB now 38960 (34 GiB pool +
+4 GiB outside). Proper stop this time (bash stop-prod.sh: TERM supervisor, 0 prod processes remain), boot via the
+launcher, health ok at ~100 s, probe finish=stop "probe-ok". The loose-end fixer lane was mid-turn during the
+restart (ConnectionRefured expected; host retries). README RAM cell updated to 38960.
