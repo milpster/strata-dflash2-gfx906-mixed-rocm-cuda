@@ -244,6 +244,11 @@ ENGINE_SILENCE_S = 300.0
 # single call (a file flush, the host->device transfer); the engine's own bound is the same (session_phase_limit_s).
 SESSION_WAIT_MAX_S = 3600
 
+# The automatic disk tier's typed progress lines (`DCACHE <phase> <done> <total> [<secs>]`): disk bytes on
+# stdout, understood by the request parser and the manual SAVE/RESTORE parser.  They are heartbeats and never
+# prompt evaluation: only PP and RESUME feed the server's prompt statistics.
+DCACHE_PHASES = frozenset(("write", "flush", "publish", "validate", "transfer", "done"))
+
 
 # ... except while a prompt is read: a PP line comes once per chunk (up to 32768 tokens with --prefill auto, issue
 # #282), and the slowest PCs read ~100 tok/s, so a first chunk can take minutes before the first line.  Until the first
