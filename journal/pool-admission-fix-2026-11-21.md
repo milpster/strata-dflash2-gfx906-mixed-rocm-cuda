@@ -1149,3 +1149,15 @@ Branch pushed. Helper CUDA build dispatched next (toolkit fixed this morning).
    (config-entry route, option A).
 4. **Test targets**: option B — local CMake guards for the three gfx906-broken upstream test targets, commented
    as temporary upstream-defect guards. No upstream filing (draft stays held).
+
+## The expert helper builds from the port (2026-11-22, fixer lane, parent-verified)
+
+`strata-expert-helper` compiled from the port tree in its own CUDA configure
+(`tools-port/configure-cuda-helper.sh` → `build-cuda-helper`; nvcc 13.1.115, g++ host, sm_86, lane DFlash2 pair
+ENABLE=ON/HAVE=OFF). No port-side source fix: all three sidecar files byte-identical to the fork's. One
+configure lesson, recorded: the release shape (`TESTS=OFF`) configures no ggml and the lane's includes need it —
+use `TESTS=ON` exactly as build-906/build-lane do. Parent-verified: sha `58c3ae020a7479…` (55,541,552 B,
+38 cubins all sm_86) at commit `03600590f`+`8dd40c9a98`, libcudart.so.13 from the versioned toolkit path
+(RUNPATH pinned to cuda-13.1, not the alternatives symlink), `--help` exit 0 device-free, `build-906/strata`
+untouched (`17f64305…`), prod :8009 healthy throughout. Commit `8dd40c9a98`, pushed.
+Compiled ≠ run: start, fill-under-reserve, and sm_86 execution are unproven until a :8019-class window.
