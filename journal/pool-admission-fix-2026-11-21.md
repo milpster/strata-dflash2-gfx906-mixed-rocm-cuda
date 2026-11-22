@@ -1220,3 +1220,12 @@ card1's cross-card DMA faulting on host pinned pages at ANY budget; kills the ge
 (supervisor keeps respawning). Card temps currently nominal (42/63C junction, mclk 1000). Prior art: card1
 needed an SBR (gpu-sbr.sh) to recover from its Oct-22 SMU-dead wedge. Next lever if it recurs: short-bottom
 reset of card1, then the amdgpu/kernel angle. Fixer lane HELD until the engine holds a generation.
+
+## The 2026-11-20 ram-pool zombie lanes: closed (2026-11-22 22:4x)
+
+The host restarts revived two 2026-11-20-era sessions in Strata-wt-helper-ipc (helper-ipc-diet) with dead shell
+tools; both kept re-delivering blocked reports. Parent resolution: the worktree is CLEAN and the lanes' work is
+ALREADY COMMITTED in the era's own commits (managed pool lend/return, helper reserve/fill budget); the ram-pool
+suite verified by the parent: ctest 3/3 passed (ram_pool, real_mock, nonlinux probe) and ram_pool_nonlinux_probe
+11/11 checks, exit 0. Nothing was lost; "edits may have been lost" was a zombie misread. Both zombie sessions
+cancelled (retained, not resumed). Oracle review of that era's commits remains open, low priority.
