@@ -303,11 +303,11 @@ newer decision wins and the lane's behaviour is added beside it, not instead of 
 | --- | --- |
 | `STRATA_ROUTE_TAIL_SKIP` default (fork: rank 7 on CUDA/gfx1200; upstream: off, owner decision 2026-11-19) | upstream's - the fork's is the older default |
 | `STRATA_MTP_BATCH_F16` default (fork: MMQ unless `=1`; upstream: FP16 unless `=0`) | upstream's |
-| the conversation spill tier (fork: `--conversation-cache-dir` DISK tier; upstream: the SSD tier) | **both**, side by side: upstream's SSD tier, plus the fork's disk tier with its `disk_start` / `disk_wins` lookup restored and its own condition. The two are now asked the same question; the RAM entry is only taken when neither wins. Interaction untested - see the risks below |
+| the conversation spill tier (fork: `--conversation-cache-dir` DISK tier; upstream: the SSD tier) | **both**, side by side: upstream's SSD tier, plus the fork's disk tier with its `disk_start` / `disk_wins` lookup restored and its own condition. The two are now asked the same question; the RAM entry is only taken when neither wins. Interaction untested - see the risks below. **Decided 2026-11-22 (operator): in configs the spill tier is OFF (`--conversation-spill-mib 0`), the fork's DISK tier stays this rig's only disk tier** - journal/pool-admission-fix-2026-11-21.md (fork tree), `configs-port/trial-8019-spill-off.json` |
 | the free-VRAM note, the GPU-pause lines, the `kfd_quiet` warm-up, `kv_grow_start` / `kv_grow_target`, `lm_streamed_experts`, `serve_stop_bound` with the GEN hold, `mmq_resident_sort_eligible`, `g_gpu_pause_idle`, the `READY ... stop hold holdb` protocol line | upstream's, unchanged - the lane's block is inserted around them (the register-last arena pin now runs just before upstream's READY print) |
 | the elastic-KV ceiling (fork adds the drafter's scratch chunks; upstream wraps the rule in `kv_grow_*`) | upstream's rule, plus the drafter's terms guarded by `!o.dflash.empty()` so a run without `--dflash` asks the same question as before |
 | the drafter latch in the decode condition (fork `!(draft_on || (has_dflash && req_dflash && dflash_ready))`, upstream `!draft_on`) | the fork's condition - the lane's drafter needs it |
-| the CPU expert share's blob test (fork: `!transient`; upstream: `pinned || !transient`) | **the fork's `!transient`** - see the one default-path change below |
+| the CPU expert share's blob test (fork: `!transient`; upstream: `pinned || !transient`) | **the fork's `!transient`** - see the one default-path change below. **Ratified 2026-11-22 (operator): kept** - journal/pool-admission-fix-2026-11-21.md (fork tree) |
 
 The merged `generate.cpp` parses the lane's options again: `--dflash`, `--dflash-head`,
 `--dflash-vocab`, `--dflash-mask-token`, `--dflash-block`, `--dflash-remote-only`,
@@ -379,14 +379,31 @@ analysis and a compiler. Specifically unproven:
 
 * that the merged loop answers like the fork's build (the boot-and-compare on :8019 is still the next
   step, and it is the only thing that can show it);
-* the two conversation tiers living together (SSD and DISK) - each was tested alone, never as a pair;
+* the two conversation tiers living together (SSD and DISK) - each was tested alone, never as a pair (config-side this rig never asks the pair now: the port's 8019 base runs `--conversation-spill-mib 0`, so the spill tier is off and the DISK tier is the only one; the engine path itself stays untested);
 * that upstream's `--batch`, GEN `hold`, the checkpoint pool and the piped-lookup path still behave,
   now that the fork's decode-loop hunks sit among them (they compile, and the static pins hold);
 * the lane's `--dflash` request path, which upstream 0.2.18 does not contain at all, so nothing of it is
   covered by an upstream test - the three device-parity programs skip without a device.
 
 
-## The expert helper builds: `strata-expert-helper` from the CUDA tree (2026-11-22)
+## The port's own :8019 base config (2026-11-22, commit `07a407d1a8`)
+
+`configs-port/trial-8019-spill-off.json`: the champion measurement config
+(`bench/ab-v0210/rpcprof/trial-managed-pool-38g-230k.json`, named by the fork's `CHAMPION.json`) with the
+engine, cwd, helper sockets, log and the WRITTEN `--conversation-cache-dir` repointed at this tree, port
+8019, and `--conversation-spill-mib 0` added (the operator's spill-tier decision above). The engine gate
+that honours the 0 is `generate.cpp:15259` - the whole spill block runs only when `conversation_spill_mib
+!= 0`, so 0 turns it off without touching the DISK tier.
+
+**Key reach, verified device-free:** the ported server's arg path is `serve.engine_args` (`server.py:3589`,
+consumed at `:8151` by `StrataEngine(exe, engine_args(cfg, exe) + ...)`). Called directly in Python with
+this config (`announce=False`, `exe=None`, so nothing starts and nothing probes a device): all **9 of 9**
+`--conversation-cache-*` keys of the base reach the built engine argv unchanged, `--conversation-spill-mib
+0` lands in it, and the shaping layers (`user_args.merge`, `drafting.apply`, `vram_fit.fit_start`) add
+their own flags without dropping ours. The server also parses the engine's conversation-cache log lines
+(`server.py:631-639`), so the tier's own emissions are expected surface.
+
+## The expert helper builds: `strata-expert-helper` from the CUDA tree (2026-11-22, commit `8dd40c9a98`)
 
 The sidecar that owns the RTX 3080 in this box's mixed-GPU lane. `engine/cmake/strata_gpu_engine.cmake:610`
 refuses it under `STRATA_HIP_GFX906` by design ("the sidecar is CUDA-only (NVIDIA). Build it in a CUDA
@@ -478,12 +495,18 @@ exit 0).
 2. Wire the DeepSeek V4.1 engine target, or record the family as out of this port. *The target is wired
    (item 2 of "What is NOT carried") and a gfx906 build compiles none of it; the decision left is whether
    to open a CUDA configure to build and run it, which this box cannot do today (item 3 below).*
-3. Fix or replace this box's CUDA 13.1 toolkit so the expert helper can be built here at all.
-4. Two upstream v0.2.18 test targets do not link on a gfx906 configure (`native_moe_gated_test`,
+3. ~~Fix or replace this box's CUDA 13.1 toolkit so the expert helper can be built here at all.~~
+   **Decided 2026-11-22**: the operator patched the toolkit's `crt/math_functions.h` for glibc 2.43, and the
+   helper builds from this tree - see "The expert helper builds" below (commit `8dd40c9a98`).
+4. ~~Two upstream v0.2.18 test targets do not link on a gfx906 configure (`native_moe_gated_test`,
    `prefill_decode_golden` - item 8, reproduced on the clean tag). They make `ninja` fail on both the port
    and the untouched tag. Decide whether the port should carry a local guard that skips them on this card
    (a build change this port does not want to make silently), or whether this goes to the upstream
-   maintainers as a bug report - the evidence for the second is already written.
+   maintainers as a bug report - the evidence for the second is already written.~~
+   **Decided 2026-11-22 (operator): local guards, no upstream filing** - journal/pool-admission-fix-2026-11-21.md
+   (fork tree). Landed as the guard trio `de422ee1f5` / `d63ff871f1` / `ef61c81bd8` (the third target of the
+   same class, `conversation_transfer_test`, is gated by `de422ee1f5`); the default `ninja -k 0` build is
+   green with all three out of the graph, and no test source was touched.
 
    **A third target of the same class (measured 2026-11-22, after the decode-loop merge).** With
    `STRATA_BUILD_CONVERSATION_TESTS=ON`, a gfx906 configure also builds upstream's
@@ -496,7 +519,8 @@ exit 0).
    Proved inherited, not caused here: `conversation_validation_test.cpp` is byte-identical to upstream
    v0.2.18, and the lane suite does not ask for this target (its 43 / 47 cases are unaffected). It
    surfaced only because `tools-port/lane-tests.sh` leaves the conversation opt-in `ON` in the build
-   directory's cache. Same decision as item 4: local guard here, or upstream report.
+   directory's cache. ~~Same decision as item 4: local guard here, or upstream report.~~
+   **Decided with item 4 above: local guard** (`de422ee1f5`).
 5. The fork's `tests/core/cuda_runtime.h` shadows the HIP compatibility header for every test target whose
    include path contains `tests/core` (item 7). One lane program (`dflash_head_bf16_test`) does not compile
    because of it and is `EXCLUDE_FROM_ALL` here. Decide the repair in the fork - move the shim out of
