@@ -989,3 +989,9 @@ long-context safety before any prod default moves.
 
 Speed sits inside the noise band of every measured tuple (prefill 284.4–290.8 tok/s, decode 20.2–32.2). Applied to
 the prod `-fson` config (reserves 344/344) per the operator order; prod rebooted on it.
+
+### Prod boot on 344/344 (01:53–01:54)
+
+Health `ok`, `loaded: true`; one real completion: HTTP 200 in 6.6 s (first request pays window capture),
+`finish=stop`, content `ready`. Clamp lines identical to the measured leg: card0 0, card1 2 slots, CUDA1
+512 MiB free. Prod serves on `127.0.0.1:8009` with reserves 344/344, engine `4b8251e9`, helper `9d16742d`.
