@@ -960,3 +960,19 @@ card0:2, card1:8` — full grant, no clamp line — and `CUDA1: 548 MiB of VRAM 
 (the 140 MiB LOW lines earlier in the same file are older boots). Health `ok`, `loaded: true`. One real
 completion: HTTP 200 in 0.5 s, 8 tokens, 8/8 drafts accepted, 28.2 tok/s; the probe's first `content: null`
 was `finish_reason: length` inside reasoning, the known benign class. Prod serves on `127.0.0.1:8009`.
+
+### Operator order 2026-11-22: margins down 256 MiB (600/600 → 344/344)
+
+3,058-token oracle leg first (fson-rsv344, 01:33): **pass**, 0 non-finite, 8 tokens, 5/8 drafts. The clamp's own
+words at boot:
+
+```
+foresight swap: card0 asked 2 slots (114 MiB) with 488 MiB free -> granted 0 slots, leaving 488 MiB
+foresight swap: card1 asked 8 slots (293 MiB) with 586 MiB free -> granted 2 slots (73 MiB), leaving 512 MiB
+strata serve: CUDA1: 512 MiB of VRAM free with everything loaded
+```
+
+So −256 MiB of margin buys bigger expert caches, and costs most of the swap: `card0:0, card1:2` instead of
+`card0:2, card1:8`. The two operator orders now pull against each other — "always on for quality" needs ~600/600,
+"reduce margins" lands the cards just under the low line. The 240k window (fson-rsv344-240k) is running to confirm
+long-context safety before any prod default moves.
