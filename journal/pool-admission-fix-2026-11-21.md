@@ -1118,3 +1118,17 @@ suite **47/47 (100%, 5 device skips)**, default pair 43/43, the 28 static checks
 (31,528,984 B; a strata hash is not a content hash — quote (commit, sha)). Upstream's SSD tier and the lane's
 DISK tier coexist; runtime correctness UNVERIFIED without a boot — the :8019 compare is the only proof.
 Branch pushed. Helper CUDA build dispatched next (toolkit fixed this morning).
+
+### Merge decision items resolved (2026-11-22, operator review)
+
+1. **MTP**: not used — no mtp key in config/launcher, prod drafts via DFlash prompt-lookup (`--suffix-draft`);
+   the `STRATA_MTP_BATCH_F16` collision is moot for this lane.
+2. **CPU-share blob rule** (`pinned && !transient`, the fork's): keep — upstream's `pinned || !transient` sends
+   managed-pool blobs (pinned + transient) down the DMA-from-borrow path and the pool loan is never noted or
+   released; the fork's rule routes them through the source's own copy. Load-bearing for the CPU pool.
+3. **Upstream SSD spill tier is ON BY DEFAULT** (generate.cpp:1249: `--conversation-spill-mib` unset =
+   min(32 GiB, a quarter of free disk)). Coexistence with our DISK tier is therefore live, not hypothetical:
+   ported/test configs MUST set `--conversation-spill-mib 0` or every parked conversation is double-written to
+   two disk tiers (up to 32 + 24 GiB).
+4. `conversation_transfer_test`: upstream guard bug (admits a CUDA-only test when `NOT STRATA_ENABLE_HIP`,
+   true on a gfx906 configure); source byte-identical to v0.2.18. Third such target — reportable, not ours.
