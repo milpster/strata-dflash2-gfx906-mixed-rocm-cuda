@@ -1014,3 +1014,12 @@ free with everything loaded` — inside the measured-pass band (360 MiB passed 2
 Health `ok`, completion probe `finish=stop`, `ready` in 6.4 s. Prod serves on `127.0.0.1:8009` at reserves 144/144,
 engine `4b8251e9`, helper `9d16742d`. The margin ladder for the record today: 256/192 → 600/600 (always-on swap)
 → 344/344 (−256) → **144/144 (−200)**, every step measured before the prod boot.
+
+## The upstream 0.2.18 port starts (2026-11-22, operator order)
+
+Phase 0 done by the parent: `git worktree add /mnt/srcds/Strata-wt-0218 -b port-0218 v0.2.18` — new branch `port-0218`
+at tag `v0.2.18` (tip `6e38f588a6`, engine 0.1.64), both `engine/src/core/expert_source.cpp` and
+`terminal/serve/server.py` present. Phases 1–2 delegated to a fixer riding the engine via the
+`llamacpp/swift-1.5-iq3_xxs` entry (prod :8009): 140-file port manifest, the two hand-merges, CMake wiring, fork
+dflash2 flag rename, then the gfx906 build — commits local and incremental, no boots, no GPU runs, nothing on :8009.
+Plan of record: docs/PLAN-UPSTREAM-0218.md (approved, f10c877634).
