@@ -1088,3 +1088,14 @@ restored in 185.9 ms (prefill 31,571 ms → 370 ms). Cross-boot disk restore pro
 fixer's own 192,840-token conversation restored from the previous boot's disk cache in 31.4 s at boot, before any
 request of this boot wrote anything; a 210,015-token disk-only snapshot restored in 29.6 s same-boot. RAM tier
 holds ~one 2.3k-token conversation (311 MB GDN checkpoint) under the 512 MiB ceiling; larger ones go disk-only.
+
+## CUDA 13.1 toolkit fixed (2026-11-22, operator + surplus GLM 5.3 lane)
+
+The nvcc/glibc 2.43 rsqrt clash is closed. Lane proved the two-line `noexcept (true)` patch rootless (patched
+include-copy compiled exit 0, `-I` shadowing proven with an `#error` tripwire; script tested on a sandbox twin,
+idempotent, anchored on lines+text, auto-restores on anchor miss). Operator applied
+`sudo bash /tmp/opencode/cuda-fix/patch-cuda-header.sh`; parent-verified: backup
+`math_functions.h.orig-preglibc243` beside the header, lines 629/653 patched, one-line `.cu` compiles exit 0
+through the real toolkit (default and `-ccbin g++`). Clang-host caveat did not reproduce; clang-as-nvcc-host is
+separately broken on this box (clang 21 vs libstdc++ 16, unrelated). Helper CUDA build now unblocked, queued
+behind the merge lane.
