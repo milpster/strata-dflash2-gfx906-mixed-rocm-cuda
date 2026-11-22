@@ -1138,3 +1138,14 @@ Branch pushed. Helper CUDA build dispatched next (toolkit fixed this morning).
 - CPU-share blob rule: **keep the fork's `pinned && !transient`** (correctness for pool loans + measurement
   provenance; the loan-leak is upstreamable later as a pool-aware release patch, parked for the held report).
 - Upstream SSD spill tier: pros/cons of config-entry vs code-default presented; operator choice pending.
+
+### Operator decisions, complete (2026-11-22)
+
+2. **CPU-share rule**: keep the fork's `pinned && !transient` (journaled 34291cb2b1).
+3. **Conversation disk tier**: **keep ours** — upstream's spill tier is a storage tier with no draft/target pair
+   restore, no partial checkpoint restore, and zero measurements on this rig; ours is the serving tier the whole
+   240k record ran on. Upstream's per-process lockfile isolation and reservation accounting are the only better
+   ideas, irrelevant under our single-writer discipline. Ported/test configs set `--conversation-spill-mib 0`
+   (config-entry route, option A).
+4. **Test targets**: option B — local CMake guards for the three gfx906-broken upstream test targets, commented
+   as temporary upstream-defect guards. No upstream filing (draft stays held).
