@@ -1005,3 +1005,12 @@ after prod is back). The 3k oracle leg runs before the prod boot, per the measur
 Expected landing: free-before-FS ≈ 386 MiB on card1, so the clamp grants 0 slots everywhere (swap off) and the card
 loads at ~386 MiB free — the same free-VRAM class as the measured 360 MiB tuple (`fs2-240k`: 239,663 tokens clean),
 and above the 156 MiB full-card-stall line.
+
+### Restart on 144/144 (02:19–02:20)
+
+3k oracle first: **pass**, 0 non-finite, 6 tokens, 4/4 drafts, 82.6 tok/s prefill. Boot landed as predicted:
+card0 288 / card1 386 MiB free at the FS point → clamp granted 0 everywhere, swap off; `CUDA1: 386 MiB of VRAM
+free with everything loaded` — inside the measured-pass band (360 MiB passed 239,663 tokens; the stall line is 156).
+Health `ok`, completion probe `finish=stop`, `ready` in 6.4 s. Prod serves on `127.0.0.1:8009` at reserves 144/144,
+engine `4b8251e9`, helper `9d16742d`. The margin ladder for the record today: 256/192 → 600/600 (always-on swap)
+→ 344/344 (−256) → **144/144 (−200)**, every step measured before the prod boot.
