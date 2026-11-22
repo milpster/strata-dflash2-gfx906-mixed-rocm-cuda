@@ -11,6 +11,8 @@ GPU; the engine was compiled for gfx906 only, and no process on port 8009 was to
 | --- | --- | --- |
 | Files only the fork has | 140 (`PORT-MANIFEST.txt`) | copied straight in, `src/` to `engine/src/`, `include/` to `engine/include/`, `sycl/` to `engine/sycl/`, `serve/` to `terminal/serve/` |
 | Expert helper's own sources | 3 (`PORT-MANIFEST-HELPER.txt`) | copied to `engine/tools/mixed_gpu/sidecar/`; the plan's 140 did not count them, but the engine needs one of them and the helper target needs two |
+| The lane's own test programs | 49 (`PORT-MANIFEST-TESTS.txt`) | copied to `engine/tests/`; `tools-port/lane-tests.py` prints that list from the two trees. Not built yet - their blocks are owed (below) |
+| DeepSeek V4.1's remaining pieces | 6 (`PORT-MANIFEST-DSV41.txt`) | its two `.cu` test programs and the two vendored attribution trees (Project Maya, antirez-ds4) |
 | Headers both trees have | 30 | 24 applied cleanly with a three-way merge of the fork's difference against v0.2.18; 6 decided by hand |
 | Sources both trees have | 37 | 29 applied cleanly; 8 by hand (mtp.cpp, peer_experts.cpp, pinned.cu, q36_engine.cu, iq_kernels.cu, remote_experts.cpp, conversation_cache_test.cpp, verify.hpp side) |
 | `engine/src/core/expert_source.cpp` | 1 | hand merge: the fork's difference replayed with a three-way merge (52 of 57 pieces clean, 5 by hand) |
@@ -25,7 +27,14 @@ the fork tree. Re-running it refreshes the copies.
    version unchanged.** The fork changes them by 15 and 40 pieces. Those pieces sit inside the dispatch
    loop that upstream rewrote in 0.2.18 (the request-owned decode path), and after several attempts no
    merge could be shown correct by reading. A half-merged decode loop is a worse outcome than a named
-   missing feature, so the two files stayed upstream's.
+   missing feature, so the two files stayed upstream's. Measured 2026-11-22 to size the job: against
+   v0.2.18 the fork's `generate.cpp` differs by 397 hunks (+5645 / -4107 lines; upstream's file is
+   24627 lines, the fork's 26165) and `prefill.cpp` by 175 hunks (+1319 / -2081). Most of that is
+   upstream's own movement and features this port does not carry, not the lane's.
+   `tools-port/port-worklist.py` splits it by feature and writes the lane's own pieces, with their
+   code, into `PORT-WORKLIST-UNPORTED.md` - in `generate.cpp`: 15 expert-helper hunks, 6 CPU-pool,
+   6 VRAM-clamp, 59 drafter; in `prefill.cpp`: 6 expert-helper, 53 prompt-kernel. That is the list to
+   work from, one feature at a time, with a boot and an output comparison after each.
    *What this costs:* the prompt tier does not hand claimed expert rows to the helper, and the decode
    loop does not attach to a running helper. Everything the lane needs *inside* the engine's other files
    is in place (the client, the frame transport, the eligibility rules, the wire protocol), but the two
@@ -124,8 +133,15 @@ Run:
 
 * `sh tools-port/configure-906.sh build-906` - clean configure; prints
   `DFlash2 runtimes compiled: upstream (src/core/dflash2.cpp, src/kernels/cuda/dflash2.cu)`.
-* `ninja -C build-906 strata` - succeeds. Engine `build-906/strata`, 29.2 MB,
-  sha256 `36f8a503b79c19fc66cf88bd6aa3eb6c54e0a61f35d85fb259791bad2aad2848`.
+* `ninja -C build-906 strata` - succeeds. Engine `build-906/strata`, 29.2 MB.
+* **The engine's hash is not a content hash.** v0.2.18 stamps the build with the commit it was
+  configured from (`git rev-parse --short=9 HEAD`, run at configure time in `cmake/strata_gpu_engine.cmake`),
+  so committing and reconfiguring changes the bytes of every binary with no source change. Quote a build
+  as the pair (commit, sha256). This port's builds: at `43ff7f30b` the engine was
+  `36f8a503b79c19fc66cf88bd6aa3eb6c54e0a61f35d85fb259791bad2aad2848`, then
+  `aa3c67a3154c93a33a5466ebf26e0d719a86af54da23876f76b96627c4499375`; reconfigured and rebuilt at
+  `84d066665` it is `7d6873e5e435960399dbd5853e62e4e9feb8056ce20a17c5dd0f0f6877a8035c`, and `strings`
+  finds that commit inside the binary.
 * `ldd build-906/strata` with `LD_LIBRARY_PATH=/home/srcds/rocm-gfx906-xnack/lib:/opt/rocm-6.1.0/lib`:
   `libhipblas.so.2` and `libamdhip64.so.6` from `/opt/rocm-6.1.0/lib`, `librocblas.so.4` from
   `/home/srcds/rocm-gfx906-xnack/lib` - what `AGENTS.md` says a correct gfx906 link looks like.
