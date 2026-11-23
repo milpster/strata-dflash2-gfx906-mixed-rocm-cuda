@@ -1242,3 +1242,20 @@ vendored ggml - the lane's no-stamp claim was wrong and its 9-hex search missed 
 at 3e83be2b71. Verdict APPROVED at 6c4621e522. Nine port commits unpushed (SSH cooldown holds them).
 Static phase closed; what remains is runtime: the :8009 validation window (bars pending operator) and the
 host-RAM squeeze question (5.2 GiB java at 153% CPU) that kills 52k-token prompts.
+
+## Phase 4 window: progress before the operator pause (2026-11-23 00:5x-01:0x)
+
+3k oracle gate: PASSED on the record's own evidence terms (0 non-finite, 286 tokens, drafts accepted, prompt
+read clean) - the harness's exit-3 was plumbing (the done: line is server stdout; 247 engine starts in the prod
+elog, zero done lines - the classifier's exit-0 path cannot fire from the engine elog). Quality gate: arm F
+(fork 4b8251e9, helper-less yardstick) COMPLETE and banked - 4,995 teacher-forced positions (qq0218-F.tsv,
+5.3 MB) + full-vocab first-logits dumps (prompt-0218-F/). Arm P died twice to #267 first-verify-window
+timeouts (layer 43; arm F's earlier death was layer 7) - different binaries, different cards, helper-less
+config; swap still held 12.8 GiB (sudo swapoff unavailable to the agent). Operator paused the benchmarks;
+everything stopped, data preserved on disk. Window findings: (1) the port engine's argv parser is stricter
+than the fork's (bare values rejected; fork tolerated a variadic-style list); (2) the yardstick's arg
+stripping leaves a lone --expert-helper-ram-relief which refuses to boot - both arms now derive from each
+engine's own validated config with expert-helper args stripped; (3) the port's RESTING default-pair binary
+refuses --dflash configs - the lane-pair build (936efcc7) is the serving-shaped binary. Open: arm P retry
+vs a real first-window timeout in the merged verify path; the 240k+1024TG legs; the port helper's runtime
+debut (58c3ae02, never executed).
