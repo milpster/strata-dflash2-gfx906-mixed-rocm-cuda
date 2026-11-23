@@ -1304,7 +1304,7 @@ Same-day, same-driver, same-prompt comparisons (ctx-threshold 323200 1024, seed 
 | 3k oracle | pass (0 non-finite, drafts) | - | gate |
 | Quality: PPL/KL/top-1 (4,995 pos) | REF (3.924) | 3.924, KL 0.00000, top-1 100% | ALL BARS PASS |
 | Full-vocab first logits (20 prompts) | REF | top-1 100%, KL mean 0.0096 | pass |
-| 240k fill | 239,663 tok, 716.3 s, ~348 tok/s read, 507 gen, 0 non-finite | 356.3 tok/s read (182,180-tok pass 1), full 239,663 pass 2, 1,144.1 s, 393+323 gen, 0 non-finite, coherent answers both | PASS |
+| 240k fill | 239,663 tok read in 688,368 ms (**348.2 tok/s**), 507 gen in 22,952 ms (22.1 tok/s), drafts 282/558, 0 non-finite | pass 1 truncated to 182,180 tok, read in 511,249 ms (356.3 tok/s), 323 gen; pass 2 239,663 tok read in 690,745 ms (**347.0 tok/s**), 393 gen in 18,236 ms (21.6 tok/s), drafts 224/392; 0 non-finite, coherent answers both | PASS |
 | Helper runtime | fork helper (prod) | PORT HELPER DEBUT: two channels live, 3,826 experts proxied, 7.11 GiB fill, engine attach OK | PASS |
 | Park/restore | prod-era evidence | live: 179,598 tokens reused, 185k re-read in 12 s @ 91.7% hit (agent conversation) | PASS |
 | Decode speed band | 20-32 tok/s era | 20.0-29.2 tok/s measured tonight | same band |
@@ -1315,6 +1315,44 @@ tokens where the fork served 239,663) - more correct, but a difference to rememb
 no whole-arena pin) - PORT-NOTES carries the diagnosis; the machine's amdgpu/KFD SVM flakiness remains a separate
 open item. Prod (fork pair) left up and probe-verified. The 0.2.18 port is RUNTIME-VALIDATED: serving, long
 context, helper attach, park/restore, and numerically exact against the fork.
+
+### Correction 2026-11-23 (Phase 1): the tok/s figures and the only same-prompt pair
+
+Line references below are to the saved logs. Engine elogs contain NUL bytes; read them with `tr -d '\0'`.
+
+The "356.3 tok/s read" figure is the port's **truncated first pass, 182,180 tokens**, not the 240k fill:
+`logs/port-pair-240k-engine.log:275` — `prompt 182180 tokens = 0 reused + 182180 read in 511249 ms
+(356.3 tok/s)`. The full pass in the same boot read **239,663 tokens at 347.0 tok/s**
+(`logs/port-pair-240k-engine.log:295`, 690,745 ms). The fork's own 239,663 leg read at **348.2 tok/s**
+(`logs/fork-240k-refleg.log:6`, 688,368 ms).
+
+Harness clock versus engine clock:
+- Fork: reconciled. The harness wall is 716.3 s (`logs/fork-240k-refleg.log:3`, 507 completion tokens);
+  the engine accounts for 688,368 ms prefill + 22,952 ms generation = 711.3 s, so ~5 s sat outside engine timing.
+- Port: **deleted as inconsistent**. The harness cell was 1,144.1 s (`logs/port-240k-leg2.log:3`), but the
+  engine log for that boot records the two prefills alone at 511,249 + 690,745 ms = **1,202.0 s** (1,236.4 s
+  with the 16,187 + 18,236 ms of generation) — more time than the harness wall contains. The harness cell is
+  removed rather than quoted; the per-request engine lines above stand.
+
+The 239,663-token pair is the **only same-prompt pair**, one run per arm: prefill **348.2 (fork) vs 347.0
+(port) tok/s** (-0.3%), decode **22.1 vs 21.6 tok/s** (N=1 each). The two runs are not otherwise matched:
+- VRAM reserves: fork 144/144 (`--vram-reserve-mib 144 --vram-reserve-later-mib 144`,
+  the leg's own boot line, `logs/engine-prod-ud-iq3xxs-v0233.log:56377`) vs port 256/192
+  (`logs/port-pair-240k-engine.log:6`).
+- Helper: fork fill 3,921 experts / 7.34 GiB (`logs/engine-prod-ud-iq3xxs-v0233.log:56117`) vs the port
+  helper's 3,826 / 7.11 GiB in this boot (`logs/port-pair-240k-engine.log:211`; 3,816 / 7.09 GiB on the
+  later promoted boot, `logs/engine-prod-port0218.log:53`) — different helper binaries (9d16742d vs 58c3ae02).
+- Helper rows served during the request: 50,075 vs 28,846 (`logs/fork-240k-refleg.log:6`,
+  `logs/port-pair-240k-engine.log:295`).
+- Server trees: the prod-era server on :8009 vs the port tree's server (later pinned as run/port0218-server).
+- Cache dirs: `/mnt/srcds/Strata-wt-helper-ipc/run/diet-prod-38g` vs
+  `/mnt/srcds/Strata-wt-0218/run/trial-8019-cache`.
+- Generated lengths: 507 vs 393 tokens; drafts 282/558 vs 224/392.
+
+Matched-pair conclusion: **no demonstrated port speedup or regression exists yet** — the Phase 2 windows of
+the approved measurement contract decide (W1 prefill, W2 decode/short-PP/turn, W3 240k decode, W4 engine x
+server cell). The promotion does not rest on any tok/s figure: it rests on quality parity, the clean 240k pass
+(0 non-finite) and the helper/park-restore checks above.
 
 ## PROMOTED: the 0.2.18 port serves prod (2026-11-23 ~12:50, operator order "yes promote")
 

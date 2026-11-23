@@ -16,10 +16,16 @@ tree's terminal/). Boot via launch-prod-ud-iq3xxs-dflash-w4-q4_0-mixed.sh (defau
 WORK/HELPER). Verified at promotion: health ~30 s, probe finish=stop "probe-ok", "store open" (pool mode,
 no whole-arena pin), helper two channels + 3,816 experts / 7.09 GiB attached. Validation basis (same day,
 journal 2026-11-23): quality-gate perfect parity vs the fork (PPL 3.924=3.924, KL 0.00000, top-1 100%),
-240k fill clean (356.3 tok/s read, 0 non-finite), helper debut, park/restore live. The previous fork tuple
+240k fill clean (239,663 tokens read at 347.0 tok/s, 0 non-finite; the 356.3 tok/s figure quoted
+earlier was the truncated 182,180-token first pass), helper debut, park/restore live. The previous fork tuple
 (4b8251e9 + 9d16742d, fson.json, 144/144) remains in run/fsclamp-bin + the fson config for instant
 rollback via STRATA_PROD_BIN/STRATA_PROD_CONFIG overrides. The 2026-11-21 sections below remain the
 measurement record for the margin ladder and the clamp fix.
+
+Speed is not part of this promotion. No port speedup or regression is demonstrated: the only same-prompt pair
+(239,663 tokens, one run per arm) read at 348.2 (fork) vs 347.0 (port) tok/s and decoded 22.1 vs 21.6 tok/s,
+while reserves (144/144 vs 256/192), helper binary/fill, helper rows, server tree and cache dirs all differ.
+The Phase 2 windows of the approved measurement contract decide whether an engine or server difference exists.
 
 ## Resolved 2026-11-21 23:59: the 240k non-finite logits (`#879`)
 
