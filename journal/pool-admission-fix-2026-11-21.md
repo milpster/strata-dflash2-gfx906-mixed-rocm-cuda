@@ -1336,3 +1336,17 @@ health ok, probe finish=stop "probe-ok". The Phase 0 prep lane resumed with inst
 outage-window partials. Note for the record: the fault class has now hit BOTH engines (fork and port) across
 two days - the KFD/SVM stability investigation in the approved plan is not optional; the wedge recurs under
 serving load within hours of any clear state.
+
+## Production startup recovery (2026-11-23 16:15)
+
+At 15:55:39 the port engine reported a verify timeout at layer 24. At 15:55:48–50 the kernel reported failed KFD quiesce, a BACO reset on Radeon VII 0000:04:00.0, lost VRAM, and a wedged-device message. The supervisor restarted the pair, but its new engine remained in startup with no further engine-log output and no listener on :8009. At 16:10 the supervisor had run that generation about 14 minutes; the old startup watchdog was 1,200 seconds, so that observation did not establish watchdog failure.
+
+Operator requested a 900-second startup watchdog; parent changed the launcher, validated `bash -n` (exit 0), and committed `7b61ba7`. Parent stopped prod with `bash stop-prod.sh` (exit 0), then booted separately through the prod launcher with the same tuple. The new supervisor command line shows `--startup-timeout 900`; health returned OK after about 40 seconds; a real completion returned `finish=stop`, `probe-ok` (curl exit 0). The restarted engine reports `STRATA_RAM_BUDGET_MIB=36864 ... store open` and helper proxy 3,816 experts / 7.09 GiB. No GPU reset was run by the agent. Kernel reset recovery remains unproven; the 900-second watchdog limits wait time but does not itself repair a wedged GPU.
+
+### Further recovery events (2026-11-23 16:26–16:42)
+
+Generation 1 went silent while reading an 11,788-token prompt; the server ended it after 536 seconds. This is the request-silence timeout, separate from the 900-second startup watchdog. The supervisor started generation 2; it reported health OK, then the helper channel closed and the pair restarted. At 16:29:23–25 the kernel reported a second BACO reset on 0000:04:00.0, VRAM loss, and “device wedged, but no recovery needed.” Generation 3 started at 16:29:28 and at ~16:42 had spent ~12m46s starting, with the engine log last modified at 16:29:39 and its main thread using ~99.5% CPU. The supervisor was configured for 900 seconds; no claim is made that this deadline had expired. The recovery specialist lost connection to :8009 and its host status was still running at the check.
+
+### Startup watchdog observed firing (2026-11-23 16:44)
+
+The 900-second watchdog did fire: `run/prod-swift15-f16kv-mixed-supervisor-events.log:645` records `2026-11-23T16:44:29 gen 3 recovering: helper did not attach and fill before the startup deadline`, 901 seconds after generation 3 started at 16:29:28. The supervisor started a replacement which reached ready in 27 seconds. This establishes bounded restart for this observed event, not a fix for recurring GPU faults. CPU-only deterministic watchdog tests were committed in `83a8000c5c`, refined in `dd479282f9`, and oracle-reviewed APPROVED: 39 supervisor tests passed (57 subtests), four focused deadline tests passed.
