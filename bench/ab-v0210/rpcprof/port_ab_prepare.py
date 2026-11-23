@@ -270,8 +270,10 @@ def prepare(out, do_preflight=True, previous_manifest=None):
             "delta": spec.get("delta"),
             "delta_note": spec.get("delta_note"),
             "gate_metric": spec["gate_metric"],
-            "claim": spec.get("claim", "pre-registered delta, 90 % interval, "
-                                       "confirm-or-indeterminate"),
+            "claim": spec.get("claim", "descriptive only at n=2/arm (per-leg rates, ranges, "
+                                       "memory, an UNCONFIRMED direction); any confirm / "
+                                       "no-difference / within-delta statement needs a "
+                                       "follow-up window at n>=3 - see the top-level claim block"),
             "legs": leg_section(out, window),
             "schedule": [{k: r[k] for k in r if k in ("group", "boot", "arm", "rep", "shapes",
                                                       "pilot", "warmup", "server_arm", "cell")}
@@ -449,6 +451,8 @@ def verify():
                 if not isinstance(value, (int, float)):
                     problems.append("W2 pilot delta " + shape + "." + name + " is not a number "
                                     "although frozen=true")
+    if manifest.get("claim") != C.CLAIM:
+        problems.append("claim block drifted from port_ab_contract.CLAIM")
     if manifest["arm_config_equality"]["diffs"]:
         problems.append("arms differ outside the declared structural pair: "
                         + ", ".join(sorted(manifest["arm_config_equality"]["diffs"])))

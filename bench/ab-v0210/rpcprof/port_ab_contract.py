@@ -12,7 +12,10 @@ Sources (plan/measurement-contract-speed-attribution-faults.md, approved 2026-11
     323,200 / 239,663 = 1.3486 B per token, ctx-threshold.sh documents ~0.742 tok/B);
   * prefill 287.1-348.2 tok/s and decode 21.6-22.1 tok/s measured on the 239,663 prompt;
   * boot 3-5 min (full-residency init);
-  * pre-registered deltas: prefill 5 %, decode 8 %; claim level 90 % (n=3/arm, exact/HL);
+  * pre-registered deltas: prefill 5 %, decode 8 %; n=2/arm (operator directive 2026-11-23
+    evening, reduced from 3): 2v2 gives C(4,2)=6 allocations and a minimum exact two-sided
+    p = 0.33, so this window is DESCRIPTIVE-ONLY; the 90 % exact/HL claim rule applies to a
+    FOLLOW-UP window at n>=3 (3v3: C(6,3)=20, min p = 0.10), never to this one;
   * prerequisite 0: >=15 GiB MemAvailable pre-boot, non-engine RSS <=8 GiB, no non-pinned
     process above ~50 % of a core on the stage cores, >=40 GiB free for the cache dir.
 """
@@ -81,11 +84,13 @@ REQUEST_TEMPLATE = {
 TTFT_TEMPLATE = {**REQUEST_TEMPLATE, "stream": True}
 
 # ------------------------------------------------------------------------------- windows
-# n per arm (operator directive 2026-11-23: 3, not 5). Each window's claim boots are
-# interleaved A B B A A B with the replicates numbered 1..3 per arm.
-REPS = 3
-INTERLEAVE = ("A", "B", "B", "A", "A", "B")
-INTERLEAVE_PAIRS = (("A", 1), ("B", 1), ("B", 2), ("A", 2), ("A", 3), ("B", 3))
+# n per arm. Operator directive 2026-11-23 (evening) reduced it to 2 (it was 3, then 5).
+# At n=2 the window cannot support a confidence claim (2v2: C(4,2)=6 allocations, minimum
+# exact two-sided p = 0.33), so its outputs are descriptive-only; see CLAIM below. Each
+# window's claim boots are interleaved A B B A with the replicates numbered 1..2 per arm.
+REPS = 2
+INTERLEAVE = ("A", "B", "B", "A")
+INTERLEAVE_PAIRS = (("A", 1), ("B", 1), ("B", 2), ("A", 2))
 
 # A window's boots are grouped by the SHAPE they carry, and the group name is part of the
 # boot key (W2-A-dec-r1 vs W2-A-sht-r1): two boot shapes of one window must never share a
@@ -110,7 +115,7 @@ WINDOWS = {
         "name": "144k decode + short-PP 2k/8k + 3-turn TTFT",
         "boot_groups": {"dec": ["dec144k"], "sht": ["pp2k", "pp8k", "ttft3"]},
         "legs_per_boot": {"dec": 1, "sht": 3},
-        "boots_per_arm": REPS * 2,    # 3 decode boots + 3 short boots per arm
+        "boots_per_arm": REPS * 2,    # 2 decode boots + 2 short boots per arm
         # one discarded first-touch boot per arm per boot group: the short one is the pilot
         # (its legs are recorded and excluded from the claim sample), the decode one is a
         # plain warmup. Without the decode warmup the first claim decode boot pays the rig's
@@ -212,39 +217,44 @@ def budget_derivation() -> dict:
     # the 240k decode boot: 239,663 prefill + the same two generations
     w3_fast = _leg_s(239663, 1024, slow=False) + 1024 / DECODE_TPS[1]
     w3_slow = _leg_s(239663, 1024, slow=True) + 1024 / DECODE_TPS[0]
-    w1_total = 6 + WINDOWS["W1"]["warmup_boots"]                  # 6 claim + 2 warmup = 8
+    # 2 arms x REPS claim boots, plus the discarded boots each window spends
+    claim = 2 * REPS                                              # n=2/arm -> 4 claim boots
+    w1_total = claim + WINDOWS["W1"]["warmup_boots"]              # 4 claim + 2 warmup = 6
     # per-arm counts become per-window counts: one discarded boot per arm per boot group
     w2_dec_warmup = 2 * WINDOWS["W2"]["decode_warmup"]["boots_per_arm"]   # 2 arms x 1
     w2_sht_pilot = 2 * WINDOWS["W2"]["pilot"]["boots_per_arm"]            # 2 arms x 1
-    w2_dec = 6 + w2_dec_warmup                                    # 6 claim + 2 warmup = 8
-    w2_sht = 6 + w2_sht_pilot                                     # 6 claim + 2 pilot  = 8
-    w3_total = 6 + WINDOWS["W3"]["warmup_boots"]                  # 8
+    w2_dec = claim + w2_dec_warmup                                # 4 claim + 2 warmup = 6
+    w2_sht = claim + w2_sht_pilot                                 # 4 claim + 2 pilot  = 6
+    w3_total = claim + WINDOWS["W3"]["warmup_boots"]              # 4 claim + 2 warmup = 6
     w4_total = 4                                                  # 2 cells x 2 boots
     return {
         "anchors": {"prefill_tps": PREFILL_TPS, "decode_tps": DECODE_TPS, "boot_s": BOOT_S,
                     "w1_leg_s": W1_LEG_S, "source": "239,663-token pair + contract text"},
         "W1": {
-            "boots": {"claim": 6, "warmup": WINDOWS["W1"]["warmup_boots"], "total": w1_total},
-            "terms": str(w1_total) + " boots x (239,663 prefill leg + boot): 690-1,150 s per "
-                     "leg, 180-300 s per boot",
+            "boots": {"claim": claim, "warmup": WINDOWS["W1"]["warmup_boots"],
+                      "total": w1_total},
+            "terms": str(w1_total) + " boots x (239,663 prefill leg + boot) = 4 claim "
+                     "(2 per arm) + 2 warmup; 690-1,150 s per leg, 180-300 s per boot",
             "range_s": [w1_total * W1_LEG_S[0] + w1_total * BOOT_S[0],
                         w1_total * W1_LEG_S[1] + w1_total * BOOT_S[1]],
         },
         "W2": {
-            "boots": {"decode_claim": 6, "decode_warmup": w2_dec_warmup,
-                      "short_claim": 6, "short_pilot": w2_sht_pilot,
+            "boots": {"decode_claim": claim, "decode_warmup": w2_dec_warmup,
+                      "short_claim": claim, "short_pilot": w2_sht_pilot,
                       "total": w2_dec + w2_sht},
-            "terms": str(w2_dec) + " decode boots x (144k prefill + 2 x 1024 gen + boot) + "
-                     + str(w2_sht) + " short boots x (2k + 8k + 3-turn TTFT + boot)",
+            "terms": str(w2_dec) + " decode boots x (144k prefill + 2 x 1024 gen + boot) "
+                     "[4 claim + 2 warmup] + " + str(w2_sht) + " short boots x (2k + 8k + "
+                     "3-turn TTFT + boot) [4 claim + 2 pilot]",
             "decode_boot_s": [round(dec_fast + BOOT_S[0], 1), round(dec_slow + BOOT_S[1], 1)],
             "short_boot_s": [round(short_fast + BOOT_S[0], 1), round(short_slow + BOOT_S[1], 1)],
             "range_s": [w2_dec * (dec_fast + BOOT_S[0]) + w2_sht * (short_fast + BOOT_S[0]),
                         w2_dec * (dec_slow + BOOT_S[1]) + w2_sht * (short_slow + BOOT_S[1])],
         },
         "W3": {
-            "boots": {"claim": 6, "warmup": WINDOWS["W3"]["warmup_boots"], "total": w3_total},
+            "boots": {"claim": claim, "warmup": WINDOWS["W3"]["warmup_boots"],
+                      "total": w3_total},
             "terms": str(w3_total) + " boots x (239,663 prefill + 2 x 1024 gen (fresh then "
-                     "cached) + boot)",
+                     "cached) + boot) = 4 claim + 2 warmup",
             "range_s": [w3_total * (w3_fast + BOOT_S[0]), w3_total * (w3_slow + BOOT_S[1])],
             "note": "the contract states 1.2-2 h for the claim boots; adding the two warmup "
                     "boots and the cached second generation is why the planning range is wider",
@@ -272,17 +282,36 @@ def window_contract_budget_s(window: str):
 
 
 # -------------------------------------------------------------------------- claim rule
+# n=2/arm (operator directive 2026-11-23 evening). 2v2 has C(4,2) = 6 allocations and a
+# minimum exact two-sided p = 0.33 (1/6 + 1/6): NO interval at this n reaches 90 % (or 95 %),
+# so NOTHING this window produces can be a claim. Its honest outputs are the per-leg rates,
+# full ranges and memory; a direction may be noted and must carry UNCONFIRMED. "confirm",
+# "no difference" and "within delta" are all unsupported here. A follow-up window at n>=3
+# (3v3: C(6,3)=20, min p = 0.10) restores the 90 % exact/HL rule stated in level/method.
 CLAIM = {
     "level": 0.90,
-    "method": "exact / Hodges-Lehmann two-sided interval at n=3 per arm "
-              "(3v3 gives C(6,3)=20 allocations, minimum exact p = 0.10)",
-    "outputs": ["confirm (90%)", "indeterminate"],
-    "confirm_when": "the 90% interval excludes 0 AND exceeds the pre-registered delta",
-    "within_delta_clause": "'within +/-delta' is licensed ONLY when the entire 90% interval "
-                           "lies inside +/-delta; a wide interval straddling the delta boundary "
-                           "is INDETERMINATE, not 'within 5%'",
-    "never": ["a 95 % claim at this n", "'no difference'", "'engine faster' before W4 decides"],
-    "report": "median + full range, speed beside memory, boot-state confounds named",
+    "level_note": "the level applies to a FOLLOW-UP window at n>=3 only; at n=2/arm the "
+                  "minimum exact two-sided p is 0.33, so no 90 % (or 95 %) interval exists",
+    "method": "exact / Hodges-Lehmann two-sided interval at n>=3 per arm for a follow-up "
+              "window (3v3 gives C(6,3)=20 allocations, minimum exact p = 0.10). This window "
+              "is n=2/arm: 2v2 gives C(4,2)=6 allocations, minimum exact two-sided p = 0.33, "
+              "and the outputs are DESCRIPTIVE-ONLY",
+    "outputs": ["descriptive: per-leg rates, full ranges, memory beside speed",
+                "directional observation, explicitly marked UNCONFIRMED"],
+    "confirm_when": "NOT SUPPORTED at n=2/arm (no interval reaches 90 %); a follow-up window "
+                    "at n>=3 confirms only when its 90 % interval excludes 0 AND exceeds the "
+                    "pre-registered delta",
+    "within_delta_clause": "NOT SUPPORTED at n=2/arm. In a FOLLOW-UP window at n>=3 'within "
+                           "+/-delta' is licensed ONLY when the entire 90% interval lies "
+                           "inside +/-delta; a wide interval straddling the delta boundary is "
+                           "INDETERMINATE, not 'within 5%'",
+    "never": ["'confirm' at n=2/arm", "'no difference'", "'within delta' at n=2/arm",
+              "'engine faster' before W4 decides"],
+    "follow_up": "any claim (confirm, no difference, within delta) requires a FOLLOW-UP window "
+                 "at n>=3 per arm; this window's records are that window's baseline and are "
+                 "descriptive only",
+    "report": "median + full range, speed beside memory, boot-state confounds named, every "
+              "comparison labelled descriptive-only",
     "delta_pre_registered": {
         "prefill_read_tps": 0.05,
         "decode_gen_tps": 0.08,

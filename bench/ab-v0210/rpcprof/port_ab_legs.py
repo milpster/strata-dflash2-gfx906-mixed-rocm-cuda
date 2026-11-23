@@ -98,7 +98,7 @@ def schedule(window):
 
     Every row names its boot group, because the group is part of the boot key. W2's short
     group pilot (rep 0) and decode warmup (rep 0) come first; the claim boots follow,
-    interleaved A B B A A B inside each group.
+    interleaved A B B A (n=2/arm, operator directive 2026-11-23) inside each group.
     """
     spec = C.WINDOWS[window]
     rows = []

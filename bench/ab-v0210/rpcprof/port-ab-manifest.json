@@ -85,7 +85,7 @@
   }
  },
  "claim": {
-  "confirm_when": "the 90% interval excludes 0 AND exceeds the pre-registered delta",
+  "confirm_when": "NOT SUPPORTED at n=2/arm (no interval reaches 90 %); a follow-up window at n>=3 confirms only when its 90 % interval excludes 0 AND exceeds the pre-registered delta",
   "delta_pre_registered": {
    "decode_gen_tps": 0.08,
    "prefill_read_tps": 0.05,
@@ -94,28 +94,29 @@
    "ttft_inter_turn_s": "from the W2 pilot",
    "ttft_turn1_s": "from the W2 pilot"
   },
+  "follow_up": "any claim (confirm, no difference, within delta) requires a FOLLOW-UP window at n>=3 per arm; this window's records are that window's baseline and are descriptive only",
   "interleave": [
    "A",
    "B",
    "B",
-   "A",
-   "A",
-   "B"
+   "A"
   ],
   "level": 0.9,
-  "method": "exact / Hodges-Lehmann two-sided interval at n=3 per arm (3v3 gives C(6,3)=20 allocations, minimum exact p = 0.10)",
-  "n_per_arm": 3,
+  "level_note": "the level applies to a FOLLOW-UP window at n>=3 only; at n=2/arm the minimum exact two-sided p is 0.33, so no 90 % (or 95 %) interval exists",
+  "method": "exact / Hodges-Lehmann two-sided interval at n>=3 per arm for a follow-up window (3v3 gives C(6,3)=20 allocations, minimum exact p = 0.10). This window is n=2/arm: 2v2 gives C(4,2)=6 allocations, minimum exact two-sided p = 0.33, and the outputs are DESCRIPTIVE-ONLY",
+  "n_per_arm": 2,
   "never": [
-   "a 95 % claim at this n",
+   "'confirm' at n=2/arm",
    "'no difference'",
+   "'within delta' at n=2/arm",
    "'engine faster' before W4 decides"
   ],
   "outputs": [
-   "confirm (90%)",
-   "indeterminate"
+   "descriptive: per-leg rates, full ranges, memory beside speed",
+   "directional observation, explicitly marked UNCONFIRMED"
   ],
-  "report": "median + full range, speed beside memory, boot-state confounds named",
-  "within_delta_clause": "'within +/-delta' is licensed ONLY when the entire 90% interval lies inside +/-delta; a wide interval straddling the delta boundary is INDETERMINATE, not 'within 5%'"
+  "report": "median + full range, speed beside memory, boot-state confounds named, every comparison labelled descriptive-only",
+  "within_delta_clause": "NOT SUPPORTED at n=2/arm. In a FOLLOW-UP window at n>=3 'within +/-delta' is licensed ONLY when the entire 90% interval lies inside +/-delta; a wide interval straddling the delta boundary is INDETERMINATE, not 'within 5%'"
  },
  "configs": {
   "W1-A-pp-r0": {
@@ -271,58 +272,6 @@
    "sha256": "de06a1e1216ace346e460c2fd22dfebad7249fd0785d85c8b75a878aed39d0a8",
    "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1-A-pp-r2.sock",
    "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1-A-pp-r2-2.sock",
-   "warmup": false,
-   "window": "W1"
-  },
-  "W1-A-pp-r3": {
-   "arm": "A",
-   "boot_group": "pp",
-   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W1-A-pp-r3",
-   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W1-A-pp-r3.json",
-   "deltas": [
-    {
-     "field": "reasoning_budget_tokens",
-     "from": 55000,
-     "kind": "tuple",
-     "to": 0
-    },
-    {
-     "field": "args/--vram-reserve-mib",
-     "from": "144",
-     "kind": "tuple",
-     "to": "256"
-    },
-    {
-     "field": "args/--vram-reserve-later-mib",
-     "from": "144",
-     "kind": "tuple",
-     "to": "192"
-    },
-    {
-     "field": "cwd",
-     "from": "/mnt/srcds/Strata",
-     "kind": "harness",
-     "to": "/mnt/srcds/Strata/v0215"
-    },
-    {
-     "field": "log",
-     "from": "/mnt/srcds/Strata/logs/engine-prod-ud-iq3xxs-v0233.log",
-     "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1-A-pp-r3.engine.log"
-    },
-    {
-     "field": "args/--conversation-cache-dir",
-     "from": "/mnt/srcds/Strata-wt-helper-ipc/run/diet-prod-38g",
-     "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W1-A-pp-r3"
-    }
-   ],
-   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1-A-pp-r3.engine.log",
-   "pilot": false,
-   "rep": 3,
-   "sha256": "533c0577d98cb2632217ff2acf3d601d61e3ee17d07622463867323ba58ccacb",
-   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1-A-pp-r3.sock",
-   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1-A-pp-r3-2.sock",
    "warmup": false,
    "window": "W1"
   },
@@ -518,70 +467,6 @@
    "warmup": false,
    "window": "W1"
   },
-  "W1-B-pp-r3": {
-   "arm": "B",
-   "boot_group": "pp",
-   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W1-B-pp-r3",
-   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W1-B-pp-r3.json",
-   "deltas": [
-    {
-     "field": "trial_note",
-     "from": "PROMOTED to prod 2026-11-23 per operator order: the port validated by the full window (quality parity, 240k, helper, park/restore). Serving shape = the validated trial tuple (256/192, budget 36864, spill off).",
-     "kind": "harness",
-     "to": "<absent>"
-    },
-    {
-     "field": "derived_from",
-     "from": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/trial-managed-pool-38g-230k.json",
-     "kind": "harness",
-     "to": "<absent>"
-    },
-    {
-     "field": "derived_note",
-     "from": "port-0218 test-window base on :8019: the champion measurement config with the engine, cwd, sockets, log and conversation-cache-dir repointed at the port tree, and --conversation-spill-mib 0 added (upstream spill tier off; the fork DISK tier under --conversation-cache-dir is this rig's only disk tier). Boots are the operator's, never the fixer's.",
-     "kind": "harness",
-     "to": "<absent>"
-    },
-    {
-     "field": "managed_budget_mib",
-     "from": 40960,
-     "kind": "harness",
-     "to": "<absent>"
-    },
-    {
-     "field": "model_name",
-     "from": "swift-1.5-ud-iq3xxs-managed",
-     "kind": "tuple",
-     "to": "ud-iq3_xxs"
-    },
-    {
-     "field": "reasoning_budget_tokens",
-     "from": 2000,
-     "kind": "tuple",
-     "to": 0
-    },
-    {
-     "field": "log",
-     "from": "/mnt/srcds/Strata/logs/engine-prod-port0218.log",
-     "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1-B-pp-r3.engine.log"
-    },
-    {
-     "field": "args/--conversation-cache-dir",
-     "from": "/mnt/srcds/Strata/run/prod-port0218-cache",
-     "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W1-B-pp-r3"
-    }
-   ],
-   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1-B-pp-r3.engine.log",
-   "pilot": false,
-   "rep": 3,
-   "sha256": "6056e8b953639de2771a3818ff33a24a7f9bbe2d6bdd4cc8dba18c952ae0c83c",
-   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1-B-pp-r3.sock",
-   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1-B-pp-r3-2.sock",
-   "warmup": false,
-   "window": "W1"
-  },
   "W2-A-dec-r0": {
    "arm": "A",
    "boot_group": "dec",
@@ -738,58 +623,6 @@
    "warmup": false,
    "window": "W2"
   },
-  "W2-A-dec-r3": {
-   "arm": "A",
-   "boot_group": "dec",
-   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-A-dec-r3",
-   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W2-A-dec-r3.json",
-   "deltas": [
-    {
-     "field": "reasoning_budget_tokens",
-     "from": 55000,
-     "kind": "tuple",
-     "to": 0
-    },
-    {
-     "field": "args/--vram-reserve-mib",
-     "from": "144",
-     "kind": "tuple",
-     "to": "256"
-    },
-    {
-     "field": "args/--vram-reserve-later-mib",
-     "from": "144",
-     "kind": "tuple",
-     "to": "192"
-    },
-    {
-     "field": "cwd",
-     "from": "/mnt/srcds/Strata",
-     "kind": "harness",
-     "to": "/mnt/srcds/Strata/v0215"
-    },
-    {
-     "field": "log",
-     "from": "/mnt/srcds/Strata/logs/engine-prod-ud-iq3xxs-v0233.log",
-     "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-dec-r3.engine.log"
-    },
-    {
-     "field": "args/--conversation-cache-dir",
-     "from": "/mnt/srcds/Strata-wt-helper-ipc/run/diet-prod-38g",
-     "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-A-dec-r3"
-    }
-   ],
-   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-dec-r3.engine.log",
-   "pilot": false,
-   "rep": 3,
-   "sha256": "609aabbb80a2251bb3c00deb4aec5bf3dc06e680d26a8163021627e2b066cfd9",
-   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-A-dec-r3.sock",
-   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-A-dec-r3-2.sock",
-   "warmup": false,
-   "window": "W2"
-  },
   "W2-A-sht-r0": {
    "arm": "A",
    "boot_group": "sht",
@@ -943,58 +776,6 @@
    "sha256": "88d07f59ed69e39c5087a18c9d34aef10c7f37348ecd7304aa669c5f288dde40",
    "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-A-sht-r2.sock",
    "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-A-sht-r2-2.sock",
-   "warmup": false,
-   "window": "W2"
-  },
-  "W2-A-sht-r3": {
-   "arm": "A",
-   "boot_group": "sht",
-   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-A-sht-r3",
-   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W2-A-sht-r3.json",
-   "deltas": [
-    {
-     "field": "reasoning_budget_tokens",
-     "from": 55000,
-     "kind": "tuple",
-     "to": 0
-    },
-    {
-     "field": "args/--vram-reserve-mib",
-     "from": "144",
-     "kind": "tuple",
-     "to": "256"
-    },
-    {
-     "field": "args/--vram-reserve-later-mib",
-     "from": "144",
-     "kind": "tuple",
-     "to": "192"
-    },
-    {
-     "field": "cwd",
-     "from": "/mnt/srcds/Strata",
-     "kind": "harness",
-     "to": "/mnt/srcds/Strata/v0215"
-    },
-    {
-     "field": "log",
-     "from": "/mnt/srcds/Strata/logs/engine-prod-ud-iq3xxs-v0233.log",
-     "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-sht-r3.engine.log"
-    },
-    {
-     "field": "args/--conversation-cache-dir",
-     "from": "/mnt/srcds/Strata-wt-helper-ipc/run/diet-prod-38g",
-     "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-A-sht-r3"
-    }
-   ],
-   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-sht-r3.engine.log",
-   "pilot": false,
-   "rep": 3,
-   "sha256": "fd9911bb52dd34b4b35ef02ce8e2eb43f93c6f7d21a36aad9a1cd544edb1e142",
-   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-A-sht-r3.sock",
-   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-A-sht-r3-2.sock",
    "warmup": false,
    "window": "W2"
   },
@@ -1190,70 +971,6 @@
    "warmup": false,
    "window": "W2"
   },
-  "W2-B-dec-r3": {
-   "arm": "B",
-   "boot_group": "dec",
-   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-B-dec-r3",
-   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W2-B-dec-r3.json",
-   "deltas": [
-    {
-     "field": "trial_note",
-     "from": "PROMOTED to prod 2026-11-23 per operator order: the port validated by the full window (quality parity, 240k, helper, park/restore). Serving shape = the validated trial tuple (256/192, budget 36864, spill off).",
-     "kind": "harness",
-     "to": "<absent>"
-    },
-    {
-     "field": "derived_from",
-     "from": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/trial-managed-pool-38g-230k.json",
-     "kind": "harness",
-     "to": "<absent>"
-    },
-    {
-     "field": "derived_note",
-     "from": "port-0218 test-window base on :8019: the champion measurement config with the engine, cwd, sockets, log and conversation-cache-dir repointed at the port tree, and --conversation-spill-mib 0 added (upstream spill tier off; the fork DISK tier under --conversation-cache-dir is this rig's only disk tier). Boots are the operator's, never the fixer's.",
-     "kind": "harness",
-     "to": "<absent>"
-    },
-    {
-     "field": "managed_budget_mib",
-     "from": 40960,
-     "kind": "harness",
-     "to": "<absent>"
-    },
-    {
-     "field": "model_name",
-     "from": "swift-1.5-ud-iq3xxs-managed",
-     "kind": "tuple",
-     "to": "ud-iq3_xxs"
-    },
-    {
-     "field": "reasoning_budget_tokens",
-     "from": 2000,
-     "kind": "tuple",
-     "to": 0
-    },
-    {
-     "field": "log",
-     "from": "/mnt/srcds/Strata/logs/engine-prod-port0218.log",
-     "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-dec-r3.engine.log"
-    },
-    {
-     "field": "args/--conversation-cache-dir",
-     "from": "/mnt/srcds/Strata/run/prod-port0218-cache",
-     "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-B-dec-r3"
-    }
-   ],
-   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-dec-r3.engine.log",
-   "pilot": false,
-   "rep": 3,
-   "sha256": "830131c1c1abd9a6e08c442e3fda94b671f1e08cfc65213183f12fba37ee7438",
-   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-B-dec-r3.sock",
-   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-B-dec-r3-2.sock",
-   "warmup": false,
-   "window": "W2"
-  },
   "W2-B-sht-r0": {
    "arm": "B",
    "boot_group": "sht",
@@ -1446,70 +1163,6 @@
    "warmup": false,
    "window": "W2"
   },
-  "W2-B-sht-r3": {
-   "arm": "B",
-   "boot_group": "sht",
-   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-B-sht-r3",
-   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W2-B-sht-r3.json",
-   "deltas": [
-    {
-     "field": "trial_note",
-     "from": "PROMOTED to prod 2026-11-23 per operator order: the port validated by the full window (quality parity, 240k, helper, park/restore). Serving shape = the validated trial tuple (256/192, budget 36864, spill off).",
-     "kind": "harness",
-     "to": "<absent>"
-    },
-    {
-     "field": "derived_from",
-     "from": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/trial-managed-pool-38g-230k.json",
-     "kind": "harness",
-     "to": "<absent>"
-    },
-    {
-     "field": "derived_note",
-     "from": "port-0218 test-window base on :8019: the champion measurement config with the engine, cwd, sockets, log and conversation-cache-dir repointed at the port tree, and --conversation-spill-mib 0 added (upstream spill tier off; the fork DISK tier under --conversation-cache-dir is this rig's only disk tier). Boots are the operator's, never the fixer's.",
-     "kind": "harness",
-     "to": "<absent>"
-    },
-    {
-     "field": "managed_budget_mib",
-     "from": 40960,
-     "kind": "harness",
-     "to": "<absent>"
-    },
-    {
-     "field": "model_name",
-     "from": "swift-1.5-ud-iq3xxs-managed",
-     "kind": "tuple",
-     "to": "ud-iq3_xxs"
-    },
-    {
-     "field": "reasoning_budget_tokens",
-     "from": 2000,
-     "kind": "tuple",
-     "to": 0
-    },
-    {
-     "field": "log",
-     "from": "/mnt/srcds/Strata/logs/engine-prod-port0218.log",
-     "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-sht-r3.engine.log"
-    },
-    {
-     "field": "args/--conversation-cache-dir",
-     "from": "/mnt/srcds/Strata/run/prod-port0218-cache",
-     "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-B-sht-r3"
-    }
-   ],
-   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-sht-r3.engine.log",
-   "pilot": false,
-   "rep": 3,
-   "sha256": "c29a14a053c70057c910122037bbdbf390ff7f7c8720537f97f28df27de5e282",
-   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-B-sht-r3.sock",
-   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-B-sht-r3-2.sock",
-   "warmup": false,
-   "window": "W2"
-  },
   "W3-A-pp-r0": {
    "arm": "A",
    "boot_group": "pp",
@@ -1663,58 +1316,6 @@
    "sha256": "dbf2aa33fed2bda18dd2148ba8aecd1b7b12d619cf88a88020c9c24394a973e8",
    "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W3-A-pp-r2.sock",
    "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W3-A-pp-r2-2.sock",
-   "warmup": false,
-   "window": "W3"
-  },
-  "W3-A-pp-r3": {
-   "arm": "A",
-   "boot_group": "pp",
-   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W3-A-pp-r3",
-   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W3-A-pp-r3.json",
-   "deltas": [
-    {
-     "field": "reasoning_budget_tokens",
-     "from": 55000,
-     "kind": "tuple",
-     "to": 0
-    },
-    {
-     "field": "args/--vram-reserve-mib",
-     "from": "144",
-     "kind": "tuple",
-     "to": "256"
-    },
-    {
-     "field": "args/--vram-reserve-later-mib",
-     "from": "144",
-     "kind": "tuple",
-     "to": "192"
-    },
-    {
-     "field": "cwd",
-     "from": "/mnt/srcds/Strata",
-     "kind": "harness",
-     "to": "/mnt/srcds/Strata/v0215"
-    },
-    {
-     "field": "log",
-     "from": "/mnt/srcds/Strata/logs/engine-prod-ud-iq3xxs-v0233.log",
-     "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W3-A-pp-r3.engine.log"
-    },
-    {
-     "field": "args/--conversation-cache-dir",
-     "from": "/mnt/srcds/Strata-wt-helper-ipc/run/diet-prod-38g",
-     "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W3-A-pp-r3"
-    }
-   ],
-   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W3-A-pp-r3.engine.log",
-   "pilot": false,
-   "rep": 3,
-   "sha256": "ecb54b3c3363789ab90ac6b560196adb8ee6f7d7a9eef18855d329ec22eb63c1",
-   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W3-A-pp-r3.sock",
-   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W3-A-pp-r3-2.sock",
    "warmup": false,
    "window": "W3"
   },
@@ -1907,70 +1508,6 @@
    "sha256": "75624800efe0493b7955bc1494a8f4e72622607df91c3bdadeb89d86ec5fb83f",
    "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W3-B-pp-r2.sock",
    "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W3-B-pp-r2-2.sock",
-   "warmup": false,
-   "window": "W3"
-  },
-  "W3-B-pp-r3": {
-   "arm": "B",
-   "boot_group": "pp",
-   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W3-B-pp-r3",
-   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W3-B-pp-r3.json",
-   "deltas": [
-    {
-     "field": "trial_note",
-     "from": "PROMOTED to prod 2026-11-23 per operator order: the port validated by the full window (quality parity, 240k, helper, park/restore). Serving shape = the validated trial tuple (256/192, budget 36864, spill off).",
-     "kind": "harness",
-     "to": "<absent>"
-    },
-    {
-     "field": "derived_from",
-     "from": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/trial-managed-pool-38g-230k.json",
-     "kind": "harness",
-     "to": "<absent>"
-    },
-    {
-     "field": "derived_note",
-     "from": "port-0218 test-window base on :8019: the champion measurement config with the engine, cwd, sockets, log and conversation-cache-dir repointed at the port tree, and --conversation-spill-mib 0 added (upstream spill tier off; the fork DISK tier under --conversation-cache-dir is this rig's only disk tier). Boots are the operator's, never the fixer's.",
-     "kind": "harness",
-     "to": "<absent>"
-    },
-    {
-     "field": "managed_budget_mib",
-     "from": 40960,
-     "kind": "harness",
-     "to": "<absent>"
-    },
-    {
-     "field": "model_name",
-     "from": "swift-1.5-ud-iq3xxs-managed",
-     "kind": "tuple",
-     "to": "ud-iq3_xxs"
-    },
-    {
-     "field": "reasoning_budget_tokens",
-     "from": 2000,
-     "kind": "tuple",
-     "to": 0
-    },
-    {
-     "field": "log",
-     "from": "/mnt/srcds/Strata/logs/engine-prod-port0218.log",
-     "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W3-B-pp-r3.engine.log"
-    },
-    {
-     "field": "args/--conversation-cache-dir",
-     "from": "/mnt/srcds/Strata/run/prod-port0218-cache",
-     "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W3-B-pp-r3"
-    }
-   ],
-   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W3-B-pp-r3.engine.log",
-   "pilot": false,
-   "rep": 3,
-   "sha256": "0f1dc7e2aa1f7ab04156980dc87cb5c3b34ecf26a3da9452dff2ffe1e49ae18c",
-   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W3-B-pp-r3.sock",
-   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W3-B-pp-r3-2.sock",
    "warmup": false,
    "window": "W3"
   },
@@ -2382,15 +1919,15 @@
   }
  },
  "git_branch": "recovery-startup-watchdog",
- "git_head_at_prepare": "4c4d95fe8e99760e426e4a2d9c2528974dc39895",
+ "git_head_at_prepare": "c5fdb0ff02797eb9988b055507de0ec78c5a01e2",
  "harness_script_shas": {
   "port_ab_boot.sh": "938dc5e428483af0731db3b2321fb41a0bd511ce611b0506021096748559d204",
   "port_ab_boot_plan.py": "e17befa8c8c7c42b0bc85e90001fe772e1ba1970779bbcce847f7c294a75b25a",
   "port_ab_configs.py": "5b72653b69be523b7fdab28ed93ff46b777e56c39237e010f1845857e5fee289",
-  "port_ab_contract.py": "4cb619301b9bb3bb48ea5a39a3299c9b323f5eff8b8475bb38b557f67ddc0971",
-  "port_ab_legs.py": "87a364b061b8dc993873bf455f04c94c4965159dc8507e8cbb3b515b95f2db9c",
+  "port_ab_contract.py": "e801f2ac876c556d8bf8d88453207019e9be328d81d4c138925ffa9155cecea6",
+  "port_ab_legs.py": "103ada991841260fc62994494c5ff569aee2d3b67945f4ef677820e2e33c2a92",
   "port_ab_preflight.py": "3d8b4bafcafb5cd75ed932a8161dd7f5758141fbc5d3943c2cddbcc43253d90b",
-  "port_ab_prepare.py": "5150ad2d158e8086539f25bd2bedaacfc6cdc2809b8cc1b273fb83f67933d658",
+  "port_ab_prepare.py": "749fcc4ef17e0c1bda6849e773e91046a1671e6b5092353fcde327a9209906ef",
   "port_ab_prereq0.py": "075e7080b628a746c2fbc35d389378324db98b063d0058760099c6ae413704d5",
   "port_ab_stop.sh": "e490afbc386f12b32e37cc3cabbb20771147bd41d48b1bd3eb4fc1d7f359317f",
   "port_ab_ttft.py": "8dd1de272cb193145439743d82cbac5610a439f6eb1e024f6202dcdf1bad206b"
@@ -2666,7 +2203,7 @@
    "resolution": "per-engine configs (A without the flag, B with '0'); both cross cells then boot, and 'no spill' holds in both"
   }
  },
- "prepared_at": "2026-11-23T21:02:04",
+ "prepared_at": "2026-11-23T21:20:14",
  "prerequisite0": {
   "cache_free_gib_min": 40,
   "command": "python3 bench/ab-v0210/rpcprof/port_ab_prereq0.py --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123",
@@ -2709,34 +2246,34 @@
     ]
    },
    "boots": {
-    "claim": 6,
-    "total": 8,
+    "claim": 4,
+    "total": 6,
     "warmup": 2
    },
-   "boots_per_arm": 3,
+   "boots_per_arm": 2,
    "boots_per_cell": null,
    "budget_derivation": {
     "boots": {
-     "claim": 6,
-     "total": 8,
+     "claim": 4,
+     "total": 6,
      "warmup": 2
     },
     "range_s": [
-     6960,
-     11600
+     5220,
+     8700
     ],
-    "terms": "8 boots x (239,663 prefill leg + boot): 690-1,150 s per leg, 180-300 s per boot"
+    "terms": "6 boots x (239,663 prefill leg + boot) = 4 claim (2 per arm) + 2 warmup; 690-1,150 s per leg, 180-300 s per boot"
    },
    "budget_h": [
-    1.93,
-    3.22
+    1.45,
+    2.42
    ],
    "budget_s": [
-    6960,
-    11600
+    5220,
+    8700
    ],
    "budget_source": "derived at harness-prep from the contract's measured anchors, including the discarded first-touch boots",
-   "claim": "pre-registered delta, 90 % interval, confirm-or-indeterminate",
+   "claim": "descriptive only at n=2/arm (per-leg rates, ranges, memory, an UNCONFIRMED direction); any confirm / no-difference / within-delta statement needs a follow-up window at n>=3 - see the top-level claim block",
    "contract_budget_h": [
     1.5,
     2.5
@@ -2755,9 +2292,7 @@
     "W1-A-pp-r1",
     "W1-B-pp-r1",
     "W1-B-pp-r2",
-    "W1-A-pp-r2",
-    "W1-A-pp-r3",
-    "W1-B-pp-r3"
+    "W1-A-pp-r2"
    ],
    "legs": {
     "pp239k": {
@@ -2862,26 +2397,6 @@
      "shapes": [
       "pp239k"
      ]
-    },
-    {
-     "arm": "A",
-     "boot": "pp",
-     "group": "pp",
-     "pilot": false,
-     "rep": 3,
-     "shapes": [
-      "pp239k"
-     ]
-    },
-    {
-     "arm": "B",
-     "boot": "pp",
-     "group": "pp",
-     "pilot": false,
-     "rep": 3,
-     "shapes": [
-      "pp239k"
-     ]
     }
    ],
    "warmup_boots": 2
@@ -2898,46 +2413,46 @@
     ]
    },
    "boots": {
-    "decode_claim": 6,
+    "decode_claim": 4,
     "decode_warmup": 2,
-    "short_claim": 6,
+    "short_claim": 4,
     "short_pilot": 2,
-    "total": 16
+    "total": 12
    },
-   "boots_per_arm": 6,
+   "boots_per_arm": 4,
    "boots_per_cell": null,
    "budget_derivation": {
     "boots": {
-     "decode_claim": 6,
+     "decode_claim": 4,
      "decode_warmup": 2,
-     "short_claim": 6,
+     "short_claim": 4,
      "short_pilot": 2,
-     "total": 16
+     "total": 12
     },
     "decode_boot_s": [
      686.2,
      896.4
     ],
     "range_s": [
-     7390.075397454524,
-     10111.710205503308
+     5542.556548090892,
+     7583.782654127482
     ],
     "short_boot_s": [
      237.5,
      367.6
     ],
-    "terms": "8 decode boots x (144k prefill + 2 x 1024 gen + boot) + 8 short boots x (2k + 8k + 3-turn TTFT + boot)"
+    "terms": "6 decode boots x (144k prefill + 2 x 1024 gen + boot) [4 claim + 2 warmup] + 6 short boots x (2k + 8k + 3-turn TTFT + boot) [4 claim + 2 pilot]"
    },
    "budget_h": [
-    2.05,
-    2.81
+    1.54,
+    2.11
    ],
    "budget_s": [
-    7390,
-    10111
+    5542,
+    7583
    ],
    "budget_source": "derived at harness-prep from the contract's measured anchors, including the discarded first-touch boots",
-   "claim": "pre-registered delta, 90 % interval, confirm-or-indeterminate",
+   "claim": "descriptive only at n=2/arm (per-leg rates, ranges, memory, an UNCONFIRMED direction); any confirm / no-difference / within-delta statement needs a follow-up window at n>=3 - see the top-level claim block",
    "contract_budget_h": null,
    "contract_budget_s": null,
    "decode_warmup": {
@@ -2959,14 +2474,10 @@
     "W2-B-dec-r1",
     "W2-B-dec-r2",
     "W2-A-dec-r2",
-    "W2-A-dec-r3",
-    "W2-B-dec-r3",
     "W2-A-sht-r1",
     "W2-B-sht-r1",
     "W2-B-sht-r2",
-    "W2-A-sht-r2",
-    "W2-A-sht-r3",
-    "W2-B-sht-r3"
+    "W2-A-sht-r2"
    ],
    "legs": {
     "dec144k": {
@@ -3222,26 +2733,6 @@
     },
     {
      "arm": "A",
-     "boot": "dec",
-     "group": "dec",
-     "pilot": false,
-     "rep": 3,
-     "shapes": [
-      "dec144k"
-     ]
-    },
-    {
-     "arm": "B",
-     "boot": "dec",
-     "group": "dec",
-     "pilot": false,
-     "rep": 3,
-     "shapes": [
-      "dec144k"
-     ]
-    },
-    {
-     "arm": "A",
      "boot": "sht",
      "group": "sht",
      "pilot": false,
@@ -3282,30 +2773,6 @@
      "group": "sht",
      "pilot": false,
      "rep": 2,
-     "shapes": [
-      "pp2k",
-      "pp8k",
-      "ttft3"
-     ]
-    },
-    {
-     "arm": "A",
-     "boot": "sht",
-     "group": "sht",
-     "pilot": false,
-     "rep": 3,
-     "shapes": [
-      "pp2k",
-      "pp8k",
-      "ttft3"
-     ]
-    },
-    {
-     "arm": "B",
-     "boot": "sht",
-     "group": "sht",
-     "pilot": false,
-     "rep": 3,
      "shapes": [
       "pp2k",
       "pp8k",
@@ -3322,35 +2789,35 @@
     ]
    },
    "boots": {
-    "claim": 6,
-    "total": 8,
+    "claim": 4,
+    "total": 6,
     "warmup": 2
    },
-   "boots_per_arm": 3,
+   "boots_per_arm": 2,
    "boots_per_cell": null,
    "budget_derivation": {
     "boots": {
-     "claim": 6,
-     "total": 8,
+     "claim": 4,
+     "total": 6,
      "warmup": 2
     },
     "note": "the contract states 1.2-2 h for the claim boots; adding the two warmup boots and the cached second generation is why the planning range is wider",
     "range_s": [
-     7687.687161640602,
-     9836.693370486473
+     5765.765371230452,
+     7377.520027864855
     ],
-    "terms": "8 boots x (239,663 prefill + 2 x 1024 gen (fresh then cached) + boot)"
+    "terms": "6 boots x (239,663 prefill + 2 x 1024 gen (fresh then cached) + boot) = 4 claim + 2 warmup"
    },
    "budget_h": [
-    2.14,
-    2.73
+    1.6,
+    2.05
    ],
    "budget_s": [
-    7687,
-    9836
+    5765,
+    7377
    ],
    "budget_source": "derived at harness-prep from the contract's measured anchors, including the discarded first-touch boots",
-   "claim": "pre-registered delta, 90 % interval, confirm-or-indeterminate",
+   "claim": "descriptive only at n=2/arm (per-leg rates, ranges, memory, an UNCONFIRMED direction); any confirm / no-difference / within-delta statement needs a follow-up window at n>=3 - see the top-level claim block",
    "contract_budget_h": [
     1.2,
     2.0
@@ -3369,9 +2836,7 @@
     "W3-A-pp-r1",
     "W3-B-pp-r1",
     "W3-B-pp-r2",
-    "W3-A-pp-r2",
-    "W3-A-pp-r3",
-    "W3-B-pp-r3"
+    "W3-A-pp-r2"
    ],
    "legs": {
     "pp239k": {
@@ -3471,26 +2936,6 @@
      "group": "pp",
      "pilot": false,
      "rep": 2,
-     "shapes": [
-      "pp239k"
-     ]
-    },
-    {
-     "arm": "A",
-     "boot": "pp",
-     "group": "pp",
-     "pilot": false,
-     "rep": 3,
-     "shapes": [
-      "pp239k"
-     ]
-    },
-    {
-     "arm": "B",
-     "boot": "pp",
-     "group": "pp",
-     "pilot": false,
-     "rep": 3,
      "shapes": [
       "pp239k"
      ]

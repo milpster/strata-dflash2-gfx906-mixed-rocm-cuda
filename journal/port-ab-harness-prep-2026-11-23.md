@@ -1,5 +1,9 @@
 # Phase-2 A/B harness prep (2026-11-23, CPU-only)
 
+**Updated 2026-11-23 (evening): n reduced from 3 to 2 per arm by operator directive.** The
+sections above the last one describe the n=3 freeze and are kept as history; the last section is
+the current schedule, budgets and claim rule.
+
 Scope: the artifacts the approved measurement contract's Phase 2 needs, built at harness-prep and
 committed before any window. Plan: `/home/srcds/.opencode/plan/measurement-contract-speed-attribution-faults.md`.
 Lane: fixer (CPU only). No boot, no GPU work, no `:8009` traffic, no process control; prod kept serving
@@ -172,3 +176,68 @@ are fixed in the commit after it on this branch, CPU-only (no boot, no GPU, no `
 Selftests cover each: prereq-0 clean/starved/prod-up; legs' correct-path restart, filtered normal
 stop (and the superseded path ignored), fault after a boot's end not failing it, no-end fallback to
 the next boot's start, and the evidence file's fields.
+
+
+## Window W1 open (2026-11-23 21:1x)
+
+Operator directive: the 12.54 GiB non-engine RSS (browser, VS Code, Hindsight, opencode host - normal desktop usage) is waived as the idle baseline for this window. RAM headroom with prod stopped: ~50 GiB. The prereq-0 snapshot (prereq0-20261123-211245.json) is retained as the record; the waiver is operator-authorized, the per-leg memory sampler still tracks every leg. W1 budget: the derived 1.93-3.22 h (warmups counted) per the operator's go.
+
+
+## n=2 per arm (operator directive 2026-11-23 evening): descriptive-only window
+
+Operator directive: reduce the A/B arms from n=3 to n=2. Everything below is CPU-only work on
+`recovery-startup-watchdog` (no boot, no GPU, no `:8009`, no push); the previously open W1 is
+re-planned, not re-measured, at the reduced sample.
+
+**Statistical consequence, stated plainly.** 2v2 has C(4,2) = 6 allocations and a minimum exact
+two-sided p = 1/6 + 1/6 = **0.33**. No interval at this n reaches 90 % (or 95 %), so this window
+supports **no claim at all**: `confirm`, `no difference` and `within ±delta` are all
+unsupported. Its honest outputs are the per-leg rates, full ranges and memory, plus a directional
+observation marked **UNCONFIRMED**. Any of those three statements requires a **follow-up window at
+n>=3 per arm** (3v3: C(6,3) = 20 allocations, min exact p = 0.10 — the 90 % exact/HL rule the
+contract already states); n=4 would restore 95 %. The manifest's claim block now says exactly this,
+and `port_ab_prepare.py --verify` fails if the block drifts from `port_ab_contract.CLAIM`.
+
+Schedule (claim boots interleaved A B B A, replicates 1..2 per arm):
+
+| Window | claim boots | discarded boots | total boots | measured legs | claim legs |
+|---|---|---|---|---|---|
+| W1 | A1 B1 B2 A2 | 2 first-touch warmups (A0 B0) | 6 | 6 x pp239k (1/boot) | 4 |
+| W2 | dec A1 B1 B2 A2, sht A1 B1 B2 A2 | 2 sht pilots (A0 B0) + 2 dec warmups (A0 B0) | 12 | 4 decode + 6 x 3 (2k/8k/ttft) | 4 decode + 12 |
+| W3 | A1 B1 B2 A2 | 2 first-touch warmups (A0 B0) | 6 | 6 x pp239k tg (1/boot) | 4 |
+| W4 | unchanged: 2 cross cells x 2 boots | none | 4 | 4 x dec144k | 4 (veto only) |
+
+The config tree shrank from 36 to 28 frozen configs; the eight `*-r3.json` configs of W1/W2/W3
+were deleted. `port_ab_boot.sh` and `port_ab_stop.sh` took the replicate as an argument and
+needed no change; the schedule, runbook, manifest and configs all derive from
+`port_ab_contract.REPS`, so the reduction is one edit plus a regeneration.
+
+New derived budgets (arithmetic shown; `contract_budget_s` stays in the manifest as the
+contract's reference value, and the planning number is always the derivation, which counts every
+discarded boot):
+
+| Window | boots | new derived | arithmetic | old n=3 derived | contract |
+|---|---|---|---|---|---|
+| W1 | 6 (4 claim + 2 warmup) | 1.45-2.42 h | 6 x (690-1,150 s leg + 180-300 s boot) = 5,220-8,700 s | 1.93-3.22 h (8 boots) | 1.5-2.5 h |
+| W2 | 12 (6 dec = 4+2, 6 sht = 4+2) | 1.54-2.11 h | 6 x 686.2-896.4 s decode + 6 x 237.5-367.6 s short = 5,543-7,584 s | 2.05-2.81 h (16 boots) | none (this manifest is the first) |
+| W3 | 6 (4 claim + 2 warmup) | 1.60-2.05 h | 6 x 960.96-1,229.59 s = 5,766-7,378 s | 2.14-2.73 h (8 boots) | 1.2-2 h |
+| W4 | 4 (2 cells x 2) | 0.76-1.00 h | 4 x 686.2-896.4 s = 2,745-3,586 s (unchanged) | 0.76-1.00 h | ~1 h |
+
+The n=2 window is ~25 % shorter than the n=3 plan in W1-W3 (4 claim boots instead of 6) and W2 is
+nearly halved (12 boots instead of 16). The W1 window opened at 21:1x is now gated on 1.45-2.42 h,
+not the 1.93-3.22 h recorded above.
+
+Validation (CPU only, exit codes as run):
+
+| Check | Command | Exit |
+|---|---|---|
+| manifest re-verify after regeneration | `port_ab_prepare.py --verify` | 0 (OK) |
+| leg/boot gate selftests | `port_ab_legs.py --selftest` | 0 (12/12 ok) |
+| 2x2 argv preflight | `port_ab_preflight.py --strict` | 0 (4 bootable cells, port tuple verbatim refuses at argv) |
+| TTFT parser selftest | `port_ab_ttft.py --selftest` | 0 |
+| prereq-0 selftest | `port_ab_prereq0.py --selftest` | 0 |
+| shell syntax | `bash -n port_ab_boot.sh port_ab_stop.sh` | 0 |
+| python syntax | `python -m py_compile port_ab_{contract,configs,legs,prepare,boot_plan,preflight,prereq0,ttft}.py` | 0 |
+
+Not done, on purpose: no boot, no leg, no measurement, no GPU, no `:8009` traffic, no push. The
+n=3 fallback remains one edit (`REPS`) away if the operator reverses the directive.
