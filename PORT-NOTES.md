@@ -319,7 +319,7 @@ They were not in upstream 0.2.18 at all, so this is new CLI surface, all of it i
 
 `prefill.cpp`'s CPU-share test: upstream admits a blob the CPU can read from RAM when
 `pinned || !transient`; the merged file admits it when `!transient` (the lane's CS-T rule,
-`prefill.cpp:6466`). The difference is a source that is BOTH mlocked and assembles on demand - which is
+`prefill.cpp:6443`). The difference is a source that is BOTH mlocked and assembles on demand - which is
 what the managed RAM pool answers - and upstream has no such source today, so today the two tests pick
 the same experts. It is kept because the lane's managed pool would otherwise hand a pool loan to a share
 that holds it for a whole layer. Recorded here because it is the only default-path behaviour this merge
@@ -556,3 +556,19 @@ exit 0).
 6. The seven `ds4_*` rule tests are pure host programs that the fork happens to keep inside
    `STRATA_BUILD_DSV41`, so a gfx906 build never builds them. Moving them out of that guard would give this
    card their coverage; it changes which features a given configure compiles, so it is not this port's call.
+
+## The night window's "first-window defect": the diagnosis (2026-11-23, fixer lane, no device touched)
+
+The night window (journal/pool-admission-fix-2026-11-21.md, "The night window's verdict") blocked the port's
+quality arm because its FIRST decode/verify window never completed. The lane hunted a lost wait/init/call in
+the merged decode loop and found none; the actual discriminator: **the two engines never ran the same arena
+path.** The fork arm's config carried STRATA_RAM_BUDGET_MIB=36864 (managed pool store, no pin); the port arms
+did not (buffered arena + whole-arena cudaHostRegister pin, 46.8 GiB / 4480 ranges) - exactly the kernel path
+(svm_range_set_attr) this machine stalls on tonight. Config fix, one env line, no code change:
+configs-port/trial-8019-spill-off.json env now holds STRATA_RAM_BUDGET_MIB=36864 (both port binaries carry
+the pool store; 36864 is the known-good budget, 40960 the raised one the XDMA faults were first blamed on).
+Empirical vindication: arm P re-ran with the budget, printed "store open", skipped the pin, completed its
+first window, scored all 5 segments - and the full quality gate passed (top-1 100%, KL 0.00000, PPL
+3.924=3.924 vs the fork over 4,995 positions). The managed_budget_mib key in the JSONs is dead (no runner
+reads it); the fork arm qq0218F.json carries the working env value. Re-validation path for any port boot:
+the engine must print "store open" and must NOT print register-last / strata pin lines.
