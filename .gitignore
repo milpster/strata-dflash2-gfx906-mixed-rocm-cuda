@@ -120,6 +120,8 @@ bench/ab-v0210/armA/strata_control/
 
 # tool caches / runtime outputs
 .serena/
+# supervisor per-generation work dirs (state shards; peers.json only)
+run/mixed-pair-*/
 strata-server.out
 results.db
 results.json
