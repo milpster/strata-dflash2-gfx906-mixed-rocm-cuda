@@ -93,28 +93,68 @@ def processes():
     return rows
 
 
+def parse_core_snapshot(text, classify_fn=None, self_pid=None):
+    """Flag the hot threads on the stage cores from 'ps -eLo pid,tid,psr,pcpu,etimes,comm'.
+
+    The pinned threads are the ENGINE's stage threads (--stage-cpus 3,5,7,9,11,13,15): their
+    using those cores is the design. Everything else on a stage core is competition and is
+    flagged. Split out from the ps call so the rule can be tested without a hot process.
+    """
+    classify_fn = classify_fn or classify
+    self_pid = os.getpid() if self_pid is None else self_pid
+    hot, threads = [], {}
+    stage = set(C.PREREQ0["stage_cores"])
+    for line in text.splitlines():
+        parts = line.split(None, 5)
+        if len(parts) < 6 or not parts[0].isdigit():
+            continue
+        pid, tid, psr, pcpu = int(parts[0]), parts[1], int(parts[2]), float(parts[3])
+        comm = parts[5].strip()
+        threads[psr] = threads.get(psr, 0) + 1
+        if pid == self_pid or psr not in stage:
+            continue
+        if pcpu < C.PREREQ0["core_hot_fraction"] * 100:
+            continue
+        kind = classify_fn(pid)
+        if kind == "serving":
+            continue          # the engine's own stage threads: pinned there on purpose
+        hot.append({"pid": pid, "tid": tid, "psr": psr, "pcpu": pcpu, "comm": comm,
+                    "kind": kind, "cmd": cmdline(pid)[:120]})
+    return {"threads_per_cpu": {str(k): v for k, v in sorted(threads.items())}, "hot": hot}
+
+
 def temp_core_snapshot():
-    """ps -eLo psr,pcpu for every thread; flag the hot threads on the stage cores."""
+    """ps -eLo psr,pcpu for every thread; the stage-core rule is parse_core_snapshot's."""
     try:
         text = subprocess.run(["ps", "-eLo", "pid,tid,psr,pcpu,etimes,comm"],
                               capture_output=True, text=True, timeout=20).stdout
     except (OSError, subprocess.SubprocessError) as error:
         return {"error": str(error), "hot": []}
-    hot, threads = [], {}
-    stage = set(C.PREREQ0["stage_cores"])
-    for line in text.splitlines()[1:]:
-        parts = line.split(None, 5)
-        if len(parts) < 6:
-            continue
-        pid, tid, psr, pcpu = int(parts[0]), parts[1], int(parts[2]), float(parts[3])
-        comm = parts[5].strip()
-        threads[psr] = threads.get(psr, 0) + 1
-        if psr in stage and pcpu >= C.PREREQ0["core_hot_fraction"] * 100 and pid != os.getpid():
-            kind = classify(pid)
-            if kind == "serving":
-                hot.append({"pid": pid, "tid": tid, "psr": psr, "pcpu": pcpu, "comm": comm,
-                            "kind": kind, "cmd": cmdline(pid)[:120]})
-    return {"threads_per_cpu": {str(k): v for k, v in sorted(threads.items())}, "hot": hot}
+    snap = parse_core_snapshot(text)
+    for row in snap["hot"]:
+        row["cmd"] = cmdline(row["pid"])[:120]
+    return snap
+
+
+def selftest():
+    """The rule, on a synthetic ps snapshot: engine threads pass, an intruder is flagged."""
+    text = (
+        "  PID     TID PSR %CPU ELAPSED COMMAND\n"
+        " 1001    1001   0  1.0  100:00 hostapp\n"
+        " 2002    2003   5 99.0  010:00 strata\n"      # the engine's pinned stage thread
+        " 3003    3003   7 97.5  108:00 pytest\n"      # the incident shape: a stuck test
+        " 3004    3004   9 12.0  108:00 python\n"      # low load: not hot
+        " 4004    4004   3 51.0  001:00 kworker/3:1\n" # just over the line
+    )
+    kinds = {2002: "serving", 3003: "other", 3004: "other", 4004: "other", 1001: "other"}
+    snap = parse_core_snapshot(text, classify_fn=lambda pid: kinds.get(pid, "other"), self_pid=1)
+    flagged = sorted(row["pid"] for row in snap["hot"])
+    assert flagged == [3003, 4004], flagged
+    assert snap["threads_per_cpu"]["5"] == 1 and snap["threads_per_cpu"]["0"] == 1, snap
+    print("selftest OK: engine stage threads pass, hot intruders flagged, low load ignored")
+
+
+
 
 
 def main() -> int:
@@ -122,7 +162,11 @@ def main() -> int:
     ap.add_argument("--out", type=pathlib.Path, default=HERE / "out" / "port-ab-20261123")
     ap.add_argument("--cache-dir", help="filesystem the leg cache dirs live on (default: --out)")
     ap.add_argument("--json", action="store_true", help="print the snapshot JSON only")
+    ap.add_argument("--selftest", action="store_true", help="exercise the stage-core rule, no ps")
     a = ap.parse_args()
+    if a.selftest:
+        selftest()
+        return 0
 
     mi = meminfo()                      # /proc/meminfo values are KiB
     avail_kib = mi.get("MemAvailable", 0)
