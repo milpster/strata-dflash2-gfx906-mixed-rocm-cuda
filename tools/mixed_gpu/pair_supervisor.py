@@ -183,15 +183,32 @@ def apply_stage_affinity(engine: tuple[int, str], cpus: str, snapshot: Path) -> 
 class LogTail:
     """Only complete lines written since this generation started are evidence."""
 
-    def __init__(self, path: Path):
+    HEAD_BYTES = 256  # A rewrite in place can leave the file longer than the old offset.
+
+    def __init__(self, path: Path, since: float | None = None):
         self.path = path
         try:
             info = path.stat()
         except FileNotFoundError:
             info = None
         self.identity = (info.st_dev, info.st_ino) if info else None
-        self.position = info.st_size if info else 0
+        # A launcher that names its log per generation creates the file after the
+        # generation boundary, so that file is this generation's own and is read
+        # from its start. A file that predates the boundary (an earlier
+        # generation, or the append-only log of a fixed port_ab path) is read
+        # from its size: its content belongs to earlier generations.
+        self.position = (0 if info is None or (
+            since is not None and min(info.st_ctime, info.st_mtime) >= since)
+            else info.st_size)
+        self.head = self.read_head()
         self.pending = ""
+
+    def read_head(self) -> bytes:
+        try:
+            with self.path.open("rb") as log:
+                return log.read(self.HEAD_BYTES)
+        except FileNotFoundError:
+            return b""
 
     def read_lines(self) -> list[str]:
         try:
@@ -201,9 +218,15 @@ class LogTail:
         with log:
             info = os.fstat(log.fileno())
             identity = info.st_dev, info.st_ino
-            if identity != self.identity or info.st_size < self.position:
+            head = log.read(self.HEAD_BYTES)
+            # A launcher that re-creates a fixed path in place can leave the file
+            # longer than the previous offset: the rewritten head, not the size,
+            # proves the earlier lines are gone.
+            if (identity != self.identity or info.st_size < self.position
+                    or not head.startswith(self.head)):
                 self.position = 0
                 self.pending = ""
+                self.head = head
             self.identity = identity
             log.seek(self.position)
             text = self.pending + log.read().decode("utf-8", errors="replace")
@@ -294,8 +317,11 @@ def supervise(args: argparse.Namespace) -> int:
                         raise RuntimeError(f"Refusing existing socket path: {path}")
                 environment = dict(os.environ, STRATA_PAIR_RECORD=str(record))
                 tail = LogTail(engine_log) if engine_log is not None else None
-                # The helper log is append-only across generations: take its size at the
-                # generation boundary, before the launcher can append anything.
+                # The helper log either grows append-only across generations or gets a
+                # new name per generation. Take the boundary before the launcher runs, so
+                # an appended line and a freshly created file are both scoped to this
+                # generation.
+                boundary = time.time()
                 helper_tail = LogTail(last_helper_log) if last_helper_log is not None else None
                 started = time.monotonic()
                 child = subprocess.Popen(["nice", "-n", str(args.nice), "bash", str(args.launcher), "--pair-child"], env=environment,
@@ -309,6 +335,11 @@ def supervise(args: argparse.Namespace) -> int:
                 owned: dict[Path, tuple[int, int]] = {}
                 healthy = False
                 engine_attached = False
+                # The helper log is read as a per-generation tail, so a fill line is
+                # visible once. Latch what it proved: the engine's attach can still be
+                # pending in the poll that reads it.
+                helper_filled = False
+                helper_second_channel = False
                 stage_attempts = 0
                 stage_result: dict | None = None
                 stage_next = 0.0
@@ -341,12 +372,6 @@ def supervise(args: argparse.Namespace) -> int:
                                     publish["engine_stderr_log"] = str(engine_log)
                                 write_json(args.state, publish)
                         if peers is not None:
-                            if peers["helper_log"]:
-                                # The first generation of this supervisor process has no
-                                # earlier boundary; take the offset at first publication.
-                                last_helper_log = Path(peers["helper_log"])
-                                if helper_tail is None:
-                                    helper_tail = LogTail(last_helper_log)
                             dead = [name for name in ("helper", "server") if peers[f"{name}_pid"]
                                     and not alive(peers[f"{name}_pid"], peers[f"{name}_start"])]
                             if dead:
@@ -376,15 +401,32 @@ def supervise(args: argparse.Namespace) -> int:
                                                                  for line in lines):
                                         reading = None  # The request ended; idle is not a stall.
                                 helper_path = Path(peers["helper_log"])
-                                helper_log = helper_path.read_text(errors="replace") if helper_path.exists() else ""
-                                if helper_tail is None:
-                                    helper_tail = LogTail(helper_path)
-                                if helper_ended(helper_tail.read_lines()) is not None:
+                                if helper_tail is None or helper_tail.path != helper_path:
+                                    # A launcher that names its log per generation (date and
+                                    # PID in the name) publishes a new path each time: the
+                                    # old tail would read a dead file and never see a marker.
+                                    # A path this supervisor has not tailed is either that
+                                    # fresh file (read it from the start) or an older log
+                                    # (read it from its size); a path it already tails is
+                                    # append-only across generations, so its history stays
+                                    # earlier generations' evidence.
+                                    helper_tail = (LogTail(helper_path) if helper_path == last_helper_log
+                                                   else LogTail(helper_path, since=boundary))
+                                last_helper_log = helper_path
+                                # Markers, the fill report and the second-channel line are
+                                # evidence only from the lines this generation wrote; a
+                                # previous generation's fill must not declare this one
+                                # attached.
+                                helper_lines = helper_tail.read_lines()
+                                if helper_ended(helper_lines) is not None:
                                     reason = "helper channel ended"
                                     break
-                                attached = bool(FILLED.search(helper_log))
+                                helper_filled |= any(FILLED.search(line) for line in helper_lines)
+                                helper_second_channel |= any(
+                                    "second-channel engine connected" in line for line in helper_lines)
+                                attached = helper_filled
                                 if len(args.socket) > 1:
-                                    attached &= "second-channel engine connected" in helper_log
+                                    attached &= helper_second_channel
                                 attached &= tail is None or engine_attached
                             attached &= bool(peers["server_pid"])
                             attached &= executable is None or engine is not None

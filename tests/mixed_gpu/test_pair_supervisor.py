@@ -135,6 +135,38 @@ class RecoveryTests(ScratchTest):
         self.start_pair()
         self.assertEqual(self.attached()["generation"], 1)
 
+    def test_stale_helper_log_content_does_not_poison_startup(self):
+        # The append-only port_ab helper log already holds a previous generation's
+        # fill and end-of-channel marker when a new pair starts. Neither is this
+        # generation's evidence: the boot must not be declared attached or ended
+        # before its own helper writes.
+        stale = self.root / "helper-port-ab.log"
+        stale.write_text("expert-helper: filled 4093 slots (6.25 GiB)\n"
+                         "expert-helper: second channel: request failed: helper timeout\n")
+        self.start_pair({"FAKE_HELPER_LOG_NAME": stale.name, "FAKE_KEEP_HELPER_LOG": "1",
+                         "FAKE_NO_FILL": "1", "FAKE_ENGINE_ACK_WITHOUT_FILL": "1"},
+                        ("--startup-timeout", "1"))
+        state = self.wait_state(lambda state: state["state"] == "backoff")
+        self.assertEqual(state["generation"], 1)
+        self.assertNotIn("attached_at", state)
+        # Neither the stale marker ended generation 1 nor its fill reported it attached.
+        self.assertEqual(state["reason"], "helper did not attach and fill before the startup deadline")
+
+    def test_marker_in_the_next_generations_rotated_helper_log_ends_that_generation(self):
+        # Production launchers name the helper log per generation, so generation 2
+        # tails a different file than generation 1. The tail must follow the newly
+        # published path; a marker written there is this generation's failure.
+        self.start_pair()
+        before = self.attached()
+        os.kill(before["engine_pid"], signal.SIGKILL)
+        second = self.attached(before["generation"] + 1)
+        self.assertNotEqual(second["helper_log"], before["helper_log"])
+        with Path(second["helper_log"]).open("a") as log:
+            log.write("expert-helper: the engine said bye; exiting\n")
+        state = self.wait_state(lambda state: state["state"] == "backoff")
+        self.assertEqual(state["generation"], second["generation"])
+        self.assertEqual(state["reason"], "helper channel ended")
+
     def test_helper_fill_without_engine_ack_never_becomes_attached(self):
         self.start_pair({"FAKE_NO_ENGINE_ACK": "1"}, ("--startup-timeout", "1"))
         state = self.wait_state(lambda state: state["state"] == "backoff")

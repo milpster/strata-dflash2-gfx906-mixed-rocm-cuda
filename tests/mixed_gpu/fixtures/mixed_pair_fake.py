@@ -104,7 +104,8 @@ if mode == "engine":
         channels.append(channel)
     channels[0].sendall(b"fill")
     filled = channels[0].recv(32) == b"4093"
-    if filled and os.environ.get("FAKE_NO_ENGINE_ACK") != "1":
+    acked = filled or os.environ.get("FAKE_ENGINE_ACK_WITHOUT_FILL") == "1"
+    if acked and os.environ.get("FAKE_NO_ENGINE_ACK") != "1":
         append(root / "engine.log", "strata generate: expert-helper proxy: 4093 experts on one.sock, 6.25 GiB (fill report)")
     append(root / "engine.log", "strata generate: session is up")
     time.sleep(0.2)
@@ -141,8 +142,11 @@ elif mode == "server":
         raise SystemExit(2)
     threading.Event().wait(120)
 elif mode == "launcher":
-    helper_log = root / f"helper-{os.getpid()}.log"
-    helper_log.write_text("")
+    # A per-generation name (the production launchers and window_pair do the same);
+    # FAKE_HELPER_LOG_NAME + FAKE_KEEP_HELPER_LOG model the append-only port_ab path.
+    helper_log = root / os.environ.get("FAKE_HELPER_LOG_NAME", f"helper-{os.getpid()}.log")
+    if os.environ.get("FAKE_KEEP_HELPER_LOG") != "1":
+        helper_log.write_text("")
     helper = subprocess.Popen([sys.executable, __file__, "helper"],
                               env=dict(os.environ, FAKE_HELPER_LOG=str(helper_log)))
     publish(helper.pid, 0, helper_log)
