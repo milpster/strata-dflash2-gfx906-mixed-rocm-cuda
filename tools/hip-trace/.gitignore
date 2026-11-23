@@ -1,0 +1,5 @@
+# build outputs (make)
+hip_trace.so
+libfakehip.so
+selftest
+*.o
