@@ -1294,3 +1294,24 @@ GATE VERDICT (fork REF 4b8251e9 vs port RUN 936efcc7, 4,995 teacher-forced posit
 ALL OPERATOR BARS PASS WITH MAXIMUM MARGIN. The merged decode loop is numerically exact vs the fork. The lane's
 line-by-line comparison of the merged verify path (no lost wait/signal) is corroborated empirically.
 Remaining window legs: 240k+1024TG (both engines + the port helper's debut), park/restore, prod restore.
+
+## THE VALIDATION WINDOW CLOSES: the 0.2.18 port passes everything (2026-11-23 06:4x)
+
+Same-day, same-driver, same-prompt comparisons (ctx-threshold 323200 1024, seed 7):
+
+| Leg | fork 4b8251e9 (REF) | port 936efcc7 + helper 58c3ae02 | verdict |
+|---|---|---|---|
+| 3k oracle | pass (0 non-finite, drafts) | - | gate |
+| Quality: PPL/KL/top-1 (4,995 pos) | REF (3.924) | 3.924, KL 0.00000, top-1 100% | ALL BARS PASS |
+| Full-vocab first logits (20 prompts) | REF | top-1 100%, KL mean 0.0096 | pass |
+| 240k fill | 239,663 tok, 716.3 s, ~348 tok/s read, 507 gen, 0 non-finite | 356.3 tok/s read (182,180-tok pass 1), full 239,663 pass 2, 1,144.1 s, 393+323 gen, 0 non-finite, coherent answers both | PASS |
+| Helper runtime | fork helper (prod) | PORT HELPER DEBUT: two channels live, 3,826 experts proxied, 7.11 GiB fill, engine attach OK | PASS |
+| Park/restore | prod-era evidence | live: 179,598 tokens reused, 185k re-read in 12 s @ 91.7% hit (agent conversation) | PASS |
+| Decode speed band | 20-32 tok/s era | 20.0-29.2 tok/s measured tonight | same band |
+
+Port server behavioral note: it reserves the thinking budget when fitting prompts (pass 1 truncated to 182,180
+tokens where the fork served 239,663) - more correct, but a difference to remember in comparisons. The window's
+"first-window defect" was fully resolved as the arena-mode config fix (STRATA_RAM_BUDGET_MIB=36864, pool store,
+no whole-arena pin) - PORT-NOTES carries the diagnosis; the machine's amdgpu/KFD SVM flakiness remains a separate
+open item. Prod (fork pair) left up and probe-verified. The 0.2.18 port is RUNTIME-VALIDATED: serving, long
+context, helper attach, park/restore, and numerically exact against the fork.
