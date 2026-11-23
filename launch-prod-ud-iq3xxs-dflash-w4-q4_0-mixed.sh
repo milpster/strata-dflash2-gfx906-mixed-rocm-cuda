@@ -18,7 +18,7 @@
 # 256 that was measured), helper reserve 0 / fill 7400 / shard 00002 of the UD pack.
 set -euo pipefail
 ROOT=${STRATA_PROD_TREE:-/mnt/srcds/Strata}
-WORK="$ROOT/v0215"
+WORK=${STRATA_PROD_WORK:-"$ROOT/run/port0218-server"}   # 2026-11-23: the ported 0.2.18 server (pinned copy)
 # Keep the serving wrapper stable; pin the latest built engine/helper separately.
 # 2026-11-13: v0233 promoted (ARM1_SHADOW champion, journal 18i): v0233-candidate engine+helper
 # (all 8 lanes landed, default-off) + foresight shadow stack in the config env
@@ -33,13 +33,13 @@ WORK="$ROOT/v0215"
 # -> 38 GiB pool + 4 GiB outside area, CUDA0 VRAM margin 256 (one +64 step after the
 # 40 GiB run exhausted the card at 7 MiB free), CUDA1 192, helper reserve 0 (the component
 # clamps it to 64), fill 7400 MiB, relief hot 2048 / arena cap 4096.
-BIN=${STRATA_PROD_BIN:-"$ROOT/run/fsclamp-bin"}
+BIN=${STRATA_PROD_BIN:-"$ROOT/run/port0218-bin"}   # 2026-11-23: promoted 0.2.18 port (936efcc7 + helper 58c3ae02)
 export STRATA_RAM_BUDGET_MIB=${STRATA_RAM_BUDGET_MIB:-43008}
 PY="$ROOT/.venv/bin/python"
-CONFIG=${STRATA_PROD_CONFIG:-"$ROOT/prod-config-ud-iq3xxs-dflash-w4-q4_0-mixed-fson.json"}
+CONFIG=${STRATA_PROD_CONFIG:-"$ROOT/prod-config-port0218.json"}   # 2026-11-23: the port serving config (validated window tuple)
 SOCKET="$ROOT/run/prod-iq3xxs-ud-mixed.sock"
 SOCKET2="$ROOT/run/prod-iq3xxs-ud-mixed2.sock"
-HELPER="$BIN/rpcw-cuda/strata-expert-helper-patient"
+HELPER="$BIN/rpcw-cuda/strata-expert-helper"   # 2026-11-23: the port helper build (58c3ae02)
 # KSM is OPT-IN here (SPEC-stage2 lever 4): measured general_profit -109.9 MB on this pair
 # (2026-11-08 17:22 baseline; -636 MB by 2026-11-09 11:01, pages_sharing 141 -> 0, ksmd ~0.1-0.2 %
 # CPU) - the merge costs more than it saves, so the default is OFF and STRATA_KSM=1 opts in

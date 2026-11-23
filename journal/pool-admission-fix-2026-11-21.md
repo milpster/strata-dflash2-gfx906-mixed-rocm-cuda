@@ -1315,3 +1315,13 @@ tokens where the fork served 239,663) - more correct, but a difference to rememb
 no whole-arena pin) - PORT-NOTES carries the diagnosis; the machine's amdgpu/KFD SVM flakiness remains a separate
 open item. Prod (fork pair) left up and probe-verified. The 0.2.18 port is RUNTIME-VALIDATED: serving, long
 context, helper attach, park/restore, and numerically exact against the fork.
+
+## PROMOTED: the 0.2.18 port serves prod (2026-11-23 ~12:50, operator order "yes promote")
+
+Staged: run/port0218-bin (engine 936efcc7 lane-pair + helper 58c3ae02, SHA256SUMS), run/port0218-server
+(pinned copy of the port tree's terminal/ - first staging missed the strata_control sibling and crash-looped
+22 generations; fixed by copying the whole tree), prod-config-port0218.json (validated tuple: 256/192,
+budget 36864, spill off, prod sockets, fresh cache dir run/prod-port0218-cache). Launcher defaults repointed
+(BIN/CONFIG/WORK/HELPER, all STRATA_PROD_* overridable for rollback). Verified: health ~30 s, probe
+finish=stop "probe-ok", engine identity lines (port bin, store open, no pin, helper two channels + 3,816
+experts / 7.09 GiB). Rollback = STRATA_PROD_BIN=run/fsclamp-bin STRATA_PROD_CONFIG=fson.json + reboot.

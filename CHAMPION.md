@@ -6,16 +6,20 @@ If a lane needs a different setting, it changes one thing on top of this and say
 
 Last updated 2026-11-23. Supersedes every earlier "winner", "champion" or launcher default.
 
-## What is serving since 2026-11-22/23 (journal-verified, parent-probed)
+## PROMOTED 2026-11-23 ~12:50 (operator order): the 0.2.18 port serves prod
 
-Engine 4b8251e9 (run/fsclamp-bin, the clamped merge build) + helper 9d16742d, config
-prod-config-ud-iq3xxs-dflash-w4-q4_0-mixed-fson.json at reserves 144/144 (swap clamped off; ~600/600
-re-enables it), STRATA_RAM_BUDGET_MIB=36864 (the +4/+2 GiB raises were reverted: the XDMA fault era),
-context 262144, boot via launch-prod-ud-iq3xxs-dflash-w4-q4_0-mixed.sh. Decode band 20-32 tok/s,
-prefill ~284-356 tok/s. The 0.2.18 PORT (branch port-0218, 4bbf7444dd) is fully runtime-validated
-(quality-gate parity, 240k, helper, park/restore - journal 2026-11-23) and awaits the operator's
-promotion decision; nothing in this file changes until that order. The 2026-11-21 sections below
-remain the measurement record for the margin ladder and the clamp fix.
+Engine 936efcc798aab395... (run/port0218-bin/rpcw-hip/strata, the lane-pair build: ENABLE_DFLASH2=ON /
+HAVE=OFF, the fork drafter) + helper 58c3ae020a7479... (run/port0218-bin/rpcw-cuda/strata-expert-helper,
+sm_86), config prod-config-port0218.json (the validated window tuple: reserves 256/192, budget 36864,
+spill tier off, cache dir run/prod-port0218-cache), server run/port0218-server (pinned copy of the port
+tree's terminal/). Boot via launch-prod-ud-iq3xxs-dflash-w4-q4_0-mixed.sh (defaults repointed: BIN/CONFIG/
+WORK/HELPER). Verified at promotion: health ~30 s, probe finish=stop "probe-ok", "store open" (pool mode,
+no whole-arena pin), helper two channels + 3,816 experts / 7.09 GiB attached. Validation basis (same day,
+journal 2026-11-23): quality-gate perfect parity vs the fork (PPL 3.924=3.924, KL 0.00000, top-1 100%),
+240k fill clean (356.3 tok/s read, 0 non-finite), helper debut, park/restore live. The previous fork tuple
+(4b8251e9 + 9d16742d, fson.json, 144/144) remains in run/fsclamp-bin + the fson config for instant
+rollback via STRATA_PROD_BIN/STRATA_PROD_CONFIG overrides. The 2026-11-21 sections below remain the
+measurement record for the margin ladder and the clamp fix.
 
 ## Resolved 2026-11-21 23:59: the 240k non-finite logits (`#879`)
 
