@@ -133,3 +133,32 @@ trials run on 8009, not port 8019.
 - The fault track's differential legs are unrun: only `default-margins` and `default-margins-b2`
   have records; the other frozen configs under `gen/faultdiff/` have none.
 - Decide the 239k mismatch before more W1/W1d legs are read as 240k.
+
+## Closed 2026-11-23 23:33: margins reverted; the fault is margin-independent in this window
+
+The operator returned the serving tuple to 256/192 (`prod-config-port0218.json`, unchanged) at 23:33 and
+closed this experiment; `prod-config-port0218-defaultmargins.json` (armed in `db53fa43d2`) is deleted in
+the same commit so it cannot be booted by accident, and the base config and its launcher stay untouched.
+
+- **The fault returns at 700/700.** W1d-B-pp-r0 (port engine `run/port0218-bin/rpcw-hip/strata`, both
+  reserve flags absent — `700 MiB reserved`, elog 40 — start 23:25:38, elog 6) took the XDMA fault at
+  23:29:49, engine pid 1756818 (`journalctl -k -b` 2010-2014; elog 85, `0x7f9161ff2000`) — **251 s** in,
+  against **276 s** (W1-A-pp-r1 gen 1, 22:27:40 → 22:32:16, pid 422387, `-k -b` 1759) and **271 s**
+  (W1-B-pp-r1 gen 1, 22:43:50 → 22:48:21, pid 784900, `-k -b` 1901) at 256/192. Same 10 records,
+  `0x00800031`, XDMA, `RW: 0x0`, pages inside one 128 KiB host-VA window.
+- **Faults per prefill attempt: 2 of 4 at 256/192, 1 of 4 at 700/700**, Fisher exact two-sided p = 1.0.
+  256/192 completed W1-B-pp-r0 gen 3 at 301.6 tok/s (elog 117) and W1-A-pp-r1 gen 2 at 290.8 (elog 189);
+  700/700 completed default-margins b1 at 287.4, b2 at 294.4 (legs above) and W1d-A-pp-r0 at 262.8
+  (elog 101). Nothing in this data separates the settings, and the Foresight swap co-varies with them in
+  every boot read (0 slots at 256/192: W1-B-r0 elog 89-91, W1-A-r0 elog 74-76; `card0:2, card1:8` at
+  700/700: W1d-B elog 77, W1d-A elog 74), so margins, headroom and swap cannot be told apart either; the
+  arms also differ in engine binary (`fsclamp-bin` A, `port0218-bin` B), a third co-variable.
+- **Nothing survived.** Every non-faulted boot in the window was ended by `port_ab_stop.sh` (`boots/*.json`,
+  `ended_by`), and the longest fault-free boot that served a prefill is **626 s** (default-margins b2:
+  23:07:45 elog 114 → 23:18:11, prefill leg plus 6 decode requests at 27.3-38.4 tok/s, boot log 94-178).
+  The longer fault-free walls served nothing: W1-A-pp-r0, 886 s, no request.
+- **One fault is per attempt, not per boot.** W1-A-pp-r1 gen 1 faulted at 22:32:16; its successor started
+  6 s later (22:32:22, elog 92) and completed the identical 58,423-token prefill at 290.8 tok/s (elog 189).
+- 256/192 stays the serving tuple. The W1d window stays in the harness with 2 of its 6 boots used (one per
+  arm, no claim pair) — superseding the "no artifacts" note under *Next* — and will not be continued.
+
