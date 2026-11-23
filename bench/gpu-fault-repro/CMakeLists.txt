@@ -20,10 +20,17 @@
 
 cmake_minimum_required(VERSION 3.21)
 
+# gfx906 must be in the cache before project(): CMake seeds HIP_ARCHITECTURES
+# during HIP compiler detection from amdgpu-arch, and on this box that probe is
+# poisoned by HSA_OVERRIDE_GFX_VERSION=9.0.6 (it answers gfx900/gfx906 by
+# override, not by card). FORCE before project() beats the probe; a cache entry
+# set afterwards does not.
+set(CMAKE_HIP_ARCHITECTURES gfx906 CACHE STRING "" FORCE)
+
 # Host-compiler and header details, neither of them a GPU one. Applied only when
 # the user did not set CMAKE_HIP_FLAGS:
 # - ROCm 6.1 ships clang 17, whose cuda_wrappers/cmath cannot parse this box's
-#   default GCC 16 libstdc++ headers; point it at GCC 13.
+#   default GCC 15.2 libstdc++ headers; point it at GCC 13.
 # - /usr/include/hip belongs to the installed 7.x tree; the 6.1.0 headers must
 #   come first or the build mixes 7.x headers with 6.1.0 runtime libs.
 if(NOT CMAKE_HIP_FLAGS)
@@ -37,12 +44,6 @@ endif()
 project(hip_fault_repro LANGUAGES CXX HIP)
 enable_language(HIP)
 find_package(hip REQUIRED)
-
-# ROCm 6.1's hip-config defaults AMDGPU_TARGETS to gfx900 and that wins over a
-# cache entry, so the arch is forced after find_package.
-if(CMAKE_HIP_ARCHITECTURES STREQUAL "" OR CMAKE_HIP_ARCHITECTURES STREQUAL "gfx900")
-  set(CMAKE_HIP_ARCHITECTURES gfx906)
-endif()
 
 # CXX is enabled only because hip-config's FindThreads dependency needs it; the
 # one .cpp must be compiled by the ROCm clang, which is what HIP language does.
