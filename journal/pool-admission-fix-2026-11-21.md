@@ -1259,3 +1259,23 @@ engine's own validated config with expert-helper args stripped; (3) the port's R
 refuses --dflash configs - the lane-pair build (936efcc7) is the serving-shaped binary. Open: arm P retry
 vs a real first-window timeout in the merged verify path; the 240k+1024TG legs; the port helper's runtime
 debut (58c3ae02, never executed).
+
+## The night window's verdict: the port engine has a first-window runtime defect (2026-11-23 02:5x)
+
+Autonomous window under operator order. Results:
+- 3k oracle (fork): PASSED on the record's evidence terms (0 non-finite, 286 tokens, drafts accepted).
+- Quality gate arm F (fork, yardstick): COMPLETE and banked - 4,995 positions + full-vocab first logits.
+- Quality gate arm P (port 936efcc7): BLOCKED - the port engine's FIRST decode/verify window never completes,
+  deterministic 3x in the yardstick (#267 at layer 43, 5 s watchdog) and 2x in serving (hang at 58/58 prompt
+  tokens, no watchdog). The fork engine completes identical protocols. 47/47 static tests never saw it.
+- Bisect attempt (no --dflash): the engine pin hung in kernel D-state inside svm_range_set_attr (amdgpu/KFD
+  SVM range registration, /proc/<pid>/wchan) - one boot's pin stalled at 4032/4480 ranges for 10+ min. The
+  same kernel path explains the night's XDMA permission faults. Machine flakiness and the port defect are
+  BOTH real; a clean discriminator needs a stable machine.
+- The port's RESTING default-pair binary also refuses --dflash configs (needs the lane pair 936efcc7) and its
+  argv parser is stricter than the fork's. Native IQ packs REQUIRE --spec >= 2 (a no-drafter bisect is
+  impossible without spec).
+- 240k+1024TG legs and the port helper's runtime debut: NOT RUN - blocked behind the port defect.
+- PROD RESTORED AND VERIFIED: fork pair via the launcher, health ~30 s, probe finish=stop "probe-ok".
+NEXT: a fresh fixer lane chases the port's first-window hang (reproducers: the qgate arm-P yardstick leg and
+the port-serve-first serving boot); the amdgpu/KFD SVM path gets its own stability investigation.
