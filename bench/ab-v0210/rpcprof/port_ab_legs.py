@@ -42,8 +42,8 @@ MANIFEST = HERE / "port-ab-manifest.json"
 
 
 def leg_cap(shape, window):
-    entry = C.LEGS[shape]["max_tokens"]
-    return int(entry) if isinstance(entry, int) else int(entry.get(window) or entry["W2"])
+    """The leg's generation cap: the same number the TG gate reads (contract.gen_tokens)."""
+    return C.gen_tokens(shape, window)
 
 
 def corpus_path(out, shape):
@@ -313,24 +313,54 @@ def supervisor_generation(out, key):
         return None
 
 
-SUPERVISOR_RESTART = re.compile(r"recover|restart|exited")
+SUPERVISOR_RESTART = re.compile(r"recovering|recovered|backoff")
+LOG_STAMP = re.compile(r"(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})")
+STAMP_TOLERANCE_S = 2.0
 
 
-def supervisor_events(out, key):
-    """Restart evidence from the supervisor's own events log.
+def _stamp_epoch(stamp):
+    """Epoch of a log line's own timestamp (local time, as the logs write it)."""
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return time.mktime(time.strptime(stamp, fmt))
+        except ValueError:
+            continue
+    return None
+
+
+def supervisor_events(out, key, record=None):
+    """Restart evidence from the supervisor's own events log, scoped to THIS boot.
 
     pair_supervisor.append_event writes state.with_name(state.stem + "-events.log"), and the
     state file is run/<key>.supervisor.json - so the log is run/<key>.supervisor-events.log,
-    not run/<key>-events.log. Only recover/restart/exited lines count: a normal shutdown
-    appends "stopped: stop requested" on every clean stop and must never fail a boot.
+    not run/<key>-events.log.
+
+    Only "recovering"/"recovered"/"backoff" lines count. A clean stop appends
+    "gen N stopping: launcher exited" or "gen N stopped: stop requested", and the events log
+    always carries at least that line, so the old pattern's "exited" failed every bookended
+    boot. The file is also appended across every boot that reuses the key (W1-B-pp-r1 holds
+    three boots and 26 event lines), so a line is this boot's only when its own timestamp
+    falls in [started_epoch, ended_epoch]; a line with no timestamp, or a boot record without
+    the times, is kept (fail closed).
     """
     path = pathlib.Path(out) / "run" / (key + ".supervisor-events.log")
     if not path.is_file():
         return []
+    record = record or {}
+    started = record.get("started_epoch")
+    ended = record.get("ended_epoch")
     rows = []
     for line in path.read_text(errors="replace").splitlines():
-        if SUPERVISOR_RESTART.search(line):
-            rows.append(line.strip()[:200])
+        if not SUPERVISOR_RESTART.search(line):
+            continue
+        stamp = LOG_STAMP.search(line)
+        when = _stamp_epoch(stamp.group(1)) if stamp else None
+        if when is not None and isinstance(started, (int, float)):
+            if when < float(started) - STAMP_TOLERANCE_S:
+                continue
+            if isinstance(ended, (int, float)) and ended > 0 and when > float(ended) + STAMP_TOLERANCE_S:
+                continue
+        rows.append(line.strip()[:200])
     return rows
 
 
@@ -369,13 +399,56 @@ def boot_prefix(rec):
 
 
 def slice_text(rec):
+    """The leg's own elog bytes [elog_start, elog_end); the whole file when a record has none."""
     elog = pathlib.Path(rec.get("elog", ""))
     if not elog.is_file():
         return ""
-    with elog.open("rb") as f:
-        f.seek(int(rec.get("elog_start") or 0))
-        blob = f.read(max(0, int(rec.get("elog_end") or 0) - int(rec.get("elog_start") or 0)))
+    blob = elog.read_bytes()
+    start, end = rec.get("elog_start"), rec.get("elog_end")
+    if isinstance(start, int) and isinstance(end, int) and end >= start:
+        blob = blob[start:end]
     return blob.replace(b"\0", b"").decode("utf-8", "replace")
+
+
+def boot_log_text(rec, record):
+    """THIS boot's own segment of the engine log, never the whole appended file.
+
+    The engine log path is per boot KEY and is appended across every boot that reuses the key:
+    W1-B-pp-r1.engine.log holds the 22:43 boot, its 22:48 restart and the 23:45 boot this leg
+    measured, and the file's only GPU fault belongs to the 22:48 boot. The leg's
+    [elog_start, elog_end) is not the boot either: W1-A-pp-r1's fault (byte 12,640) sits in
+    the same boot but before the request, and that crash forced the generation-2 restart the
+    restart gate reports. So the segment starts at the first timestamped line at or after the
+    boot record's started_epoch and ends at its ended_epoch; an untimestamped line (the HIP
+    runtime writes "Memory access fault by GPU node-" without one) belongs to the last
+    timestamp above it. Without a boot record the leg's elog window is used; a file with no
+    usable timestamp at all is read whole (fail closed: never silently drop a fault).
+    """
+    elog = pathlib.Path(rec.get("elog", ""))
+    if not elog.is_file():
+        return ""
+    text = elog.read_bytes().replace(b"\0", b"").decode("utf-8", "replace")
+    record = record or {}
+    started = record.get("started_epoch")
+    if not isinstance(started, (int, float)):
+        return slice_text(rec) or text
+    ended = record.get("ended_epoch")
+    begin = float(started) - STAMP_TOLERANCE_S
+    close = (float(ended) + STAMP_TOLERANCE_S
+             if isinstance(ended, (int, float)) and ended > 0 else None)
+    kept, when = [], None
+    for line in text.splitlines(keepends=True):
+        stamp = LOG_STAMP.search(line)
+        if stamp:
+            value = _stamp_epoch(stamp.group(1))
+            if value is not None:
+                when = value
+        if when is None:
+            continue            # above this log's first timestamp: an earlier boot's lines
+        if when < begin or (close is not None and when > close):
+            continue
+        kept.append(line)
+    return "".join(kept) if kept else text
 
 
 TUPLE_ARGV = ("--spec", "--vram-reserve-mib", "--vram-reserve-later-mib", "--dflash-block",
@@ -404,6 +477,7 @@ def boot_checks(out, key, rec):
     """Everything the boot lines and the boot record must prove, computed once per boot."""
     prefix = boot_prefix(rec)
     record = boot_json(out, key) or {}
+    boot_text = boot_log_text(rec, record)
     checks = {"key": key, "problems": [], "warnings": [], "tuple": None, "fill": None,
               "restart": None, "low": 0, "fs_slots": [], "cache_slots": None,
               "fingerprint": None, "page_cache": None}
@@ -454,9 +528,9 @@ def boot_checks(out, key, rec):
                                       "frozen band " + str(band["gib"]))
 
     generation = supervisor_generation(out, key)
-    events = supervisor_events(out, key)
+    events = supervisor_events(out, key, record)
     restarts = (generation - 1) if isinstance(generation, int) and generation > 1 else 0
-    matches = len(re.findall(C.EXPECTED_LINES["restart"], prefix))
+    matches = len(re.findall(C.EXPECTED_LINES["restart"], boot_text))
     checks["restart"] = {"generation": generation, "restarts": restarts,
                          "supervisor_events": events, "engine_lines": matches}
     if restarts or events or matches:
@@ -472,7 +546,7 @@ def boot_checks(out, key, rec):
     if cache is None:
         checks["problems"].append(key + ": no 'expert cache N slots' line in the boot prefix")
 
-    faults = len(re.findall(C.EXPECTED_LINES["gpu_fault"], prefix))
+    faults = len(re.findall(C.EXPECTED_LINES["gpu_fault"], boot_text))
     if faults:
         checks["problems"].append(key + ": " + str(faults) + " GPU memory-access fault line(s)")
 
@@ -599,7 +673,8 @@ def check(out, window, manifest_path=None):
                 rows.append({"shape": leg, "arm": arm, "boot": bkey, "kind": "ttft",
                              "ttft_s": ttft, "wall_s": [t.get("wall_s") for t in turns],
                              "inter_turn_s": [t.get("inter_turn_wall_s") for t in turns],
-                             "reused": 0, "prompt_tok": None, "restart": boot["restart"],
+                             "reused": 0, "prompt_tok": None, "tg": None,
+                             "restart": boot["restart"],
                              "low": boot["low"], "mem": rec.get("mem") or {}})
                 if any(x is None for x in ttft):
                     problems.append(bkey + "/" + leg + ": a turn never produced a first token")
@@ -617,6 +692,7 @@ def check(out, window, manifest_path=None):
                      "gen_tok": row and row["gen_tok"],
                      "decode_from_request": 2 if decode else 1,
                      "reused_second": decode and decode["reused"],
+                     "tg": (leg in C.LEGS and C.claims_tg(leg, window)),
                      "helper": tail.groups() if tail else None,
                      "non_finite": len(re.findall(C.EXPECTED_LINES["non_finite"], text)),
                      "gpu_fault": len(re.findall(C.EXPECTED_LINES["gpu_fault"], text)),
@@ -639,6 +715,12 @@ def check(out, window, manifest_path=None):
                 if expected and row["prompt_tok"] < expected * 0.9:
                     problems.append(bkey + "/" + leg + ": served " + str(row["prompt_tok"])
                                     + " tokens, expected ~" + str(expected))
+                if entry["tg"] and (entry["gen_tok"] is None
+                                    or entry["gen_tok"] < C.TG_CLAIM_MIN_GENERATED):
+                    problems.append(bkey + "/" + leg + ": TG leg generated "
+                                    + str(entry["gen_tok"]) + " token(s), below the "
+                                    + str(C.TG_CLAIM_MIN_GENERATED) + "-token TG floor "
+                                    + "(operator directive 2026-11-24): not a TG measurement")
             if tail and (tail.group(7) != "0" or tail.group(8) != "0"):
                 problems.append(bkey + "/" + leg + ": helper timeouts=" + tail.group(7)
                                 + " fallbacks=" + tail.group(8))
@@ -666,18 +748,23 @@ def check(out, window, manifest_path=None):
         if len({tuple(v) for v in values.values()}) > 1:
             problems.append(shape + ": served prompt-N differs across arms: " + str(values))
 
-    header = ("%-8s %-2s %-16s %8s %6s %8s %8s %5s %5s %4s" %
-              ("shape", "arm", "boot", "promptN", "reused", "read_tps", "gen_tps", "fill",
-               "slots", "LOW"))
+    # TG: "tg" = this row's gen_tps is claim-grade (a TG leg that generated >= 1,000 tokens);
+    # "ctx" = context only, never a TG rate - W1's 8-token prefill tail, or a TG leg that
+    # stopped short of the floor (which the gate also fails, loudly). "-" = no gen rate.
+    header = ("%-8s %-2s %-16s %8s %6s %8s %8s %3s %5s %5s %4s" %
+              ("shape", "arm", "boot", "promptN", "reused", "read_tps", "gen_tps", "TG",
+               "fill", "slots", "LOW"))
     print(header)
     for r in sorted(rows, key=lambda x: (x["shape"], x["boot"])):
         fill = r.get("fill") or {}
-        print(("%-8s %-2s %-16s %8s %6s %8s %8s %5s %5s %4s" % (
+        tg = r.get("tg")
+        claim_grade = bool(tg) and (r.get("gen_tok") or 0) >= C.TG_CLAIM_MIN_GENERATED
+        print(("%-8s %-2s %-16s %8s %6s %8s %8s %3s %5s %5s %4s" % (
             r["shape"], r["arm"], r["boot"], r.get("prompt_tok") or "-",
             r.get("reused") if r.get("reused") is not None else "-",
             r.get("read_tps") or (r.get("ttft_s") and "ttft " + str(r["ttft_s"][0])) or "-",
-            r.get("gen_tps") or "-", fill.get("rows") or "-", r.get("cache_slots") or "-",
-            r.get("low", "-"))))
+            r.get("gen_tps") or "-", "-" if tg is None else ("tg" if claim_grade else "ctx"),
+            fill.get("rows") or "-", r.get("cache_slots") or "-", r.get("low", "-"))))
     for r in sorted(rows, key=lambda x: (x["shape"], x["boot"])):
         if r.get("fingerprint") and r["fingerprint"].get("available") is False:
             warnings.append(r["boot"] + ": kernel fingerprint unavailable: "
@@ -771,7 +858,7 @@ SELFTEST_JUDGE2 = ("strata serve: prompt {n} tokens = {reused} reused + 10 read 
 
 def _fixture(root, key, arm, shape, *, spec="5", rows=3680, gib="6.84", restart_line="",
              second_reused=None, ttft_first=True, generation=None, started=1.0, ended=None,
-             supervisor_events=None, legacy_events=None):
+             supervisor_events=None, legacy_events=None, tokens=None, generated=None):
     import tempfile  # noqa: F401 - the caller owns the temp dir
     d = pathlib.Path(root) / "records" / key
     d.mkdir(parents=True, exist_ok=True)
@@ -785,8 +872,11 @@ def _fixture(root, key, arm, shape, *, spec="5", rows=3680, gib="6.84", restart_
                              {"ttft_client_s": 0.6, "wall_s": 2.5, "inter_turn_wall_s": 0.3}],
                "mem": {"max_rss_mib": 40000}}
     else:
-        n = 239663 if shape == "pp239k" else 144000
-        body += SELFTEST_JUDGE.format(n=n, reused=0, gen=(1024 if shape == "dec144k" else 8))
+        n = tokens if tokens is not None else (58423 if shape == "pp239k" else 144000)
+        body += SELFTEST_JUDGE.format(
+            n=n, reused=0,
+            gen=(generated if generated is not None
+                 else (1024 if shape == "dec144k" else 8)))
         if second_reused is not None:
             body += SELFTEST_JUDGE2.format(n=n, reused=second_reused)
         rec = {"arm": arm, "leg": shape, "kind": "tg" if second_reused is not None else "prefill",
@@ -900,6 +990,55 @@ def selftest():
         if not ok:
             failures.append("supervisor-normal-stop")
 
+    # the TG floor (operator directive 2026-11-24): a decode leg needs >= 1,000 tokens
+    # actually generated; W1's 8-token prefill tail is context only, never a TG rate
+    for name, generated, want in (("tg-999-generated-fails", 999, 1),
+                                  ("tg-1000-generated-passes", 1000, 0)):
+        with tempfile.TemporaryDirectory(dir=_tmpdir()) as root:
+            _fixture(root, "W4-A-dec-r1", "A", "dec144k", generated=generated)
+            _fixture(root, "W4-B-dec-r1", "B", "dec144k", generated=generated)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = check(pathlib.Path(root), "W4")
+            text = buf.getvalue()
+            ok = (rc == want and (("TG leg generated " + str(generated)) in text) == bool(want))
+            print(("ok   " if ok else "FAIL ") + name + ": rc " + str(rc) + " (want "
+                  + str(want) + ")")
+            if not ok:
+                failures.append(name)
+    rc, text = run(lambda r: clean(r))
+    ok = rc == 0 and text.count("ctx") >= 2 and " tg" not in text
+    print(("ok   " if ok else "FAIL ") + "w1-8-token-tail-is-context: rc " + str(rc)
+          + " (W1's prefill legs must print TG=ctx, not tg)")
+    if not ok:
+        failures.append("w1-8-token-tail-is-context")
+
+    # the boot's own engine-log segment: a previous boot's fault under the same key must not
+    # fail this boot, an in-boot fault before the request must, and no offsets means whole file
+    with tempfile.TemporaryDirectory(dir=_tmpdir()) as root:
+        path = pathlib.Path(root) / "x.engine.log"
+        old, new = 1795450000.0, 1795460000.0
+
+        def line(when, text):
+            return ("[strata] " + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(when))
+                    + " " + text + "\n")
+
+        body = (line(old, "engine started: /x")
+                + "Memory access fault by GPU node-2 (old boot)\n"
+                + line(new, "engine started: /x") + "strata serve: judge\n")
+        path.write_text(body)
+        judge = body.index("strata serve: judge")
+        rec = {"elog": str(path), "elog_start": judge, "elog_end": len(body)}
+        scoped = boot_log_text(rec, {"started_epoch": new - 1})
+        in_boot = boot_log_text(rec, {"started_epoch": old - 1})
+        whole = boot_log_text({"elog": str(path)}, {})
+        ok = ("Memory access fault" not in scoped and scoped.count("engine started:") == 1
+              and "Memory access fault" in in_boot and "Memory access fault" in whole)
+        print(("ok   " if ok else "FAIL ") + "boot-log-segment: previous-boot fault scoped out, "
+              "in-boot fault kept, offsets-less record reads whole file")
+        if not ok:
+            failures.append("boot-log-segment")
+
     # the kernel window ends with the boot: a fault AFTER a boot's end belongs to no earlier boot
     def fingerprint_case(name, boot_ended, fault_at, want_rc, want_until):
         calls = []
@@ -951,9 +1090,10 @@ def selftest():
         print("SELFTEST FAILED: " + ", ".join(failures))
         return 1
     print("selftest OK: gates pass on a clean pair and fail on restart, wrong tuple, bad fill, "
-          "cold request 2 and a missing first token; the restart source is the supervisor's own "
-          "events log filtered to recover/restart/exited, the kernel window ends with the boot, "
-          "and the per-boot evidence is written beside the boot record")
+          "cold request 2, a missing first token, a previous boot's fault, and a TG leg under "
+          "the 1,000-generated floor; a clean stop is not a restart, a previous boot's events "
+          "are not this boot's, the kernel window ends with the boot, and the per-boot evidence "
+          "is written beside the boot record")
     return 0
 
 

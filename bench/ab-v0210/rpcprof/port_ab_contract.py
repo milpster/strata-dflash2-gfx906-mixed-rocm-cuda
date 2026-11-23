@@ -8,8 +8,11 @@ manifest; the leg runner and the pre-window checker read the same values, so a n
 drift between them.
 
 Sources (plan/measurement-contract-speed-attribution-faults.md, approved 2026-11-23):
-  * byte target 323,200 B -> 239,663 tokens (the one same-prompt pair; observed ratio
-    323,200 / 239,663 = 1.3486 B per token, ctx-threshold.sh documents ~0.742 tok/B);
+  * byte target 323,200 B, frozen as corpus/pp239k.ctx323200.bin (sha256 210b16b3...): the
+    engine served 58,423 prompt tokens on it in every W1 leg, both arms. The 239,663-token
+    figure is the generator's old estimate (323,200 / 239,663 = 1.3486 B per token,
+    ctx-threshold.sh documents ~0.742 tok/B); it still scales the other shapes' byte targets,
+    but the frozen bytes, not the token estimate, are the contract;
   * prefill 287.1-348.2 tok/s and decode 21.6-22.1 tok/s measured on the 239,663 prompt;
   * boot 3-5 min (full-residency init);
   * pre-registered deltas: prefill 5 %, decode 8 %; n=2/arm (operator directive 2026-11-23
@@ -30,7 +33,10 @@ from __future__ import annotations
 
 # ---------------------------------------------------------------------------- corpus shapes
 # bytes are what champions_prepare.build_paired_prompt takes (exact byte length); tokens is
-# the count the engine reported for that byte target on the 239,663 pair.
+# the count the engine reports for that byte target. The generator freezes the BYTE target;
+# every engine leg measured 58,423 prompt tokens on the 323,200-byte corpus (5.53 B/token),
+# not the 239,663 the ratio below was estimated from. BYTES_PER_TOKEN still scales the other
+# shapes' byte targets (their measured token counts are not in yet), so it is left unchanged.
 BYTES_PER_TOKEN = 323200 / 239663
 
 
@@ -39,7 +45,13 @@ def bytes_for(tokens: int) -> int:
 
 
 SHAPES = {
-    "pp239k": {"tokens_expected": 239663, "bytes": 323200, "head_tag": "champs work=pp239k",
+    # tokens_expected is the MEASURED count, not the estimate the byte target was scaled from.
+    # The frozen corpus is corpus/pp239k.ctx323200.bin: 323,200 bytes, sha256
+    # 210b16b32b8658e68b863442d3c2d9ebde7eb3c9d50b0cea8c28e7d045c0ea68. All four W1 claim
+    # boots, both engines, served exactly 58,423 prompt tokens on it. The old 239,663 was the
+    # generator's 1.3486 B/token estimate and no longer describes the frozen file; the BYTE
+    # target (323,200), not the token estimate, is what the corpus generator freezes.
+    "pp239k": {"tokens_expected": 58423, "bytes": 323200, "head_tag": "champs work=pp239k",
                "use": "W1 prefill rate, W3 prefill half of the 240k decode leg"},
     "dec144k": {"tokens_expected": 144000, "bytes": bytes_for(144000),
                 "use": "W2 144k decode (one prefill + 1024 generated), W4 2x2 decode shape"},
@@ -72,8 +84,31 @@ LEGS = {
 }
 
 
+# TG claim floor (operator directive 2026-11-24, contract line "Decode/TG measurement
+# floor"): a gen_tps figure supports a TG statement only when that leg actually GENERATED at
+# least this many tokens - the count the judge line reports, never the max_tokens cap. A
+# shorter tail is context only: W1's 8-token tail is a prefill leg and its gen rate is not a
+# TG measurement. A decode leg below the floor cannot enter a TG claim sample.
+TG_CLAIM_MIN_GENERATED = 1000
+
+
 def kind_for(shape, window):
     return LEGS[shape].get("kind_by_window", {}).get(window) or LEGS[shape]["kind"]
+
+
+def gen_tokens(shape, window):
+    """How many tokens this leg's kind is meant to generate in this window (its own cap).
+
+    The single place the TG gate reads a leg's intended generation count from; it is the same
+    number port_ab_legs.commands() passes as --max-tokens.
+    """
+    entry = LEGS[shape]["max_tokens"]
+    return int(entry) if isinstance(entry, int) else int(entry.get(window) or entry["W2"])
+
+
+def claims_tg(shape, window):
+    """True when this leg's kind produces a TG (decode) claim in this window."""
+    return LEGS[shape]["kind"] != "ttft" and gen_tokens(shape, window) >= TG_CLAIM_MIN_GENERATED
 
 
 def corpus_shape(shape):
