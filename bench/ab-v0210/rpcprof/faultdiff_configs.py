@@ -77,7 +77,20 @@ SOCKETS = ("--expert-helper-socket", "--expert-helper-socket2")
 DROP_KEYS = ("derived_from", "derived_note", "managed_budget_mib")
 
 LEG_ORDER = ("default-margins", "parking-off", "park-on-no-evict", "dflash-off",
-             "single-card-0", "single-card-1", "xnack-1", "xnack-0")
+             "single-card-0", "single-card-1", "xnack-1", "xnack-0", "arena-mlock",
+             "pageable-h2d")
+
+# The legs whose one lever is an engine environment key: leg -> (key, value). The two new
+# knobs parse differently on purpose: STRATA_ARENA_MLOCK is on for ANY value (a presence test,
+# include/strata/core/pin_budget.hpp:147), while STRATA_TEST_PAGEABLE is on only for '1'
+# (e[0] == '1': include/strata/core/pinned_ring.hpp:173, src/prefill/prefill.cpp:244). "1" is
+# the value both accept, so no leg here can be inert through its parser.
+ENV_LEVER = {
+    "xnack-1": ("HSA_XNACK", "1"),
+    "xnack-0": ("HSA_XNACK", "0"),
+    "arena-mlock": ("STRATA_ARENA_MLOCK", "1"),
+    "pageable-h2d": ("STRATA_TEST_PAGEABLE", "1"),
+}
 
 
 def sha256_path(path):
@@ -303,6 +316,92 @@ LEGS = {
         "observe": ["exit code and signal of the engine on a fault (killed vs error return)",
                     "the kernel slice's fault class, compared with xnack-1 at matched exposure"],
     },
+    "arena-mlock": {
+        "purpose": "Is a MOVABLE registered host span needed for the fault? (STRATA_ARENA_MLOCK=1: mlock() every "
+                   "span cudaHostRegister pins, so reclaim, compaction and THP collapse cannot move or unmap those "
+                   "pages under a queued H2D read; the base leaves the knob unset and it is on by PRESENCE, "
+                   "pin_budget.hpp:147. The promoted tuple registers no expert arena - it boots 'experts via mmap' - "
+                   "so the leg's own banner is its first evidence: see observe)",
+        "narrows": "kernel-side relocation of a registered host span as a precondition, on any boot that registers "
+                   "one: a cudaHostRegister'd range on gfx906 is a KFD userptr mapping, and amdgpu invalidates the "
+                   "queues' view of it whenever the CPU page tables under it change - reclaim, swap and compaction "
+                   "all do (pin_budget.hpp:129-133), and the arena is THP-requested (pinned.cu:514). mlock() is the "
+                   "one knob that forbids that move. If the banner reports a nonzero locked size and the fault "
+                   "stops, the precondition is a page-table change under a live registration, not the copy code",
+        "cannot_exclude": "WHICH relocation: THP collapse, compaction, ordinary reclaim and swap are not separated "
+                          "(mlock forbids all four for the span), and the knob changes memory pressure itself - the "
+                          "locked span stops being reclaimable, so the box's memory shape (MemAvailable, Cached, "
+                          "swap) differs from the base for the whole leg, a second variable the leg cannot remove. "
+                          "A clean leg is 'no fault with the span pinned', not 'no fault from reclaim', and a span "
+                          "mlock could not take keeps today's behavior with only a log line to say so. On the "
+                          "promoted tuple the lever may have NOTHING to lock: that tuple's own boots print "
+                          "'experts via mmap' (15 of them in logs/engine-prod-port0218.log) with zero 'strata pin:' "
+                          "lines, so no expert arena is registered and a locked size that covers only the native "
+                          "preset's mapped host tables is not a test of the expert pages",
+        "declared": [("env/STRATA_ARENA_MLOCK", "<absent>", "1")],
+        "present": [r"strata pin: arena mlock: RLIMIT_MEMLOCK soft limit",
+                    r"strata pin: arena mlock: locked d+.d+ GiB over d+ spans in d+ ms"],
+        "absent": [],
+        "observe": ["the engine's own banner, 'strata pin: arena mlock: locked X.XX GiB over N spans in M ms', "
+                    "with its '(complement covers N MiB)' tail when there is one (arena_mlock_report, "
+                    "pin_budget.hpp:189-200). READ THE SIZE FIRST: the base tuple registers no expert arena (it "
+                    "boots 'experts via mmap' and prints no 'strata pin:' line at all), so a small count means the "
+                    "knob locked the native preset's mapped host tables and the expert pages were never in scope; "
+                    "a count against a real arena needs a boot whose 'strata generate: expert arena:' line exists",
+                    "the boot's expert-source line, 'strata generate: experts via mmap (--mmap-experts; the A/B arm "
+                    "of R2.1)' (generate.cpp:8400) or 'strata generate: expert arena: ...' (generate.cpp:8656): "
+                    "which one the leg booted is the difference between testing a registered arena and testing "
+                    "nothing of the kind",
+                    "the once-per-process 'strata pin: arena mlock: RLIMIT_MEMLOCK soft limit: unlimited' line - "
+                    "or its WARNING form naming a MiB limit, which predicts a partial mlock",
+                    "every 'strata pin: arena mlock: mlock of [.., +N MiB) failed (errno N, ...)' line: a failed "
+                    "span kept the base's behavior, so the leg is a partial mlock and says which spans were left",
+                    "no banner at all means the knob never fired (no registration reached arena_mlock_span) - the "
+                    "leg is then not a test of the arena, whatever its fault outcome",
+                    "whether the fault stops within the same ~5-minute window as the base, at the leg's recorded "
+                    "exposure (requests, tokens, parks); a fault later than the base's is exposure, not proof",
+                    "the kernel slice's fault class and vmid: the fault must not simply move to another client"],
+    },
+    "pageable-h2d": {
+        "purpose": "Is the PINNED source of the H2D copies necessary for the fault? (STRATA_TEST_PAGEABLE=1: every "
+                   "pinned host allocation with a pageable fallback takes the pageable path, so the copies come "
+                   "from ordinary pageable memory)",
+        "narrows": "the pageable-source copy path of the PROMPT path: the prefill ring buffers and the PLE host "
+                   "buffers fall back to pageable memory (prefill.cpp:241-244, the force_pageable() gate at :763 and "
+                   ":2033) and the pinned upload ring hands out no slot, so every such upload goes through direct() "
+                   "- cudaMemcpyAsync from the caller's pages plus a stream wait (pinned_ring.hpp:49, :96-102, :121), "
+                   "the path the code's own comment assumes is safe because the driver copied before returning "
+                   "(pinned_ring.hpp:10-15). If the fault stops, that path's assumption is implicated",
+        "cannot_exclude": "it is a STRESS VARIANT, not the production path: the base serves its prompt path from "
+                          "pinned slots, so a fault here proves the class is reachable from a pageable source, not "
+                          "that the promoted tuple takes it. The scope is narrow on this tuple in particular: its "
+                          "expert pages are ALREADY a pageable file mapping ('experts via mmap', 15 boots in "
+                          "logs/engine-prod-port0218.log), so the knob adds the prompt-path rings on top of an "
+                          "expert path that was pageable before the leg started, and the two cannot be separated "
+                          "here. It also changes the workload's timing - each staged upload waits for its stream - "
+                          "so exposure and rates differ from the base's legs and decode rate is not comparable",
+        "declared": [("env/STRATA_TEST_PAGEABLE", "<absent>", "1")],
+        "present": [r"engine started: .*--serve ",
+                    r"strata generate: expert-helper proxy: d+ experts on "],
+        "absent": [],
+        "observe": ["whether faults become more frequent or at-will: the first fault's wall time since ready "
+                    "against the base's window, and whether a request dies before its token budget",
+                    "the boot's expert-source line: 'strata generate: experts via mmap (--mmap-experts; the A/B arm "
+                    "of R2.1)' (generate.cpp:8400) means the expert pages were already pageable before the knob, so "
+                    "the leg's difference is the prompt-path rings only. A boot that says 'strata generate: expert "
+                    "arena:' (generate.cpp:8656) instead is the other tuple, and then read its pin-mode lines too: "
+                    "'FileExpertSource: allocating X.XX GiB (page-locked|pageable resident) cache complement' "
+                    "(expert_source.cpp:3937), '... cache complement ready: resident X GiB, pinned Y GiB' "
+                    "(:4348) and 'strata generate: resident RAM mode: ... (page-locked|locked|pageable)' "
+                    "(generate.cpp:11663) - a pinned GiB that falls there would mean the leg moved a second thing",
+                    "the helper's fill report and the 'expert-helper proxy:' line, unchanged from the base: the "
+                    "leg must not change the expert tier's size",
+                    "the engine prints NO banner of its own for the forced pageable rings - the knob only skips "
+                    "the cudaHostAlloc - so the leg is asserted by its config, its env echo in the boot record and "
+                    "the absence of any 'strata: pinned upload of N bytes failed' / 'upload of N bytes failed' line",
+                    "exposure (requests, tokens, parks) and the decode rate, recorded as NOT comparable with the "
+                    "base's: every staged upload waits for its stream"],
+    },
 }
 
 
@@ -364,9 +463,9 @@ def derive(leg, out=OUT_DEFAULT):
         card = "0" if leg.endswith("-0") else "1"
         cfg["gpu"] = [int(card)]
         set_arg(pairs, "--gpu", card)
-    elif leg in ("xnack-1", "xnack-0"):
+    elif leg in ENV_LEVER:
         env = dict(cfg.get("env") or {})
-        env["HSA_XNACK"] = "1" if leg.endswith("-1") else "0"
+        env[ENV_LEVER[leg][0]] = ENV_LEVER[leg][1]
         cfg["env"] = env
     else:                                        # pragma: no cover - guarded above
         raise SystemExit("no transform for " + leg)
@@ -499,12 +598,17 @@ def verify(leg, out=OUT_DEFAULT):
             problems.append(leg + ": layer_split key moved (inert with one GPU; keep it as the base)")
         if get_one(pairs, "--expert-helper-slots") != "4600":
             problems.append(leg + ": helper slots moved")
-    if leg in ("xnack-0", "xnack-1"):
-        want_xnack = "1" if leg.endswith("-1") else "0"
-        if (cfg.get("env") or {}).get("HSA_XNACK") != want_xnack:
-            problems.append(leg + ": HSA_XNACK is not " + want_xnack)
+    if leg in ENV_LEVER:
+        env_key, env_value = ENV_LEVER[leg]
+        if (cfg.get("env") or {}).get(env_key) != env_value:
+            problems.append(leg + ": " + env_key + " is not " + env_value)
         if (cfg.get("env") or {}).get("HSA_OVERRIDE_GFX_VERSION") != "9.0.6":
             problems.append(leg + ": HSA_OVERRIDE_GFX_VERSION left the env block")
+        # the other env legs' keys must not have crept in: one variable means one variable
+        for other in ENV_LEVER.values():
+            if other[0] != env_key and other[0] in (cfg.get("env") or {}):
+                problems.append(leg + ": " + other[0] + " is in the env block and is not this "
+                                "leg's lever")
     if cfg.get("exe") != str(ROOT / PINS["engine"]):
         problems.append(leg + ": exe is " + str(cfg.get("exe")))
     for value in (cfg["log"], cfg["expert_helper_socket"], cfg["expert_helper_socket2"]):
