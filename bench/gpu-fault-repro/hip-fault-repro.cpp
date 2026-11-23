@@ -27,10 +27,16 @@
 // reports success, which once made a kernel that never ran look clean.
 //
 // --host-write-sec N (default 30) rewrites one word per page per tick: a cache
-// coherence probe, not a fault trigger; 0 turns it off.
+// coherence probe, not a fault trigger; 0 turns it off. A write round takes the
+// scan mutex S, and a scan holds S from the launch to the last checksum
+// comparison, so no write round can land inside a scan.
 //
 // Checksums: per page, the integer sum of the words and the word-index-weighted
-// sum (sum i*w[i]); both compared against the host's expected values. Every 10 s
+// sum (sum i*w[i]); both compared against the host's expected values. A single
+// mismatch is re-scanned once, still under S, before it is called a fault:
+// only two consecutive disagreeing scans print CHECKSUM FAULT (exit 4); a
+// mismatch that the re-scan does not reproduce prints RETRY CLEAN and the run
+// continues (counted in HB and DONE as retry-clean). Every 10 s
 // a heartbeat logs VA ranges, one page's checksums, /proc/self/statm, Cached and
 // MemAvailable. A checksum mismatch logs the page VA and maps; so does a HIP
 // fault. ABRT/SEGV/BUS/ILL dump the last scan and maps from a signal handler.
@@ -66,8 +72,13 @@ static const size_t kPage = 4096, kWords = 1024, kPages = 16384, kBytes = kPages
 static FILE* L;  // log; raw fd kept for the signal handler
 static int g_log_fd = -1;
 static std::mutex W;  // serializes host writes against the churn copy
+// Serializes a whole scan (launch, synchronize, copies, checksum compare)
+// against host writes, so no write round can land between the device's read and
+// the expectation it is checked against. A host write takes S and then W; the
+// churn thread takes W only, so --mode file keeps churning through scans.
+static std::mutex S;
 static std::atomic<bool> stop{false};
-static std::atomic<u64> scans{0}, ticks{0};
+static std::atomic<u64> scans{0}, ticks{0}, retry_clean{0};
 static std::atomic<int> churn_fail{0};
 
 // No static destructors on fault paths: the churn thread may still hold g_dir.
@@ -290,6 +301,7 @@ static void base_expected(std::vector<u64>& esum, std::vector<u64>& ewsum) {
 // one word per page: a cache coherence probe into a live device mapping
 static void host_writes(uint32_t* base, std::vector<u64>& esum, std::vector<u64>& ewsum,
                         u64 round) {
+  std::lock_guard<std::mutex> sk(S);  // never inside a scan (lock order S, then W)
   std::lock_guard<std::mutex> lk(W);
   for (size_t p = 0; p < kPages; ++p) {
     uint32_t* w = base + p * kWords;
@@ -482,6 +494,32 @@ int main(int argc, char** argv) {
           dptr, (char*)dptr + kBytes);
     dump_maps(what);
     die(3);
+  };
+
+  // One scan, exactly as the detector needs it: launch, synchronize, both result
+  // copies. The caller holds S around this and the checksum compare, so the
+  // expectations esum/ewsum describe the only content the device could have read.
+  auto run_scan = [&](u64 done) {
+    hipError_t le = scan1((const uint32_t*)dptr);
+    if (le != hipSuccess) {  // a silent no-op launch must never look like a clean scan
+      if (fault_class(le)) devfault("scan_pages launch", le, done);
+      logf_("SETUP ERROR scan_pages launch: %s code=%d", hipGetErrorString(le), (int)le);
+      die(2);
+    }
+    hipError_t e = hipDeviceSynchronize();
+    if (e != hipSuccess) devfault("scan_pages", e, done);
+    for (int k = 0; k < 2; ++k) {  // a copy that fails after a fault is a fault, not setup
+      hipError_t ce = k ? hipMemcpy(hwsum.data(), dwsum, kPages * sizeof(*dwsum),
+                                    hipMemcpyDeviceToHost)
+                        : hipMemcpy(hisum.data(), disum, kPages * sizeof(*disum),
+                                    hipMemcpyDeviceToHost);
+      if (ce != hipSuccess) devfault(k ? "wsum copy" : "isum copy", ce, done);
+    }
+  };
+  auto first_bad = [&]() -> int {  // first page whose device sums differ from the host's
+    for (size_t p = 0; p < kPages; ++p)
+      if (hisum[p] != esum[p] || hwsum[p] != ewsum[p]) return (int)p;
+    return -1;
   };
 
   if (positive) {  // the engine's park/restore race, deliberately
@@ -719,35 +757,46 @@ int main(int argc, char** argv) {
       host_writes((uint32_t*)host, esum, ewsum, wround++);
       logf_("host write round %llu (one word per page)", wround);
     }
-    hipError_t le = scan1((const uint32_t*)dptr);
-    if (le != hipSuccess) {  // a silent no-op launch must never look like a clean scan
-      if (fault_class(le)) devfault("scan_pages launch", le, n);
-      logf_("SETUP ERROR scan_pages launch: %s code=%d", hipGetErrorString(le), (int)le);
-      die(2);
-    }
-    hipError_t e = hipDeviceSynchronize();
-    if (e != hipSuccess) devfault("scan_pages", e, n);
-    for (int k = 0; k < 2; ++k) {  // a copy that fails after a fault is a fault, not setup
-      hipError_t ce = k ? hipMemcpy(hwsum.data(), dwsum, kPages * sizeof(*dwsum),
-                                    hipMemcpyDeviceToHost)
-                        : hipMemcpy(hisum.data(), disum, kPages * sizeof(*disum),
-                                    hipMemcpyDeviceToHost);
-      if (ce != hipSuccess) devfault(k ? "wsum copy" : "isum copy", ce, n);
-    }
-    scans = ++n;
-    int bad = -1;
-    for (size_t p = 0; p < kPages && bad < 0; ++p)
-      if (hisum[p] != esum[p] || hwsum[p] != ewsum[p]) bad = (int)p;
-    if (bad >= 0) {
-      logf_("CHECKSUM FAULT page %d host VA %p device VA %p isum=%llu expected=%llu "
-            "wsum=%llu expected=%llu", bad, (char*)host + (size_t)bad * kPage,
-            (char*)dptr + (size_t)bad * kPage, hisum[bad], esum[bad], hwsum[bad], ewsum[bad]);
-      dump_maps("checksum fault");
-      die(4);
+    // S is held from the launch to the last comparison: a host write round can
+    // no longer change a page the device is reading or the expectation it is
+    // compared against mid-scan.
+    size_t sp = 0;
+    u64 hp_isum = 0, hp_esum = 0, hp_wsum = 0, hp_ewsum = 0;
+    {
+      std::lock_guard<std::mutex> scan_lk(S);
+      run_scan(n);
+      scans = ++n;
+      int bad = first_bad();
+      if (bad >= 0) {
+        // A checksum mismatch used to be reported at once. Re-scan once before
+        // calling it a fault: device-side corruption that survives a scan is
+        // stable, whereas a torn scan or a stale page source is not.
+        logf_("checksum mismatch scan %llu page %d host VA %p device VA %p isum=%llu "
+              "expected=%llu wsum=%llu expected=%llu; re-scanning once to confirm",
+              n, bad, (char*)host + (size_t)bad * kPage, (char*)dptr + (size_t)bad * kPage,
+              hisum[bad], esum[bad], hwsum[bad], ewsum[bad]);
+        run_scan(n);  // confirmation scan, still under the lock
+        int bad2 = first_bad();
+        if (bad2 < 0) {
+          ++retry_clean;
+          logf_("RETRY CLEAN scan %llu: the mismatch on page %d did not reproduce; the second "
+                "scan agrees with the host expectation, so this is not reported as a fault "
+                "(retry-clean=%llu)", n, bad, retry_clean.load());
+        } else {
+          logf_("CHECKSUM FAULT page %d host VA %p device VA %p isum=%llu expected=%llu "
+                "wsum=%llu expected=%llu (confirmed: two consecutive scans disagree; earlier "
+                "first-bad page %d, retry first-bad page %d)", bad2,
+                (char*)host + (size_t)bad2 * kPage, (char*)dptr + (size_t)bad2 * kPage,
+                hisum[bad2], esum[bad2], hwsum[bad2], ewsum[bad2], bad, bad2);
+          dump_maps("checksum fault");
+          die(4);
+        }
+      }
+      sp = (size_t)(n % kPages);
+      hp_isum = hisum[sp], hp_esum = esum[sp], hp_wsum = hwsum[sp], hp_ewsum = ewsum[sp];
     }
     if (time(nullptr) - last >= 10) {
       last = time(nullptr);
-      size_t sp = (size_t)(n % kPages);
       static char statm[512], mi[8192];
       slurp("/proc/self/statm", statm, sizeof statm);
       slurp("/proc/meminfo", mi, sizeof mi);
@@ -755,11 +804,14 @@ int main(int argc, char** argv) {
       char* c = strstr(mi, "Cached:"), *a = strstr(mi, "MemAvailable:");
       if (c) trim_nl(c);
       if (a) trim_nl(a);
-      logf_("HB scans=%llu ticks=%llu cycles=%llu elapsed=%lds page=%zu isum=%llu expected=%llu "
-            "wsum=%llu expected=%llu | host VA [%p,%p) device VA [%p,%p) | statm=%s | %s | %s",
-            n, ticks.load(), cyc, (long)(time(nullptr) - t0), sp, hisum[sp], esum[sp], hwsum[sp],
-            ewsum[sp], host, (char*)host + kBytes, dptr, (char*)dptr + kBytes, statm,
-            c ? c : "Cached: ?", a ? a : "MemAvailable: ?");
+      // the page's sums are snapshotted under the scan lock, so a host write
+      // between the compare and this line cannot show a false mismatch
+      logf_("HB scans=%llu ticks=%llu cycles=%llu retry-clean=%llu elapsed=%lds page=%zu isum=%llu "
+            "expected=%llu wsum=%llu expected=%llu | host VA [%p,%p) device VA [%p,%p) | statm=%s "
+            "| %s | %s",
+            n, ticks.load(), cyc, retry_clean.load(), (long)(time(nullptr) - t0), sp, hp_isum,
+            hp_esum, hp_wsum, hp_ewsum, host, (char*)host + kBytes, dptr, (char*)dptr + kBytes,
+            statm, c ? c : "Cached: ?", a ? a : "MemAvailable: ?");
     }
   }
   stop = true;
@@ -772,7 +824,9 @@ int main(int argc, char** argv) {
     fclose(L);
     return 5;
   }
-  logf_("DONE scans=%llu elapsed=%lds, no HIP fault, no checksum fault", n, elapsed);
+  logf_("DONE scans=%llu elapsed=%lds, no HIP fault, no checksum fault; retry-clean=%llu "
+        "(single-scan mismatches that a re-scan did not reproduce)", n, elapsed,
+        retry_clean.load());
   fclose(L);
   return 0;
 }

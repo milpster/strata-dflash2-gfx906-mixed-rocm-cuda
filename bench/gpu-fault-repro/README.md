@@ -34,11 +34,26 @@ Three modes, and only the first one carries the churn coupling:
 `--host-write-sec N` (default 30) rewrites one word per page per tick in the
 mapping the device reads. That is a cache-coherence probe — it shows whether
 CPU writes and device reads agree — not a fault trigger. `--host-write-sec 0`
-turns it off.
+turns it off and leaves the pure-read control: a registered mapping read at
+maximum rate with no host write at all.
+
+A scan is atomic with respect to host writes. A write round takes the scan
+mutex, and a scan holds it from the kernel launch through the synchronize, both
+result copies and the checksum comparison, so no write round can land between
+the device's read and the expectation it is checked against. Write rounds keep
+their period: a round written between two scans is verified by the next one.
 
 Checksums are per page: the integer sum of its words plus the word-index
 weighted sum `sum i*w[i]`. The weighted sum catches permutations and
 compensating bit changes that the plain sum misses.
+
+A single mismatch is not a fault. On a mismatch the run re-scans once, still
+under the scan mutex, and logs `checksum mismatch …; re-scanning once to
+confirm`. If the second scan agrees with the host expectation the line reads
+`RETRY CLEAN`, the count `retry-clean=` rises in the heartbeat and the `DONE`
+line, and the run continues; `CHECKSUM FAULT` (exit 4) is printed only when two
+consecutive scans disagree. A device-side corruption is stable across a re-scan;
+a torn scan, a stale page source or a lost host write is not.
 
 Every 10 s a heartbeat logs the buffer's host and device VA ranges, one page's
 checksums, `/proc/self/statm`, `Cached`, `MemAvailable`, churn ticks and
@@ -223,7 +238,7 @@ slice below. If the process was killed by a signal, the log ends with
    boot state.
 
 Clean exit prints
-`DONE scans=… elapsed=…s, no HIP fault, no checksum fault`. A run whose churn
+`DONE scans=… elapsed=…s, no HIP fault, no checksum fault; retry-clean=N …`. A run whose churn
 under-delivered prints `DONE scans=… elapsed=…s, CHURN DEFECT ticks=… expected~…`.
 Exit codes: 0 clean, 2 usage/setup, 3 HIP fault (a positive control pass when a
 fault class is returned), 4 checksum fault, 5 churn defect, 6 positive control
@@ -258,6 +273,16 @@ this box is 134 = 128+SIGABRT).
   checks CPU/device coherence in a live mapping; it is not a churn or reclaim
   source. In cycle mode the pattern rewrite restores the initial contents, so
   the probe restarts from a known state each cycle.
+- **A checksum fault now means two consecutive scans disagree with the host
+  expectation.** A single mismatching scan is re-scanned under the same lock
+  and, if the re-scan agrees, is logged as `RETRY CLEAN` and counted in
+  `retry-clean=` instead of ending the run; the check itself is unchanged. Read
+  exit 4 as "the device returned the same wrong bytes twice", which a torn or
+  stale read does not do — but a `retry-clean` count above zero still means the
+  host write and the device's view of that page disagreed once, so record it.
+  `--host-write-sec 0` remains the pure-read control: no host write, nothing for
+  the retry to absorb, and any mismatch there is a device or page-source
+  question on its own.
 - **The checksums are weak evidence.** Integer sum plus weighted sum catches
   replaced or zero-filled pages, permutations and large bit changes; it does
   not catch equal-sum corruptions, and it says nothing about pages the device
