@@ -8,7 +8,11 @@ pre-boot state a gate:
 
   * MemAvailable >= 15 GiB (pre-boot only; during a leg the memory sampler records);
   * total non-engine RSS <= 8 GiB, AND no single non-engine process above 2 GiB left
-    unresolved (five 1.9 GiB stragglers must not pass one-per-process checks);
+    unresolved (five 1.9 GiB stragglers must not pass one-per-process checks). This SUM gate is
+    the one gate the operator may waive per invocation (--waive-nonengine or
+    PREREQ0_WAIVE_NONENGINE=1) when the box is running the operator's normal desktop; the waiver
+    is recorded in the snapshot with who gave it and the reading, and every other gate stays
+    fail-closed;
   * no non-pinned process above ~50 % of a core on the stage cores 3,5,7,9,11,13,15;
   * loadavg recorded;
   * no stratum serving process alive (the gate is PRE-BOOT: prod is stopped);
@@ -142,15 +146,42 @@ def temp_core_snapshot():
 # filesystem the leg caches are written to and stays measured in both states.
 PREBOOT_GATES = ("memory", "nonengine_rss", "single_process", "stage_cores")
 
+# The one waivable gate. The operator's normal desktop (browser, editor, Hindsight, agent host)
+# is the box's idle baseline for a window and yields ~12.5-13.3 GiB of non-engine RSS; the sum
+# gate therefore refuses a box that is otherwise idle. The waiver is per invocation, applies to
+# the SUM only, and is written into the snapshot instead of being silently dropped.
+WAIVER = {
+    "gate": "nonengine_rss",
+    "by": "operator",
+    "directive": "operator directive 2026-11-23: the ~12.5-13.3 GiB of non-engine RSS (browser, "
+                 "editor, Hindsight, agent host) is normal desktop usage and is waived as the "
+                 "idle baseline for the window",
+    "journal": "journal/port-ab-harness-prep-2026-11-23.md (section 'Window W1 open "
+               "(2026-11-23 21:1x)')",
+    "scope": "the non-engine RSS SUM gate only; MemAvailable, per-process >= 2 GiB, stage-core "
+             "load, serving-process and disk gates still fail closed",
+    "flag": "--waive-nonengine / PREREQ0_WAIVE_NONENGINE=1",
+}
 
-def gate_verdict(avail_kib, other_mib, others, cores, serving, free_gib):
+
+def env_waiver():
+    """PREREQ0_WAIVE_NONENGINE=1 (also true/yes/on) as the flag's default."""
+    return os.environ.get("PREREQ0_WAIVE_NONENGINE", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def gate_verdict(avail_kib, other_mib, others, cores, serving, free_gib, waive_nonengine=None):
     """The prerequisite-0 failures, split from the probes so the prod-up state is testable.
 
     Two states, one refusal: with serving processes alive the only failure is 'stop prod
     first' (the gate is PRE-BOOT), the four RAM/CPU gates are skipped instead of appending
     FAIL lines about a box that is currently serving, and the exit code is unchanged (1).
+
+    One waivable gate, per invocation: when the non-engine RSS SUM exceeds its limit and
+    waive_nonengine is set (the WAIVER record), that failure moves to 'waived' -- it is not
+    dropped, it is reported with the reading and the operator who waived it. Every other gate
+    still appends to 'failures' and still refuses. The prod-up state waives nothing.
     """
-    failures, evaluated, skipped = [], [], []
+    failures, evaluated, skipped, waived = [], [], [], []
     if serving:
         failures.append("serving processes alive (" + ", ".join(str(p["pid"]) for p in serving)
                         + "): the gate is PRE-BOOT, stop prod first")
@@ -161,8 +192,14 @@ def gate_verdict(avail_kib, other_mib, others, cores, serving, free_gib):
             failures.append("MemAvailable " + str(round(avail_kib / GIB, 1)) + " GiB < "
                             + str(C.PREREQ0["mem_available_gib_min"]) + " GiB")
         if other_mib > C.PREREQ0["nonengine_rss_gib_max"] * MIB:
-            failures.append("non-engine RSS " + str(round(other_mib / MIB, 2)) + " GiB > "
-                            + str(C.PREREQ0["nonengine_rss_gib_max"]) + " GiB")
+            reading = ("non-engine RSS " + str(round(other_mib / MIB, 2)) + " GiB > "
+                       + str(C.PREREQ0["nonengine_rss_gib_max"]) + " GiB")
+            if waive_nonengine:
+                waived.append({**waive_nonengine, "reading": reading,
+                               "nonengine_gib": round(other_mib / MIB, 2),
+                               "gate_max_gib": C.PREREQ0["nonengine_rss_gib_max"]})
+            else:
+                failures.append(reading)
         big = sorted((p for p in others
                       if p["rss_mib"] >= C.PREREQ0["single_process_rss_gib_warn"] * 1024),
                      key=lambda p: -p["rss_mib"])[:10]
@@ -181,7 +218,17 @@ def gate_verdict(avail_kib, other_mib, others, cores, serving, free_gib):
                             + str(C.PREREQ0["cache_free_gib_min"]) + " GiB (disk, not RAM)")
     else:
         skipped.append("disk")
-    return {"failures": failures, "evaluated": evaluated, "skipped": skipped}
+    return {"failures": failures, "evaluated": evaluated, "skipped": skipped, "waived": waived}
+
+
+def verdict_label(failures, waived):
+    """OPEN, OPEN with the waived gate(s) named, or REFUSED. Any failure refuses, always."""
+    if failures:
+        return "REFUSED"
+    if waived:
+        return ("OPEN (WAIVED: " + ", ".join(str(w.get("gate") or "unknown") for w in waived)
+                + " by operator)")
+    return "OPEN"
 
 
 def selftest():
@@ -215,9 +262,41 @@ def selftest():
     assert len(prod_up["failures"]) == 1 and "stop prod first" in prod_up["failures"][0], prod_up
     assert prod_up["skipped"] == list(PREBOOT_GATES), prod_up
     assert prod_up["evaluated"] == ["disk"], prod_up
+    assert prod_up["waived"] == [], prod_up
+
+    # The waived sum gate: the operator's desktop as the idle baseline. 13,300 MiB is the
+    # reading recorded at 21:23; the waiver names the reading and the operator, and exits 0.
+    desktop_mib = 13300
+    over = gate_verdict(40 * GIB, desktop_mib, procs, {"hot": []}, [], 100.0)
+    assert len(over["failures"]) == 1 and "non-engine RSS" in over["failures"][0], over
+    assert over["waived"] == [] and verdict_label(over["failures"], over["waived"]) == "REFUSED"
+    waived = gate_verdict(40 * GIB, desktop_mib, procs, {"hot": []}, [], 100.0,
+                          waive_nonengine=WAIVER)
+    assert waived["failures"] == [], waived
+    assert len(waived["waived"]) == 1, waived
+    entry = waived["waived"][0]
+    assert entry["gate"] == "nonengine_rss" and entry["by"] == "operator", entry
+    assert entry["nonengine_gib"] == round(desktop_mib / MIB, 2), entry
+    assert entry["gate_max_gib"] == C.PREREQ0["nonengine_rss_gib_max"], entry
+    assert "non-engine RSS" in entry["reading"], entry
+    assert "journal/port-ab-harness-prep-2026-11-23.md" in entry["journal"], entry
+    assert verdict_label(waived["failures"], waived["waived"]) == "OPEN (WAIVED: nonengine_rss by operator)"
+    # ... and the waiver covers nothing else: memory, the stage cores and the disk still refuse
+    still = gate_verdict(10 * GIB, desktop_mib, procs, {"hot": hot}, [], 30.0,
+                         waive_nonengine=WAIVER)
+    assert len(still["failures"]) == 3, still
+    assert all("non-engine RSS" not in f for f in still["failures"]), still
+    assert len(still["waived"]) == 1, still
+    assert verdict_label(still["failures"], still["waived"]) == "REFUSED", still
+    # the prod-up state waives nothing: the gate is not evaluated there at all
+    prod_up_w = gate_verdict(10 * GIB, desktop_mib, procs, {"hot": hot}, serving, 100.0,
+                             waive_nonengine=WAIVER)
+    assert prod_up_w["waived"] == [] and len(prod_up_w["failures"]) == 1, prod_up_w
     print("selftest OK: engine stage threads pass, hot intruders flagged, low load ignored; "
           "clean pre-boot passes, a starved one fails on memory, and a prod-up box refuses only "
-          "with 'stop prod first' (RAM/CPU gates not evaluated)")
+          "with 'stop prod first' (RAM/CPU gates not evaluated); the non-engine RSS sum refuses "
+          "unwaived, is WAIVED (operator, reading + journal recorded) per invocation, and memory, "
+          "stage-core, disk and prod-up still refuse with the waiver set")
 
 
 
@@ -229,10 +308,17 @@ def main() -> int:
     ap.add_argument("--cache-dir", help="filesystem the leg cache dirs live on (default: --out)")
     ap.add_argument("--json", action="store_true", help="print the snapshot JSON only")
     ap.add_argument("--selftest", action="store_true", help="exercise the stage-core rule, no ps")
+    ap.add_argument("--waive-nonengine", action="store_true", default=env_waiver(),
+                    help="waive the non-engine RSS SUM gate only, for this invocation "
+                         "(default: PREREQ0_WAIVE_NONENGINE=1). The reading, the operator and the "
+                         "journal are recorded in the snapshot; every other gate still refuses")
+    ap.add_argument("--no-waive-nonengine", dest="waive_nonengine", action="store_false",
+                    help="force the sum gate back on even when PREREQ0_WAIVE_NONENGINE is set")
     a = ap.parse_args()
     if a.selftest:
         selftest()
         return 0
+    waive = dict(WAIVER) if a.waive_nonengine else None
 
     mi = meminfo()                      # /proc/meminfo values are KiB
     avail_kib = mi.get("MemAvailable", 0)
@@ -256,13 +342,15 @@ def main() -> int:
     except OSError:
         free_gib = None
 
-    verdict = gate_verdict(avail_kib, other_mib, others, cores, serving, free_gib)
+    verdict = gate_verdict(avail_kib, other_mib, others, cores, serving, free_gib, waive)
     failures = verdict["failures"]
+    waived = verdict["waived"]
     prod_up = bool(serving)
     mem_gate = ("not evaluated (prod up)" if prod_up else
                 "gate >= " + str(C.PREREQ0["mem_available_gib_min"]))
     rss_gate = ("not evaluated (prod up)" if prod_up else
-                "gate <= " + str(C.PREREQ0["nonengine_rss_gib_max"]))
+                "gate <= " + str(C.PREREQ0["nonengine_rss_gib_max"])
+                + (" [WAIVED by operator: " + WAIVER["journal"] + "]" if waived else ""))
 
     snapshot = {
         "ts": time.time(), "iso": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -273,8 +361,10 @@ def main() -> int:
         "cpu": {"loadavg": loadavg, "threads_per_cpu": cores.get("threads_per_cpu"),
                 "hot_stage_core_threads": cores.get("hot"), "stage_cores": C.PREREQ0["stage_cores"]},
         "disk": {"probe": str(cache_probe), "free_gib": None if free_gib is None else round(free_gib, 1)},
-        "gates": {"evaluated": verdict["evaluated"], "not_evaluated": verdict["skipped"]},
-        "verdict": "OPEN" if not failures else "REFUSED",
+        "gates": {"evaluated": verdict["evaluated"], "not_evaluated": verdict["skipped"],
+                  "waived": [w["gate"] for w in waived]},
+        "waived": waived,
+        "verdict": verdict_label(failures, waived),
         "failures": failures,
     }
     if a.json:
@@ -299,6 +389,11 @@ def main() -> int:
         print("  serving     : " + (str(len(serving)) + " process(es) alive" if serving else "none (pre-boot OK)"))
         for f in failures:
             print("  FAIL: " + f)
+        for w in waived:
+            print("  WAIVED (" + w["by"] + "): " + w["reading"])
+            print("      directive: " + w["directive"])
+            print("      record   : " + w["journal"] + "  [" + w["flag"] + "]")
+            print("      scope    : " + w["scope"])
         print("VERDICT: " + snapshot["verdict"])
 
     if a.out:

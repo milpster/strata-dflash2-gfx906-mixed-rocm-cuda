@@ -241,3 +241,41 @@ Validation (CPU only, exit codes as run):
 
 Not done, on purpose: no boot, no leg, no measurement, no GPU, no `:8009` traffic, no push. The
 n=3 fallback remains one edit (`REPS`) away if the operator reverses the directive.
+
+
+## Prerequisite-0 waiver (2026-11-23, fixer lane, CPU only)
+
+The W1 boot was blocked at prerequisite 0: the only failing gate is the non-engine RSS sum
+(12.54 GiB at 21:12, 13.29 GiB at 21:23) while MemAvailable was ~48 GiB, no single non-engine
+process reached 2 GiB, no stage-core thread was hot and the disk was 61 GiB free. The operator
+has waived that reading as the idle baseline (see "Window W1 open" above), so the gate now has
+one explicit, per-invocation override instead of a manual bypass:
+
+* `port_ab_prereq0.py --waive-nonengine` (or `PREREQ0_WAIVE_NONENGINE=1`;
+  `--no-waive-nonengine` forces the gate back on) moves ONLY the non-engine RSS sum failure
+  into `waived` in the snapshot, with the reading, `by: operator`, the directive text and this
+  journal reference. The verdict becomes `OPEN (WAIVED: nonengine_rss by operator)` and the
+  exit code is 0. Every other failure (MemAvailable, per-process >= 2 GiB, stage cores,
+  serving processes, disk) still appends to `failures` and still exits 1; the prod-up state
+  waives nothing because those gates are not evaluated there.
+* `port_ab_boot.sh ... --waive-nonengine` (or the same env var) passes the flag to that one
+  prerequisite-0 call. Nothing is global: a later invocation without it refuses again, and the
+  printed output always shows the actual reading.
+* The manifest was re-pinned deliberately (`port_ab_prepare.py --prepare`): only the two
+  harness script shas, `prepared_at` and `git_head_at_prepare` changed; `--verify` is OK and
+  no arm, corpus, config or budget value moved.
+
+Validation (CPU only; no boot, no leg, no GPU, no `:8009`, no push):
+
+| Check | Command | Result |
+|---|---|---|
+| python syntax | `py_compile port_ab_prereq0.py` | 0 |
+| prereq-0 selftest (unwaived refusal, waived pass, memory/stage-core/disk/prod-up still refuse) | `port_ab_prereq0.py --selftest` | 0 |
+| shell syntax | `bash -n port_ab_boot.sh` | 0 |
+| live gate with the waiver | `port_ab_prereq0.py --out out/port-ab-20261123 --cache-dir out/port-ab-20261123 --waive-nonengine` | 0, `OPEN (WAIVED: nonengine_rss by operator)`, snapshot `prereq0-20261123-212629.json` (12.53 GiB reading) |
+| live gate on a 31 GiB filesystem with the waiver set | same, `--cache-dir /tmp/opencode/prereq0-check` | 1, refused on the disk gate (waiver covers the sum only) |
+| manifest | `port_ab_prepare.py --verify` | 0 (OK) |
+
+One reading printed by the live run is worth keeping: the `/tmp` probe refused at 31 GiB free
+while the sum gate was waived, which is the intended shape - the waiver is one gate, not a
+blanket pass.

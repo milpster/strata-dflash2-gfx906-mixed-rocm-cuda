@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# port_ab_boot.sh WINDOW ARM BOOT REP [--server-arm A|B] - boot ONE Phase-2 boot's pair.
+# port_ab_boot.sh WINDOW ARM BOOT REP [--server-arm A|B] [--waive-nonengine]
+#   - boot ONE Phase-2 boot's pair.
 #
 # The measurement boots are the operator's; this script exists because the prod launchers
 # hardcode the prod sockets, state file and port, while the contract requires trial sockets
@@ -13,6 +14,10 @@
 # Refuses, loudly, when: the derived config is not byte-identical to the frozen manifest pin;
 # an engine/helper sha left the manifest; prerequisite 0 fails; a prod pair or this boot's
 # predecessor looks live; the boot's sockets exist; the port is taken.
+#
+# --waive-nonengine (or PREREQ0_WAIVE_NONENGINE=1) waives prerequisite 0's non-engine RSS SUM
+# gate for THIS invocation only, recording WAIVED (operator) in the snapshot; it cannot waive
+# memory, per-process, stage-core, serving or disk.
 #
 # Does NOT fire a leg and does NOT stop itself: legs are fired by port_ab_legs.py --run,
 # stopping is port_ab_stop.sh (stop and boot are separate invocations).
@@ -84,12 +89,21 @@ BOOT=${3:?usage: port_ab_boot.sh WINDOW ARM BOOT REP [--server-arm A|B]}
 REP=${4:?usage: port_ab_boot.sh WINDOW ARM BOOT REP [--server-arm A|B]}
 shift 4
 SERVER_ARM=$ARM
+WAIVE_NONENGINE=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --server-arm) SERVER_ARM=${2:?--server-arm needs A or B}; shift 2 ;;
+    --waive-nonengine) WAIVE_NONENGINE=1; shift ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
+# prerequisite 0's non-engine RSS SUM gate is waived only when this invocation asks for it
+# (--waive-nonengine here, or PREREQ0_WAIVE_NONENGINE=1 in the caller's environment). The
+# operator directive and its journal record live in port_ab_prereq0.WAIVER; every other gate
+# still refuses the boot.
+case "${PREREQ0_WAIVE_NONENGINE:-}" in
+  1|true|TRUE|yes|on) WAIVE_NONENGINE=1 ;;
+esac
 [[ $ARM == A || $ARM == B ]] || { echo "bad ARM $ARM" >&2; exit 2; }
 [[ $SERVER_ARM == A || $SERVER_ARM == B ]] || { echo "bad --server-arm $SERVER_ARM" >&2; exit 2; }
 OUT=${PORT_AB_OUT:-$HERE/out/port-ab-20261123}
@@ -97,9 +111,18 @@ KEY="$WINDOW-$ARM-$BOOT-r$REP"
 PLAN="$OUT/run/$KEY.env"
 mkdir -p "$OUT/run" "$OUT/logs" "$OUT/boots"
 
-# prerequisite 0 (pre-boot, engine down). Refuses the boot; never overridable.
-"$PY" "$HERE/port_ab_prereq0.py" --out "$OUT" --cache-dir "$OUT" || {
-  echo "REFUSING: prerequisite 0 failed (see above). The gate is pre-boot and not overridable." >&2; exit 1; }
+# prerequisite 0 (pre-boot, engine down). Refuses the boot. The ONE overridable gate is the
+# non-engine RSS sum, and only per invocation with --waive-nonengine or
+# PREREQ0_WAIVE_NONENGINE=1: the snapshot then records WAIVED (operator) with the reading and
+# the journal, and the call still exits 0 only if every other gate passed. Memory, per-process,
+# stage-core, serving-process and disk gates have no override.
+PREREQ0_ARGS=(--out "$OUT" --cache-dir "$OUT")
+[[ $WAIVE_NONENGINE == "1" ]] && PREREQ0_ARGS+=(--waive-nonengine)
+"$PY" "$HERE/port_ab_prereq0.py" "${PREREQ0_ARGS[@]}" || {
+  echo "REFUSING: prerequisite 0 failed (see above). Only the non-engine RSS sum gate is" >&2
+  echo "          waivable, and only per invocation (--waive-nonengine / PREREQ0_WAIVE_NONENGINE=1);" >&2
+  echo "          memory, per-process, stage-core, serving and disk gates always refuse." >&2
+  exit 1; }
 
 # no prod pair may be live
 for st in "$ROOT"/run/prod*-supervisor.json; do

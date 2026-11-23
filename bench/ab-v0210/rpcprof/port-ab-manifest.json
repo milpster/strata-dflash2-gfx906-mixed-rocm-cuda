@@ -1919,16 +1919,16 @@
   }
  },
  "git_branch": "recovery-startup-watchdog",
- "git_head_at_prepare": "c5fdb0ff02797eb9988b055507de0ec78c5a01e2",
+ "git_head_at_prepare": "81e34c065ff706b668bf40787036515a5c8949b2",
  "harness_script_shas": {
-  "port_ab_boot.sh": "938dc5e428483af0731db3b2321fb41a0bd511ce611b0506021096748559d204",
+  "port_ab_boot.sh": "80b4848e3e6142abf65a315007a67f45f84f252537af7d0b51500aea6fb66e13",
   "port_ab_boot_plan.py": "e17befa8c8c7c42b0bc85e90001fe772e1ba1970779bbcce847f7c294a75b25a",
   "port_ab_configs.py": "5b72653b69be523b7fdab28ed93ff46b777e56c39237e010f1845857e5fee289",
   "port_ab_contract.py": "e801f2ac876c556d8bf8d88453207019e9be328d81d4c138925ffa9155cecea6",
   "port_ab_legs.py": "103ada991841260fc62994494c5ff569aee2d3b67945f4ef677820e2e33c2a92",
   "port_ab_preflight.py": "3d8b4bafcafb5cd75ed932a8161dd7f5758141fbc5d3943c2cddbcc43253d90b",
   "port_ab_prepare.py": "749fcc4ef17e0c1bda6849e773e91046a1671e6b5092353fcde327a9209906ef",
-  "port_ab_prereq0.py": "075e7080b628a746c2fbc35d389378324db98b063d0058760099c6ae413704d5",
+  "port_ab_prereq0.py": "d147d876a94aaf6395e6883f1a9f07faecd11680a38d5eea1f12912ae58c875c",
   "port_ab_stop.sh": "e490afbc386f12b32e37cc3cabbb20771147bd41d48b1bd3eb4fc1d7f359317f",
   "port_ab_ttft.py": "8dd1de272cb193145439743d82cbac5610a439f6eb1e024f6202dcdf1bad206b"
  },
@@ -2203,7 +2203,7 @@
    "resolution": "per-engine configs (A without the flag, B with '0'); both cross cells then boot, and 'no spill' holds in both"
   }
  },
- "prepared_at": "2026-11-23T21:20:14",
+ "prepared_at": "2026-11-23T21:26:44",
  "prerequisite0": {
   "cache_free_gib_min": 40,
   "command": "python3 bench/ab-v0210/rpcprof/port_ab_prereq0.py --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123",
