@@ -1,0 +1,457 @@
+{
+ "base": "prod-config-port0218.json",
+ "base_sha256": "0068f4bb0dd38d7b4c66235d3c94806f68ca7c9ab88814ef9def595ee8e38cf1",
+ "leg_note": "harness: the rig's own paths, identical for every leg (log, port, the two helper sockets, the per-leg cache dir) plus the base's provenance keys",
+ "legs": {
+  "dflash-off": {
+   "absent": [
+    "^dflash: /mnt/srcds/dflash2/artifacts/",
+    "--dflash\\s+/mnt/srcds/dflash2"
+   ],
+   "cannot_exclude": "the drafter as a rate amplifier: without it decode is slower, so the same wall time is a smaller exposure (record requests/tokens); and the verify window still runs (spec 5), so the window's own kernel path stays",
+   "diff_from_base": {
+    "args/--conversation-cache-dir": [
+     "/mnt/srcds/Strata/run/prod-port0218-cache",
+     "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/faultdiff-r1/cache/dflash-off"
+    ],
+    "args/--dflash": [
+     "/mnt/srcds/dflash2/artifacts/inco-dflash2-q4_0.gguf",
+     "<absent>"
+    ],
+    "args/--dflash-block": [
+     "7",
+     "<absent>"
+    ],
+    "derived_from": [
+     "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/trial-managed-pool-38g-230k.json",
+     "<absent>"
+    ],
+    "derived_note": [
+     "port-0218 test-window base on :8019: the champion measurement config with the engine, cwd, sockets, log and conversation-cache-dir repointed at the port tree, and --conversation-spill-mib 0 added (upstream spill tier off; the fork DISK tier under --conversation-cache-dir is this rig's only disk tier). Boots are the operator's, never the fixer's.",
+     "<absent>"
+    ],
+    "expert_helper_socket": [
+     "/mnt/srcds/Strata/run/prod-iq3xxs-ud-mixed.sock",
+     "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/faultdiff-r1/run/fd-dflash-off.sock"
+    ],
+    "expert_helper_socket2": [
+     "/mnt/srcds/Strata/run/prod-iq3xxs-ud-mixed2.sock",
+     "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/faultdiff-r1/run/fd-dflash-off-2.sock"
+    ],
+    "log": [
+     "/mnt/srcds/Strata/logs/engine-prod-port0218.log",
+     "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/faultdiff-r1/logs/dflash-off.engine.log"
+    ],
+    "managed_budget_mib": [
+     "40960",
+     "<absent>"
+    ],
+    "port": [
+     "8009",
+     "8019"
+    ],
+    "trial_note": [
+     "<base note>",
+     "<leg note>"
+    ]
+   },
+   "file": "dflash-off.json",
+   "narrows": "the DFlash drafter's own path: its artifact, its draft passes, the target-layer tap collection across the layer split, and the drafter's DMA reads",
+   "observe": [
+    "no 'dflash:' artifact line: no drafter was loaded and no tap collector ran",
+    "the engine-started argv echo carries --spec 5 and no --dflash/--dflash-block",
+    "the judge line's 'drafts accepted' reads 0 of 0 over the leg (or the prompt-lookup count, which the leg records - never assumed)"
+   ],
+   "present": [
+    "engine started: .*--spec 5 "
+   ],
+   "purpose": "Is the DFlash drafter (and its cross-GPU tap collector) necessary? (drafter removed; --spec 0 is refused, see README)",
+   "sha256": "744c3072c848d63f02b685d70e8027c265bc6ca9d372a971c3fad2b8274295ae"
+  },
+  "park-on-no-evict": {
+   "absent": [
+    "conversation cache: file page-cache release ON"
+   ],
+   "cannot_exclude": "page-cache pressure as a general factor: without the release the parked file's pages stay cached (a different memory shape - less free RAM, more Cached), so 'no fault' and 'fault' both carry that confound",
+   "diff_from_base": {
+    "args/--conversation-cache-dir": [
+     "/mnt/srcds/Strata/run/prod-port0218-cache",
+     "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/faultdiff-r1/cache/park-on-no-evict"
+    ],
+    "args/--conversation-cache-evict-page-cache": [
+     "<flag>",
+     "<absent>"
+    ],
+    "derived_from": [
+     "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/trial-managed-pool-38g-230k.json",
+     "<absent>"
+    ],
+    "derived_note": [
+     "port-0218 test-window base on :8019: the champion measurement config with the engine, cwd, sockets, log and conversation-cache-dir repointed at the port tree, and --conversation-spill-mib 0 added (upstream spill tier off; the fork DISK tier under --conversation-cache-dir is this rig's only disk tier). Boots are the operator's, never the fixer's.",
+     "<absent>"
+    ],
+    "expert_helper_socket": [
+     "/mnt/srcds/Strata/run/prod-iq3xxs-ud-mixed.sock",
+     "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/faultdiff-r1/run/fd-park-on-no-evict.sock"
+    ],
+    "expert_helper_socket2": [
+     "/mnt/srcds/Strata/run/prod-iq3xxs-ud-mixed2.sock",
+     "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/faultdiff-r1/run/fd-park-on-no-evict-2.sock"
+    ],
+    "log": [
+     "/mnt/srcds/Strata/logs/engine-prod-port0218.log",
+     "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/faultdiff-r1/logs/park-on-no-evict.engine.log"
+    ],
+    "managed_budget_mib": [
+     "40960",
+     "<absent>"
+    ],
+    "port": [
+     "8009",
+     "8019"
+    ],
+    "trial_note": [
+     "<base note>",
+     "<leg note>"
+    ]
+   },
+   "file": "park-on-no-evict.json",
+   "narrows": "the page-cache release (posix_fadvise DONTNEED on park writes, restore reads and ring sidecars) as a precondition, with parking and the disk tier otherwise intact",
+   "observe": [
+    "'pages-released=0 (0 MiB released)' on every disk park line (base reads >0)",
+    "Cached/MemAvailable shape while parked (the pages are not handed back)"
+   ],
+   "present": [
+    "conversation cache: disk tier ON at ",
+    "conversation cache: RAM ceiling 512 MiB"
+   ],
+   "purpose": "Does the fadvise of the disk tier's own file pages matter? (base minus ONLY --conversation-cache-evict-page-cache)",
+   "sha256": "0985e7effddbd759512b1e7479e37e9dc89e0edd2bef89a84f016f6346576825"
+  },
+  "parking-off": {
+   "absent": [
+    "conversation cache: file page-cache release ON",
+    "conversation cache: disk tier ON",
+    "conversation cache: parked",
+    "disk park streamed",
+    "--conversation-cache-dir"
+   ],
+   "cannot_exclude": "parking as a trigger: with the path off the engine also stops switching conversations (a parked conversation is never restored, and a switch re-prefills the whole prompt), so the leg's load stays on ONE conversation and its prefill/decode shares differ from the base; a clean leg means 'needs the park path', and a faulting leg still leaves read-only serving, the helper's DMA and the platform open",
+   "diff_from_base": {
+    "args/--conversation-cache-dir": [
+     "/mnt/srcds/Strata/run/prod-port0218-cache",
+     "<absent>"
+    ],
+    "args/--conversation-cache-disk-idle-save": [
+     "<flag>",
+     "<absent>"
+    ],
+    "args/--conversation-cache-mib": [
+     "4096",
+     "0"
+    ],
+    "derived_from": [
+     "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/trial-managed-pool-38g-230k.json",
+     "<absent>"
+    ],
+    "derived_note": [
+     "port-0218 test-window base on :8019: the champion measurement config with the engine, cwd, sockets, log and conversation-cache-dir repointed at the port tree, and --conversation-spill-mib 0 added (upstream spill tier off; the fork DISK tier under --conversation-cache-dir is this rig's only disk tier). Boots are the operator's, never the fixer's.",
+     "<absent>"
+    ],
+    "expert_helper_socket": [
+     "/mnt/srcds/Strata/run/prod-iq3xxs-ud-mixed.sock",
+     "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/faultdiff-r1/run/fd-parking-off.sock"
+    ],
+    "expert_helper_socket2": [
+     "/mnt/srcds/Strata/run/prod-iq3xxs-ud-mixed2.sock",
+     "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/faultdiff-r1/run/fd-parking-off-2.sock"
+    ],
+    "log": [
+     "/mnt/srcds/Strata/logs/engine-prod-port0218.log",
+     "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/faultdiff-r1/logs/parking-off.engine.log"
+    ],
+    "managed_budget_mib": [
+     "40960",
+     "<absent>"
+    ],
+    "port": [
+     "8009",
+     "8019"
+    ],
+    "trial_note": [
+     "<base note>",
+     "<leg note>"
+    ]
+   },
+   "file": "parking-off.json",
+   "narrows": "the whole park/restore path (host snapshot, disk park stream, the fadvise of a parked file, restore re-registration) as a precondition",
+   "observe": [
+    "no 'parked' and no 'disk park streamed' line over the whole leg: the park path never ran (park_current returns at once when neither tier is on)",
+    "the engine-started argv echo carries --conversation-cache-mib 0 and no --conversation-cache-dir (the tier is off, not merely unused)"
+   ],
+   "present": [
+    "engine started: .*--conversation-cache-mib 0 --"
+   ],
+   "purpose": "Is the park path necessary for the fault? (parking truly OFF: mib 0, no dir, no idle-save)",
+   "sha256": "624a062bdf3a65e51336202e752a5c40d5a1cb7f5328c14f27ed5d6e9e866d5d"
+  },
+  "single-card-0": {
+   "absent": [
+    "layer split across GPUs",
+    "layer split: CUDA1"
+   ],
+   "cannot_exclude": "the slot/board: card 0 is a different physical card and a different PCIe slot, so a fault here moves the question to that card, it does not exonerate the hardware class",
+   "diff_from_base": {
+    "args/--conversation-cache-dir": [
+     "/mnt/srcds/Strata/run/prod-port0218-cache",
+     "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/faultdiff-r1/cache/single-card-0"
+    ],
+    "args/--gpu": [
+     "0,1",
+     "0"
+    ],
+    "derived_from": [
+     "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/trial-managed-pool-38g-230k.json",
+     "<absent>"
+    ],
+    "derived_note": [
+     "port-0218 test-window base on :8019: the champion measurement config with the engine, cwd, sockets, log and conversation-cache-dir repointed at the port tree, and --conversation-spill-mib 0 added (upstream spill tier off; the fork DISK tier under --conversation-cache-dir is this rig's only disk tier). Boots are the operator's, never the fixer's.",
+     "<absent>"
+    ],
+    "expert_helper_socket": [
+     "/mnt/srcds/Strata/run/prod-iq3xxs-ud-mixed.sock",
+     "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/faultdiff-r1/run/fd-single-card-0.sock"
+    ],
+    "expert_helper_socket2": [
+     "/mnt/srcds/Strata/run/prod-iq3xxs-ud-mixed2.sock",
+     "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/faultdiff-r1/run/fd-single-card-0-2.sock"
+    ],
+    "gpu": [
+     "[0, 1]",
+     "[0]"
+    ],
+    "log": [
+     "/mnt/srcds/Strata/logs/engine-prod-port0218.log",
+     "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/faultdiff-r1/logs/single-card-0.engine.log"
+    ],
+    "managed_budget_mib": [
+     "40960",
+     "<absent>"
+    ],
+    "port": [
+     "8009",
+     "8019"
+    ],
+    "trial_note": [
+     "<base note>",
+     "<leg note>"
+    ]
+   },
+   "file": "single-card-0.json",
+   "narrows": "the split itself (two cards, cross-card traffic) as a precondition; with single-card-1 it separates 'the tuple' from 'this card'",
+   "observe": [
+    "no layer-split line: one card, one stage",
+    "foresight swap reports 1 card and card0:<slots> (the 2,8 list truncates to its first entry: STRATA_FS_SLOTS is per card, env kept identical on purpose)"
+   ],
+   "present": [
+    "engine started: .*--gpu 0 ",
+    "foresight swap: .* on 1 card\\(s\\)",
+    "expert-helper proxy: \\d+ experts on "
+   ],
+   "purpose": "Card/slot split, control: the whole engine on GPU 0 (0000:04:00.0), the card the fault is NOT logged on",
+   "sha256": "c8b8c33be5b7f1db1779721a6b32c5837b055e1ca29a7b0daca2fdf5d0fcae12"
+  },
+  "single-card-1": {
+   "absent": [
+    "layer split across GPUs",
+    "layer split: CUDA1"
+   ],
+   "cannot_exclude": "VRAM/occupancy differences: one card holds every layer, so the expert cache, the KV residency and the page shape all differ from the base (the boot lines are recorded for exactly this)",
+   "diff_from_base": {
+    "args/--conversation-cache-dir": [
+     "/mnt/srcds/Strata/run/prod-port0218-cache",
+     "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/faultdiff-r1/cache/single-card-1"
+    ],
+    "args/--gpu": [
+     "0,1",
+     "1"
+    ],
+    "derived_from": [
+     "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/trial-managed-pool-38g-230k.json",
+     "<absent>"
+    ],
+    "derived_note": [
+     "port-0218 test-window base on :8019: the champion measurement config with the engine, cwd, sockets, log and conversation-cache-dir repointed at the port tree, and --conversation-spill-mib 0 added (upstream spill tier off; the fork DISK tier under --conversation-cache-dir is this rig's only disk tier). Boots are the operator's, never the fixer's.",
+     "<absent>"
+    ],
+    "expert_helper_socket": [
+     "/mnt/srcds/Strata/run/prod-iq3xxs-ud-mixed.sock",
+     "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/faultdiff-r1/run/fd-single-card-1.sock"
+    ],
+    "expert_helper_socket2": [
+     "/mnt/srcds/Strata/run/prod-iq3xxs-ud-mixed2.sock",
+     "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/faultdiff-r1/run/fd-single-card-1-2.sock"
+    ],
+    "gpu": [
+     "[0, 1]",
+     "[1]"
+    ],
+    "log": [
+     "/mnt/srcds/Strata/logs/engine-prod-port0218.log",
+     "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/faultdiff-r1/logs/single-card-1.engine.log"
+    ],
+    "managed_budget_mib": [
+     "40960",
+     "<absent>"
+    ],
+    "port": [
+     "8009",
+     "8019"
+    ],
+    "trial_note": [
+     "<base note>",
+     "<leg note>"
+    ]
+   },
+   "file": "single-card-1.json",
+   "narrows": "card 1 alone: if the fault continues here with no second card and no split, the remaining candidate set is this card's own path",
+   "observe": [
+    "the fault's card/vmid in the kernel slice is still card 1 (0000:09:00.0)",
+    "boot lines: expert cache slots, VRAM free, foresight slots (one card's numbers)"
+   ],
+   "present": [
+    "engine started: .*--gpu 1 ",
+    "foresight swap: .* on 1 card\\(s\\)",
+    "expert-helper proxy: \\d+ experts on "
+   ],
+   "purpose": "Card/slot split, the suspect: the whole engine on GPU 1 (0000:09:00.0), the card the fault is logged on",
+   "sha256": "eb0ac6519bdb476a5c00afd57d22839fb7211f8e783e33762136f1d24cabd409"
+  },
+  "xnack-0": {
+   "absent": [],
+   "cannot_exclude": "whether unset already meant off on this runtime (record both legs; the base's unset state is the third data point)",
+   "diff_from_base": {
+    "args/--conversation-cache-dir": [
+     "/mnt/srcds/Strata/run/prod-port0218-cache",
+     "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/faultdiff-r1/cache/xnack-0"
+    ],
+    "derived_from": [
+     "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/trial-managed-pool-38g-230k.json",
+     "<absent>"
+    ],
+    "derived_note": [
+     "port-0218 test-window base on :8019: the champion measurement config with the engine, cwd, sockets, log and conversation-cache-dir repointed at the port tree, and --conversation-spill-mib 0 added (upstream spill tier off; the fork DISK tier under --conversation-cache-dir is this rig's only disk tier). Boots are the operator's, never the fixer's.",
+     "<absent>"
+    ],
+    "env/HSA_XNACK": [
+     "<absent>",
+     "0"
+    ],
+    "expert_helper_socket": [
+     "/mnt/srcds/Strata/run/prod-iq3xxs-ud-mixed.sock",
+     "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/faultdiff-r1/run/fd-xnack-0.sock"
+    ],
+    "expert_helper_socket2": [
+     "/mnt/srcds/Strata/run/prod-iq3xxs-ud-mixed2.sock",
+     "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/faultdiff-r1/run/fd-xnack-0-2.sock"
+    ],
+    "log": [
+     "/mnt/srcds/Strata/logs/engine-prod-port0218.log",
+     "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/faultdiff-r1/logs/xnack-0.engine.log"
+    ],
+    "managed_budget_mib": [
+     "40960",
+     "<absent>"
+    ],
+    "port": [
+     "8009",
+     "8019"
+    ],
+    "trial_note": [
+     "<base note>",
+     "<leg note>"
+    ]
+   },
+   "file": "xnack-0.json",
+   "narrows": "the same split from the other side: with xnack explicitly off, a permission fault has no retry path",
+   "observe": [
+    "exit code and signal of the engine on a fault (killed vs error return)",
+    "the kernel slice's fault class, compared with xnack-1 at matched exposure"
+   ],
+   "present": [
+    "engine started: ",
+    "expert-helper proxy: \\d+ experts on "
+   ],
+   "purpose": "Survivability split: HSA_XNACK=0 (explicitly off; the base leaves it unset)",
+   "sha256": "b83798483c63322980c8ddcb06c62c529a88920ff4818329377e2770c871025e"
+  },
+  "xnack-1": {
+   "absent": [],
+   "cannot_exclude": "anything about the access pattern: xnack changes what the platform does AFTER a bad access, never which access is bad",
+   "diff_from_base": {
+    "args/--conversation-cache-dir": [
+     "/mnt/srcds/Strata/run/prod-port0218-cache",
+     "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/faultdiff-r1/cache/xnack-1"
+    ],
+    "derived_from": [
+     "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/trial-managed-pool-38g-230k.json",
+     "<absent>"
+    ],
+    "derived_note": [
+     "port-0218 test-window base on :8019: the champion measurement config with the engine, cwd, sockets, log and conversation-cache-dir repointed at the port tree, and --conversation-spill-mib 0 added (upstream spill tier off; the fork DISK tier under --conversation-cache-dir is this rig's only disk tier). Boots are the operator's, never the fixer's.",
+     "<absent>"
+    ],
+    "env/HSA_XNACK": [
+     "<absent>",
+     "1"
+    ],
+    "expert_helper_socket": [
+     "/mnt/srcds/Strata/run/prod-iq3xxs-ud-mixed.sock",
+     "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/faultdiff-r1/run/fd-xnack-1.sock"
+    ],
+    "expert_helper_socket2": [
+     "/mnt/srcds/Strata/run/prod-iq3xxs-ud-mixed2.sock",
+     "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/faultdiff-r1/run/fd-xnack-1-2.sock"
+    ],
+    "log": [
+     "/mnt/srcds/Strata/logs/engine-prod-port0218.log",
+     "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/faultdiff-r1/logs/xnack-1.engine.log"
+    ],
+    "managed_budget_mib": [
+     "40960",
+     "<absent>"
+    ],
+    "port": [
+     "8009",
+     "8019"
+    ],
+    "trial_note": [
+     "<base note>",
+     "<leg note>"
+    ]
+   },
+   "file": "xnack-1.json",
+   "narrows": "the runtime's xnack setting as the difference between 'the kernel kills the process' and 'the fault is retried/handled'",
+   "observe": [
+    "the leg's survivability vs xnack-0 at matched exposure: fault raises, process dies, or the fault is retried and the request completes",
+    "the kernel slice's xnack/permission-fault lines for the same minutes"
+   ],
+   "present": [
+    "engine started: ",
+    "expert-helper proxy: \\d+ experts on "
+   ],
+   "purpose": "Survivability split: HSA_XNACK=1 (the runtime asks the kernel for xnack retry)",
+   "sha256": "5d93f3417fc44386c8da18b6de5a73db72c52f1d834ac1f9b4f475b6f6672ef6"
+  }
+ },
+ "out_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/faultdiff-r1",
+ "pins": {
+  "engine": "run/port0218-bin/rpcw-hip/strata",
+  "engine_sha256": "936efcc798aab3952551281f2f328c1b8b19311fee9d0298142e702809a58394",
+  "helper": "run/port0218-bin/rpcw-cuda/strata-expert-helper",
+  "helper_sha256": "58c3ae020a7479a13c622627544507f5b43f284f9be4b5222ac90c3421b88bb2",
+  "server_tree": "run/port0218-server"
+ },
+ "port": 8019,
+ "window": "faultdiff-r1"
+}
