@@ -1279,3 +1279,18 @@ Autonomous window under operator order. Results:
 - PROD RESTORED AND VERIFIED: fork pair via the launcher, health ~30 s, probe finish=stop "probe-ok".
 NEXT: a fresh fixer lane chases the port's first-window hang (reproducers: the qgate arm-P yardstick leg and
 the port-serve-first serving boot); the amdgpu/KFD SVM path gets its own stability investigation.
+
+## THE QUALITY GATE PASSES - the port is numerically identical to the fork (2026-11-23 04:55)
+
+The defect-chase lane diagnosed the night's "first-window defect" as the ARENA MODE: the fork arm ran the
+managed RAM pool (STRATA_RAM_BUDGET_MIB=36864, store open, no pin); the port arms ran the buffered arena with
+the whole-arena cudaHostRegister pin (46.8 GiB / 4480 ranges) - exactly the kernel path (svm_range_set_attr)
+the machine stalls on tonight. Config fix (one env line, no code change): the port's trial base and the arm
+configs now carry 36864. THE FIX WORKS: arm P completed its first window and scored all 5 segments.
+
+GATE VERDICT (fork REF 4b8251e9 vs port RUN 936efcc7, 4,995 teacher-forced positions + 20 full-vocab prompts):
+- top-1 100.00% (bar >=99) - KL mean 0.00000, p99 0.0000 (bars <=0.02/<=1.0) - PPL 3.924 = 3.924 (bar d<=0.5%)
+- full-vocab first logits: top-1 100%, KL mean 0.00964, median 0.00100, max 0.12926
+ALL OPERATOR BARS PASS WITH MAXIMUM MARGIN. The merged decode loop is numerically exact vs the fork. The lane's
+line-by-line comparison of the merged verify path (no lost wait/signal) is corroborated empirically.
+Remaining window legs: 240k+1024TG (both engines + the port helper's debut), park/restore, prod restore.
