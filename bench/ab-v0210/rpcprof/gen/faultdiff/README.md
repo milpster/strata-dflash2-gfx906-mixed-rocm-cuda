@@ -12,7 +12,8 @@ under serving load (`bench/gpu-fault-repro/README.md`).
   every config is derived from the base, every change is declared data, and `--check` fails closed
   when a file, a delta or the base drifts.
 - Runner: `../faultdiff_run.py` boots, watches, loads and stops one leg through the prod launcher's
-  own sequence on the trial port 8019. Nothing in this directory was hand-edited or booted while it
+  own sequence on the prod port 8009 (operator rule 2026-11-23: while prod is down, trials run on 8009
+  too). Nothing in this directory was hand-edited or booted while it
   was written (fixer lane: configs, guard code and static checks only).
 
 Do not edit a config by hand. Change `faultdiff_configs.py`, run it, and review the diff.
@@ -61,7 +62,7 @@ which drops both - see its row), `STRATA_RAM_BUDGET_MIB 36864`,
 `--expert-helper-slots 4600` (helper `--fill-mib 0`, its own budget governs - the fill report is
 recorded every boot), `--conversation-spill-mib 0`, `--spec 5 --spec-min-p 0.5`, `--layer-split 30`
 (key; the server appends it only with more than one GPU), `--vision`, the sampling block, and every
-env key except the leg's own. The only differences are the harness paths (log, port 8019, the two
+env key except the leg's own. The only differences are the harness paths (log, port 8009, the two
 helper sockets, the per-leg cache dir) and the base's provenance notes.
 
 ## Why `--spec 0` is not the dflash-off leg
@@ -107,7 +108,7 @@ All commands from `/mnt/srcds/Strata`. The legs are frozen for the window direct
 # 1. STOP PROD (its own invocation, the operator's call), then check the boot plan
 .venv/bin/python bench/ab-v0210/rpcprof/faultdiff_run.py --leg parking-off --boot --dry-run
 
-# 2. boot: prerequisite 0, no live prod pair, no other /dev/kfd user, free port 8019,
+# 2. boot: prerequisite 0, no live prod pair, no other /dev/kfd user, free port 8009,
 #    no stale socket, empty cache dir, then helper -> sockets -> server -> 'ready: http://'
 .venv/bin/python bench/ab-v0210/rpcprof/faultdiff_run.py --leg parking-off --boot
 #    the non-engine RSS sum is the one waivable gate (the operator's desktop baseline):
@@ -148,7 +149,7 @@ behaviour), so stop the leg at the first fault and keep the log and the kernel s
 | MemAvailable >= 15 GiB, non-engine RSS sum <= 8 GiB, no process >= 2 GiB, no hot thread on the stage cores, >= 40 GiB free disk | `port_ab_prereq0.py` (Phase 2's own gate) | non-engine RSS sum only, per invocation (`--waive-nonengine`), as the operator's desktop baseline |
 | no live prod pair (`run/prod*-supervisor.json`) | `faultdiff_run.py --boot` | no |
 | no other `/dev/kfd` user (`fuser /dev/kfd`, `rocm-smi --showpids`) | the repro README's exclusivity step | `--waive-exclusivity` only, and it is written into the boot record |
-| port 8019 free, no stale socket, cache dir empty | `faultdiff_run.py --boot` | no |
+| port 8009 free, no stale socket, cache dir empty | `faultdiff_run.py --boot` | no |
 
 ## Expected engine boot lines (per leg: present / absent)
 

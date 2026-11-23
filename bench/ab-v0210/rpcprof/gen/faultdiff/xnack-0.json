@@ -127,7 +127,7 @@
  "log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/faultdiff-r1/logs/xnack-0.engine.log",
  "model_name": "swift-1.5-ud-iq3xxs-managed",
  "pack": "/mnt/srcds/ai/iq3s",
- "port": 8019,
+ "port": 8009,
  "reasoning_budget_tokens": 2000,
  "reasoning_effort": "high",
  "sampling": {

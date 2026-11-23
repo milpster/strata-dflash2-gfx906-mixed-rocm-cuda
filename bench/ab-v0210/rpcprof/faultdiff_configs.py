@@ -60,7 +60,7 @@ GEN = HERE / "gen" / "faultdiff"
 # the speed windows' artifacts are sha-pinned and a fault boot may not touch them).
 WINDOW = "faultdiff-r1"
 OUT_DEFAULT = HERE / "out" / WINDOW
-PORT = 8019          # the trial port; prod keeps 8009 and the fault legs are trials
+PORT = 8009          # the prod port (operator rule 2026-11-23: while prod is down, trials run on 8009 too)
 
 # The rig the base runs, pinned. faultdiff_run.py re-hashes both before a boot and refuses.
 PINS = {
@@ -422,6 +422,9 @@ def declared_for(leg, out=OUT_DEFAULT):
         "expert_helper_socket2": [base.get("expert_helper_socket2"), paths["socket2"]],
         "args/--conversation-cache-dir": [base_cache, paths["cache_dir"]],
     }
+    # A harness delta that no longer changes anything (the trial port is now the prod port)
+    # is not a delta: emitting it would fail the declared-vs-actual diff.
+    declared = {k: v for k, v in declared.items() if str(v[0]) != str(v[1])}
     for field, old, new in LEGS[leg]["declared"]:
         if old == "<cache>":
             old = paths["cache_dir"]
