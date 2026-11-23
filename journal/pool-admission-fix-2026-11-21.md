@@ -1319,6 +1319,17 @@ context, helper attach, park/restore, and numerically exact against the fork.
 ### Correction 2026-11-23 (Phase 1): the tok/s figures and the only same-prompt pair
 
 Line references below are to the saved logs. Engine elogs contain NUL bytes; read them with `tr -d '\0'`.
+The logs are gitignored, so the verbatim quotes inline here are the record; these sha256 values make
+them checkable while the files live (taken 2026-11-23 21:45; `engine-prod-port0218.log` is the live
+prod log and grows if prod serves again):
+
+| log | sha256 |
+|---|---|
+| `port-pair-240k-engine.log` | `64159487c661a30ceddc23ee839b9e6787ca566a324af5eb34bbaeea389a915a` |
+| `fork-240k-refleg.log` | `6e7de937f73aa35cccb5e2ed0ba5b7a3b3b5cd210624842f225368432c38ef83` |
+| `port-240k-leg2.log` | `b00141c2c573004e9c011d3c5653e7326974f14992343b11745494cb6757c5a7` |
+| `engine-prod-ud-iq3xxs-v0233.log` | `24cf8ff9e62dd98b335a2ca4dd74a70252b4d0f1cac11f65a13618e5059d6a5f` |
+| `engine-prod-port0218.log` | `4ac89262d0aee27562793f5ec9d6fbd63e728ab85a3112971b0f49624ebe2642` |
 
 The "356.3 tok/s read" figure is the port's **truncated first pass, 182,180 tokens**, not the 240k fill:
 `logs/port-pair-240k-engine.log:275` — `prompt 182180 tokens = 0 reused + 182180 read in 511249 ms
@@ -1329,24 +1340,44 @@ The "356.3 tok/s read" figure is the port's **truncated first pass, 182,180 toke
 Harness clock versus engine clock:
 - Fork: reconciled. The harness wall is 716.3 s (`logs/fork-240k-refleg.log:3`, 507 completion tokens);
   the engine accounts for 688,368 ms prefill + 22,952 ms generation = 711.3 s, so ~5 s sat outside engine timing.
-- Port: **deleted as inconsistent**. The harness cell was 1,144.1 s (`logs/port-240k-leg2.log:3`), but the
-  engine log for that boot records the two prefills alone at 511,249 + 690,745 ms = **1,202.0 s** (1,236.4 s
-  with the 16,187 + 18,236 ms of generation) — more time than the harness wall contains. The harness cell is
-  removed rather than quoted; the per-request engine lines above stand.
+- Port: **deleted as a speed cell — it contains queueing, not a clock disagreement**. The harness wall was
+  1,144.1 s (`logs/port-240k-leg2.log:3`), while the boot's engine log records 511,249 + 690,745 ms of prefill
+  (1,236.4 s with the 16,187 + 18,236 ms of generation), i.e. more engine time than the wall contains. The
+  arithmetic closes on a queue: the client started 76.1 s into the 182,180-token truncated pass, waited out
+  its remaining 435.1 s, and then ran its own request — **690,745 + 18,236 ms = 709.0 s** engine-only —
+  and 435.1 + 709.0 = 1,144.1 s. So the derived port engine-only wall is **709.0 s**, and the fork's 716.3 s
+  wall is queue-free (its engine accounts 711.3 s of it) and is the comparable one. The cell stays out of the
+  record; the per-request engine lines above stand.
+- Provenance of leg2's excerpt (`port-240k-leg2.log`): the leg ran at :8009 with the harness's default
+  `STRATA_ELOG`, so the engine excerpt it captured (`:6`, a 179,642-token park/restore line) came from the
+  **fork's** elog, the 02:42:23 boot — leg2 is fork evidence in its excerpt and port evidence only in its
+  request. The attribution holds because the port elog reports the same 393 generated tokens for the
+  request (`logs/port-pair-240k-engine.log:295`), where the fork's own leg line reports 507
+  (`logs/engine-prod-ud-iq3xxs-v0233.log:56492`).
 
 The 239,663-token pair is the **only same-prompt pair**, one run per arm: prefill **348.2 (fork) vs 347.0
 (port) tok/s** (-0.3%), decode **22.1 vs 21.6 tok/s** (N=1 each). The two runs are not otherwise matched:
 - VRAM reserves: fork 144/144 (`--vram-reserve-mib 144 --vram-reserve-later-mib 144`,
-  the leg's own boot line, `logs/engine-prod-ud-iq3xxs-v0233.log:56377`) vs port 256/192
-  (`logs/port-pair-240k-engine.log:6`).
-- Helper: fork fill 3,921 experts / 7.34 GiB (`logs/engine-prod-ud-iq3xxs-v0233.log:56117`) vs the port
-  helper's 3,826 / 7.11 GiB in this boot (`logs/port-pair-240k-engine.log:211`; 3,816 / 7.09 GiB on the
-  later promoted boot, `logs/engine-prod-port0218.log:53`) — different helper binaries (9d16742d vs 58c3ae02).
+  the leg's own boot line, `logs/engine-prod-ud-iq3xxs-v0233.log:56377`) vs port 256/192 (the port leg's own
+  boot, `logs/port-pair-240k-engine.log:164`; the file's earlier boot at `:6` carries the same pair).
+- Helper: fork fill 3,921 experts / 7.34 GiB (`logs/engine-prod-ud-iq3xxs-v0233.log:56422`, the leg's own
+  boot) vs the port helper's 3,826 / 7.11 GiB in this boot (`logs/port-pair-240k-engine.log:211`; 3,816 /
+  7.09 GiB on the later promoted boot, `logs/engine-prod-port0218.log:53`) — different helper binaries
+  (9d16742d vs 58c3ae02).
 - Helper rows served during the request: 50,075 vs 28,846 (`logs/fork-240k-refleg.log:6`,
   `logs/port-pair-240k-engine.log:295`).
-- Server trees: the prod-era server on :8009 vs the port tree's server (later pinned as run/port0218-server).
-- Cache dirs: `/mnt/srcds/Strata-wt-helper-ipc/run/diet-prod-38g` vs
-  `/mnt/srcds/Strata-wt-0218/run/trial-8019-cache`.
+- Server trees: the prod-era server on :8009 vs the port tree's server (later pinned as run/port0218-server);
+  each leg's engine-started line names the tree it ran from — `run/fsclamp-bin/rpcw-hip/strata` for the fork
+  (`logs/engine-prod-ud-iq3xxs-v0233.log:56377`) against `Strata-wt-0218/build-lane/strata` for the port
+  (`logs/port-pair-240k-engine.log:164`).
+- Cache dirs: `/mnt/srcds/Strata-wt-helper-ipc/run/diet-prod-38g` (the fork boot's disk tier ON line,
+  `logs/engine-prod-ud-iq3xxs-v0233.log:56444`) vs `/mnt/srcds/Strata-wt-0218/run/trial-8019-cache` (the
+  port boot's park line, `logs/port-pair-240k-engine.log:294`).
+- Prefill order: the port's 239,663 pass was the **second** prefill in its boot, behind the 182,180-token
+  truncated pass (`logs/port-pair-240k-engine.log:275`), where the fork's was the first real request after a
+  58-token probe (`logs/engine-prod-ud-iq3xxs-v0233.log:56469`). Decode-cache warmth ended near-equal, so this
+  confound does not travel with the tok/s gap: 96.4% hit over the fork's leg (`:56493`) against 95.2% over the
+  port's (`logs/port-pair-240k-engine.log:296`).
 - Generated lengths: 507 vs 393 tokens; drafts 282/558 vs 224/392.
 
 Matched-pair conclusion: **no demonstrated port speedup or regression exists yet** — the Phase 2 windows of
