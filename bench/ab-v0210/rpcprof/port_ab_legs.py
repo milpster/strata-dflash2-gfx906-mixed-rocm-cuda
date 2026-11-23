@@ -6,7 +6,10 @@ flag, a byte target or a timeout:
   * --runbook W1              the whole window in boot order (boot + legs + stop per boot)
   * --window W2 --arm A --rep 1 --shape dec144k --run
                               fire that leg against the ALREADY BOOTED server
-  * --check W1                the window's gates over every leg record + boot record
+  * --check W1                the window's gates over every leg record + boot record, and
+                              the per-boot evidence written beside each boot record
+  * --bookend KEY             (port_ab_stop.sh) record ended_epoch + final generation in
+                              the boot record, so the kernel slice ends with the boot
   * --freeze-pilot W2         compute the pilot deltas from the pilot records and write them
                               into the manifest (the claim legs refuse until this is done)
 
@@ -258,6 +261,39 @@ def boot_json(out, key):
         return None
 
 
+def next_boot_start(out, key, started):
+    """The earliest started_epoch of another boot that began after this one (None if none)."""
+    best = None
+    for path in sorted((pathlib.Path(out) / "boots").glob("*.json")):
+        if path.name.endswith(".evidence.json") or path.stem == key:
+            continue
+        try:
+            stamp = json.loads(path.read_text()).get("started_epoch")
+        except (OSError, ValueError):
+            continue
+        if isinstance(stamp, (int, float)) and stamp > started and (best is None or stamp < best):
+            best = stamp
+    return best
+
+
+def boot_window_end(out, key, record):
+    """Where this boot's kernel-journal slice ends: its stop time, else the next boot's start.
+
+    Never time.time(): at window end every fault of every later boot would be attributed to
+    all earlier boots (a false FAIL). port_ab_stop.sh writes ended_epoch into the boot record;
+    a record without one is bounded by the next boot's start, and the last unterminated boot
+    by its own start - an empty window, which can miss a fault but can never invent one.
+    """
+    started = record.get("started_epoch") or 0
+    ended = record.get("ended_epoch")
+    if isinstance(ended, (int, float)) and ended > 0:
+        return float(ended), "ended_epoch"
+    later = next_boot_start(out, key, started)
+    if later is not None:
+        return float(later), "next boot start"
+    return float(started), "no end recorded"
+
+
 def supervisor_generation(out, key):
     path = pathlib.Path(out) / "run" / (key + ".supervisor.json")
     if not path.is_file():
@@ -268,14 +304,23 @@ def supervisor_generation(out, key):
         return None
 
 
+SUPERVISOR_RESTART = re.compile(r"recover|restart|exited")
+
+
 def supervisor_events(out, key):
-    """Restart evidence from the supervisor's own events log (<state>-events.log)."""
-    path = pathlib.Path(out) / "run" / (key + "-events.log")
+    """Restart evidence from the supervisor's own events log.
+
+    pair_supervisor.append_event writes state.with_name(state.stem + "-events.log"), and the
+    state file is run/<key>.supervisor.json - so the log is run/<key>.supervisor-events.log,
+    not run/<key>-events.log. Only recover/restart/exited lines count: a normal shutdown
+    appends "stopped: stop requested" on every clean stop and must never fail a boot.
+    """
+    path = pathlib.Path(out) / "run" / (key + ".supervisor-events.log")
     if not path.is_file():
         return []
     rows = []
     for line in path.read_text(errors="replace").splitlines():
-        if re.search(r"recover|restart|exited|stopped", line):
+        if SUPERVISOR_RESTART.search(line):
             rows.append(line.strip()[:200])
     return rows
 
@@ -412,7 +457,12 @@ def boot_checks(out, key, rec):
     if record:
         since = record.get("started_epoch")
         if since:
-            checks["fingerprint"] = kernel_fingerprint(since, time.time())
+            until, bound_by = boot_window_end(out, key, record)
+            checks["fingerprint"] = kernel_fingerprint(since, until)
+            checks["fingerprint"]["window"] = {"since": since, "until": until, "bound_by": bound_by}
+            if bound_by == "no end recorded":
+                checks["warnings"].append(key + ": boot record has no ended_epoch and no later "
+                                          "boot started, so the kernel fingerprint window is empty")
             if checks["fingerprint"].get("count"):
                 checks["problems"].append(key + ": kernel journal fingerprint is not clean: "
                                           + checks["fingerprint"]["matches"][0])
@@ -429,6 +479,59 @@ def boot_checks(out, key, rec):
     else:
         checks["warnings"].append(key + ": no boot record under boots/ (tuple checked from the log)")
     return checks
+
+
+def bookend(out, key):
+    """Record where a boot ended: ended_epoch and the final supervisor generation.
+
+    port_ab_stop.sh calls this at stop time, after the pair is gone. The kernel-journal
+    fingerprint is then bounded by the boot's own end instead of by the window's end. The
+    first stop wins: a repeated stop script must not move a boot's end forward.
+    """
+    path = pathlib.Path(out) / "boots" / (key + ".json")
+    if not path.is_file():
+        print("bookend: no boot record " + str(path) + " (was this boot recorded?)",
+              file=sys.stderr)
+        return 1
+    try:
+        record = json.loads(path.read_text())
+    except ValueError as error:
+        print("bookend: " + str(path) + " is not JSON: " + str(error), file=sys.stderr)
+        return 1
+    if "ended_epoch" not in record:
+        record["ended_epoch"] = round(time.time(), 3)
+        record["ended_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    record["final_generation"] = supervisor_generation(out, key)
+    record["ended_by"] = "port_ab_stop.sh"
+    temp = path.with_suffix(path.suffix + ".new")
+    temp.write_text(json.dumps(record, indent=1, sort_keys=True) + "\n")
+    temp.replace(path)
+    print("bookend: " + key + " ended_epoch " + str(record["ended_epoch"])
+          + ", final generation " + str(record["final_generation"]))
+    return 0
+
+
+def write_boot_evidence(out, key, checks):
+    """Persist the computed per-boot evidence beside the boot record (boots/<key>.evidence.json).
+
+    The journal's claim is that every boot carries the page-cache proxy, the kernel-journal
+    fingerprint, the LOW count, the granted FS slots, the cache slot count and the restart
+    flag. check() computes them; without this they die with the console.
+    """
+    evidence = {
+        "key": key, "written_at": time.strftime("%Y-%m-%dT%H:%M:%S"), "written_by": "port_ab_legs.py --check",
+        "kernel_fingerprint": checks["fingerprint"], "page_cache": checks["page_cache"],
+        "low_warning_count": checks["low"], "granted_fs_slots": checks["fs_slots"],
+        "cache_slots": checks["cache_slots"], "restart": checks["restart"],
+        "fill": checks["fill"], "tuple": checks["tuple"],
+        "problems": checks["problems"], "warnings": checks["warnings"],
+    }
+    path = pathlib.Path(out) / "boots" / (key + ".evidence.json")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_suffix(path.suffix + ".new")
+    temp.write_text(json.dumps(evidence, indent=1, sort_keys=True) + "\n")
+    temp.replace(path)
+    return path
 
 
 # ------------------------------------------------------------------------------- gate check
@@ -460,6 +563,7 @@ def check(out, window, manifest_path=None):
             bkey = d.name
             if bkey not in boot_seen:
                 boot_seen[bkey] = boot_checks(out, bkey, rec)
+                write_boot_evidence(out, bkey, boot_seen[bkey])
                 problems.extend(boot_seen[bkey]["problems"])
                 warnings.extend(boot_seen[bkey]["warnings"])
                 fill = boot_seen[bkey]["fill"]
@@ -644,7 +748,8 @@ SELFTEST_JUDGE2 = ("strata serve: prompt {n} tokens = {reused} reused + 10 read 
 
 
 def _fixture(root, key, arm, shape, *, spec="5", rows=3680, gib="6.84", restart_line="",
-             second_reused=None, ttft_first=True, generation=None):
+             second_reused=None, ttft_first=True, generation=None, started=1.0, ended=None,
+             supervisor_events=None, legacy_events=None):
     import tempfile  # noqa: F401 - the caller owns the temp dir
     d = pathlib.Path(root) / "records" / key
     d.mkdir(parents=True, exist_ok=True)
@@ -671,13 +776,21 @@ def _fixture(root, key, arm, shape, *, spec="5", rows=3680, gib="6.84", restart_
                "mem": {"max_rss_mib": 40000, "cached_start_mib": 1000, "cached_end_mib": 2000}}
         pathlib.Path(rec["elog"]).write_text(body)
     (d / (arm + "-" + shape + ".json")).write_text(json.dumps(rec))
-    (pathlib.Path(root) / "boots" / (key + ".json")).write_text(
-        json.dumps({"key": key, "started_epoch": 1.0,
-                    "page_cache": {"cached_mib": 1000, "pgmajfault": 10}}))
-    if generation:
-        (pathlib.Path(root) / "run").mkdir(parents=True, exist_ok=True)
-        (pathlib.Path(root) / "run" / (key + ".supervisor.json")).write_text(
-            json.dumps({"generation": generation}))
+    boot = {"key": key, "started_epoch": started,
+            "page_cache": {"cached_mib": 1000, "pgmajfault": 10}}
+    if ended is not None:
+        boot["ended_epoch"] = ended
+    (pathlib.Path(root) / "boots" / (key + ".json")).write_text(json.dumps(boot))
+    if generation or supervisor_events is not None or legacy_events is not None:
+        run = pathlib.Path(root) / "run"
+        run.mkdir(parents=True, exist_ok=True)
+        if generation:
+            (run / (key + ".supervisor.json")).write_text(json.dumps({"generation": generation}))
+        # pair_supervisor.append_event writes <state stem>-events.log; the old path was <key>-events.log
+        if supervisor_events is not None:
+            (run / (key + ".supervisor-events.log")).write_text(supervisor_events)
+        if legacy_events is not None:
+            (run / (key + "-events.log")).write_text(legacy_events)
 
 
 def selftest():
@@ -737,12 +850,93 @@ def selftest():
         print(("ok   " if ok else "FAIL ") + "ttft-missing-first-token: rc " + str(rc))
         if not ok:
             failures.append("ttft-missing-first-token")
+    # the restart source: pair_supervisor writes <state stem>-events.log, and only
+    # recover/restart/exited lines are restarts ("stopped: stop requested" is a clean stop)
+    with tempfile.TemporaryDirectory(dir=_tmpdir()) as root:
+        _fixture(root, "W1-A-pp-r1", "A", "pp239k",
+                 supervisor_events="2026-11-23T20:00:00 gen 2 recovering: helper did not attach\n")
+        _fixture(root, "W1-B-pp-r1", "B", "pp239k")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = check(pathlib.Path(root), "W1")
+        ok = rc == 1 and "supervisor event(s)" in buf.getvalue()
+        print(("ok   " if ok else "FAIL ") + "supervisor-events-restart: rc " + str(rc))
+        if not ok:
+            failures.append("supervisor-events-restart")
+    with tempfile.TemporaryDirectory(dir=_tmpdir()) as root:
+        _fixture(root, "W1-A-pp-r1", "A", "pp239k", ended=6.0,
+                 supervisor_events="2026-11-23T20:00:00 gen 1 stopped: stop requested\n",
+                 legacy_events="2026-11-23T20:00:00 gen 2 recovering: wrong path\n")
+        _fixture(root, "W1-B-pp-r1", "B", "pp239k", ended=6.0)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = check(pathlib.Path(root), "W1")
+        no_restart = "restart" not in buf.getvalue() and "supervisor event(s)" not in buf.getvalue()
+        ok = rc == 0 and no_restart
+        print(("ok   " if ok else "FAIL ") + "supervisor-normal-stop: rc " + str(rc)
+              + " (a clean stop and the superseded <key>-events.log path must not count)")
+        if not ok:
+            failures.append("supervisor-normal-stop")
+
+    # the kernel window ends with the boot: a fault AFTER a boot's end belongs to no earlier boot
+    def fingerprint_case(name, boot_ended, fault_at, want_rc, want_until):
+        calls = []
+
+        def fake(since, until):
+            calls.append((since, until))
+            hit = fault_at is not None and since <= fault_at < until
+            return {"available": True, "reason": "",
+                    "matches": ["amdgpu ring gfx timeout"] if hit else [], "count": 1 if hit else 0}
+
+        with tempfile.TemporaryDirectory(dir=_tmpdir()) as root:
+            real = globals()["kernel_fingerprint"]
+            globals()["kernel_fingerprint"] = fake
+            try:
+                _fixture(root, "W1-A-pp-r1", "A", "pp239k", started=1.0, ended=boot_ended)
+                _fixture(root, "W1-B-pp-r1", "B", "pp239k", started=100.0, ended=110.0)
+                buf = io.StringIO()
+                with contextlib.redirect_stdout(buf):
+                    rc = check(pathlib.Path(root), "W1")
+            finally:
+                globals()["kernel_fingerprint"] = real
+            untils = sorted(round(c[1], 3) for c in calls)
+            ok = rc == want_rc and want_until in untils
+            print(("ok   " if ok else "FAIL ") + name + ": rc " + str(rc) + " (want "
+                  + str(want_rc) + "), untils " + str(untils))
+            if not ok:
+                failures.append(name)
+
+    fingerprint_case("fingerprint-after-end", 2.0, 50.0, 0, 2.0)
+    fingerprint_case("fingerprint-no-end-falls-back", None, 50.0, 1, 100.0)
+
+    # the evidence file: what check() computes is written beside the boot record
+    with tempfile.TemporaryDirectory(dir=_tmpdir()) as root:
+        _fixture(root, "W1-A-pp-r1", "A", "pp239k", ended=6.0)
+        _fixture(root, "W1-B-pp-r1", "B", "pp239k", ended=6.0)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            check(pathlib.Path(root), "W1")
+        path = pathlib.Path(root) / "boots" / "W1-A-pp-r1.evidence.json"
+        evidence = json.loads(path.read_text()) if path.is_file() else {}
+        missing = [k for k in ("kernel_fingerprint", "page_cache", "low_warning_count",
+                               "granted_fs_slots", "cache_slots", "restart") if k not in evidence]
+        ok = path.is_file() and not missing and evidence["cache_slots"] == 5739
+        print(("ok   " if ok else "FAIL ") + "boot-evidence-file: missing " + str(missing))
+        if not ok:
+            failures.append("boot-evidence-file")
+
     if failures:
         print("SELFTEST FAILED: " + ", ".join(failures))
         return 1
     print("selftest OK: gates pass on a clean pair and fail on restart, wrong tuple, bad fill, "
-          "cold request 2 and a missing first token")
+          "cold request 2 and a missing first token; the restart source is the supervisor's own "
+          "events log filtered to recover/restart/exited, the kernel window ends with the boot, "
+          "and the per-boot evidence is written beside the boot record")
     return 0
+
+
+def _tmpdir():
+    return "/tmp/opencode" if pathlib.Path("/tmp/opencode").is_dir() else None
 
 
 def main():
@@ -759,6 +953,8 @@ def main():
     ap.add_argument("--run", action="store_true", help="execute the leg command(s)")
     ap.add_argument("--check", metavar="WINDOW", help="gate-check every leg record of a window")
     ap.add_argument("--freeze-pilot", metavar="WINDOW", help="freeze the W2 pilot deltas")
+    ap.add_argument("--bookend", metavar="KEY",
+                    help="record ended_epoch + final generation in boots/KEY.json (stop time)")
     ap.add_argument("--selftest", action="store_true", help="exercise the gates on synthetic records")
     a = ap.parse_args()
 
@@ -771,6 +967,8 @@ def main():
         return check(a.out_dir, a.check, a.manifest)
     if a.freeze_pilot:
         return freeze_pilot(a.out_dir, a.freeze_pilot, a.manifest)
+    if a.bookend:
+        return bookend(a.out_dir, a.bookend)
     if not a.arm:
         ap.error("--arm is required unless --runbook/--check/--freeze-pilot is given")
 

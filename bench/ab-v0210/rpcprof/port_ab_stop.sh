@@ -7,6 +7,10 @@
 # survivors named in that state are TERMed by recorded pid. Quiet is verified for 20 s.
 #
 # BOOT is the boot group (part of the boot key: W2-A-dec-r1 vs W2-A-sht-r1).
+#
+# At stop time it also writes the boot's end into boots/<KEY>.json: ended_epoch (the first stop
+# wins) and the final supervisor generation. The gate checker bounds a boot's kernel-journal
+# fingerprint by that end, so a fault during a LATER boot is never charged to an earlier one.
 set -uo pipefail
 ROOT=${STRATA_PROD_TREE:-/mnt/srcds/Strata}
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -64,6 +68,12 @@ PYEOF
 else
   echo "port_ab_stop: no state file $STATE (was this boot started?)"
 fi
+
+# Record where the boot ended: the checker bounds the kernel-journal fingerprint by this
+# epoch (never by the window's end, which would attribute a later boot's fault to this one).
+# The first stop wins; the writer is idempotent and also stores the final supervisor generation.
+"$PY" "$HERE/port_ab_legs.py" --bookend "$KEY" --out-dir "$OUT" 2>&1 ||
+  echo "port_ab_stop: could not bookend boots/$KEY.json" >&2
 
 rm -f "$SOCK" "$SOCK2"
 echo "port_ab_stop: verifying 20 s of quiet for $KEY"

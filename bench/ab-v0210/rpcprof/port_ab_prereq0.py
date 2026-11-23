@@ -136,8 +136,60 @@ def temp_core_snapshot():
     return snap
 
 
+# The four RAM/CPU gates the pre-boot state owns. Alive serving processes make them
+# meaningless (the numbers describe the serving lane, not the box a leg will run on), so in
+# that state they are reported as NOT EVALUATED and never as FAIL lines. The disk gate is the
+# filesystem the leg caches are written to and stays measured in both states.
+PREBOOT_GATES = ("memory", "nonengine_rss", "single_process", "stage_cores")
+
+
+def gate_verdict(avail_kib, other_mib, others, cores, serving, free_gib):
+    """The prerequisite-0 failures, split from the probes so the prod-up state is testable.
+
+    Two states, one refusal: with serving processes alive the only failure is 'stop prod
+    first' (the gate is PRE-BOOT), the four RAM/CPU gates are skipped instead of appending
+    FAIL lines about a box that is currently serving, and the exit code is unchanged (1).
+    """
+    failures, evaluated, skipped = [], [], []
+    if serving:
+        failures.append("serving processes alive (" + ", ".join(str(p["pid"]) for p in serving)
+                        + "): the gate is PRE-BOOT, stop prod first")
+        skipped.extend(PREBOOT_GATES)
+    else:
+        evaluated.extend(PREBOOT_GATES)
+        if avail_kib < C.PREREQ0["mem_available_gib_min"] * GIB:
+            failures.append("MemAvailable " + str(round(avail_kib / GIB, 1)) + " GiB < "
+                            + str(C.PREREQ0["mem_available_gib_min"]) + " GiB")
+        if other_mib > C.PREREQ0["nonengine_rss_gib_max"] * MIB:
+            failures.append("non-engine RSS " + str(round(other_mib / MIB, 2)) + " GiB > "
+                            + str(C.PREREQ0["nonengine_rss_gib_max"]) + " GiB")
+        big = sorted((p for p in others
+                      if p["rss_mib"] >= C.PREREQ0["single_process_rss_gib_warn"] * 1024),
+                     key=lambda p: -p["rss_mib"])[:10]
+        if big:
+            failures.append("process(es) >= " + str(C.PREREQ0["single_process_rss_gib_warn"])
+                            + " GiB RSS must be resolved or reported: "
+                            + ", ".join(str(p["pid"]) + " " + p["cmd"].split()[0] for p in big[:3]))
+        if cores.get("hot"):
+            failures.append("hot non-pinned thread(s) on the stage cores: "
+                            + ", ".join(str(h["pid"]) + "/" + h["comm"] + " " + str(h["pcpu"]) + "%"
+                                        for h in cores["hot"][:5]))
+    if free_gib is not None:
+        evaluated.append("disk")
+        if free_gib < C.PREREQ0["cache_free_gib_min"]:
+            failures.append("cache filesystem free " + str(round(free_gib, 1)) + " GiB < "
+                            + str(C.PREREQ0["cache_free_gib_min"]) + " GiB (disk, not RAM)")
+    else:
+        skipped.append("disk")
+    return {"failures": failures, "evaluated": evaluated, "skipped": skipped}
+
+
 def selftest():
-    """The rule, on a synthetic ps snapshot: engine threads pass, an intruder is flagged."""
+    """The rule, on a synthetic ps snapshot: engine threads pass, an intruder is flagged.
+
+    Also the two states of the gate: a clean pre-boot passes, a starved one names memory, and
+    a prod-up box refuses with 'stop prod first' alone while the RAM/CPU gates are skipped.
+    """
     text = (
         "  PID     TID PSR %CPU ELAPSED COMMAND\n"
         " 1001    1001   0  1.0  100:00 hostapp\n"
@@ -151,7 +203,21 @@ def selftest():
     flagged = sorted(row["pid"] for row in snap["hot"])
     assert flagged == [3003, 4004], flagged
     assert snap["threads_per_cpu"]["5"] == 1 and snap["threads_per_cpu"]["0"] == 1, snap
-    print("selftest OK: engine stage threads pass, hot intruders flagged, low load ignored")
+
+    procs = [{"pid": 4001, "rss_mib": 900, "kind": "other", "cmd": "python one.py"}]
+    clean = gate_verdict(40 * GIB, 900, procs, {"hot": []}, [], 100.0)
+    assert clean["failures"] == [] and clean["skipped"] == [], clean
+    starved = gate_verdict(10 * GIB, 900, procs, {"hot": []}, [], 100.0)
+    assert len(starved["failures"]) == 1 and "MemAvailable" in starved["failures"][0], starved
+    hot = [{"pid": 3003, "comm": "pytest", "pcpu": 97.5}]
+    serving = [{"pid": 2002, "rss_mib": 4000, "kind": "serving", "cmd": "strata --serve"}]
+    prod_up = gate_verdict(10 * GIB, 20000, procs, {"hot": hot}, serving, 100.0)
+    assert len(prod_up["failures"]) == 1 and "stop prod first" in prod_up["failures"][0], prod_up
+    assert prod_up["skipped"] == list(PREBOOT_GATES), prod_up
+    assert prod_up["evaluated"] == ["disk"], prod_up
+    print("selftest OK: engine stage threads pass, hot intruders flagged, low load ignored; "
+          "clean pre-boot passes, a starved one fails on memory, and a prod-up box refuses only "
+          "with 'stop prod first' (RAM/CPU gates not evaluated)")
 
 
 
@@ -190,26 +256,13 @@ def main() -> int:
     except OSError:
         free_gib = None
 
-    failures = []
-    if serving:
-        failures.append("serving processes alive (" + ", ".join(str(p["pid"]) for p in serving)
-                        + "): the gate is PRE-BOOT, stop prod first")
-    if avail_kib < C.PREREQ0["mem_available_gib_min"] * GIB:
-        failures.append("MemAvailable " + str(round(avail_kib / GIB, 1)) + " GiB < "
-                        + str(C.PREREQ0["mem_available_gib_min"]) + " GiB")
-    if other_mib > C.PREREQ0["nonengine_rss_gib_max"] * MIB:
-        failures.append("non-engine RSS " + str(round(other_mib / MIB, 2)) + " GiB > "
-                        + str(C.PREREQ0["nonengine_rss_gib_max"]) + " GiB")
-    if big:
-        failures.append("process(es) >= " + str(C.PREREQ0["single_process_rss_gib_warn"])
-                        + " GiB RSS must be resolved or reported: "
-                        + ", ".join(str(p["pid"]) + " " + p["cmd"].split()[0] for p in big[:3]))
-    if cores.get("hot"):
-        failures.append("hot non-pinned thread(s) on the stage cores: "
-                        + ", ".join(str(h["pid"]) + "/" + h["comm"] + " " + str(h["pcpu"]) + "%" for h in cores["hot"][:5]))
-    if free_gib is not None and free_gib < C.PREREQ0["cache_free_gib_min"]:
-        failures.append("cache filesystem free " + str(round(free_gib, 1)) + " GiB < "
-                        + str(C.PREREQ0["cache_free_gib_min"]) + " GiB (disk, not RAM)")
+    verdict = gate_verdict(avail_kib, other_mib, others, cores, serving, free_gib)
+    failures = verdict["failures"]
+    prod_up = bool(serving)
+    mem_gate = ("not evaluated (prod up)" if prod_up else
+                "gate >= " + str(C.PREREQ0["mem_available_gib_min"]))
+    rss_gate = ("not evaluated (prod up)" if prod_up else
+                "gate <= " + str(C.PREREQ0["nonengine_rss_gib_max"]))
 
     snapshot = {
         "ts": time.time(), "iso": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -220,6 +273,7 @@ def main() -> int:
         "cpu": {"loadavg": loadavg, "threads_per_cpu": cores.get("threads_per_cpu"),
                 "hot_stage_core_threads": cores.get("hot"), "stage_cores": C.PREREQ0["stage_cores"]},
         "disk": {"probe": str(cache_probe), "free_gib": None if free_gib is None else round(free_gib, 1)},
+        "gates": {"evaluated": verdict["evaluated"], "not_evaluated": verdict["skipped"]},
         "verdict": "OPEN" if not failures else "REFUSED",
         "failures": failures,
     }
@@ -229,16 +283,17 @@ def main() -> int:
         print("prerequisite 0 @ " + snapshot["iso"])
         print("  memory      : MemAvailable " + str(snapshot["mem"]["available_gib"]) + " GiB / "
               + str(snapshot["mem"]["total_gib"]) + " GiB, swap used "
-              + str(snapshot["mem"]["swap_used_gib"]) + " GiB  (gate >= "
-              + str(C.PREREQ0["mem_available_gib_min"]) + ")")
-        print("  non-engine  : " + str(snapshot["rss"]["nonengine_gib"]) + " GiB  (gate <= "
-              + str(C.PREREQ0["nonengine_rss_gib_max"]) + ")")
+              + str(snapshot["mem"]["swap_used_gib"]) + " GiB  (" + mem_gate + ")")
+        print("  non-engine  : " + str(snapshot["rss"]["nonengine_gib"]) + " GiB  (" + rss_gate + ")")
         for p in top[:5]:
             print("      " + str(p["pid"]).rjust(7) + " " + str(p["rss_mib"]).rjust(7) + " MiB  " + p["cmd"])
+        hot = cores.get("hot") or []
         print("  cpu         : loadavg " + " ".join(str(x) for x in loadavg)
-              + "; hot stage-core threads: " + (str(len(cores.get("hot") or [])) + " ("
-              + ", ".join(str(h["pid"]) + "/" + str(h["pcpu"]) + "%" for h in (cores.get("hot") or [])[:5]) + ")"
-              if cores.get("hot") else "none"))
+              + "; hot stage-core threads: "
+              + ((str(len(hot)) + " (" + ", ".join(str(h["pid"]) + "/" + str(h["pcpu"]) + "%"
+                                                   for h in hot[:5]) + ")")
+                 if hot else "none")
+              + ("  [not evaluated (prod up)]" if prod_up else ""))
         print("  disk        : " + str(snapshot["disk"]["free_gib"]) + " GiB free on "
               + snapshot["disk"]["probe"] + "  (gate >= " + str(C.PREREQ0["cache_free_gib_min"]) + ")")
         print("  serving     : " + (str(len(serving)) + " process(es) alive" if serving else "none (pre-boot OK)"))

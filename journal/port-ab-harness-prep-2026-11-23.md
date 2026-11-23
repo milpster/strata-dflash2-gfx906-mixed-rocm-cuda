@@ -138,10 +138,12 @@ Non-blocking:
 8. Manifest fields: W4's interleave is its own four boots (not the six-boot pattern), `reps_per_arm`
    is gone in favour of `boots_per_cell`, W4's budget counts the cached second generation, and every
    window's `budget_source` is the same phrase (derived), with the contract value as its own field.
-9. The helper fill band is frozen in `frozen_tuple.helper_fill_band` (rows 3,430-3,970; 6.55-7.00
-   GiB; 5 % arm drift), derived from the 7,000 MiB cap and the Phase-1 row size. Every boot record
-   now also carries the page-cache proxy, the kernel-journal fingerprint, the LOW count, the granted
-   FS slots, the cache slot count and the restart flag.
+9. The helper fill band is frozen in `frozen_tuple.helper_fill_band` (rows 3,430-3,970; 6.55-6.90
+   GiB; 5 % arm drift), derived from the 7,000 MiB cap and the Phase-1 row size; the GiB upper bound
+   is 66 MiB over the cap for the helper's startup accounting, not the 168 MiB the first draft allowed.
+   Every boot now also writes `boots/<key>.evidence.json` at `--check` time, carrying the page-cache
+   proxy, the kernel-journal fingerprint, the LOW count, the granted FS slots, the cache slot count
+   and the restart flag (the boot record itself stays as written at boot and at stop).
 10. The freeze is enforced AT BOOT: `port_ab_boot_plan.py` refuses when the derived config is not
     byte-identical to `manifest.configs[key].sha256` or an engine/helper sha left the manifest; the
     helper's entire argv comes from `pc.helper_argv` (no bash defaults) and its env (timeout, frozen
@@ -153,3 +155,20 @@ Non-blocking:
 Trivia: the journal's commit list is corrected above; `settings_sha256_blind` blanks the declared
 spill flag before hashing (A and B now hash equal with `diffs == {}`); the boot docstring names
 `--run`.
+
+## Final advisories before the first window
+
+The oracle approved the harness (`4c4d95fe8e`) with four non-blocking advisories and two nits; all
+are fixed in the commit after it on this branch, CPU-only (no boot, no GPU, no `:8009`):
+
+| # | What was wrong | Fix | Where |
+|---|---|---|---|
+| 1 | prereq-0 appended FAIL lines for the memory/RSS/CPU gates even with prod serving, so a prod-up run looked like a starved box | one verdict function with two states: serving alive -> the single failure "stop prod first", those four gates reported "not evaluated (prod up)"; disk stays measured; exit code unchanged | `port_ab_prereq0.py:143-184` (`PREBOOT_GATES`, `gate_verdict`), snapshot `gates`, `--selftest` prod-up case |
+| 2 | the supervisor-events restart source read `run/<key>-events.log`, but `pair_supervisor.append_event` writes `run/<key>.supervisor-events.log` | correct path, and only `recover|restart|exited` lines count: a clean "stopped: stop requested" event never fails a boot | `port_ab_legs.py:307-327` |
+| 3 | the kernel fingerprint ran to `time.time()`, so at window end one fault was attributed to every earlier boot | `port_ab_stop.sh` writes `ended_epoch` + `final_generation` into `boots/<key>.json` (first stop wins); the checker bounds the slice by it, else by the next boot's start; with neither, an empty window plus a warning (never an invented FAIL) | `port_ab_legs.py:264-296,484-511`, `port_ab_stop.sh:72-76` |
+| 4 | the per-boot evidence was computed but never written, though this journal claimed the boot record carried it | `--check` writes `boots/<key>.evidence.json` (fingerprint + window, page cache, LOW count, granted FS slots, cache slots, restart, fill, tuple, problems/warnings); item 9 above reworded to match | `port_ab_legs.py:514-535,566` |
+| 5 | helper fill band's GiB ceiling was 7.00 GiB (7168 MiB), 168 MiB above the 7,000 MiB cap; `windows.W2.delta.ttft_s` was a superseded null slot | ceiling tightened to 6.90 GiB with the 66 MiB allowance stated in the band's basis; `ttft_s` removed from W2's `delta` (the pilot `pilot_deltas` slots are the TTFT deltas) | `port_ab_contract.py:173-182,125-128`, manifest regenerated |
+
+Selftests cover each: prereq-0 clean/starved/prod-up; legs' correct-path restart, filtered normal
+stop (and the superseded path ignored), fault after a boot's end not failing it, no-end fallback to
+the next boot's start, and the evidence file's fields.

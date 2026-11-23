@@ -2339,11 +2339,11 @@
   },
   "helper_fill_band": {
    "arm_drift_max": 0.05,
-   "basis": "fill-mib 7000 binds at ~6.84 GiB; Phase-1 row size 1.87-1.92 MiB/row -> 3,646-3,743 rows; the band is 6 % either side and is checked per boot, never widened",
+   "basis": "fill-mib 7000 binds at ~6.84 GiB; Phase-1 row size 1.87-1.92 MiB/row -> 3,646-3,743 rows; rows allow 6 % either side, GiB is 6.55-6.90 (the upper bound is 66 MiB over the 7,000 MiB cap, for the helper's startup accounting); checked per boot, never widened",
    "checked_from": "the helper's own boot line (EXPECTED_LINES.boot_helper)",
    "gib": [
     6.55,
-    7.0
+    6.9
    ],
    "rows": [
     3430,
@@ -2382,17 +2382,17 @@
   }
  },
  "git_branch": "recovery-startup-watchdog",
- "git_head_at_prepare": "f6e28f03b90968f474008d916ced9dd7d2531640",
+ "git_head_at_prepare": "4c4d95fe8e99760e426e4a2d9c2528974dc39895",
  "harness_script_shas": {
   "port_ab_boot.sh": "938dc5e428483af0731db3b2321fb41a0bd511ce611b0506021096748559d204",
   "port_ab_boot_plan.py": "e17befa8c8c7c42b0bc85e90001fe772e1ba1970779bbcce847f7c294a75b25a",
   "port_ab_configs.py": "5b72653b69be523b7fdab28ed93ff46b777e56c39237e010f1845857e5fee289",
-  "port_ab_contract.py": "3ded82fcb0c635a2a51465e832c16009df92177b6a42d8b8255dc25ecc326b57",
-  "port_ab_legs.py": "622026a909c27b5deda3bce1895674473554eadecd61bb57904c36d3801b14da",
+  "port_ab_contract.py": "4cb619301b9bb3bb48ea5a39a3299c9b323f5eff8b8475bb38b557f67ddc0971",
+  "port_ab_legs.py": "87a364b061b8dc993873bf455f04c94c4965159dc8507e8cbb3b515b95f2db9c",
   "port_ab_preflight.py": "3d8b4bafcafb5cd75ed932a8161dd7f5758141fbc5d3943c2cddbcc43253d90b",
   "port_ab_prepare.py": "5150ad2d158e8086539f25bd2bedaacfc6cdc2809b8cc1b273fb83f67933d658",
-  "port_ab_prereq0.py": "4c425de5cf6c2308aa5b940baf2b949a879e922243c1ed1c34cf0a4f78a7ea6f",
-  "port_ab_stop.sh": "b68308615e96e2d6ae53e7d4eb7badbb2e41e485578d9cbda05959896dc841b6",
+  "port_ab_prereq0.py": "075e7080b628a746c2fbc35d389378324db98b063d0058760099c6ae413704d5",
+  "port_ab_stop.sh": "e490afbc386f12b32e37cc3cabbb20771147bd41d48b1bd3eb4fc1d7f359317f",
   "port_ab_ttft.py": "8dd1de272cb193145439743d82cbac5610a439f6eb1e024f6202dcdf1bad206b"
  },
  "harness_scripts": {
@@ -2666,7 +2666,7 @@
    "resolution": "per-engine configs (A without the flag, B with '0'); both cross cells then boot, and 'no spill' holds in both"
   }
  },
- "prepared_at": "2026-11-23T20:36:21",
+ "prepared_at": "2026-11-23T21:02:04",
  "prerequisite0": {
   "cache_free_gib_min": 40,
   "command": "python3 bench/ab-v0210/rpcprof/port_ab_prereq0.py --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123",
@@ -2946,8 +2946,7 @@
     "note": "discarded first-touch decode boot, as W1/W3 have"
    },
    "delta": {
-    "gen_tps": 0.08,
-    "ttft_s": null
+    "gen_tps": 0.08
    },
    "delta_note": "decode 8 % pre-registered; short-PP and TTFT deltas come from the W2 pilot and are frozen in this manifest before the claim legs",
    "gate_metric": "gen_tps / ttft_s",

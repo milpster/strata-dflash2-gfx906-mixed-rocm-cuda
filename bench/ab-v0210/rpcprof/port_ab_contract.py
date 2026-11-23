@@ -122,7 +122,9 @@ WINDOWS = {
         "decode_warmup": {"boots_per_arm": 1, "group": "dec",
                           "note": "discarded first-touch decode boot, as W1/W3 have"},
         "gate_metric": "gen_tps / ttft_s",
-        "delta": {"gen_tps": 0.08, "ttft_s": None},
+        # the TTFT delta is not pre-registered here: the W2 pilot's ttft_turn1_s /
+        # ttft_inter_turn_s slots (pilot_deltas) are the only TTFT deltas a claim may use
+        "delta": {"gen_tps": 0.08},
         "delta_note": "decode 8 % pre-registered; short-PP and TTFT deltas come from the W2 "
                       "pilot and are frozen in this manifest before the claim legs",
         "budget_s": None,             # derived below (the contract demanded a number here)
@@ -165,14 +167,17 @@ WINDOWS = {
 # (6.84 GiB reported), which is BELOW the Phase-1 fills of 7.09 GiB (port, 3,816 rows) and
 # 7.34 GiB (fork, 3,921 rows) - that is the point of the cap: it narrows the residual fill
 # difference. The band is derived from the cap and the Phase-1 row size (1.87-1.92 MiB/row):
-# 7000 / 1.92 = 3,646 .. 7000 / 1.87 = 3,743 rows; 6 % either side leaves room for the
-# helper's own startup accounting without hiding an uncapped fill.
+# 7000 / 1.92 = 3,646 .. 7000 / 1.87 = 3,743 rows; 6 % either side of the rows leaves room
+# for the helper's own startup accounting. The GiB upper bound is 6.90 GiB (7065 MiB): 66 MiB
+# over the cap for that accounting, and still far below the Phase-1 fills the cap must catch.
 HELPER_FILL_BAND = {
     "rows": [3430, 3970],
-    "gib": [6.55, 7.00],
+    "gib": [6.55, 6.90],
     "arm_drift_max": 0.05,
     "basis": "fill-mib 7000 binds at ~6.84 GiB; Phase-1 row size 1.87-1.92 MiB/row -> "
-             "3,646-3,743 rows; the band is 6 % either side and is checked per boot, never widened",
+             "3,646-3,743 rows; rows allow 6 % either side, GiB is 6.55-6.90 (the upper bound "
+             "is 66 MiB over the 7,000 MiB cap, for the helper's startup accounting); checked "
+             "per boot, never widened",
     "checked_from": "the helper's own boot line (EXPECTED_LINES.boot_helper)",
 }
 
