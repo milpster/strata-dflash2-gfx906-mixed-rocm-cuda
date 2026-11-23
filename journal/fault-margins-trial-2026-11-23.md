@@ -84,7 +84,12 @@ Memory during the legs: `min_avail_mib 12692`, `max_swap_used_mib 4369`, card3 1
 nvidia0 7592 (`…/default-margins-b2/B-pp239k.json` 40-46); boot 1 11308 / 4372 / 16030 / 15977 /
 7592 (default-margins record 40-46), against `max_swap_used_mib 0` on W1-B-pp-r0
 (`records/W1-B-pp-r0/B-pp239k.json:41`). `max_rss_mib` reads 227 and 224 there (line 39) where
-peers read 40924 and 41379 (A-pp239k.json:39, B-pp239k.json:39): engine RSS is unavailable.
+peers read 40924 and 41379 (A-pp239k.json:39, B-pp239k.json:39): those are the SERVER process, not
+the engine — the driver was pointed at the server pid (boot 2's record `engine_pid 1343791` is
+`server_pid` at `out/faultdiff-r1/run/default-margins.state.json:117`), so the engine's RSS is not
+in these records. It stands in the load records instead, where the pid came from `find_engine` on
+the leg socket (`faultdiff_run.py:314,638-639`): `engine_pid 1344547`, `max_rss_mib` 41,946-41,956
+(`out/faultdiff-r1/records/default-margins/load/faultdiff-default-margins-n1..n3.json:46,49`).
 
 Boot 1 was stopped to move port (`strata prefill: stopped in the chunk from token 0 before layer 34
 (STOP)`, elog 108). The generator now uses 8009 (`faultdiff_configs.py:63`): while prod is down,
@@ -110,8 +115,13 @@ trials run on 8009, not port 8019.
   the swap grant and ~4.4 GiB of swap differing; W1d is descriptive-only (`port_ab_contract.py:156-158`).
   Replies differ too (`b3482dfb…` at 256/192, `…/W1-B-pp-r0/B-pp239k.json:28`; `01db7a9d…` on both
   default legs, record 28).
-- **Nothing about arm A**; A-r1's boot log ends `done: 0 tokens in 198 s ... (error)` (line 40)
-  while its record holds a reply at 203.3 s — different attempts, unreconciled.
+- **Nothing about arm A**'s margins; A-r1's record is the replacement generation's. Gen 1 (fork
+  engine) took the XDMA fault at 22:32:16 and its in-flight prefill died with the engine (`exit code
+  -6`, boot log 39-40); the pair supervisor replaced the generation
+  (`out/port-ab-20261123/run/W1-A-pp-r1.supervisor.json`: `generation 2`, `engine_pid 527427`) and the
+  leg was re-fired at it, writing the record at ts 1795469857.584 (22:37:37, after the fault) with
+  that pid (`records/W1-A-pp-r1/A-pp239k.json:36`). The 203.3 s is the replacement's, not gen 1's —
+  hence the failed (boot log 1-41) and completed (78-81) request in one file.
 
 ## Next
 
