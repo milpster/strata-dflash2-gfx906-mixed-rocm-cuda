@@ -674,6 +674,8 @@ def check(out, window, manifest_path=None):
                              "ttft_s": ttft, "wall_s": [t.get("wall_s") for t in turns],
                              "inter_turn_s": [t.get("inter_turn_wall_s") for t in turns],
                              "reused": 0, "prompt_tok": None, "tg": None,
+                             "engine": rec.get("engine_sha256"),
+                             "engine_exe": rec.get("engine_exe"),
                              "restart": boot["restart"],
                              "low": boot["low"], "mem": rec.get("mem") or {}})
                 if any(x is None for x in ttft):
@@ -700,6 +702,9 @@ def check(out, window, manifest_path=None):
                      "fs_slots": boot["fs_slots"], "cache_slots": boot["cache_slots"],
                      "fill": boot["fill"], "fingerprint": boot["fingerprint"],
                      "page_cache": boot["page_cache"], "tuple": boot["tuple"],
+                     "engine": rec.get("engine_sha256"),
+                     "engine_exe": rec.get("engine_exe"),
+                     "engine_reason": rec.get("engine_identity_reason"),
                      "mem": rec.get("mem") or {}}
             rows.append(entry)
             by_shape.setdefault(leg, {}).setdefault(arm, []).append(entry["prompt_tok"])
@@ -751,20 +756,30 @@ def check(out, window, manifest_path=None):
     # TG: "tg" = this row's gen_tps is claim-grade (a TG leg that generated >= 1,000 tokens);
     # "ctx" = context only, never a TG rate - W1's 8-token prefill tail, or a TG leg that
     # stopped short of the floor (which the gate also fails, loudly). "-" = no gen rate.
-    header = ("%-8s %-2s %-16s %8s %6s %8s %8s %3s %5s %5s %4s" %
+    # engine: the leading 12 hex of the digest of the engine binary the leg's record names,
+    # so the table says which build produced the rate. "-" means the record carries no
+    # identity (records written before the field existed, or an unreadable /proc link:
+    # the record's engine_identity_reason says which). It is printed, never gated - the
+    # manifest's arm->sha pins are not yet compared against a record (known gap).
+    header = ("%-8s %-2s %-16s %8s %6s %8s %8s %3s %5s %5s %4s %12s" %
               ("shape", "arm", "boot", "promptN", "reused", "read_tps", "gen_tps", "TG",
-               "fill", "slots", "LOW"))
+               "fill", "slots", "LOW", "engine"))
     print(header)
     for r in sorted(rows, key=lambda x: (x["shape"], x["boot"])):
         fill = r.get("fill") or {}
         tg = r.get("tg")
         claim_grade = bool(tg) and (r.get("gen_tok") or 0) >= C.TG_CLAIM_MIN_GENERATED
-        print(("%-8s %-2s %-16s %8s %6s %8s %8s %3s %5s %5s %4s" % (
+        print(("%-8s %-2s %-16s %8s %6s %8s %8s %3s %5s %5s %4s %12s" % (
             r["shape"], r["arm"], r["boot"], r.get("prompt_tok") or "-",
             r.get("reused") if r.get("reused") is not None else "-",
             r.get("read_tps") or (r.get("ttft_s") and "ttft " + str(r["ttft_s"][0])) or "-",
             r.get("gen_tps") or "-", "-" if tg is None else ("tg" if claim_grade else "ctx"),
-            fill.get("rows") or "-", r.get("cache_slots") or "-", r.get("low", "-"))))
+            fill.get("rows") or "-", r.get("cache_slots") or "-", r.get("low", "-"),
+            (r.get("engine") or "-")[:12])))
+    missing = [r for r in rows if not r.get("engine")]
+    if missing:
+        print("engine: " + str(len(missing)) + " of " + str(len(rows)) + " leg record(s) name no "
+              "engine sha (pre-identity record, or the link was unreadable)")
     for r in sorted(rows, key=lambda x: (x["shape"], x["boot"])):
         if r.get("fingerprint") and r["fingerprint"].get("available") is False:
             warnings.append(r["boot"] + ": kernel fingerprint unavailable: "

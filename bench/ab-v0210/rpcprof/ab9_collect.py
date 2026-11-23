@@ -131,8 +131,12 @@ def agg(legs: list[dict], arm: str, ctx: int, kind: str = "prefill") -> dict | N
     pp_med = statistics.median(pp) if pp else 0.0
     pp_spread = (max(pp) - min(pp)) if len(pp) > 1 else 0.0
     n_claims = claims or 1
+    # Which build(s) produced these rates: short da/dr of each leg's engine sha256, so a
+    # row can never be read as "arm A" while arm A served from a different binary than the
+    # window it is compared with. "-" = the record predates the identity field.
+    engines = sorted({(l.get("engine_sha256") or "-")[:12] for l in sel})
     out = {
-        "arm": arm, "ctx": ctx, "legs": len(sel), "pp_med": pp_med,
+        "arm": arm, "ctx": ctx, "engine": ",".join(engines), "legs": len(sel), "pp_med": pp_med,
         "pp_spread": round(pp_spread, 2), "fresh_judge_ok": reused_bad == 0 and len(pp) > 0,
         "claims": claims, "rows": rows, "img_kb": img_kb, "reply_kb": reply_kb,
         "sum_d2h_us": d2h, "sum_begin_us": begin, "sum_reply_us": reply,
@@ -174,7 +178,7 @@ def build_table(data: dict) -> tuple[list[dict], list[dict]]:
     return rows, tgs
 
 
-TSV_COLS = ["arm", "ctx", "legs", "pp_med", "pp_spread", "fresh_judge_ok", "claims", "rows",
+TSV_COLS = ["arm", "ctx", "engine", "legs", "pp_med", "pp_spread", "fresh_judge_ok", "claims", "rows",
             "img_kb", "reply_kb", "sum_d2h_us", "sum_begin_us", "sum_reply_us", "sum_lock_us",
             "sum_queue_us", "wall_s", "transfer_share", "helper_side_us", "engine_side_us",
             "rows_per_claim", "fixed_cost_per_claim_us", "gain_vs_A", "pipelining_recovery",
@@ -260,19 +264,21 @@ def main() -> int:
         nv = subprocess.run("nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv,noheader",
                             shell=True, capture_output=True, text=True).stdout.strip()
         f.write(f"host: `{uname}`; nvidia: `{nv}`\n\n")
-        f.write("| arm | ctx | legs | PP med | spread | claims | rows | Σbegin_us | Σreply_us | "
+        f.write("| arm | ctx | engine | legs | PP med | spread | claims | rows | Σbegin_us | Σreply_us | "
                 "Σd2h_us | Σlock_us | Σqueue_us | wall_s | transfer_share | helper_side_us | "
                 "rows/claim | fixed_cost/claim | gain | pipe_recovery | drift_vs_C | rxpci GB/s |\n")
-        f.write("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
+        f.write("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
         for r in rows:
-            f.write("| {arm} | {ctx} | {legs} | {pp_med} | {pp_spread} | {claims} | {rows} | "
+            f.write("| {arm} | {ctx} | {engine} | {legs} | {pp_med} | {pp_spread} | {claims} | {rows} | "
                     "{sum_begin_us} | {sum_reply_us} | {sum_d2h_us} | {sum_lock_us} | {sum_queue_us} | "
                     "{wall_s} | {transfer_share} | {helper_side_us} | {rows_per_claim} | "
                     "{fixed_cost_per_claim_us} | {gain_vs_A} | {pipelining_recovery} | {drift_vs_C} | "
                     "{rxpci_gbps_median} |\n".format(**{c: r.get(c, "") for c in TSV_COLS}))
         f.write("\n## TG sanity (cached rerun; walls = run1/run2 s)\n\n")
         for l in tgs:
-            f.write(f"- {l['arm']} {l['leg']} ctx={l['ctx']} max_tokens={l['max_tokens']} walls={l['walls']}\n")
+            f.write(f"- {l['arm']} {l['leg']} ctx={l['ctx']} max_tokens={l['max_tokens']} "
+                    f"walls={l['walls']} "
+                    f"engine={(l.get('engine_sha256') or '-')[:12]}\n")
         f.write("\nFresh-judge invariant (0 reused on every fresh leg): "
                 f"{all(r['fresh_judge_ok'] for r in rows)}\n")
         f.write(f"Confound flags (leg slices carrying 'below 512 MiB'): "

@@ -133,6 +133,64 @@ def cached_mib():
     return None
 
 
+_SHA256_BY_LINK: dict[str, str] = {}
+_IDENTITY_BY_PID: dict[int, dict] = {}
+
+
+def sha256_file(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def engine_identity(pid) -> dict:
+    """Which binary produced this leg's rate: the engine's executable and its digest.
+
+    Read through /proc/<pid>/exe, so the answer is the image the process actually maps
+    rather than a path the caller assumed (a replaced or unlinked binary still answers,
+    and keeps its " (deleted)" marker so the record says so). Called after the requests
+    and the sampler are done, so hashing a 30-50 MB engine cannot touch the measured wall;
+    the digest is cached per link for the run, since one driver run may cover several legs.
+
+    No pid, or an unreadable link, records null plus the reason: identity is provenance,
+    never a gate - a leg whose binary is unknown is a weaker record, not a failed one,
+    and the rate stays primary.
+    """
+    out = {"engine_exe": None, "engine_sha256": None, "engine_identity_reason": None}
+    if pid is None:
+        out["engine_identity_reason"] = ("no engine pid: --engine-pid was not given and no "
+                                         "--serve engine was found")
+        return out
+    if pid in _IDENTITY_BY_PID:
+        return dict(_IDENTITY_BY_PID[pid])
+    link = f"/proc/{int(pid)}/exe"
+    try:
+        exe = os.readlink(link)
+    except OSError as error:
+        out["engine_identity_reason"] = (f"{link} unreadable (pid {int(pid)} is not a process "
+                                         f"this user can inspect): {error.strerror or error}")
+        _IDENTITY_BY_PID[pid] = dict(out)
+        return out
+    out["engine_exe"] = exe
+    if exe not in _SHA256_BY_LINK:
+        try:
+            _SHA256_BY_LINK[exe] = sha256_file(link)
+        except OSError as error:
+            out["engine_identity_reason"] = (f"{exe} found but not readable: "
+                                             f"{error.strerror or error}")
+            _IDENTITY_BY_PID[pid] = dict(out)
+            return out
+    out["engine_sha256"] = _SHA256_BY_LINK[exe]
+    if exe.endswith(" (deleted)"):
+        out["engine_identity_reason"] = ("the running image was unlinked or replaced after it "
+                                         "started: the digest describes that inode, not the "
+                                         "path's current file")
+    _IDENTITY_BY_PID[pid] = dict(out)
+    return dict(out)
+
+
 def find_engine_pid():
     """Locate the strata engine process: first argv element ends with /strata
     and --serve appears as its own NUL-delimited argument. Matching the bare
@@ -282,6 +340,11 @@ def main() -> int:
     sampler.stop_evt.set()
     sampler.join()
     e1, h1 = size(a.elog), size(a.hlog)
+    # Identity is read here, after the wire and after the sampler: it is provenance for the
+    # rate above, so it must not sit anywhere the wall time could see it. cached_end_mib is
+    # taken first, so hashing the engine (page-cache warm-up of tens of MB) cannot reach it.
+    cached_end = cached_mib()
+    identity = engine_identity(engine_pid)
 
     rec = {
         "arm": a.arm, "leg": a.leg, "kind": a.kind, "ctx": a.ctx,
@@ -295,12 +358,18 @@ def main() -> int:
         "mem": {
             "engine_pid": engine_pid,
             "cached_start_mib": cached_start,
-            "cached_end_mib": cached_mib(),
+            "cached_end_mib": cached_end,
             "max_rss_mib": sampler.max_rss_mib,
             "min_avail_mib": None if sampler.min_avail_mib == 1 << 30 else sampler.min_avail_mib,
             "max_swap_used_mib": sampler.max_swap_used_mib,
             "max_vram_mib": sampler.max_vram_mib,
         },
+        # Which build produced this record. Two arms can serve the same shape from different
+        # engines (W1 arm A and arm B are 47.8 MB vs 29.1 MB builds); without these the
+        # binary is recoverable only from the engine log.
+        "engine_exe": identity["engine_exe"],
+        "engine_sha256": identity["engine_sha256"],
+        "engine_identity_reason": identity["engine_identity_reason"],
     }
     if template:
         # The body as actually sent, with the prompt replaced by its digest so the

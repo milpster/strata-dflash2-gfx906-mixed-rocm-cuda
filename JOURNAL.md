@@ -1794,3 +1794,23 @@ Numbers to expect (the rig's own boot figures, in `tests/core/cache_spill_test.c
 3695 + 1432 = **5127 slots ≈ 8.2 GiB** — at or above split-32's 5045.  Validation window should show
 `CUDA1: ~1400 additional experts, ~2.3 GiB` at boot, `expert_slots` ~5100, decode hit back toward
 92%, TG recovery at long context, PP unchanged.
+
+## 2026-11-24 — leg records name the engine binary (bench harness, CPU-only)
+
+The W1 audit found that an ab9 leg record could not say which engine produced it: arm A ran
+`run/fsclamp-bin/rpcw-hip/strata` (50,147,224 B, sha `4b8251e9…`) and arm B
+`run/port0218-bin/rpcw-hip/strata` (30,555,416 B, sha `936efcc7…`), and the binary was
+recoverable only from the engine log. `ab9_driver.py` now writes `engine_exe`
+(`os.readlink("/proc/<pid>/exe")`, the image the process maps, not an assumed path) and
+`engine_sha256` into every record, read **after** the request and after the MemSampler stops
+and after `cached_end_mib` is captured, so hashing 30-50 MB cannot reach the wall or the
+warmth proxy. No pid or an unreadable link records `null` plus `engine_identity_reason`;
+identity never fails a leg. `ab9_collect.py` gained an `engine` column (TSV/MD, short sha,
+per arm+ctx, TG lines too) and `port_ab_legs.py --check` a trailing `engine` column. CPU-only
+proof: a bash-copy stand-in pid answered path+sha matching the file's own digest, a dead pid
+and a missing pid answered null+reason, an unlinked image answered path` (deleted)`+sha+note;
+both demos ran on synthetic records (no GPU, no boot, no writes under `out/`).
+
+Gap left open, by instruction: nothing in `--check` compares a *record* to the manifest's
+arm→sha pins (the pins are enforced at boot by `port_ab_boot_plan.py`, and `--check` reads the
+manifest only for `pilot_frozen`). The new column is printed, never gated.
