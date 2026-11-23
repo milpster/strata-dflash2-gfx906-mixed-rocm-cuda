@@ -3,7 +3,7 @@
 #
 #   PATH=/opt/rocm-6.1.0/bin:$PATH cmake -S . -B build -G Ninja \
 #     -DCMAKE_HIP_COMPILER=/opt/rocm-6.1.0/llvm/bin/clang++ \
-#     -DCMAKE_HIP_ARCHITECTURES=gfx906 -DCMAKE_PREFIX_PATH=/opt/rocm-6.1.0
+#     -DCMAKE_PREFIX_PATH=/opt/rocm-6.1.0
 #   PATH=/opt/rocm-6.1.0/bin:$PATH cmake --build build -j
 #
 # Runtime (xnack gfx906 rocBLAS + 6.1.0 userspace, as prod uses):
@@ -22,10 +22,12 @@ cmake_minimum_required(VERSION 3.21)
 
 # gfx906 must be in the cache before project(): CMake seeds HIP_ARCHITECTURES
 # during HIP compiler detection from amdgpu-arch, and on this box that probe is
-# poisoned by HSA_OVERRIDE_GFX_VERSION=9.0.6 (it answers gfx900/gfx906 by
-# override, not by card). FORCE before project() beats the probe; a cache entry
-# set afterwards does not.
-set(CMAKE_HIP_ARCHITECTURES gfx906 CACHE STRING "" FORCE)
+# poisoned by HSA_OVERRIDE_GFX_VERSION=9.0.6 (it answers by override, not by
+# card). FORCE before project() beats the probe; a cache entry set afterwards
+# does not. A -D on the command line still wins because the guard skips FORCE.
+if(NOT DEFINED CMAKE_HIP_ARCHITECTURES)
+  set(CMAKE_HIP_ARCHITECTURES gfx906 CACHE STRING "" FORCE)
+endif()
 
 # Host-compiler and header details, neither of them a GPU one. Applied only when
 # the user did not set CMAKE_HIP_FLAGS:

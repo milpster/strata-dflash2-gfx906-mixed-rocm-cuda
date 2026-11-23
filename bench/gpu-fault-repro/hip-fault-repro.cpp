@@ -1,23 +1,32 @@
 // hip-fault-repro.cpp - minimal control for the recurrent GPU permission faults.
 // Fault track, measurement contract Phase 4. Build/run: see README.md.
 //
-// --mode file (default): a 64 MiB file in the run dir is mmap(MAP_SHARED)'d and
-// hipHostRegister'd mapped; device 1 scans that mapping while the churn thread
-// rewrites the same file, fsyncs, posix_fadvise(DONTNEED)s it and renames it.
-// That couples the churn to the pages the device reads. --mode anon keeps the
-// old hipHostMalloc buffer with a separate park file.
-// Optional --host-write-sec N makes the host rewrite one word per page while
-// the device mapping is live.
+// --mode cycle (default): the scanned 64 MiB file is repeatedly taken through
+//   sync -> hipHostUnregister -> munmap -> posix_fadvise(DONTNEED) -> rewrite the
+//   pattern -> mmap(MAP_SHARED) -> hipHostRegister(mapped) -> re-derive the
+//   device pointer -> scan. Unmapping first makes DONTNEED effective, so each
+//   cycle exercises eviction, refault and re-registration under a live device
+//   mapping. --mode file scans one registered file mapping without cycling;
+//   --mode anon scans a hipHostMalloc buffer with a separate park file. Those
+//   two test only branch 1: a registered mapping read at max rate is stable.
+//
+// --positive-control runs once, before the long leg: it queues a scan, then
+// hipHostUnregister + munmap + fadvise WHILE THE SCAN IS IN FLIGHT. A detected
+// fault is the expected result (exit 3); anything else is a failed control
+// (exit 6) and the detector path is unproven.
+//
+// --host-write-sec N (default 30) rewrites one word per page per tick: a cache
+// coherence probe, not a fault trigger; 0 turns it off.
 //
 // Checksums: per page, the integer sum of the words and the word-index-weighted
-// sum (sum i*w[i]), both compared against the host's expected values. The
-// weighted sum catches permutations and compensating corruption that the plain
-// sum cannot. Every 10 s: VA ranges, one page's checksums, /proc/self/statm,
-// Cached, MemAvailable. A checksum mismatch logs the page VA and maps; so does a
-// HIP fault. ABRT/SEGV/BUS/ILL dump the last scan and maps from a signal handler.
+// sum (sum i*w[i]); both compared against the host's expected values. Every 10 s
+// a heartbeat logs VA ranges, one page's checksums, /proc/self/statm, Cached and
+// MemAvailable. A checksum mismatch logs the page VA and maps; so does a HIP
+// fault. ABRT/SEGV/BUS/ILL dump the last scan and maps from a signal handler.
 // ROCm 6.1.0 has no hipErrorMemoryFault: the class arrives as
 // hipErrorIllegalAddress / hipErrorLaunchFailure / hipErrorAssert or a signal.
-// Exit: 0 clean, 2 usage/setup, 3 HIP fault, 4 checksum fault, 5 churn defect.
+// Exit: 0 clean, 2 usage/setup, 3 HIP fault, 4 checksum fault, 5 churn defect,
+// 6 positive control failed, 128+signal.
 
 #include <hip/hip_runtime.h>
 #include <atomic>
@@ -48,6 +57,10 @@ static std::atomic<bool> stop{false};
 static std::atomic<u64> scans{0}, ticks{0};
 static std::atomic<int> churn_fail{0};
 
+// No static destructors on fault paths: the churn thread may still hold g_dir.
+// Every log line is flushed by logf_, so no fflush (and no FILE lock race) here.
+[[noreturn]] static void die(int code) { _exit(code); }
+
 static char* slurp(const char* path, char* buf, size_t cap) {
   int fd = open(path, O_RDONLY);
   ssize_t n = fd >= 0 ? read(fd, buf, cap - 1) : -1;
@@ -60,6 +73,13 @@ static char* slurp(const char* path, char* buf, size_t cap) {
 static void trim_nl(char* p) {
   char* e = strchr(p, '\n');
   if (e) *e = 0;
+}
+
+static long cached_kb() {
+  static char mi[8192];
+  slurp("/proc/meminfo", mi, sizeof mi);
+  const char* c = strstr(mi, "\nCached:");
+  return c ? atol(c + 8) : -1;
 }
 
 static void logf_(const char* fmt, ...) {
@@ -126,7 +146,6 @@ static void on_fatal(int sig) {
   _exit(128 + sig);
 }
 
-// small values: the mapping stays free of NaN-like bit patterns
 static inline uint32_t pattern(size_t p, size_t i) {
   return (uint32_t)((p * kWords + i) & 0xFFFFFFu);
 }
@@ -152,19 +171,33 @@ __global__ void scan_pages(const uint32_t* __restrict__ buf, u64* __restrict__ i
   if (t == 0) isum[p] = si[0], wsum[p] = sw[0];
 }
 
-static int g_mode = 1, g_period = 2;  // 1 = file, 0 = anon
+// 0 anon, 1 file (no cycle), 2 cycle (default)
+static int g_mode = 2, g_period = 2;
 static int g_churn_fd = -1;
 static void* g_map = nullptr;
 static std::string g_dir;
 
-// file mode: rewrite the scanned file in place (identical bytes), fsync, drop it
-// from page cache, turn the park slot over, drop again. anon mode keeps the old
-// separate park.tmp -> park.bin churn.
+// Rewrite the pattern without a mapping, so DONTNEED left nothing behind.
+static bool write_pattern(int fd) {
+  static uint32_t buf[(1u << 20) / 4];
+  for (size_t off = 0; off < kBytes; off += sizeof buf) {
+    size_t base = off / 4;
+    for (size_t i = 0; i < sizeof buf / 4; ++i) {
+      size_t g = base + i;
+      buf[i] = pattern(g / kWords, g % kWords);
+    }
+    if (pwrite(fd, buf, sizeof buf, (off_t)off) != (ssize_t)sizeof buf) return false;
+  }
+  return true;
+}
+
+// file mode: rewrite the scanned file in place, fsync, drop it from page cache,
+// turn the park slot over, drop again. cycle/anon modes run the separate park.
 static void churn() {
   std::vector<char> buf(8u << 20, 'x');
   for (u64 t = 0; !stop; ++t) {
     int rc = 0;
-    if (g_mode) {
+    if (g_mode == 1) {
       off_t off = (off_t)((t % (kBytes / buf.size())) * buf.size());
       {
         std::lock_guard<std::mutex> lk(W);
@@ -213,9 +246,22 @@ static void mkdir_p(const std::string& path) {
       std::string d = path.substr(0, i);
       if (mkdir(d.c_str(), 0755) != 0 && errno != EEXIST) return;
     }
+  if (mkdir(path.c_str(), 0755) != 0 && errno != EEXIST) return;  // the argument itself
 }
 
-// one word per page, so the CPU writes into a mapping the device is using
+// expected sums for the initial pattern, after a cycle rewrote the file
+static void base_expected(std::vector<u64>& esum, std::vector<u64>& ewsum) {
+  for (size_t p = 0; p < kPages; ++p) {
+    esum[p] = 0, ewsum[p] = 0;
+    for (size_t i = 0; i < kWords; ++i) {
+      u64 v = pattern(p, i);
+      esum[p] += v;
+      ewsum[p] += (u64)i * v;
+    }
+  }
+}
+
+// one word per page: a cache coherence probe into a live device mapping
 static void host_writes(uint32_t* base, std::vector<u64>& esum, std::vector<u64>& ewsum,
                         u64 round) {
   std::lock_guard<std::mutex> lk(W);
@@ -230,8 +276,9 @@ static void host_writes(uint32_t* base, std::vector<u64>& esum, std::vector<u64>
 }
 
 int main(int argc, char** argv) {
-  int dev = 1, churn_sec = 2, host_write_sec = 30;
+  int dev = 1, churn_sec = 2, host_write_sec = 30, cycle_sec = 30;
   long duration_sec = 1800;
+  bool positive = false;
   std::string dummy = "./run", lp = "hip-fault-repro.log", pci;
   for (int i = 1; i < argc; ++i) {
     auto val = [&]() -> const char* {
@@ -244,22 +291,24 @@ int main(int argc, char** argv) {
     if (!strcmp(argv[i], "--dev")) dev = atoi(val());
     else if (!strcmp(argv[i], "--duration-sec")) duration_sec = atol(val());
     else if (!strcmp(argv[i], "--churn-sec")) churn_sec = atoi(val());
+    else if (!strcmp(argv[i], "--cycle-sec")) cycle_sec = atoi(val());
     else if (!strcmp(argv[i], "--host-write-sec")) host_write_sec = atoi(val());
     else if (!strcmp(argv[i], "--mode")) {
       const char* m = val();
-      g_mode = !strcmp(m, "file");
-      if (!g_mode && strcmp(m, "anon")) {
-        fprintf(stderr, "--mode takes file or anon\n");
+      g_mode = !strcmp(m, "cycle") ? 2 : !strcmp(m, "file") ? 1 : 0;
+      if (strcmp(m, "cycle") && strcmp(m, "file") && strcmp(m, "anon")) {
+        fprintf(stderr, "--mode takes cycle, file or anon\n");
         return 2;
       }
     }
+    else if (!strcmp(argv[i], "--positive-control")) positive = true;
     else if (!strcmp(argv[i], "--dummy-dir")) dummy = val();
     else if (!strcmp(argv[i], "--pci")) pci = val();
     else if (!strcmp(argv[i], "--log")) lp = val();
     else {
-      fprintf(stderr, "usage: %s [--dev N] [--duration-sec N] [--churn-sec N]"
-                      " [--host-write-sec N] [--mode file|anon] [--dummy-dir DIR]"
-                      " [--pci DDDD:BB:DD.F] [--log FILE]\n", argv[0]);
+      fprintf(stderr, "usage: %s [--dev N] [--duration-sec N] [--churn-sec N] [--cycle-sec N]"
+                      " [--host-write-sec N] [--mode cycle|file|anon] [--positive-control]"
+                      " [--dummy-dir DIR] [--pci DDDD:BB:DD.F] [--log FILE]\n", argv[0]);
       return 2;
     }
   }
@@ -290,7 +339,7 @@ int main(int argc, char** argv) {
     if (e == hipSuccess) return;
     logf_("SETUP ERROR in %s: %s code=%d", what, hipGetErrorString(e), (int)e);
     dump_maps(what);
-    exit(2);
+    die(2);
   };
 
   int ndev = 0;
@@ -305,10 +354,10 @@ int main(int argc, char** argv) {
   char bdf[32];
   snprintf(bdf, sizeof bdf, "%04x:%02x:%02x.0", prop.pciDomainID, prop.pciBusID,
            prop.pciDeviceID);
-  bool arch_ok = !strcmp(prop.gcnArchName, "gfx906"), pci_ok = pci.empty() || pci == bdf;
-  logf_("start: dev=%d %s pci=%s arch=%s duration=%lds churn=%ds mode=%s host-write=%ds "
-        "dummy=%s", dev, prop.name, bdf, prop.gcnArchName, duration_sec, churn_sec,
-        g_mode ? "file" : "anon", host_write_sec, dummy.c_str());
+  bool arch_ok = !strncmp(prop.gcnArchName, "gfx906", 6), pci_ok = pci.empty() || pci == bdf;
+  logf_("start: dev=%d %s pci=%s arch=%s duration=%lds churn=%ds cycle=%ds mode=%s host-write=%ds "
+        "dummy=%s", dev, prop.name, bdf, prop.gcnArchName, duration_sec, churn_sec, cycle_sec,
+        g_mode == 2 ? "cycle" : g_mode == 1 ? "file" : "anon", host_write_sec, dummy.c_str());
   int hrv = 0, hdv = 0;
   hipchk(hipRuntimeGetVersion(&hrv), "hipRuntimeGetVersion");
   hipchk(hipDriverGetVersion(&hdv), "hipDriverGetVersion");
@@ -331,10 +380,14 @@ int main(int argc, char** argv) {
     return 2;
   }
   if (!arch_ok) logf_("note: arch check overridden by --pci %s", bdf);
+  if (positive && g_mode == 0) {
+    logf_("positive control needs --mode cycle or file (there is no mapping to unmap in anon)");
+    return 2;
+  }
 
   void* host = nullptr;
   std::vector<u64> esum(kPages), ewsum(kPages), hisum(kPages), hwsum(kPages);
-  if (g_mode) {
+  if (g_mode != 0) {
     const std::string scan = dummy + "/scan.bin";
     g_churn_fd = open(scan.c_str(), O_RDWR | O_CREAT, 0600);
     if (g_churn_fd < 0) {
@@ -350,8 +403,14 @@ int main(int argc, char** argv) {
       logf_("mmap %s: %s", scan.c_str(), strerror(errno));
       return 2;
     }
-    hipchk(hipHostRegister(host, kBytes, hipHostRegisterMapped | hipHostRegisterPortable),
-           "hipHostRegister(file mapping)");
+    hipError_t re =
+        hipHostRegister(host, kBytes, hipHostRegisterMapped | hipHostRegisterPortable);
+    if (re != hipSuccess) {  // file-backed registration may be refused: platform fact
+      logf_("SETUP ERROR hipHostRegister(file mapping): %s code=%d; record this and run "
+            "--mode anon", hipGetErrorString(re), (int)re);
+      dump_maps("hipHostRegister");
+      die(2);
+    }
   } else {
     hipError_t he = hipHostMalloc(&host, kBytes, hipHostMallocMapped | hipHostMallocPortable);
     if (he != hipSuccess) {
@@ -383,39 +442,100 @@ int main(int argc, char** argv) {
   logf_("buffer: host VA [%p,%p) device VA [%p,%p)", host, (char*)host + kBytes, dptr,
         (char*)dptr + kBytes);
 
+  auto scan1 = [&](const uint32_t* buf) {
+    hipLaunchKernelGGL(scan_pages, dim3((unsigned)kPages), dim3(256), 0, 0, buf, disum, dwsum,
+                       (u64)kPages);
+  };
+  auto devfault = [&](const char* what, hipError_t e, u64 done) {
+    logf_("HIP FAULT in %s: %s code=%d%s; last completed scan %llu", what,
+          hipGetErrorString(e), (int)e, fault_class(e) ? " [fault class]" : "", done);
+    logf_("buffer host VA [%p,%p) device VA [%p,%p)", host, host ? (char*)host + kBytes : nullptr,
+          dptr, (char*)dptr + kBytes);
+    dump_maps(what);
+    die(3);
+  };
+
+  if (positive) {  // the engine's park/restore race, deliberately
+    logf_("positive control: queueing a scan, then unregister+munmap while it is in flight");
+    scan1((const uint32_t*)dptr);
+    hipError_t ue = hipHostUnregister(host);
+    int unmap_rc = munmap(host, kBytes);
+    host = nullptr;
+    int frc = posix_fadvise(g_churn_fd, 0, 0, POSIX_FADV_DONTNEED);
+    hipError_t se = hipDeviceSynchronize();
+    logf_("positive control: unregister=%s code=%d munmap=%d fadvise=%d sync=%s code=%d%s",
+          hipGetErrorString(ue), (int)ue, unmap_rc, frc, hipGetErrorString(se), (int)se,
+          fault_class(ue) || fault_class(se) ? " [fault class]" : "");
+    if (ue != hipSuccess || se != hipSuccess) {
+      dump_maps("positive control");
+      logf_("positive control: fault detected as expected (this exit 3 is the control's pass)");
+      die(3);
+    }
+    logf_("positive control FAILED: no fault; detector path unproven");
+    die(6);
+  }
+
   std::thread churner(churn);
   const time_t t0 = time(nullptr);
-  time_t last = 0, last_w = t0;
-  u64 n = 0, wround = 0;
+  time_t last = 0, last_w = t0, last_c = t0;
+  u64 n = 0, wround = 0, cyc = 0;
+
+  auto do_cycle = [&]() {  // sync -> unregister -> munmap -> fadvise -> rewrite -> remap
+    hipError_t se = hipDeviceSynchronize();
+    if (se != hipSuccess) devfault("cycle sync", se, n);
+    long before = cached_kb();
+    hipError_t ue = hipHostUnregister(host);
+    if (ue != hipSuccess) devfault("cycle hipHostUnregister", ue, n);
+    if (munmap(host, kBytes) != 0) {
+      logf_("SETUP ERROR cycle munmap: %s", strerror(errno));
+      die(2);
+    }
+    host = nullptr;
+    int frc = posix_fadvise(g_churn_fd, 0, 0, POSIX_FADV_DONTNEED);
+    bool wok = write_pattern(g_churn_fd);
+    base_expected(esum, ewsum);  // the rewrite restored the initial pattern
+    void* m = mmap(nullptr, kBytes, PROT_READ | PROT_WRITE, MAP_SHARED, g_churn_fd, 0);
+    if (m == MAP_FAILED) {
+      logf_("SETUP ERROR cycle mmap: %s", strerror(errno));
+      die(2);
+    }
+    host = m;
+    hipError_t re =
+        hipHostRegister(host, kBytes, hipHostRegisterMapped | hipHostRegisterPortable);
+    if (re != hipSuccess) {
+      logf_("SETUP ERROR cycle hipHostRegister: %s code=%d", hipGetErrorString(re), (int)re);
+      die(2);
+    }
+    hipchk(hipHostGetDevicePointer(&dptr, host, 0), "cycle hipHostGetDevicePointer");
+    long after = cached_kb();
+    logf_("cycle %llu: unregistered, munmapped, fadvise=%d, pattern rewrite=%s, Cached %ld -> %ld "
+          "kB; remapped host [%p,%p) device [%p,%p)", ++cyc, frc, wok ? "ok" : "failed", before,
+          after, host, (char*)host + kBytes, dptr, (char*)dptr + kBytes);
+    if (!wok) {
+      churn_fail = 1;
+      logf_("cycle %llu: pattern rewrite failed: %s", cyc, strerror(errno));
+    }
+  };
+
   while (!stop && time(nullptr) - t0 < duration_sec) {
+    if (g_mode == 2 && time(nullptr) - last_c >= cycle_sec) {
+      last_c = time(nullptr);
+      do_cycle();
+    }
     if (host_write_sec > 0 && time(nullptr) - last_w >= host_write_sec) {
       last_w = time(nullptr);
       host_writes((uint32_t*)host, esum, ewsum, wround++);
       logf_("host write round %llu (one word per page)", wround);
     }
-    hipLaunchKernelGGL(scan_pages, dim3((unsigned)kPages), dim3(256), 0, 0,
-                       (const uint32_t*)dptr, disum, dwsum, (u64)kPages);
+    scan1((const uint32_t*)dptr);
     hipError_t e = hipDeviceSynchronize();
-    if (e != hipSuccess) {
-      logf_("HIP FAULT in scan_pages: %s code=%d%s; last completed scan %llu", hipGetErrorString(e),
-            (int)e, fault_class(e) ? " [fault class]" : "", n);
-      logf_("buffer host VA [%p,%p) device VA [%p,%p)", host, (char*)host + kBytes, dptr,
-            (char*)dptr + kBytes);
-      dump_maps("device scan fault");
-      exit(3);
-    }
+    if (e != hipSuccess) devfault("scan_pages", e, n);
     for (int k = 0; k < 2; ++k) {  // a copy that fails after a fault is a fault, not setup
       hipError_t ce = k ? hipMemcpy(hwsum.data(), dwsum, kPages * sizeof(*dwsum),
                                     hipMemcpyDeviceToHost)
                         : hipMemcpy(hisum.data(), disum, kPages * sizeof(*disum),
                                     hipMemcpyDeviceToHost);
-      if (ce != hipSuccess) {
-        logf_("HIP FAULT in %s copy: %s code=%d%s; last completed scan %llu",
-              k ? "wsum" : "isum", hipGetErrorString(ce), (int)ce,
-              fault_class(ce) ? " [fault class]" : "", n);
-        dump_maps("device copy fault");
-        exit(3);
-      }
+      if (ce != hipSuccess) devfault(k ? "wsum copy" : "isum copy", ce, n);
     }
     scans = ++n;
     int bad = -1;
@@ -426,7 +546,7 @@ int main(int argc, char** argv) {
             "wsum=%llu expected=%llu", bad, (char*)host + (size_t)bad * kPage,
             (char*)dptr + (size_t)bad * kPage, hisum[bad], esum[bad], hwsum[bad], ewsum[bad]);
       dump_maps("checksum fault");
-      exit(4);
+      die(4);
     }
     if (time(nullptr) - last >= 10) {
       last = time(nullptr);
@@ -438,24 +558,24 @@ int main(int argc, char** argv) {
       char* c = strstr(mi, "Cached:"), *a = strstr(mi, "MemAvailable:");
       if (c) trim_nl(c);
       if (a) trim_nl(a);
-      logf_("HB scans=%llu ticks=%llu elapsed=%lds page=%zu isum=%llu expected=%llu "
+      logf_("HB scans=%llu ticks=%llu cycles=%llu elapsed=%lds page=%zu isum=%llu expected=%llu "
             "wsum=%llu expected=%llu | host VA [%p,%p) device VA [%p,%p) | statm=%s | %s | %s",
-            n, ticks.load(), (long)(time(nullptr) - t0), sp, hisum[sp], esum[sp], hwsum[sp],
+            n, ticks.load(), cyc, (long)(time(nullptr) - t0), sp, hisum[sp], esum[sp], hwsum[sp],
             ewsum[sp], host, (char*)host + kBytes, dptr, (char*)dptr + kBytes, statm,
             c ? c : "Cached: ?", a ? a : "MemAvailable: ?");
     }
   }
   stop = true;
   churner.join();
-  long want = churn_sec > 0 ? duration_sec / churn_sec : 0;
+  long elapsed = (long)(time(nullptr) - t0);
+  long want = g_period > 0 ? (elapsed + g_period - 1) / g_period : 0;
   if (churn_fail || ticks == 0 || (long)ticks * 10 < want * 8) {
-    logf_("DONE scans=%llu elapsed=%lds, CHURN DEFECT ticks=%llu expected~%ld", n,
-          (long)(time(nullptr) - t0), ticks.load(), want);
+    logf_("DONE scans=%llu elapsed=%lds, CHURN DEFECT ticks=%llu expected~%ld", n, elapsed,
+          ticks.load(), want);
     fclose(L);
     return 5;
   }
-  logf_("DONE scans=%llu elapsed=%lds, no HIP fault, no checksum fault", n,
-        (long)(time(nullptr) - t0));
+  logf_("DONE scans=%llu elapsed=%lds, no HIP fault, no checksum fault", n, elapsed);
   fclose(L);
   return 0;
 }
