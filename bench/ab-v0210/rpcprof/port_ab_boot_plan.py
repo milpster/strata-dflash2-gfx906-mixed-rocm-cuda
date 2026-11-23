@@ -65,7 +65,8 @@ def build(args):
     manifest = load_manifest(args.manifest)
     cfg, deltas, paths = pc.derive(args.arm, window=args.window, rep=args.rep, out=args.out,
                                    boot=args.boot)
-    problems = pc.check_tuple(cfg, args.arm)
+    # the window's margins mode decides the reserve gate (W1d: both flags must be ABSENT)
+    problems = pc.check_tuple(cfg, args.arm, window=args.window)
     if problems:
         raise SystemExit("REFUSING: " + "; ".join(problems))
 

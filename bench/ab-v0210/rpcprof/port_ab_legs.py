@@ -183,6 +183,15 @@ def runbook(out, window):
                  + " h, claim boots only]") if contract else "  [the contract had no budget here]"),
              "# boot: port_ab_boot.sh WINDOW ARM BOOT REP [--server-arm A|B]",
              "# stop: port_ab_stop.sh WINDOW ARM BOOT REP"]
+    if C.margins_mode(window) == "engine-default":
+        # Operator directive 2026-11-23 23:00 (W1d): the engine's own VRAM margins. Measured
+        # on this rig today: 700 MiB reserved per card instead of 256/192, card0 expert cache
+        # 4,116 slots (not 5,739), 728/648 MiB free VRAM after load, and the Foresight swap
+        # grant flips from 0 slots to card0:2/card1:8 - a W1d result is the whole boot
+        # difference, not the reserves alone.
+        lines.append("# margins: ENGINE-DEFAULT - neither --vram-reserve-mib nor "
+                     "--vram-reserve-later-mib is in the engine argv; the boot gate expects "
+                     "both ABSENT")
     for row in rows:
         key = pc.boot_key(window, row["arm"], row["rep"], row["boot"])
         label = ("pilot, excluded from the claim" if row["pilot"] else
@@ -405,12 +414,25 @@ def boot_checks(out, key, rec):
     else:
         flags = argv_flags(started[-1].split("engine started:", 1)[1])
         checks["tuple"] = {flag: flags.get(flag) for flag in TUPLE_ARGV}
+        window = (parse_boot_key(key) or (None,))[0]
+        margins = C.margins_mode(window) if window in C.WINDOWS else "explicit"
+        checks["margins"] = margins
         expected = {"--spec": str(pc.TUPLE["spec"]),
-                    "--vram-reserve-mib": str(pc.TUPLE["vram_reserve_mib"]),
-                    "--vram-reserve-later-mib": str(pc.TUPLE["vram_reserve_later_mib"]),
                     "--dflash-block": str(pc.TUPLE["dflash_block"]),
                     "--expert-helper-slots": str(pc.TUPLE["helper_slots"]),
                     "--layer-split": str(pc.TUPLE["layer_split"])}
+        if margins == "engine-default":
+            # Operator-directed W1d: the engine's own VRAM margins apply, so a reserve flag on
+            # the boot line means this is the WRONG boot for the window (the reserves pin the
+            # tuple W1d exists to leave behind).
+            for flag in ("--vram-reserve-mib", "--vram-reserve-later-mib"):
+                if flags.get(flag) is not None:
+                    checks["problems"].append(key + ": engine argv carries " + flag + "="
+                                              + repr(flags.get(flag)) + " but this window runs "
+                                              "with engine-default margins (both reserves absent)")
+        else:
+            expected["--vram-reserve-mib"] = str(pc.TUPLE["vram_reserve_mib"])
+            expected["--vram-reserve-later-mib"] = str(pc.TUPLE["vram_reserve_later_mib"])
         for flag, want in expected.items():
             got = flags.get(flag)
             if str(got) != want:
@@ -540,7 +562,7 @@ JUDGE_TAIL = re.compile(C.EXPECTED_LINES["judge_tail"])
 
 def parse_boot_key(key):
     """W2-A-sht-r1 -> (window, arm, boot, rep)."""
-    m = re.match(r"^(W\d)-([AB])-([a-z]+)-r(\d+)$", key)
+    m = re.match(r"^(W\d[a-z]?)-([AB])-([a-z]+)-r(\d+)$", key)
     return m.groups() if m else None
 
 
@@ -941,7 +963,7 @@ def _tmpdir():
 
 def main():
     ap = argparse.ArgumentParser(description="Phase-2 leg invocations: print, run, check, freeze pilot")
-    ap.add_argument("--window", default="W1", choices=["W1", "W2", "W3", "W4"])
+    ap.add_argument("--window", default="W1", choices=sorted(C.WINDOWS))
     ap.add_argument("--arm", choices=["A", "B"])
     ap.add_argument("--boot", default=None, help="boot group (W2: dec or sht); default from --shape")
     ap.add_argument("--rep", type=int, default=1)
@@ -960,6 +982,10 @@ def main():
 
     if a.selftest:
         return selftest()
+    for flag, value in (("--runbook", a.runbook), ("--check", a.check),
+                        ("--freeze-pilot", a.freeze_pilot)):
+        if value and value not in C.WINDOWS:
+            ap.error(flag + " " + value + " is not a window: choose " + ", ".join(sorted(C.WINDOWS)))
     if a.runbook:
         print(runbook(a.out_dir, a.runbook))
         return 0

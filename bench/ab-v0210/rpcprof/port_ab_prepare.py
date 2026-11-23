@@ -121,7 +121,9 @@ def prepare_configs(out):
         for row in legs.schedule(window):
             arm, boot, rep = row["arm"], row["boot"], row["rep"]
             cfg, deltas, paths = pc.derive(arm, window=window, rep=rep, out=out, boot=boot)
-            problems = pc.check_tuple(cfg, arm)
+            # the window decides the margins mode: a W1d config must prove BOTH reserve flags
+            # absent instead of carrying the tuple's 256/192
+            problems = pc.check_tuple(cfg, arm, window=window)
             if problems:
                 raise SystemExit("; ".join(problems))
             target = pathlib.Path(paths["config"])
@@ -171,6 +173,13 @@ def leg_section(out, window):
                 del words[i:i + 2]
             example[arm] = " ".join(words) + "   # --engine-pid is added by --run"
         cs = C.corpus_shape(shape)
+        gates = list(C.GATES["ttft" if C.kind_for(shape, window) == "ttft" else
+                             ("decode" if C.kind_for(shape, window) == "tg" else "prefill")])
+        if C.margins_mode(window) == "engine-default":
+            # the shared gate text names the tuple's 256/192; this window supersedes it
+            gates.append("engine-default margins (operator directive 2026-11-23 23:00): "
+                         "--vram-reserve-mib and --vram-reserve-later-mib must be ABSENT from "
+                         "the engine boot line - a reserve flag here means the wrong boot")
         rows[shape] = {
             "kind": C.kind_for(shape, window),
             "boot_group": boot,
@@ -186,8 +195,7 @@ def leg_section(out, window):
                                       ("judge", "judge_tail", "dflash", "boot_started",
                                        "boot_helper", "boot_helper_proxy", "boot_cache",
                                        "boot_split", "boot_fs", "low_warning", "restart")],
-            "gates": C.GATES["ttft" if C.kind_for(shape, window) == "ttft" else
-                             ("decode" if C.kind_for(shape, window) == "tg" else "prefill")],
+            "gates": gates,
             "metric": ("TTFT per turn + inter-turn wall (next first token - previous finish)"
                        if C.kind_for(shape, window) == "ttft"
                        else ("request 2 gen_tps (cached re-run); request 1 read_tps recorded"
@@ -251,6 +259,10 @@ def prepare(out, do_preflight=True, previous_manifest=None):
         contract = C.window_contract_budget_s(window)
         entry = {
             "name": spec["name"],
+            # how the window's configs carry the VRAM reserves: "explicit" writes the tuple's
+            # 256/192, "engine-default" (W1d, operator directive 2026-11-23 23:00) removes both
+            # flags so the engine's own margins apply
+            "margins": C.margins_mode(window),
             "boot_groups": spec["boot_groups"],
             "legs_per_boot": spec["legs_per_boot"],
             "boots_per_arm": spec.get("boots_per_arm"),
@@ -420,7 +432,8 @@ def verify():
             continue
         cfg = json.loads(path.read_text())
         arm = row.get("arm") or key.split("-")[1]
-        for p in pc.check_tuple(cfg, arm):
+        # a frozen W1d config must prove both reserve flags ABSENT, not carry the tuple's 256/192
+        for p in pc.check_tuple(cfg, arm, window=row.get("window") or key.split("-")[0]):
             problems.append(key + ": " + p)
     for key in scheduled:
         if key not in manifest["configs"]:

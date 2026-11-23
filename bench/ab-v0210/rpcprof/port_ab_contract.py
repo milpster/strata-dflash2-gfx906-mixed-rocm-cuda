@@ -18,6 +18,13 @@ Sources (plan/measurement-contract-speed-attribution-faults.md, approved 2026-11
     FOLLOW-UP window at n>=3 (3v3: C(6,3)=20, min p = 0.10), never to this one;
   * prerequisite 0: >=15 GiB MemAvailable pre-boot, non-engine RSS <=8 GiB, no non-pinned
     process above ~50 % of a core on the stage cores, >=40 GiB free for the cache dir.
+  * W1d (operator directive 2026-11-23 23:00) is W1's window re-run with the ENGINE'S OWN
+    DEFAULT VRAM margins: both reserve flags are absent instead of 256/192. It is a SEPARATE
+    window with its own boot keys, so W1's evidence and config pins stay untouched. On this
+    rig a default-margins boot measured today reserves 700 MiB per card (not 256/192), brings
+    card0's expert cache up at 4,116 slots (not 5,739), leaves 728/648 MiB free VRAM after
+    load, and flips the Foresight swap grant from 0 slots to card0:2/card1:8 - so a W1d
+    result is NOT attributable to the reserves alone. See the W1d entry for the full note.
 """
 from __future__ import annotations
 
@@ -54,8 +61,9 @@ LEGS = {
     # kind=tg issues the SAME prompt twice: request 1 is the fresh prefill, request 2 the
     # cached re-run. The decode rate is request 2's gen rate (the contract's "request 2 of the
     # boot, 1024-token cap"); request 1's read rate is the prefill, already owned by W1.
-    "pp239k": {"kind": "prefill", "kind_by_window": {"W1": "prefill", "W3": "tg"},
-               "max_tokens": {"W1": 8, "W3": 1024}},
+    "pp239k": {"kind": "prefill",
+               "kind_by_window": {"W1": "prefill", "W1d": "prefill", "W3": "tg"},
+               "max_tokens": {"W1": 8, "W1d": 8, "W3": 1024}},
     "dec144k": {"kind": "prefill", "kind_by_window": {"W2": "tg", "W4": "tg"},
                 "max_tokens": {"W2": 1024, "W4": 1024}},
     "pp2k": {"kind": "prefill", "max_tokens": {"W2": 32}},
@@ -102,6 +110,7 @@ INTERLEAVE_PAIRS = (("A", 1), ("B", 1), ("B", 2), ("A", 2))
 WINDOWS = {
     "W1": {
         "name": "prefill rate, 239,663-token frozen corpus",
+        "margins": "explicit",         # both reserve flags written from TUPLE (256/192)
         "boot_groups": {"pp": ["pp239k"]},
         "legs_per_boot": {"pp": 1},
         "boots_per_arm": REPS,
@@ -111,8 +120,49 @@ WINDOWS = {
         "gate_metric": "read_tps",
         "delta": 0.05,
     },
+    # Operator directive 2026-11-23 23:00: re-run W1's speed window with the ENGINE'S OWN
+    # DEFAULT VRAM margins. Every W1d config has BOTH --vram-reserve-mib and
+    # --vram-reserve-later-mib REMOVED (port_ab_configs.derive calls ensure_absent and records
+    # each removal as an "operator-directive" delta); nothing else about the leg differs from
+    # W1, which keeps writing 256/192. Purpose: see whether the XDMA permission fault that
+    # recurs during the W1 claim sequence stops recurring under default margins.
+    #
+    # What a default-margins boot is KNOWN to change on this rig (measured today, 2026-11-23,
+    # on the live faultdiff leg): the engine reserved 700 MiB on each card instead of 256/192;
+    # card0's expert cache came up with 4,116 slots instead of 5,739; post-load free VRAM was
+    # 728/648 MiB; and the Foresight swap grant FLIPPED from 0 slots to card0:2/card1:8.
+    # ATTRIBUTION LIMIT: because the Foresight grant flips with the reserves, a W1d result is
+    # NOT attributable to the reserves alone - it is the default-margins BOOT (reserves +
+    # cache size + swap grant together) against W1's pinned tuple. W1d is descriptive-only for
+    # that reason and for the n=2/arm reason CLAIM states; it must never be read as "the
+    # reserves cost X".
+    #
+    # W1d has its own window id and therefore its own boot keys (W1d-*) and config paths, so
+    # W1's records, evidence and manifest config pins are never overwritten.
+    "W1d": {
+        "name": "prefill rate, 239,663-token frozen corpus, engine-default VRAM margins "
+                "(operator-directed rerun of W1)",
+        "margins": "engine-default",   # both reserve flags REMOVED, not set
+        "boot_groups": {"pp": ["pp239k"]},
+        "legs_per_boot": {"pp": 1},
+        "boots_per_arm": REPS,
+        "warmup_boots": 2,
+        "budget_s": None,             # derived below, identical boot shape to W1
+        "contract_budget_s": [5400, 9000],   # inherited from W1 (same boot shape); the
+                                             # contract itself says nothing about a
+                                             # default-margins rerun
+        "gate_metric": "read_tps",
+        "delta": 0.05,
+        "delta_note": "W1's pre-registered 5 % prefill delta is kept for reference only: W1d "
+                      "is a separate, descriptive-only window (n=2/arm, and the boot differs in "
+                      "more than the reserves)",
+        "boot_identity_note": "engine-default margins: --vram-reserve-mib and "
+                              "--vram-reserve-later-mib absent from the engine argv, so the "
+                              "leg runner's tuple gate expects BOTH absent for a W1d boot",
+    },
     "W2": {
         "name": "144k decode + short-PP 2k/8k + 3-turn TTFT",
+        "margins": "explicit",
         "boot_groups": {"dec": ["dec144k"], "sht": ["pp2k", "pp8k", "ttft3"]},
         "legs_per_boot": {"dec": 1, "sht": 3},
         "boots_per_arm": REPS * 2,    # 2 decode boots + 2 short boots per arm
@@ -137,6 +187,7 @@ WINDOWS = {
     },
     "W3": {
         "name": "240k decode (each boot carries its own 239,663 prefill)",
+        "margins": "explicit",
         "boot_groups": {"pp": ["pp239k"]},
         "legs_per_boot": {"pp": 1},
         "boots_per_arm": REPS,
@@ -148,6 +199,7 @@ WINDOWS = {
     },
     "W4": {
         "name": "2x2 engine x server cell (veto-only)",
+        "margins": "explicit",
         "boot_groups": {"dec": ["dec144k"]},
         "legs_per_boot": {"dec": 1},
         "cells": ["A-engine+B-server", "B-engine+A-server"],
@@ -220,6 +272,9 @@ def budget_derivation() -> dict:
     # 2 arms x REPS claim boots, plus the discarded boots each window spends
     claim = 2 * REPS                                              # n=2/arm -> 4 claim boots
     w1_total = claim + WINDOWS["W1"]["warmup_boots"]              # 4 claim + 2 warmup = 6
+    # W1d carries the identical boot shape (one 239,663 prefill leg per boot, 2 warmups), so
+    # its range is W1's arithmetic and nothing new is claimed about default-margins speed.
+    w1d_total = claim + WINDOWS["W1d"]["warmup_boots"]            # 4 claim + 2 warmup = 6
     # per-arm counts become per-window counts: one discarded boot per arm per boot group
     w2_dec_warmup = 2 * WINDOWS["W2"]["decode_warmup"]["boots_per_arm"]   # 2 arms x 1
     w2_sht_pilot = 2 * WINDOWS["W2"]["pilot"]["boots_per_arm"]            # 2 arms x 1
@@ -237,6 +292,17 @@ def budget_derivation() -> dict:
                      "(2 per arm) + 2 warmup; 690-1,150 s per leg, 180-300 s per boot",
             "range_s": [w1_total * W1_LEG_S[0] + w1_total * BOOT_S[0],
                         w1_total * W1_LEG_S[1] + w1_total * BOOT_S[1]],
+        },
+        "W1d": {
+            "boots": {"claim": claim, "warmup": WINDOWS["W1d"]["warmup_boots"],
+                      "total": w1d_total},
+            "terms": str(w1d_total) + " boots x (239,663 prefill leg + boot) = 4 claim "
+                     "(2 per arm) + 2 warmup; same shape as W1 (engine-default margins change "
+                     "the boot, not the leg)",
+            "range_s": [w1d_total * W1_LEG_S[0] + w1d_total * BOOT_S[0],
+                        w1d_total * W1_LEG_S[1] + w1d_total * BOOT_S[1]],
+            "note": "inherits W1's anchors; a default-margins boot has no separate speed "
+                    "anchor and must not be given one before it is measured",
         },
         "W2": {
             "boots": {"decode_claim": claim, "decode_warmup": w2_dec_warmup,
@@ -265,6 +331,18 @@ def budget_derivation() -> dict:
             "range_s": [w4_total * (dec_fast + BOOT_S[0]), w4_total * (dec_slow + BOOT_S[1])],
         },
     }
+
+
+def margins_mode(window):
+    """How this window's configs carry the VRAM reserves.
+
+    "explicit"       - derive() writes --vram-reserve-mib / --vram-reserve-later-mib from
+                       TUPLE (256/192), the frozen Phase-2 tuple.
+    "engine-default" - derive() REMOVES both flags (ensure_absent), so the engine's own
+                       defaults apply. See the W1d entry for what that changes on this rig and
+                       why such a result is not attributable to the reserves alone.
+    """
+    return WINDOWS[window].get("margins", "explicit")
 
 
 def shapes_of(window):

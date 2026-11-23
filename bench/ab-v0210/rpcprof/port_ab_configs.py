@@ -211,11 +211,23 @@ def derive(arm, *, window, rep, out, port=None, base_override=None, boot=None):
     for key in ("expert_helper_socket", "expert_helper_socket2"):
         cfg.pop(key, None)
 
-    # 3. the frozen tuple in the engine arguments
-    args = set_arg(args, "--vram-reserve-mib", TUPLE["vram_reserve_mib"], allow_add=True,
-                   deltas=deltas, who="tuple")
-    args = set_arg(args, "--vram-reserve-later-mib", TUPLE["vram_reserve_later_mib"],
-                   allow_add=True, deltas=deltas, who="tuple")
+    # 3. the frozen tuple in the engine arguments. The VRAM reserves follow the window's
+    #    margins mode: every window except W1d writes the frozen 256/192 from TUPLE, while an
+    #    engine-default window (W1d, operator directive 2026-11-23 23:00) must carry NEITHER
+    #    flag, so both are REMOVED here and the removal is recorded as an operator-directive
+    #    delta. What that changes on this rig (measured 2026-11-23 on the live faultdiff leg):
+    #    the engine reserves 700 MiB per card instead of 256/192, card0's expert cache comes up
+    #    at 4,116 slots instead of 5,739, post-load free VRAM is 728/648 MiB, and the Foresight
+    #    swap grant flips from 0 slots to card0:2/card1:8 - so such a boot is NOT "W1 minus the
+    #    reserves"; see port_ab_contract.WINDOWS["W1d"].
+    if C.margins_mode(window) == "engine-default":
+        args = ensure_absent(args, "--vram-reserve-mib", deltas, "operator-directive")
+        args = ensure_absent(args, "--vram-reserve-later-mib", deltas, "operator-directive")
+    else:
+        args = set_arg(args, "--vram-reserve-mib", TUPLE["vram_reserve_mib"], allow_add=True,
+                       deltas=deltas, who="tuple")
+        args = set_arg(args, "--vram-reserve-later-mib", TUPLE["vram_reserve_later_mib"],
+                       allow_add=True, deltas=deltas, who="tuple")
     args = set_arg(args, "--spec", TUPLE["spec"], allow_add=True, deltas=deltas, who="tuple")
     args = set_arg(args, "--dflash-block", TUPLE["dflash_block"], allow_add=True, deltas=deltas,
                    who="tuple")
@@ -265,8 +277,11 @@ def derive(arm, *, window, rep, out, port=None, base_override=None, boot=None):
     args = set_arg(args, "--conversation-cache-dir", paths["cache_dir"], allow_add=True,
                    deltas=deltas, who="harness")
     cfg["args"] = args
-    cfg["trial_note"] = ("port-ab leg " + paths["key"] + ": frozen Phase-2 tuple (reserves "
-                         + str(TUPLE["vram_reserve_mib"]) + "/" + str(TUPLE["vram_reserve_later_mib"])
+    reserves_note = ("engine-default reserves (both reserve flags absent, operator directive "
+                     "2026-11-23 23:00)" if C.margins_mode(window) == "engine-default" else
+                     "reserves " + str(TUPLE["vram_reserve_mib"]) + "/"
+                     + str(TUPLE["vram_reserve_later_mib"]))
+    cfg["trial_note"] = ("port-ab leg " + paths["key"] + ": frozen Phase-2 tuple (" + reserves_note
                          + ", budget " + str(TUPLE["ram_budget_mib"]) + ", spec " + str(TUPLE["spec"])
                          + ", dflash-block " + str(TUPLE["dflash_block"]) + ", layer-split "
                          + str(TUPLE["layer_split"]) + ", helper slots " + str(TUPLE["helper_slots"])
@@ -328,15 +343,27 @@ def cross_arm_diffs(a, b):
     return diffs
 
 
-def check_tuple(cfg, arm):
-    """Fail-closed check that the config the server execs carries the whole frozen tuple."""
+def check_tuple(cfg, arm, *, window=None):
+    """Fail-closed check that the config the server execs carries the whole frozen tuple.
+
+    window selects the margins mode: an absent window means "explicit" (both reserves written
+    from TUPLE), an engine-default window (W1d) must carry NEITHER reserve flag, so their
+    presence there is the failure and their absence is what a W1d config must prove.
+    """
     problems = []
     args = cfg["args"]
-    for flag, value in (("--vram-reserve-mib", TUPLE["vram_reserve_mib"]),
-                        ("--vram-reserve-later-mib", TUPLE["vram_reserve_later_mib"]),
-                        ("--spec", TUPLE["spec"]),
-                        ("--dflash-block", TUPLE["dflash_block"]),
-                        ("--expert-helper-slots", TUPLE["helper_slots"])):
+    margins = C.margins_mode(window) if window in C.WINDOWS else "explicit"
+    if margins == "engine-default":
+        for flag in ("--vram-reserve-mib", "--vram-reserve-later-mib"):
+            if arg_value(args, flag) is not None:
+                problems.append(arm + ": " + flag + " is " + repr(arg_value(args, flag))
+                                + " but the window runs with engine-default margins")
+    reserve_tuple = () if margins == "engine-default" else (
+        ("--vram-reserve-mib", TUPLE["vram_reserve_mib"]),
+        ("--vram-reserve-later-mib", TUPLE["vram_reserve_later_mib"]))
+    for flag, value in reserve_tuple + (("--spec", TUPLE["spec"]),
+                                        ("--dflash-block", TUPLE["dflash_block"]),
+                                        ("--expert-helper-slots", TUPLE["helper_slots"])):
         if arg_value(args, flag) != str(value):
             problems.append(arm + ": " + flag + " is " + repr(arg_value(args, flag))
                             + ", tuple says " + str(value))
@@ -402,7 +429,7 @@ def helper_env():
 def main():
     ap = argparse.ArgumentParser(description="derive the Phase-2 arm configs from the frozen tuple")
     ap.add_argument("--arm", required=True, choices=["A", "B"])
-    ap.add_argument("--window", default="W1")
+    ap.add_argument("--window", default="W1", choices=sorted(C.WINDOWS))
     ap.add_argument("--boot", default=None, help="boot group (W2: dec or sht)")
     ap.add_argument("--rep", type=int, default=1)
     ap.add_argument("--out-dir", type=pathlib.Path, default=OUT_DEFAULT)
@@ -412,7 +439,7 @@ def main():
     a = ap.parse_args()
     cfg, deltas, paths = derive(a.arm, window=a.window, rep=a.rep, out=a.out_dir,
                                 port=a.port, boot=a.boot)
-    problems = check_tuple(cfg, a.arm)
+    problems = check_tuple(cfg, a.arm, window=a.window)
     for p in problems:
         print("PROBLEM: " + p, file=sys.stderr)
     if problems:
