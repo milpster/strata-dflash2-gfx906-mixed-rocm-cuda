@@ -56,17 +56,47 @@ fault path is unproven until it is forced:
 ./build/hip-fault-repro --mode cycle --positive-control --dev 1 --pci 0000:09:00.0 ...
 ```
 
-It queues a scan, then `hipHostUnregister` + `munmap` + `fadvise` **while
-that scan is in flight** — the engine's park/restore race, deliberately. The
-control passes on a **memory-fault class** result: exit 3 with
-`positive control: memory fault detected as expected`, or a signal kill
-(128+signal) whose log ends in the `FATAL signal` block — a fault that killed
-the process has proved the detector just as well. Exit 7 means the unmap was
-rejected without a memory fault (`positive control INCONCLUSIVE`), e.g.
-`hipErrorInvalidValue` from a busy range: that does **not** certify the
-detector. Exit 6 means no error at all was returned; the fault path is unproven
-and a clean long leg cannot be interpreted. Run it once per window, before the
-long leg, and record the exit code and the `positive control:` log line.
+It runs four measured steps and stops at the first that produces a memory fault:
+
+| step | what it does | measured on this box, 2026-11-24 (10 runs) |
+|---|---|---|
+| 0 | one 64 MiB scan + sync, no race | 286–313 ms cold, 125–170 ms warm (10 runs) |
+| 1 | the original control order, timed | `unregister` 127–216 ms ≈ the whole scan, `munmap` 2.1–2.8 ms, `sync` 4–8 µs, no fault |
+| 2 | the same order, but a 16-repeat scan (~3.2 s) in flight | `unregister` 3.09–3.46 s = the whole scan, no fault |
+| 3 | a 16-repeat scan, then `munmap` while the registration is still live | `munmap` 1.1–2.0 ms, then the process aborted: exit 134, `FATAL signal 6`, kernel `no-retry page fault` with `PERMISSION_FAULTS: 0x3` at vmid 8 |
+
+Step 3 is the engine's shape: the host revokes the range while the device is
+still reading it. On ROCm 6.1.0 the HSA runtime prints `Memory access fault by
+GPU node-2 … Page not present or supervisor privilege` and aborts, so the
+control's pass is a signal kill, 128+SIGABRT = 134, with a `FATAL signal`
+block in the log. Step 3 runs last because it always ends the process.
+
+Why the older one-step control could never fire, measured in steps 1 and 2:
+`hipHostUnregister` is **blocking** — it waits for the device to go idle, so
+the `munmap` that follows always lands after the scan has finished. Its
+elapsed time equals the scan's, and the same holds for a scan held in flight
+for 3.2 s. The munmap alone does revoke the device translation (step 3 proves
+it); the race is only unreachable *behind a blocking unregister*.
+
+A device read of an already-unregistered VA faults the same way (a variant of
+step 3 was run: unregister + munmap, then a scan of the old device VA, also
+SIGABRT with a permission fault). It is not a separate step: either probe ends
+the process, and the in-flight munmap is the shape the engine actually has.
+
+A memory fault is the only pass. Exit 7 means every step was rejected without
+one (`positive control INCONCLUSIVE`), e.g. `hipErrorInvalidValue` from a busy
+range: that does **not** certify the detector. Exit 6 means no error at all was
+returned and no signal arrived; the fault path is unproven and a clean long leg
+cannot be interpreted. Run it once per window, before the long leg, and record
+the exit code and the `positive control:` lines.
+
+Step 0 also guards the detector itself: a kernel launch that fails
+(`hipGetLastError` != `hipErrorSuccess`) is a setup error (exit 2), never a
+clean scan. Before 2026-11-24 the binary was built for plain `gfx906`, which
+does not load on this box's `gfx906:sramecc+:xnack-` device: every launch
+failed with `hipErrorInvalidDeviceFunction` (98), `hipDeviceSynchronize` still
+returned success, and no scan ever ran. That is what the old control's
+`unregister=no error code=0 … sync=no error code=0` line actually showed.
 
 ## The differential
 
@@ -75,18 +105,29 @@ long leg, and record the exit code and the `positive control:` log line.
 | **cycle** faults (exit 3/4, or SIGABRT with a `FATAL signal` block) | the platform space: a 64 MiB file mapping taken through eviction, refault and re-registration under live device reads cannot survive it without any Strata code. The engine's buffer handling is exonerated as the *origin*; only a config or hardware change helps. |
 | **cycle** clean for hours | this eviction/refault/re-registration path is stable on this box. It does **not** exonerate the engine's remaining deltas: pool growth, SVM range churn, concurrent queues, the 40 GiB working set. |
 | **file/anon** clean | only that a registered mapping read at maximum rate is stable. No churn was applied to the scanned pages (mapped, pinned folios are skipped by `invalidate_mapping_pages`). This row must never be written as "churn exonerated". |
-| **positive control** exit 3 or 128+signal with `FATAL signal` | the detector's fault path works: a memory fault was returned, or the fault killed the process. |
+| **positive control** exit 3 or 128+signal with `FATAL signal` | the detector's fault path works: a memory fault was returned, or the fault killed the process. Measured here: exit 134 (SIGABRT) at step 3. |
 | **positive control** exit 6 or 7 | the race did not produce a memory fault (no error / non-fault error); a clean long leg is uninterpretable until the control passes. |
 
 ## Build
 
 Needs the ROCm 6.1.0 gfx906 userspace and, on this box, GCC 13 headers for the
 ROCm clang (clang 17 cannot parse the default GCC 15.2 libstdc++). The
-CMakeLists forces `CMAKE_HIP_ARCHITECTURES=gfx906` before `project()` unless
-it is defined (the `amdgpu-arch` probe here is poisoned by
-`HSA_OVERRIDE_GFX_VERSION`), and sets `--gcc-install-dir`,
+CMakeLists forces
+`CMAKE_HIP_ARCHITECTURES="gfx906:sramecc+:xnack-;gfx906:sramecc-:xnack-"`
+before `project()` unless it is defined (the `amdgpu-arch` probe here is
+poisoned by `HSA_OVERRIDE_GFX_VERSION`), and sets `--gcc-install-dir`,
 `-isystem /opt/rocm-6.1.0/include` and `-L/opt/rocm-6.1.0/lib` itself. Never
 build or link against `/opt/rocm` 7.x.
+
+The feature-qualified target is required, not cosmetic. Measured 2026-11-24: a
+plain `gfx906` code object does **not** load on this box's
+`gfx906:sramecc+:xnack-` device. `hipLaunchKernelGGL` sets
+`hipErrorInvalidDeviceFunction` (98) and `hipDeviceSynchronize` still returns
+`hipErrorSuccess`, so every scan silently never ran and the checksums read 0.
+Check the built targets with `roc-obj-ls build/hip-fault-repro`; they must
+carry `sramecc`/`xnack` feature bits. Clang rejects a mixture of plain and
+feature-qualified gfx906 in one build, so both sramecc variants are built and
+the loader picks the exact match.
 
 ```sh
 cd bench/gpu-fault-repro
@@ -127,7 +168,8 @@ Before the window, with the engine down and the run dir empty:
    without `--pci`, the program refuses any device whose `gcnArchName` does not
    start with `gfx906`.
 
-Positive control first (expect exit 3), then the long leg:
+Positive control first (expect exit 134, a memory-fault abort; anything else is
+a failed control), then the long leg:
 
 ```sh
 cd bench/gpu-fault-repro
@@ -151,7 +193,7 @@ tail -f ./run/repro-*.log          # live progress: HB lines, cycles, churn, fau
 | `--cycle-sec N` | 30 | cycle period in `--mode cycle`; 0 = cycle before every scan |
 | `--host-write-sec N` | 30 | host coherence probe, one word per page; 0 = off |
 | `--mode cycle\|file\|anon` | cycle | see *What it tests* |
-| `--positive-control` | off | in-flight unmap race; expects exit 3 |
+| `--positive-control` | off | measured multi-step in-flight unmap race; expects exit 128+SIGABRT |
 | `--dummy-dir DIR` | `./run` | run directory (scan.bin / park files, created) |
 | `--log FILE` | `hip-fault-repro.log` | append-only log (parent dirs created) |
 
@@ -183,10 +225,11 @@ slice below. If the process was killed by a signal, the log ends with
 Clean exit prints
 `DONE scans=… elapsed=…s, no HIP fault, no checksum fault`. A run whose churn
 under-delivered prints `DONE scans=… elapsed=…s, CHURN DEFECT ticks=… expected~…`.
-Exit codes: 0 clean, 2 usage/setup, 3 HIP fault (also the positive control's
-pass), 4 checksum fault, 5 churn defect, 6 positive control failed (no error at
-all), 7 positive control inconclusive (rejected without a memory fault),
-128+signal when a signal ended it (a control killed by a signal passes).
+Exit codes: 0 clean, 2 usage/setup, 3 HIP fault (a positive control pass when a
+fault class is returned), 4 checksum fault, 5 churn defect, 6 positive control
+failed (no error at all), 7 positive control inconclusive (rejected without a
+memory fault), 128+signal when a signal ended it (the control's usual pass on
+this box is 134 = 128+SIGABRT).
 
 ## Limits (read before interpreting a clean run)
 
@@ -219,10 +262,11 @@ all), 7 positive control inconclusive (rejected without a memory fault),
   replaced or zero-filled pages, permutations and large bit changes; it does
   not catch equal-sum corruptions, and it says nothing about pages the device
   never read before a fault.
-- **Scans are maximally hot.** A full 64 MiB read takes roughly 11 ms over PCIe,
-  so every page is touched every ~11 ms; the engine touches host pages in
-  bursts. Hot, uniform, read-only-between-writes access is the easiest case for
-  a mapping to survive.
+- **Scans are hot but slow.** Measured on this box: a full 64 MiB scan takes
+  **125–149 ms** (16,384 blocks × 256 threads, ~0.5 GB/s effective over PCIe),
+  and 294–316 ms cold, so every page is touched every ~0.13 s. The engine
+  touches host pages in bursts. Hot, uniform, read-only-between-writes access
+  is the easiest case for a mapping to survive.
 - **The churn rate is far below the working set.** 8 MiB every 2 s is ~4 MiB/s
   against the engine's ~40 GiB of parked/working data.
 - **One copy queue.** The device reads through one kernel launch loop with a
@@ -232,7 +276,19 @@ all), 7 positive control inconclusive (rejected without a memory fault),
   exits 2 with `SETUP ERROR hipHostRegister(file mapping)`, record the error
   and run `--mode anon`; the refusal is itself a platform fact about this
   kernel/driver.
-- **Untested on hardware.** This commit is code plus docs. The source compiles
-  clean with ROCm 6.1.0 clang for gfx906 (`-Wall -Wextra`, host and device
-  pass) and that is the only validation it has. The first run is a
-  parent-window step.
+- **The control and the engine's fault share the class, not the client.** The
+  engine's live fault is `[mmhub0] ... IH client 0x12 (VMC)` with
+  `Faulty UTCL2 client ID: XDMA (0x0)` — its helper's DMA engine reading a
+  parked host page. The control's fault is `[gfxhub0] ... IH client 0x1b
+  (UTCL2)` with `TCP (0x8)` — a shader read. Both are `PERMISSION_FAULTS:
+  0x3`, vmid 8, on `0000:09:00.0`, and both end the process; a pass therefore
+  certifies *a GPU permission fault on revoked host pages reaches this
+  process*, not that the XDMA client in particular was exercised. The control
+  cannot speak for the DMA path.
+- **Validation is partial.** Measured 2026-11-24 on GUAM, card 09:00.0, with
+  the engine down: the positive control (6 runs, all exit 134) and a 20 s
+  `--mode file` leg (exit 0, 122 scans, no checksum fault). The long
+  `--mode cycle` leg has **not** been run: it is still the first parent-window
+  step. Earlier commits were code plus docs only; the source compiles clean
+  with ROCm 6.1.0 clang for gfx906 (`-Wall -Wextra`, host and device pass), and
+  the build is the only validation those earlier commits had.

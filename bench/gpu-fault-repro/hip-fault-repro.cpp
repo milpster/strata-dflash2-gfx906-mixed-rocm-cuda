@@ -10,10 +10,21 @@
 //   --mode anon scans a hipHostMalloc buffer with a separate park file. Those
 //   two test only branch 1: a registered mapping read at max rate is stable.
 //
-// --positive-control runs once, before the long leg: it queues a scan, then
-// hipHostUnregister + munmap + fadvise WHILE THE SCAN IS IN FLIGHT. A detected
-// fault is the expected result (exit 3); anything else is a failed control
-// (exit 6) and the detector path is unproven.
+// --positive-control runs once, before the long leg. The original one-step
+// form (queue a scan, then hipHostUnregister + munmap) never fired, and this
+// file now measures why: hipHostUnregister is blocking (its elapsed time equals
+// the scan's, also for a scan held in flight for 3.2 s), so the munmap always
+// lands after device idle. A registration plus munmap does revoke the device
+// translation, so the control now queues a 16-repeat scan and munmaps WHILE
+// the registration is still live and the device is reading. Measured on ROCm
+// 6.1.0: the HSA runtime reports a GPU memory access fault and aborts, exit
+// 134, log ending in the FATAL signal block. That, or a fault-class HIP error
+// (exit 3), is the pass; exit 6/7 still means the control failed and a clean
+// long leg is uninterpretable.
+//
+// Every launch is checked with hipGetLastError: on this stack a failed launch
+// returns hipErrorInvalidDeviceFunction while hipDeviceSynchronize still
+// reports success, which once made a kernel that never ran look clean.
 //
 // --host-write-sec N (default 30) rewrites one word per page per tick: a cache
 // coherence probe, not a fault trigger; 0 turns it off.
@@ -26,7 +37,8 @@
 // ROCm 6.1.0 has no hipErrorMemoryFault: the class arrives as
 // hipErrorIllegalAddress / hipErrorLaunchFailure / hipErrorAssert or a signal.
 // Exit: 0 clean, 2 usage/setup, 3 HIP fault, 4 checksum fault, 5 churn defect,
-// 6 positive control failed, 128+signal.
+// 6 positive control failed, 7 positive control inconclusive (non-fault
+// rejection), 128+signal (the control's usual pass here: 134).
 
 #include <hip/hip_runtime.h>
 #include <atomic>
@@ -44,6 +56,7 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <thread>
+#include <time.h>
 #include <unistd.h>
 #include <vector>
 
@@ -80,6 +93,14 @@ static long cached_kb() {
   slurp("/proc/meminfo", mi, sizeof mi);
   const char* c = strstr(mi, "\nCached:");
   return c ? atol(c + 8) : -1;
+}
+
+// monotonic microseconds: the positive control's timings must not move when
+// the wall clock is adjusted mid-run
+static u64 now_us() {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (u64)ts.tv_sec * 1000000ull + (u64)(ts.tv_nsec / 1000);
 }
 
 static void logf_(const char* fmt, ...) {
@@ -150,25 +171,30 @@ static inline uint32_t pattern(size_t p, size_t i) {
   return (uint32_t)((p * kWords + i) & 0xFFFFFFu);
 }
 
+// repeat > 1 keeps the kernel reading the same buffer for roughly
+// repeat * (one 64 MiB scan), which the positive control needs to hold a scan
+// in flight long enough for a host-side unmap to overlap it.
 __global__ void scan_pages(const uint32_t* __restrict__ buf, u64* __restrict__ isum,
-                           u64* __restrict__ wsum, u64 pages) {
+                           u64* __restrict__ wsum, u64 pages, unsigned repeat) {
   __shared__ u64 si[256], sw[256];
   u64 p = blockIdx.x;
   if (p >= pages) return;
   unsigned t = threadIdx.x;
   const uint32_t* w = buf + p * kWords;
-  u64 a = 0, b = 0;
-  for (unsigned i = t; i < kWords; i += blockDim.x) {
-    a += w[i];
-    b += (u64)i * w[i];
-  }
-  si[t] = a, sw[t] = b;
-  __syncthreads();
-  for (unsigned s = blockDim.x / 2; s > 0; s >>= 1) {
-    if (t < s) si[t] += si[t + s], sw[t] += sw[t + s];
+  for (unsigned r = 0; r < repeat; ++r) {
+    u64 a = 0, b = 0;
+    for (unsigned i = t; i < kWords; i += blockDim.x) {
+      a += w[i];
+      b += (u64)i * w[i];
+    }
+    si[t] = a, sw[t] = b;
     __syncthreads();
+    for (unsigned s = blockDim.x / 2; s > 0; s >>= 1) {
+      if (t < s) si[t] += si[t + s], sw[t] += sw[t + s];
+      __syncthreads();
+    }
+    if (t == 0) isum[p] = si[0], wsum[p] = sw[0];
   }
-  if (t == 0) isum[p] = si[0], wsum[p] = sw[0];
 }
 
 // 0 anon, 1 file (no cycle), 2 cycle (default)
@@ -442,9 +468,12 @@ int main(int argc, char** argv) {
   logf_("buffer: host VA [%p,%p) device VA [%p,%p)", host, (char*)host + kBytes, dptr,
         (char*)dptr + kBytes);
 
-  auto scan1 = [&](const uint32_t* buf) {
+  auto scan1 = [&](const uint32_t* buf, unsigned repeat = 1) -> hipError_t {
     hipLaunchKernelGGL(scan_pages, dim3((unsigned)kPages), dim3(256), 0, 0, buf, disum, dwsum,
-                       (u64)kPages);
+                       (u64)kPages, repeat);
+    // A launch can fail without informing hipDeviceSynchronize on this stack;
+    // never let that read as a clean scan.
+    return hipGetLastError();
   };
   auto devfault = [&](const char* what, hipError_t e, u64 done) {
     logf_("HIP FAULT in %s: %s code=%d%s; last completed scan %llu", what,
@@ -456,29 +485,181 @@ int main(int argc, char** argv) {
   };
 
   if (positive) {  // the engine's park/restore race, deliberately
-    logf_("positive control: queueing a scan, then unregister+munmap while it is in flight");
-    scan1((const uint32_t*)dptr);
-    hipError_t ue = hipHostUnregister(host);
-    int unmap_rc = munmap(host, kBytes);
-    host = nullptr;
-    int frc = posix_fadvise(g_churn_fd, 0, 0, POSIX_FADV_DONTNEED);
-    hipError_t se = hipDeviceSynchronize();
-    bool faulted = fault_class(ue) || fault_class(se);
-    logf_("positive control: unregister=%s code=%d munmap=%d fadvise=%d sync=%s code=%d%s",
-          hipGetErrorString(ue), (int)ue, unmap_rc, frc, hipGetErrorString(se), (int)se,
-          faulted ? " [fault class]" : "");
-    if (faulted) {  // only a memory-fault class certifies the detector
-      dump_maps("positive control");
-      logf_("positive control: memory fault detected as expected (exit 3 is the control's pass)");
+    // Measured history: the original control (queue one 64 MiB scan, then
+    // unregister + munmap) never fired - five runs on 2026-11-24 all exit 6,
+    // and at the time the kernel never ran at all (see CMakeLists: plain
+    // gfx906 does not load here). Steps 1 and 2 now measure the blocking
+    // unregister that makes the original order race-free; step 3 revokes the
+    // range while the registration is live and the device is reading, which is
+    // the engine's shape and does fault. A pass is still only a memory-fault
+    // class: exit 3, or a signal that ends the log with a FATAL block.
+    bool rejected = false;  // some stage returned a non-fault error
+    auto pass = [&](const char* where, hipError_t e) {
+      dump_maps(where);
+      logf_("positive control: memory fault detected as expected at %s (%s code=%d); "
+            "exit 3 is the control's pass", where, hipGetErrorString(e), (int)e);
       die(3);
+    };
+    auto chk = [&](const char* what, hipError_t e) {  // fault -> pass, else record
+      if (e == hipSuccess) return;
+      if (fault_class(e)) pass(what, e);
+      rejected = true;
+      logf_("positive control: %s: %s code=%d (not a fault class; not a pass)", what,
+            hipGetErrorString(e), (int)e);
+    };
+    auto remap = [&]() {  // fresh mapping + registration, same file
+      void* m = mmap(nullptr, kBytes, PROT_READ | PROT_WRITE, MAP_SHARED, g_churn_fd, 0);
+      if (m == MAP_FAILED) {
+        logf_("SETUP ERROR positive control mmap: %s", strerror(errno));
+        die(2);
+      }
+      host = m;
+      hipError_t re =
+          hipHostRegister(host, kBytes, hipHostRegisterMapped | hipHostRegisterPortable);
+      if (re != hipSuccess) {
+        logf_("SETUP ERROR positive control hipHostRegister: %s code=%d",
+              hipGetErrorString(re), (int)re);
+        die(2);
+      }
+      hipchk(hipHostGetDevicePointer(&dptr, host, 0), "positive control hipHostGetDevicePointer");
+      logf_("positive control: remapped host VA [%p,%p) device VA [%p,%p)", host,
+            (char*)host + kBytes, dptr, (char*)dptr + kBytes);
+    };
+    // A launch that fails is a setup error (2), never a clean or a fault result.
+    auto launch = [&](const char* what, const void* buf, unsigned repeat) {
+      hipError_t le = scan1((const uint32_t*)buf, repeat);
+      if (le != hipSuccess) {
+        logf_("SETUP ERROR positive control %s launch: %s code=%d", what, hipGetErrorString(le),
+              (int)le);
+        dump_maps(what);
+        die(2);
+      }
+    };
+
+    // Step 0: with no race at all, how long does one scan take?
+    u64 t = now_us();
+    launch("step 0 cold", dptr, 1);
+    hipError_t e0 = hipDeviceSynchronize();
+    u64 us_cold = now_us() - t;
+    t = now_us();
+    launch("step 0 warm", dptr, 1);
+    if (e0 == hipSuccess) e0 = hipDeviceSynchronize();
+    u64 us_warm = now_us() - t;
+    logf_("positive control step 0: one 64 MiB scan+sync cold=%llu us warm=%llu us", us_cold,
+          us_warm);
+    chk("step 0 baseline scan", e0);
+
+    // Step 1: the original control, timed. If unregister covers the scan, its
+    // elapsed time is the scan time and munmap can never overlap device reads.
+    logf_("positive control step 1: queueing a scan, then unregister+munmap while it is in flight");
+    t = now_us();
+    launch("step 1", dptr, 1);
+    u64 t_launch1 = now_us() - t;
+    t = now_us();
+    hipError_t ue1 = hipHostUnregister(host);
+    u64 t_unreg1 = now_us() - t;
+    void* reg1 = host;
+    host = nullptr;
+    t = now_us();
+    int unmap1 = munmap(reg1, kBytes);
+    u64 t_unmap1 = now_us() - t;
+    int frc1 = posix_fadvise(g_churn_fd, 0, 0, POSIX_FADV_DONTNEED);
+    t = now_us();
+    hipError_t se1 = hipDeviceSynchronize();
+    u64 t_sync1 = now_us() - t;
+    logf_("positive control step 1: launch=%llu unregister=%llu munmap=%llu sync=%llu us "
+          "(warm scan %llu us); unregister=%s code=%d munmap=%d fadvise=%d sync=%s code=%d%s",
+          t_launch1, t_unreg1, t_unmap1, t_sync1, us_warm, hipGetErrorString(ue1), (int)ue1,
+          unmap1, frc1, hipGetErrorString(se1), (int)se1,
+          (fault_class(ue1) || fault_class(se1)) ? " [fault class]" : "");
+    chk("step 1 unregister", ue1);
+    if (unmap1 != 0) {
+      rejected = true;
+      logf_("positive control: step 1 munmap: %s", strerror(errno));
     }
-    if (ue != hipSuccess || se != hipSuccess) {
-      hipError_t bad = ue != hipSuccess ? ue : se;
-      logf_("positive control INCONCLUSIVE: rejected without a memory fault (%s code=%d); "
-            "detector path not proven", hipGetErrorString(bad), (int)bad);
+    chk("step 1 sync", se1);
+    logf_("positive control step 1: %s", t_unreg1 >= us_warm / 2
+              ? "unregister waited for the scan (blocking), so munmap followed device idle"
+              : "unregister returned before the scan could have finished (no blocking seen)");
+
+    // Step 2: same order, but the scan is held in flight for ~1 s. A
+    // non-blocking unregister would now leave a second of device reads to race.
+    remap();
+    const unsigned kRepeat = 16;  // ~16 x one scan: seconds of device reads
+    logf_("positive control step 2: queueing a %u-repeat scan (~%llu us), then unregister while "
+          "it is in flight", kRepeat, (u64)kRepeat * us_warm);
+    t = now_us();
+    launch("step 2", dptr, kRepeat);
+    u64 t_launch2 = now_us() - t;
+    t = now_us();
+    hipError_t ue2 = hipHostUnregister(host);
+    u64 t_unreg2 = now_us() - t;
+    void* reg2 = host;
+    host = nullptr;
+    t = now_us();
+    int unmap2 = munmap(reg2, kBytes);
+    u64 t_unmap2 = now_us() - t;
+    int frc2 = posix_fadvise(g_churn_fd, 0, 0, POSIX_FADV_DONTNEED);
+    t = now_us();
+    hipError_t se2 = hipDeviceSynchronize();
+    u64 t_sync2 = now_us() - t;
+    logf_("positive control step 2: launch=%llu unregister=%llu munmap=%llu sync=%llu us; "
+          "unregister=%s code=%d munmap=%d fadvise=%d sync=%s code=%d%s", t_launch2, t_unreg2,
+          t_unmap2, t_sync2, hipGetErrorString(ue2), (int)ue2, unmap2, frc2,
+          hipGetErrorString(se2), (int)se2, (fault_class(ue2) || fault_class(se2))
+              ? " [fault class]" : "");
+    chk("step 2 unregister with a long scan in flight", ue2);
+    if (unmap2 != 0) {
+      rejected = true;
+      logf_("positive control: step 2 munmap: %s", strerror(errno));
+    }
+    chk("step 2 sync", se2);
+    logf_("positive control step 2: %s", t_unreg2 >= (u64)kRepeat * us_warm / 2
+              ? "unregister waited for the long scan (blocking)"
+              : "unregister did not wait for the long scan");
+
+    // Step 3 (last, and fatal by construction on this platform): the engine's
+    // shape - munmap the range while the registration is still live and the
+    // device is reading it. Measured 2026-11-24: ROCm 6.1.0 aborts the process
+    // through the HSA runtime with a GPU memory access fault, so the log's
+    // FATAL block and the 128+SIGABRT exit are the control's pass. (A device
+    // read of an already-unregistered VA faults the same way; it is not probed
+    // here because either probe ends the process.)
+    remap();
+    logf_("positive control step 3: queueing a %u-repeat scan, then munmap while registered",
+          kRepeat);
+    launch("step 3", dptr, kRepeat);
+    t = now_us();
+    int unmap3 = munmap(host, kBytes);
+    u64 t_unmap3 = now_us() - t;
+    void* reg3 = host;
+    host = nullptr;
+    // Logged before the sync: the HSA abort arrives while the device is still
+    // scanning, so this is the last line the stage can write.
+    logf_("positive control step 3: munmap=%d in %llu us while the registration is still live and "
+          "the device is scanning; fadvise next, then sync", unmap3, t_unmap3);
+    int frc3 = posix_fadvise(g_churn_fd, 0, 0, POSIX_FADV_DONTNEED);
+    t = now_us();
+    hipError_t se3 = hipDeviceSynchronize();
+    u64 t_sync3 = now_us() - t;
+    hipError_t ue3 = hipHostUnregister(reg3);
+    logf_("positive control step 3: munmap=%d in %llu us fadvise=%d sync=%s code=%d in %llu us "
+          "unregister-after-munmap=%s code=%d%s", unmap3, t_unmap3, frc3,
+          hipGetErrorString(se3), (int)se3, t_sync3, hipGetErrorString(ue3), (int)ue3,
+          (fault_class(se3) || fault_class(ue3)) ? " [fault class]" : "");
+    if (unmap3 != 0) {
+      rejected = true;
+      logf_("positive control: step 3 munmap: %s", strerror(errno));
+    }
+    chk("step 3 sync after munmap-while-registered", se3);
+    chk("step 3 unregister after munmap", ue3);
+
+    if (rejected) {
+      logf_("positive control INCONCLUSIVE: rejected without a memory fault; detector path not "
+            "proven");
       die(7);
     }
-    logf_("positive control FAILED: no fault; detector path unproven");
+    logf_("positive control FAILED: no fault in any step; detector path unproven");
     die(6);
   }
 
@@ -538,7 +719,12 @@ int main(int argc, char** argv) {
       host_writes((uint32_t*)host, esum, ewsum, wround++);
       logf_("host write round %llu (one word per page)", wround);
     }
-    scan1((const uint32_t*)dptr);
+    hipError_t le = scan1((const uint32_t*)dptr);
+    if (le != hipSuccess) {  // a silent no-op launch must never look like a clean scan
+      if (fault_class(le)) devfault("scan_pages launch", le, n);
+      logf_("SETUP ERROR scan_pages launch: %s code=%d", hipGetErrorString(le), (int)le);
+      die(2);
+    }
     hipError_t e = hipDeviceSynchronize();
     if (e != hipSuccess) devfault("scan_pages", e, n);
     for (int k = 0; k < 2; ++k) {  // a copy that fails after a fault is a fault, not setup

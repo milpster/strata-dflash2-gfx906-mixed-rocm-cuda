@@ -20,13 +20,23 @@
 
 cmake_minimum_required(VERSION 3.21)
 
-# gfx906 must be in the cache before project(): CMake seeds HIP_ARCHITECTURES
-# during HIP compiler detection from amdgpu-arch, and on this box that probe is
-# poisoned by HSA_OVERRIDE_GFX_VERSION=9.0.6 (it answers by override, not by
-# card). FORCE before project() beats the probe; a cache entry set afterwards
-# does not. A -D on the command line still wins because the guard skips FORCE.
+# gfx906 targets must be in the cache before project(): CMake seeds
+# HIP_ARCHITECTURES during HIP compiler detection from amdgpu-arch, and on this
+# box that probe is poisoned by HSA_OVERRIDE_GFX_VERSION=9.0.6 (it answers by
+# override, not by card). FORCE before project() beats the probe; a cache entry
+# set afterwards does not. A -D on the command line still wins because the guard
+# skips FORCE.
+# Measured 2026-11-24: a plain `gfx906` code object does NOT load on this
+# box's gfx906:sramecc+:xnack- device. hipLaunchKernelGGL sets
+# hipErrorInvalidDeviceFunction (98) and hipDeviceSynchronize still returns
+# hipErrorSuccess, so the scan silently never ran. The target must carry the
+# device's features. Clang refuses a mixture of feature-qualified and plain
+# gfx906 in one build ("a feature should either exist in all offload archs, or
+# not exist in any"), so the plain target is dropped and both sramecc variants
+# are built; the loader picks the exact match.
 if(NOT DEFINED CMAKE_HIP_ARCHITECTURES)
-  set(CMAKE_HIP_ARCHITECTURES gfx906 CACHE STRING "" FORCE)
+  set(CMAKE_HIP_ARCHITECTURES "gfx906:sramecc+:xnack-;gfx906:sramecc-:xnack-"
+      CACHE STRING "" FORCE)
 endif()
 
 # Host-compiler and header details, neither of them a GPU one. Applied only when
