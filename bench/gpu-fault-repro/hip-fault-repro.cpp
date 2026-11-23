@@ -463,13 +463,20 @@ int main(int argc, char** argv) {
     host = nullptr;
     int frc = posix_fadvise(g_churn_fd, 0, 0, POSIX_FADV_DONTNEED);
     hipError_t se = hipDeviceSynchronize();
+    bool faulted = fault_class(ue) || fault_class(se);
     logf_("positive control: unregister=%s code=%d munmap=%d fadvise=%d sync=%s code=%d%s",
           hipGetErrorString(ue), (int)ue, unmap_rc, frc, hipGetErrorString(se), (int)se,
-          fault_class(ue) || fault_class(se) ? " [fault class]" : "");
-    if (ue != hipSuccess || se != hipSuccess) {
+          faulted ? " [fault class]" : "");
+    if (faulted) {  // only a memory-fault class certifies the detector
       dump_maps("positive control");
-      logf_("positive control: fault detected as expected (this exit 3 is the control's pass)");
+      logf_("positive control: memory fault detected as expected (exit 3 is the control's pass)");
       die(3);
+    }
+    if (ue != hipSuccess || se != hipSuccess) {
+      hipError_t bad = ue != hipSuccess ? ue : se;
+      logf_("positive control INCONCLUSIVE: rejected without a memory fault (%s code=%d); "
+            "detector path not proven", hipGetErrorString(bad), (int)bad);
+      die(7);
     }
     logf_("positive control FAILED: no fault; detector path unproven");
     die(6);
@@ -481,9 +488,10 @@ int main(int argc, char** argv) {
   u64 n = 0, wround = 0, cyc = 0;
 
   auto do_cycle = [&]() {  // sync -> unregister -> munmap -> fadvise -> rewrite -> remap
+    u64 c = ++cyc;
     hipError_t se = hipDeviceSynchronize();
     if (se != hipSuccess) devfault("cycle sync", se, n);
-    long before = cached_kb();
+    long c_before = cached_kb();  // with the mapping still present
     hipError_t ue = hipHostUnregister(host);
     if (ue != hipSuccess) devfault("cycle hipHostUnregister", ue, n);
     if (munmap(host, kBytes) != 0) {
@@ -492,8 +500,15 @@ int main(int argc, char** argv) {
     }
     host = nullptr;
     int frc = posix_fadvise(g_churn_fd, 0, 0, POSIX_FADV_DONTNEED);
+    long c_evicted = cached_kb();  // middle sample: this is the eviction evidence
     bool wok = write_pattern(g_churn_fd);
-    base_expected(esum, ewsum);  // the rewrite restored the initial pattern
+    if (!wok) {  // do not remap: the sums would not describe the file
+      logf_("cycle %llu: CHURN DEFECT pattern rewrite failed: %s; not remapping", c,
+            strerror(errno));
+      die(5);
+    }
+    long c_rewritten = cached_kb();  // after the pwrite refilled the cache
+    base_expected(esum, ewsum);      // the rewrite restored the initial pattern
     void* m = mmap(nullptr, kBytes, PROT_READ | PROT_WRITE, MAP_SHARED, g_churn_fd, 0);
     if (m == MAP_FAILED) {
       logf_("SETUP ERROR cycle mmap: %s", strerror(errno));
@@ -507,14 +522,10 @@ int main(int argc, char** argv) {
       die(2);
     }
     hipchk(hipHostGetDevicePointer(&dptr, host, 0), "cycle hipHostGetDevicePointer");
-    long after = cached_kb();
-    logf_("cycle %llu: unregistered, munmapped, fadvise=%d, pattern rewrite=%s, Cached %ld -> %ld "
-          "kB; remapped host [%p,%p) device [%p,%p)", ++cyc, frc, wok ? "ok" : "failed", before,
-          after, host, (char*)host + kBytes, dptr, (char*)dptr + kBytes);
-    if (!wok) {
-      churn_fail = 1;
-      logf_("cycle %llu: pattern rewrite failed: %s", cyc, strerror(errno));
-    }
+    logf_("cycle %llu: unregistered, munmapped, fadvise=%d, pattern rewrite ok, Cached before=%ld "
+          "after-fadvise=%ld after-rewrite=%ld kB; remapped host [%p,%p) device [%p,%p)", c, frc,
+          c_before, c_evicted, c_rewritten, host, (char*)host + kBytes, dptr,
+          (char*)dptr + kBytes);
   };
 
   while (!stop && time(nullptr) - t0 < duration_sec) {

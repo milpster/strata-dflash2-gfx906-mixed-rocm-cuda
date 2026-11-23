@@ -57,11 +57,16 @@ fault path is unproven until it is forced:
 ```
 
 It queues a scan, then `hipHostUnregister` + `munmap` + `fadvise` **while
-that scan is in flight** — the engine's park/restore race, deliberately. Exit 3
-with a `positive control: fault detected as expected` line is the control
-passing. Exit 6 means no fault was returned; the fault path is unproven and a
-clean long leg cannot be interpreted. Run it once per window, before the long
-leg, and record the exit code and the `positive control:` log line.
+that scan is in flight** — the engine's park/restore race, deliberately. The
+control passes on a **memory-fault class** result: exit 3 with
+`positive control: memory fault detected as expected`, or a signal kill
+(128+signal) whose log ends in the `FATAL signal` block — a fault that killed
+the process has proved the detector just as well. Exit 7 means the unmap was
+rejected without a memory fault (`positive control INCONCLUSIVE`), e.g.
+`hipErrorInvalidValue` from a busy range: that does **not** certify the
+detector. Exit 6 means no error at all was returned; the fault path is unproven
+and a clean long leg cannot be interpreted. Run it once per window, before the
+long leg, and record the exit code and the `positive control:` log line.
 
 ## The differential
 
@@ -70,8 +75,8 @@ leg, and record the exit code and the `positive control:` log line.
 | **cycle** faults (exit 3/4, or SIGABRT with a `FATAL signal` block) | the platform space: a 64 MiB file mapping taken through eviction, refault and re-registration under live device reads cannot survive it without any Strata code. The engine's buffer handling is exonerated as the *origin*; only a config or hardware change helps. |
 | **cycle** clean for hours | this eviction/refault/re-registration path is stable on this box. It does **not** exonerate the engine's remaining deltas: pool growth, SVM range churn, concurrent queues, the 40 GiB working set. |
 | **file/anon** clean | only that a registered mapping read at maximum rate is stable. No churn was applied to the scanned pages (mapped, pinned folios are skipped by `invalidate_mapping_pages`). This row must never be written as "churn exonerated". |
-| **positive control** exit 3 | the detector's fault path works. |
-| **positive control** exit 6 | the race did not fault; a clean long leg is uninterpretable until the control passes. |
+| **positive control** exit 3 or 128+signal with `FATAL signal` | the detector's fault path works: a memory fault was returned, or the fault killed the process. |
+| **positive control** exit 6 or 7 | the race did not produce a memory fault (no error / non-fault error); a clean long leg is uninterpretable until the control passes. |
 
 ## Build
 
@@ -143,7 +148,7 @@ tail -f ./run/repro-*.log          # live progress: HB lines, cycles, churn, fau
 | `--pci DDDD:BB:DD.F` | none | require this PCI address; overrides the arch check |
 | `--duration-sec N` | 1800 | wall time before a clean exit |
 | `--churn-sec N` | 2 | park-churn period (8 MiB rewritten per tick) |
-| `--cycle-sec N` | 30 | cycle period in `--mode cycle` |
+| `--cycle-sec N` | 30 | cycle period in `--mode cycle`; 0 = cycle before every scan |
 | `--host-write-sec N` | 30 | host coherence probe, one word per page; 0 = off |
 | `--mode cycle\|file\|anon` | cycle | see *What it tests* |
 | `--positive-control` | off | in-flight unmap race; expects exit 3 |
@@ -160,8 +165,10 @@ slice below. If the process was killed by a signal, the log ends with
 ## What to capture
 
 1. The log: the `start:` line (device, `pci=`, arch, mode), `runtime:` lines,
-   `positive control:` (first run), `HB` heartbeats, `cycle` lines with the
-   `Cached` before/after (the eviction evidence), `churn`, `host write round`,
+   `positive control:` (first run), `HB` heartbeats, `cycle` lines with
+   `Cached before=… after-fadvise=… after-rewrite=…` (the **middle** sample is
+   the eviction evidence; the third shows the rewrite refilled the cache),
+   `churn`, `host write round`,
    and on a fault the `CHECKSUM FAULT` / `HIP FAULT` / `FATAL signal` block
    with its maps dump.
 2. The kernel side of the same minutes —
@@ -177,8 +184,9 @@ Clean exit prints
 `DONE scans=… elapsed=…s, no HIP fault, no checksum fault`. A run whose churn
 under-delivered prints `DONE scans=… elapsed=…s, CHURN DEFECT ticks=… expected~…`.
 Exit codes: 0 clean, 2 usage/setup, 3 HIP fault (also the positive control's
-pass), 4 checksum fault, 5 churn defect, 6 positive control failed,
-128+signal when a signal ended it.
+pass), 4 checksum fault, 5 churn defect, 6 positive control failed (no error at
+all), 7 positive control inconclusive (rejected without a memory fault),
+128+signal when a signal ended it (a control killed by a signal passes).
 
 ## Limits (read before interpreting a clean run)
 
@@ -197,7 +205,8 @@ pass), 4 checksum fault, 5 churn defect, 6 positive control failed,
   produces no mismatch. What fires instead is the HIP fault path when the stale
   translation is invalid, or the checksum when it returns zeros or other data.
   That is why the positive control exists: it proves the fault path, and the
-  `Cached` before/after plus the kernel journal are the eviction evidence.
+  `after-fadvise` sample in the cycle line plus the kernel journal are the
+  eviction evidence.
 - **HIP does not give the faulting address.** The log records the buffer's VA
   ranges and the page being scanned, which is what a post-mortem needs to match
   against the `amdgpu`/XDMA line in the kernel journal. The exact GPU VA comes
