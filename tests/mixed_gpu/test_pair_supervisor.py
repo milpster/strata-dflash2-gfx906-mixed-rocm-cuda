@@ -474,21 +474,28 @@ class StartupDeadlineTests(ScratchTest):
         def wait(self, timeout=None):
             return 0
 
-    def supervise_scripted(self, startup_timeout, record, fill_call=None,
-                           stop_call=None, stop_on_second_launch=False, backoff=0.0,
-            startup_stop_call=None):
-        """Runs pair.supervise() on a clock that advances 1 s per monotonic() call.
+    def supervise_scripted(self, startup_timeout, record, fill_pass=None, stop_pass=None,
+                           backoff=0.0):
+        """Runs pair.supervise() on a scripted clock with fake children.
 
-        With interval 0 the loop consumes the clock once per pass, so the deadline
-        comparison becomes a fixed, generated count. Events inject on the Nth call:
-        fill_call appends the helper's fill line before the deadline check of that
-        pass, stop_call sets the shutdown flag the same way a SIGTERM handler would.
+        Scripted time passes where wall time really passes: each stop.wait of the
+        interval advances the clock by the interval. monotonic() only reads it —
+        note the deadline check is short-circuited by "not healthy", so a check
+        clock could never advance once the pair attached. fill_pass writes the
+        helper's fill line during that wait (so the same pass evaluates it), and
+        stop_pass makes that wait return "stop requested", i.e. the loop leaves
+        before that pass runs. Nothing here touches a real process tree, signal
+        disposition, socket, GPU, or wall clock.
         """
         state = self.root / "state.json"
         helper_log = self.root / "helper.log"
         helper_log.write_text("expert-helper: listening on one.sock\n")
         self.launchers = []
         self.published = []
+        # supervise() installs SIGINT/SIGTERM handlers on the real process. Keep
+        # this test's own disposition intact: capture the attempt, restore after.
+        original_handlers = {sig: signal.getsignal(sig)
+                             for sig in (signal.SIGINT, signal.SIGTERM)}
         # The launcher stand-in is a live, dedicated process-group leader (exactly
         # what start_new_session=True produces), so the supervisor's ownership
         # proofs (alive, start token, getpgid == launcher pid) hold against /proc.
@@ -500,6 +507,9 @@ class StartupDeadlineTests(ScratchTest):
         record_peers = {"helper_pid": self.launcher_pid, "helper_start": token,
                         "server_pid": self.launcher_pid, "server_start": token,
                         "helper_log": str(helper_log), "engine_log": str(self.root / "engine.log")}
+
+        def record_signal(signum, handler):
+            return original_handlers[signum]  # Captured, never installed.
 
         def fake_popen(command, **kwargs):
             child = StartupDeadlineTests.Launcher(self.launcher_pid)
@@ -520,14 +530,8 @@ class StartupDeadlineTests(ScratchTest):
         clock = {"now": 0.0, "calls": 0}
 
         def fake_monotonic():
-            value = clock["now"]
-            clock["now"] += 1.0
             clock["calls"] += 1
-            # The deadline check itself consumes one clock call: pass 1 stamps the
-            # start, pass k reads k-1 seconds, so expiry lands on call timeout+1.
-            if fill_call is not None and clock["calls"] == fill_call:
-                helper_log.write_text("expert-helper: filled 4096 slots (7.0 GiB)\n")
-            return value
+            return clock["now"]  # Time passes in wait(); this is only a read.
 
         args = argparse.Namespace(
             launcher=self.root / "launch.sh", config=None, state=state,
@@ -538,10 +542,10 @@ class StartupDeadlineTests(ScratchTest):
         workdir.mkdir()
 
         waits = []
+        WAIT_CAP = 100
 
         class FakeEvent:
-            """Event that only releases when the test asks it to; real-time
-            waits would let generations run past the scripted clock."""
+            """Stops only when the script says so; a regression fails, never hangs."""
 
             def __init__(self):
                 self._flag = False
@@ -553,16 +557,21 @@ class StartupDeadlineTests(ScratchTest):
                 self._flag = True
 
             def wait(self, timeout=None):
-                # The generation loop asks stop.wait(interval) on every pass; a
-                # backoff wait is the same call with timeout > 0. stop_call
-                # releases it; backoff waits additionally release (a stop that
-                # lands in backoff must still stop the next generation).
-                waits.append(timeout)
-                if timeout == 0.0:  # Backoff release: the next generation still starts.
+                if timeout == 0.0:  # Backoff release: no scripted interval passes.
                     return self._flag
-                if stop_call is not None and len(waits) >= stop_call:
+                waits.append(timeout)
+                if len(waits) > WAIT_CAP:
+                    raise AssertionError(
+                        f"scripted supervisor exceeded {WAIT_CAP} interval waits: "
+                        f"states={[p['state'] for p in self_states]}")
+                clock["now"] += timeout
+                if fill_pass is not None and len(waits) == fill_pass:
+                    helper_log.write_text("expert-helper: filled 4096 slots (7.0 GiB)\n")
+                if stop_pass is not None and len(waits) >= stop_pass:
                     self._flag = True
                 return self._flag
+
+        self_states = self.published
 
         class FakeWorkdir:
             name = workdir
@@ -573,21 +582,31 @@ class StartupDeadlineTests(ScratchTest):
             def __exit__(self, *_exc):
                 return False
 
-        with mock.patch.object(pair.subprocess, "Popen", side_effect=fake_popen), \
-                mock.patch.object(pair, "enable_subreaper", return_value=None), \
-                mock.patch.object(pair, "stop_group", side_effect=fake_stop_group), \
-                mock.patch.object(pair, "write_json", side_effect=fake_write_json), \
-                mock.patch.object(pair.os, "kill"), \
-                mock.patch.object(pair.time, "monotonic", side_effect=fake_monotonic), \
-                mock.patch.object(pair.tempfile, "TemporaryDirectory", return_value=FakeWorkdir()):
-            with mock.patch.object(pair.threading, "Event", FakeEvent):
-                return pair.supervise(args)
+        try:
+            with mock.patch.object(pair.signal, "signal", side_effect=record_signal), \
+                    mock.patch.object(pair.subprocess, "Popen", side_effect=fake_popen), \
+                    mock.patch.object(pair, "enable_subreaper", return_value=None), \
+                    mock.patch.object(pair, "stop_group", side_effect=fake_stop_group), \
+                    mock.patch.object(pair, "write_json", side_effect=fake_write_json), \
+                    mock.patch.object(pair.os, "kill"), \
+                    mock.patch.object(pair.time, "monotonic", side_effect=fake_monotonic), \
+                    mock.patch.object(pair.tempfile, "TemporaryDirectory", return_value=FakeWorkdir()):
+                with mock.patch.object(pair.threading, "Event", FakeEvent):
+                    code = pair.supervise(args)
+        finally:
+            for sig, handler in original_handlers.items():
+                if signal.getsignal(sig) is not handler:
+                    signal.signal(sig, handler)
+        self.elapsed = clock["now"]
+        self.clock_calls = clock["calls"]
+        return code
 
     def test_deadline_retries_a_hung_startup_that_published_its_peers(self):
-        # The wedged-device class: helper and server are alive, the engine never
-        # attaches, so the 20-minute (now 15-minute) deadline must fire at call 4
-        # (startup 2 s + 1) and a fresh generation must then be launched.
-        code = self.supervise_scripted(2.0, self.root / "work" / "peers.json", stop_call=7)  # deadline pass 3 (clock 4); stop lands in gen 2's first pass
+        # The wedged-device class: helper and server are alive and published, the
+        # engine never attaches. With T = 2 s, pass k starts at elapsed k seconds,
+        # so the pass-3 check (3.0 > 2.0) is the first expiry: the generation is
+        # torn down and a fresh one starts. stop_pass 5 releases in gen 2 pass 2.
+        code = self.supervise_scripted(2.0, self.root / "work" / "peers.json", stop_pass=5)
         self.assertEqual(code, 0)
         recovering = next(p for p in self.published
                           if p["state"] == "recovering" and p["generation"] == 1)
@@ -598,36 +617,49 @@ class StartupDeadlineTests(ScratchTest):
                          ["starting", "monitoring", "stopping", "stopped"])
         self.assertEqual(len(self.launchers), 2)  # The hung generation was replaced.
         self.assertEqual(self.launchers[0].kills, 1)  # Its tree was stopped, not leaked.
+        self.assertGreater(self.elapsed, 2.0)  # Expiry really passed before the stop.
 
     def test_unpublished_launcher_hitting_the_deadline_is_refused_once(self):
         # A launcher that never wrote its peers record is a configuration refusal,
-        # not a wedged device: publish failed, do not spin new generations.
+        # not a wedged device: publish failed, do not spin new generations. The
+        # bounded FakeEvent turns any future regression here into a failure.
         code = self.supervise_scripted(2.0, None)
         self.assertEqual(code, 1)
         failed = next(p for p in self.published if p["state"] == "failed")
         self.assertIn("startup deadline", failed["reason"])
+        self.assertNotIn("backoff", [p["state"] for p in self.published])
         self.assertEqual(len(self.launchers), 1)
         self.assertEqual(self.launchers[0].kills, 1)
+        self.assertLess(self.clock_calls, 20)  # Refusal is immediate, not a spin.
 
     def test_attached_startup_never_false_fires_the_deadline(self):
-        # The fill line lands during the call-3 check, so pass 3 attaches before
-        # the deadline check at call 4 could expire a generation that is healthy.
+        # The fill lands during pass 2's wait, so pass 2 attaches. Passes 3-5 then
+        # run attached at elapsed 3-5 s, past T = 2 s: the deadline is guarded by
+        # "not healthy" (nothing re-arms per pass), so it must never fire.
+        before = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
         code = self.supervise_scripted(2.0, self.root / "work" / "peers.json",
-                                       fill_call=3, stop_call=4)
+                                       fill_pass=2, stop_pass=6)
         self.assertEqual(code, 0)
+        for sig, handler in before.items():
+            self.assertIs(signal.getsignal(sig), handler)  # Real disposition restored.
         self.assertEqual([p["state"] for p in self.published],
                          ["starting", "monitoring", "attached", "stopping", "stopped"])
         self.assertFalse([p for p in self.published if p["reason"] and "deadline" in p["reason"]])
+        self.assertGreater(self.elapsed, 2 * 2.0)  # Ran at least 2x past expiry attached.
         self.assertEqual(self.launchers[0].kills, 1)  # Shutdown still tears the tree down.
 
     def test_stop_before_the_deadline_reports_the_stop_not_a_timeout(self):
-        # The 2026-11-23 manual stop: SIGTERM arrived ~25 s before the 1200 s
-        # deadline; the generation must be reported as stopped, never as timed out.
-        code = self.supervise_scripted(2.0, self.root / "work" / "peers.json", stop_call=3)
+        # The 2026-11-23 manual stop: TERM landed ~25 s before the generation's
+        # 1200 s deadline and the generation reported "stopping", never a timeout.
+        # Here stop_pass 2 releases at the pass-2 entry (elapsed 2 s, T = 2 s), so
+        # no check ever reads past the deadline and the reason stays "launcher
+        # exited" — the stop pre-empts expiry.
+        code = self.supervise_scripted(2.0, self.root / "work" / "peers.json", stop_pass=2)
         self.assertEqual(code, 0)
         self.assertEqual([p["state"] for p in self.published],
                          ["starting", "monitoring", "stopping", "stopped"])
         self.assertFalse([p for p in self.published if p["reason"] and "deadline" in p["reason"]])
+        self.assertLess(self.elapsed, 4.0)  # Never a pass beyond T = 2 s.
         self.assertEqual(self.launchers[0].kills, 1)
 
 
@@ -657,6 +689,11 @@ class LauncherTests(ScratchTest):
                     self.assertEqual(args[args.index("--lock") + 1], str(ROOT / "run/mixed-supervisor.lock"))
                     self.assertIn("--config", args)
                     self.assertEqual(args[args.index("--nice") + 1], "1")
+                    if launcher.name == "launch-prod-ud-iq3xxs-dflash-w4-q4_0-mixed.sh":
+                        # The promoted prod tuple must keep the operator-set watchdog.
+                        self.assertIn("--startup-timeout", args)
+                        self.assertEqual(args[args.index("--startup-timeout") + 1], "900",
+                                         "the promoted prod launcher must carry the 900 s watchdog")
             for mode, expected in (("--single-run", 1), ("--pair-child", 2), ("--unknown", 2)):
                 with self.subTest(launcher=launcher.name, mode=mode):
                     capture = self.root / "exec.txt"
