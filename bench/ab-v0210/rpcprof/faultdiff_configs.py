@@ -3,6 +3,9 @@
 
 Why this exists: the fault track (plan/measurement-contract-speed-attribution-faults.md,
 Phase 4) needs controlled config tests, ONE variable per boot, on the promoted port tuple.
+default-margins is the one declared exception (operator directive 2026-11-23): it moves both
+reserves and, through the headroom they leave, the Foresight swap grant - see its entry and
+README.md.
 This file is the only writer of gen/faultdiff/: every config is derived from the one base
 (prod-config-port0218.json, the tuple that is serving and therefore the tuple the fault hits),
 each declared change is data below, and --check fails closed when a config on disk or the base
@@ -73,7 +76,7 @@ SOCKETS = ("--expert-helper-socket", "--expert-helper-socket2")
 # Provenance keys that point at another config or name a value with no consumer.
 DROP_KEYS = ("derived_from", "derived_note", "managed_budget_mib")
 
-LEG_ORDER = ("parking-off", "park-on-no-evict", "dflash-off",
+LEG_ORDER = ("default-margins", "parking-off", "park-on-no-evict", "dflash-off",
              "single-card-0", "single-card-1", "xnack-1", "xnack-0")
 
 
@@ -157,6 +160,38 @@ def drop_key(cfg, key):
 HARNESS_NOTE = ("harness: the rig's own paths, identical for every leg (log, port, the two "
                 "helper sockets, the per-leg cache dir) plus the base's provenance keys")
 LEGS = {
+    "default-margins": {
+        "purpose": "Does the fault need the explicit 256/192 margins? (both --vram-reserve* flags absent: the engine's own 700 MiB default on every card; operator directive 2026-11-23)",
+        "narrows": "the explicit reserve pair as a precondition: the engine sizes the expert cache against a "
+                   "larger reserve (700 MiB on card 0 and, because --vram-reserve-later-mib defaults to -1, "
+                   "700 MiB on the later card too), so free VRAM and cache slots both change",
+        "cannot_exclude": "the reserve as a rate confound: a larger reserve leaves a smaller expert cache, so a "
+                          "clean leg is a stability data point at a different occupancy and its rates must not "
+                          "be compared with the base's legs; it also cannot separate 'more free VRAM at fault "
+                          "time' from 'fewer slots, less churn'. It is not single-variable either: the leg moves "
+                          "BOTH reserves (256/192 -> the engine's 700/700) and, through the larger post-load "
+                          "headroom, the Foresight swap grant - the base's 256/192 boots granted 0 slots, the "
+                          "2026-11-23 22:58 boot of this leg granted card0:2,card1:8 - so a clean or faulting "
+                          "result cannot be attributed to the reserve alone",
+        "declared": [
+            ("args/--vram-reserve-mib", "256", "<absent>"),
+            ("args/--vram-reserve-later-mib", "192", "<absent>"),
+        ],
+        "present": [r"engine started: ", r"expert cache auto: .* MiB reserved"],
+        "absent": [r"engine started: .*--vram-reserve-mib",
+                   r"engine started: .*--vram-reserve-later-mib"],
+        "observe": ["the boot's 'expert cache auto: X GiB free, 700 MiB reserved ... -> N slots' line: the "
+                    "engine's own default took effect (record the slots against the base's)",
+                    "the engine-started argv echo carries no --vram-reserve-mib and no "
+                    "--vram-reserve-later-mib",
+                    "the boot's 'strata serve: foresight swap: slots per layer per card: ...' line: record the "
+                    "granted slots per card every boot. The base's 256/192 boots granted 0 slots; this leg's "
+                    "2026-11-23 22:58 boot granted card0:2,card1:8, so the swap grant, not only the reserve, "
+                    "differs from the base",
+                    "the 'strata serve: N MiB of VRAM free with everything loaded' line (the headroom the swap "
+                    "grant is sized from)",
+                    "the kernel slice's fault class and the leg's survivability vs the base's exposure"],
+    },
     "parking-off": {
         "purpose": "Is the park path necessary for the fault? (parking truly OFF: mib 0, no dir, no idle-save)",
         "narrows": "the whole park/restore path (host snapshot, disk park stream, the fadvise of a "
@@ -313,7 +348,10 @@ def derive(leg, out=OUT_DEFAULT):
     set_arg(pairs, "--conversation-cache-dir", paths["cache_dir"])
 
     # 3. the leg's own lever - one variable, never a retune
-    if leg == "parking-off":
+    if leg == "default-margins":
+        pairs = drop_flag(pairs, "--vram-reserve-mib")
+        pairs = drop_flag(pairs, "--vram-reserve-later-mib")
+    elif leg == "parking-off":
         set_arg(pairs, "--conversation-cache-mib", "0")
         pairs = drop_flag(pairs, "--conversation-cache-dir")
         pairs = drop_flag(pairs, "--conversation-cache-disk-idle-save")

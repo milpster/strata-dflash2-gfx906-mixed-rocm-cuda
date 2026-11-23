@@ -3,6 +3,74 @@
  "base_sha256": "0068f4bb0dd38d7b4c66235d3c94806f68ca7c9ab88814ef9def595ee8e38cf1",
  "leg_note": "harness: the rig's own paths, identical for every leg (log, port, the two helper sockets, the per-leg cache dir) plus the base's provenance keys",
  "legs": {
+  "default-margins": {
+   "absent": [
+    "engine started: .*--vram-reserve-mib",
+    "engine started: .*--vram-reserve-later-mib"
+   ],
+   "cannot_exclude": "the reserve as a rate confound: a larger reserve leaves a smaller expert cache, so a clean leg is a stability data point at a different occupancy and its rates must not be compared with the base's legs; it also cannot separate 'more free VRAM at fault time' from 'fewer slots, less churn'. It is not single-variable either: the leg moves BOTH reserves (256/192 -> the engine's 700/700) and, through the larger post-load headroom, the Foresight swap grant - the base's 256/192 boots granted 0 slots, the 2026-11-23 22:58 boot of this leg granted card0:2,card1:8 - so a clean or faulting result cannot be attributed to the reserve alone",
+   "diff_from_base": {
+    "args/--conversation-cache-dir": [
+     "/mnt/srcds/Strata/run/prod-port0218-cache",
+     "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/faultdiff-r1/cache/default-margins"
+    ],
+    "args/--vram-reserve-later-mib": [
+     "192",
+     "<absent>"
+    ],
+    "args/--vram-reserve-mib": [
+     "256",
+     "<absent>"
+    ],
+    "derived_from": [
+     "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/trial-managed-pool-38g-230k.json",
+     "<absent>"
+    ],
+    "derived_note": [
+     "port-0218 test-window base on :8019: the champion measurement config with the engine, cwd, sockets, log and conversation-cache-dir repointed at the port tree, and --conversation-spill-mib 0 added (upstream spill tier off; the fork DISK tier under --conversation-cache-dir is this rig's only disk tier). Boots are the operator's, never the fixer's.",
+     "<absent>"
+    ],
+    "expert_helper_socket": [
+     "/mnt/srcds/Strata/run/prod-iq3xxs-ud-mixed.sock",
+     "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/faultdiff-r1/run/fd-default-margins.sock"
+    ],
+    "expert_helper_socket2": [
+     "/mnt/srcds/Strata/run/prod-iq3xxs-ud-mixed2.sock",
+     "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/faultdiff-r1/run/fd-default-margins-2.sock"
+    ],
+    "log": [
+     "/mnt/srcds/Strata/logs/engine-prod-port0218.log",
+     "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/faultdiff-r1/logs/default-margins.engine.log"
+    ],
+    "managed_budget_mib": [
+     "40960",
+     "<absent>"
+    ],
+    "port": [
+     "8009",
+     "8019"
+    ],
+    "trial_note": [
+     "<base note>",
+     "<leg note>"
+    ]
+   },
+   "file": "default-margins.json",
+   "narrows": "the explicit reserve pair as a precondition: the engine sizes the expert cache against a larger reserve (700 MiB on card 0 and, because --vram-reserve-later-mib defaults to -1, 700 MiB on the later card too), so free VRAM and cache slots both change",
+   "observe": [
+    "the boot's 'expert cache auto: X GiB free, 700 MiB reserved ... -> N slots' line: the engine's own default took effect (record the slots against the base's)",
+    "the engine-started argv echo carries no --vram-reserve-mib and no --vram-reserve-later-mib",
+    "the boot's 'strata serve: foresight swap: slots per layer per card: ...' line: record the granted slots per card every boot. The base's 256/192 boots granted 0 slots; this leg's 2026-11-23 22:58 boot granted card0:2,card1:8, so the swap grant, not only the reserve, differs from the base",
+    "the 'strata serve: N MiB of VRAM free with everything loaded' line (the headroom the swap grant is sized from)",
+    "the kernel slice's fault class and the leg's survivability vs the base's exposure"
+   ],
+   "present": [
+    "engine started: ",
+    "expert cache auto: .* MiB reserved"
+   ],
+   "purpose": "Does the fault need the explicit 256/192 margins? (both --vram-reserve* flags absent: the engine's own 700 MiB default on every card; operator directive 2026-11-23)",
+   "sha256": "7e535b3c1339de38518635920af9febc9d59b26e6f838ec44eb38055bfe2ed20"
+  },
   "dflash-off": {
    "absent": [
     "^dflash: /mnt/srcds/dflash2/artifacts/",

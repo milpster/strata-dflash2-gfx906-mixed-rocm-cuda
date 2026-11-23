@@ -1,7 +1,7 @@
 # Fault-track differential (window `faultdiff-r1`)
 
-Seven frozen configs, each the promoted prod tuple with **one** thing changed, for the fault
-track of the approved contract (`/home/srcds/.opencode/plan/measurement-contract-speed-attribution-faults.md`,
+Eight frozen configs, each the promoted prod tuple with **one** thing changed (bar the one
+operator-directed exception, `default-margins`), for the fault track of the approved contract (`/home/srcds/.opencode/plan/measurement-contract-speed-attribution-faults.md`,
 Phase 4). The fault is a kernel-side page permission fault on the engine's host pages, logged on
 the XDMA client (vmid 8) on card 1 (`0000:09:00.0`), which ends the generation after 5-15 minutes
 under serving load (`bench/gpu-fault-repro/README.md`).
@@ -38,6 +38,7 @@ Do not edit a config by hand. Change `faultdiff_configs.py`, run it, and review 
 
 | leg | the one variable | narrows (if it stops the fault) | CANNOT exclude |
 |---|---|---|---|
+| `default-margins` | **both** `--vram-reserve-mib` and `--vram-reserve-later-mib` absent, so the engine's own 700/700 defaults apply (operator directive 2026-11-23) | the explicit reserve pair and the occupancy the engine plans from it: the expert cache is sized against a 700 MiB reserve on both cards, so free VRAM and the slot count both change | the reserve alone. The larger reserve leaves more VRAM free after load, and that headroom changes the Foresight swap grant: the base's 256/192 boots granted 0 slots, this leg's 2026-11-23 22:58 boot granted `card0:2,card1:8`. A clean or faulting result is therefore not attributable to the reserve, and as a rate confound it also cannot separate "more free VRAM at fault time" from "fewer slots, less churn". |
 | `parking-off` | `--conversation-cache-mib 0`, no `--conversation-cache-dir`, no `--conversation-cache-disk-idle-save` | the whole park/restore path (host snapshot, disk park stream, fadvise of the parked file, restore re-registration) as a precondition | parking as a *trigger*: with the path off no conversation is ever restored either, so a clean leg only says "needs the park path". Read-only serving, the helper's DMA and the platform stay open. |
 | `park-on-no-evict` | base minus **only** `--conversation-cache-evict-page-cache` | the page-cache release (fadvise DONTNEED on park writes, restore reads, ring sidecars) as a precondition, with parking and the disk tier intact - the cleanest single-variable leg | page-cache pressure as a general factor: without the release the parked file's pages stay cached, so the memory shape differs (less free RAM, more Cached) in both outcomes. |
 | `dflash-off` | `--dflash` and `--dflash-block` removed (drafter not loaded) | the DFlash drafter's own path: its artifact, its draft passes, the cross-GPU tap collection over the layer split, the drafter's DMA reads | the drafter as a *rate amplifier*: decode is slower, so equal wall time is a smaller exposure (record requests and tokens). The verify window (spec 5) and its kernels stay. |
@@ -46,8 +47,16 @@ Do not edit a config by hand. Change `faultdiff_configs.py`, run it, and review 
 | `xnack-1` | `HSA_XNACK=1` in the env block | the runtime's xnack setting as the difference between "the kernel kills the process" and "the fault is retried/handled" | anything about the access pattern: xnack changes what the platform does *after* a bad access, never which access is bad. |
 | `xnack-0` | `HSA_XNACK=0` (the base leaves it unset) | the same split from the other side: with xnack explicitly off a permission fault has no retry path | whether unset already meant off on this runtime - the unset base state is the third data point, and it is only a data point if it is recorded, which the boot record does. |
 
+`default-margins` is the operator-directed leg of 2026-11-23: it drops both reserve flags so
+the engine's own defaults (700 MiB on each card) apply, and it is **not** single-variable. The
+larger reserve leaves more VRAM free once everything is loaded, and that headroom changes the
+Foresight swap grant - the base's 256/192 boots granted 0 slots, while this leg's 22:58 boot of
+2026-11-23 granted `card0:2,card1:8`. A clean or faulting result therefore cannot be attributed to
+the reserve alone. The leg records the `foresight swap:` line on every boot for exactly this.
+
 Every leg also carries these, identical on purpose (not a variable): engine `936efcc7`, helper
-`58c3ae02`, `--vram-reserve-mib 256 --vram-reserve-later-mib 192`, `STRATA_RAM_BUDGET_MIB 36864`,
+`58c3ae02`, `--vram-reserve-mib 256 --vram-reserve-later-mib 192` (except `default-margins`,
+which drops both - see its row), `STRATA_RAM_BUDGET_MIB 36864`,
 `--max-context 262144 --kv int8 --kv-resident 262144 --kv-resident-mib 4096`,
 `--expert-helper-slots 4600` (helper `--fill-mib 0`, its own budget governs - the fill report is
 recorded every boot), `--conversation-spill-mib 0`, `--spec 5 --spec-min-p 0.5`, `--layer-split 30`
@@ -158,7 +167,7 @@ own boot shape instead of assuming it.
 | `strata generate: expert cache N slots, X GiB of VRAM` | `generate.cpp:9271` | yes | yes | yes | yes | yes (one card's numbers) |
 | `strata generate: layer split: CUDA1 runs layers 30-47, expert cache ...` | `generate.cpp:9560` | yes | yes | yes | yes | **absent** (no split) |
 | `strata generate: expert-helper proxy: N experts on <sock>, X GiB (fill report)` | `generate.cpp:9869` | yes | yes | yes | yes | yes |
-| `strata serve: foresight swap: ... on N card(s)` | `core/expert_source.cpp:8019` | 2 cards, `card0:2,card1:8` | same | same | same | 1 card: `STRATA_FS_SLOTS` 2,8 truncates to card0:2 (env kept identical on purpose) |
+| `strata serve: foresight swap: ... on N card(s)` | `core/expert_source.cpp:8019` | 2 cards; 0 granted slots at the base's 256/192, `card0:2,card1:8` for `default-margins` (700/700, 2026-11-23 22:58) | same as base (256/192) | same as base (256/192) | same as base (256/192) | 1 card: `STRATA_FS_SLOTS` 2,8 truncates to card0:2 (env kept identical on purpose) |
 | at request time: `strata serve: conversation cache: parked ...` / `disk park streamed ... pages-released=N` | `generate.cpp:15131`, `:14254` | yes / N>0 | **never** | yes / **N=0** | yes / N>0 | yes / N>0 |
 
 The engine's `INFO ...` line goes to its **stdout** (the server's ready pump consumes it into the
