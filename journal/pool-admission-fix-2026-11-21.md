@@ -1325,3 +1325,14 @@ budget 36864, spill off, prod sockets, fresh cache dir run/prod-port0218-cache).
 (BIN/CONFIG/WORK/HELPER, all STRATA_PROD_* overridable for rollback). Verified: health ~30 s, probe
 finish=stop "probe-ok", engine identity lines (port bin, store open, no pin, helper two channels + 3,816
 experts / 7.09 GiB). Rollback = STRATA_PROD_BIN=run/fsclamp-bin STRATA_PROD_CONFIG=fson.json + reboot.
+
+## Post-reboot: prod restored, prep lane resumed (2026-11-23 15:1x)
+
+The promoted port engine served 12:50 -> ~14:48 (including the prep lane's early calls), then wedged on the
+recurrent GPU fault class (verify timeout layer 2 #267 + "Memory access fault by GPU node-1, Page not present")
+and the supervisor's respawns died ~327 s into boot. Parent stopped the crash loop (each respawn re-provokes
+the fault path). Operator rebooted the machine (~14:55). Fresh boot at 15:11:49: pool mode (store open),
+health ok, probe finish=stop "probe-ok". The Phase 0 prep lane resumed with instructions to discard
+outage-window partials. Note for the record: the fault class has now hit BOTH engines (fork and port) across
+two days - the KFD/SVM stability investigation in the approved plan is not optional; the wedge recurs under
+serving load within hours of any clear state.
