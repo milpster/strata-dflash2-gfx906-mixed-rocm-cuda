@@ -228,6 +228,12 @@ def main() -> int:
                          "adds messages + max_tokens only. Without it the legacy parity body is sent.")
     ap.add_argument("--request-template-sha256",
                     help="reject the run unless the template file digests to this")
+    ap.add_argument("--timeout", type=float,
+                    help="HTTP deadline for the request (default: 1800 s at ctx >= 80000, else 900 s). "
+                         "The Phase-2 239,663-token legs need up to 5,400 s per leg.")
+    ap.add_argument("--engine-pid", type=int,
+                    help="pin the MemSampler to THIS engine pid (the Phase-2 contract: the pid is "
+                         "pinned, never first-match). Default: the first --serve engine found.")
     a = ap.parse_args()
 
     prompt, prompt_sha = load_prompt(a)
@@ -235,7 +241,8 @@ def main() -> int:
     max_tokens = 64 if a.kind == "warm" else a.max_tokens
     runs = 2 if a.kind == "tg" else 1
     e0, h0 = size(a.elog), size(a.hlog)
-    sampler = MemSampler(find_engine_pid())
+    engine_pid = a.engine_pid if a.engine_pid is not None else find_engine_pid()
+    sampler = MemSampler(engine_pid)
     sampler.start()
     t0 = time.time()
     walls: list[float] = []
@@ -245,7 +252,8 @@ def main() -> int:
     for i in range(runs):
         start_e, start_h = size(a.elog), size(a.hlog)
         wall, content, content_from, model = post(a.url, prompt, max_tokens,
-                                                  timeout=1800 if a.ctx >= 80000 else 900,
+                                                  timeout=a.timeout if a.timeout else
+                                                  (1800 if a.ctx >= 80000 else 900),
                                                   template=template)
         walls.append(round(wall, 3))
         requests.append({
@@ -272,6 +280,7 @@ def main() -> int:
         "elog": a.elog, "elog_start": e0, "elog_end": e1,
         "hlog": a.hlog, "hlog_start": h0, "hlog_end": h1,
         "mem": {
+            "engine_pid": engine_pid,
             "max_rss_mib": sampler.max_rss_mib,
             "min_avail_mib": None if sampler.min_avail_mib == 1 << 30 else sampler.min_avail_mib,
             "max_swap_used_mib": sampler.max_swap_used_mib,
