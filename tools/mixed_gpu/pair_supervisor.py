@@ -39,9 +39,21 @@ PROXY = re.compile(r"expert-helper proxy: [1-9][0-9]* experts\b")
 REQUEST_DONE = re.compile(r"strata serve: prompt [0-9,]+ tokens")
 READ_TICK = re.compile(r"reading the prompt: ([0-9,]+ of [0-9,]+) tokens")
 GENERATION_TICK = re.compile(r"^\[strata\] .+: [0-9,]+ of (?:budget|max) ")
+# The helper log is append-only across generations, so these markers are only
+# evidence when they are written after the current generation starts.
+HELPER_END_MARKERS = (
+    "channel:", "request failed:", "the engine said bye; exiting",
+    "the engine idled past the timeout; exiting", "fill refused:",
+    "--persist: engine session",
+)
 STAGE_SCRIPT = Path(__file__).resolve().parent / "staging_affinity.py"
 STAGE_ATTEMPTS = 30  # Fast window: the engine renames itself strata-host only after early serve startup.
 STAGE_LATE_INTERVAL = 60  # Staging threads spawn lazily at first staging work; retry slowly afterwards.
+
+
+def helper_ended(lines: list[str]) -> str | None:
+    """The first helper end-of-channel marker in the lines read for this generation."""
+    return next((mark for line in lines for mark in HELPER_END_MARKERS if mark in line), None)
 
 
 def helper_degraded(line: str) -> bool:
@@ -272,6 +284,7 @@ def supervise(args: argparse.Namespace) -> int:
             record = Path(work) / "peers.json"
             generation = 0
             failures = 0
+            last_helper_log: Path | None = None
             publish: dict = {}
             while not stop.is_set():
                 generation += 1
@@ -281,6 +294,9 @@ def supervise(args: argparse.Namespace) -> int:
                         raise RuntimeError(f"Refusing existing socket path: {path}")
                 environment = dict(os.environ, STRATA_PAIR_RECORD=str(record))
                 tail = LogTail(engine_log) if engine_log is not None else None
+                # The helper log is append-only across generations: take its size at the
+                # generation boundary, before the launcher can append anything.
+                helper_tail = LogTail(last_helper_log) if last_helper_log is not None else None
                 started = time.monotonic()
                 child = subprocess.Popen(["nice", "-n", str(args.nice), "bash", str(args.launcher), "--pair-child"], env=environment,
                                          start_new_session=True)
@@ -325,6 +341,12 @@ def supervise(args: argparse.Namespace) -> int:
                                     publish["engine_stderr_log"] = str(engine_log)
                                 write_json(args.state, publish)
                         if peers is not None:
+                            if peers["helper_log"]:
+                                # The first generation of this supervisor process has no
+                                # earlier boundary; take the offset at first publication.
+                                last_helper_log = Path(peers["helper_log"])
+                                if helper_tail is None:
+                                    helper_tail = LogTail(last_helper_log)
                             dead = [name for name in ("helper", "server") if peers[f"{name}_pid"]
                                     and not alive(peers[f"{name}_pid"], peers[f"{name}_start"])]
                             if dead:
@@ -355,11 +377,9 @@ def supervise(args: argparse.Namespace) -> int:
                                         reading = None  # The request ended; idle is not a stall.
                                 helper_path = Path(peers["helper_log"])
                                 helper_log = helper_path.read_text(errors="replace") if helper_path.exists() else ""
-                                if any(mark in helper_log for mark in (
-                                    "channel:", "request failed:", "the engine said bye; exiting",
-                                    "the engine idled past the timeout; exiting", "fill refused:",
-                                    "--persist: engine session"
-                                )):
+                                if helper_tail is None:
+                                    helper_tail = LogTail(helper_path)
+                                if helper_ended(helper_tail.read_lines()) is not None:
                                     reason = "helper channel ended"
                                     break
                                 attached = bool(FILLED.search(helper_log))
