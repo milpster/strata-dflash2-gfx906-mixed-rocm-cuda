@@ -480,7 +480,10 @@ def boot_checks(out, key, rec):
     boot_text = boot_log_text(rec, record)
     checks = {"key": key, "problems": [], "warnings": [], "tuple": None, "fill": None,
               "restart": None, "low": 0, "fs_slots": [], "cache_slots": None,
-              "fingerprint": None, "page_cache": None}
+              "fingerprint": None, "page_cache": None,
+              # the engine digest this boot started, pinned by port_ab_boot_plan.py --record;
+              # a leg's own record must name the same binary (engine_identity_problems)
+              "engine_sha": record.get("engine_sha256")}
 
     started = [line for line in prefix.splitlines() if C.EXPECTED_LINES["boot_started"] in line]
     if not started:
@@ -640,6 +643,40 @@ def parse_boot_key(key):
     return m.groups() if m else None
 
 
+def engine_pin(manifest, arm):
+    """The engine digest the manifest pins for an arm (None when the arm is not pinned)."""
+    return (((manifest.get("arms") or {}).get(arm) or {}).get("engine") or {}).get("sha256")
+
+
+def engine_identity_problems(bkey, leg, rec, boot_engine_sha, manifest):
+    """The arm's pinned engine, the leg's own engine and the boot's engine are one binary.
+
+    port_ab_boot_plan.py refuses to boot an engine that left its pin and writes that pin into
+    boots/<key>.json; ab9_driver.py records the digest of the image the leg actually ran on
+    (/proc/<pid>/exe). Until now nothing compared the two, so a leg measured on the other
+    arm's engine passed every gate (2026-11-23: arm A ran run/fsclamp-bin 4b8251e9, arm B ran
+    run/port0218-bin 936efcc7; a swap would have gone unnoticed). Both comparisons are made
+    here. A record that names no engine (a pre-identity record, or an unreadable /proc link:
+    engine_identity_reason says which) is informational only - it is a weaker record, not a
+    failed one, and the historical windows must not be retro-failed.
+    """
+    problems = []
+    got = rec.get("engine_sha256")
+    if not got:
+        return problems
+    arm = rec.get("arm")
+    pin = engine_pin(manifest, arm)
+    if pin and got != pin:
+        problems.append(bkey + "/" + leg + ": arm " + str(arm) + " leg record names engine "
+                        + got[:12] + ", the manifest pins " + pin[:12] + " for arm "
+                        + str(arm) + "'s engine")
+    if boot_engine_sha and boot_engine_sha != got:
+        problems.append(bkey + "/" + leg + ": leg record names engine " + got[:12]
+                        + ", boots/" + bkey + ".json names " + boot_engine_sha[:12]
+                        + " (the leg did not run the engine this boot started)")
+    return problems
+
+
 def check(out, window, manifest_path=None):
     manifest = load_manifest(manifest_path)
     frozen = pilot_frozen(manifest)
@@ -667,6 +704,8 @@ def check(out, window, manifest_path=None):
                     group = parsed[2]
                     fills_by_group.setdefault(group, {}).setdefault(arm, []).append(fill["rows"])
             boot = boot_seen[bkey]
+            problems.extend(engine_identity_problems(bkey, leg, rec, boot.get("engine_sha"),
+                                                     manifest))
             if rec.get("kind") == "ttft":
                 turns = rec.get("turn_rows") or []
                 ttft = [t.get("ttft_client_s") for t in turns]
@@ -676,6 +715,7 @@ def check(out, window, manifest_path=None):
                              "reused": 0, "prompt_tok": None, "tg": None,
                              "engine": rec.get("engine_sha256"),
                              "engine_exe": rec.get("engine_exe"),
+                             "engine_reason": rec.get("engine_identity_reason"),
                              "restart": boot["restart"],
                              "low": boot["low"], "mem": rec.get("mem") or {}})
                 if any(x is None for x in ttft):
@@ -759,8 +799,9 @@ def check(out, window, manifest_path=None):
     # engine: the leading 12 hex of the digest of the engine binary the leg's record names,
     # so the table says which build produced the rate. "-" means the record carries no
     # identity (records written before the field existed, or an unreadable /proc link:
-    # the record's engine_identity_reason says which). It is printed, never gated - the
-    # manifest's arm->sha pins are not yet compared against a record (known gap).
+    # the record's engine_identity_reason says which); such a leg is informational only and
+    # is named below. A record that DOES name an engine must agree with the arm's manifest
+    # pin and with the engine its boot record started - engine_identity_problems() fails it.
     header = ("%-8s %-2s %-16s %8s %6s %8s %8s %3s %5s %5s %4s %12s" %
               ("shape", "arm", "boot", "promptN", "reused", "read_tps", "gen_tps", "TG",
                "fill", "slots", "LOW", "engine"))
@@ -779,7 +820,12 @@ def check(out, window, manifest_path=None):
     missing = [r for r in rows if not r.get("engine")]
     if missing:
         print("engine: " + str(len(missing)) + " of " + str(len(rows)) + " leg record(s) name no "
-              "engine sha (pre-identity record, or the link was unreadable)")
+              "engine sha (pre-identity record, or the link was unreadable), so such a leg "
+              "cannot be attributed to a build")
+        for r in sorted(missing, key=lambda x: (x["boot"], x["shape"])):
+            print("INFO: " + r["boot"] + "/" + r["shape"] + " names no engine sha: not "
+                  "attributable to a build"
+                  + (("; " + str(r["engine_reason"])) if r.get("engine_reason") else ""))
     for r in sorted(rows, key=lambda x: (x["shape"], x["boot"])):
         if r.get("fingerprint") and r["fingerprint"].get("available") is False:
             warnings.append(r["boot"] + ": kernel fingerprint unavailable: "
@@ -873,7 +919,8 @@ SELFTEST_JUDGE2 = ("strata serve: prompt {n} tokens = {reused} reused + 10 read 
 
 def _fixture(root, key, arm, shape, *, spec="5", rows=3680, gib="6.84", restart_line="",
              second_reused=None, ttft_first=True, generation=None, started=1.0, ended=None,
-             supervisor_events=None, legacy_events=None, tokens=None, generated=None):
+             supervisor_events=None, legacy_events=None, tokens=None, generated=None,
+             engine_sha=None, boot_engine_sha=None):
     import tempfile  # noqa: F401 - the caller owns the temp dir
     d = pathlib.Path(root) / "records" / key
     d.mkdir(parents=True, exist_ok=True)
@@ -902,9 +949,13 @@ def _fixture(root, key, arm, shape, *, spec="5", rows=3680, gib="6.84", restart_
                "hlog_start": 0, "hlog_end": 0,
                "mem": {"max_rss_mib": 40000, "cached_start_mib": 1000, "cached_end_mib": 2000}}
         pathlib.Path(rec["elog"]).write_text(body)
+    if engine_sha:
+        rec["engine_sha256"] = engine_sha
     (d / (arm + "-" + shape + ".json")).write_text(json.dumps(rec))
     boot = {"key": key, "started_epoch": started,
             "page_cache": {"cached_mib": 1000, "pgmajfault": 10}}
+    if boot_engine_sha:
+        boot["engine_sha256"] = boot_engine_sha
     if ended is not None:
         boot["ended_epoch"] = ended
     (pathlib.Path(root) / "boots" / (key + ".json")).write_text(json.dumps(boot))
@@ -1021,6 +1072,53 @@ def selftest():
                   + str(want) + ")")
             if not ok:
                 failures.append(name)
+    # the engine identity gate: a leg record's engine must be the arm's pinned build AND the
+    # engine its own boot record started. A record naming no engine stays informational (the
+    # historical windows are not retro-failed), but says it cannot be attributed to a build.
+    SHA_A = "4b8251e9e06334a8e2dc8ab78453449a4820dccd1a4d13efe4faf19100233d41"
+    SHA_B = "936efcc798aab3952551281f2f328c1b8b19311fee9d0298142e702809a58394"
+
+    def engine_case(name, build, want_rc, want_text):
+        with tempfile.TemporaryDirectory(dir=_tmpdir()) as root:
+            manifest = pathlib.Path(root) / "manifest.json"
+            manifest.write_text(json.dumps({"arms": {
+                "A": {"engine": {"sha256": SHA_A}}, "B": {"engine": {"sha256": SHA_B}}}}))
+            build(root)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = check(pathlib.Path(root), "W1", manifest)
+            text = buf.getvalue()
+            hit = want_text in text
+            ok = rc == want_rc and hit and (want_rc == 0 or "FAIL: " in text)
+            print(("ok   " if ok else "FAIL ") + name + ": rc " + str(rc) + " (want "
+                  + str(want_rc) + ")" + ("" if hit else ", missing: " + want_text))
+            if not ok:
+                failures.append(name)
+
+    def two_arms(shas, boot_shas=None):
+        boot_shas = boot_shas or {}
+
+        def build(root):
+            _fixture(root, "W1-A-pp-r1", "A", "pp239k", engine_sha=shas[0],
+                     boot_engine_sha=boot_shas.get("A"))
+            _fixture(root, "W1-B-pp-r1", "B", "pp239k", engine_sha=shas[1],
+                     boot_engine_sha=boot_shas.get("B"))
+        return build
+
+    engine_case("engine-sha-matches-pin", two_arms((SHA_A, SHA_B), {"A": SHA_A, "B": SHA_B}),
+                0, "VERDICT: PASS")
+    engine_case("engine-sha-swap-fails",
+                two_arms((SHA_B, SHA_A)), 1,
+                "W1-A-pp-r1/pp239k: arm A leg record names engine " + SHA_B[:12]
+                + ", the manifest pins " + SHA_A[:12] + " for arm A's engine")
+    engine_case("engine-sha-boot-mismatch-fails",
+                two_arms((SHA_A, SHA_B), {"A": SHA_B}), 1,
+                "W1-A-pp-r1/pp239k: leg record names engine " + SHA_A[:12]
+                + ", boots/W1-A-pp-r1.json names " + SHA_B[:12])
+    engine_case("engine-sha-absent-is-informational",
+                two_arms((None, None)), 0,
+                "cannot be attributed to a build")
+
     rc, text = run(lambda r: clean(r))
     ok = rc == 0 and text.count("ctx") >= 2 and " tg" not in text
     print(("ok   " if ok else "FAIL ") + "w1-8-token-tail-is-context: rc " + str(rc)
@@ -1105,10 +1203,12 @@ def selftest():
         print("SELFTEST FAILED: " + ", ".join(failures))
         return 1
     print("selftest OK: gates pass on a clean pair and fail on restart, wrong tuple, bad fill, "
-          "cold request 2, a missing first token, a previous boot's fault, and a TG leg under "
-          "the 1,000-generated floor; a clean stop is not a restart, a previous boot's events "
-          "are not this boot's, the kernel window ends with the boot, and the per-boot evidence "
-          "is written beside the boot record")
+          "cold request 2, a missing first token, a previous boot's fault, a TG leg under "
+          "the 1,000-generated floor, an engine sha that is not the arm's pin and a leg whose "
+          "engine is not the one its boot started; a clean stop is not a restart, a previous "
+          "boot's events are not this boot's, the kernel window ends with the boot, a record "
+          "with no engine sha is informational only, and the per-boot evidence is written "
+          "beside the boot record")
     return 0
 
 
