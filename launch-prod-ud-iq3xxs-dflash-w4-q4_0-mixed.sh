@@ -69,7 +69,7 @@ case "${1:-}" in
       --socket "$SOCKET" --socket "$SOCKET2" --nice 1 \
       --stage-cpus 3,5,7,9,11,13,15 \
       --stall-timeout 600 \
-      --startup-timeout 1200 ;;  # 2026-11-13: full residency (no ram-relief) init takes ~6-8 min single-threaded; the 360 s default killed every generation before the helper attached/filled
+      --startup-timeout 900 ;;  # 2026-11-23: operator-set 15-minute startup watchdog; full-residency init previously took ~6-8 min
   *) echo 'Usage: launcher [--recover|--single-run]' >&2; exit 2 ;;
 esac
 command -v ss >/dev/null
