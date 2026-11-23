@@ -231,7 +231,8 @@ def prepare(out, do_preflight=True):
         windows[window] = {
             "name": spec["name"],
             "legs_per_boot": spec["legs_per_boot"],
-            "reps_per_arm": C.REPS,
+            "reps_per_arm": spec.get("boots_per_cell", C.REPS),
+            "boots_per_cell": spec.get("boots_per_cell"),
             "interleave": list(C.INTERLEAVE),
             "warmup_boots": spec["warmup_boots"],
             "pilot": spec.get("pilot"),

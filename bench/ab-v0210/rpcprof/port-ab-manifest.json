@@ -1714,14 +1714,14 @@
   }
  },
  "git_branch": "recovery-startup-watchdog",
- "git_head_at_prepare": "b3ef5e48c02d6571caa6adf30ccd97057386a435",
+ "git_head_at_prepare": "afe71f39ff6efd731b6b404b90ef911c536f3e18",
  "harness_script_shas": {
   "port_ab_boot.sh": "7635ffbd299d6511df93551ceb9766179ff33c374e07f3766275ca65e5796043",
   "port_ab_configs.py": "bb9f1b4ed9de43ed6e3e064725b135829b6638480a3e796ce6470f05d3b0cb4c",
   "port_ab_contract.py": "5995fc0a4ae2191c21bbf014806f26d685a277f6a421fd0861ae527e11282714",
   "port_ab_legs.py": "a6e7b31c8babbac2a87101395aba74b9b5c41ffd6feab7b6c14e1c09a30eac35",
   "port_ab_preflight.py": "3d8b4bafcafb5cd75ed932a8161dd7f5758141fbc5d3943c2cddbcc43253d90b",
-  "port_ab_prepare.py": "aa44a7d821ebe69c549a851b1d2eb111fa11901f17e62f126b311a398535a777",
+  "port_ab_prepare.py": "b63c810bab8fb62aef5c203f9a12aeeabc2bcf443e5bf747801613c6eb0b9455",
   "port_ab_prereq0.py": "61834eff1431763c1af2f2c245021159b84bf1c0de5941bb96e3d2c55d203412",
   "port_ab_stop.sh": "40ae7a812cd3e05bf683945940b9019ebf5ba93f024799f5a4837310f81f8fa7",
   "port_ab_ttft.py": "f4f27634d6513b7d352a22d99a1db8b9dfe8c37e787cc9cd72a05582f09e5284"
@@ -2001,7 +2001,7 @@
    "resolution": "per-engine configs (A without the flag, B with '0'); both cross cells then boot, and 'no spill' holds in both"
   }
  },
- "prepared_at": "2026-11-23T20:02:38",
+ "prepared_at": "2026-11-23T20:04:11",
  "prerequisite0": {
   "cache_free_gib_min": 40,
   "command": "python3 bench/ab-v0210/rpcprof/port_ab_prereq0.py --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123",
@@ -2038,6 +2038,7 @@
  "title": "Frozen A/B harness manifest for the approved Phase-2 measurement contract",
  "windows": {
   "W1": {
+   "boots_per_cell": null,
    "budget_derivation": {
     "range_s": [
      5220,
@@ -2182,6 +2183,7 @@
    "warmup_boots": 2
   },
   "W2": {
+   "boots_per_cell": null,
    "budget_derivation": {
     "decode_boot_s": [
      686.2251111729099,
@@ -2510,6 +2512,7 @@
    "warmup_boots": 2
   },
   "W3": {
+   "boots_per_cell": null,
    "budget_derivation": {
     "note": "the contract states 1.2-2 h; its own leg range (690-1,150 s) plus boots derives the wider range above - the derived one governs planning",
     "range_s": [
@@ -2654,6 +2657,7 @@
    "warmup_boots": 2
   },
   "W4": {
+   "boots_per_cell": 2,
    "budget_derivation": {
     "range_s": [
      2559.561078175803,
@@ -2717,7 +2721,7 @@
    },
    "name": "2x2 engine x server cell (veto-only)",
    "pilot": null,
-   "reps_per_arm": 3,
+   "reps_per_arm": 2,
    "schedule": [
     {
      "arm": "A",
