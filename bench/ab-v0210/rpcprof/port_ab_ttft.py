@@ -9,9 +9,10 @@ first token. The Phase-2 contract asks for TTFT and the inter-turn wall measured
     finished, each with a timestamp) from GET /v1/telemetry's activity block, so the number
     does not depend on this client's scheduling.
 
-One leg = one 3-turn conversation on one boot. Turn 1 reads the frozen 2k prompt from the
-corpus (head-tagged, so it is a cold prefill); turns 2 and 3 append a short user line to the
-SAME conversation, so their TTFT is the cached-prefix turn latency production serves.
+One leg = one 3-turn conversation on one boot. Turn 1 reads the TTFT leg's OWN frozen 2k
+prompt (SHAPES.ttft2k, a different head tag from pp2k, so turn 1 is a cold prefill even in a
+boot whose short group already ran pp2k); turns 2 and 3 append a short user line to the SAME
+conversation, so their TTFT is the cached-prefix turn latency production serves.
 
 CPU-only standalone: it talks to the server over HTTP like any client. --selftest exercises
 the SSE parser and the event pairing on a synthetic transcript, with no network.
@@ -101,6 +102,20 @@ def server_events(url):
     return []
 
 
+def inter_turn_wall(previous, current):
+    """Next turn's first token minus the previous turn's finish (the contract's definition).
+
+    The client's own idle gap is not the turn latency: what production serves is the wait for
+    the next turn's first token, counted from the moment the previous turn ended.
+    """
+    if not previous or not current:
+        return None
+    first, finished = current.get("first_delta_at"), previous.get("finished_at")
+    if not isinstance(first, (int, float)) or not isinstance(finished, (int, float)):
+        return None
+    return round(first - finished, 3)
+
+
 def turn_messages(corpus_text, turn):
     msgs = [{"role": "user", "content": corpus_text}]
     for i in range(1, turn):
@@ -139,6 +154,9 @@ def run_turn(url, messages, max_tokens, template, key_env, timeout):
     text = "".join(parts)
     return {"ttft_client_s": round((first - t0), 3) if first else None,
             "wall_s": round(t_end - t0, 3),
+            # absolute epoch stamps: the inter-turn wall is the NEXT turn's first token minus
+            # THIS turn's finish, never the client's idle gap between two calls
+            "first_delta_at": first, "finished_at": t_end,
             "text_sha256": hashlib.sha256(text.encode()).hexdigest(),
             "chars": len(text), "finish_reason": finish, "usage": usage, "text": text}
 
@@ -175,11 +193,11 @@ def main() -> int:
     events_before = server_events(a.url)
     last_seq = max((e.get("seq", 0) for e in events_before), default=0)
 
+    cached_start = ab9_driver.cached_mib()
     sampler = ab9_driver.MemSampler(a.engine_pid if a.engine_pid is not None
                                     else ab9_driver.find_engine_pid())
     sampler.start()
     turns = []
-    t_prev_end = None
     messages = turn_messages(corpus, 1)
     try:
         for turn in range(1, a.turns + 1):
@@ -187,12 +205,11 @@ def main() -> int:
                 messages = turn_messages(corpus, turn)
                 messages[-2]["content"] = turns[-1]["text"]  # the assistant reply it must send back
             row = run_turn(a.url, messages, a.max_tokens, template, a.api_key_env, a.timeout)
-            if t_prev_end is not None:
-                row["inter_turn_wall_s"] = round((time.time() - t_prev_end) - row["wall_s"], 3)
+            row["inter_turn_wall_s"] = inter_turn_wall(turns[-1] if turns else None, row)
             turns.append(row)
-            t_prev_end = time.time()
             print("turn " + str(turn) + ": ttft " + str(row["ttft_client_s"]) + " s, wall "
-                  + str(row["wall_s"]) + " s, " + str(row["chars"]) + " chars", flush=True)
+                  + str(row["wall_s"]) + " s, inter-turn " + str(row["inter_turn_wall_s"])
+                  + " s, " + str(row["chars"]) + " chars", flush=True)
     finally:
         sampler.stop_evt.set()
         sampler.join()
@@ -220,7 +237,8 @@ def main() -> int:
            "turn_rows": [{k: v for k, v in row.items() if k != "text"} for row in turns],
            "server_turns": server_turns,
            "elog": a.elog, "hlog": a.hlog,
-           "mem": {"max_rss_mib": sampler.max_rss_mib,
+           "mem": {"cached_start_mib": cached_start, "cached_end_mib": ab9_driver.cached_mib(),
+                   "max_rss_mib": sampler.max_rss_mib,
                    "min_avail_mib": None if sampler.min_avail_mib == 1 << 30 else sampler.min_avail_mib,
                    "max_swap_used_mib": sampler.max_swap_used_mib,
                    "max_vram_mib": sampler.max_vram_mib}}
@@ -256,7 +274,16 @@ def selftest() -> int:
     assert round(stamps["finished"] - stamps["queued"], 3) == 5.0
     msg = turn_messages("TEXT", 3)
     assert msg[0]["content"] == "TEXT" and len(msg) == 5 and msg[-1]["role"] == "user", msg
-    print("selftest OK: first-delta TTFT, finish/done, event pairing, 3-turn message shape")
+    # inter-turn = next first token - previous finish (NOT the idle gap between calls)
+    prev = {"finished_at": 100.0, "wall_s": 4.0}
+    cur = {"first_delta_at": 106.5, "wall_s": 3.0}
+    assert inter_turn_wall(prev, cur) == 6.5, inter_turn_wall(prev, cur)
+    assert inter_turn_wall(None, cur) is None
+    assert inter_turn_wall({"finished_at": None}, cur) is None
+    # the old bug: the client's idle gap read ~0; the contract's number is the wait above
+    assert inter_turn_wall(prev, cur) != round(0.0, 3)
+    print("selftest OK: first-delta TTFT, finish/done, event pairing, 3-turn message shape, "
+          "inter-turn = next first token - previous finish")
     return 0
 
 

@@ -121,6 +121,18 @@ def size(path: str) -> int:
     return os.stat(path).st_size if os.path.exists(path) else 0
 
 
+def cached_mib():
+    """Page cache in MiB: the warmth proxy the Phase-2 leg record asks for."""
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("Cached:"):
+                    return int(line.split()[1]) // 1024
+    except OSError:
+        pass
+    return None
+
+
 def find_engine_pid():
     """Locate the strata engine process: first argv element ends with /strata
     and --serve appears as its own NUL-delimited argument. Matching the bare
@@ -241,6 +253,7 @@ def main() -> int:
     max_tokens = 64 if a.kind == "warm" else a.max_tokens
     runs = 2 if a.kind == "tg" else 1
     e0, h0 = size(a.elog), size(a.hlog)
+    cached_start = cached_mib()
     engine_pid = a.engine_pid if a.engine_pid is not None else find_engine_pid()
     sampler = MemSampler(engine_pid)
     sampler.start()
@@ -281,6 +294,8 @@ def main() -> int:
         "hlog": a.hlog, "hlog_start": h0, "hlog_end": h1,
         "mem": {
             "engine_pid": engine_pid,
+            "cached_start_mib": cached_start,
+            "cached_end_mib": cached_mib(),
             "max_rss_mib": sampler.max_rss_mib,
             "min_avail_mib": None if sampler.min_avail_mib == 1 << 30 else sampler.min_avail_mib,
             "max_swap_used_mib": sampler.max_swap_used_mib,

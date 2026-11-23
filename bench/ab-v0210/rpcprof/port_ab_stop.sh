@@ -1,19 +1,22 @@
 #!/usr/bin/env bash
-# port_ab_stop.sh WINDOW ARM REP - stop ONE Phase-2 leg's pair through its state file.
+# port_ab_stop.sh WINDOW ARM BOOT REP - stop ONE Phase-2 boot's pair through its state file.
 #
 # Stop and boot are separate invocations (the operator directive after the 2026-11-12
 # incidents), and no kill pattern lives in a command line: the supervisor is found through
-# its per-leg state file, its identity is checked in /proc before the signal, and the
+# its per-boot state file, its identity is checked in /proc before the signal, and the
 # survivors named in that state are TERMed by recorded pid. Quiet is verified for 20 s.
+#
+# BOOT is the boot group (part of the boot key: W2-A-dec-r1 vs W2-A-sht-r1).
 set -uo pipefail
 ROOT=${STRATA_PROD_TREE:-/mnt/srcds/Strata}
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PY="$ROOT/.venv/bin/python"
-WINDOW=${1:?usage: port_ab_stop.sh WINDOW ARM REP}
-ARM=${2:?usage: port_ab_stop.sh WINDOW ARM REP}
-REP=${3:?usage: port_ab_stop.sh WINDOW ARM REP}
+WINDOW=${1:?usage: port_ab_stop.sh WINDOW ARM BOOT REP}
+ARM=${2:?usage: port_ab_stop.sh WINDOW ARM BOOT REP}
+BOOT=${3:?usage: port_ab_stop.sh WINDOW ARM BOOT REP}
+REP=${4:?usage: port_ab_stop.sh WINDOW ARM BOOT REP}
 OUT=${PORT_AB_OUT:-$HERE/out/port-ab-20261123}
-KEY="$WINDOW-$ARM-r$REP"
+KEY="$WINDOW-$ARM-$BOOT-r$REP"
 STATE="$OUT/run/$KEY.supervisor.json"
 SOCK="$OUT/run/pa-$KEY.sock"
 SOCK2="$OUT/run/pa-$KEY-2.sock"
@@ -59,7 +62,7 @@ PYEOF
     fi
   done
 else
-  echo "port_ab_stop: no state file $STATE (was this leg booted?)"
+  echo "port_ab_stop: no state file $STATE (was this boot started?)"
 fi
 
 rm -f "$SOCK" "$SOCK2"
@@ -71,13 +74,13 @@ for d in /proc/[0-9]*; do
   exe=$(readlink "$d/exe" 2>/dev/null) || continue
   case "$exe" in
     "$ROOT"/run/fsclamp-bin/rpcw-hip/strata|"$ROOT"/run/port0218-bin/rpcw-hip/strata)
-      # only count it when this leg's socket is on its command line
+      # only count it when this boot's socket is on its command line
       if tr '\0' '\n' < "$d/cmdline" 2>/dev/null | grep -qxF "$SOCK"; then
         echo "  still alive: engine $pid"; alive=1
       fi ;;
   esac
-  [[ -S $SOCK || -S $SOCK2 ]] && alive=1
 done
+[[ -S $SOCK || -S $SOCK2 ]] && alive=1
 if [[ $alive -eq 0 ]]; then echo "port_ab_stop: QUIET"; exit 0; fi
 echo "port_ab_stop: NOT QUIET - run again or inspect $STATE" >&2
 exit 1

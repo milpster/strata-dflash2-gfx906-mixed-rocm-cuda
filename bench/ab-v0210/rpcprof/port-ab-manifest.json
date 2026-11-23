@@ -3,7 +3,8 @@
   "diffs": {},
   "settings_sha256_blind": {
    "A": "e42334dbf56688e5e2965836b2921d5604686a617ab2058048e0fc0074431921",
-   "B": "11c6f67416e23831feea34e7e40ea29504a84680c19ac7c75ef5215bff2c93df"
+   "B": "e42334dbf56688e5e2965836b2921d5604686a617ab2058048e0fc0074431921",
+   "note": "the declared spill flag is blanked before hashing, so two identical-setting arms hash equal"
   },
   "structural": {
    "spill_flag": {
@@ -86,9 +87,12 @@
  "claim": {
   "confirm_when": "the 90% interval excludes 0 AND exceeds the pre-registered delta",
   "delta_pre_registered": {
-   "decode": 0.08,
-   "prefill": 0.05,
-   "short_pp_ttft": "from the W2 pilot, frozen before the claim legs"
+   "decode_gen_tps": 0.08,
+   "prefill_read_tps": 0.05,
+   "short_pp_gen_tps": "from the W2 pilot",
+   "short_pp_read_tps": "from the W2 pilot (per shape, frozen before the claim legs)",
+   "ttft_inter_turn_s": "from the W2 pilot",
+   "ttft_turn1_s": "from the W2 pilot"
   },
   "interleave": [
    "A",
@@ -114,9 +118,11 @@
   "within_delta_clause": "'within +/-delta' is licensed ONLY when the entire 90% interval lies inside +/-delta; a wide interval straddling the delta boundary is INDETERMINATE, not 'within 5%'"
  },
  "configs": {
-  "W1-A-r0": {
-   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W1-A-r0",
-   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W1-A-r0.json",
+  "W1-A-pp-r0": {
+   "arm": "A",
+   "boot_group": "pp",
+   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W1-A-pp-r0",
+   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W1-A-pp-r0.json",
    "deltas": [
     {
      "field": "reasoning_budget_tokens",
@@ -146,23 +152,29 @@
      "field": "log",
      "from": "/mnt/srcds/Strata/logs/engine-prod-ud-iq3xxs-v0233.log",
      "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1-A-r0.engine.log"
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1-A-pp-r0.engine.log"
     },
     {
      "field": "args/--conversation-cache-dir",
      "from": "/mnt/srcds/Strata-wt-helper-ipc/run/diet-prod-38g",
      "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W1-A-r0"
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W1-A-pp-r0"
     }
    ],
-   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1-A-r0.engine.log",
-   "sha256": "11cdff3f8e613e6263a36fd45e639121c850646e3cec5be2b2c08bb90836481c",
-   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1-A-r0.sock",
-   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1-A-r0-2.sock"
+   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1-A-pp-r0.engine.log",
+   "pilot": false,
+   "rep": 0,
+   "sha256": "861792f2c8d819b138152fe28391af41f44753f570e0e49dbda8d4e23e984159",
+   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1-A-pp-r0.sock",
+   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1-A-pp-r0-2.sock",
+   "warmup": true,
+   "window": "W1"
   },
-  "W1-A-r1": {
-   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W1-A-r1",
-   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W1-A-r1.json",
+  "W1-A-pp-r1": {
+   "arm": "A",
+   "boot_group": "pp",
+   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W1-A-pp-r1",
+   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W1-A-pp-r1.json",
    "deltas": [
     {
      "field": "reasoning_budget_tokens",
@@ -192,23 +204,29 @@
      "field": "log",
      "from": "/mnt/srcds/Strata/logs/engine-prod-ud-iq3xxs-v0233.log",
      "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1-A-r1.engine.log"
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1-A-pp-r1.engine.log"
     },
     {
      "field": "args/--conversation-cache-dir",
      "from": "/mnt/srcds/Strata-wt-helper-ipc/run/diet-prod-38g",
      "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W1-A-r1"
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W1-A-pp-r1"
     }
    ],
-   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1-A-r1.engine.log",
-   "sha256": "0642a9b5b944f225caa95abb6b1cc0093675793fa794ac5f0c7cb58cb42bf160",
-   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1-A-r1.sock",
-   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1-A-r1-2.sock"
+   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1-A-pp-r1.engine.log",
+   "pilot": false,
+   "rep": 1,
+   "sha256": "a14a23fa8a9c4b75d5cf7ed0a4a682c659d4524217792f90a3d80c8dda949eb4",
+   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1-A-pp-r1.sock",
+   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1-A-pp-r1-2.sock",
+   "warmup": false,
+   "window": "W1"
   },
-  "W1-A-r2": {
-   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W1-A-r2",
-   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W1-A-r2.json",
+  "W1-A-pp-r2": {
+   "arm": "A",
+   "boot_group": "pp",
+   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W1-A-pp-r2",
+   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W1-A-pp-r2.json",
    "deltas": [
     {
      "field": "reasoning_budget_tokens",
@@ -238,23 +256,29 @@
      "field": "log",
      "from": "/mnt/srcds/Strata/logs/engine-prod-ud-iq3xxs-v0233.log",
      "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1-A-r2.engine.log"
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1-A-pp-r2.engine.log"
     },
     {
      "field": "args/--conversation-cache-dir",
      "from": "/mnt/srcds/Strata-wt-helper-ipc/run/diet-prod-38g",
      "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W1-A-r2"
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W1-A-pp-r2"
     }
    ],
-   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1-A-r2.engine.log",
-   "sha256": "dc6dedf3a19caf27782e809090cb3ffcab17e9a00140f57f8ce1505334d51d79",
-   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1-A-r2.sock",
-   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1-A-r2-2.sock"
+   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1-A-pp-r2.engine.log",
+   "pilot": false,
+   "rep": 2,
+   "sha256": "de06a1e1216ace346e460c2fd22dfebad7249fd0785d85c8b75a878aed39d0a8",
+   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1-A-pp-r2.sock",
+   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1-A-pp-r2-2.sock",
+   "warmup": false,
+   "window": "W1"
   },
-  "W1-A-r3": {
-   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W1-A-r3",
-   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W1-A-r3.json",
+  "W1-A-pp-r3": {
+   "arm": "A",
+   "boot_group": "pp",
+   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W1-A-pp-r3",
+   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W1-A-pp-r3.json",
    "deltas": [
     {
      "field": "reasoning_budget_tokens",
@@ -284,23 +308,29 @@
      "field": "log",
      "from": "/mnt/srcds/Strata/logs/engine-prod-ud-iq3xxs-v0233.log",
      "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1-A-r3.engine.log"
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1-A-pp-r3.engine.log"
     },
     {
      "field": "args/--conversation-cache-dir",
      "from": "/mnt/srcds/Strata-wt-helper-ipc/run/diet-prod-38g",
      "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W1-A-r3"
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W1-A-pp-r3"
     }
    ],
-   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1-A-r3.engine.log",
-   "sha256": "d2c66ef6892c06669c1ac6b5b11c282420773ac17becf658ae83aa15e85d3881",
-   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1-A-r3.sock",
-   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1-A-r3-2.sock"
+   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1-A-pp-r3.engine.log",
+   "pilot": false,
+   "rep": 3,
+   "sha256": "533c0577d98cb2632217ff2acf3d601d61e3ee17d07622463867323ba58ccacb",
+   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1-A-pp-r3.sock",
+   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1-A-pp-r3-2.sock",
+   "warmup": false,
+   "window": "W1"
   },
-  "W1-B-r0": {
-   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W1-B-r0",
-   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W1-B-r0.json",
+  "W1-B-pp-r0": {
+   "arm": "B",
+   "boot_group": "pp",
+   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W1-B-pp-r0",
+   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W1-B-pp-r0.json",
    "deltas": [
     {
      "field": "trial_note",
@@ -342,23 +372,29 @@
      "field": "log",
      "from": "/mnt/srcds/Strata/logs/engine-prod-port0218.log",
      "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1-B-r0.engine.log"
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1-B-pp-r0.engine.log"
     },
     {
      "field": "args/--conversation-cache-dir",
      "from": "/mnt/srcds/Strata/run/prod-port0218-cache",
      "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W1-B-r0"
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W1-B-pp-r0"
     }
    ],
-   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1-B-r0.engine.log",
-   "sha256": "5300a277d8d9f05f283ca1d9a452df40c636c3094d231947cc9966d0b08a49ef",
-   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1-B-r0.sock",
-   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1-B-r0-2.sock"
+   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1-B-pp-r0.engine.log",
+   "pilot": false,
+   "rep": 0,
+   "sha256": "3ef32533207ac36706d1f92f738564ed9386b8bcac9f8927bf9d2d42cd472029",
+   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1-B-pp-r0.sock",
+   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1-B-pp-r0-2.sock",
+   "warmup": true,
+   "window": "W1"
   },
-  "W1-B-r1": {
-   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W1-B-r1",
-   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W1-B-r1.json",
+  "W1-B-pp-r1": {
+   "arm": "B",
+   "boot_group": "pp",
+   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W1-B-pp-r1",
+   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W1-B-pp-r1.json",
    "deltas": [
     {
      "field": "trial_note",
@@ -400,23 +436,29 @@
      "field": "log",
      "from": "/mnt/srcds/Strata/logs/engine-prod-port0218.log",
      "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1-B-r1.engine.log"
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1-B-pp-r1.engine.log"
     },
     {
      "field": "args/--conversation-cache-dir",
      "from": "/mnt/srcds/Strata/run/prod-port0218-cache",
      "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W1-B-r1"
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W1-B-pp-r1"
     }
    ],
-   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1-B-r1.engine.log",
-   "sha256": "cbb66ba8f54490a38a2141bfa0eca24252a1505b1395f1c4cc1084f60263c88a",
-   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1-B-r1.sock",
-   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1-B-r1-2.sock"
+   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1-B-pp-r1.engine.log",
+   "pilot": false,
+   "rep": 1,
+   "sha256": "ac53a39a71dd313613cbc660a04a38d8c6f13a581981f51fba524f993c020fee",
+   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1-B-pp-r1.sock",
+   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1-B-pp-r1-2.sock",
+   "warmup": false,
+   "window": "W1"
   },
-  "W1-B-r2": {
-   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W1-B-r2",
-   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W1-B-r2.json",
+  "W1-B-pp-r2": {
+   "arm": "B",
+   "boot_group": "pp",
+   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W1-B-pp-r2",
+   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W1-B-pp-r2.json",
    "deltas": [
     {
      "field": "trial_note",
@@ -458,23 +500,29 @@
      "field": "log",
      "from": "/mnt/srcds/Strata/logs/engine-prod-port0218.log",
      "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1-B-r2.engine.log"
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1-B-pp-r2.engine.log"
     },
     {
      "field": "args/--conversation-cache-dir",
      "from": "/mnt/srcds/Strata/run/prod-port0218-cache",
      "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W1-B-r2"
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W1-B-pp-r2"
     }
    ],
-   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1-B-r2.engine.log",
-   "sha256": "894f65f60f7432bdf626a80cce8a63d804fd78f3453547deeb51f2f915ac3ce8",
-   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1-B-r2.sock",
-   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1-B-r2-2.sock"
+   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1-B-pp-r2.engine.log",
+   "pilot": false,
+   "rep": 2,
+   "sha256": "f51de7a796a90bc1d54a9407b333848773a9a4b54d16b395f64aad4dfdc46166",
+   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1-B-pp-r2.sock",
+   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1-B-pp-r2-2.sock",
+   "warmup": false,
+   "window": "W1"
   },
-  "W1-B-r3": {
-   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W1-B-r3",
-   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W1-B-r3.json",
+  "W1-B-pp-r3": {
+   "arm": "B",
+   "boot_group": "pp",
+   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W1-B-pp-r3",
+   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W1-B-pp-r3.json",
    "deltas": [
     {
      "field": "trial_note",
@@ -516,23 +564,29 @@
      "field": "log",
      "from": "/mnt/srcds/Strata/logs/engine-prod-port0218.log",
      "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1-B-r3.engine.log"
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1-B-pp-r3.engine.log"
     },
     {
      "field": "args/--conversation-cache-dir",
      "from": "/mnt/srcds/Strata/run/prod-port0218-cache",
      "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W1-B-r3"
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W1-B-pp-r3"
     }
    ],
-   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1-B-r3.engine.log",
-   "sha256": "3b10ee66e4f396233953fedb793bf0fd8acf21cb859588832693eeddf8b22a51",
-   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1-B-r3.sock",
-   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1-B-r3-2.sock"
+   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1-B-pp-r3.engine.log",
+   "pilot": false,
+   "rep": 3,
+   "sha256": "6056e8b953639de2771a3818ff33a24a7f9bbe2d6bdd4cc8dba18c952ae0c83c",
+   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1-B-pp-r3.sock",
+   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1-B-pp-r3-2.sock",
+   "warmup": false,
+   "window": "W1"
   },
-  "W2-A-r0": {
-   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-A-r0",
-   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W2-A-r0.json",
+  "W2-A-dec-r0": {
+   "arm": "A",
+   "boot_group": "dec",
+   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-A-dec-r0",
+   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W2-A-dec-r0.json",
    "deltas": [
     {
      "field": "reasoning_budget_tokens",
@@ -562,23 +616,29 @@
      "field": "log",
      "from": "/mnt/srcds/Strata/logs/engine-prod-ud-iq3xxs-v0233.log",
      "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-r0.engine.log"
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-dec-r0.engine.log"
     },
     {
      "field": "args/--conversation-cache-dir",
      "from": "/mnt/srcds/Strata-wt-helper-ipc/run/diet-prod-38g",
      "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-A-r0"
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-A-dec-r0"
     }
    ],
-   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-r0.engine.log",
-   "sha256": "1e2410b802ce240aaedc1a4a15bccf94ea3732d762870584245d0ba002fd8167",
-   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-A-r0.sock",
-   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-A-r0-2.sock"
+   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-dec-r0.engine.log",
+   "pilot": false,
+   "rep": 0,
+   "sha256": "54eedffaee30143cdd09bbc883f24c5981bd824c886e4cbcb5244671c0504d19",
+   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-A-dec-r0.sock",
+   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-A-dec-r0-2.sock",
+   "warmup": true,
+   "window": "W2"
   },
-  "W2-A-r1": {
-   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-A-r1",
-   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W2-A-r1.json",
+  "W2-A-dec-r1": {
+   "arm": "A",
+   "boot_group": "dec",
+   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-A-dec-r1",
+   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W2-A-dec-r1.json",
    "deltas": [
     {
      "field": "reasoning_budget_tokens",
@@ -608,23 +668,29 @@
      "field": "log",
      "from": "/mnt/srcds/Strata/logs/engine-prod-ud-iq3xxs-v0233.log",
      "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-r1.engine.log"
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-dec-r1.engine.log"
     },
     {
      "field": "args/--conversation-cache-dir",
      "from": "/mnt/srcds/Strata-wt-helper-ipc/run/diet-prod-38g",
      "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-A-r1"
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-A-dec-r1"
     }
    ],
-   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-r1.engine.log",
-   "sha256": "634eedf405c4353eb193a142aa4422c2b940c8733637e82cd170eca7beee7148",
-   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-A-r1.sock",
-   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-A-r1-2.sock"
+   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-dec-r1.engine.log",
+   "pilot": false,
+   "rep": 1,
+   "sha256": "76996fa9b367f11f4ecc56912970f333f7233cc80aa8908ea117088105ae9e11",
+   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-A-dec-r1.sock",
+   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-A-dec-r1-2.sock",
+   "warmup": false,
+   "window": "W2"
   },
-  "W2-A-r2": {
-   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-A-r2",
-   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W2-A-r2.json",
+  "W2-A-dec-r2": {
+   "arm": "A",
+   "boot_group": "dec",
+   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-A-dec-r2",
+   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W2-A-dec-r2.json",
    "deltas": [
     {
      "field": "reasoning_budget_tokens",
@@ -654,23 +720,29 @@
      "field": "log",
      "from": "/mnt/srcds/Strata/logs/engine-prod-ud-iq3xxs-v0233.log",
      "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-r2.engine.log"
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-dec-r2.engine.log"
     },
     {
      "field": "args/--conversation-cache-dir",
      "from": "/mnt/srcds/Strata-wt-helper-ipc/run/diet-prod-38g",
      "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-A-r2"
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-A-dec-r2"
     }
    ],
-   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-r2.engine.log",
-   "sha256": "bf1bb2b340874d0a1f93958b034ea926398a484f41d2db512da602997ca9f80f",
-   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-A-r2.sock",
-   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-A-r2-2.sock"
+   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-dec-r2.engine.log",
+   "pilot": false,
+   "rep": 2,
+   "sha256": "11b704561f86c33b70bcdd57a728094bf782fd50a50d5393a53caf6a2265ca99",
+   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-A-dec-r2.sock",
+   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-A-dec-r2-2.sock",
+   "warmup": false,
+   "window": "W2"
   },
-  "W2-A-r3": {
-   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-A-r3",
-   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W2-A-r3.json",
+  "W2-A-dec-r3": {
+   "arm": "A",
+   "boot_group": "dec",
+   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-A-dec-r3",
+   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W2-A-dec-r3.json",
    "deltas": [
     {
      "field": "reasoning_budget_tokens",
@@ -700,255 +772,29 @@
      "field": "log",
      "from": "/mnt/srcds/Strata/logs/engine-prod-ud-iq3xxs-v0233.log",
      "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-r3.engine.log"
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-dec-r3.engine.log"
     },
     {
      "field": "args/--conversation-cache-dir",
      "from": "/mnt/srcds/Strata-wt-helper-ipc/run/diet-prod-38g",
      "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-A-r3"
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-A-dec-r3"
     }
    ],
-   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-r3.engine.log",
-   "sha256": "02d35160e5d427480cf12b503f96a02f30994de5ae658ca1d570818697085dfd",
-   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-A-r3.sock",
-   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-A-r3-2.sock"
+   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-dec-r3.engine.log",
+   "pilot": false,
+   "rep": 3,
+   "sha256": "609aabbb80a2251bb3c00deb4aec5bf3dc06e680d26a8163021627e2b066cfd9",
+   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-A-dec-r3.sock",
+   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-A-dec-r3-2.sock",
+   "warmup": false,
+   "window": "W2"
   },
-  "W2-B-r0": {
-   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-B-r0",
-   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W2-B-r0.json",
-   "deltas": [
-    {
-     "field": "trial_note",
-     "from": "PROMOTED to prod 2026-11-23 per operator order: the port validated by the full window (quality parity, 240k, helper, park/restore). Serving shape = the validated trial tuple (256/192, budget 36864, spill off).",
-     "kind": "harness",
-     "to": "<absent>"
-    },
-    {
-     "field": "derived_from",
-     "from": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/trial-managed-pool-38g-230k.json",
-     "kind": "harness",
-     "to": "<absent>"
-    },
-    {
-     "field": "derived_note",
-     "from": "port-0218 test-window base on :8019: the champion measurement config with the engine, cwd, sockets, log and conversation-cache-dir repointed at the port tree, and --conversation-spill-mib 0 added (upstream spill tier off; the fork DISK tier under --conversation-cache-dir is this rig's only disk tier). Boots are the operator's, never the fixer's.",
-     "kind": "harness",
-     "to": "<absent>"
-    },
-    {
-     "field": "managed_budget_mib",
-     "from": 40960,
-     "kind": "harness",
-     "to": "<absent>"
-    },
-    {
-     "field": "model_name",
-     "from": "swift-1.5-ud-iq3xxs-managed",
-     "kind": "tuple",
-     "to": "ud-iq3_xxs"
-    },
-    {
-     "field": "reasoning_budget_tokens",
-     "from": 2000,
-     "kind": "tuple",
-     "to": 0
-    },
-    {
-     "field": "log",
-     "from": "/mnt/srcds/Strata/logs/engine-prod-port0218.log",
-     "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-r0.engine.log"
-    },
-    {
-     "field": "args/--conversation-cache-dir",
-     "from": "/mnt/srcds/Strata/run/prod-port0218-cache",
-     "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-B-r0"
-    }
-   ],
-   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-r0.engine.log",
-   "sha256": "df5e7c4f70e5a360101ef8027ab0f59ca284aecf312ee7bd3700a72a346b0393",
-   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-B-r0.sock",
-   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-B-r0-2.sock"
-  },
-  "W2-B-r1": {
-   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-B-r1",
-   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W2-B-r1.json",
-   "deltas": [
-    {
-     "field": "trial_note",
-     "from": "PROMOTED to prod 2026-11-23 per operator order: the port validated by the full window (quality parity, 240k, helper, park/restore). Serving shape = the validated trial tuple (256/192, budget 36864, spill off).",
-     "kind": "harness",
-     "to": "<absent>"
-    },
-    {
-     "field": "derived_from",
-     "from": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/trial-managed-pool-38g-230k.json",
-     "kind": "harness",
-     "to": "<absent>"
-    },
-    {
-     "field": "derived_note",
-     "from": "port-0218 test-window base on :8019: the champion measurement config with the engine, cwd, sockets, log and conversation-cache-dir repointed at the port tree, and --conversation-spill-mib 0 added (upstream spill tier off; the fork DISK tier under --conversation-cache-dir is this rig's only disk tier). Boots are the operator's, never the fixer's.",
-     "kind": "harness",
-     "to": "<absent>"
-    },
-    {
-     "field": "managed_budget_mib",
-     "from": 40960,
-     "kind": "harness",
-     "to": "<absent>"
-    },
-    {
-     "field": "model_name",
-     "from": "swift-1.5-ud-iq3xxs-managed",
-     "kind": "tuple",
-     "to": "ud-iq3_xxs"
-    },
-    {
-     "field": "reasoning_budget_tokens",
-     "from": 2000,
-     "kind": "tuple",
-     "to": 0
-    },
-    {
-     "field": "log",
-     "from": "/mnt/srcds/Strata/logs/engine-prod-port0218.log",
-     "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-r1.engine.log"
-    },
-    {
-     "field": "args/--conversation-cache-dir",
-     "from": "/mnt/srcds/Strata/run/prod-port0218-cache",
-     "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-B-r1"
-    }
-   ],
-   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-r1.engine.log",
-   "sha256": "b09f343d3bf92383aac40208157699d72d725c569e801346e6f9374d3c455771",
-   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-B-r1.sock",
-   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-B-r1-2.sock"
-  },
-  "W2-B-r2": {
-   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-B-r2",
-   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W2-B-r2.json",
-   "deltas": [
-    {
-     "field": "trial_note",
-     "from": "PROMOTED to prod 2026-11-23 per operator order: the port validated by the full window (quality parity, 240k, helper, park/restore). Serving shape = the validated trial tuple (256/192, budget 36864, spill off).",
-     "kind": "harness",
-     "to": "<absent>"
-    },
-    {
-     "field": "derived_from",
-     "from": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/trial-managed-pool-38g-230k.json",
-     "kind": "harness",
-     "to": "<absent>"
-    },
-    {
-     "field": "derived_note",
-     "from": "port-0218 test-window base on :8019: the champion measurement config with the engine, cwd, sockets, log and conversation-cache-dir repointed at the port tree, and --conversation-spill-mib 0 added (upstream spill tier off; the fork DISK tier under --conversation-cache-dir is this rig's only disk tier). Boots are the operator's, never the fixer's.",
-     "kind": "harness",
-     "to": "<absent>"
-    },
-    {
-     "field": "managed_budget_mib",
-     "from": 40960,
-     "kind": "harness",
-     "to": "<absent>"
-    },
-    {
-     "field": "model_name",
-     "from": "swift-1.5-ud-iq3xxs-managed",
-     "kind": "tuple",
-     "to": "ud-iq3_xxs"
-    },
-    {
-     "field": "reasoning_budget_tokens",
-     "from": 2000,
-     "kind": "tuple",
-     "to": 0
-    },
-    {
-     "field": "log",
-     "from": "/mnt/srcds/Strata/logs/engine-prod-port0218.log",
-     "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-r2.engine.log"
-    },
-    {
-     "field": "args/--conversation-cache-dir",
-     "from": "/mnt/srcds/Strata/run/prod-port0218-cache",
-     "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-B-r2"
-    }
-   ],
-   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-r2.engine.log",
-   "sha256": "7bfe00357c66f3445b70f242232dd64418de1290ad5b31fad0fcaf9ba467d947",
-   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-B-r2.sock",
-   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-B-r2-2.sock"
-  },
-  "W2-B-r3": {
-   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-B-r3",
-   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W2-B-r3.json",
-   "deltas": [
-    {
-     "field": "trial_note",
-     "from": "PROMOTED to prod 2026-11-23 per operator order: the port validated by the full window (quality parity, 240k, helper, park/restore). Serving shape = the validated trial tuple (256/192, budget 36864, spill off).",
-     "kind": "harness",
-     "to": "<absent>"
-    },
-    {
-     "field": "derived_from",
-     "from": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/trial-managed-pool-38g-230k.json",
-     "kind": "harness",
-     "to": "<absent>"
-    },
-    {
-     "field": "derived_note",
-     "from": "port-0218 test-window base on :8019: the champion measurement config with the engine, cwd, sockets, log and conversation-cache-dir repointed at the port tree, and --conversation-spill-mib 0 added (upstream spill tier off; the fork DISK tier under --conversation-cache-dir is this rig's only disk tier). Boots are the operator's, never the fixer's.",
-     "kind": "harness",
-     "to": "<absent>"
-    },
-    {
-     "field": "managed_budget_mib",
-     "from": 40960,
-     "kind": "harness",
-     "to": "<absent>"
-    },
-    {
-     "field": "model_name",
-     "from": "swift-1.5-ud-iq3xxs-managed",
-     "kind": "tuple",
-     "to": "ud-iq3_xxs"
-    },
-    {
-     "field": "reasoning_budget_tokens",
-     "from": 2000,
-     "kind": "tuple",
-     "to": 0
-    },
-    {
-     "field": "log",
-     "from": "/mnt/srcds/Strata/logs/engine-prod-port0218.log",
-     "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-r3.engine.log"
-    },
-    {
-     "field": "args/--conversation-cache-dir",
-     "from": "/mnt/srcds/Strata/run/prod-port0218-cache",
-     "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-B-r3"
-    }
-   ],
-   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-r3.engine.log",
-   "sha256": "bfaa3871e6f2b4866cba1b2a8a0b669c5ef76e9773fa4c9fc67d8c22d649d1c9",
-   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-B-r3.sock",
-   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-B-r3-2.sock"
-  },
-  "W3-A-r0": {
-   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W3-A-r0",
-   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W3-A-r0.json",
+  "W2-A-sht-r0": {
+   "arm": "A",
+   "boot_group": "sht",
+   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-A-sht-r0",
+   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W2-A-sht-r0.json",
    "deltas": [
     {
      "field": "reasoning_budget_tokens",
@@ -978,23 +824,29 @@
      "field": "log",
      "from": "/mnt/srcds/Strata/logs/engine-prod-ud-iq3xxs-v0233.log",
      "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W3-A-r0.engine.log"
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-sht-r0.engine.log"
     },
     {
      "field": "args/--conversation-cache-dir",
      "from": "/mnt/srcds/Strata-wt-helper-ipc/run/diet-prod-38g",
      "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W3-A-r0"
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-A-sht-r0"
     }
    ],
-   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W3-A-r0.engine.log",
-   "sha256": "6cc4b4b86844db2cdc9f650db42770c48ed35f0c2ac63639baab6559d79f5d48",
-   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W3-A-r0.sock",
-   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W3-A-r0-2.sock"
+   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-sht-r0.engine.log",
+   "pilot": true,
+   "rep": 0,
+   "sha256": "b04fdce4d1c2dd334f47ec4ab097ab4ef7dbb37e4a22f577468e105683975ed8",
+   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-A-sht-r0.sock",
+   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-A-sht-r0-2.sock",
+   "warmup": false,
+   "window": "W2"
   },
-  "W3-A-r1": {
-   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W3-A-r1",
-   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W3-A-r1.json",
+  "W2-A-sht-r1": {
+   "arm": "A",
+   "boot_group": "sht",
+   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-A-sht-r1",
+   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W2-A-sht-r1.json",
    "deltas": [
     {
      "field": "reasoning_budget_tokens",
@@ -1024,23 +876,29 @@
      "field": "log",
      "from": "/mnt/srcds/Strata/logs/engine-prod-ud-iq3xxs-v0233.log",
      "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W3-A-r1.engine.log"
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-sht-r1.engine.log"
     },
     {
      "field": "args/--conversation-cache-dir",
      "from": "/mnt/srcds/Strata-wt-helper-ipc/run/diet-prod-38g",
      "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W3-A-r1"
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-A-sht-r1"
     }
    ],
-   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W3-A-r1.engine.log",
-   "sha256": "ae944f42f4882cbc56e1d71700c7cd545738c19a39c11545b833705bc862bf35",
-   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W3-A-r1.sock",
-   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W3-A-r1-2.sock"
+   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-sht-r1.engine.log",
+   "pilot": false,
+   "rep": 1,
+   "sha256": "f5080531f3b3c1c1f20c340b156a49763582b9223ec7b5c1251c6a06a5ab034b",
+   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-A-sht-r1.sock",
+   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-A-sht-r1-2.sock",
+   "warmup": false,
+   "window": "W2"
   },
-  "W3-A-r2": {
-   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W3-A-r2",
-   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W3-A-r2.json",
+  "W2-A-sht-r2": {
+   "arm": "A",
+   "boot_group": "sht",
+   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-A-sht-r2",
+   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W2-A-sht-r2.json",
    "deltas": [
     {
      "field": "reasoning_budget_tokens",
@@ -1070,23 +928,29 @@
      "field": "log",
      "from": "/mnt/srcds/Strata/logs/engine-prod-ud-iq3xxs-v0233.log",
      "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W3-A-r2.engine.log"
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-sht-r2.engine.log"
     },
     {
      "field": "args/--conversation-cache-dir",
      "from": "/mnt/srcds/Strata-wt-helper-ipc/run/diet-prod-38g",
      "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W3-A-r2"
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-A-sht-r2"
     }
    ],
-   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W3-A-r2.engine.log",
-   "sha256": "287361727244c34e1504385bc021eeb5cd9b4f4ac55332482fe5048f8b960ab3",
-   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W3-A-r2.sock",
-   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W3-A-r2-2.sock"
+   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-sht-r2.engine.log",
+   "pilot": false,
+   "rep": 2,
+   "sha256": "88d07f59ed69e39c5087a18c9d34aef10c7f37348ecd7304aa669c5f288dde40",
+   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-A-sht-r2.sock",
+   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-A-sht-r2-2.sock",
+   "warmup": false,
+   "window": "W2"
   },
-  "W3-A-r3": {
-   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W3-A-r3",
-   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W3-A-r3.json",
+  "W2-A-sht-r3": {
+   "arm": "A",
+   "boot_group": "sht",
+   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-A-sht-r3",
+   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W2-A-sht-r3.json",
    "deltas": [
     {
      "field": "reasoning_budget_tokens",
@@ -1116,23 +980,29 @@
      "field": "log",
      "from": "/mnt/srcds/Strata/logs/engine-prod-ud-iq3xxs-v0233.log",
      "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W3-A-r3.engine.log"
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-sht-r3.engine.log"
     },
     {
      "field": "args/--conversation-cache-dir",
      "from": "/mnt/srcds/Strata-wt-helper-ipc/run/diet-prod-38g",
      "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W3-A-r3"
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-A-sht-r3"
     }
    ],
-   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W3-A-r3.engine.log",
-   "sha256": "c8d8ddf135d8a81e8e14efe10bb8bf66ef57d26eca279e09a235b4701dc972a5",
-   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W3-A-r3.sock",
-   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W3-A-r3-2.sock"
+   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-sht-r3.engine.log",
+   "pilot": false,
+   "rep": 3,
+   "sha256": "fd9911bb52dd34b4b35ef02ce8e2eb43f93c6f7d21a36aad9a1cd544edb1e142",
+   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-A-sht-r3.sock",
+   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-A-sht-r3-2.sock",
+   "warmup": false,
+   "window": "W2"
   },
-  "W3-B-r0": {
-   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W3-B-r0",
-   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W3-B-r0.json",
+  "W2-B-dec-r0": {
+   "arm": "B",
+   "boot_group": "dec",
+   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-B-dec-r0",
+   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W2-B-dec-r0.json",
    "deltas": [
     {
      "field": "trial_note",
@@ -1174,23 +1044,29 @@
      "field": "log",
      "from": "/mnt/srcds/Strata/logs/engine-prod-port0218.log",
      "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W3-B-r0.engine.log"
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-dec-r0.engine.log"
     },
     {
      "field": "args/--conversation-cache-dir",
      "from": "/mnt/srcds/Strata/run/prod-port0218-cache",
      "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W3-B-r0"
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-B-dec-r0"
     }
    ],
-   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W3-B-r0.engine.log",
-   "sha256": "d7dcad11cfa33d77db9c23ca1a9682bb10fd9eba8508767363248250f2bf2a13",
-   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W3-B-r0.sock",
-   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W3-B-r0-2.sock"
+   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-dec-r0.engine.log",
+   "pilot": false,
+   "rep": 0,
+   "sha256": "33bc2fa24037fe94ef53b7087f30e74efcf335f3a9fffb972a411926bd5a361c",
+   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-B-dec-r0.sock",
+   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-B-dec-r0-2.sock",
+   "warmup": true,
+   "window": "W2"
   },
-  "W3-B-r1": {
-   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W3-B-r1",
-   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W3-B-r1.json",
+  "W2-B-dec-r1": {
+   "arm": "B",
+   "boot_group": "dec",
+   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-B-dec-r1",
+   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W2-B-dec-r1.json",
    "deltas": [
     {
      "field": "trial_note",
@@ -1232,23 +1108,29 @@
      "field": "log",
      "from": "/mnt/srcds/Strata/logs/engine-prod-port0218.log",
      "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W3-B-r1.engine.log"
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-dec-r1.engine.log"
     },
     {
      "field": "args/--conversation-cache-dir",
      "from": "/mnt/srcds/Strata/run/prod-port0218-cache",
      "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W3-B-r1"
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-B-dec-r1"
     }
    ],
-   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W3-B-r1.engine.log",
-   "sha256": "8560f56c7c9d78839d785bd2ef81b5b3ca4091b580d4022cfce49e671a5dbff9",
-   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W3-B-r1.sock",
-   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W3-B-r1-2.sock"
+   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-dec-r1.engine.log",
+   "pilot": false,
+   "rep": 1,
+   "sha256": "0592b04c478a6061195b006bd832b2f393920caf76badd492695c31225fdc4bb",
+   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-B-dec-r1.sock",
+   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-B-dec-r1-2.sock",
+   "warmup": false,
+   "window": "W2"
   },
-  "W3-B-r2": {
-   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W3-B-r2",
-   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W3-B-r2.json",
+  "W2-B-dec-r2": {
+   "arm": "B",
+   "boot_group": "dec",
+   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-B-dec-r2",
+   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W2-B-dec-r2.json",
    "deltas": [
     {
      "field": "trial_note",
@@ -1290,23 +1172,29 @@
      "field": "log",
      "from": "/mnt/srcds/Strata/logs/engine-prod-port0218.log",
      "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W3-B-r2.engine.log"
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-dec-r2.engine.log"
     },
     {
      "field": "args/--conversation-cache-dir",
      "from": "/mnt/srcds/Strata/run/prod-port0218-cache",
      "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W3-B-r2"
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-B-dec-r2"
     }
    ],
-   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W3-B-r2.engine.log",
-   "sha256": "909815e2534416a93415d1bdc3ea10f55b809a20c3a048d1d8f10df54a48e11e",
-   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W3-B-r2.sock",
-   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W3-B-r2-2.sock"
+   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-dec-r2.engine.log",
+   "pilot": false,
+   "rep": 2,
+   "sha256": "b6b7cf55069a908563d12bed7bc0348b20b2881dfdf97cc8fafc984b9469d7b9",
+   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-B-dec-r2.sock",
+   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-B-dec-r2-2.sock",
+   "warmup": false,
+   "window": "W2"
   },
-  "W3-B-r3": {
-   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W3-B-r3",
-   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W3-B-r3.json",
+  "W2-B-dec-r3": {
+   "arm": "B",
+   "boot_group": "dec",
+   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-B-dec-r3",
+   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W2-B-dec-r3.json",
    "deltas": [
     {
      "field": "trial_note",
@@ -1348,24 +1236,750 @@
      "field": "log",
      "from": "/mnt/srcds/Strata/logs/engine-prod-port0218.log",
      "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W3-B-r3.engine.log"
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-dec-r3.engine.log"
     },
     {
      "field": "args/--conversation-cache-dir",
      "from": "/mnt/srcds/Strata/run/prod-port0218-cache",
      "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W3-B-r3"
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-B-dec-r3"
     }
    ],
-   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W3-B-r3.engine.log",
-   "sha256": "ab4f9076156e7e0573d9eb718ed08d823b97c4ed961d0ffc57112269d39da539",
-   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W3-B-r3.sock",
-   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W3-B-r3-2.sock"
+   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-dec-r3.engine.log",
+   "pilot": false,
+   "rep": 3,
+   "sha256": "830131c1c1abd9a6e08c442e3fda94b671f1e08cfc65213183f12fba37ee7438",
+   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-B-dec-r3.sock",
+   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-B-dec-r3-2.sock",
+   "warmup": false,
+   "window": "W2"
   },
-  "W4-A-r1-B": {
-   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W4-A-r1",
+  "W2-B-sht-r0": {
+   "arm": "B",
+   "boot_group": "sht",
+   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-B-sht-r0",
+   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W2-B-sht-r0.json",
+   "deltas": [
+    {
+     "field": "trial_note",
+     "from": "PROMOTED to prod 2026-11-23 per operator order: the port validated by the full window (quality parity, 240k, helper, park/restore). Serving shape = the validated trial tuple (256/192, budget 36864, spill off).",
+     "kind": "harness",
+     "to": "<absent>"
+    },
+    {
+     "field": "derived_from",
+     "from": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/trial-managed-pool-38g-230k.json",
+     "kind": "harness",
+     "to": "<absent>"
+    },
+    {
+     "field": "derived_note",
+     "from": "port-0218 test-window base on :8019: the champion measurement config with the engine, cwd, sockets, log and conversation-cache-dir repointed at the port tree, and --conversation-spill-mib 0 added (upstream spill tier off; the fork DISK tier under --conversation-cache-dir is this rig's only disk tier). Boots are the operator's, never the fixer's.",
+     "kind": "harness",
+     "to": "<absent>"
+    },
+    {
+     "field": "managed_budget_mib",
+     "from": 40960,
+     "kind": "harness",
+     "to": "<absent>"
+    },
+    {
+     "field": "model_name",
+     "from": "swift-1.5-ud-iq3xxs-managed",
+     "kind": "tuple",
+     "to": "ud-iq3_xxs"
+    },
+    {
+     "field": "reasoning_budget_tokens",
+     "from": 2000,
+     "kind": "tuple",
+     "to": 0
+    },
+    {
+     "field": "log",
+     "from": "/mnt/srcds/Strata/logs/engine-prod-port0218.log",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-sht-r0.engine.log"
+    },
+    {
+     "field": "args/--conversation-cache-dir",
+     "from": "/mnt/srcds/Strata/run/prod-port0218-cache",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-B-sht-r0"
+    }
+   ],
+   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-sht-r0.engine.log",
+   "pilot": true,
+   "rep": 0,
+   "sha256": "bc7ba40228a081c107d0cc544a1cc9c0e5bb1537bada0394d67f2b1f4c10ade6",
+   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-B-sht-r0.sock",
+   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-B-sht-r0-2.sock",
+   "warmup": false,
+   "window": "W2"
+  },
+  "W2-B-sht-r1": {
+   "arm": "B",
+   "boot_group": "sht",
+   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-B-sht-r1",
+   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W2-B-sht-r1.json",
+   "deltas": [
+    {
+     "field": "trial_note",
+     "from": "PROMOTED to prod 2026-11-23 per operator order: the port validated by the full window (quality parity, 240k, helper, park/restore). Serving shape = the validated trial tuple (256/192, budget 36864, spill off).",
+     "kind": "harness",
+     "to": "<absent>"
+    },
+    {
+     "field": "derived_from",
+     "from": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/trial-managed-pool-38g-230k.json",
+     "kind": "harness",
+     "to": "<absent>"
+    },
+    {
+     "field": "derived_note",
+     "from": "port-0218 test-window base on :8019: the champion measurement config with the engine, cwd, sockets, log and conversation-cache-dir repointed at the port tree, and --conversation-spill-mib 0 added (upstream spill tier off; the fork DISK tier under --conversation-cache-dir is this rig's only disk tier). Boots are the operator's, never the fixer's.",
+     "kind": "harness",
+     "to": "<absent>"
+    },
+    {
+     "field": "managed_budget_mib",
+     "from": 40960,
+     "kind": "harness",
+     "to": "<absent>"
+    },
+    {
+     "field": "model_name",
+     "from": "swift-1.5-ud-iq3xxs-managed",
+     "kind": "tuple",
+     "to": "ud-iq3_xxs"
+    },
+    {
+     "field": "reasoning_budget_tokens",
+     "from": 2000,
+     "kind": "tuple",
+     "to": 0
+    },
+    {
+     "field": "log",
+     "from": "/mnt/srcds/Strata/logs/engine-prod-port0218.log",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-sht-r1.engine.log"
+    },
+    {
+     "field": "args/--conversation-cache-dir",
+     "from": "/mnt/srcds/Strata/run/prod-port0218-cache",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-B-sht-r1"
+    }
+   ],
+   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-sht-r1.engine.log",
+   "pilot": false,
+   "rep": 1,
+   "sha256": "6c850dcced52e203aea3ce3b24de80bda171944a7be4172689af9da80b8c7ce0",
+   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-B-sht-r1.sock",
+   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-B-sht-r1-2.sock",
+   "warmup": false,
+   "window": "W2"
+  },
+  "W2-B-sht-r2": {
+   "arm": "B",
+   "boot_group": "sht",
+   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-B-sht-r2",
+   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W2-B-sht-r2.json",
+   "deltas": [
+    {
+     "field": "trial_note",
+     "from": "PROMOTED to prod 2026-11-23 per operator order: the port validated by the full window (quality parity, 240k, helper, park/restore). Serving shape = the validated trial tuple (256/192, budget 36864, spill off).",
+     "kind": "harness",
+     "to": "<absent>"
+    },
+    {
+     "field": "derived_from",
+     "from": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/trial-managed-pool-38g-230k.json",
+     "kind": "harness",
+     "to": "<absent>"
+    },
+    {
+     "field": "derived_note",
+     "from": "port-0218 test-window base on :8019: the champion measurement config with the engine, cwd, sockets, log and conversation-cache-dir repointed at the port tree, and --conversation-spill-mib 0 added (upstream spill tier off; the fork DISK tier under --conversation-cache-dir is this rig's only disk tier). Boots are the operator's, never the fixer's.",
+     "kind": "harness",
+     "to": "<absent>"
+    },
+    {
+     "field": "managed_budget_mib",
+     "from": 40960,
+     "kind": "harness",
+     "to": "<absent>"
+    },
+    {
+     "field": "model_name",
+     "from": "swift-1.5-ud-iq3xxs-managed",
+     "kind": "tuple",
+     "to": "ud-iq3_xxs"
+    },
+    {
+     "field": "reasoning_budget_tokens",
+     "from": 2000,
+     "kind": "tuple",
+     "to": 0
+    },
+    {
+     "field": "log",
+     "from": "/mnt/srcds/Strata/logs/engine-prod-port0218.log",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-sht-r2.engine.log"
+    },
+    {
+     "field": "args/--conversation-cache-dir",
+     "from": "/mnt/srcds/Strata/run/prod-port0218-cache",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-B-sht-r2"
+    }
+   ],
+   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-sht-r2.engine.log",
+   "pilot": false,
+   "rep": 2,
+   "sha256": "682faa23511804a010b0ed1641574daf98020f48de7536c6c22c91239d841378",
+   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-B-sht-r2.sock",
+   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-B-sht-r2-2.sock",
+   "warmup": false,
+   "window": "W2"
+  },
+  "W2-B-sht-r3": {
+   "arm": "B",
+   "boot_group": "sht",
+   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-B-sht-r3",
+   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W2-B-sht-r3.json",
+   "deltas": [
+    {
+     "field": "trial_note",
+     "from": "PROMOTED to prod 2026-11-23 per operator order: the port validated by the full window (quality parity, 240k, helper, park/restore). Serving shape = the validated trial tuple (256/192, budget 36864, spill off).",
+     "kind": "harness",
+     "to": "<absent>"
+    },
+    {
+     "field": "derived_from",
+     "from": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/trial-managed-pool-38g-230k.json",
+     "kind": "harness",
+     "to": "<absent>"
+    },
+    {
+     "field": "derived_note",
+     "from": "port-0218 test-window base on :8019: the champion measurement config with the engine, cwd, sockets, log and conversation-cache-dir repointed at the port tree, and --conversation-spill-mib 0 added (upstream spill tier off; the fork DISK tier under --conversation-cache-dir is this rig's only disk tier). Boots are the operator's, never the fixer's.",
+     "kind": "harness",
+     "to": "<absent>"
+    },
+    {
+     "field": "managed_budget_mib",
+     "from": 40960,
+     "kind": "harness",
+     "to": "<absent>"
+    },
+    {
+     "field": "model_name",
+     "from": "swift-1.5-ud-iq3xxs-managed",
+     "kind": "tuple",
+     "to": "ud-iq3_xxs"
+    },
+    {
+     "field": "reasoning_budget_tokens",
+     "from": 2000,
+     "kind": "tuple",
+     "to": 0
+    },
+    {
+     "field": "log",
+     "from": "/mnt/srcds/Strata/logs/engine-prod-port0218.log",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-sht-r3.engine.log"
+    },
+    {
+     "field": "args/--conversation-cache-dir",
+     "from": "/mnt/srcds/Strata/run/prod-port0218-cache",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W2-B-sht-r3"
+    }
+   ],
+   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-sht-r3.engine.log",
+   "pilot": false,
+   "rep": 3,
+   "sha256": "c29a14a053c70057c910122037bbdbf390ff7f7c8720537f97f28df27de5e282",
+   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-B-sht-r3.sock",
+   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-B-sht-r3-2.sock",
+   "warmup": false,
+   "window": "W2"
+  },
+  "W3-A-pp-r0": {
+   "arm": "A",
+   "boot_group": "pp",
+   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W3-A-pp-r0",
+   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W3-A-pp-r0.json",
+   "deltas": [
+    {
+     "field": "reasoning_budget_tokens",
+     "from": 55000,
+     "kind": "tuple",
+     "to": 0
+    },
+    {
+     "field": "args/--vram-reserve-mib",
+     "from": "144",
+     "kind": "tuple",
+     "to": "256"
+    },
+    {
+     "field": "args/--vram-reserve-later-mib",
+     "from": "144",
+     "kind": "tuple",
+     "to": "192"
+    },
+    {
+     "field": "cwd",
+     "from": "/mnt/srcds/Strata",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/v0215"
+    },
+    {
+     "field": "log",
+     "from": "/mnt/srcds/Strata/logs/engine-prod-ud-iq3xxs-v0233.log",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W3-A-pp-r0.engine.log"
+    },
+    {
+     "field": "args/--conversation-cache-dir",
+     "from": "/mnt/srcds/Strata-wt-helper-ipc/run/diet-prod-38g",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W3-A-pp-r0"
+    }
+   ],
+   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W3-A-pp-r0.engine.log",
+   "pilot": false,
+   "rep": 0,
+   "sha256": "fffcdd3a082922a1689cafc7f2f67f36226a1dc6a11781388547e417618a235d",
+   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W3-A-pp-r0.sock",
+   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W3-A-pp-r0-2.sock",
+   "warmup": true,
+   "window": "W3"
+  },
+  "W3-A-pp-r1": {
+   "arm": "A",
+   "boot_group": "pp",
+   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W3-A-pp-r1",
+   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W3-A-pp-r1.json",
+   "deltas": [
+    {
+     "field": "reasoning_budget_tokens",
+     "from": 55000,
+     "kind": "tuple",
+     "to": 0
+    },
+    {
+     "field": "args/--vram-reserve-mib",
+     "from": "144",
+     "kind": "tuple",
+     "to": "256"
+    },
+    {
+     "field": "args/--vram-reserve-later-mib",
+     "from": "144",
+     "kind": "tuple",
+     "to": "192"
+    },
+    {
+     "field": "cwd",
+     "from": "/mnt/srcds/Strata",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/v0215"
+    },
+    {
+     "field": "log",
+     "from": "/mnt/srcds/Strata/logs/engine-prod-ud-iq3xxs-v0233.log",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W3-A-pp-r1.engine.log"
+    },
+    {
+     "field": "args/--conversation-cache-dir",
+     "from": "/mnt/srcds/Strata-wt-helper-ipc/run/diet-prod-38g",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W3-A-pp-r1"
+    }
+   ],
+   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W3-A-pp-r1.engine.log",
+   "pilot": false,
+   "rep": 1,
+   "sha256": "6c1c0440fdcafa7d4c240011c417554d2f7e8e4103579310db3809b093bd6778",
+   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W3-A-pp-r1.sock",
+   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W3-A-pp-r1-2.sock",
+   "warmup": false,
+   "window": "W3"
+  },
+  "W3-A-pp-r2": {
+   "arm": "A",
+   "boot_group": "pp",
+   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W3-A-pp-r2",
+   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W3-A-pp-r2.json",
+   "deltas": [
+    {
+     "field": "reasoning_budget_tokens",
+     "from": 55000,
+     "kind": "tuple",
+     "to": 0
+    },
+    {
+     "field": "args/--vram-reserve-mib",
+     "from": "144",
+     "kind": "tuple",
+     "to": "256"
+    },
+    {
+     "field": "args/--vram-reserve-later-mib",
+     "from": "144",
+     "kind": "tuple",
+     "to": "192"
+    },
+    {
+     "field": "cwd",
+     "from": "/mnt/srcds/Strata",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/v0215"
+    },
+    {
+     "field": "log",
+     "from": "/mnt/srcds/Strata/logs/engine-prod-ud-iq3xxs-v0233.log",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W3-A-pp-r2.engine.log"
+    },
+    {
+     "field": "args/--conversation-cache-dir",
+     "from": "/mnt/srcds/Strata-wt-helper-ipc/run/diet-prod-38g",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W3-A-pp-r2"
+    }
+   ],
+   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W3-A-pp-r2.engine.log",
+   "pilot": false,
+   "rep": 2,
+   "sha256": "dbf2aa33fed2bda18dd2148ba8aecd1b7b12d619cf88a88020c9c24394a973e8",
+   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W3-A-pp-r2.sock",
+   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W3-A-pp-r2-2.sock",
+   "warmup": false,
+   "window": "W3"
+  },
+  "W3-A-pp-r3": {
+   "arm": "A",
+   "boot_group": "pp",
+   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W3-A-pp-r3",
+   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W3-A-pp-r3.json",
+   "deltas": [
+    {
+     "field": "reasoning_budget_tokens",
+     "from": 55000,
+     "kind": "tuple",
+     "to": 0
+    },
+    {
+     "field": "args/--vram-reserve-mib",
+     "from": "144",
+     "kind": "tuple",
+     "to": "256"
+    },
+    {
+     "field": "args/--vram-reserve-later-mib",
+     "from": "144",
+     "kind": "tuple",
+     "to": "192"
+    },
+    {
+     "field": "cwd",
+     "from": "/mnt/srcds/Strata",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/v0215"
+    },
+    {
+     "field": "log",
+     "from": "/mnt/srcds/Strata/logs/engine-prod-ud-iq3xxs-v0233.log",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W3-A-pp-r3.engine.log"
+    },
+    {
+     "field": "args/--conversation-cache-dir",
+     "from": "/mnt/srcds/Strata-wt-helper-ipc/run/diet-prod-38g",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W3-A-pp-r3"
+    }
+   ],
+   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W3-A-pp-r3.engine.log",
+   "pilot": false,
+   "rep": 3,
+   "sha256": "ecb54b3c3363789ab90ac6b560196adb8ee6f7d7a9eef18855d329ec22eb63c1",
+   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W3-A-pp-r3.sock",
+   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W3-A-pp-r3-2.sock",
+   "warmup": false,
+   "window": "W3"
+  },
+  "W3-B-pp-r0": {
+   "arm": "B",
+   "boot_group": "pp",
+   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W3-B-pp-r0",
+   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W3-B-pp-r0.json",
+   "deltas": [
+    {
+     "field": "trial_note",
+     "from": "PROMOTED to prod 2026-11-23 per operator order: the port validated by the full window (quality parity, 240k, helper, park/restore). Serving shape = the validated trial tuple (256/192, budget 36864, spill off).",
+     "kind": "harness",
+     "to": "<absent>"
+    },
+    {
+     "field": "derived_from",
+     "from": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/trial-managed-pool-38g-230k.json",
+     "kind": "harness",
+     "to": "<absent>"
+    },
+    {
+     "field": "derived_note",
+     "from": "port-0218 test-window base on :8019: the champion measurement config with the engine, cwd, sockets, log and conversation-cache-dir repointed at the port tree, and --conversation-spill-mib 0 added (upstream spill tier off; the fork DISK tier under --conversation-cache-dir is this rig's only disk tier). Boots are the operator's, never the fixer's.",
+     "kind": "harness",
+     "to": "<absent>"
+    },
+    {
+     "field": "managed_budget_mib",
+     "from": 40960,
+     "kind": "harness",
+     "to": "<absent>"
+    },
+    {
+     "field": "model_name",
+     "from": "swift-1.5-ud-iq3xxs-managed",
+     "kind": "tuple",
+     "to": "ud-iq3_xxs"
+    },
+    {
+     "field": "reasoning_budget_tokens",
+     "from": 2000,
+     "kind": "tuple",
+     "to": 0
+    },
+    {
+     "field": "log",
+     "from": "/mnt/srcds/Strata/logs/engine-prod-port0218.log",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W3-B-pp-r0.engine.log"
+    },
+    {
+     "field": "args/--conversation-cache-dir",
+     "from": "/mnt/srcds/Strata/run/prod-port0218-cache",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W3-B-pp-r0"
+    }
+   ],
+   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W3-B-pp-r0.engine.log",
+   "pilot": false,
+   "rep": 0,
+   "sha256": "6ee6e9e4c9aad2f4bc54656817180f9cc19245847bcbefd586fc50999381939f",
+   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W3-B-pp-r0.sock",
+   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W3-B-pp-r0-2.sock",
+   "warmup": true,
+   "window": "W3"
+  },
+  "W3-B-pp-r1": {
+   "arm": "B",
+   "boot_group": "pp",
+   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W3-B-pp-r1",
+   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W3-B-pp-r1.json",
+   "deltas": [
+    {
+     "field": "trial_note",
+     "from": "PROMOTED to prod 2026-11-23 per operator order: the port validated by the full window (quality parity, 240k, helper, park/restore). Serving shape = the validated trial tuple (256/192, budget 36864, spill off).",
+     "kind": "harness",
+     "to": "<absent>"
+    },
+    {
+     "field": "derived_from",
+     "from": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/trial-managed-pool-38g-230k.json",
+     "kind": "harness",
+     "to": "<absent>"
+    },
+    {
+     "field": "derived_note",
+     "from": "port-0218 test-window base on :8019: the champion measurement config with the engine, cwd, sockets, log and conversation-cache-dir repointed at the port tree, and --conversation-spill-mib 0 added (upstream spill tier off; the fork DISK tier under --conversation-cache-dir is this rig's only disk tier). Boots are the operator's, never the fixer's.",
+     "kind": "harness",
+     "to": "<absent>"
+    },
+    {
+     "field": "managed_budget_mib",
+     "from": 40960,
+     "kind": "harness",
+     "to": "<absent>"
+    },
+    {
+     "field": "model_name",
+     "from": "swift-1.5-ud-iq3xxs-managed",
+     "kind": "tuple",
+     "to": "ud-iq3_xxs"
+    },
+    {
+     "field": "reasoning_budget_tokens",
+     "from": 2000,
+     "kind": "tuple",
+     "to": 0
+    },
+    {
+     "field": "log",
+     "from": "/mnt/srcds/Strata/logs/engine-prod-port0218.log",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W3-B-pp-r1.engine.log"
+    },
+    {
+     "field": "args/--conversation-cache-dir",
+     "from": "/mnt/srcds/Strata/run/prod-port0218-cache",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W3-B-pp-r1"
+    }
+   ],
+   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W3-B-pp-r1.engine.log",
+   "pilot": false,
+   "rep": 1,
+   "sha256": "bce11f73e64679167707259e3300b6e24afcf0294a01108e19962caf214f078b",
+   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W3-B-pp-r1.sock",
+   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W3-B-pp-r1-2.sock",
+   "warmup": false,
+   "window": "W3"
+  },
+  "W3-B-pp-r2": {
+   "arm": "B",
+   "boot_group": "pp",
+   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W3-B-pp-r2",
+   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W3-B-pp-r2.json",
+   "deltas": [
+    {
+     "field": "trial_note",
+     "from": "PROMOTED to prod 2026-11-23 per operator order: the port validated by the full window (quality parity, 240k, helper, park/restore). Serving shape = the validated trial tuple (256/192, budget 36864, spill off).",
+     "kind": "harness",
+     "to": "<absent>"
+    },
+    {
+     "field": "derived_from",
+     "from": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/trial-managed-pool-38g-230k.json",
+     "kind": "harness",
+     "to": "<absent>"
+    },
+    {
+     "field": "derived_note",
+     "from": "port-0218 test-window base on :8019: the champion measurement config with the engine, cwd, sockets, log and conversation-cache-dir repointed at the port tree, and --conversation-spill-mib 0 added (upstream spill tier off; the fork DISK tier under --conversation-cache-dir is this rig's only disk tier). Boots are the operator's, never the fixer's.",
+     "kind": "harness",
+     "to": "<absent>"
+    },
+    {
+     "field": "managed_budget_mib",
+     "from": 40960,
+     "kind": "harness",
+     "to": "<absent>"
+    },
+    {
+     "field": "model_name",
+     "from": "swift-1.5-ud-iq3xxs-managed",
+     "kind": "tuple",
+     "to": "ud-iq3_xxs"
+    },
+    {
+     "field": "reasoning_budget_tokens",
+     "from": 2000,
+     "kind": "tuple",
+     "to": 0
+    },
+    {
+     "field": "log",
+     "from": "/mnt/srcds/Strata/logs/engine-prod-port0218.log",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W3-B-pp-r2.engine.log"
+    },
+    {
+     "field": "args/--conversation-cache-dir",
+     "from": "/mnt/srcds/Strata/run/prod-port0218-cache",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W3-B-pp-r2"
+    }
+   ],
+   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W3-B-pp-r2.engine.log",
+   "pilot": false,
+   "rep": 2,
+   "sha256": "75624800efe0493b7955bc1494a8f4e72622607df91c3bdadeb89d86ec5fb83f",
+   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W3-B-pp-r2.sock",
+   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W3-B-pp-r2-2.sock",
+   "warmup": false,
+   "window": "W3"
+  },
+  "W3-B-pp-r3": {
+   "arm": "B",
+   "boot_group": "pp",
+   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W3-B-pp-r3",
+   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W3-B-pp-r3.json",
+   "deltas": [
+    {
+     "field": "trial_note",
+     "from": "PROMOTED to prod 2026-11-23 per operator order: the port validated by the full window (quality parity, 240k, helper, park/restore). Serving shape = the validated trial tuple (256/192, budget 36864, spill off).",
+     "kind": "harness",
+     "to": "<absent>"
+    },
+    {
+     "field": "derived_from",
+     "from": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/trial-managed-pool-38g-230k.json",
+     "kind": "harness",
+     "to": "<absent>"
+    },
+    {
+     "field": "derived_note",
+     "from": "port-0218 test-window base on :8019: the champion measurement config with the engine, cwd, sockets, log and conversation-cache-dir repointed at the port tree, and --conversation-spill-mib 0 added (upstream spill tier off; the fork DISK tier under --conversation-cache-dir is this rig's only disk tier). Boots are the operator's, never the fixer's.",
+     "kind": "harness",
+     "to": "<absent>"
+    },
+    {
+     "field": "managed_budget_mib",
+     "from": 40960,
+     "kind": "harness",
+     "to": "<absent>"
+    },
+    {
+     "field": "model_name",
+     "from": "swift-1.5-ud-iq3xxs-managed",
+     "kind": "tuple",
+     "to": "ud-iq3_xxs"
+    },
+    {
+     "field": "reasoning_budget_tokens",
+     "from": 2000,
+     "kind": "tuple",
+     "to": 0
+    },
+    {
+     "field": "log",
+     "from": "/mnt/srcds/Strata/logs/engine-prod-port0218.log",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W3-B-pp-r3.engine.log"
+    },
+    {
+     "field": "args/--conversation-cache-dir",
+     "from": "/mnt/srcds/Strata/run/prod-port0218-cache",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W3-B-pp-r3"
+    }
+   ],
+   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W3-B-pp-r3.engine.log",
+   "pilot": false,
+   "rep": 3,
+   "sha256": "0f1dc7e2aa1f7ab04156980dc87cb5c3b34ecf26a3da9452dff2ffe1e49ae18c",
+   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W3-B-pp-r3.sock",
+   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W3-B-pp-r3-2.sock",
+   "warmup": false,
+   "window": "W3"
+  },
+  "W4-A-dec-r1": {
+   "arm": "A",
+   "boot_group": "dec",
+   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W4-A-dec-r1",
    "cell": "A-engine+B-server",
-   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W4-A-r1.json",
+   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W4-A-dec-r1.json",
    "deltas": [
     {
      "field": "reasoning_budget_tokens",
@@ -1395,25 +2009,31 @@
      "field": "log",
      "from": "/mnt/srcds/Strata/logs/engine-prod-ud-iq3xxs-v0233.log",
      "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W4-A-r1.engine.log"
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W4-A-dec-r1.engine.log"
     },
     {
      "field": "args/--conversation-cache-dir",
      "from": "/mnt/srcds/Strata-wt-helper-ipc/run/diet-prod-38g",
      "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W4-A-r1"
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W4-A-dec-r1"
     }
    ],
-   "engine_arm": "A",
-   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W4-A-r1.engine.log",
-   "sha256": "38217b39da325ea04a7d71d941b9fb40d5ed1cc4dcc89b295e120bc62d7aca24",
-   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W4-A-r1.sock",
-   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W4-A-r1-2.sock"
+   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W4-A-dec-r1.engine.log",
+   "pilot": false,
+   "rep": 1,
+   "server_arm": "B",
+   "sha256": "629233b44c92f3805a0ef6da230d1143e9933ef15488c005bb28b4e88c0158dc",
+   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W4-A-dec-r1.sock",
+   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W4-A-dec-r1-2.sock",
+   "warmup": false,
+   "window": "W4"
   },
-  "W4-A-r2-B": {
-   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W4-A-r2",
+  "W4-A-dec-r2": {
+   "arm": "A",
+   "boot_group": "dec",
+   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W4-A-dec-r2",
    "cell": "A-engine+B-server",
-   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W4-A-r2.json",
+   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W4-A-dec-r2.json",
    "deltas": [
     {
      "field": "reasoning_budget_tokens",
@@ -1443,25 +2063,31 @@
      "field": "log",
      "from": "/mnt/srcds/Strata/logs/engine-prod-ud-iq3xxs-v0233.log",
      "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W4-A-r2.engine.log"
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W4-A-dec-r2.engine.log"
     },
     {
      "field": "args/--conversation-cache-dir",
      "from": "/mnt/srcds/Strata-wt-helper-ipc/run/diet-prod-38g",
      "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W4-A-r2"
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W4-A-dec-r2"
     }
    ],
-   "engine_arm": "A",
-   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W4-A-r2.engine.log",
-   "sha256": "75a6fa839055d24ab8b545c335e9dcface2717353fbbd87bee8516cdd1498284",
-   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W4-A-r2.sock",
-   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W4-A-r2-2.sock"
+   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W4-A-dec-r2.engine.log",
+   "pilot": false,
+   "rep": 2,
+   "server_arm": "B",
+   "sha256": "4cb81edf0135ff1f7d99a4f65086df7242c27b7e7d84dcc4225b7be5a728f2e0",
+   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W4-A-dec-r2.sock",
+   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W4-A-dec-r2-2.sock",
+   "warmup": false,
+   "window": "W4"
   },
-  "W4-B-r1-A": {
-   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W4-B-r1",
+  "W4-B-dec-r1": {
+   "arm": "B",
+   "boot_group": "dec",
+   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W4-B-dec-r1",
    "cell": "B-engine+A-server",
-   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W4-B-r1.json",
+   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W4-B-dec-r1.json",
    "deltas": [
     {
      "field": "trial_note",
@@ -1503,25 +2129,31 @@
      "field": "log",
      "from": "/mnt/srcds/Strata/logs/engine-prod-port0218.log",
      "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W4-B-r1.engine.log"
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W4-B-dec-r1.engine.log"
     },
     {
      "field": "args/--conversation-cache-dir",
      "from": "/mnt/srcds/Strata/run/prod-port0218-cache",
      "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W4-B-r1"
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W4-B-dec-r1"
     }
    ],
-   "engine_arm": "B",
-   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W4-B-r1.engine.log",
-   "sha256": "c155b7f7ee81bb10d7f0f605f6eb4db94812b9e55ca942f9b4e348b012f71dc5",
-   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W4-B-r1.sock",
-   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W4-B-r1-2.sock"
+   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W4-B-dec-r1.engine.log",
+   "pilot": false,
+   "rep": 1,
+   "server_arm": "A",
+   "sha256": "ffa1a9a7470aa0788fdfbe84dfadb8625421765c497c47b0bc9163ecb8f2be41",
+   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W4-B-dec-r1.sock",
+   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W4-B-dec-r1-2.sock",
+   "warmup": false,
+   "window": "W4"
   },
-  "W4-B-r2-A": {
-   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W4-B-r2",
+  "W4-B-dec-r2": {
+   "arm": "B",
+   "boot_group": "dec",
+   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W4-B-dec-r2",
    "cell": "B-engine+A-server",
-   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W4-B-r2.json",
+   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W4-B-dec-r2.json",
    "deltas": [
     {
      "field": "trial_note",
@@ -1563,20 +2195,24 @@
      "field": "log",
      "from": "/mnt/srcds/Strata/logs/engine-prod-port0218.log",
      "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W4-B-r2.engine.log"
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W4-B-dec-r2.engine.log"
     },
     {
      "field": "args/--conversation-cache-dir",
      "from": "/mnt/srcds/Strata/run/prod-port0218-cache",
      "kind": "harness",
-     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W4-B-r2"
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W4-B-dec-r2"
     }
    ],
-   "engine_arm": "B",
-   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W4-B-r2.engine.log",
-   "sha256": "7ef39d207da4f0abcdabff3514e6b0547effb3c7335f573cd29bdce61d7ce98a",
-   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W4-B-r2.sock",
-   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W4-B-r2-2.sock"
+   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W4-B-dec-r2.engine.log",
+   "pilot": false,
+   "rep": 2,
+   "server_arm": "A",
+   "sha256": "0e43802c310b36d7e28e84b92e87849a266214639ea61fb99de992bec1a6ca6e",
+   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W4-B-dec-r2.sock",
+   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W4-B-dec-r2-2.sock",
+   "warmup": false,
+   "window": "W4"
   }
  },
  "contract": {
@@ -1610,7 +2246,7 @@
    "sha256": "b38471d3d9d1ed6b9522ebf25b7153822b9acf977f727d4c6c5a625e2bad535b",
    "shape": "pp2k",
    "tokens_expected": 2000,
-   "use": "W2 short-PP 2k and the TTFT leg's turn-1 prompt"
+   "use": "W2 short-PP 2k"
   },
   {
    "bytes": 10788,
@@ -1620,19 +2256,31 @@
    "shape": "pp8k",
    "tokens_expected": 8000,
    "use": "W2 short-PP 8k"
+  },
+  {
+   "bytes": 2697,
+   "head_tag": "[champs work=ttft2k pair=0 ctx=2697]",
+   "path": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/ttft2k.ctx2697.bin",
+   "sha256": "48a449fc77a55c2d74182c9adabef76498560ba297919709fd59193ddff0cddc",
+   "shape": "ttft2k",
+   "tokens_expected": 2000,
+   "use": "W2 3-turn TTFT leg turn-1 prompt (distinct from pp2k: cold on purpose)"
   }
  ],
  "could_not_build": [
   "No boot, no leg and no measurement was run: the fixer lane is CPU-only, prod is serving, and the windows are operator-gated.",
   "The 2x2 verdicts are STATIC (binary literal scan + server argv model). The servers' drafting chooser was not executed; its no-op outcome for these names is asserted from the regex in both trees and must be confirmed from the first boot line.",
   "W4's optional third boot per cell (min p 0.10) is planned but not prepared; 2 boots per cell is what the budget covers.",
-  "Short-PP/TTFT pilot deltas are not pre-registered here: the contract requires the pilot legs to run first and their deltas to be written into this manifest before the claim legs. The pilot section marks where they land."
+  "The W2 pilot deltas are not filled yet: the pilot boots must run first, then port_ab_legs.py --freeze-pilot W2 writes them here. Claim legs refuse until then.",
+  "The helper fill band is derived from the 7,000 MiB cap and the Phase-1 row size, not measured under this tuple; the first boot's fill is recorded and checked against it."
  ],
  "deviations": [
   "The arms cannot be byte-identical: arm B carries --conversation-spill-mib 0 and arm A has no such option. That is the declared structural difference, not a lever.",
   "model_name is matched to 'ud-iq3_xxs' and reasoning_budget_tokens to 0: the adopted bases served different values (A 55,000 / B 2,000 and two names); neither name matches a drafter regex in either server, so drafting.apply leaves the args untouched.",
-  "A base's --conversation-cache-dir pointed into the helper-ipc worktree; both arms now use a fresh per-leg directory under the harness tree.",
-  "W2's budget is derived here for the first time (the contract required it at harness-prep once legs-per-boot was frozen)."
+  "A base's --conversation-cache-dir pointed into the helper-ipc worktree; both arms now use a fresh per-boot directory under the harness tree.",
+  "The boot key includes the boot group (W2-A-dec-r1 / W2-A-sht-r1): W2's two boot shapes must never share a cache dir, sockets, logs or state file.",
+  "The helper's environment is frozen (PATH/HOME/TERM/STRATA_HELPER_REPLY_TIMEOUT_MS) and recorded per boot, instead of inheriting the caller's shell.",
+  "W2 now has a discarded decode warmup boot per arm as W1/W3 do, and the budgets count every discarded boot; the contract's numbers (1.5-2.5 h W1, 1.2-2 h W3) are kept beside the derived planning ranges."
  ],
  "frozen_tuple": {
   "helper_argv": {
@@ -1683,7 +2331,26 @@
     "<sock2>"
    ]
   },
-  "helper_fill_note": "fill-mib 7000 caps both helpers below the 7.09/7.34 GiB fills the Phase-1 record lists; the residual fill difference is narrowed and still recorded from the boot lines",
+  "helper_env": {
+   "HOME": "/home/srcds",
+   "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+   "STRATA_HELPER_REPLY_TIMEOUT_MS": "600000",
+   "TERM": "dumb"
+  },
+  "helper_fill_band": {
+   "arm_drift_max": 0.05,
+   "basis": "fill-mib 7000 binds at ~6.84 GiB; Phase-1 row size 1.87-1.92 MiB/row -> 3,646-3,743 rows; the band is 6 % either side and is checked per boot, never widened",
+   "checked_from": "the helper's own boot line (EXPECTED_LINES.boot_helper)",
+   "gib": [
+    6.55,
+    7.0
+   ],
+   "rows": [
+    3430,
+    3970
+   ]
+  },
+  "helper_fill_note": "fill-mib 7000 caps both helpers below the 7.09/7.34 GiB fills the Phase-1 record lists; the band above is what the boot lines are checked against, and it is never widened after the fact",
   "values": {
    "conversation_spill_mib": 0,
    "dflash_block": 7,
@@ -1709,25 +2376,28 @@
    "10_000 ms helper timeout": "expert_helper_timeout key -> --expert-helper-timeout-ms",
    "STRATA_RAM_BUDGET_MIB 36864": "config env (both arms)",
    "helper --fill-mib 7000 / --reserve-mib 0": "helper argv (both arms)",
+   "helper env": "STRATA_HELPER_REPLY_TIMEOUT_MS 600000, frozen PATH/HOME/TERM",
    "layer_split 30": "config key; both servers append --layer-split 30",
    "model_name / reasoning_budget_tokens / reasoning_effort": "matched serving identity"
   }
  },
  "git_branch": "recovery-startup-watchdog",
- "git_head_at_prepare": "e6e3bb9517c0781af9acb8b0fa6ae368b54144d2",
+ "git_head_at_prepare": "f6e28f03b90968f474008d916ced9dd7d2531640",
  "harness_script_shas": {
-  "port_ab_boot.sh": "7635ffbd299d6511df93551ceb9766179ff33c374e07f3766275ca65e5796043",
-  "port_ab_configs.py": "bb9f1b4ed9de43ed6e3e064725b135829b6638480a3e796ce6470f05d3b0cb4c",
-  "port_ab_contract.py": "5995fc0a4ae2191c21bbf014806f26d685a277f6a421fd0861ae527e11282714",
-  "port_ab_legs.py": "a6e7b31c8babbac2a87101395aba74b9b5c41ffd6feab7b6c14e1c09a30eac35",
+  "port_ab_boot.sh": "938dc5e428483af0731db3b2321fb41a0bd511ce611b0506021096748559d204",
+  "port_ab_boot_plan.py": "e17befa8c8c7c42b0bc85e90001fe772e1ba1970779bbcce847f7c294a75b25a",
+  "port_ab_configs.py": "5b72653b69be523b7fdab28ed93ff46b777e56c39237e010f1845857e5fee289",
+  "port_ab_contract.py": "3ded82fcb0c635a2a51465e832c16009df92177b6a42d8b8255dc25ecc326b57",
+  "port_ab_legs.py": "622026a909c27b5deda3bce1895674473554eadecd61bb57904c36d3801b14da",
   "port_ab_preflight.py": "3d8b4bafcafb5cd75ed932a8161dd7f5758141fbc5d3943c2cddbcc43253d90b",
-  "port_ab_prepare.py": "b63c810bab8fb62aef5c203f9a12aeeabc2bcf443e5bf747801613c6eb0b9455",
+  "port_ab_prepare.py": "5150ad2d158e8086539f25bd2bedaacfc6cdc2809b8cc1b273fb83f67933d658",
   "port_ab_prereq0.py": "4c425de5cf6c2308aa5b940baf2b949a879e922243c1ed1c34cf0a4f78a7ea6f",
-  "port_ab_stop.sh": "40ae7a812cd3e05bf683945940b9019ebf5ba93f024799f5a4837310f81f8fa7",
-  "port_ab_ttft.py": "f4f27634d6513b7d352a22d99a1db8b9dfe8c37e787cc9cd72a05582f09e5284"
+  "port_ab_stop.sh": "b68308615e96e2d6ae53e7d4eb7badbb2e41e485578d9cbda05959896dc841b6",
+  "port_ab_ttft.py": "8dd1de272cb193145439743d82cbac5610a439f6eb1e024f6202dcdf1bad206b"
  },
  "harness_scripts": {
   "port_ab_boot.sh": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/port_ab_boot.sh",
+  "port_ab_boot_plan.py": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/port_ab_boot_plan.py",
   "port_ab_configs.py": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/port_ab_configs.py",
   "port_ab_contract.py": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/port_ab_contract.py",
   "port_ab_legs.py": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/port_ab_legs.py",
@@ -1741,7 +2411,6 @@
  "preflight": {
   "cells": [
    {
-    "args_builder": "/mnt/srcds/Strata/v0215/serve/server.py",
     "cell": "A-engine+A-server",
     "config_engine_arm": "A",
     "drafting_rewrite": {
@@ -1789,7 +2458,6 @@
     "verdict": "bootable"
    },
    {
-    "args_builder": "/mnt/srcds/Strata/run/port0218-server/serve/server.py",
     "cell": "B-engine+B-server",
     "config_engine_arm": "B",
     "drafting_rewrite": {
@@ -1837,7 +2505,6 @@
     "verdict": "bootable"
    },
    {
-    "args_builder": "/mnt/srcds/Strata/run/port0218-server/serve/server.py",
     "cell": "A-engine+B-server",
     "config_engine_arm": "A",
     "drafting_rewrite": {
@@ -1885,7 +2552,6 @@
     "verdict": "bootable"
    },
    {
-    "args_builder": "/mnt/srcds/Strata/v0215/serve/server.py",
     "cell": "B-engine+A-server",
     "config_engine_arm": "B",
     "drafting_rewrite": {
@@ -1933,7 +2599,6 @@
     "verdict": "bootable"
    },
    {
-    "args_builder": "/mnt/srcds/Strata/run/port0218-server/serve/server.py",
     "cell": "A-engine+B-server (port tuple verbatim)",
     "config_engine_arm": "B",
     "drafting_rewrite": {
@@ -2001,7 +2666,7 @@
    "resolution": "per-engine configs (A without the flag, B with '0'); both cross cells then boot, and 'no spill' holds in both"
   }
  },
- "prepared_at": "2026-11-23T20:04:47",
+ "prepared_at": "2026-11-23T20:36:21",
  "prerequisite0": {
   "cache_free_gib_min": 40,
   "command": "python3 bench/ab-v0210/rpcprof/port_ab_prereq0.py --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123",
@@ -2038,58 +2703,90 @@
  "title": "Frozen A/B harness manifest for the approved Phase-2 measurement contract",
  "windows": {
   "W1": {
+   "boot_groups": {
+    "pp": [
+     "pp239k"
+    ]
+   },
+   "boots": {
+    "claim": 6,
+    "total": 8,
+    "warmup": 2
+   },
+   "boots_per_arm": 3,
    "boots_per_cell": null,
    "budget_derivation": {
+    "boots": {
+     "claim": 6,
+     "total": 8,
+     "warmup": 2
+    },
     "range_s": [
-     5220,
-     8700
+     6960,
+     11600
     ],
-    "terms": "6 legs x per-leg 690-1,150 s + 6 boots x 3-5 min (warmup boots excluded)"
+    "terms": "8 boots x (239,663 prefill leg + boot): 690-1,150 s per leg, 180-300 s per boot"
    },
    "budget_h": [
+    1.93,
+    3.22
+   ],
+   "budget_s": [
+    6960,
+    11600
+   ],
+   "budget_source": "derived at harness-prep from the contract's measured anchors, including the discarded first-touch boots",
+   "claim": "pre-registered delta, 90 % interval, confirm-or-indeterminate",
+   "contract_budget_h": [
     1.5,
     2.5
    ],
-   "budget_s": [
+   "contract_budget_s": [
     5400,
     9000
    ],
-   "budget_source": "the contract's stated budget",
-   "claim": "pre-registered delta, 90 % interval, confirm-or-indeterminate",
+   "decode_warmup": null,
    "delta": 0.05,
+   "delta_note": null,
    "gate_metric": "read_tps",
    "interleave": [
-    "A",
-    "B",
-    "B",
-    "A",
-    "A",
-    "B"
+    "W1-A-pp-r0",
+    "W1-B-pp-r0",
+    "W1-A-pp-r1",
+    "W1-B-pp-r1",
+    "W1-B-pp-r2",
+    "W1-A-pp-r2",
+    "W1-A-pp-r3",
+    "W1-B-pp-r3"
    ],
    "legs": {
     "pp239k": {
+     "boot_group": "pp",
      "bytes": 323200,
-     "command_A": "python3 /mnt/srcds/Strata/bench/ab-v0210/rpcprof/ab9_driver.py --arm A --leg pp239k --kind prefill --ctx 323200 --max-tokens 8 --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/records/W1-A-r1 --elog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1-A-r1.engine.log --hlog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1-A-r1-helper.log --url http://127.0.0.1:8009/v1/chat/completions --prompt-file /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/pp239k.ctx323200.bin --prompt-sha256 210b16b32b8658e68b863442d3c2d9ebde7eb3c9d50b0cea8c28e7d045c0ea68 --request-template /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/request-template.json --request-template-sha256 1367e0c041b3e7e6abceef27587f9ffbb8ff1d8b2ea4cc7d0141d9e945a18abd --timeout 5400 --champs-shape pp239k --champs-pair 0 --champs-measured   # --engine-pid is added by --run",
-     "command_B": "python3 /mnt/srcds/Strata/bench/ab-v0210/rpcprof/ab9_driver.py --arm B --leg pp239k --kind prefill --ctx 323200 --max-tokens 8 --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/records/W1-B-r1 --elog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1-B-r1.engine.log --hlog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1-B-r1-helper.log --url http://127.0.0.1:8009/v1/chat/completions --prompt-file /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/pp239k.ctx323200.bin --prompt-sha256 210b16b32b8658e68b863442d3c2d9ebde7eb3c9d50b0cea8c28e7d045c0ea68 --request-template /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/request-template.json --request-template-sha256 1367e0c041b3e7e6abceef27587f9ffbb8ff1d8b2ea4cc7d0141d9e945a18abd --timeout 5400 --champs-shape pp239k --champs-pair 0 --champs-measured   # --engine-pid is added by --run",
+     "command_A": "python3 /mnt/srcds/Strata/bench/ab-v0210/rpcprof/ab9_driver.py --arm A --leg pp239k --kind prefill --ctx 323200 --max-tokens 8 --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/records/W1-A-pp-r1 --elog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1-A-pp-r1.engine.log --hlog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1-A-pp-r1-helper.log --url http://127.0.0.1:8009/v1/chat/completions --prompt-file /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/pp239k.ctx323200.bin --prompt-sha256 210b16b32b8658e68b863442d3c2d9ebde7eb3c9d50b0cea8c28e7d045c0ea68 --request-template /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/request-template.json --request-template-sha256 1367e0c041b3e7e6abceef27587f9ffbb8ff1d8b2ea4cc7d0141d9e945a18abd --timeout 5400 --champs-shape pp239k --champs-pair 0 --champs-measured   # --engine-pid is added by --run",
+     "command_B": "python3 /mnt/srcds/Strata/bench/ab-v0210/rpcprof/ab9_driver.py --arm B --leg pp239k --kind prefill --ctx 323200 --max-tokens 8 --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/records/W1-B-pp-r1 --elog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1-B-pp-r1.engine.log --hlog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1-B-pp-r1-helper.log --url http://127.0.0.1:8009/v1/chat/completions --prompt-file /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/pp239k.ctx323200.bin --prompt-sha256 210b16b32b8658e68b863442d3c2d9ebde7eb3c9d50b0cea8c28e7d045c0ea68 --request-template /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/request-template.json --request-template-sha256 1367e0c041b3e7e6abceef27587f9ffbb8ff1d8b2ea4cc7d0141d9e945a18abd --timeout 5400 --champs-shape pp239k --champs-pair 0 --champs-measured   # --engine-pid is added by --run",
      "corpus": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/pp239k.ctx323200.bin",
      "corpus_sha256": "210b16b32b8658e68b863442d3c2d9ebde7eb3c9d50b0cea8c28e7d045c0ea68",
+     "delta_key": "prefill_read_tps",
      "expected_engine_lines": [
       "strata serve: prompt (\\d+) tokens = (\\d+) reused \\+ (\\d+)(?: of (\\d+))? read in (\\d+) ms \\(([\\d.]+) tok/s\\), (\\d+) generated in (\\d+) ms \\(([\\d.]+) tok/s\\)",
       "drafts accepted (\\d+) of (\\d+), (\\d+) checkpoints helper=reqs=(\\d+) rows=(\\d+) bytes=(\\d+) timeouts=(\\d+) fallbacks=(\\d+)",
       "dflash: .* trained block (\\d+)",
-      "engine started: .*--spec 5 .*--dflash-block 7 .*--vram-reserve-mib 256 .*--vram-reserve-later-mib 192",
+      "engine started: ",
       "expert-helper: (\\d+) rows on .* \\(mirrored \\d+/\\d+ slots, ([\\d.]+) GiB",
       "expert-helper proxy: (\\d+) experts on .* \\(fill report\\)",
       "strata generate: expert cache (\\d+) slots",
       "layer split: .* runs layers 30-47",
       "foresight swap: .*granted (\\d+) slots.*leaving (\\d+) MiB",
-      " - LOW:"
+      " - LOW:",
+      "pair supervisor:.*(restart|recovered|recovering|exited)"
      ],
      "gates": [
       "judge line present with reused == 0 (cold prompt, no cache reuse)",
       "served prompt-N equal across arms for the same shape (truncation guard)",
       "no non-finite logits; no GPU memory-access fault; no supervisor restart in the boot",
-      "boot line carries the frozen tuple (spec 5, dflash-block 7, reserves 256/192, layer split 30) and the helper fill is inside the recorded band"
+      "the engine's own 'engine started:' line carries the frozen tuple (parsed flag/value pairs: spec 5, reserves 256/192, dflash-block 7, helper slots 4,600)",
+      "the helper's boot line reports a fill inside the frozen band, and the arms' fills differ by no more than the band's drift limit"
      ],
      "kind": "prefill",
      "max_tokens": 8,
@@ -2099,14 +2796,14 @@
     }
    },
    "legs_per_boot": {
-    "pp239k": 1
+    "pp": 1
    },
    "name": "prefill rate, 239,663-token frozen corpus",
    "pilot": null,
-   "reps_per_arm": 3,
    "schedule": [
     {
      "arm": "A",
+     "boot": "pp",
      "group": "warmup",
      "pilot": false,
      "rep": 0,
@@ -2117,6 +2814,7 @@
     },
     {
      "arm": "B",
+     "boot": "pp",
      "group": "warmup",
      "pilot": false,
      "rep": 0,
@@ -2127,7 +2825,8 @@
     },
     {
      "arm": "A",
-     "group": "boot",
+     "boot": "pp",
+     "group": "pp",
      "pilot": false,
      "rep": 1,
      "shapes": [
@@ -2136,7 +2835,8 @@
     },
     {
      "arm": "B",
-     "group": "boot",
+     "boot": "pp",
+     "group": "pp",
      "pilot": false,
      "rep": 1,
      "shapes": [
@@ -2145,7 +2845,8 @@
     },
     {
      "arm": "B",
-     "group": "boot",
+     "boot": "pp",
+     "group": "pp",
      "pilot": false,
      "rep": 2,
      "shapes": [
@@ -2154,7 +2855,8 @@
     },
     {
      "arm": "A",
-     "group": "boot",
+     "boot": "pp",
+     "group": "pp",
      "pilot": false,
      "rep": 2,
      "shapes": [
@@ -2163,7 +2865,8 @@
     },
     {
      "arm": "A",
-     "group": "boot",
+     "boot": "pp",
+     "group": "pp",
      "pilot": false,
      "rep": 3,
      "shapes": [
@@ -2172,7 +2875,8 @@
     },
     {
      "arm": "B",
-     "group": "boot",
+     "boot": "pp",
+     "group": "pp",
      "pilot": false,
      "rep": 3,
      "shapes": [
@@ -2183,68 +2887,114 @@
    "warmup_boots": 2
   },
   "W2": {
+   "boot_groups": {
+    "dec": [
+     "dec144k"
+    ],
+    "sht": [
+     "pp2k",
+     "pp8k",
+     "ttft3"
+    ]
+   },
+   "boots": {
+    "decode_claim": 6,
+    "decode_warmup": 2,
+    "short_claim": 6,
+    "short_pilot": 2,
+    "total": 16
+   },
+   "boots_per_arm": 6,
    "boots_per_cell": null,
    "budget_derivation": {
+    "boots": {
+     "decode_claim": 6,
+     "decode_warmup": 2,
+     "short_claim": 6,
+     "short_pilot": 2,
+     "total": 16
+    },
     "decode_boot_s": [
-     686.2251111729099,
-     896.382212933937
+     686.2,
+     896.4
     ],
     "range_s": [
-     6017.625175108704,
-     8318.945779635435
+     7390.075397454524,
+     10111.710205503308
     ],
     "short_boot_s": [
-     237.53431350890554,
-     367.5815627539765
+     237.5,
+     367.6
     ],
-    "terms": "6 decode boots x (144k prefill + 1024 gen + boot) + 6 short boots x (2k + 8k + 3-turn TTFT + boot) + 2 pilot boots (also the discarded first-touch boots)"
+    "terms": "8 decode boots x (144k prefill + 2 x 1024 gen + boot) + 8 short boots x (2k + 8k + 3-turn TTFT + boot)"
    },
    "budget_h": [
-    1.67,
-    2.31
+    2.05,
+    2.81
    ],
    "budget_s": [
-    6017,
-    8318
+    7390,
+    10111
    ],
-   "budget_source": "derived at harness-prep from the contract's measured anchors",
+   "budget_source": "derived at harness-prep from the contract's measured anchors, including the discarded first-touch boots",
    "claim": "pre-registered delta, 90 % interval, confirm-or-indeterminate",
+   "contract_budget_h": null,
+   "contract_budget_s": null,
+   "decode_warmup": {
+    "boots_per_arm": 1,
+    "group": "dec",
+    "note": "discarded first-touch decode boot, as W1/W3 have"
+   },
    "delta": {
     "gen_tps": 0.08,
     "ttft_s": null
    },
+   "delta_note": "decode 8 % pre-registered; short-PP and TTFT deltas come from the W2 pilot and are frozen in this manifest before the claim legs",
    "gate_metric": "gen_tps / ttft_s",
    "interleave": [
-    "A",
-    "B",
-    "B",
-    "A",
-    "A",
-    "B"
+    "W2-A-sht-r0",
+    "W2-B-sht-r0",
+    "W2-A-dec-r0",
+    "W2-B-dec-r0",
+    "W2-A-dec-r1",
+    "W2-B-dec-r1",
+    "W2-B-dec-r2",
+    "W2-A-dec-r2",
+    "W2-A-dec-r3",
+    "W2-B-dec-r3",
+    "W2-A-sht-r1",
+    "W2-B-sht-r1",
+    "W2-B-sht-r2",
+    "W2-A-sht-r2",
+    "W2-A-sht-r3",
+    "W2-B-sht-r3"
    ],
    "legs": {
     "dec144k": {
+     "boot_group": "dec",
      "bytes": 194193,
-     "command_A": "python3 /mnt/srcds/Strata/bench/ab-v0210/rpcprof/ab9_driver.py --arm A --leg dec144k --kind tg --ctx 194193 --max-tokens 1024 --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/records/W2-A-r1 --elog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-r1.engine.log --hlog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-r1-helper.log --url http://127.0.0.1:8009/v1/chat/completions --prompt-file /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/dec144k.ctx194193.bin --prompt-sha256 ae952003d607fba7d9f2609acb5dc5328e7c76ec81c40ef7061be2db658321f1 --request-template /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/request-template.json --request-template-sha256 1367e0c041b3e7e6abceef27587f9ffbb8ff1d8b2ea4cc7d0141d9e945a18abd --timeout 5400 --champs-shape dec144k --champs-pair 0 --champs-measured   # --engine-pid is added by --run",
-     "command_B": "python3 /mnt/srcds/Strata/bench/ab-v0210/rpcprof/ab9_driver.py --arm B --leg dec144k --kind tg --ctx 194193 --max-tokens 1024 --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/records/W2-B-r1 --elog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-r1.engine.log --hlog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-r1-helper.log --url http://127.0.0.1:8009/v1/chat/completions --prompt-file /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/dec144k.ctx194193.bin --prompt-sha256 ae952003d607fba7d9f2609acb5dc5328e7c76ec81c40ef7061be2db658321f1 --request-template /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/request-template.json --request-template-sha256 1367e0c041b3e7e6abceef27587f9ffbb8ff1d8b2ea4cc7d0141d9e945a18abd --timeout 5400 --champs-shape dec144k --champs-pair 0 --champs-measured   # --engine-pid is added by --run",
+     "command_A": "python3 /mnt/srcds/Strata/bench/ab-v0210/rpcprof/ab9_driver.py --arm A --leg dec144k --kind tg --ctx 194193 --max-tokens 1024 --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/records/W2-A-dec-r1 --elog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-dec-r1.engine.log --hlog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-dec-r1-helper.log --url http://127.0.0.1:8009/v1/chat/completions --prompt-file /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/dec144k.ctx194193.bin --prompt-sha256 ae952003d607fba7d9f2609acb5dc5328e7c76ec81c40ef7061be2db658321f1 --request-template /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/request-template.json --request-template-sha256 1367e0c041b3e7e6abceef27587f9ffbb8ff1d8b2ea4cc7d0141d9e945a18abd --timeout 5400 --champs-shape dec144k --champs-pair 0 --champs-measured   # --engine-pid is added by --run",
+     "command_B": "python3 /mnt/srcds/Strata/bench/ab-v0210/rpcprof/ab9_driver.py --arm B --leg dec144k --kind tg --ctx 194193 --max-tokens 1024 --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/records/W2-B-dec-r1 --elog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-dec-r1.engine.log --hlog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-dec-r1-helper.log --url http://127.0.0.1:8009/v1/chat/completions --prompt-file /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/dec144k.ctx194193.bin --prompt-sha256 ae952003d607fba7d9f2609acb5dc5328e7c76ec81c40ef7061be2db658321f1 --request-template /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/request-template.json --request-template-sha256 1367e0c041b3e7e6abceef27587f9ffbb8ff1d8b2ea4cc7d0141d9e945a18abd --timeout 5400 --champs-shape dec144k --champs-pair 0 --champs-measured   # --engine-pid is added by --run",
      "corpus": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/dec144k.ctx194193.bin",
      "corpus_sha256": "ae952003d607fba7d9f2609acb5dc5328e7c76ec81c40ef7061be2db658321f1",
+     "delta_key": "decode_gen_tps",
      "expected_engine_lines": [
       "strata serve: prompt (\\d+) tokens = (\\d+) reused \\+ (\\d+)(?: of (\\d+))? read in (\\d+) ms \\(([\\d.]+) tok/s\\), (\\d+) generated in (\\d+) ms \\(([\\d.]+) tok/s\\)",
       "drafts accepted (\\d+) of (\\d+), (\\d+) checkpoints helper=reqs=(\\d+) rows=(\\d+) bytes=(\\d+) timeouts=(\\d+) fallbacks=(\\d+)",
       "dflash: .* trained block (\\d+)",
-      "engine started: .*--spec 5 .*--dflash-block 7 .*--vram-reserve-mib 256 .*--vram-reserve-later-mib 192",
+      "engine started: ",
       "expert-helper: (\\d+) rows on .* \\(mirrored \\d+/\\d+ slots, ([\\d.]+) GiB",
       "expert-helper proxy: (\\d+) experts on .* \\(fill report\\)",
       "strata generate: expert cache (\\d+) slots",
       "layer split: .* runs layers 30-47",
       "foresight swap: .*granted (\\d+) slots.*leaving (\\d+) MiB",
-      " - LOW:"
+      " - LOW:",
+      "pair supervisor:.*(restart|recovered|recovering|exited)"
      ],
      "gates": [
-      "judge line present, gen_tps parsed, drafts accepted/total recorded",
+      "judge line present, gen_tps parsed from request 2, drafts accepted/total recorded",
       "helper reqs/rows/bytes and timeouts=0 fallbacks=0 recorded",
-      "same discard gate as prefill"
+      "same discard gate as prefill (tuple, fill band, restart, fault fingerprint)"
      ],
      "kind": "tg",
      "max_tokens": 1024,
@@ -2253,28 +3003,32 @@
      "turns": null
     },
     "pp2k": {
+     "boot_group": "sht",
      "bytes": 2697,
-     "command_A": "python3 /mnt/srcds/Strata/bench/ab-v0210/rpcprof/ab9_driver.py --arm A --leg pp2k --kind prefill --ctx 2697 --max-tokens 32 --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/records/W2-A-r1 --elog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-r1.engine.log --hlog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-r1-helper.log --url http://127.0.0.1:8009/v1/chat/completions --prompt-file /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/pp2k.ctx2697.bin --prompt-sha256 b38471d3d9d1ed6b9522ebf25b7153822b9acf977f727d4c6c5a625e2bad535b --request-template /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/request-template.json --request-template-sha256 1367e0c041b3e7e6abceef27587f9ffbb8ff1d8b2ea4cc7d0141d9e945a18abd --timeout 5400 --champs-shape pp2k --champs-pair 0 --champs-measured   # --engine-pid is added by --run",
-     "command_B": "python3 /mnt/srcds/Strata/bench/ab-v0210/rpcprof/ab9_driver.py --arm B --leg pp2k --kind prefill --ctx 2697 --max-tokens 32 --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/records/W2-B-r1 --elog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-r1.engine.log --hlog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-r1-helper.log --url http://127.0.0.1:8009/v1/chat/completions --prompt-file /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/pp2k.ctx2697.bin --prompt-sha256 b38471d3d9d1ed6b9522ebf25b7153822b9acf977f727d4c6c5a625e2bad535b --request-template /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/request-template.json --request-template-sha256 1367e0c041b3e7e6abceef27587f9ffbb8ff1d8b2ea4cc7d0141d9e945a18abd --timeout 5400 --champs-shape pp2k --champs-pair 0 --champs-measured   # --engine-pid is added by --run",
+     "command_A": "python3 /mnt/srcds/Strata/bench/ab-v0210/rpcprof/ab9_driver.py --arm A --leg pp2k --kind prefill --ctx 2697 --max-tokens 32 --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/records/W2-A-sht-r1 --elog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-sht-r1.engine.log --hlog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-sht-r1-helper.log --url http://127.0.0.1:8009/v1/chat/completions --prompt-file /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/pp2k.ctx2697.bin --prompt-sha256 b38471d3d9d1ed6b9522ebf25b7153822b9acf977f727d4c6c5a625e2bad535b --request-template /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/request-template.json --request-template-sha256 1367e0c041b3e7e6abceef27587f9ffbb8ff1d8b2ea4cc7d0141d9e945a18abd --timeout 5400 --champs-shape pp2k --champs-pair 0 --champs-measured   # --engine-pid is added by --run",
+     "command_B": "python3 /mnt/srcds/Strata/bench/ab-v0210/rpcprof/ab9_driver.py --arm B --leg pp2k --kind prefill --ctx 2697 --max-tokens 32 --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/records/W2-B-sht-r1 --elog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-sht-r1.engine.log --hlog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-sht-r1-helper.log --url http://127.0.0.1:8009/v1/chat/completions --prompt-file /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/pp2k.ctx2697.bin --prompt-sha256 b38471d3d9d1ed6b9522ebf25b7153822b9acf977f727d4c6c5a625e2bad535b --request-template /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/request-template.json --request-template-sha256 1367e0c041b3e7e6abceef27587f9ffbb8ff1d8b2ea4cc7d0141d9e945a18abd --timeout 5400 --champs-shape pp2k --champs-pair 0 --champs-measured   # --engine-pid is added by --run",
      "corpus": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/pp2k.ctx2697.bin",
      "corpus_sha256": "b38471d3d9d1ed6b9522ebf25b7153822b9acf977f727d4c6c5a625e2bad535b",
+     "delta_key": "short_pp_read_tps",
      "expected_engine_lines": [
       "strata serve: prompt (\\d+) tokens = (\\d+) reused \\+ (\\d+)(?: of (\\d+))? read in (\\d+) ms \\(([\\d.]+) tok/s\\), (\\d+) generated in (\\d+) ms \\(([\\d.]+) tok/s\\)",
       "drafts accepted (\\d+) of (\\d+), (\\d+) checkpoints helper=reqs=(\\d+) rows=(\\d+) bytes=(\\d+) timeouts=(\\d+) fallbacks=(\\d+)",
       "dflash: .* trained block (\\d+)",
-      "engine started: .*--spec 5 .*--dflash-block 7 .*--vram-reserve-mib 256 .*--vram-reserve-later-mib 192",
+      "engine started: ",
       "expert-helper: (\\d+) rows on .* \\(mirrored \\d+/\\d+ slots, ([\\d.]+) GiB",
       "expert-helper proxy: (\\d+) experts on .* \\(fill report\\)",
       "strata generate: expert cache (\\d+) slots",
       "layer split: .* runs layers 30-47",
       "foresight swap: .*granted (\\d+) slots.*leaving (\\d+) MiB",
-      " - LOW:"
+      " - LOW:",
+      "pair supervisor:.*(restart|recovered|recovering|exited)"
      ],
      "gates": [
       "judge line present with reused == 0 (cold prompt, no cache reuse)",
       "served prompt-N equal across arms for the same shape (truncation guard)",
       "no non-finite logits; no GPU memory-access fault; no supervisor restart in the boot",
-      "boot line carries the frozen tuple (spec 5, dflash-block 7, reserves 256/192, layer split 30) and the helper fill is inside the recorded band"
+      "the engine's own 'engine started:' line carries the frozen tuple (parsed flag/value pairs: spec 5, reserves 256/192, dflash-block 7, helper slots 4,600)",
+      "the helper's boot line reports a fill inside the frozen band, and the arms' fills differ by no more than the band's drift limit"
      ],
      "kind": "prefill",
      "max_tokens": 32,
@@ -2283,28 +3037,32 @@
      "turns": null
     },
     "pp8k": {
+     "boot_group": "sht",
      "bytes": 10788,
-     "command_A": "python3 /mnt/srcds/Strata/bench/ab-v0210/rpcprof/ab9_driver.py --arm A --leg pp8k --kind prefill --ctx 10788 --max-tokens 32 --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/records/W2-A-r1 --elog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-r1.engine.log --hlog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-r1-helper.log --url http://127.0.0.1:8009/v1/chat/completions --prompt-file /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/pp8k.ctx10788.bin --prompt-sha256 0d77817c68a43cb5df2638330ecf197e76e6c85b59527f24eaf734870facfcc1 --request-template /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/request-template.json --request-template-sha256 1367e0c041b3e7e6abceef27587f9ffbb8ff1d8b2ea4cc7d0141d9e945a18abd --timeout 5400 --champs-shape pp8k --champs-pair 0 --champs-measured   # --engine-pid is added by --run",
-     "command_B": "python3 /mnt/srcds/Strata/bench/ab-v0210/rpcprof/ab9_driver.py --arm B --leg pp8k --kind prefill --ctx 10788 --max-tokens 32 --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/records/W2-B-r1 --elog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-r1.engine.log --hlog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-r1-helper.log --url http://127.0.0.1:8009/v1/chat/completions --prompt-file /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/pp8k.ctx10788.bin --prompt-sha256 0d77817c68a43cb5df2638330ecf197e76e6c85b59527f24eaf734870facfcc1 --request-template /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/request-template.json --request-template-sha256 1367e0c041b3e7e6abceef27587f9ffbb8ff1d8b2ea4cc7d0141d9e945a18abd --timeout 5400 --champs-shape pp8k --champs-pair 0 --champs-measured   # --engine-pid is added by --run",
+     "command_A": "python3 /mnt/srcds/Strata/bench/ab-v0210/rpcprof/ab9_driver.py --arm A --leg pp8k --kind prefill --ctx 10788 --max-tokens 32 --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/records/W2-A-sht-r1 --elog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-sht-r1.engine.log --hlog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-sht-r1-helper.log --url http://127.0.0.1:8009/v1/chat/completions --prompt-file /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/pp8k.ctx10788.bin --prompt-sha256 0d77817c68a43cb5df2638330ecf197e76e6c85b59527f24eaf734870facfcc1 --request-template /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/request-template.json --request-template-sha256 1367e0c041b3e7e6abceef27587f9ffbb8ff1d8b2ea4cc7d0141d9e945a18abd --timeout 5400 --champs-shape pp8k --champs-pair 0 --champs-measured   # --engine-pid is added by --run",
+     "command_B": "python3 /mnt/srcds/Strata/bench/ab-v0210/rpcprof/ab9_driver.py --arm B --leg pp8k --kind prefill --ctx 10788 --max-tokens 32 --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/records/W2-B-sht-r1 --elog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-sht-r1.engine.log --hlog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-sht-r1-helper.log --url http://127.0.0.1:8009/v1/chat/completions --prompt-file /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/pp8k.ctx10788.bin --prompt-sha256 0d77817c68a43cb5df2638330ecf197e76e6c85b59527f24eaf734870facfcc1 --request-template /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/request-template.json --request-template-sha256 1367e0c041b3e7e6abceef27587f9ffbb8ff1d8b2ea4cc7d0141d9e945a18abd --timeout 5400 --champs-shape pp8k --champs-pair 0 --champs-measured   # --engine-pid is added by --run",
      "corpus": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/pp8k.ctx10788.bin",
      "corpus_sha256": "0d77817c68a43cb5df2638330ecf197e76e6c85b59527f24eaf734870facfcc1",
+     "delta_key": "short_pp_read_tps",
      "expected_engine_lines": [
       "strata serve: prompt (\\d+) tokens = (\\d+) reused \\+ (\\d+)(?: of (\\d+))? read in (\\d+) ms \\(([\\d.]+) tok/s\\), (\\d+) generated in (\\d+) ms \\(([\\d.]+) tok/s\\)",
       "drafts accepted (\\d+) of (\\d+), (\\d+) checkpoints helper=reqs=(\\d+) rows=(\\d+) bytes=(\\d+) timeouts=(\\d+) fallbacks=(\\d+)",
       "dflash: .* trained block (\\d+)",
-      "engine started: .*--spec 5 .*--dflash-block 7 .*--vram-reserve-mib 256 .*--vram-reserve-later-mib 192",
+      "engine started: ",
       "expert-helper: (\\d+) rows on .* \\(mirrored \\d+/\\d+ slots, ([\\d.]+) GiB",
       "expert-helper proxy: (\\d+) experts on .* \\(fill report\\)",
       "strata generate: expert cache (\\d+) slots",
       "layer split: .* runs layers 30-47",
       "foresight swap: .*granted (\\d+) slots.*leaving (\\d+) MiB",
-      " - LOW:"
+      " - LOW:",
+      "pair supervisor:.*(restart|recovered|recovering|exited)"
      ],
      "gates": [
       "judge line present with reused == 0 (cold prompt, no cache reuse)",
       "served prompt-N equal across arms for the same shape (truncation guard)",
       "no non-finite logits; no GPU memory-access fault; no supervisor restart in the boot",
-      "boot line carries the frozen tuple (spec 5, dflash-block 7, reserves 256/192, layer split 30) and the helper fill is inside the recorded band"
+      "the engine's own 'engine started:' line carries the frozen tuple (parsed flag/value pairs: spec 5, reserves 256/192, dflash-block 7, helper slots 4,600)",
+      "the helper's boot line reports a fill inside the frozen band, and the arms' fills differ by no more than the band's drift limit"
      ],
      "kind": "prefill",
      "max_tokens": 32,
@@ -2313,61 +3071,73 @@
      "turns": null
     },
     "ttft3": {
+     "boot_group": "sht",
      "bytes": 2697,
-     "command_A": "python3 /mnt/srcds/Strata/bench/ab-v0210/rpcprof/port_ab_ttft.py --arm A --leg ttft3 --url http://127.0.0.1:8009 --corpus /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/pp2k.ctx2697.bin --turns 3 --max-tokens 64 --template /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/request-template.json --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/records/W2-A-r1 --elog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-r1.engine.log --hlog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-r1-helper.log   # --engine-pid is added by --run",
-     "command_B": "python3 /mnt/srcds/Strata/bench/ab-v0210/rpcprof/port_ab_ttft.py --arm B --leg ttft3 --url http://127.0.0.1:8009 --corpus /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/pp2k.ctx2697.bin --turns 3 --max-tokens 64 --template /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/request-template.json --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/records/W2-B-r1 --elog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-r1.engine.log --hlog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-r1-helper.log   # --engine-pid is added by --run",
-     "corpus": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/pp2k.ctx2697.bin",
-     "corpus_sha256": "b38471d3d9d1ed6b9522ebf25b7153822b9acf977f727d4c6c5a625e2bad535b",
+     "command_A": "python3 /mnt/srcds/Strata/bench/ab-v0210/rpcprof/port_ab_ttft.py --arm A --leg ttft3 --url http://127.0.0.1:8009 --corpus /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/ttft2k.ctx2697.bin --turns 3 --max-tokens 64 --template /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/request-template.json --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/records/W2-A-sht-r1 --elog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-sht-r1.engine.log --hlog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-sht-r1-helper.log   # --engine-pid is added by --run",
+     "command_B": "python3 /mnt/srcds/Strata/bench/ab-v0210/rpcprof/port_ab_ttft.py --arm B --leg ttft3 --url http://127.0.0.1:8009 --corpus /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/ttft2k.ctx2697.bin --turns 3 --max-tokens 64 --template /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/request-template.json --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/records/W2-B-sht-r1 --elog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-sht-r1.engine.log --hlog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-sht-r1-helper.log   # --engine-pid is added by --run",
+     "corpus": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/ttft2k.ctx2697.bin",
+     "corpus_sha256": "48a449fc77a55c2d74182c9adabef76498560ba297919709fd59193ddff0cddc",
+     "delta_key": "ttft_turn1_s",
      "expected_engine_lines": [
       "strata serve: prompt (\\d+) tokens = (\\d+) reused \\+ (\\d+)(?: of (\\d+))? read in (\\d+) ms \\(([\\d.]+) tok/s\\), (\\d+) generated in (\\d+) ms \\(([\\d.]+) tok/s\\)",
       "drafts accepted (\\d+) of (\\d+), (\\d+) checkpoints helper=reqs=(\\d+) rows=(\\d+) bytes=(\\d+) timeouts=(\\d+) fallbacks=(\\d+)",
       "dflash: .* trained block (\\d+)",
-      "engine started: .*--spec 5 .*--dflash-block 7 .*--vram-reserve-mib 256 .*--vram-reserve-later-mib 192",
+      "engine started: ",
       "expert-helper: (\\d+) rows on .* \\(mirrored \\d+/\\d+ slots, ([\\d.]+) GiB",
       "expert-helper proxy: (\\d+) experts on .* \\(fill report\\)",
       "strata generate: expert cache (\\d+) slots",
       "layer split: .* runs layers 30-47",
       "foresight swap: .*granted (\\d+) slots.*leaving (\\d+) MiB",
-      " - LOW:"
+      " - LOW:",
+      "pair supervisor:.*(restart|recovered|recovering|exited)"
      ],
      "gates": [
       "per-turn first-token time from the server's own event stream (first_token - queued) and from the client's first streamed delta; both recorded",
-      "inter-turn wall = next turn's first token - previous turn's finish",
-      "same discard gate; turns must share one conversation (no fresh prefill after turn 1)"
+      "inter-turn wall = the NEXT turn's first token - the PREVIOUS turn's finish (not the client's idle gap)",
+      "same discard gate; turn 1 must be a cold prefill of the TTFT leg's own corpus"
      ],
      "kind": "ttft",
      "max_tokens": 64,
-     "metric": "TTFT per turn + inter-turn wall",
+     "metric": "TTFT per turn + inter-turn wall (next first token - previous finish)",
      "tokens_expected": 2000,
      "turns": 3
     }
    },
    "legs_per_boot": {
-    "_boot_shapes": {
-     "decode": [
-      "dec144k"
-     ],
-     "short": [
-      "pp2k",
-      "pp8k",
-      "ttft3"
-     ]
-    },
-    "dec144k": 1,
-    "pp2k": 1,
-    "pp8k": 1,
-    "ttft3": 1
+    "dec": 1,
+    "sht": 3
    },
    "name": "144k decode + short-PP 2k/8k + 3-turn TTFT",
    "pilot": {
     "boots_per_arm": 1,
-    "note": "short-PP/TTFT pilot legs run first; their deltas are frozen into the manifest before the claim legs and are excluded from the claim sample",
-    "shape": "short"
+    "group": "sht",
+    "note": "short-PP/TTFT pilot legs run first; their deltas are frozen into the manifest before the claim legs and are excluded from the claim sample"
    },
-   "reps_per_arm": 3,
+   "pilot_deltas": {
+    "deltas": {
+     "pp2k": {
+      "gen_tps": null,
+      "read_tps": null
+     },
+     "pp8k": {
+      "gen_tps": null,
+      "read_tps": null
+     },
+     "ttft3": {
+      "inter_turn_s": null,
+      "ttft_turn1_s": null
+     }
+    },
+    "frozen": false,
+    "frozen_at": null,
+    "samples": {},
+    "source": "records of the W2 pilot boots (group sht, rep 0), 1 boot per arm",
+    "window": "W2"
+   },
    "schedule": [
     {
      "arm": "A",
+     "boot": "sht",
      "group": "pilot",
      "pilot": true,
      "rep": 0,
@@ -2379,6 +3149,7 @@
     },
     {
      "arm": "B",
+     "boot": "sht",
      "group": "pilot",
      "pilot": true,
      "rep": 0,
@@ -2390,7 +3161,30 @@
     },
     {
      "arm": "A",
-     "group": "decode",
+     "boot": "dec",
+     "group": "warmup",
+     "pilot": false,
+     "rep": 0,
+     "shapes": [
+      "dec144k"
+     ],
+     "warmup": true
+    },
+    {
+     "arm": "B",
+     "boot": "dec",
+     "group": "warmup",
+     "pilot": false,
+     "rep": 0,
+     "shapes": [
+      "dec144k"
+     ],
+     "warmup": true
+    },
+    {
+     "arm": "A",
+     "boot": "dec",
+     "group": "dec",
      "pilot": false,
      "rep": 1,
      "shapes": [
@@ -2399,7 +3193,8 @@
     },
     {
      "arm": "B",
-     "group": "decode",
+     "boot": "dec",
+     "group": "dec",
      "pilot": false,
      "rep": 1,
      "shapes": [
@@ -2408,7 +3203,8 @@
     },
     {
      "arm": "B",
-     "group": "decode",
+     "boot": "dec",
+     "group": "dec",
      "pilot": false,
      "rep": 2,
      "shapes": [
@@ -2417,7 +3213,8 @@
     },
     {
      "arm": "A",
-     "group": "decode",
+     "boot": "dec",
+     "group": "dec",
      "pilot": false,
      "rep": 2,
      "shapes": [
@@ -2426,7 +3223,8 @@
     },
     {
      "arm": "A",
-     "group": "decode",
+     "boot": "dec",
+     "group": "dec",
      "pilot": false,
      "rep": 3,
      "shapes": [
@@ -2435,7 +3233,8 @@
     },
     {
      "arm": "B",
-     "group": "decode",
+     "boot": "dec",
+     "group": "dec",
      "pilot": false,
      "rep": 3,
      "shapes": [
@@ -2444,7 +3243,8 @@
     },
     {
      "arm": "A",
-     "group": "short",
+     "boot": "sht",
+     "group": "sht",
      "pilot": false,
      "rep": 1,
      "shapes": [
@@ -2455,7 +3255,8 @@
     },
     {
      "arm": "B",
-     "group": "short",
+     "boot": "sht",
+     "group": "sht",
      "pilot": false,
      "rep": 1,
      "shapes": [
@@ -2466,7 +3267,8 @@
     },
     {
      "arm": "B",
-     "group": "short",
+     "boot": "sht",
+     "group": "sht",
      "pilot": false,
      "rep": 2,
      "shapes": [
@@ -2477,7 +3279,8 @@
     },
     {
      "arm": "A",
-     "group": "short",
+     "boot": "sht",
+     "group": "sht",
      "pilot": false,
      "rep": 2,
      "shapes": [
@@ -2488,7 +3291,8 @@
     },
     {
      "arm": "A",
-     "group": "short",
+     "boot": "sht",
+     "group": "sht",
      "pilot": false,
      "rep": 3,
      "shapes": [
@@ -2499,7 +3303,8 @@
     },
     {
      "arm": "B",
-     "group": "short",
+     "boot": "sht",
+     "group": "sht",
      "pilot": false,
      "rep": 3,
      "shapes": [
@@ -2509,61 +3314,92 @@
      ]
     }
    ],
-   "warmup_boots": 2
+   "warmup_boots": 4
   },
   "W3": {
+   "boot_groups": {
+    "pp": [
+     "pp239k"
+    ]
+   },
+   "boots": {
+    "claim": 6,
+    "total": 8,
+    "warmup": 2
+   },
+   "boots_per_arm": 3,
    "boots_per_cell": null,
    "budget_derivation": {
-    "note": "the contract states 1.2-2 h; its own leg range (690-1,150 s) plus boots derives the wider range above - the derived one governs planning",
+    "boots": {
+     "claim": 6,
+     "total": 8,
+     "warmup": 2
+    },
+    "note": "the contract states 1.2-2 h for the claim boots; adding the two warmup boots and the cached second generation is why the planning range is wider",
     "range_s": [
-     5765.765371230452,
-     7377.520027864855
+     7687.687161640602,
+     9836.693370486473
     ],
-    "terms": "6 boots x (239,663 prefill + 2 x 1024 gen (fresh then cached) + boot)"
+    "terms": "8 boots x (239,663 prefill + 2 x 1024 gen (fresh then cached) + boot)"
    },
    "budget_h": [
+    2.14,
+    2.73
+   ],
+   "budget_s": [
+    7687,
+    9836
+   ],
+   "budget_source": "derived at harness-prep from the contract's measured anchors, including the discarded first-touch boots",
+   "claim": "pre-registered delta, 90 % interval, confirm-or-indeterminate",
+   "contract_budget_h": [
     1.2,
     2.0
    ],
-   "budget_s": [
+   "contract_budget_s": [
     4320,
     7200
    ],
-   "budget_source": "the contract's stated budget",
-   "claim": "pre-registered delta, 90 % interval, confirm-or-indeterminate",
+   "decode_warmup": null,
    "delta": 0.08,
+   "delta_note": null,
    "gate_metric": "gen_tps",
    "interleave": [
-    "A",
-    "B",
-    "B",
-    "A",
-    "A",
-    "B"
+    "W3-A-pp-r0",
+    "W3-B-pp-r0",
+    "W3-A-pp-r1",
+    "W3-B-pp-r1",
+    "W3-B-pp-r2",
+    "W3-A-pp-r2",
+    "W3-A-pp-r3",
+    "W3-B-pp-r3"
    ],
    "legs": {
     "pp239k": {
+     "boot_group": "pp",
      "bytes": 323200,
-     "command_A": "python3 /mnt/srcds/Strata/bench/ab-v0210/rpcprof/ab9_driver.py --arm A --leg pp239k --kind tg --ctx 323200 --max-tokens 1024 --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/records/W3-A-r1 --elog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W3-A-r1.engine.log --hlog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W3-A-r1-helper.log --url http://127.0.0.1:8009/v1/chat/completions --prompt-file /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/pp239k.ctx323200.bin --prompt-sha256 210b16b32b8658e68b863442d3c2d9ebde7eb3c9d50b0cea8c28e7d045c0ea68 --request-template /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/request-template.json --request-template-sha256 1367e0c041b3e7e6abceef27587f9ffbb8ff1d8b2ea4cc7d0141d9e945a18abd --timeout 5400 --champs-shape pp239k --champs-pair 0 --champs-measured   # --engine-pid is added by --run",
-     "command_B": "python3 /mnt/srcds/Strata/bench/ab-v0210/rpcprof/ab9_driver.py --arm B --leg pp239k --kind tg --ctx 323200 --max-tokens 1024 --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/records/W3-B-r1 --elog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W3-B-r1.engine.log --hlog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W3-B-r1-helper.log --url http://127.0.0.1:8009/v1/chat/completions --prompt-file /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/pp239k.ctx323200.bin --prompt-sha256 210b16b32b8658e68b863442d3c2d9ebde7eb3c9d50b0cea8c28e7d045c0ea68 --request-template /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/request-template.json --request-template-sha256 1367e0c041b3e7e6abceef27587f9ffbb8ff1d8b2ea4cc7d0141d9e945a18abd --timeout 5400 --champs-shape pp239k --champs-pair 0 --champs-measured   # --engine-pid is added by --run",
+     "command_A": "python3 /mnt/srcds/Strata/bench/ab-v0210/rpcprof/ab9_driver.py --arm A --leg pp239k --kind tg --ctx 323200 --max-tokens 1024 --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/records/W3-A-pp-r1 --elog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W3-A-pp-r1.engine.log --hlog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W3-A-pp-r1-helper.log --url http://127.0.0.1:8009/v1/chat/completions --prompt-file /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/pp239k.ctx323200.bin --prompt-sha256 210b16b32b8658e68b863442d3c2d9ebde7eb3c9d50b0cea8c28e7d045c0ea68 --request-template /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/request-template.json --request-template-sha256 1367e0c041b3e7e6abceef27587f9ffbb8ff1d8b2ea4cc7d0141d9e945a18abd --timeout 5400 --champs-shape pp239k --champs-pair 0 --champs-measured   # --engine-pid is added by --run",
+     "command_B": "python3 /mnt/srcds/Strata/bench/ab-v0210/rpcprof/ab9_driver.py --arm B --leg pp239k --kind tg --ctx 323200 --max-tokens 1024 --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/records/W3-B-pp-r1 --elog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W3-B-pp-r1.engine.log --hlog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W3-B-pp-r1-helper.log --url http://127.0.0.1:8009/v1/chat/completions --prompt-file /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/pp239k.ctx323200.bin --prompt-sha256 210b16b32b8658e68b863442d3c2d9ebde7eb3c9d50b0cea8c28e7d045c0ea68 --request-template /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/request-template.json --request-template-sha256 1367e0c041b3e7e6abceef27587f9ffbb8ff1d8b2ea4cc7d0141d9e945a18abd --timeout 5400 --champs-shape pp239k --champs-pair 0 --champs-measured   # --engine-pid is added by --run",
      "corpus": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/pp239k.ctx323200.bin",
      "corpus_sha256": "210b16b32b8658e68b863442d3c2d9ebde7eb3c9d50b0cea8c28e7d045c0ea68",
+     "delta_key": "decode_gen_tps",
      "expected_engine_lines": [
       "strata serve: prompt (\\d+) tokens = (\\d+) reused \\+ (\\d+)(?: of (\\d+))? read in (\\d+) ms \\(([\\d.]+) tok/s\\), (\\d+) generated in (\\d+) ms \\(([\\d.]+) tok/s\\)",
       "drafts accepted (\\d+) of (\\d+), (\\d+) checkpoints helper=reqs=(\\d+) rows=(\\d+) bytes=(\\d+) timeouts=(\\d+) fallbacks=(\\d+)",
       "dflash: .* trained block (\\d+)",
-      "engine started: .*--spec 5 .*--dflash-block 7 .*--vram-reserve-mib 256 .*--vram-reserve-later-mib 192",
+      "engine started: ",
       "expert-helper: (\\d+) rows on .* \\(mirrored \\d+/\\d+ slots, ([\\d.]+) GiB",
       "expert-helper proxy: (\\d+) experts on .* \\(fill report\\)",
       "strata generate: expert cache (\\d+) slots",
       "layer split: .* runs layers 30-47",
       "foresight swap: .*granted (\\d+) slots.*leaving (\\d+) MiB",
-      " - LOW:"
+      " - LOW:",
+      "pair supervisor:.*(restart|recovered|recovering|exited)"
      ],
      "gates": [
-      "judge line present, gen_tps parsed, drafts accepted/total recorded",
+      "judge line present, gen_tps parsed from request 2, drafts accepted/total recorded",
       "helper reqs/rows/bytes and timeouts=0 fallbacks=0 recorded",
-      "same discard gate as prefill"
+      "same discard gate as prefill (tuple, fill band, restart, fault fingerprint)"
      ],
      "kind": "tg",
      "max_tokens": 1024,
@@ -2573,14 +3409,14 @@
     }
    },
    "legs_per_boot": {
-    "pp239k": 1
+    "pp": 1
    },
    "name": "240k decode (each boot carries its own 239,663 prefill)",
    "pilot": null,
-   "reps_per_arm": 3,
    "schedule": [
     {
      "arm": "A",
+     "boot": "pp",
      "group": "warmup",
      "pilot": false,
      "rep": 0,
@@ -2591,6 +3427,7 @@
     },
     {
      "arm": "B",
+     "boot": "pp",
      "group": "warmup",
      "pilot": false,
      "rep": 0,
@@ -2601,7 +3438,8 @@
     },
     {
      "arm": "A",
-     "group": "boot",
+     "boot": "pp",
+     "group": "pp",
      "pilot": false,
      "rep": 1,
      "shapes": [
@@ -2610,7 +3448,8 @@
     },
     {
      "arm": "B",
-     "group": "boot",
+     "boot": "pp",
+     "group": "pp",
      "pilot": false,
      "rep": 1,
      "shapes": [
@@ -2619,7 +3458,8 @@
     },
     {
      "arm": "B",
-     "group": "boot",
+     "boot": "pp",
+     "group": "pp",
      "pilot": false,
      "rep": 2,
      "shapes": [
@@ -2628,7 +3468,8 @@
     },
     {
      "arm": "A",
-     "group": "boot",
+     "boot": "pp",
+     "group": "pp",
      "pilot": false,
      "rep": 2,
      "shapes": [
@@ -2637,7 +3478,8 @@
     },
     {
      "arm": "A",
-     "group": "boot",
+     "boot": "pp",
+     "group": "pp",
      "pilot": false,
      "rep": 3,
      "shapes": [
@@ -2646,7 +3488,8 @@
     },
     {
      "arm": "B",
-     "group": "boot",
+     "boot": "pp",
+     "group": "pp",
      "pilot": false,
      "rep": 3,
      "shapes": [
@@ -2657,57 +3500,80 @@
    "warmup_boots": 2
   },
   "W4": {
+   "boot_groups": {
+    "dec": [
+     "dec144k"
+    ]
+   },
+   "boots": {
+    "total": 4
+   },
+   "boots_per_arm": null,
    "boots_per_cell": 2,
    "budget_derivation": {
+    "boots": {
+     "total": 4
+    },
     "range_s": [
-     2559.561078175803,
-     3395.8992221061185
+     2744.9004446916397,
+     3585.528851735748
     ],
-    "terms": "4 boots x (144k prefill + 1024 gen + boot); 6 boots if 3/cell"
+    "terms": "4 boots x (144k prefill + 2 x 1024 gen + boot)"
    },
    "budget_h": [
+    0.76,
+    1.0
+   ],
+   "budget_s": [
+    2744,
+    3585
+   ],
+   "budget_source": "derived at harness-prep from the contract's measured anchors, including the discarded first-touch boots",
+   "claim": "VETO ONLY: with 2 boots/cell min exact p = 0.33; the cell can reject an engine claim (the effect follows the server, or the cells disagree) but can never establish one. Pair attribution stands until a cell vetoes it.",
+   "contract_budget_h": [
     0.75,
     1.08
    ],
-   "budget_s": [
+   "contract_budget_s": [
     2700,
     3900
    ],
-   "budget_source": "the contract's stated budget",
-   "claim": "VETO ONLY: with 2 boots/cell min exact p = 0.33; the cell can reject an engine claim (the effect follows the server, or the cells disagree) but can never establish one. Pair attribution stands until a cell vetoes it.",
+   "decode_warmup": null,
    "delta": null,
+   "delta_note": null,
    "gate_metric": "gen_tps",
    "interleave": [
-    "A",
-    "B",
-    "B",
-    "A",
-    "A",
-    "B"
+    "W4-A-dec-r1",
+    "W4-B-dec-r1",
+    "W4-B-dec-r2",
+    "W4-A-dec-r2"
    ],
    "legs": {
     "dec144k": {
+     "boot_group": "dec",
      "bytes": 194193,
-     "command_A": "python3 /mnt/srcds/Strata/bench/ab-v0210/rpcprof/ab9_driver.py --arm A --leg dec144k --kind tg --ctx 194193 --max-tokens 1024 --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/records/W4-A-r1 --elog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W4-A-r1.engine.log --hlog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W4-A-r1-helper.log --url http://127.0.0.1:8009/v1/chat/completions --prompt-file /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/dec144k.ctx194193.bin --prompt-sha256 ae952003d607fba7d9f2609acb5dc5328e7c76ec81c40ef7061be2db658321f1 --request-template /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/request-template.json --request-template-sha256 1367e0c041b3e7e6abceef27587f9ffbb8ff1d8b2ea4cc7d0141d9e945a18abd --timeout 5400 --champs-shape dec144k --champs-pair 0 --champs-measured   # --engine-pid is added by --run",
-     "command_B": "python3 /mnt/srcds/Strata/bench/ab-v0210/rpcprof/ab9_driver.py --arm B --leg dec144k --kind tg --ctx 194193 --max-tokens 1024 --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/records/W4-B-r1 --elog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W4-B-r1.engine.log --hlog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W4-B-r1-helper.log --url http://127.0.0.1:8009/v1/chat/completions --prompt-file /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/dec144k.ctx194193.bin --prompt-sha256 ae952003d607fba7d9f2609acb5dc5328e7c76ec81c40ef7061be2db658321f1 --request-template /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/request-template.json --request-template-sha256 1367e0c041b3e7e6abceef27587f9ffbb8ff1d8b2ea4cc7d0141d9e945a18abd --timeout 5400 --champs-shape dec144k --champs-pair 0 --champs-measured   # --engine-pid is added by --run",
+     "command_A": "python3 /mnt/srcds/Strata/bench/ab-v0210/rpcprof/ab9_driver.py --arm A --leg dec144k --kind tg --ctx 194193 --max-tokens 1024 --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/records/W4-A-dec-r1 --elog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W4-A-dec-r1.engine.log --hlog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W4-A-dec-r1-helper.log --url http://127.0.0.1:8009/v1/chat/completions --prompt-file /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/dec144k.ctx194193.bin --prompt-sha256 ae952003d607fba7d9f2609acb5dc5328e7c76ec81c40ef7061be2db658321f1 --request-template /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/request-template.json --request-template-sha256 1367e0c041b3e7e6abceef27587f9ffbb8ff1d8b2ea4cc7d0141d9e945a18abd --timeout 5400 --champs-shape dec144k --champs-pair 0 --champs-measured   # --engine-pid is added by --run",
+     "command_B": "python3 /mnt/srcds/Strata/bench/ab-v0210/rpcprof/ab9_driver.py --arm B --leg dec144k --kind tg --ctx 194193 --max-tokens 1024 --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/records/W4-B-dec-r1 --elog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W4-B-dec-r1.engine.log --hlog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W4-B-dec-r1-helper.log --url http://127.0.0.1:8009/v1/chat/completions --prompt-file /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/dec144k.ctx194193.bin --prompt-sha256 ae952003d607fba7d9f2609acb5dc5328e7c76ec81c40ef7061be2db658321f1 --request-template /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/request-template.json --request-template-sha256 1367e0c041b3e7e6abceef27587f9ffbb8ff1d8b2ea4cc7d0141d9e945a18abd --timeout 5400 --champs-shape dec144k --champs-pair 0 --champs-measured   # --engine-pid is added by --run",
      "corpus": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/dec144k.ctx194193.bin",
      "corpus_sha256": "ae952003d607fba7d9f2609acb5dc5328e7c76ec81c40ef7061be2db658321f1",
+     "delta_key": null,
      "expected_engine_lines": [
       "strata serve: prompt (\\d+) tokens = (\\d+) reused \\+ (\\d+)(?: of (\\d+))? read in (\\d+) ms \\(([\\d.]+) tok/s\\), (\\d+) generated in (\\d+) ms \\(([\\d.]+) tok/s\\)",
       "drafts accepted (\\d+) of (\\d+), (\\d+) checkpoints helper=reqs=(\\d+) rows=(\\d+) bytes=(\\d+) timeouts=(\\d+) fallbacks=(\\d+)",
       "dflash: .* trained block (\\d+)",
-      "engine started: .*--spec 5 .*--dflash-block 7 .*--vram-reserve-mib 256 .*--vram-reserve-later-mib 192",
+      "engine started: ",
       "expert-helper: (\\d+) rows on .* \\(mirrored \\d+/\\d+ slots, ([\\d.]+) GiB",
       "expert-helper proxy: (\\d+) experts on .* \\(fill report\\)",
       "strata generate: expert cache (\\d+) slots",
       "layer split: .* runs layers 30-47",
       "foresight swap: .*granted (\\d+) slots.*leaving (\\d+) MiB",
-      " - LOW:"
+      " - LOW:",
+      "pair supervisor:.*(restart|recovered|recovering|exited)"
      ],
      "gates": [
-      "judge line present, gen_tps parsed, drafts accepted/total recorded",
+      "judge line present, gen_tps parsed from request 2, drafts accepted/total recorded",
       "helper reqs/rows/bytes and timeouts=0 fallbacks=0 recorded",
-      "same discard gate as prefill"
+      "same discard gate as prefill (tuple, fill band, restart, fault fingerprint)"
      ],
      "kind": "tg",
      "max_tokens": 1024,
@@ -2717,14 +3583,14 @@
     }
    },
    "legs_per_boot": {
-    "dec144k": 1
+    "dec": 1
    },
    "name": "2x2 engine x server cell (veto-only)",
    "pilot": null,
-   "reps_per_arm": 2,
    "schedule": [
     {
      "arm": "A",
+     "boot": "dec",
      "cell": "A-engine+B-server",
      "group": "cell",
      "pilot": false,
@@ -2736,6 +3602,7 @@
     },
     {
      "arm": "B",
+     "boot": "dec",
      "cell": "B-engine+A-server",
      "group": "cell",
      "pilot": false,
@@ -2747,6 +3614,7 @@
     },
     {
      "arm": "B",
+     "boot": "dec",
      "cell": "B-engine+A-server",
      "group": "cell",
      "pilot": false,
@@ -2758,6 +3626,7 @@
     },
     {
      "arm": "A",
+     "boot": "dec",
      "cell": "A-engine+B-server",
      "group": "cell",
      "pilot": false,

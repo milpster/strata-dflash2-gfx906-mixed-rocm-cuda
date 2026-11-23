@@ -5,14 +5,16 @@ Writes, and optionally re-verifies, everything the windows need and nothing they
 invent:
 
   * the frozen head-tagged corpus (champions_prepare.build_paired_prompt): 239,663 tokens at
-    the 323,200-byte target, plus the 144k decode and 2k/8k short-PP shapes;
+    the 323,200-byte target, the 144k decode shape, the 2k/8k short-PP shapes and the TTFT
+    leg's own 2k shape;
   * the frozen request template (sampling + thinking off) every leg sends;
-  * the two arm configs for every boot of W1-W4 (port_ab_configs.derive: identical except
-    exe/cwd/log/sockets/cache-dir, plus the declared structural spill flag);
+  * both arm configs for every BOOT of W1-W4, keyed by window-arm-bootgroup-rep (the boot
+    group is what keeps W2's decode and short boots from sharing a cache dir or a socket);
   * the 2x2 argv preflight verdict (port_ab_preflight.cell - static, no boots);
   * bench/ab-v0210/rpcprof/port-ab-manifest.json: identities re-hashed FROM DISK NOW, the
-    frozen tuple, the pre-registered deltas, the claim rule, n, legs-per-boot, the derived
-    window budgets (W2 included), the exact leg invocations and their gates.
+    frozen tuple including the helper fill band, the pre-registered deltas, the claim rule,
+    n, boots-per-group, the derived window budgets (warmup boots included), the W2 pilot
+    delta slots, and the exact leg invocations with their gates.
 
 No engine, helper, server or GPU is started; no process is signalled. --verify re-derives
 every hash from disk and fails closed on any drift.
@@ -113,34 +115,27 @@ def prepare_template(out):
 
 
 def prepare_configs(out):
+    """One config per scheduled boot, keyed by window-arm-bootgroup-rep."""
     written = {}
-    for window in ("W1", "W2", "W3"):
-        # rep 0 is the discarded first-touch boot (W2: the pilot boot); reps 1..3 are the claim
-        for arm in ("A", "B"):
-            for rep in range(0, C.REPS + 1):
-                cfg, deltas, paths = pc.derive(arm, window=window, rep=rep, out=out)
-                problems = pc.check_tuple(cfg, arm)
-                if problems:
-                    raise SystemExit("; ".join(problems))
-                target = pathlib.Path(paths["config"])
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(json.dumps(cfg, indent=1, sort_keys=True) + "\n")
-                written[paths["key"]] = {"config": str(target), "sha256": sha256_path(target),
-                                         "deltas": deltas, "socket": paths["socket"],
-                                         "socket2": paths["socket2"], "cache_dir": paths["cache_dir"],
-                                         "engine_log": cfg["log"]}
-    # W4 cross cells: the engine arm's config; the server arm is chosen at boot
-    for cell in C.WINDOWS["W4"]["cells"]:
-        eng = cell.split("-")[0]
-        for rep in (1, 2):
-            key = "W4-" + eng + "-r" + str(rep) + "-" + cell.split("+")[1][0]
-            cfg, deltas, paths = pc.derive(eng, window="W4", rep=rep, out=out)
+    for window in C.WINDOWS:
+        for row in legs.schedule(window):
+            arm, boot, rep = row["arm"], row["boot"], row["rep"]
+            cfg, deltas, paths = pc.derive(arm, window=window, rep=rep, out=out, boot=boot)
+            problems = pc.check_tuple(cfg, arm)
+            if problems:
+                raise SystemExit("; ".join(problems))
             target = pathlib.Path(paths["config"])
+            target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(json.dumps(cfg, indent=1, sort_keys=True) + "\n")
-            written[key] = {"config": str(target), "sha256": sha256_path(target),
-                            "deltas": deltas, "cell": cell, "engine_arm": eng,
-                            "socket": paths["socket"], "socket2": paths["socket2"],
-                            "cache_dir": paths["cache_dir"], "engine_log": cfg["log"]}
+            entry = {"config": str(target), "sha256": sha256_path(target), "deltas": deltas,
+                     "window": window, "arm": arm, "boot_group": boot, "rep": rep,
+                     "pilot": bool(row.get("pilot")), "warmup": bool(row.get("warmup")),
+                     "socket": paths["socket"], "socket2": paths["socket2"],
+                     "cache_dir": paths["cache_dir"], "engine_log": cfg["log"]}
+            if row.get("server_arm"):
+                entry["server_arm"] = row["server_arm"]
+                entry["cell"] = row["cell"]
+            written[paths["key"]] = entry
     return written
 
 
@@ -149,50 +144,67 @@ def arm_diffs(out, window="W1", rep=1):
     b, _, _ = pc.derive("B", window=window, rep=rep, out=out)
     return {"diffs": pc.cross_arm_diffs(a, b),
             "structural": pc.structural_difference(a, b),
-            "settings_sha256_blind": {"A": pc.settings_sha256(a), "B": pc.settings_sha256(b)}}
+            "settings_sha256_blind": {"A": pc.settings_sha256(a), "B": pc.settings_sha256(b),
+                                      "note": "the declared spill flag is blanked before hashing, "
+                                              "so two identical-setting arms hash equal"}}
+
+
+DELTA_KEY = {"pp239k": {"W1": "prefill_read_tps", "W3": "decode_gen_tps"},
+             "dec144k": {"W2": "decode_gen_tps", "W4": None},
+             "pp2k": {"W2": "short_pp_read_tps"},
+             "pp8k": {"W2": "short_pp_read_tps"},
+             "ttft3": {"W2": "ttft_turn1_s"}}
 
 
 def leg_section(out, window):
     """The exact invocation and gates for every leg shape of a window."""
-    spec = C.WINDOWS[window]
     rows = {}
-    for shape in spec["legs"]:
+    for shape in C.shapes_of(window):
         cap = legs.leg_cap(shape, window)
+        boot = pc.boot_for_shape(window, shape)
         example = {}
         for arm in ("A", "B"):
-            _, _, cmds = legs.commands(out, window, arm, 1, [shape])
-            # the pid is discovered at run time and pinned by exe+socket; never freeze one here
-            words = [w for w in cmds[0]["cmd"]]
+            _, _, cmds = legs.commands(out, window, arm, 1, [shape], boot=boot)
+            words = list(cmds[0]["cmd"])
             if "--engine-pid" in words:
                 i = words.index("--engine-pid")
                 del words[i:i + 2]
             example[arm] = " ".join(words) + "   # --engine-pid is added by --run"
-        corpus_shape = "pp2k" if shape == "ttft3" else shape
+        cs = C.corpus_shape(shape)
         rows[shape] = {
             "kind": C.kind_for(shape, window),
-            "bytes": C.SHAPES[corpus_shape]["bytes"],
-            "tokens_expected": C.SHAPES[corpus_shape]["tokens_expected"],
+            "boot_group": boot,
+            "bytes": C.SHAPES[cs]["bytes"],
+            "tokens_expected": C.SHAPES[cs]["tokens_expected"],
             "max_tokens": cap,
             "turns": C.LEGS[shape].get("turns"),
-            "corpus": str(legs.corpus_path(out, corpus_shape)),
-            "corpus_sha256": sha256_path(legs.corpus_path(out, corpus_shape)),
+            "corpus": str(legs.corpus_path(out, shape)),
+            "corpus_sha256": sha256_path(legs.corpus_path(out, shape)),
             "command_A": example["A"],
             "command_B": example["B"],
             "expected_engine_lines": [C.EXPECTED_LINES[k] for k in
-                                      ("judge", "judge_tail", "dflash", "boot_tuple",
+                                      ("judge", "judge_tail", "dflash", "boot_started",
                                        "boot_helper", "boot_helper_proxy", "boot_cache",
-                                       "boot_split", "boot_fs", "low_warning")],
+                                       "boot_split", "boot_fs", "low_warning", "restart")],
             "gates": C.GATES["ttft" if C.kind_for(shape, window) == "ttft" else
                              ("decode" if C.kind_for(shape, window) == "tg" else "prefill")],
-            "metric": ("TTFT per turn + inter-turn wall" if C.kind_for(shape, window) == "ttft"
+            "metric": ("TTFT per turn + inter-turn wall (next first token - previous finish)"
+                       if C.kind_for(shape, window) == "ttft"
                        else ("request 2 gen_tps (cached re-run); request 1 read_tps recorded"
                              if C.kind_for(shape, window) == "tg"
                              else "read_tps from the single fresh request")),
+            "delta_key": DELTA_KEY.get(shape, {}).get(window),
         }
     return rows
 
 
-def prepare(out, do_preflight=True):
+def schedule_interleave(window):
+    """The boot order of a window, as concrete boot keys (never a generic 6-boot pattern)."""
+    return [pc.boot_key(window, row["arm"], row["rep"], row["boot"])
+            for row in legs.schedule(window)]
+
+
+def prepare(out, do_preflight=True, previous_manifest=None):
     started = time.strftime("%Y-%m-%dT%H:%M:%S")
     out.mkdir(parents=True, exist_ok=True)
     corpus = prepare_corpus(out)
@@ -212,7 +224,6 @@ def prepare(out, do_preflight=True):
                                        "cross cells then boot, and 'no spill' holds in both"}}
         for cell in preflight["cells"]:
             cell.pop("emitted_flags", None)
-            cell["args_builder"] = cell.get("args_builder") or str(pre.SERVER_ARGS_SOURCE[cell["server"]["arm"]])
 
     arms = {arm: identity(arm) for arm in ("A", "B")}
     for arm in ("A", "B"):
@@ -224,32 +235,52 @@ def prepare(out, do_preflight=True):
             raise SystemExit(arm + ": helper sha " + helped + " != contract "
                              + pc.ARMS[arm]["helper_sha256"])
 
+    # a frozen pilot survives a re-prepare: never silently reset deltas the operator froze
+    carried_pilot = None
+    if previous_manifest and pathlib.Path(previous_manifest).is_file():
+        try:
+            old = json.loads(pathlib.Path(previous_manifest).read_text())
+            carried_pilot = ((old.get("windows") or {}).get("W2") or {}).get("pilot_deltas")
+        except ValueError:
+            carried_pilot = None
+
     derivation = C.budget_derivation()
     windows = {}
     for window, spec in C.WINDOWS.items():
         budget = C.window_budget_s(window)
-        windows[window] = {
+        contract = C.window_contract_budget_s(window)
+        entry = {
             "name": spec["name"],
+            "boot_groups": spec["boot_groups"],
             "legs_per_boot": spec["legs_per_boot"],
-            "reps_per_arm": spec.get("boots_per_cell", C.REPS),
+            "boots_per_arm": spec.get("boots_per_arm"),
             "boots_per_cell": spec.get("boots_per_cell"),
-            "interleave": list(C.INTERLEAVE),
+            "boots": derivation[window]["boots"],
             "warmup_boots": spec["warmup_boots"],
             "pilot": spec.get("pilot"),
+            "decode_warmup": spec.get("decode_warmup"),
+            "interleave": schedule_interleave(window),
             "budget_s": budget,
             "budget_h": [round(x / 3600, 2) for x in budget],
-            "budget_source": ("derived at harness-prep from the contract's measured anchors"
-                              if spec["budget_s"] is None else "the contract's stated budget"),
+            "budget_source": "derived at harness-prep from the contract's measured anchors, "
+                             "including the discarded first-touch boots",
+            "contract_budget_s": contract,
+            "contract_budget_h": None if contract is None else [round(x / 3600, 2) for x in contract],
             "budget_derivation": derivation[window],
             "delta": spec.get("delta"),
+            "delta_note": spec.get("delta_note"),
             "gate_metric": spec["gate_metric"],
             "claim": spec.get("claim", "pre-registered delta, 90 % interval, "
                                        "confirm-or-indeterminate"),
             "legs": leg_section(out, window),
-            "schedule": [{k: r[k] for k in r if k in ("group", "arm", "rep", "shapes", "pilot",
-                                                      "warmup", "server_arm", "cell")}
+            "schedule": [{k: r[k] for k in r if k in ("group", "boot", "arm", "rep", "shapes",
+                                                      "pilot", "warmup", "server_arm", "cell")}
                          for r in legs.schedule(window)],
         }
+        if window == "W2":
+            entry["pilot_deltas"] = (carried_pilot if (carried_pilot or {}).get("frozen")
+                                     else C.pilot_deltas_template())
+        windows[window] = entry
 
     manifest = {
         "profile": "port-ab-phase2",
@@ -275,14 +306,17 @@ def prepare(out, do_preflight=True):
                 "layer_split 30": "config key; both servers append --layer-split 30",
                 "STRATA_RAM_BUDGET_MIB 36864": "config env (both arms)",
                 "helper --fill-mib 7000 / --reserve-mib 0": "helper argv (both arms)",
+                "helper env": "STRATA_HELPER_REPLY_TIMEOUT_MS 600000, frozen PATH/HOME/TERM",
                 "model_name / reasoning_budget_tokens / reasoning_effort": "matched serving identity",
                 "10_000 ms helper timeout": "expert_helper_timeout key -> --expert-helper-timeout-ms",
             },
             "helper_argv": {arm: pc.helper_argv(arm, {"socket": "<sock>", "socket2": "<sock2>"})
                             for arm in ("A", "B")},
+            "helper_env": pc.helper_env(),
+            "helper_fill_band": C.HELPER_FILL_BAND,
             "helper_fill_note": "fill-mib 7000 caps both helpers below the 7.09/7.34 GiB fills the "
-                                "Phase-1 record lists; the residual fill difference is narrowed and "
-                                "still recorded from the boot lines",
+                                "Phase-1 record lists; the band above is what the boot lines are "
+                                "checked against, and it is never widened after the fact",
         },
         "arm_config_equality": arm_diffs(out),
         "corpus": corpus,
@@ -296,14 +330,8 @@ def prepare(out, do_preflight=True):
                           "exit": "0 = the window may open; 1 = refused",
                           "gate_inside_manifest": True},
         "configs": configs,
-        "harness_scripts": {name: str(HERE / name) for name in
-                            ("port_ab_configs.py", "port_ab_contract.py", "port_ab_prepare.py",
-                             "port_ab_legs.py", "port_ab_ttft.py", "port_ab_preflight.py",
-                             "port_ab_prereq0.py", "port_ab_boot.sh", "port_ab_stop.sh")},
-        "harness_script_shas": {name: sha256_path(HERE / name) for name in
-                                ("port_ab_configs.py", "port_ab_contract.py", "port_ab_prepare.py",
-                                 "port_ab_legs.py", "port_ab_ttft.py", "port_ab_preflight.py",
-                                 "port_ab_prereq0.py", "port_ab_boot.sh", "port_ab_stop.sh")},
+        "harness_scripts": {name: str(HERE / name) for name in HARNESS_SCRIPTS},
+        "harness_script_shas": {name: sha256_path(HERE / name) for name in HARNESS_SCRIPTS},
         "deviations": [
             "The arms cannot be byte-identical: arm B carries --conversation-spill-mib 0 and arm A "
             "has no such option. That is the declared structural difference, not a lever.",
@@ -311,9 +339,14 @@ def prepare(out, do_preflight=True):
             "bases served different values (A 55,000 / B 2,000 and two names); neither name matches "
             "a drafter regex in either server, so drafting.apply leaves the args untouched.",
             "A base's --conversation-cache-dir pointed into the helper-ipc worktree; both arms now "
-            "use a fresh per-leg directory under the harness tree.",
-            "W2's budget is derived here for the first time (the contract required it at "
-            "harness-prep once legs-per-boot was frozen).",
+            "use a fresh per-boot directory under the harness tree.",
+            "The boot key includes the boot group (W2-A-dec-r1 / W2-A-sht-r1): W2's two boot "
+            "shapes must never share a cache dir, sockets, logs or state file.",
+            "The helper's environment is frozen (PATH/HOME/TERM/STRATA_HELPER_REPLY_TIMEOUT_MS) and "
+            "recorded per boot, instead of inheriting the caller's shell.",
+            "W2 now has a discarded decode warmup boot per arm as W1/W3 do, and the budgets count "
+            "every discarded boot; the contract's numbers (1.5-2.5 h W1, 1.2-2 h W3) are kept "
+            "beside the derived planning ranges.",
         ],
         "could_not_build": [
             "No boot, no leg and no measurement was run: the fixer lane is CPU-only, prod is "
@@ -323,14 +356,21 @@ def prepare(out, do_preflight=True):
             "the regex in both trees and must be confirmed from the first boot line.",
             "W4's optional third boot per cell (min p 0.10) is planned but not prepared; 2 boots "
             "per cell is what the budget covers.",
-            "Short-PP/TTFT pilot deltas are not pre-registered here: the contract requires the "
-            "pilot legs to run first and their deltas to be written into this manifest before the "
-            "claim legs. The pilot section marks where they land.",
+            "The W2 pilot deltas are not filled yet: the pilot boots must run first, then "
+            "port_ab_legs.py --freeze-pilot W2 writes them here. Claim legs refuse until then.",
+            "The helper fill band is derived from the 7,000 MiB cap and the Phase-1 row size, not "
+            "measured under this tuple; the first boot's fill is recorded and checked against it.",
         ],
     }
     MANIFEST.write_text(json.dumps(manifest, indent=1, sort_keys=True) + "\n")
     (HERE / "port-ab-manifest.sha256").write_text(sha256_path(MANIFEST) + "  port-ab-manifest.json\n")
     return manifest
+
+
+HARNESS_SCRIPTS = ("port_ab_configs.py", "port_ab_contract.py", "port_ab_prepare.py",
+                   "port_ab_legs.py", "port_ab_ttft.py", "port_ab_preflight.py",
+                   "port_ab_prereq0.py", "port_ab_boot_plan.py", "port_ab_boot.sh",
+                   "port_ab_stop.sh")
 
 
 def verify():
@@ -363,18 +403,58 @@ def verify():
     for name, path in manifest["harness_scripts"].items():
         if sha256_path(path) != manifest["harness_script_shas"][name]:
             problems.append("harness script changed since prepare: " + name)
+
+    # every scheduled boot has exactly one frozen config, and no two boots share a key
+    scheduled = set()
+    for window in manifest["windows"]:
+        for key in manifest["windows"][window].get("interleave") or []:
+            if key in scheduled:
+                problems.append("two boots share the key " + key)
+            scheduled.add(key)
     for key, row in manifest["configs"].items():
         path = pathlib.Path(row["config"])
         if not path.is_file() or sha256_path(path) != row["sha256"]:
             problems.append("config drift: " + key)
             continue
         cfg = json.loads(path.read_text())
-        arm = row.get("engine_arm") or key.split("-")[1]
+        arm = row.get("arm") or key.split("-")[1]
         for p in pc.check_tuple(cfg, arm):
             problems.append(key + ": " + p)
+    for key in scheduled:
+        if key not in manifest["configs"]:
+            problems.append("scheduled boot has no frozen config: " + key)
+
+    # budgets are derived, so a drifted derivation is a defect in the manifest
+    for window, spec in manifest["windows"].items():
+        if spec.get("budget_s") != C.window_budget_s(window):
+            problems.append(window + ": budget_s does not match the current derivation")
+        if spec.get("contract_budget_s") != C.window_contract_budget_s(window):
+            problems.append(window + ": contract_budget_s does not match the contract table")
+        if spec.get("interleave") != schedule_interleave(window):
+            problems.append(window + ": interleave does not match the schedule")
+        for row in spec.get("schedule") or []:
+            if row.get("boot") not in C.WINDOWS[window]["boot_groups"]:
+                problems.append(window + ": scheduled boot group " + str(row.get("boot"))
+                                + " is unknown")
+
+    band = (manifest.get("frozen_tuple") or {}).get("helper_fill_band") or {}
+    if band != C.HELPER_FILL_BAND:
+        problems.append("helper fill band is missing or differs from the contract table")
+    pilot = ((manifest.get("windows") or {}).get("W2") or {}).get("pilot_deltas")
+    if not pilot or "deltas" not in pilot:
+        problems.append("W2 pilot delta slots are missing")
+    elif pilot.get("frozen"):
+        for shape, slots in pilot["deltas"].items():
+            for name, value in slots.items():
+                if not isinstance(value, (int, float)):
+                    problems.append("W2 pilot delta " + shape + "." + name + " is not a number "
+                                    "although frozen=true")
     if manifest["arm_config_equality"]["diffs"]:
         problems.append("arms differ outside the declared structural pair: "
                         + ", ".join(sorted(manifest["arm_config_equality"]["diffs"])))
+    blind = manifest["arm_config_equality"]["settings_sha256_blind"]
+    if blind.get("A") != blind.get("B"):
+        problems.append("settings_sha256_blind differs across arms although the settings are equal")
     return problems
 
 
@@ -399,17 +479,21 @@ def main():
             print("  " + arm + ": engine " + entry["engine"]["sha256"][:16] + " helper "
                   + entry["helper"]["sha256"][:16] + " server tree " + entry["server_tree"]["digest"][:16])
         for window, spec in m["windows"].items():
-            print("  " + window + ": " + str(spec["budget_h"]) + " h, legs/boot "
-                  + json.dumps(spec["legs_per_boot"]) + ", reps " + str(spec["reps_per_arm"]))
+            print("  " + window + ": " + str(spec["budget_h"]) + " h planning"
+                  + ("" if spec["contract_budget_h"] is None
+                     else " (contract " + str(spec["contract_budget_h"]) + " h)")
+                  + ", boots " + json.dumps(spec["boots"]))
+        print("  W2 pilot deltas frozen: "
+              + str(((m["windows"].get("W2") or {}).get("pilot_deltas") or {}).get("frozen")))
         return 0
-    manifest = prepare(a.out_dir, do_preflight=not a.no_preflight)
+    manifest = prepare(a.out_dir, do_preflight=not a.no_preflight, previous_manifest=MANIFEST)
     print("prepared " + str(MANIFEST))
     for arm, entry in manifest["arms"].items():
         print("  " + arm + ": engine " + entry["engine"]["sha256"][:16] + "  helper "
               + entry["helper"]["sha256"][:16] + "  server " + entry["server_tree"]["digest"][:16])
     for window, spec in manifest["windows"].items():
-        print("  " + window + ": " + str(spec["budget_h"]) + " h  legs/boot "
-              + json.dumps(spec["legs_per_boot"]))
+        print("  " + window + ": " + str(spec["budget_h"]) + " h planning  boots "
+              + json.dumps(spec["boots"]))
     problems = verify()
     for p in problems:
         print("PROBLEM: " + p)

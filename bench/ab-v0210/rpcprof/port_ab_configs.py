@@ -23,10 +23,13 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import pathlib
 import sys
 
 ROOT = pathlib.Path("/mnt/srcds/Strata")
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import port_ab_contract as C
 HERE = pathlib.Path(__file__).resolve().parent
 OUT_DEFAULT = HERE / "out" / "port-ab-20261123"
 
@@ -139,9 +142,32 @@ def ensure_absent(args, flag, deltas, who):
     return strip_args(args, (flag,))
 
 
-def leg_paths(out, window, arm, rep):
-    """Every harness-owned path of one leg (== one boot: one fresh cache dir per leg)."""
-    key = window + "-" + arm + "-r" + str(rep)
+def default_boot(window):
+    """The boot group a window's single-shape legs use."""
+    return next(iter(C.WINDOWS[window]["boot_groups"]))
+
+
+def boot_for_shape(window, shape):
+    """Which boot group of the window carries this shape (W2 has two: dec and sht)."""
+    for name, shapes in C.WINDOWS[window]["boot_groups"].items():
+        if shape in shapes:
+            return name
+    raise SystemExit(shape + " is not a leg of " + window)
+
+
+def boot_key(window, arm, rep, boot=None):
+    """The boot's identity. The boot group is ALWAYS part of the key.
+
+    W2 has two boot shapes; without the group, W2-A-r1 would name both the decode boot and
+    the short boot, and the second boot would either refuse (its cache dir is not empty) or
+    silently reuse the first one's sockets, cache and logs.
+    """
+    return window + "-" + arm + "-" + (boot or default_boot(window)) + "-r" + str(rep)
+
+
+def leg_paths(out, window, arm, rep, boot=None):
+    """Every harness-owned path of one boot (one fresh cache dir per boot)."""
+    key = boot_key(window, arm, rep, boot)
     return {
         "key": key,
         "engine_log": str(out / "logs" / (key + ".engine.log")),
@@ -155,7 +181,7 @@ def leg_paths(out, window, arm, rep):
     }
 
 
-def derive(arm, *, window, rep, out, port=None, base_override=None):
+def derive(arm, *, window, rep, out, port=None, base_override=None, boot=None):
     """The config for one leg of one arm, the deltas that produced it, and its paths.
 
     The engine arm decides the structural flags (spill) and the base config; the server tree
@@ -220,8 +246,8 @@ def derive(arm, *, window, rep, out, port=None, base_override=None):
     env["STRATA_RAM_BUDGET_MIB"] = str(TUPLE["ram_budget_mib"])
     cfg["env"] = env
 
-    # 5. harness-owned paths
-    paths = leg_paths(out, window, arm, rep)
+    # 5. harness-owned paths (the boot group is part of the key: W2-A-dec-r1 / W2-A-sht-r1)
+    paths = leg_paths(out, window, arm, rep, boot)
     retarget = {
         "exe": str(ROOT / spec["engine"]),
         "cwd": str(ROOT / spec["server_tree"]),
@@ -261,7 +287,14 @@ def settings_only(cfg):
 
 
 def settings_sha256(cfg):
-    return hashlib.sha256(json.dumps(settings_only(cfg), sort_keys=True).encode()).hexdigest()
+    """Digest of the settings with the harness paths AND the declared spill pair blanked.
+
+    The spill flag is the one structural difference between the arms (A cannot carry it), so
+    a digest that kept it would differ between two configs whose settings are identical.
+    """
+    args = ensure_absent(list(cfg["args"]), "--conversation-spill-mib", [], "digest")
+    blanked = settings_only({**cfg, "args": args})
+    return hashlib.sha256(json.dumps(blanked, sort_keys=True).encode()).hexdigest()
 
 
 def structural_difference(a, b):
@@ -350,17 +383,35 @@ def helper_argv(arm, paths):
             "--socket2", paths["socket2"]]
 
 
+# The helper's whole environment, frozen. The prod launchers pass env -i with the caller's
+# PATH/HOME/TERM and a 600,000 ms reply timeout, but the helper is a native binary that needs
+# none of a developer shell's PATH; inheriting the caller's would make the frozen env depend
+# on who ran the window. FROZEN_HELPER_PATH is the stock system path, recorded in the manifest
+# and in every boot record instead of being implicit in a shell.
+FROZEN_HELPER_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+
+def helper_env():
+    """The helper's environment, fully explicit and machine-independent."""
+    return {"STRATA_HELPER_REPLY_TIMEOUT_MS": "600000",
+            "PATH": FROZEN_HELPER_PATH,
+            "HOME": "/home/srcds",
+            "TERM": "dumb"}
+
+
 def main():
     ap = argparse.ArgumentParser(description="derive the Phase-2 arm configs from the frozen tuple")
     ap.add_argument("--arm", required=True, choices=["A", "B"])
     ap.add_argument("--window", default="W1")
+    ap.add_argument("--boot", default=None, help="boot group (W2: dec or sht)")
     ap.add_argument("--rep", type=int, default=1)
     ap.add_argument("--out-dir", type=pathlib.Path, default=OUT_DEFAULT)
     ap.add_argument("--port", type=int, default=None)
     ap.add_argument("--write", action="store_true", help="write the config under <out>/configs/")
     ap.add_argument("--print", dest="show", action="store_true", help="print the config JSON")
     a = ap.parse_args()
-    cfg, deltas, paths = derive(a.arm, window=a.window, rep=a.rep, out=a.out_dir, port=a.port)
+    cfg, deltas, paths = derive(a.arm, window=a.window, rep=a.rep, out=a.out_dir,
+                                port=a.port, boot=a.boot)
     problems = check_tuple(cfg, a.arm)
     for p in problems:
         print("PROBLEM: " + p, file=sys.stderr)

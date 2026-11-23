@@ -1,109 +1,101 @@
 #!/usr/bin/env bash
-# port_ab_boot.sh WINDOW ARM REP - boot ONE Phase-2 leg's pair on the frozen tuple.
+# port_ab_boot.sh WINDOW ARM BOOT REP [--server-arm A|B] - boot ONE Phase-2 boot's pair.
 #
 # The measurement boots are the operator's; this script exists because the prod launchers
 # hardcode the prod sockets, state file and port, while the contract requires trial sockets
-# and a fresh cache dir per leg. It boots through the same pair supervisor prod uses (so a
-# crash is a recorded restart, which the leg-validity gate discards) with per-leg state,
+# and a fresh cache dir per boot. It boots through the same pair supervisor prod uses (so a
+# crash is a recorded restart, which the leg-validity gate discards) with per-boot state,
 # lock, sockets and logs.
 #
-# Refuses, loudly, when: prerequisite 0 fails; a prod pair looks live; the leg's sockets or
-# cache dir are not fresh; the config on disk is not the frozen tuple; an engine/helper
-# binary's sha left the manifest.
+# BOOT is the boot group (W1/W3: pp, W2: dec or sht, W4: dec). It is part of the boot key:
+# W2's decode and short boots must never share a cache dir, sockets or state file.
 #
-# Does NOT fire a leg and does NOT stop itself: legs are fired by port_ab_legs.py --exec,
+# Refuses, loudly, when: the derived config is not byte-identical to the frozen manifest pin;
+# an engine/helper sha left the manifest; prerequisite 0 fails; a prod pair or this boot's
+# predecessor looks live; the boot's sockets exist; the port is taken.
+#
+# Does NOT fire a leg and does NOT stop itself: legs are fired by port_ab_legs.py --run,
 # stopping is port_ab_stop.sh (stop and boot are separate invocations).
 set -euo pipefail
 ROOT=${STRATA_PROD_TREE:-/mnt/srcds/Strata}
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PY="$ROOT/.venv/bin/python"
+SUPERVISOR="$ROOT/tools/mixed_gpu/pair_supervisor.py"
 
 # ---- child mode: pair_supervisor re-execs this script with --pair-child ----------------
 if [[ ${1:-} == --pair-child ]]; then
-  : "${PORT_AB_KEY:?pair child without PORT_AB_KEY: refusing}"
-  CFG="${PORT_AB_CONFIG:?}"
-  SOCK="${PORT_AB_SOCKET:?}"
-  SOCK2="${PORT_AB_SOCKET2:?}"
-  WORK="${PORT_AB_WORK:?}"
-  BIN="${PORT_AB_BIN:?}"
-  HELPER="${PORT_AB_HELPER:?}"     # absolute path to this arm's helper binary
-  ELOG="${PORT_AB_ELOG:?}"
-  HLOG="${PORT_AB_HLOG:?}"
-  BLOG="${PORT_AB_BOOTLOG:?}"
-  PORT="${PORT_AB_PORT:-8009}"
-  FILL="${PORT_AB_FILL_MIB:-7000}"
-  SLOTS="${PORT_AB_SLOTS:-4600}"
-  RESERVE="${PORT_AB_RESERVE_MIB:-0}"
-
-  [[ ! -e $SOCK && ! -L $SOCK ]] || { echo "REFUSING: existing socket $SOCK" >&2; exit 1; }
-  [[ ! -e $SOCK2 && ! -L $SOCK2 ]] || { echo "REFUSING: existing socket $SOCK2" >&2; exit 1; }
-  [[ -z $(ss -H -ltn "sport = :$PORT") ]] || { echo "REFUSING: port $PORT occupied." >&2; exit 1; }
-  for f in "$PY" "$HELPER" "$BIN/rpcw-hip/strata" "$WORK/serve/server.py" "$CFG"; do
+  : "${PORT_AB_PLAN:?pair child without PORT_AB_PLAN: refusing}"
+  # shellcheck disable=SC1090
+  source "$PORT_AB_PLAN"
+  [[ ! -e $P_SOCK && ! -L $P_SOCK ]] || { echo "REFUSING: existing socket $P_SOCK" >&2; exit 1; }
+  [[ ! -e $P_SOCK2 && ! -L $P_SOCK2 ]] || { echo "REFUSING: existing socket $P_SOCK2" >&2; exit 1; }
+  [[ -z $(ss -H -ltn "sport = :$P_PORT") ]] || { echo "REFUSING: port $P_PORT occupied." >&2; exit 1; }
+  for f in "$PY" "$P_HELPER" "$P_ENGINE" "$P_WORK/serve/server.py" "$P_CONFIG"; do
     [[ -e $f ]] || { echo "Missing: $f" >&2; exit 2; }
   done
   while IFS= read -r name; do
     case "$name" in STRATA_DF_*|STRATA_DFLASH_*|STRATA_DUMP_*|STRATA_WINDOW_*|STRATA_PREFILL_HELPER) unset "$name" ;; esac
   done < <(compgen -e)
 
-  mkdir -p "$(dirname "$HLOG")" "$(dirname "$BLOG")"
-  # helper first: the engine attaches to its socket at start (clean env, as the launchers do)
-  env -i STRATA_HELPER_REPLY_TIMEOUT_MS=600000 PATH="$PATH" HOME="$HOME" TERM="${TERM:-dumb}" \
-    "$HELPER" --pack /mnt/srcds/ai/iq3xxs-ud \
-      --experts ../Qwen3.8-Flash-Next-UD-IQ3_XXS-00002-of-00004.gguf \
-      --device 0 --slots "$SLOTS" --reserve-mib "$RESERVE" --timeout 63115200000 \
-      --begin-timeout 63115200000 --socket "$SOCK" --fill-mib "$FILL" --socket2 "$SOCK2" \
-      >>"$HLOG" 2>&1 < /dev/null &
+  mkdir -p "$(dirname "$P_HLOG")" "$(dirname "$P_BLOG")"
+  # helper first: the engine attaches to its socket at start. Its whole argv and env come
+  # from the frozen manifest (port_ab_boot_plan.py), never from a default in this file.
+  env -i "${P_HELPER_ENV[@]}" "${P_HELPER_ARGV[@]}" >>"$P_HLOG" 2>&1 < /dev/null &
   helper_pid=$!
   for _ in $(seq 1 300); do
-    kill -0 "$helper_pid" 2>/dev/null || { echo "Helper exited; see $HLOG" >&2; exit 1; }
-    grep -q 'expert-helper: listening on' "$HLOG" && break
+    kill -0 "$helper_pid" 2>/dev/null || { echo "Helper exited; see $P_HLOG" >&2; exit 1; }
+    grep -q 'expert-helper: listening on' "$P_HLOG" && break
     sleep 1
   done
-  grep -q 'expert-helper: listening on' "$HLOG" || { echo "Helper readiness timed out." >&2; exit 1; }
+  grep -q 'expert-helper: listening on' "$P_HLOG" || { echo "Helper readiness timed out." >&2; exit 1; }
   for _ in $(seq 1 60); do
-    [[ -S $SOCK && -S $SOCK2 ]] && break
+    [[ -S $P_SOCK && -S $P_SOCK2 ]] && break
     sleep 1
   done
-  [[ -S $SOCK && -S $SOCK2 ]] || { echo "second channel socket missing" >&2; exit 1; }
+  [[ -S $P_SOCK && -S $P_SOCK2 ]] || { echo "second channel socket missing" >&2; exit 1; }
+  # Publish the helper peer: without a record the supervisor never latches healthy and kills
+  # the group at --startup-timeout (it reads peers ONLY from $STRATA_PAIR_RECORD).
+  if [[ -n ${STRATA_PAIR_RECORD:-} ]]; then
+    "$PY" "$SUPERVISOR" record "$helper_pid" 0 "$P_BLOG" "$P_HLOG"
+  else
+    echo "WARNING: STRATA_PAIR_RECORD is unset (not booted by the supervisor?)" >&2
+  fi
 
-  cd "$WORK"
+  cd "$P_WORK"
   env -u CUDA_VISIBLE_DEVICES -u STRATA_ARENA_MMAP -u GPU_PINNED_MIN_XFER_SIZE \
       -u HSA_USERPTR_FOR_PAGED_MEM -u LD_PRELOAD \
       HSA_OVERRIDE_GFX_VERSION=9.0.6 GPU_MAX_ALLOC_PERCENT=100 \
       LD_LIBRARY_PATH=/home/srcds/rocm-gfx906-xnack/lib:/opt/rocm-6.1.0/lib \
-      "$PY" "$WORK/serve/server.py" --engine strata --config "$CFG" --port "$PORT" \
-      >>"$BLOG" 2>&1 < /dev/null
-  exit $?
+      "$PY" "$P_WORK/serve/server.py" --engine strata --config "$P_CONFIG" --port "$P_PORT" \
+      >>"$P_BLOG" 2>&1 < /dev/null &
+  server_pid=$!
+  if [[ -n ${STRATA_PAIR_RECORD:-} ]]; then
+    "$PY" "$SUPERVISOR" record "$helper_pid" "$server_pid" "$P_BLOG" "$P_HLOG"
+  fi
+  rc=0
+  wait "$server_pid" || rc=$?
+  exit "$rc"
 fi
 
 # ---- owner mode ------------------------------------------------------------------------
-WINDOW=${1:?usage: port_ab_boot.sh WINDOW ARM REP [SERVER_ARM]}
-ARM=${2:?usage: port_ab_boot.sh WINDOW ARM REP [SERVER_ARM]}
-REP=${3:?usage: port_ab_boot.sh WINDOW ARM REP [SERVER_ARM]}
-SERVER_ARM=${4:-$ARM}   # W4 cells: the engine arm boots A's/B's config, the OTHER server tree runs
+WINDOW=${1:?usage: port_ab_boot.sh WINDOW ARM BOOT REP [--server-arm A|B]}
+ARM=${2:?usage: port_ab_boot.sh WINDOW ARM BOOT REP [--server-arm A|B]}
+BOOT=${3:?usage: port_ab_boot.sh WINDOW ARM BOOT REP [--server-arm A|B]}
+REP=${4:?usage: port_ab_boot.sh WINDOW ARM BOOT REP [--server-arm A|B]}
+shift 4
+SERVER_ARM=$ARM
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --server-arm) SERVER_ARM=${2:?--server-arm needs A or B}; shift 2 ;;
+    *) echo "unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+[[ $ARM == A || $ARM == B ]] || { echo "bad ARM $ARM" >&2; exit 2; }
+[[ $SERVER_ARM == A || $SERVER_ARM == B ]] || { echo "bad --server-arm $SERVER_ARM" >&2; exit 2; }
 OUT=${PORT_AB_OUT:-$HERE/out/port-ab-20261123}
-KEY="$WINDOW-$ARM-r$REP"
-
-# the leg's paths and identities come from the frozen generator, not from this script
-read -r CFG SOCK SOCK2 ELOG HLOG BLOG WORK BIN HELPER PORT CACHE < <(
-  cd "$HERE" && "$PY" - "$WINDOW" "$ARM" "$REP" "$OUT" "$SERVER_ARM" <<'PYEOF'
-import sys, pathlib
-import port_ab_configs as pc
-cfg, deltas, paths = pc.derive(sys.argv[2], window=sys.argv[1], rep=int(sys.argv[3]),
-                               out=pathlib.Path(sys.argv[4]))
-if pc.check_tuple(cfg, sys.argv[2]):
-    raise SystemExit("; ".join(pc.check_tuple(cfg, sys.argv[2])))
-pathlib.Path(paths["config"]).parent.mkdir(parents=True, exist_ok=True)
-pathlib.Path(paths["config"]).write_text(__import__("json").dumps(cfg, indent=1, sort_keys=True) + "\n")
-spec = pc.ARMS[sys.argv[2]]
-server = pc.ARMS[sys.argv[5] if len(sys.argv) > 5 else sys.argv[2]]
-print(paths["config"], paths["socket"], paths["socket2"], cfg["log"], paths["helper_log"],
-      paths["boot_log"], str(pc.ROOT / server["server_tree"]), str(pc.ROOT / spec["engine"]),
-      str(pc.ROOT / spec["helper"]), str(cfg["port"]), paths["cache_dir"])
-PYEOF
-)
-[[ $ARM == A || $ARM == B ]] || { echo "bad ARM" >&2; exit 2; }
-ARM_HELPER_DIR=$(dirname "$HELPER")
+KEY="$WINDOW-$ARM-$BOOT-r$REP"
+PLAN="$OUT/run/$KEY.env"
+mkdir -p "$OUT/run" "$OUT/logs" "$OUT/boots"
 
 # prerequisite 0 (pre-boot, engine down). Refuses the boot; never overridable.
 "$PY" "$HERE/port_ab_prereq0.py" --out "$OUT" --cache-dir "$OUT" || {
@@ -129,37 +121,48 @@ PYEOF
   done
 done
 
-# fresh cache dir per leg (>= 40 GiB free is prerequisite 0's disk gate)
-case "$CACHE" in */out/port-ab-*) ;; *) echo "REFUSING: cache dir is not under the harness tree: $CACHE" >&2; exit 1 ;; esac
-if [[ -n $(ls -A "$CACHE" 2>/dev/null) ]]; then
-  echo "REFUSING: cache dir not empty (stale checkpoint would be served as a fresh prefill): $CACHE" >&2; exit 1
-fi
-rm -rf "$CACHE"; mkdir -p "$CACHE"
-[[ -z $(ls -A "$CACHE") ]] || { echo "REFUSING: cache dir not empty after clear" >&2; exit 1; }
-[[ ! -e $SOCK && ! -L $SOCK && ! -e $SOCK2 && ! -L $SOCK2 ]] || { echo "REFUSING: stale socket" >&2; exit 1; }
-[[ -z $(ss -H -ltn "sport = :$PORT") ]] || { echo "REFUSING: port $PORT occupied." >&2; exit 1; }
+# The plan is the frozen boot: config sha, identities, the helper's full argv and env.
+"$PY" "$HERE/port_ab_boot_plan.py" --plan --window "$WINDOW" --arm "$ARM" --boot "$BOOT" \
+  --rep "$REP" --server-arm "$SERVER_ARM" --out "$OUT" > "$PLAN.tmp"
+mv "$PLAN.tmp" "$PLAN"
+# shellcheck disable=SC1090
+source "$PLAN"
+[[ $P_BOOT_ID == "$KEY" ]] || { echo "REFUSING: plan boot id $P_BOOT_ID != $KEY" >&2; exit 1; }
 
-mkdir -p "$OUT/run" "$OUT/logs" "$OUT/boots"
+# this boot's predecessor must be stopped (a live supervisor would respawn against us)
 STATE="$OUT/run/$KEY.supervisor.json"
-LOCK="$OUT/run/$KEY.lock"
-CFG_SHA=$(sha256sum "$CFG" | cut -d' ' -f1)
-ENG_SHA=$(sha256sum "$BIN/rpcw-hip/strata" | cut -d' ' -f1)
-HEL_SHA=$(sha256sum "$HELPER" | cut -d' ' -f1)
-cat > "$OUT/boots/$KEY.json" <<JSON
-{"key":"$KEY","window":"$WINDOW","arm":"$ARM","rep":$REP,
- "started_at":"$(date -Is)","config":"$CFG","config_sha256":"$CFG_SHA",
- "engine":"$BIN/rpcw-hip/strata","engine_sha256":"$ENG_SHA",
- "helper":"$HELPER","helper_sha256":"$HEL_SHA",
- "server_tree":"$WORK","sockets":["$SOCK","$SOCK2"],"port":$PORT,
- "cache_dir":"$CACHE","cache_empty_at_boot":true,
- "prereq0_snapshot":"$(ls -t "$OUT"/prereq0-*.json 2>/dev/null | head -1)",
- "loadavg":"$(cut -d' ' -f1-3 /proc/loadavg)","supervisor_state":"$STATE"}
-JSON
+if [[ -f $STATE ]]; then
+  live=$("$PY" - "$STATE" <<'PYEOF'
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    raise SystemExit(0)
+print(d.get("supervisor_pid") or "")
+PYEOF
+)
+  if [[ -n ${live:-} ]] && kill -0 "$live" 2>/dev/null; then
+    echo "REFUSING: this boot's supervisor ($live) is still alive; run port_ab_stop.sh $WINDOW $ARM $BOOT $REP" >&2
+    exit 1
+  fi
+fi
 
-export PORT_AB_KEY="$KEY" PORT_AB_CONFIG="$CFG" PORT_AB_SOCKET="$SOCK" PORT_AB_SOCKET2="$SOCK2"
-export PORT_AB_WORK="$WORK" PORT_AB_BIN="$BIN" PORT_AB_HELPER="$HELPER" PORT_AB_ELOG="$ELOG"
-export PORT_AB_HLOG="$HLOG" PORT_AB_BOOTLOG="$BLOG" PORT_AB_PORT="$PORT"
-echo "port_ab_boot: $KEY engine $ENG_SHA helper $HEL_SHA config $CFG_SHA"
-exec "$PY" "$ROOT/tools/mixed_gpu/pair_supervisor.py" run --launcher "$0" --config "$CFG" \
-  --state "$STATE" --lock "$LOCK" --socket "$SOCK" --socket "$SOCK2" --nice 1 \
+# fresh cache dir per boot (>= 40 GiB free is prerequisite 0's disk gate)
+case "$P_CACHE" in */out/port-ab-*) ;; *) echo "REFUSING: cache dir is not under the harness tree: $P_CACHE" >&2; exit 1 ;; esac
+rm -rf "$P_CACHE"; mkdir -p "$P_CACHE"
+[[ -z $(ls -A "$P_CACHE") ]] || { echo "REFUSING: cache dir not empty after clear" >&2; exit 1; }
+[[ ! -e $P_SOCK && ! -L $P_SOCK && ! -e $P_SOCK2 && ! -L $P_SOCK2 ]] || { echo "REFUSING: stale socket" >&2; exit 1; }
+[[ -z $(ss -H -ltn "sport = :$P_PORT") ]] || { echo "REFUSING: port $P_PORT occupied." >&2; exit 1; }
+
+# the boot record: cache empty, loadavg, page cache, helper argv/env, identities
+"$PY" "$HERE/port_ab_boot_plan.py" --record --window "$WINDOW" --arm "$ARM" --boot "$BOOT" \
+  --rep "$REP" --server-arm "$SERVER_ARM" --out "$OUT" > "$PLAN.tmp"
+mv "$PLAN.tmp" "$PLAN"
+# shellcheck disable=SC1090
+source "$PLAN"
+
+export PORT_AB_PLAN="$PLAN"
+echo "port_ab_boot: $KEY engine $P_ENGINE_SHA helper $P_HELPER_SHA config $P_CONFIG_SHA"
+exec "$PY" "$SUPERVISOR" run --launcher "$0" --config "$P_CONFIG" \
+  --state "$STATE" --lock "$OUT/run/$KEY.lock" --socket "$P_SOCK" --socket "$P_SOCK2" --nice 1 \
   --stage-cpus 3,5,7,9,11,13,15 --stall-timeout 600 --startup-timeout 900

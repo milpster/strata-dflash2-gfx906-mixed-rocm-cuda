@@ -3,7 +3,9 @@
 Scope: the artifacts the approved measurement contract's Phase 2 needs, built at harness-prep and
 committed before any window. Plan: `/home/srcds/.opencode/plan/measurement-contract-speed-attribution-faults.md`.
 Lane: fixer (CPU only). No boot, no GPU work, no `:8009` traffic, no process control; prod kept serving
-throughout. Branch `recovery-startup-watchdog`; commits `37e93f467b`, `c61b533bae` (local, unpushed).
+throughout. Branch `recovery-startup-watchdog` (local, unpushed): harness-prep `37e93f467b`,
+`c61b533bae`, `afe71f39ff` (journal), `e6e3bb9517` (W4 reps field), `74c23fea9a` (prereq-0 stage-core
+rule), then the oracle-review fixes below.
 
 ## What was frozen
 
@@ -92,3 +94,62 @@ i.e. the gate works and the box is not yet ready for a window.
 * W4's optional third boot per cell (min exact p 0.10) is planned, not prepared.
 * W2 pilot deltas are not pre-registered; the contract requires the pilot legs to run first and their
   deltas to land in this manifest before the claim legs.
+
+## Oracle review round 1 (2026-11-23): execution layer fixed
+
+The oracle accepted the frozen values (6/6 shas, tuple, W2 arithmetic) and found three blocking and
+eight non-blocking defects in the execution layer. All eleven plus the trivia are fixed and re-validated
+CPU-only (`--verify`, synthetic gates, selftests, `bash -n`, `py_compile`; no boot, no GPU, no
+`:8009`, no push).
+
+Blocking:
+
+1. **Boot path joined twice.** `port_ab_boot.sh` treated the engine FILE as a directory
+   (`$BIN/rpcw-hip/strata`), so the file checks, `ENG_SHA` and the boot JSON pointed at a path that
+   does not exist and `set -euo pipefail` aborted before the supervisor. The boot plan now owns the
+   engine path (`P_ENGINE`) and the boot hashes exactly that file.
+2. **No `pair_supervisor.py record` calls.** The supervisor reads its peers ONLY from
+   `$STRATA_PAIR_RECORD`; without the records it never latches healthy, so at `--startup-timeout`
+   it killed the group mid-leg (870-1450 s legs), and stage-CPU re-pinning and the stop script's
+   identity checks never ran. The child now publishes the helper peer after readiness and both peers
+   after the server starts, exactly as the prod launchers do.
+3. **W2 boot-shape key collision.** `leg_paths` keyed on window-arm-rep only, so the decode and short
+   boots of W2 shared one key, cache dir, sockets and state file; the second boot either refused (cache
+   guard) or reused the first one's state. Boot keys now carry the boot group everywhere
+   (`W2-A-dec-r1` / `W2-A-sht-r1`): `leg_paths`, `schedule`, the runbook, boot, stop and the
+   manifest's config table. The manifest was regenerated.
+
+Non-blocking:
+
+4. The gate checker now reads the BOOT RANGE (`elog[0:elog_start]`), not the leg slice, and parses
+   the engine's `engine started:` argv as flag/value pairs (the old order-sensitive regex matched
+   nothing because the real order is spec, reserve, reserve-later, dflash-block). It also enforces the
+   helper fill band, the supervisor restart (state generation, events log, engine lines), the GPU fault
+   lines and the kernel fingerprint. `port_ab_legs.py --selftest` reproduces the oracle's
+   counter-examples: a record with a restart line and a wrong tuple now FAILS.
+5. TTFT `inter_turn_wall_s` is `next turn's first delta - previous turn's finish` (absolute epoch
+   stamps), not the client's idle gap; selftest asserts it.
+6. The TTFT leg reads its own 2k corpus (`ttft2k`, different head tag), so turn 1 is a cold prefill
+   even in a short boot that already ran `pp2k`; the docstring says so.
+7. W2 gained a discarded decode warmup boot per arm (2 boots), and every window's budget now counts
+   its discarded boots: W1 1.93-3.22 h, W2 2.05-2.81 h, W3 2.14-2.73 h, W4 0.76-1.00 h. The
+   contract's numbers are kept beside them as `contract_budget_s` (1.5-2.5 h W1, 1.2-2 h W3, ~1 h
+   W4); the planning number is the derived range.
+8. Manifest fields: W4's interleave is its own four boots (not the six-boot pattern), `reps_per_arm`
+   is gone in favour of `boots_per_cell`, W4's budget counts the cached second generation, and every
+   window's `budget_source` is the same phrase (derived), with the contract value as its own field.
+9. The helper fill band is frozen in `frozen_tuple.helper_fill_band` (rows 3,430-3,970; 6.55-7.00
+   GiB; 5 % arm drift), derived from the 7,000 MiB cap and the Phase-1 row size. Every boot record
+   now also carries the page-cache proxy, the kernel-journal fingerprint, the LOW count, the granted
+   FS slots, the cache slot count and the restart flag.
+10. The freeze is enforced AT BOOT: `port_ab_boot_plan.py` refuses when the derived config is not
+    byte-identical to `manifest.configs[key].sha256` or an engine/helper sha left the manifest; the
+    helper's entire argv comes from `pc.helper_argv` (no bash defaults) and its env (timeout, frozen
+    PATH/HOME/TERM) is recorded per boot and in the manifest.
+11. The W2 pilot deltas have their own slots (`short_pp_read_tps`, `short_pp_gen_tps`,
+    `ttft_turn1_s`, `ttft_inter_turn_s`) and claim legs fail closed while any is null; `--freeze-pilot
+    W2` computes them from the pilot records and writes the manifest.
+
+Trivia: the journal's commit list is corrected above; `settings_sha256_blind` blanks the declared
+spill flag before hashing (A and B now hash equal with `diffs == {}`); the boot docstring names
+`--run`.
