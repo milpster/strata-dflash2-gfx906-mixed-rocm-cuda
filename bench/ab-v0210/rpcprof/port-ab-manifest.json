@@ -2672,7 +2672,8 @@
   "A base's --conversation-cache-dir pointed into the helper-ipc worktree; both arms now use a fresh per-boot directory under the harness tree.",
   "The boot key includes the boot group (W2-A-dec-r1 / W2-A-sht-r1): W2's two boot shapes must never share a cache dir, sockets, logs or state file.",
   "The helper's environment is frozen (PATH/HOME/TERM/STRATA_HELPER_REPLY_TIMEOUT_MS) and recorded per boot, instead of inheriting the caller's shell.",
-  "W2 now has a discarded decode warmup boot per arm as W1/W3 do, and the budgets count every discarded boot; the contract's numbers (1.5-2.5 h W1, 1.2-2 h W3) are kept beside the derived planning ranges."
+  "W2 now has a discarded decode warmup boot per arm as W1/W3 do, and the budgets count every discarded boot; the contract's numbers (1.5-2.5 h W1, 1.2-2 h W3) are kept beside the derived planning ranges.",
+  "Per-boot conversation caches are REMOVED at stop (port_ab_stop.sh, operator directive 2026-11-24): every boot insists on an empty cache dir and never reuses one, so a cache left behind was 1.4-2.8 GiB of pure waste that filled the disk (16 boots = 25 GiB) until prerequisite 0's 40 GiB gate refused a boot. Nothing a leg needs lives there - the record is records/<key>/*.json and the log is logs/<key>.*.log. A cache dir missing after a completed leg is therefore expected; --keep-cache on port_ab_stop.sh parks it, and port_ab_prune.py lists or sweeps leftovers (it never touches a cache whose boot has no ended_epoch, no record, or a live socket/pid)."
  ],
  "frozen_tuple": {
   "helper_argv": {
@@ -2774,7 +2775,7 @@
   }
  },
  "git_branch": "recovery-startup-watchdog",
- "git_head_at_prepare": "a5758eef262619523bed9070bf73a586a46d27e1",
+ "git_head_at_prepare": "eeb826b79117c0c7fb5a51e91521d130b8293437",
  "harness_script_shas": {
   "port_ab_boot.sh": "fd738f9aaf85aab0d6e359da8d3c2c3f8955e301fbb1c0aa6718e33a68f55bfb",
   "port_ab_boot_plan.py": "c146042d3c8610a84412f58dd31c959140f8030829fcc782852bbdd21e63eb85",
@@ -2782,9 +2783,10 @@
   "port_ab_contract.py": "c83420f7f86f324c5ac2cbdaeb8eb5b0709eeb27a523f1a66f6a7efc2f29fa1f",
   "port_ab_legs.py": "ac6966eafb84c703e832afc2585e54467817a69cea88bd281a63a8e29ca056ad",
   "port_ab_preflight.py": "3d8b4bafcafb5cd75ed932a8161dd7f5758141fbc5d3943c2cddbcc43253d90b",
-  "port_ab_prepare.py": "cf0c5fae9ed949bc74fb602265889ac7edb4ebce6cef3c552a68bfcb04385b7c",
+  "port_ab_prepare.py": "ab53490c7201365fff6d77f9116f3c7b42928d0b2715d898d5d53cfcd729b929",
   "port_ab_prereq0.py": "d147d876a94aaf6395e6883f1a9f07faecd11680a38d5eea1f12912ae58c875c",
-  "port_ab_stop.sh": "7f051826b8f4c47cfe5c9585fb55f9343a14b86320bb861c37e93967ac2620d5",
+  "port_ab_prune.py": "5bc4b4e101cadb40f9d923f6bd35596185773560ea43677e1b06c061fac588ae",
+  "port_ab_stop.sh": "3bd21e3b77ef2a12fb376a7de71024e4dea71cc86a752d5c569d44699ce2375b",
   "port_ab_ttft.py": "8dd1de272cb193145439743d82cbac5610a439f6eb1e024f6202dcdf1bad206b"
  },
  "harness_scripts": {
@@ -2796,6 +2798,7 @@
   "port_ab_preflight.py": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/port_ab_preflight.py",
   "port_ab_prepare.py": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/port_ab_prepare.py",
   "port_ab_prereq0.py": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/port_ab_prereq0.py",
+  "port_ab_prune.py": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/port_ab_prune.py",
   "port_ab_stop.sh": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/port_ab_stop.sh",
   "port_ab_ttft.py": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/port_ab_ttft.py"
  },
@@ -3058,7 +3061,7 @@
    "resolution": "per-engine configs (A without the flag, B with '0'); both cross cells then boot, and 'no spill' holds in both"
   }
  },
- "prepared_at": "2026-11-24T14:04:23",
+ "prepared_at": "2026-11-24T17:20:59",
  "prerequisite0": {
   "cache_free_gib_min": 40,
   "command": "python3 bench/ab-v0210/rpcprof/port_ab_prereq0.py --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123",

@@ -370,6 +370,14 @@ def prepare(out, do_preflight=True, previous_manifest=None):
             "W2 now has a discarded decode warmup boot per arm as W1/W3 do, and the budgets count "
             "every discarded boot; the contract's numbers (1.5-2.5 h W1, 1.2-2 h W3) are kept "
             "beside the derived planning ranges.",
+            "Per-boot conversation caches are REMOVED at stop (port_ab_stop.sh, operator directive "
+            "2026-11-24): every boot insists on an empty cache dir and never reuses one, so a "
+            "cache left behind was 1.4-2.8 GiB of pure waste that filled the disk (16 boots = "
+            "25 GiB) until prerequisite 0's 40 GiB gate refused a boot. Nothing a leg needs lives "
+            "there - the record is records/<key>/*.json and the log is logs/<key>.*.log. A cache "
+            "dir missing after a completed leg is therefore expected; --keep-cache on "
+            "port_ab_stop.sh parks it, and port_ab_prune.py lists or sweeps leftovers (it never "
+            "touches a cache whose boot has no ended_epoch, no record, or a live socket/pid).",
         ],
         "could_not_build": [
             "No boot, no leg and no measurement was run: the fixer lane is CPU-only, prod is "
@@ -393,7 +401,7 @@ def prepare(out, do_preflight=True, previous_manifest=None):
 HARNESS_SCRIPTS = ("port_ab_configs.py", "port_ab_contract.py", "port_ab_prepare.py",
                    "port_ab_legs.py", "port_ab_ttft.py", "port_ab_preflight.py",
                    "port_ab_prereq0.py", "port_ab_boot_plan.py", "port_ab_boot.sh",
-                   "port_ab_stop.sh")
+                   "port_ab_stop.sh", "port_ab_prune.py")
 
 
 def verify():
