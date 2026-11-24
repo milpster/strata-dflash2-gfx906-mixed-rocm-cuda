@@ -48,6 +48,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import pathlib
 import sys
 
@@ -99,6 +100,54 @@ def sha256_path(path):
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+ENGINE_ENV = "STRATA_FAULTDIFF_ENGINE"
+ENGINE_SHA_ENV = "STRATA_FAULTDIFF_ENGINE_SHA256"
+
+
+class EngineOverrideError(RuntimeError):
+    """The operator's engine override is incomplete or wrong: the harness refuses to boot."""
+
+
+def engine_expected(env=None):
+    """The engine this harness may run, as {"path", "sha256", "pinned_path", "pinned_sha256",
+    "override", "allowed"}.
+
+    Neither variable set: the rig pin, and nothing else (exactly the behaviour before the
+    override existed). Both set: the operator's binary, verified (absolute, present, its
+    sha256 equal to the one given) and recorded as an override next to the pin it replaces.
+    One alone, a path that is not there, or a sha256 that does not match: EngineOverrideError.
+    A fault leg that silently ran another binary would not be the rig the fault classes and
+    the gates were frozen against, so the substitution is always named, never implied.
+    """
+    env = os.environ if env is None else env
+    path = str(env.get(ENGINE_ENV) or "").strip()
+    want = str(env.get(ENGINE_SHA_ENV) or "").strip().lower()
+    pinned_path, pinned_sha = str(ROOT / PINS["engine"]), PINS["engine_sha256"]
+    if not path and not want:
+        return {"path": pinned_path, "sha256": pinned_sha, "override": False,
+                "pinned_path": pinned_path, "pinned_sha256": pinned_sha,
+                "allowed": (pinned_path,)}
+    if not path:
+        raise EngineOverrideError(ENGINE_ENV + " is not set but " + ENGINE_SHA_ENV + " is: an "
+                                  "engine override needs both (the path and its sha256), or neither")
+    if not want:
+        raise EngineOverrideError(ENGINE_SHA_ENV + " is not set but " + ENGINE_ENV + " is: an "
+                                  "engine override needs both (the path and its sha256), or neither")
+    target = pathlib.Path(path)
+    if not target.is_absolute():
+        raise EngineOverrideError(ENGINE_ENV + " must be an absolute path, not " + path)
+    if not target.is_file():
+        raise EngineOverrideError(ENGINE_ENV + " names no file: " + path)
+    got = sha256_path(target)
+    if got != want:
+        raise EngineOverrideError("engine override " + path + " is sha256 " + got + ", but "
+                                  + ENGINE_SHA_ENV + " says " + want
+                                  + ": the binary is not the one the operator named")
+    return {"path": str(target), "sha256": want, "override": True,
+            "pinned_path": pinned_path, "pinned_sha256": pinned_sha,
+            "allowed": (pinned_path, str(target))}
 
 
 def arg_pairs(args):
@@ -559,6 +608,23 @@ def expected(leg, out=OUT_DEFAULT):
             for field, (old, new) in declared_for(leg, out).items()}
 
 
+def exe_problems(leg, exe):
+    """Is this config's "exe" a binary the harness may run for THIS leg?
+
+    The rig's pinned engine, always. When the operator's override is complete and valid
+    (STRATA_FAULTDIFF_ENGINE + STRATA_FAULTDIFF_ENGINE_SHA256, both, file present, sha256
+    equal), its absolute path is the only other value accepted. A half-set override is a
+    problem here exactly as it is at boot time: one variable alone never widens the set.
+    """
+    try:
+        allowed = engine_expected()["allowed"]
+    except EngineOverrideError as error:
+        return [leg + ": exe is " + str(exe) + " (" + str(error) + ")"]
+    if str(exe) not in allowed:
+        return [leg + ": exe is " + str(exe)]
+    return []
+
+
 def verify(leg, out=OUT_DEFAULT):
     """Problems with this leg: the delta must be exactly the declared one, and it must parse."""
     problems = []
@@ -609,8 +675,7 @@ def verify(leg, out=OUT_DEFAULT):
             if other[0] != env_key and other[0] in (cfg.get("env") or {}):
                 problems.append(leg + ": " + other[0] + " is in the env block and is not this "
                                 "leg's lever")
-    if cfg.get("exe") != str(ROOT / PINS["engine"]):
-        problems.append(leg + ": exe is " + str(cfg.get("exe")))
+    problems += exe_problems(leg, cfg.get("exe"))
     for value in (cfg["log"], cfg["expert_helper_socket"], cfg["expert_helper_socket2"]):
         if "prod" in value or "port0218-cache" in value:
             problems.append(leg + ": a harness path still points at prod: " + value)

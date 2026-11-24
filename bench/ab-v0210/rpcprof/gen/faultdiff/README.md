@@ -136,6 +136,14 @@ All commands from `/mnt/srcds/Strata`. The legs are frozen for the window direct
 # 1. STOP PROD (its own invocation, the operator's call), then check the boot plan
 .venv/bin/python bench/ab-v0210/rpcprof/faultdiff_run.py --leg parking-off --boot --dry-run
 
+# 1b. a leg on a DIFFERENT engine binary (a patched build): the override, both or neither.
+#     Verified (absolute, present, sha256 equal), written only into the booted copy of the
+#     config (never into gen/), recorded in the boot record as "engine_override", and said
+#     out loud - a WARNING at boot, in --status and in the stop summary. No pin is edited.
+STRATA_FAULTDIFF_ENGINE=/mnt/srcds/Strata/run/port0218-nohuge-bin/rpcw-hip/strata \
+STRATA_FAULTDIFF_ENGINE_SHA256=15d330ea4d0eec4ca64ef3973e52d332253a981c25dde42b70567bf8b3ae7577 \
+  .venv/bin/python bench/ab-v0210/rpcprof/faultdiff_run.py --leg parking-off --boot --dry-run
+
 # 2. boot: prerequisite 0, no live prod pair, no other /dev/kfd user, free port 8009,
 #    no stale socket, empty cache dir, then helper -> sockets -> server -> 'ready: http://'
 .venv/bin/python bench/ab-v0210/rpcprof/faultdiff_run.py --leg parking-off --boot
@@ -169,6 +177,33 @@ stays on ONE conversation (`--ctx-pair 80000,80000`, the runner's default for th
 resumes the live session, decode stays the bulk of the exposure, and no park can happen - which is
 exactly the claim the leg is testing. The other legs alternate, because parking needs a switch. A fault ends the engine; the server restarts it on the next request (the product's own
 behaviour), so stop the leg at the first fault and keep the log and the kernel slice.
+
+### The engine override (one deliberate leg on another binary)
+
+The ten legs run the rig's pinned engine (`PINS["engine"]` in `../faultdiff_configs.py`, re-hashed
+at boot). To answer "does a patched build stop the fault", one leg can be run on a different engine
+binary without editing a pin:
+
+| variable | meaning |
+|---|---|
+| `STRATA_FAULTDIFF_ENGINE` | absolute path to the engine binary to run instead |
+| `STRATA_FAULTDIFF_ENGINE_SHA256` | the sha256 that file must have |
+
+- **Both or neither.** One alone is a hard refusal naming the missing variable. Both: the file must
+  exist and hash to the given value, or the boot is refused with both shas printed. Neither: the
+  pinned rig, unchanged.
+- The helper, the server tree, the base config, every leg config and every gate threshold stay
+  pinned. Only the engine binary moves.
+- The override reaches the engine through the window's booted config, because that is what
+  `serve/server.py` starts (`cfg["exe"]`, server.py:850,913). The frozen file under `gen/faultdiff/`
+  is never written; the leg's copy under `out/faultdiff-r1/configs/` carries the override and the
+  manifest pin (which it no longer matches) is kept beside it.
+- It is visible everywhere the boot is described: a `WARNING:` line before the gates, an
+  `engine ... (OVERRIDE ...)` line in the dry run, `"engine_override": {path, sha256, pinned_path,
+  pinned_sha256}` plus `config_pinned_sha256` in the boot record, and a `WARNING:` line in
+  `--status` and in the stop summary.
+- **A result from an override leg belongs to that binary, not to the rig.** It is evidence about the
+  patch; it is not comparable with the pinned legs' numbers, and it does not promote anything.
 
 ### The gates (all of them refuse; only two are waivable, both recorded)
 

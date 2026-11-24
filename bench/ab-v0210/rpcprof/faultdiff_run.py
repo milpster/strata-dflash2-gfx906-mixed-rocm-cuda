@@ -22,6 +22,14 @@ Design, and why (the serving-lane rules):
     socket, empty cache dir. A gate that fails refuses the boot; it is never waived silently
     (the two waivers are the operator's, recorded in the boot record).
 
+Engine override (operator's, for one deliberate leg): STRATA_FAULTDIFF_ENGINE (absolute
+path) plus STRATA_FAULTDIFF_ENGINE_SHA256 (its sha256) run ANOTHER engine binary in place of
+the rig pin. Both or neither: one alone, a missing file, or a sha256 that does not match is a
+hard refusal. Every boot that uses it says so - a WARNING at boot, an "engine" line in the dry
+run, "engine_override" in the state record, a WARNING in --status and in the stop summary - and
+the booted config's copy (never the frozen file) carries it as "exe", because that is what
+serve/server.py starts. The helper, the server tree and the base config stay pinned.
+
 Static-only validation so far: py_compile and --dry-run. No boot, no GPU, no process control
 was exercised from this file while it was written (fixer lane rule).
 """
@@ -86,6 +94,14 @@ def sha256(path):
     return fc.sha256_path(path)
 
 
+def engine_boot_line(engine):
+    """Which binary this leg boots. Printed only for an override: without one the boot is the
+    rig's own engine line, unchanged (the dry run must read as it did before the override)."""
+    return ("engine " + engine["path"] + " (OVERRIDE of the rig pin: sha256 "
+            + engine["sha256"][:16] + ", pinned " + engine["pinned_path"] + " sha256 "
+            + engine["pinned_sha256"][:16] + ")")
+
+
 def proc_cmd(pid):
     try:
         return (pathlib.Path("/proc") / str(pid) / "cmdline").read_bytes().replace(b"\0", b" ").decode(
@@ -129,7 +145,19 @@ def write_state(leg, out, record):
 
 
 def load(leg, out):
-    """The frozen config and paths of one leg, with every pin re-checked."""
+    """The frozen config and paths of one leg, with every pin re-checked.
+
+    Returns (cfg, paths, manifest, engine). The engine is the rig pin, or - when the operator
+    set STRATA_FAULTDIFF_ENGINE and STRATA_FAULTDIFF_ENGINE_SHA256 - that binary, verified here
+    (both or neither, absolute, present, sha256 equal). The helper and the server tree stay
+    pinned: the override changes the engine binary only.
+    """
+    # The override is checked before anything else, so a half-set or wrong one is refused with
+    # its own message (naming the missing or the mismatched value), not buried in a pin list.
+    try:
+        engine = fc.engine_expected()
+    except fc.EngineOverrideError as error:
+        die(str(error))
     cfg, paths = fc.derive(leg, out)
     problems = fc.verify(leg, out)
     if problems:
@@ -143,17 +171,22 @@ def load(leg, out):
     if got != pin["sha256"]:
         die(str(on_disk) + " is " + got[:16] + ", the manifest pins " + pin["sha256"][:16]
             + ": regenerate deliberately, never edit")
-    for kind in ("engine", "helper"):
-        path = ROOT / fc.PINS[kind]
-        want = fc.PINS[kind + "_sha256"]
+    if not engine["override"]:                      # no env: the rig's engine, hashed as before
+        path = ROOT / fc.PINS["engine"]
         if not path.is_file():
-            die("missing " + kind + ": " + str(path))
-        if sha256(path) != want:
-            die(kind + " " + str(path) + " is " + sha256(path)[:16] + ", the rig pins "
-                + want[:16])
+            die("missing engine: " + str(path))
+        if sha256(path) != fc.PINS["engine_sha256"]:
+            die("engine " + str(path) + " is " + sha256(path)[:16] + ", the rig pins "
+                + fc.PINS["engine_sha256"][:16])
+    helper = ROOT / fc.PINS["helper"]
+    if not helper.is_file():
+        die("missing helper: " + str(helper))
+    if sha256(helper) != fc.PINS["helper_sha256"]:
+        die("helper " + str(helper) + " is " + sha256(helper)[:16] + ", the rig pins "
+            + fc.PINS["helper_sha256"][:16])
     if sha256(fc.BASE) != manifest["base_sha256"]:
         die("the base config " + str(fc.BASE) + " changed since the legs were frozen")
-    return cfg, paths, manifest
+    return cfg, paths, manifest, engine
 
 
 # ------------------------------------------------------------------------------- the gates
@@ -340,15 +373,53 @@ def apply_stage_affinity(engine_pid, snapshot, attempts=10, gap=10):
     return {"state": "pending", **last, "cpus": STAGE_CPUS, "snapshot": str(snapshot)}
 
 
+def booted_config(paths, leg, engine):
+    """Write the leg's booted config and return its manifest pin (the evidence of the boot).
+
+    Without an override the file is the frozen one's bytes, so its sha256 must equal the
+    manifest pin. With one, the same config goes through the server with only "exe" replaced
+    (serve/server.py:850,913 starts the engine from cfg["exe"]), and the manifest pin comes
+    back unchanged: the caller records both the pin and the override, so the record says
+    exactly which field moved. The frozen file under gen/faultdiff/ is never touched.
+    """
+    cfg_path = pathlib.Path(paths["config"])
+    cfg_path.write_bytes(pathlib.Path(paths["frozen"]).read_bytes())
+    pin = json.loads((fc.GEN / "manifest.json").read_text())["legs"][leg]["sha256"]
+    if sha256(cfg_path) != pin:
+        die("the written config " + str(cfg_path) + " does not hash to the manifest pin")
+    if not engine["override"]:
+        return pin
+    cfg = json.loads(cfg_path.read_text())
+    cfg["exe"] = engine["path"]
+    cfg_path.write_bytes(fc.body(cfg))
+    written = json.loads(cfg_path.read_text())
+    if written.get("exe") != engine["path"]:
+        die("could not write the engine override into " + str(cfg_path))
+    frozen = json.loads(pathlib.Path(paths["frozen"]).read_text())
+    if {k: v for k, v in written.items() if k != "exe"} != \
+            {k: v for k, v in frozen.items() if k != "exe"}:
+        die("the override changed more than exe in " + str(cfg_path))
+    return pin
+
+
 def cmd_boot(leg, out, waive_nonengine, waive_exclusivity, dry):
     if pathlib.Path(out).resolve() != pathlib.Path(fc.OUT_DEFAULT).resolve():
         die("the legs are frozen for " + str(fc.OUT_DEFAULT) + " (their log, socket and cache "
             "paths are in the configs); a different window needs a deliberate regeneration")
-    cfg, paths, _ = load(leg, out)
+    cfg, paths, _, engine = load(leg, out)
     out = pathlib.Path(out)
     say("leg " + leg + ": " + fc.LEGS[leg]["purpose"])
     say("config sha " + sha256(paths["frozen"])[:16] + ", engine "
         + fc.PINS["engine_sha256"][:16] + ", helper " + fc.PINS["helper_sha256"][:16])
+    if engine["override"]:
+        # Named before any gate, so no reader of this output can take the boot for the pinned rig.
+        say("WARNING: the rig engine pin is OVERRIDDEN ("
+            + fc.ENGINE_ENV + "/" + fc.ENGINE_SHA_ENV + "): this boot runs "
+            + engine["path"] + " sha256 " + engine["sha256"][:16] + ", not the pinned "
+            + engine["pinned_path"] + " sha256 " + engine["pinned_sha256"][:16]
+            + ". The result belongs to another binary.")
+        say("engine: " + engine["path"] + " (override, sha256 " + engine["sha256"][:16]
+            + "; pinned " + engine["pinned_sha256"][:16] + ")")
 
     st = state_path(leg, out)
     if st.is_file():
@@ -381,6 +452,8 @@ def cmd_boot(leg, out, waive_nonengine, waive_exclusivity, dry):
         say("  server " + " ".join([PY, str(ROOT / fc.PINS["server_tree"] / "serve" / "server.py"),
                                     "--engine", "strata", "--config", paths["config"],
                                     "--port", str(cfg["port"])]))
+        if engine["override"]:                    # no override: the plan is today's plan
+            say("  " + engine_boot_line(engine) + "  <- set as the booted config's exe")
         say("  then wait for the server's 'ready: http://' line, apply stage cpus " + STAGE_CPUS
             + " and record the boot")
         return 1 if gate["failures"] else 0
@@ -392,11 +465,7 @@ def cmd_boot(leg, out, waive_nonengine, waive_exclusivity, dry):
     # The booted config is a copy of the frozen file, byte-identical to the manifest pin. The
     # server writes its shared-settings sidecar beside the config, so it boots from the window
     # and never from gen/faultdiff/ (a frozen directory with runtime droppings is not frozen).
-    cfg_path = pathlib.Path(paths["config"])
-    cfg_path.write_bytes(pathlib.Path(paths["frozen"]).read_bytes())
-    pin = json.loads((fc.GEN / "manifest.json").read_text())["legs"][leg]["sha256"]
-    if sha256(cfg_path) != pin:
-        die("the written config " + str(cfg_path) + " does not hash to the manifest pin")
+    pin = booted_config(paths, leg, engine)
     if cache:
         shutil.rmtree(cache, ignore_errors=True)
         pathlib.Path(cache).mkdir(parents=True, exist_ok=True)
@@ -407,7 +476,14 @@ def cmd_boot(leg, out, waive_nonengine, waive_exclusivity, dry):
     rec = {
         "leg": leg, "window": fc.WINDOW, "out": str(out),
         "config": paths["config"], "config_sha256": sha256(paths["config"]),
-        "engine": str(ROOT / fc.PINS["engine"]), "engine_sha256": fc.PINS["engine_sha256"],
+        # without an override these two are equal; with one, the copy carries the override's
+        # "exe" and this is the evidence that only that field moved
+        "config_pinned_sha256": pin,
+        "engine": engine["path"], "engine_sha256": engine["sha256"],
+        "engine_override": ({"path": engine["path"], "sha256": engine["sha256"],
+                             "pinned_path": engine["pinned_path"],
+                             "pinned_sha256": engine["pinned_sha256"]}
+                            if engine["override"] else None),
         "helper": str(ROOT / fc.PINS["helper"]), "helper_sha256": fc.PINS["helper_sha256"],
         "server_tree": str(ROOT / fc.PINS["server_tree"]), "port": cfg["port"],
         "sockets": [paths["socket"], paths["socket2"]], "cache_dir": cache,
@@ -527,9 +603,31 @@ def fingerprint(since, until=None):
     return {"since": since, "until": until, "kernel": kernel}
 
 
+def state_override(rec):
+    """The engine substitution a boot record carries, if it was booted with one.
+
+    Records written before the override existed have no such key: they are the pinned rig.
+    """
+    ov = rec.get("engine_override")
+    if isinstance(ov, dict) and ov.get("path"):
+        return ov
+    return None
+
+
+def override_words(rec):
+    """How a state record names its engine, for --status and --stop: never just 'engine'."""
+    ov = state_override(rec)
+    if not ov:
+        return "engine (rig pin, sha256 " + str(rec.get("engine_sha256") or "?")[:16] + ")"
+    return ("engine OVERRIDDEN: " + str(ov.get("path")) + " sha256 "
+            + str(ov.get("sha256") or "?")[:16] + " (rig pin "
+            + str(ov.get("pinned_path")) + " sha256 " + str(ov.get("pinned_sha256") or "?")[:16]
+            + " not used)")
+
+
 def cmd_status(leg, out, as_json):
     rec = read_state(leg, out)
-    cfg, paths, _ = load(leg, out)
+    cfg, paths, _, _engine = load(leg, out)
     engine_log = pathlib.Path(paths["engine_log"])
     text = engine_log.read_bytes().replace(b"\0", b"").decode("utf-8", "replace") if \
         engine_log.is_file() else ""
@@ -546,6 +644,8 @@ def cmd_status(leg, out, as_json):
     fp = fingerprint(rec.get("started_epoch") or time.time())
     report = {"leg": leg, "alive": {"engine": engine_alive, "server": server_alive,
                                     "helper": helper_alive},
+              "engine": rec.get("engine"), "engine_sha256": rec.get("engine_sha256"),
+              "engine_override": state_override(rec),
               "engine_pid": rec.get("engine_pid"),
               "uptime_s": round(time.time() - (rec.get("started_epoch") or time.time()), 1),
               "hsa_xnack": rec.get("hsa_xnack"), "engine_fault_lines": faults[-10:],
@@ -558,6 +658,10 @@ def cmd_status(leg, out, as_json):
         + ("alive" if server_alive else "DOWN") + ", helper " + ("alive" if helper_alive else "DOWN")
         + "; uptime " + str(report["uptime_s"]) + " s; HSA_XNACK "
         + str(rec.get("hsa_xnack")))
+    if state_override(rec):
+        say(override_words(rec))
+        say("WARNING: this boot's engine pin is OVERRIDDEN: the numbers below belong to "
+            + str(state_override(rec).get("path")) + ", not to the rig's pinned binary")
     say("engine fault lines: " + (str(len(faults)) if faults else "none"))
     for line in faults[-5:]:
         say("  " + line[:220])
@@ -574,7 +678,7 @@ def cmd_status(leg, out, as_json):
 
 def cmd_stop(leg, out):
     rec = read_state(leg, out)
-    cfg, paths, _ = load(leg, out)
+    cfg, paths, _, _engine = load(leg, out)
 
     def term(pid, start, what):
         if not alive(pid, start):
@@ -618,6 +722,10 @@ def cmd_stop(leg, out):
     write_state(leg, out, rec)
     say("stopped " + leg + " after " + str(rec["ran_s"]) + " s; engine fault lines "
         + str(len(faults)) + ", kernel fault-class lines " + str(fp["kernel"]["count"]))
+    if state_override(rec):
+        say(override_words(rec))
+        say("WARNING: this boot ran an OVERRIDDEN engine binary (" + fc.ENGINE_ENV
+            + "); its faults and numbers are not the rig pin's")
     say("record: " + str(state_path(leg, out)))
     left = [p for p in (rec.get("server_pid"), engine_pid, rec.get("helper_pid"))
             if alive(p)]
@@ -632,7 +740,11 @@ def cmd_load(leg, out, minutes, ctx_pair):
     """Sequential serving load (one request in flight, the operator's no-concurrency rule):
     two conversations, alternating, so every switch parks and restores. NOT a measurement."""
     rec = read_state(leg, out)
-    cfg, paths, _ = load(leg, out)
+    cfg, paths, _, _engine = load(leg, out)
+    if state_override(rec):
+        say("WARNING: this leg was booted with an OVERRIDDEN engine binary: "
+            + str(state_override(rec).get("path")) + " sha256 "
+            + str(state_override(rec).get("sha256"))[:16])
     if not alive(rec.get("server_pid"), rec.get("server_start")):
         die("the leg is not serving: boot it first")
     engine_pid = rec.get("engine_pid") if alive(rec.get("engine_pid"), rec.get("engine_start")) \
