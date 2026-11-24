@@ -32,7 +32,14 @@ The same run's cycle 1, kept so both cycles of the preserved run sit together: `
 4 generated in 322 ms (12.4 tok/s) …` (elog offsets 92048..94694), `max_rss_mib` 41,946,
 `min_avail_mib` 8,506, `max_swap_used_mib` 6,601, sha256
 `c6bdfa1941f1913eb4235fdeaf8aabfde4b6d633f2042281932970d1ab2f1942`. That digest is
-identical to the live `records/cb-1/B-pp239k.json`, which was not overwritten.
+identical to the live `records/cb-1/B-pp239k.json`.
+
+Live `records/cb-1` was overwritten once, at 01:42, by an early stub test of the summary
+path in `cycle_boots.sh` (111 bytes, no measurement in it). It was restored at 01:45 from
+the JSON the driver itself printed for that run, and the result is byte-identical to an
+opencode snapshot of the file taken before the stub ran, so the content is the driver's
+and not a reconstruction. The file here is that same copy, kept beside cb-2 because both
+cycles belong to one run.
 
 ## The live evidence this leaves alone
 
