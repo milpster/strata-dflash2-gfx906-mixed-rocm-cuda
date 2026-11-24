@@ -10,14 +10,20 @@
 # -> fire one cold 58,423-token prefill -> record faults and memory -> keep going.
 # Live output: it prints one block per cycle and per-30 s progress while booting.
 #
+# Records: a cycle writes under records/<leg>-<stamp>/cb-<N>/, where the stamp is the
+# run's start time, so two legs - or two runs of one leg - never share a record path.
+# Until 2026-11-24 the path was records/cb-<N>/, and a 01:45 pool-nohuge cycle
+# overwrote the 01:25 default-margins record (recovered copy:
+# bench/fault-va/records-preserved/).
+#
 # Engine override: when STRATA_FAULTDIFF_ENGINE (absolute path) and
 # STRATA_FAULTDIFF_ENGINE_SHA256 (its sha256) are both set in the caller's
 # environment they are exported unchanged, so every faultdiff_run.py call inherits
 # them and the leg boots that binary instead of the rig pin. With neither set the
 # pinned engine is used; a lone one is refused here, before anything starts. The
 # engine that actually served is read back from the driver's record
-# (records/<cycle>/B-pp239k.json: engine_sha256, engine_override), never from the
-# process list.
+# (records/<leg>-<stamp>/cb-<N>/B-pp239k.json: engine_sha256, engine_override),
+# never from the process list.
 #
 # --plan       print the exact commands per cycle; start, stop and write nothing.
 # --leave-up   leave the last cycle's boot running. The default is to stop it, so
@@ -52,7 +58,7 @@ for arg in "$@"; do
   case $arg in
     --leave-up) LEAVE_UP=1 ;;
     --plan) PLAN=1 ;;
-    -h|--help) printf '%s\n' "$USAGE"; sed -n '3,31p' "$0"; exit 0 ;;
+    -h|--help) printf '%s\n' "$USAGE"; sed -n '3,37p' "$0"; exit 0 ;;
     -*) die "unknown option: $arg ($USAGE)" ;;
     *) [ -z "$N" ] || die "$USAGE"; N=$arg ;;
   esac
@@ -76,9 +82,20 @@ else
 fi
 
 REC_REL="$OUT/records"
+# One record directory per run and leg, records/<leg>-<stamp>/cb-<N>/. Keyed on the cycle
+# alone the path was shared by every leg and every run, and a 01:45 pool-nohuge cycle
+# overwrote the 01:25 default-margins record on 2026-11-24. The stamp is minted once here,
+# so all cycles of this run sit under one directory, and the -2, -3 suffix keeps two runs
+# started in the same second apart (the summary file does the same).
+STAMP=$(date '+%Y%m%d-%H%M%S')
+REC_RUN_BASE="$REC_REL/$LEG-$STAMP"
+REC_RUN_REL="$REC_RUN_BASE"
+n=2
+while [ -e "$REC_RUN_REL" ]; do REC_RUN_REL="$REC_RUN_BASE-$n"; n=$((n + 1)); done
 
 if [ "$PLAN" -eq 1 ]; then
   say "plan only: nothing is started, stopped or written"
+  echo "records  $REC_RUN_REL/cb-<N>/B-pp239k.json"
   for i in $(seq 1 "$N"); do
     echo "cycle $i/$N"
     echo "  stop     $PY $RUN --leg $LEG --stop"
@@ -87,11 +104,11 @@ if [ "$PLAN" -eq 1 ]; then
     echo "  health   curl -fsS -m 2 http://127.0.0.1:8009/health; 45 tries, 10 s apart, stop early if the boot exits"
     echo "  pid      ./bench/fault-va/engine_pid.sh"
     echo "  fire     $PY bench/ab-v0210/rpcprof/ab9_driver.py --arm B --leg pp239k --kind prefill --ctx 323200 --max-tokens 8"
-    echo "           --out $REC_REL/cb-$i --elog $OUT/logs/$LEG.engine.log --hlog $OUT/logs/$LEG.helper.log"
+    echo "           --out $REC_RUN_REL/cb-$i --elog $OUT/logs/$LEG.engine.log --hlog $OUT/logs/$LEG.helper.log"
     echo "           --url http://127.0.0.1:8009/v1/chat/completions --prompt-file $CORPUS --prompt-sha256 $PROMPT_SHA"
     echo "           --request-template $TEMPLATE --request-template-sha256 $TEMPLATE_SHA --timeout 5400 --engine-pid <pid>"
     echo "  measure  journalctl -k 'no-retry page fault' since the cycle start; engine VmRSS and AnonHugePages"
-    echo "  row      $SUMMARY_DIR/cycle-<timestamp>.tsv += cb-$i, $LEG, <sha from $REC_REL/cb-$i/B-pp239k.json>, <override 0/1>, ..."
+    echo "  row      $SUMMARY_DIR/cycle-<timestamp>.tsv += cb-$i, $LEG, <sha from $REC_RUN_REL/cb-$i/B-pp239k.json>, <override 0/1>, ..."
   done
   if [ "$LEAVE_UP" -eq 1 ]; then
     echo "finally  --leave-up: the last cycle's boot is left running"
@@ -221,17 +238,18 @@ for i in $(seq 1 "$N"); do
     continue
   fi
   say "engine $EP up; firing the cold prefill"
-  # Only this cycle's record counts. The record path is shared by every leg and by earlier
-  # cycles, so the file's stamp is read across the firing: unchanged means the driver wrote
-  # nothing (HTTP 503, timeout) and this cycle has no digest and no rate. A live run showed
-  # why that matters (2026-11-24 02:02): a failed prefill inherited both.
-  REC_FILE="$REC_REL/cb-$i/B-pp239k.json"
+  # Only this cycle's record counts. The path is this run's and this leg's alone, and cb-$i
+  # is used once per run, yet the file's stamp is still read across the firing: unchanged
+  # (or absent) means the driver wrote nothing (HTTP 503, timeout) and this cycle has no
+  # digest and no rate, rather than one inherited from an earlier file. A live run showed
+  # why that matters (2026-11-24 02:02).
+  REC_FILE="$REC_RUN_REL/cb-$i/B-pp239k.json"
   REC_BEFORE=$(stat -c %y "$REC_FILE" 2>/dev/null || echo none)
   ELOG_OFF=$(tr -d '\000' < "$OUT/logs/$LEG.engine.log" 2>/dev/null | wc -c || echo 0)
   FIRE_RC=0
   $PY bench/ab-v0210/rpcprof/ab9_driver.py --arm B --leg pp239k \
     --kind prefill --ctx 323200 --max-tokens 8 \
-    --out "$REC_REL/cb-$i" \
+    --out "$REC_RUN_REL/cb-$i" \
     --elog "$OUT/logs/$LEG.engine.log" --hlog "$OUT/logs/$LEG.helper.log" \
     --url http://127.0.0.1:8009/v1/chat/completions \
     --prompt-file "$CORPUS" --prompt-sha256 "$PROMPT_SHA" \
@@ -259,7 +277,7 @@ for i in $(seq 1 "$N"); do
   HUGE=$(grep -i anonhugepages "/proc/$EP/smaps_rollup" 2>/dev/null | awk '{print $2, $3}' || echo 'gone')
   RSS=$(awk '/VmRSS/{printf "%.1f GiB", $2/1048576}' "/proc/$EP/status" 2>/dev/null || echo gone)
   if [ "$FIRE_RC" -eq 0 ]; then
-    IFS='|' read -r R_SHA R_OVR R_NOTE <<< "$(record_engine "$REC_REL/cb-$i")" || true
+    IFS='|' read -r R_SHA R_OVR R_NOTE <<< "$(record_engine "$REC_RUN_REL/cb-$i")" || true
   else
     R_SHA=''; R_OVR=''; R_NOTE=''
   fi

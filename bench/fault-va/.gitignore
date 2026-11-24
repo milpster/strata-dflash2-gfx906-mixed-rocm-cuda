@@ -4,3 +4,6 @@ out/
 run/
 run2/
 run3/
+# The cycle records themselves are written under another tree,
+# bench/ab-v0210/rpcprof/out/faultdiff-r1/records/<leg>-<stamp>/, and that path is
+# ignored by the repository's root .gitignore. records-preserved/ here stays tracked.
