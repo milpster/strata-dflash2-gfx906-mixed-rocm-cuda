@@ -16,6 +16,12 @@ conversation, so their TTFT is the cached-prefix turn latency production serves.
 
 CPU-only standalone: it talks to the server over HTTP like any client. --selftest exercises
 the SSE parser and the event pairing on a synthetic transcript, with no network.
+
+Engine identity: the record names the binary the leg ran on (engine_exe, engine_sha256, read
+through /proc/<pid>/exe after the requests and the sampler are done) exactly as ab9_driver.py
+writes it, because a TTFT or a rate nobody can attribute to a build is not a measurement: the
+W2 claims said "n=2/arm" while five ttft3 records named no engine at all. The identity code is
+ab9_driver.engine_identity - imported, never duplicated - so the two record kinds cannot drift.
 """
 from __future__ import annotations
 
@@ -194,8 +200,10 @@ def main() -> int:
     last_seq = max((e.get("seq", 0) for e in events_before), default=0)
 
     cached_start = ab9_driver.cached_mib()
-    sampler = ab9_driver.MemSampler(a.engine_pid if a.engine_pid is not None
-                                    else ab9_driver.find_engine_pid())
+    # the pid is pinned for the whole leg: the sampler and the engine identity below must
+    # describe the SAME process (a second find_engine_pid() could land on prod's engine)
+    engine_pid = a.engine_pid if a.engine_pid is not None else ab9_driver.find_engine_pid()
+    sampler = ab9_driver.MemSampler(engine_pid)
     sampler.start()
     turns = []
     messages = turn_messages(corpus, 1)
@@ -213,6 +221,12 @@ def main() -> int:
     finally:
         sampler.stop_evt.set()
         sampler.join()
+
+    # Identity is read here, after the wire and after the sampler, exactly as ab9_driver does:
+    # it is provenance for the turns above, so hashing a 30-50 MB engine must not sit anywhere
+    # the measured wall could see it. cached_end_mib is taken first for the same reason.
+    cached_end = ab9_driver.cached_mib()
+    identity = ab9_driver.engine_identity(engine_pid)
 
     events_after = server_events(a.url)
     new_events = [e for e in events_after if e.get("seq", 0) > last_seq]
@@ -237,11 +251,18 @@ def main() -> int:
            "turn_rows": [{k: v for k, v in row.items() if k != "text"} for row in turns],
            "server_turns": server_turns,
            "elog": a.elog, "hlog": a.hlog,
-           "mem": {"cached_start_mib": cached_start, "cached_end_mib": ab9_driver.cached_mib(),
+           "mem": {"engine_pid": engine_pid,
+                   "cached_start_mib": cached_start, "cached_end_mib": cached_end,
                    "max_rss_mib": sampler.max_rss_mib,
                    "min_avail_mib": None if sampler.min_avail_mib == 1 << 30 else sampler.min_avail_mib,
                    "max_swap_used_mib": sampler.max_swap_used_mib,
-                   "max_vram_mib": sampler.max_vram_mib}}
+                   "max_vram_mib": sampler.max_vram_mib},
+           # Which build produced these turns (ab9_driver.MemSampler+engine_identity are the one
+           # implementation of both). Without these a ttft3 record cannot be assigned to an
+           # arm's build, and --check fails such a leg rather than printing it as INFO.
+           "engine_exe": identity["engine_exe"],
+           "engine_sha256": identity["engine_sha256"],
+           "engine_identity_reason": identity["engine_identity_reason"]}
     out = pathlib.Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     path = out / (a.arm + "-" + a.leg + ".json")

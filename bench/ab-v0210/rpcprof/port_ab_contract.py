@@ -884,7 +884,22 @@ EXPECTED_LINES = {
     "boot_split": r"layer split: .* runs layers 30-47",
     "boot_fs": r"foresight swap: .*granted (\d+) slots.*leaving (\d+) MiB",
     "dflash": r"dflash: .* trained block (\d+)",
-    "low_warning": r" - LOW:",
+    # The low-VRAM warning, in EVERY wording a server writes it. The three known spellings:
+    #   fork server:  "... VRAM free with everything loaded - LOW: its window graphs ..."
+    #   port server:  "<n> MiB of the card's memory are free at the start of this request.
+    #                  ... Below 512 MiB the driver can move GPU memory to system RAM ..."
+    #   older port:   "WARNING: only <n> MiB of VRAM free at the start of this request
+    #                  (below 512 MiB): ..."
+    # The count is a CONDITION count (how often a request started with too little VRAM), not a
+    # fingerprint of one server's log format: matching only " - LOW:" counted 1 line on both
+    # arms of W2 while arm A printed the #2065 wording twice and arm B the reworded sentence
+    # twice (logs/W2-A-dec-r0-boot.log vs logs/W2-B-dec-r0-boot.log), so "LOW 1 vs 1" reported
+    # equal conditions where the two arms' logs were simply spelled differently. No known line
+    # matches two of the alternatives (measured over all 548 logs under out/), so the
+    # alternatives cannot double-count one warning. "below 512 MiB" is deliberately
+    # lower-case: the reworded port sentence spells it "Below 512 MiB" and is counted by its
+    # own alternative, so making this case-insensitive would count that one line twice.
+    "low_warning": r" - LOW:|below 512 MiB|are free at the start of this request",
     "non_finite": r"non-finite logits",
     "gpu_fault": r"Memory access fault by GPU node-",
     "restart": r"pair supervisor:.*(restart|recovered|recovering|exited)",

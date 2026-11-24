@@ -3435,19 +3435,19 @@
   }
  },
  "git_branch": "recovery-startup-watchdog",
- "git_head_at_prepare": "2d7008bf9fd323a97d3fa4a732d42cdf267629ca",
+ "git_head_at_prepare": "c5a64549047268f8a3dcd160b841ea06676cbbc2",
  "harness_script_shas": {
   "port_ab_boot.sh": "fd738f9aaf85aab0d6e359da8d3c2c3f8955e301fbb1c0aa6718e33a68f55bfb",
   "port_ab_boot_plan.py": "c146042d3c8610a84412f58dd31c959140f8030829fcc782852bbdd21e63eb85",
   "port_ab_configs.py": "f7c5e4d2b57836565b028d160879833f0467b11c7aecef908dc3cd72686b2310",
-  "port_ab_contract.py": "35ebc3e796de3d97dfd561cee89161c8db2f291a04b84285fa30a0c85816cfb3",
-  "port_ab_legs.py": "53a27e08969f6420ac1f9a2065ffa5c8bc945ed4d5dd88ecb7a583044ab6c9c5",
+  "port_ab_contract.py": "52b6fc43c47e4122ebbced611b67bde0b1ce1b044af039b438156b8741940ccc",
+  "port_ab_legs.py": "a306012ed4554f74f0ad557e7e9884556e60de1b25bbe6a98eeaaeccc0a95d6c",
   "port_ab_preflight.py": "3d8b4bafcafb5cd75ed932a8161dd7f5758141fbc5d3943c2cddbcc43253d90b",
   "port_ab_prepare.py": "9da9eb87cf94566145182dc5be223d7efff36e526908066e5651ebc12a5206e7",
   "port_ab_prereq0.py": "d147d876a94aaf6395e6883f1a9f07faecd11680a38d5eea1f12912ae58c875c",
   "port_ab_prune.py": "5bc4b4e101cadb40f9d923f6bd35596185773560ea43677e1b06c061fac588ae",
   "port_ab_stop.sh": "3bd21e3b77ef2a12fb376a7de71024e4dea71cc86a752d5c569d44699ce2375b",
-  "port_ab_ttft.py": "8dd1de272cb193145439743d82cbac5610a439f6eb1e024f6202dcdf1bad206b"
+  "port_ab_ttft.py": "52f363541daf14a5b25a59163fa7ad702947406005fcb50218e2c6e30638b2fd"
  },
  "harness_scripts": {
   "port_ab_boot.sh": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/port_ab_boot.sh",
@@ -3721,7 +3721,7 @@
    "resolution": "per-engine configs (A without the flag, B with '0'); both cross cells then boot, and 'no spill' holds in both"
   }
  },
- "prepared_at": "2026-11-24T20:13:38",
+ "prepared_at": "2026-11-24T20:30:36",
  "prerequisite0": {
   "cache_free_gib_min": 40,
   "command": "python3 bench/ab-v0210/rpcprof/port_ab_prereq0.py --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123",
@@ -3863,7 +3863,7 @@
       "strata generate: expert cache (\\d+) slots",
       "layer split: .* runs layers 30-47",
       "foresight swap: .*granted (\\d+) slots.*leaving (\\d+) MiB",
-      " - LOW:",
+      " - LOW:|below 512 MiB|are free at the start of this request",
       "pair supervisor:.*(restart|recovered|recovering|exited)"
      ],
      "gates": [
@@ -4044,7 +4044,7 @@
       "strata generate: expert cache (\\d+) slots",
       "layer split: .* runs layers 30-47",
       "foresight swap: .*granted (\\d+) slots.*leaving (\\d+) MiB",
-      " - LOW:",
+      " - LOW:|below 512 MiB|are free at the start of this request",
       "pair supervisor:.*(restart|recovered|recovering|exited)"
      ],
      "gates": [
@@ -4228,7 +4228,7 @@
       "strata generate: expert cache (\\d+) slots",
       "layer split: .* runs layers 30-47",
       "foresight swap: .*granted (\\d+) slots.*leaving (\\d+) MiB",
-      " - LOW:",
+      " - LOW:|below 512 MiB|are free at the start of this request",
       "pair supervisor:.*(restart|recovered|recovering|exited)"
      ],
      "gates": [
@@ -4451,7 +4451,7 @@
       "strata generate: expert cache (\\d+) slots",
       "layer split: .* runs layers 30-47",
       "foresight swap: .*granted (\\d+) slots.*leaving (\\d+) MiB",
-      " - LOW:",
+      " - LOW:|below 512 MiB|are free at the start of this request",
       "pair supervisor:.*(restart|recovered|recovering|exited)"
      ],
      "gates": [
@@ -4492,7 +4492,7 @@
       "strata generate: expert cache (\\d+) slots",
       "layer split: .* runs layers 30-47",
       "foresight swap: .*granted (\\d+) slots.*leaving (\\d+) MiB",
-      " - LOW:",
+      " - LOW:|below 512 MiB|are free at the start of this request",
       "pair supervisor:.*(restart|recovered|recovering|exited)"
      ],
      "gates": [
@@ -4535,7 +4535,7 @@
       "strata generate: expert cache (\\d+) slots",
       "layer split: .* runs layers 30-47",
       "foresight swap: .*granted (\\d+) slots.*leaving (\\d+) MiB",
-      " - LOW:",
+      " - LOW:|below 512 MiB|are free at the start of this request",
       "pair supervisor:.*(restart|recovered|recovering|exited)"
      ],
      "gates": [
@@ -4578,7 +4578,7 @@
       "strata generate: expert cache (\\d+) slots",
       "layer split: .* runs layers 30-47",
       "foresight swap: .*granted (\\d+) slots.*leaving (\\d+) MiB",
-      " - LOW:",
+      " - LOW:|below 512 MiB|are free at the start of this request",
       "pair supervisor:.*(restart|recovered|recovering|exited)"
      ],
      "gates": [
@@ -4886,7 +4886,7 @@
       "strata generate: expert cache (\\d+) slots",
       "layer split: .* runs layers 30-47",
       "foresight swap: .*granted (\\d+) slots.*leaving (\\d+) MiB",
-      " - LOW:",
+      " - LOW:|below 512 MiB|are free at the start of this request",
       "pair supervisor:.*(restart|recovered|recovering|exited)"
      ],
      "gates": [
@@ -5055,7 +5055,7 @@
       "strata generate: expert cache (\\d+) slots",
       "layer split: .* runs layers 30-47",
       "foresight swap: .*granted (\\d+) slots.*leaving (\\d+) MiB",
-      " - LOW:",
+      " - LOW:|below 512 MiB|are free at the start of this request",
       "pair supervisor:.*(restart|recovered|recovering|exited)"
      ],
      "gates": [
@@ -5201,7 +5201,7 @@
       "strata generate: expert cache (\\d+) slots",
       "layer split: .* runs layers 30-47",
       "foresight swap: .*granted (\\d+) slots.*leaving (\\d+) MiB",
-      " - LOW:",
+      " - LOW:|below 512 MiB|are free at the start of this request",
       "pair supervisor:.*(restart|recovered|recovering|exited)"
      ],
      "gates": [
@@ -5245,7 +5245,7 @@
       "strata generate: expert cache (\\d+) slots",
       "layer split: .* runs layers 30-47",
       "foresight swap: .*granted (\\d+) slots.*leaving (\\d+) MiB",
-      " - LOW:",
+      " - LOW:|below 512 MiB|are free at the start of this request",
       "pair supervisor:.*(restart|recovered|recovering|exited)"
      ],
      "gates": [
@@ -5427,7 +5427,7 @@
       "strata generate: expert cache (\\d+) slots",
       "layer split: .* runs layers 30-47",
       "foresight swap: .*granted (\\d+) slots.*leaving (\\d+) MiB",
-      " - LOW:",
+      " - LOW:|below 512 MiB|are free at the start of this request",
       "pair supervisor:.*(restart|recovered|recovering|exited)"
      ],
      "gates": [

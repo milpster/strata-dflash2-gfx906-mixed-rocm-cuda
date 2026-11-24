@@ -521,7 +521,15 @@ def boot_checks(out, key, rec):
               "fingerprint": None, "page_cache": None,
               # the engine digest this boot started, pinned by port_ab_boot_plan.py --record;
               # a leg's own record must name the same binary (engine_identity_problems)
-              "engine_sha": record.get("engine_sha256")}
+              "engine_sha": record.get("engine_sha256"),
+              # whether a boot record exists at all: a leg with no boot record has no boot to
+              # attribute it to, so it cannot enter a claim sample (sample_class)
+              "record_present": bool(record),
+              # why this boot's legs cannot enter a CLAIM sample, one reason each. A boot that
+              # restarted or faulted measured at least part of its legs on a recovering pair,
+              # so its legs are DISCARDED (sample_class): not failed twice, but never counted
+              # as an arm's sample either.
+              "discard": []}
 
     started = [line for line in prefix.splitlines() if C.EXPECTED_LINES["boot_started"] in line]
     if not started:
@@ -579,8 +587,18 @@ def boot_checks(out, key, rec):
                                   "(generation " + str(generation) + ", "
                                   + str(len(events)) + " supervisor event(s), "
                                   + str(matches) + " engine line(s))")
+        checks["discard"].append("restart")
 
-    checks["low"] = len(re.findall(C.EXPECTED_LINES["low_warning"], prefix))
+    # The low-VRAM warning count is a CONDITION count, so it is taken over THIS BOOT'S OWN
+    # log segment - the same segment the restart and fault gates read - and not over the
+    # pre-request prefix alone: the warnings a window's table is compared on are printed per
+    # request ("... 400 MiB of VRAM free at the start of this request (below 512 MiB) ..." on
+    # the fork, "... 398 MiB of the card's memory are free at the start of this request ...
+    # Below 512 MiB ..." on the port), so a prefix-only count saw nothing but the boot-time
+    # CUDA line in one server's wording. Two arms' columns are comparable only when both count
+    # the same events; contract EXPECTED_LINES["low_warning"] matches all three known
+    # spellings. This value is display/evidence only - no gate reads it.
+    checks["low"] = len(re.findall(C.EXPECTED_LINES["low_warning"], boot_text))
     checks["fs_slots"] = [int(m.group(1)) for m in re.finditer(C.EXPECTED_LINES["boot_fs"], prefix)]
     cache = re.search(C.EXPECTED_LINES["boot_cache"], prefix)
     checks["cache_slots"] = int(cache.group(1)) if cache else None
@@ -590,6 +608,7 @@ def boot_checks(out, key, rec):
     faults = len(re.findall(C.EXPECTED_LINES["gpu_fault"], boot_text))
     if faults:
         checks["problems"].append(key + ": " + str(faults) + " GPU memory-access fault line(s)")
+        checks["discard"].append("gpu fault")
 
     if record:
         since = record.get("started_epoch")
@@ -603,6 +622,7 @@ def boot_checks(out, key, rec):
             if checks["fingerprint"].get("count"):
                 checks["problems"].append(key + ": kernel journal fingerprint is not clean: "
                                           + checks["fingerprint"]["matches"][0])
+                checks["discard"].append("kernel fault fingerprint")
         start_cache = record.get("page_cache") or {}
         now = page_cache_now()
         checks["page_cache"] = {"cached_mib_at_boot": start_cache.get("cached_mib"),
@@ -715,6 +735,172 @@ def engine_identity_problems(bkey, leg, rec, boot_engine_sha, manifest):
     return problems
 
 
+def scheduled_role(window, bkey):
+    """Which scheduled slot a boot key fills: pilot, warmup (discarded first touch) or claim.
+
+    Read from the WINDOW's own schedule (legs.schedule), never guessed from the rep number:
+    W2's pilot and warmup are both rep 0, W1d has only a warmup at rep 0, and a window at
+    n=3 (W1f) starts its claims at r1 - "rep 0 means warmup" would mislabel two of them.
+    A key the schedule does not know is "unscheduled": a boot record for a boot the window
+    never planned is not part of any sample.
+    """
+    if not parse_boot_key(bkey):
+        return "unscheduled"
+    for row in schedule(window):
+        if pc.boot_key(window, row["arm"], row["rep"], row["boot"]) == bkey:
+            if row.get("pilot"):
+                return "pilot"
+            if row.get("warmup"):
+                return "warmup"
+            return "claim"
+    return "unscheduled"
+
+
+def sample_class(window, bkey, boot):
+    """claim / pilot / warmup / discarded for one boot of a window, with the reason.
+
+    Only a CLAIM slot boot - one the window scheduled for the claim sample, with a boot
+    record, and with no restart or fault in it - contributes a leg to an arm's n. Everything
+    else is named with its reason so the claim-n table can show the reader what the window
+    actually holds instead of what it was planned to hold: W2 lost one short boot
+    (W2-B-sht-r1, a GPU reset) and every short shape silently became A=2 / B=1.
+    """
+    role = scheduled_role(window, bkey)
+    if role != "claim":
+        return role, ("the window scheduled this boot as " + role
+                      if role != "unscheduled" else "the window schedules no such boot")
+    if not (boot or {}).get("record_present"):
+        return "discarded", "no boot record under boots/"
+    reasons = (boot or {}).get("discard") or []
+    if reasons:
+        return "discarded", boot["key"] + ": " + " + ".join(reasons)
+    return "claim", ""
+
+
+def claim_n_table(window, rows, classes, boot_seen=None):
+    """shape x arm -> HOW MANY CLAIM LEGS this window actually holds, plus what it implies.
+
+    This answers "is the window's n what the report says it is". Until now --check printed
+    every row and passed, so W2 - where arm B lost the short boot W2-B-sht-r1 to a GPU reset -
+    printed A=2/B=1 on every short shape and read exactly like a balanced window; the
+    imbalance was only caught by a human re-reading the table, while the report stated n=2/arm.
+
+    The table is driven by the WINDOW'S SCHEDULE, not by the records that happen to exist:
+    a scheduled claim boot with no record for a shape is a DISCARDED leg, and it is the
+    missing one that shortens the arm. Counting only records would hide it, which is the
+    defect being fixed.
+
+    Classification (per boot and shape):
+      claim     the window scheduled this slot as a claim boot, its boot record exists, and
+                the boot carries no restart and no GPU/kernel fault;
+      pilot     the window's pilot boot (its deltas are frozen before the claims);
+      warmup    the window's discarded first-touch boot;
+      discarded a claim slot whose boot restarted, faulted or has no record - measured on a
+                recovering pair, or never measured, so it is in no arm's n.
+
+    An unbalanced claim sample is reported as a PROBLEM line, not a hard refusal, because the
+    contract's CLAIM block makes an n=2 window's output DESCRIPTIVE: an unbalanced descriptive
+    sample may still be printed, it just can never be described as n=2/arm. The problem line
+    carries the counts and says so, and the verdict counts it - so no window can silently claim
+    a balance it does not have.
+    """
+    problems, notes = [], []
+    boot_seen = boot_seen or {}
+    present = {(r["boot"], r["shape"]) for r in rows}
+    shapes = []
+    for r in rows:
+        if r["shape"] not in shapes:
+            shapes.append(r["shape"])
+    slots = {}
+    for row in schedule(window):
+        bkey = pc.boot_key(window, row["arm"], row["rep"], row["boot"])
+        role = "pilot" if row.get("pilot") else ("warmup" if row.get("warmup") else "claim")
+        for shape in row["shapes"]:
+            if shape not in shapes:
+                shapes.append(shape)
+            slots.setdefault(shape, []).append((row["arm"], bkey, role))
+    counts = {s: {} for s in shapes}
+    for shape in shapes:
+        covered = set()
+        for arm, bkey, role in slots.get(shape) or []:
+            cell = counts[shape].setdefault(arm, {"claim": 0, "pilot": 0, "warmup": 0,
+                                                  "discarded": 0})
+            covered.add((bkey, shape))
+            if role != "claim":
+                # a pilot/warmup leg is in no n whatever its boot did; count it where it was
+                # scheduled, and call it discarded when there is no record of it at all
+                if (bkey, shape) in present:
+                    cell[role] += 1
+                else:
+                    cell["discarded"] += 1
+                    notes.append(shape + ": " + bkey + " has no " + shape + " record (it is a "
+                                 + role + " boot, so it was in no n either way)")
+                continue
+            boot = boot_seen.get(bkey) or {}
+            klass, _ = (classes.get((bkey, shape)) or ("discarded", "no record of this leg"))
+            if (bkey, shape) not in present:
+                klass = "discarded"
+            cell[klass] += 1
+            if klass == "discarded":
+                # one wording for every shape, so the reason reads the same whether or not the
+                # restarted boot happened to write this particular leg before it faulted
+                if boot.get("discard"):
+                    why = ("the boot was discarded (" + " + ".join(boot["discard"]) + ")"
+                           + (" and it has no " + shape + " record" if (bkey, shape) not in present
+                              else ""))
+                else:
+                    why = ("the window scheduled this claim boot but it has no " + shape
+                           + " record")
+                notes.append(shape + ": " + bkey + " is out of the claim sample: " + why)
+        for r in rows:
+            if r["shape"] != shape or (r["boot"], shape) in covered:
+                continue
+            klass = (classes.get((r["boot"], shape)) or ("discarded",))[0]
+            if klass not in ("claim", "pilot", "warmup", "discarded"):
+                klass = "discarded"
+            counts[shape].setdefault(r["arm"], {"claim": 0, "pilot": 0, "warmup": 0,
+                                                "discarded": 0})[klass] += 1
+            notes.append(shape + ": " + r["boot"] + " is a record the window does not schedule; "
+                         "counted as " + klass)
+    print("")
+    print("claim-n table: CLAIM legs only per shape and arm (pilot/warm/disc are shown and are "
+          "in no n)")
+    print("%-10s %2s %6s %6s %6s %6s %6s" %
+          ("shape", "arm", "claim", "pilot", "warm", "disc", "n"))
+    for shape in shapes:
+        for arm in sorted(counts[shape]):
+            c = counts[shape][arm]
+            print("%-10s %2s %6d %6d %6d %6d %6d" %
+                  (shape, arm, c["claim"], c["pilot"], c["warmup"], c["discarded"], c["claim"]))
+    print("")
+    window_arms = C.window_arms(window) if window in C.WINDOWS else ("A", "B")
+    for shape in shapes:
+        n = {a: counts[shape].get(a, {}).get("claim", 0) for a in window_arms}
+        detail = " ".join(a + "=" + str(n[a]) for a in window_arms)
+        if shape not in slots:
+            # a record of a shape this window does not schedule (a legacy shape name): shown
+            # above so it is not hidden, but it is in no window's plan and balances nothing
+            continue
+        if len(window_arms) < 2:
+            # a one-arm window (W3p) has no A/B comparison to balance; say what it holds
+            notes.append(shape + ": claim n " + detail + " (one-arm window: no A/B balance to "
+                         "check)")
+            continue
+        if not any(n.values()):
+            # an unrun or not-yet-opened window: nothing to balance. NOT a problem - the check
+            # must not invent a failure for a window whose boots simply have not happened.
+            notes.append(shape + ": no claim leg of this shape exists yet (" + detail + ")")
+            continue
+        if len(set(n.values())) > 1:
+            hi, lo = max(n.values()), min(n.values())
+            problems.append(shape + ": claim n " + detail + " - the arms are not balanced; the "
+                            "window cannot be read as n=" + str(hi) + "/arm on this shape (it "
+                            "holds n=" + str(lo) + " on the short arm)")
+    for note in notes:
+        print("NOTE: " + note)
+    return problems
+
+
 def check(out, window, manifest_path=None):
     manifest = load_manifest(manifest_path)
     frozen = pilot_frozen(manifest)
@@ -726,6 +912,7 @@ def check(out, window, manifest_path=None):
         return 2
     by_shape = {}
     fills_by_group = {}
+    classes = {}
     for d in recdirs:
         parsed = parse_boot_key(d.name)
         for jf in sorted(d.glob("*.json")):
@@ -742,9 +929,21 @@ def check(out, window, manifest_path=None):
                     group = parsed[2]
                     fills_by_group.setdefault(group, {}).setdefault(arm, []).append(fill["rows"])
             boot = boot_seen[bkey]
+            classes[(bkey, leg)] = sample_class(window, bkey, boot)
             problems.extend(engine_identity_problems(bkey, leg, rec, boot.get("engine_sha"),
                                                      manifest))
             if rec.get("kind") == "ttft":
+                # A ttft3 leg with no attributable engine is a FAILURE, not the INFO the
+                # pre-identity records got: its turns are a sample of an arm's build, and a
+                # sample nobody can assign to a build cannot be pooled with the other arm's.
+                # (ab9_driver legs keep the informational reading: their records predate the
+                # field across every historical window and are never retro-failed.)
+                if not rec.get("engine_sha256"):
+                    problems.append(bkey + "/" + leg + ": ttft leg names no engine sha"
+                                    + ((" (" + str(rec.get("engine_identity_reason")) + ")")
+                                       if rec.get("engine_identity_reason") else "")
+                                    + ", so its turns cannot be attributed to this arm's build "
+                                    "and the sample cannot enter an A/B statement")
                 turns = rec.get("turn_rows") or []
                 ttft = [t.get("ttft_client_s") for t in turns]
                 rows.append({"shape": leg, "arm": arm, "boot": bkey, "kind": "ttft",
@@ -886,34 +1085,58 @@ def check(out, window, manifest_path=None):
     # the record's engine_identity_reason says which); such a leg is informational only and
     # is named below. A record that DOES name an engine must agree with the arm's manifest
     # pin and with the engine its boot record started - engine_identity_problems() fails it.
-    header = ("%-8s %-2s %-16s %8s %6s %8s %8s %3s %5s %5s %4s %12s" %
+    # "smp" is the row's SAMPLE CLASS from sample_class(): "clm" = a scheduled claim boot
+    # with no restart/fault, i.e. a leg that is part of its arm's n; "plt"/"wrm" = the
+    # window's pilot/discarded-first-touch boot; "dsc" = a claim slot whose boot restarted,
+    # faulted or has no boot record (its legs are in NO n - see the claim-n table below).
+    # lowVRAM counts the low-VRAM warning in EITHER server wording (contract
+    # EXPECTED_LINES["low_warning"]): the fork's "- LOW:" and the port's "are free at the
+    # start of this request" / "(below 512 MiB)". It is a CONDITION count, so two arms may
+    # only be compared on it when both logs are counted the same way - which is what this
+    # column now does.
+    header = ("%-8s %-2s %-16s %8s %6s %8s %8s %3s %4s %5s %5s %7s %12s" %
               ("shape", "arm", "boot", "promptN", "reused", "read_tps", "gen_tps", "TG",
-               "fill", "slots", "LOW", "engine"))
+               "smp", "fill", "slots", "lowVRAM", "engine"))
     print(header)
     for r in sorted(rows, key=lambda x: (x["shape"], x["boot"])):
         fill = r.get("fill") or {}
         tg = r.get("tg")
         claim_grade = bool(tg) and (r.get("gen_tok") or 0) >= C.TG_CLAIM_MIN_GENERATED
-        print(("%-8s %-2s %-16s %8s %6s %8s %8s %3s %5s %5s %4s %12s" % (
+        klass = (classes.get((r["boot"], r["shape"])) or ("?",))[0]
+        print(("%-8s %-2s %-16s %8s %6s %8s %8s %3s %4s %5s %5s %7s %12s" % (
             r["shape"], r["arm"], r["boot"], r.get("prompt_tok") or "-",
             r.get("reused") if r.get("reused") is not None else "-",
             r.get("read_tps") or (r.get("ttft_s") and "ttft " + str(r["ttft_s"][0])) or "-",
             r.get("gen_tps") or "-",
             "-" if tg is None else (("tg*" if r.get("prodshape") else "tg")
                                     if claim_grade else "ctx"),
+            {"claim": "clm", "pilot": "plt", "warmup": "wrm"}.get(klass, "dsc"),
             fill.get("rows") or "-", r.get("cache_slots") or "-", r.get("low", "-"),
             (r.get("engine") or "-")[:12])))
+    print("lowVRAM = low-VRAM warnings in this boot's own log segment, counted in EVERY "
+          "server wording ('- LOW:' / 'below 512 MiB' / 'are free at the start of this "
+          "request'), so two arms are compared on the same events; "
+          "smp = sample class (clm claim, plt pilot, wrm warmup, dsc discarded)")
+    problems.extend(claim_n_table(window, rows, classes, boot_seen))
     for r in sorted(rows, key=lambda x: (x["shape"], x["boot"])):
         if r.get("prodshape"):
             print("NOTE: " + r["boot"] + "/" + r["shape"] + " ran the PROD SHAPE (thinking ON): "
                   "comparable to prod's serving shape, NOT poolable with the thinking-off "
                   "prefill legs - its TG rate belongs to no A/B sample they are in")
+    # Informational for the ab9_driver leg kinds (their records predate the identity field in
+    # every historical window, and those windows are never retro-failed); a FAIL for a ttft leg,
+    # which is handled where its record is read. The split is named here so a reader does not
+    # take "informational" to cover all of them.
     missing = [r for r in rows if not r.get("engine")]
     if missing:
+        ttft_missing = [r for r in missing if r.get("kind") == "ttft"]
+        other_missing = [r for r in missing if r.get("kind") != "ttft"]
         print("engine: " + str(len(missing)) + " of " + str(len(rows)) + " leg record(s) name no "
               "engine sha (pre-identity record, or the link was unreadable), so such a leg "
-              "cannot be attributed to a build")
-        for r in sorted(missing, key=lambda x: (x["boot"], x["shape"])):
+              "cannot be attributed to a build: " + str(len(ttft_missing)) + " ttft leg(s), "
+              "FAILED for it below, and " + str(len(other_missing)) + " ab9_driver leg(s), "
+              "informational only because every historical window's records predate the field")
+        for r in sorted(other_missing, key=lambda x: (x["boot"], x["shape"])):
             print("INFO: " + r["boot"] + "/" + r["shape"] + " names no engine sha: not "
                   "attributable to a build"
                   + (("; " + str(r["engine_reason"])) if r.get("engine_reason") else ""))
@@ -1011,7 +1234,7 @@ SELFTEST_JUDGE2 = ("strata serve: prompt {n} tokens = {reused} reused + 10 read 
 def _fixture(root, key, arm, shape, *, spec="5", rows=3680, gib="6.84", restart_line="",
              second_reused=None, ttft_first=True, generation=None, started=1.0, ended=None,
              supervisor_events=None, legacy_events=None, tokens=None, generated=None,
-             record_cap=None, engine_sha=None, boot_engine_sha=None):
+             record_cap=None, engine_sha=None, boot_engine_sha=None, log_extra=""):
     import tempfile  # noqa: F401 - the caller owns the temp dir
     d = pathlib.Path(root) / "records" / key
     d.mkdir(parents=True, exist_ok=True)
@@ -1020,10 +1243,17 @@ def _fixture(root, key, arm, shape, *, spec="5", rows=3680, gib="6.84", restart_
     boot += restart_line
     body = boot
     if shape == "ttft3":
+        # a ttft record carries the same engine log and elog window an ab9_driver record does:
+        # the boot gates and the low-VRAM count read this boot's own segment of it, and the
+        # attribution gate reads the record's engine sha
+        body = boot + log_extra
         rec = {"arm": arm, "leg": shape, "kind": "ttft", "turns": 3, "max_tokens": 64, "ts": 1,
+               "elog": str(pathlib.Path(root) / (key + "-" + shape + ".engine.log")),
+               "elog_start": len(boot.encode()), "elog_end": len(body.encode()),
                "turn_rows": [{"ttft_client_s": 2.0 if ttft_first else None, "wall_s": 4.0},
                              {"ttft_client_s": 0.6, "wall_s": 2.5, "inter_turn_wall_s": 0.3}],
                "mem": {"max_rss_mib": 40000}}
+        pathlib.Path(rec["elog"]).write_text(body)
     else:
         n = tokens if tokens is not None else (58423 if shape == "pp239k" else 144000)
         # the shape's own contract cap is what the record was SCHEDULED under; "generated"
@@ -1036,6 +1266,9 @@ def _fixture(root, key, arm, shape, *, spec="5", rows=3680, gib="6.84", restart_
             cap = record_cap      # a record written under an older, shorter cap
         if second_reused is not None:
             body += SELFTEST_JUDGE2.format(n=n, reused=second_reused)
+        # log_extra lands AFTER the judge, i.e. inside the leg's slice: that is where a real
+        # request's low-VRAM warning is printed, not in the boot prefix
+        body += log_extra
         rec = {"arm": arm, "leg": shape, "kind": "tg" if second_reused is not None else "prefill",
                "ctx": n, "max_tokens": cap, "ts": 1, "walls": [1], "wall_s": 1,
                "content_from": "content", "prompt_bytes": n, "prompt_sha256": "x", "requests": [],
@@ -1361,6 +1594,152 @@ def selftest():
         if not ok:
             failures.append("boot-evidence-file")
 
+    # (2) AN UNBALANCED CLAIM SAMPLE IS REPORTED, WITH THE COUNTS. W2 lost one short boot to a
+    # GPU reset, so every short shape held A=2 / B=1 and the window still printed every row and
+    # passed while other text called it n=2/arm. The table counts CLAIM legs only, and the
+    # imbalance is a problem line - not a hard refusal, because the contract makes an n=2
+    # window's output descriptive.
+    with tempfile.TemporaryDirectory(dir=_tmpdir()) as root:
+        # the short group: pilot r0 per arm, claims r1/r2, and B's r1 boot restarted after it
+        # wrote pp2k but before pp8k
+        for arm in ("A", "B"):
+            _fixture(root, "W2-" + arm + "-sht-r0", arm, "pp2k", tokens=2057, ended=6.0)
+            _fixture(root, "W2-" + arm + "-sht-r0", arm, "pp8k", tokens=8032, ended=6.0)
+        for arm in ("A", "B"):
+            _fixture(root, "W2-" + arm + "-sht-r1", arm, "pp2k", tokens=2057, ended=6.0,
+                     generation=2 if arm == "B" else None)
+            _fixture(root, "W2-" + arm + "-sht-r1", arm, "pp8k", tokens=8032, ended=6.0,
+                     generation=2 if arm == "B" else None)
+            _fixture(root, "W2-" + arm + "-sht-r2", arm, "pp2k", tokens=2057, ended=6.0)
+            _fixture(root, "W2-" + arm + "-sht-r2", arm, "pp8k", tokens=8032, ended=6.0)
+        # drop B's pp8k record from the restarted boot, as the real window did
+        (pathlib.Path(root) / "records" / "W2-B-sht-r1" / "B-pp8k.json").unlink()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = check(pathlib.Path(root), "W2", MANIFEST)
+        text = buf.getvalue()
+        want = ("pp8k: claim n A=2 B=1 - the arms are not balanced; the window cannot be read "
+                "as n=2/arm on this shape")
+        pp2k = "pp2k: claim n A=2 B=1 - the arms are not balanced"
+        ok = (rc == 1 and want in text and pp2k in text
+              and "W2-B-sht-r1 is out of the claim sample" in text
+              and "claim-n table" in text)
+        print(("ok   " if ok else "FAIL ") + "claim-n-unbalanced-is-reported: rc " + str(rc)
+              + " (A=2/B=1 is a problem line with the counts; a discarded boot loses its legs "
+              "from BOTH shapes it did not finish)")
+        if not ok:
+            failures.append("claim-n-unbalanced-is-reported")
+
+    # ... and a BALANCED window must NOT produce that line: the gate has to catch imbalance,
+    # not fire on every window (a false positive would make the line worthless)
+    with tempfile.TemporaryDirectory(dir=_tmpdir()) as root:
+        for arm in ("A", "B"):
+            for rep in (0, 1, 2):
+                _fixture(root, "W2-" + arm + "-sht-r" + str(rep), arm, "pp2k", tokens=2057,
+                         ended=6.0)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = check(pathlib.Path(root), "W2", MANIFEST)
+        text = buf.getvalue()
+        ok = rc == 0 and "the arms are not balanced" not in text
+        print(("ok   " if ok else "FAIL ") + "claim-n-balanced-is-not-reported: rc " + str(rc)
+              + " (A=2/B=2 on every shape: the table says n=2 per arm and no imbalance line "
+              "is printed)")
+        if not ok:
+            failures.append("claim-n-balanced-is-not-reported")
+
+    # (3) THE LOW-VRAM COUNT IS A CONDITION COUNT, NOT A LOG-FORMAT FINGERPRINT. The fork
+    # server prints " - LOW:" and "(below 512 MiB)"; the port server prints the reworded
+    # "N MiB of the card's memory are free at the start of this request ... Below 512 MiB".
+    # Counting only " - LOW:" made W2's "LOW 1 vs 1" an artifact of two spellings.
+    # the lines as the two servers actually write them (verbatim from
+    # out/port-ab-20261123/logs/W2-A-dec-r0.engine.log and W2-B-dec-r0.engine.log)
+    FORK_BOOT_LOW = ("strata serve: CUDA1: 434 MiB of VRAM free with everything loaded - LOW: "
+                     "its window graphs are captured on first use and need room too\n")
+    FORK_REQ_LOW = ("strata serve: WARNING: only 400 MiB of VRAM free at the start of this "
+                    "request (below 512 MiB): when the card is this full the driver can page GPU "
+                    "memory to system RAM, decode falls to a few tok/s\n")
+    PORT_REQ_LOW = ("strata serve: 398 MiB of the card's memory are free at the start of this "
+                    "request. The model and its cache use most of the card on purpose, and the "
+                    "display and other programs use some. Below 512 MiB the driver can move GPU "
+                    "memory to system RAM, and decode can then fall to a few tokens a second.\n")
+
+    def low_column(build):
+        with tempfile.TemporaryDirectory(dir=_tmpdir()) as root:
+            build(root)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = check(pathlib.Path(root), "W1")
+            text = buf.getvalue()
+            got = {}
+            for arm in ("A", "B"):
+                row = [l for l in text.splitlines() if l.startswith("pp239k   " + arm)]
+                got[arm] = int(row[0].split()[11]) if row else -1
+            return rc, got, text
+
+    for name, extra, want_low in (
+            # both spellings in one boot, one of each: BOTH must be counted
+            ("low-warning-fork-both-spellings", FORK_BOOT_LOW + FORK_REQ_LOW, 2),
+            # the port's reworded sentence, which the old " - LOW:" regex never saw at all
+            ("low-warning-port-reworded", PORT_REQ_LOW, 1)):
+        rc, got, _ = low_column(lambda r, x=extra: (
+            _fixture(r, "W1-A-pp-r1", "A", "pp239k", ended=6.0, log_extra=x),
+            _fixture(r, "W1-B-pp-r1", "B", "pp239k", ended=6.0)))
+        # B has none of these lines; the fixture's own boot prefix has none either, so A's
+        # count is exactly the extra lines and B's is 0
+        ok = rc == 0 and got["A"] == want_low and got["B"] == 0
+        print(("ok   " if ok else "FAIL ") + name + ": lowVRAM A=" + str(got["A"])
+              + " B=" + str(got["B"]) + " (want A=" + str(want_low) + " B=0; rc "
+              + str(rc) + ")")
+        if not ok:
+            failures.append(name)
+    # the point of the column: the SAME two low-VRAM requests read as 2 on either arm, in
+    # whichever wording that arm's server prints. Before the fix this was fork 2 / port 0.
+    rc, got, text = low_column(lambda r: (
+        _fixture(r, "W1-A-pp-r1", "A", "pp239k", ended=6.0,
+                 log_extra=FORK_REQ_LOW + FORK_REQ_LOW.replace("only 400", "only 187")),
+        _fixture(r, "W1-B-pp-r1", "B", "pp239k", ended=6.0,
+                 log_extra=PORT_REQ_LOW + PORT_REQ_LOW.replace("398 MiB", "135 MiB"))))
+    ok = rc == 0 and got["A"] == got["B"] == 2
+    print(("ok   " if ok else "FAIL ") + "low-warning-both-wordings-count-equally: fork "
+          + str(got["A"]) + " vs port " + str(got["B"]) + " (two low-VRAM requests on each arm "
+          "read as 2 vs 2, not 1 vs 1)")
+    if not ok:
+        failures.append("low-warning-both-wordings-count-equally")
+
+    # (1) A ttft3 LEG WITH NO ATTRIBUTABLE ENGINE IS A FAIL, not the INFO an ab9_driver record
+    # of the same age gets: its turns are an arm's sample and cannot be assigned to a build.
+    def ttft_case(name, rec_shas, want_rc, want_text, pins=(SHA_A, SHA_B)):
+        """A ttft3 leg pair whose records name rec_shas, against a manifest pinning pins."""
+        with tempfile.TemporaryDirectory(dir=_tmpdir()) as root:
+            manifest = pathlib.Path(root) / "manifest.json"
+            manifest.write_text(json.dumps({"arms": {
+                arm: ({"engine": {"sha256": sha}} if sha else {})
+                for arm, sha in zip(("A", "B"), pins)}}))
+            _fixture(root, "W1-A-ttft3", "A", "ttft3", engine_sha=rec_shas[0])
+            _fixture(root, "W1-B-ttft3", "B", "ttft3", engine_sha=rec_shas[1])
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = check(pathlib.Path(root), "W1", manifest)
+            text = buf.getvalue()
+            hit = want_text in text if want_text else True
+            ok = rc == want_rc and hit
+            print(("ok   " if ok else "FAIL ") + name + ": rc " + str(rc) + " (want "
+                  + str(want_rc) + ")" + ("" if hit else ", missing: " + want_text))
+            if not ok:
+                failures.append(name)
+
+    # a ttft record naming its arm's pinned build is untouched by the attribution gate ...
+    ttft_case("ttft-with-engine-passes", (SHA_A, SHA_B), 0, None)
+    # ... and one that names no build at all is FAILED, not printed as an INFO: the ttft3
+    # records are an arm's sample and cannot be pooled when nobody can say which build ran
+    ttft_case("ttft-without-engine-fails", (None, None), 1,
+              "ttft leg names no engine sha, so its turns cannot be attributed to this arm's "
+              "build")
+    # ... and a ttft record on the OTHER arm's engine is still the swap failure it always was
+    ttft_case("ttft-engine-swapped-fails", (SHA_B, SHA_A), 1,
+              "the manifest pins")
+
     if failures:
         print("SELFTEST FAILED: " + ", ".join(failures))
         return 1
@@ -1373,7 +1752,11 @@ def selftest():
           "beside the boot record; a 1,024-token pp239k leg is TG=tg, a 32-token tail stays "
           "TG=ctx, a record written under the old 8-token cap warns instead of failing "
           "the window it is the untouched baseline of, and the prod-shape leg prints tg* when "
-          "it clears the floor and FAILs when it does not")
+          "it clears the floor and FAILs when it does not; an unbalanced claim sample is a "
+          "problem line carrying both arms' counts (a balanced one is not reported), a "
+          "restarted boot's legs are out of the sample, the low-VRAM count sees the fork's "
+          "'- LOW:'/'(below 512 MiB)' and the port's reworded sentence alike so two arms' "
+          "columns are comparable, and a ttft leg with no attributable engine is a FAIL")
     return 0
 
 
