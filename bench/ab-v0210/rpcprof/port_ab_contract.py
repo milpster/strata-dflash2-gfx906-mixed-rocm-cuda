@@ -142,6 +142,14 @@ LEGS = {
     # never clear TG_CLAIM_MIN_GENERATED; prod serves with thinking on, and its budget keeps
     # generation running to the cap. Not a claim leg and never pooled with one - see W3p.
     "pp239k-prodshape": {"kind": "tg", "corpus": "pp239k", "max_tokens": 1024},
+    # The SPAN-INSTRUMENTED legs (W3s only). Same frozen corpora as the legs they shadow, same
+    # single fresh request, but the engine's own span lines are ON (STRATA_ENGINE_SPANS=1, see
+    # the W3s window and port_ab_configs.VARIANTS-adjacent env_extra hook). kind=prefill with a
+    # 32-token cap: the ONE number these exist for is request 1's read_tps and the per-chunk /
+    # per-layer breakdown behind it, so no cached re-run and no TG leg is spent. They are
+    # DIAGNOSTIC shapes, never claim shapes - nothing here is poolable with a W1/W1f/W3/W2 rate.
+    "dec144k-spans": {"kind": "prefill", "corpus": "dec144k", "max_tokens": 32},
+    "pp239k-spans": {"kind": "prefill", "corpus": "pp239k", "max_tokens": 32},
 }
 
 
@@ -207,6 +215,28 @@ REQUEST_TEMPLATES = {
     "claim": {"file": "request-template.json", "settings": REQUEST_TEMPLATE},
     "prodshape": {"file": "request-template-prodshape.json", "settings": PRODSHAPE_TEMPLATE},
 }
+
+# ------------------------------------------------------- diagnostic env (per window)
+# The ONE environment a non-claim window is allowed to move on top of the frozen tuple's, and
+# the only place it is written. It is NOT a VARIANTS overlay: a variant replaces serving
+# IDENTITY keys (and expected_identity then demands them); an entry here turns on an
+# ENGINE-SIDE INSTRUMENTATION switch, which changes what the engine LOGS, not what it serves.
+# Both arms of the window carry the same keys, so an A-vs-B comparison is still between two
+# arms that differ only in the declared structural pair.
+#
+#   W3s: STRATA_ENGINE_SPANS=1 - the engine's own per-layer / per-chunk / per-pass span lines
+#        (src/prefill/prefill.cpp:3512 and :8694, gate text "L4/L5 (STRATA_ENGINE_SPANS=1)").
+#        Any value turns the gate on (getenv(...) != nullptr), so "1" is used for legibility
+#        and there is no "=0" that means off - the key must be ABSENT to be off.
+WINDOW_ENV = {
+    "W3s": {"STRATA_ENGINE_SPANS": "1"},
+}
+
+
+def window_env(window):
+    """The diagnostic env additions a window's configs carry ({} for every other window)."""
+    return dict(WINDOW_ENV.get(window) or {})
+
 
 # ------------------------------------------------------------------------------- windows
 # n per arm. Operator directive 2026-11-23 (evening) reduced it to 2 (it was 3, then 5).
@@ -462,6 +492,66 @@ WINDOWS = {
                               "legs. The one thing it settles is the earlier failure - a leg "
                               "that must clear TG_CLAIM_MIN_GENERATED can do so on this shape.",
     },
+    # ---------------------------------------------------------------------------- W3s
+    # Operator request 2026-11-24: a SPAN-INSTRUMENTED prefill leg, to localise WHY the port
+    # engine is slower than the fork at 144k prefill (measured A 320.7 vs B 305.6 tok/s, n=2,
+    # DESCRIPTIVE). Nothing in this harness has ever carried the engine's own breakdown: all
+    # four W1/W2/W3 engine logs of the Phase-2 window hold ZERO "rpcprofile:" lines, because
+    # STRATA_ENGINE_SPANS was never set on any leg (git grep: the env appears only at
+    # src/prefill/prefill.cpp:3512 and :8694, and no config in out/port-ab-20261123/configs/
+    # carries it). A rate difference alone cannot say whether the port lost the time in the
+    # layer walk, in intake, in a chunk tail, or outside the run.
+    #
+    # What it measures: the SAME 144k decode corpus and the SAME 239,663-token corpus the W2
+    # decode and W3 legs read, as ONE fresh 32-token request per leg, with
+    # STRATA_ENGINE_SPANS=1 in the config env (port_ab_contract.WINDOW_ENV["W3s"], the only
+    # env difference from the frozen tuple - see derive()'s window_env hook). The engine then
+    # writes "rpcprofile: chunk" per chunk, "rpcprofile: span" per walked layer and
+    # "rpcprofile: pass"/"run" per run, which engine_breakdown.py reads.
+    #
+    # What it is NOT: a speed leg, and not poolable with anything. The spans cost wall time
+    # (two clock reads per walked layer, one per chunk, plus a line per layer on stderr), so a
+    # W3s tok/s is a number from an INSTRUMENTED run and is never comparable to an
+    # uninstrumented leg's. The question it answers is "where does the port's time go", read
+    # as shares of each arm's own instrumented wall; the A/B rate it prints is context only.
+    # Its own window id gives it its own boot keys (W3s-*) and config pins, so no W1/W1d/W1f/
+    # W2/W3/W3p config, record or pin can be touched by running it.
+    #
+    # Both arms: the difference to localise is between A and B, so a one-arm window would
+    # answer nothing. Boot shape is W2's decode boot (one 144k leg per boot) with the W3 pp leg
+    # carried in the same boot - both are one fresh request on the same pair, and the pp leg
+    # second is the 239k context the fork/port difference was originally seen at.
+    "W3s": {
+        "name": "span-instrumented prefill (STRATA_ENGINE_SPANS=1): the 144k decode corpus and "
+                "the 239,663-token corpus, one fresh request each, to localise the A-vs-B "
+                "prefill difference",
+        "margins": "explicit",                  # the frozen 256/192 tuple, as every claim boot
+        "boot_groups": {"spans": ["dec144k-spans", "pp239k-spans"]},
+        "legs_per_boot": {"spans": 2},
+        "boots_per_arm": REPS,                  # 2 boots/arm, descriptive only
+        "warmup_boots": 2,                      # one discarded first-touch boot per arm
+        "budget_s": None,                       # derived below (W2 decode arithmetic + spans)
+        "contract_budget_s": None,              # the contract predates this leg
+        "gate_metric": "read_tps",
+        "delta": None,
+        "delta_note": "no pre-registered delta: an instrumented run's wall includes the span "
+                      "logging, so its rate is not the quantity any pre-registered delta was "
+                      "stated for. The window's output is a SHARE table, not a rate claim",
+        # the claim template, unchanged: this window must not also move the request shape, or
+        # the breakdown would describe a serving shape nobody measured a rate at
+        "request_template": "claim",
+        "window_env": dict(WINDOW_ENV["W3s"]),
+        "poolable_with_claim_legs": False,
+        "claim": "NOT A CLAIM LEG and never poolable: the engine's span logging adds wall time "
+                 "(two clock reads per walked layer and one line per layer per chunk), so a "
+                 "W3s rate is an instrumented rate and cannot be compared to an uninstrumented "
+                 "leg's, nor can an A-vs-B W3s rate difference be read as the size of the "
+                 "prefill difference. What the window produces is a per-segment SHARE table "
+                 "per arm (engine_breakdown.py), and any statement about where the port loses "
+                 "time is a statement about those shares, DESCRIPTIVE at n=2.",
+        "measurement_caveat": "Spans are ON: read shares within each arm, never rates across "
+                              "arms or against W1/W2/W3.",
+    },
 }
 
 
@@ -540,6 +630,13 @@ def budget_derivation() -> dict:
     # boots are W3's two B reps and it spends one discarded first-touch boot.
     w3p_claim = len([p for p in claim_pairs("W3p")])               # arms(B) x REPS = 2
     w3p_total = w3p_claim + WINDOWS["W3p"]["warmup_boots"]         # 2 claim + 1 warmup = 3
+    # W3s is a W2 decode boot plus the W3 pp leg in the SAME boot: the 144k leg's arithmetic
+    # and the 239,663 leg's, one boot each (the boot is paid once for both legs). The spans'
+    # own logging cost is real but has no measured anchor, so it is planned for by the two
+    # discarded first-touch boots and by the leg ranges being the cheapest rate in the table -
+    # deliberately, not by an invented per-layer cost.
+    w3s_claim = len([p for p in claim_pairs("W3s")])               # both arms x REPS = 4
+    w3s_total = w3s_claim + WINDOWS["W3s"]["warmup_boots"]         # 4 claim + 2 warmup = 6
     w4_total = 4                                                  # 2 cells x 2 boots
     return {
         "anchors": {"prefill_tps": PREFILL_TPS, "decode_tps": DECODE_TPS, "boot_s": BOOT_S,
@@ -606,6 +703,23 @@ def budget_derivation() -> dict:
             "note": "W3's anchors, W3's leg and cap: thinking on changes what the model writes, "
                     "not the wall-clock terms (a 2,000-token thinking budget is inside the "
                     "1,024-token cap the leg sets, so the generation still ends at the cap)",
+        },
+        "W3s": {
+            "boots": {"claim": w3s_claim, "warmup": WINDOWS["W3s"]["warmup_boots"],
+                      "total": w3s_total},
+            "terms": str(w3s_total) + " boots x (144k prefill + 239,663 prefill + boot) = 4 claim "
+                     "(2 per arm) + 2 warmup; the 144k leg without its two cached generations "
+                     "(a 32-token tail) and no cached re-run anywhere",
+            # the 144k term is the decode boot's prefill without its two 1,024-token
+            # generations; the pp term is W3's prefill without its generations either
+            "range_s": [w3s_total * (144000 / PREFILL_TPS[1] + 239663 / PREFILL_TPS[1]
+                                     + 64 / DECODE_TPS[1] + BOOT_S[0]),
+                        w3s_total * (144000 / PREFILL_TPS[0] + 239663 / PREFILL_TPS[0]
+                                     + 64 / DECODE_TPS[0] + BOOT_S[1])],
+            "note": "W1/W2/W3's measured prefill anchors; the span logging's own cost has no "
+                    "measured anchor on this rig and is NOT estimated into the range - the "
+                    "range is a planning floor, and a window that overruns it is evidence "
+                    "about the span cost, not a harness defect",
         },
         "W4": {
             "boots": {"total": w4_total},

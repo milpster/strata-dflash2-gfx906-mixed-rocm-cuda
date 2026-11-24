@@ -102,6 +102,12 @@ def main():
 
     print(f"claim lines={len(claims)}  span lines={len(spans)}  chunk lines={len(chunks)}  pass lines={len(passes)}")
     if not claims and not spans and not chunks and not passes:
+        # A fully empty slice is the case a span window most often hits (the switch never
+        # reached the engine, or the leg ran on a binary without the lines): say what to do
+        # instead of returning a bare count line. The later hint cannot fire here, because
+        # this return comes first.
+        print("(no span/chunk lines: rerun the window with STRATA_ENGINE_SPANS=1 in the engine's "
+              "env - any value turns the gate on, the key must be ABSENT to be off)")
         return
 
     if claims:

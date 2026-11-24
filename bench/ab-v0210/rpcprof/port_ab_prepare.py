@@ -186,6 +186,10 @@ def arm_diffs(out, window="W1", rep=1):
 DELTA_KEY = {"pp239k": {"W1": "prefill_read_tps", "W1f": "prefill_read_tps",
                        "W3": "decode_gen_tps"},
              "pp239k-prodshape": {"W3p": None},
+             # W3s is diagnostic: an instrumented rate has no pre-registered delta to move
+             # against, and neither span shape is a claim shape.
+             "dec144k-spans": {"W3s": None},
+             "pp239k-spans": {"W3s": None},
              "dec144k": {"W2": "decode_gen_tps", "W4": None},
              "pp2k": {"W2": "short_pp_read_tps"},
              "pp8k": {"W2": "short_pp_read_tps"},
@@ -223,7 +227,18 @@ def leg_section(out, window):
                          + json.dumps({k: v for k, v in pc.VARIANTS[variant].items()
                                        if k != "note"}, sort_keys=True)
                          + "): the booted config MUST carry it and the request MUST be sent "
-                         "with " + template["file"] + " - this boot is NOT the claim shape")
+                         + "with " + template["file"] + " - this boot is NOT the claim shape")
+        env_extra = C.window_env(window)
+        if env_extra:
+            # the diagnostic switch is a GATE, not a note: a span leg whose engine log carries
+            # no "rpcprofile:" line measured nothing, and the whole point of the window is that
+            # line. The engine log must also show the per-layer lines, not only the pass line.
+            gates.append("diagnostic env " + json.dumps(env_extra, sort_keys=True)
+                         + " MUST be in the booted config's env (both arms) and the leg's "
+                         "engine-log slice MUST carry rpcprofile: chunk / span / pass lines - "
+                         "with none, the leg measured no breakdown and is void; the span "
+                         "logging adds wall time, so this rate is instrumented, never a speed "
+                         "measurement")
         rows[shape] = {
             "kind": C.kind_for(shape, window),
             "boot_group": boot,
@@ -325,6 +340,10 @@ def prepare(out, do_preflight=True, previous_manifest=None):
             # existing window, "prodshape" for W3p. Named in the manifest so no reader has to
             # infer from a config diff whether a rate is poolable with the claim legs.
             "config_variant": C.config_variant(window),
+            # the engine-side INSTRUMENTATION the window's configs turn on (W3s:
+            # STRATA_ENGINE_SPANS=1). Not a serving-shape variant: it changes what the engine
+            # logs, and its rates are instrumented rates, never speed measurements.
+            "diagnostic_env": C.window_env(window),
             "request_template": C.REQUEST_TEMPLATES[C.request_template(window)]["file"],
             "arms": list(C.window_arms(window)),
             "poolable_with_claim_legs": spec.get("poolable_with_claim_legs", True),
@@ -567,6 +586,35 @@ def verify():
                                     + " != the keys the variant actually moves " + str(sorted(want)))
         elif any(d.get("kind") == "variant" for d in (row.get("deltas") or [])):
             problems.append(key + ": a claim config carries variant deltas")
+        # a diagnostic-env window (W3s) must differ from its own uninstrumented twin in the
+        # env keys it names and NOTHING else: that is what makes its span breakdown a
+        # breakdown of the leg the rate was measured on. The trial_note names the window, so
+        # the note and the deltas it is made of are excluded from the comparison.
+        env_extra = C.window_env(window) if window in C.WINDOWS else {}
+        if env_extra:
+            want_deltas = {"env/" + k for k in env_extra}
+            seen = {d.get("field") for d in (row.get("deltas") or [])
+                    if d.get("kind") == "instrument"}
+            if seen != want_deltas:
+                problems.append(key + ": instrument delta set " + str(sorted(seen))
+                                + " != the env this window names " + str(sorted(want_deltas)))
+            # rep 0 is the discarded first-touch boot's own key (W1's warmup is r0 too), so
+            # it must be passed as 0: "row.get('rep') or 1" would re-derive r1's paths and
+            # report the boot's own socket/log/cache as a difference the window moved.
+            diffs = pc.instrument_only_difference(cfg, window, arm, out=OUT_DEFAULT,
+                                                 rep=(row.get("rep")
+                                                      if row.get("rep") is not None else 1),
+                                                 boot=row.get("boot_group"))
+            moved = {k: v for k, v in diffs.items() if k not in ("env", "trial_note")}
+            if moved:
+                problems.append(key + ": the diagnostic window moved more than its env "
+                                "(fields " + ", ".join(sorted(moved)) + ")")
+            env_diff = {k for k in ((diffs.get("env") or {}).get("instrumented") or {})
+                        if ((diffs.get("env") or {}).get("instrumented") or {}).get(k)
+                        != ((diffs.get("env") or {}).get("plain") or {}).get(k)}
+            if env_diff != set(env_extra):
+                problems.append(key + ": the diagnostic env moved " + str(sorted(env_diff))
+                                + ", the window names " + str(sorted(env_extra)))
     for key in scheduled:
         if key not in manifest["configs"]:
             problems.append("scheduled boot has no frozen config: " + key)

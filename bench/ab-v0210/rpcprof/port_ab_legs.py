@@ -834,6 +834,21 @@ def check(out, window, manifest_path=None):
             if tail and (tail.group(7) != "0" or tail.group(8) != "0"):
                 problems.append(bkey + "/" + leg + ": helper timeouts=" + tail.group(7)
                                 + " fallbacks=" + tail.group(8))
+            # a SPAN window's whole purpose is the engine's own breakdown lines: a leg whose
+            # slice carries none measured nothing, and must fail rather than pass as "a leg
+            # that ran". Only the windows that name a diagnostic env are held to it.
+            spans_wanted = bool(C.window_env(window))
+            if spans_wanted:
+                seen = {kind: len(re.findall(r"rpcprofile: " + kind + r"(?:\s|$)", text))
+                        for kind in ("span", "chunk", "pass")}
+                if not seen["span"] or not seen["chunk"] or not seen["pass"]:
+                    problems.append(bkey + "/" + leg + ": span window produced no "
+                                    + ", ".join(k for k, v in seen.items() if not v)
+                                    + " line(s) (" + json.dumps(seen) + "): the diagnostic env "
+                                    + json.dumps(C.window_env(window)) + " did not reach the "
+                                    + "engine, so this leg carries no breakdown and is void")
+                else:
+                    entry["span_lines"] = seen
             if entry["non_finite"]:
                 problems.append(bkey + "/" + leg + ": non-finite logits")
 
