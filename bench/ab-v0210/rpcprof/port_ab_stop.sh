@@ -6,7 +6,8 @@
 # its per-boot state file, its identity is checked in /proc before the signal, and the
 # survivors named in that state are TERMed by recorded pid. Quiet is verified for 20 s.
 #
-# BOOT is the boot group (part of the boot key: W2-A-dec-r1 vs W2-A-sht-r1).
+# BOOT is the boot group (part of the boot key: W2-A-dec-r1 vs W2-A-sht-r1; W1f's group is
+# pp, as W1's is - the WINDOW prefix is what keeps W1f's keys off W1's records).
 #
 # At stop time it also writes the boot's end into boots/<KEY>.json: ended_epoch (the first stop
 # wins) and the final supervisor generation. The gate checker bounds a boot's kernel-journal

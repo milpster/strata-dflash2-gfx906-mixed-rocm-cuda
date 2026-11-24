@@ -65,7 +65,9 @@ def build(args):
     manifest = load_manifest(args.manifest)
     cfg, deltas, paths = pc.derive(args.arm, window=args.window, rep=args.rep, out=args.out,
                                    boot=args.boot)
-    # the window's margins mode decides the reserve gate (W1d: both flags must be ABSENT)
+    # the window's margins mode decides the reserve gate: W1, W1f and the other explicit
+    # windows must carry both reserves (256/192), W1d's engine-default window must carry
+    # neither. W1f is explicit, exactly as W1 is - only n and the boot keys differ.
     problems = pc.check_tuple(cfg, args.arm, window=args.window)
     if problems:
         raise SystemExit("REFUSING: " + "; ".join(problems))

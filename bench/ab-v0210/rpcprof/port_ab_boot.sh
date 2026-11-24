@@ -8,7 +8,7 @@
 # crash is a recorded restart, which the leg-validity gate discards) with per-boot state,
 # lock, sockets and logs.
 #
-# BOOT is the boot group (W1/W3: pp, W2: dec or sht, W4: dec). It is part of the boot key:
+# BOOT is the boot group (W1/W1f/W3: pp, W2: dec or sht, W4: dec). It is part of the boot key:
 # W2's decode and short boots must never share a cache dir, sockets or state file.
 #
 # Refuses, loudly, when: the derived config is not byte-identical to the frozen manifest pin;

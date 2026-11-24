@@ -8,7 +8,8 @@ invent:
     the 323,200-byte target, the 144k decode shape, the 2k/8k short-PP shapes and the TTFT
     leg's own 2k shape;
   * the frozen request template (sampling + thinking off) every leg sends;
-  * both arm configs for every BOOT of W1-W4, keyed by window-arm-bootgroup-rep (the boot
+  * both arm configs for every BOOT of W1-W4 and W1f (the claim-capable n=3 follow-up), keyed
+    by window-arm-bootgroup-rep (the boot
     group is what keeps W2's decode and short boots from sharing a cache dir or a socket);
   * the 2x2 argv preflight verdict (port_ab_preflight.cell - static, no boots);
   * bench/ab-v0210/rpcprof/port-ab-manifest.json: identities re-hashed FROM DISK NOW, the
@@ -151,7 +152,8 @@ def arm_diffs(out, window="W1", rep=1):
                                               "so two identical-setting arms hash equal"}}
 
 
-DELTA_KEY = {"pp239k": {"W1": "prefill_read_tps", "W3": "decode_gen_tps"},
+DELTA_KEY = {"pp239k": {"W1": "prefill_read_tps", "W1f": "prefill_read_tps",
+                       "W3": "decode_gen_tps"},
              "dec144k": {"W2": "decode_gen_tps", "W4": None},
              "pp2k": {"W2": "short_pp_read_tps"},
              "pp8k": {"W2": "short_pp_read_tps"},
@@ -282,6 +284,8 @@ def prepare(out, do_preflight=True, previous_manifest=None):
             "delta": spec.get("delta"),
             "delta_note": spec.get("delta_note"),
             "gate_metric": spec["gate_metric"],
+            # W1f carries its own claim text (it is the n=3 follow-up); every other window
+            # gets the n=2/arm descriptive-only statement the contract's claim rule requires
             "claim": spec.get("claim", "descriptive only at n=2/arm (per-leg rates, ranges, "
                                        "memory, an UNCONFIRMED direction); any confirm / "
                                        "no-difference / within-delta statement needs a "
@@ -432,7 +436,8 @@ def verify():
             continue
         cfg = json.loads(path.read_text())
         arm = row.get("arm") or key.split("-")[1]
-        # a frozen W1d config must prove both reserve flags ABSENT, not carry the tuple's 256/192
+        # a frozen engine-default config (W1d) must prove both reserve flags ABSENT, not carry
+        # the tuple's 256/192; an explicit-margins window (W1, W1f, ...) must carry both
         for p in pc.check_tuple(cfg, arm, window=row.get("window") or key.split("-")[0]):
             problems.append(key + ": " + p)
     for key in scheduled:

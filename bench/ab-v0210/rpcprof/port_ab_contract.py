@@ -21,6 +21,10 @@ Sources (plan/measurement-contract-speed-attribution-faults.md, approved 2026-11
     FOLLOW-UP window at n>=3 (3v3: C(6,3)=20, min p = 0.10), never to this one;
   * prerequisite 0: >=15 GiB MemAvailable pre-boot, non-engine RSS <=8 GiB, no non-pinned
     process above ~50 % of a core on the stage cores, >=40 GiB free for the cache dir.
+  * W1f (operator directive 2026-11-24) is the claim-capable FOLLOW-UP to W1 after arm B was
+    re-pinned to the promoted pool-fix engine 15d330ea: 3 boots per arm, so CLAIM's 90 %
+    exact/HL rule applies to it. W1's four old-pin claim records stay untouched as the
+    pre-amendment baseline. See the W1f entry.
   * W1d (operator directive 2026-11-23 23:00) is W1's window re-run with the ENGINE'S OWN
     DEFAULT VRAM margins: both reserve flags are absent instead of 256/192. It is a SEPARATE
     window with its own boot keys, so W1's evidence and config pins stay untouched. On this
@@ -74,8 +78,12 @@ LEGS = {
     # cached re-run. The decode rate is request 2's gen rate (the contract's "request 2 of the
     # boot, 1024-token cap"); request 1's read rate is the prefill, already owned by W1.
     "pp239k": {"kind": "prefill",
-               "kind_by_window": {"W1": "prefill", "W1d": "prefill", "W3": "tg"},
-               "max_tokens": {"W1": 8, "W1d": 8, "W3": 1024}},
+               # W1f is W1's follow-up (same prefill leg, same 8-token tail); it is listed
+               # here because gen_tokens/kind_for fall back through entry["W2"] and pp239k has
+               # no W2 slot - an unlisted window would raise, not silently default.
+               "kind_by_window": {"W1": "prefill", "W1d": "prefill", "W1f": "prefill",
+                                  "W3": "tg"},
+               "max_tokens": {"W1": 8, "W1d": 8, "W1f": 8, "W3": 1024}},
     "dec144k": {"kind": "prefill", "kind_by_window": {"W2": "tg", "W4": "tg"},
                 "max_tokens": {"W2": 1024, "W4": 1024}},
     "pp2k": {"kind": "prefill", "max_tokens": {"W2": 32}},
@@ -134,6 +142,41 @@ TTFT_TEMPLATE = {**REQUEST_TEMPLATE, "stream": True}
 REPS = 2
 INTERLEAVE = ("A", "B", "B", "A")
 INTERLEAVE_PAIRS = (("A", 1), ("B", 1), ("B", 2), ("A", 2))
+
+# W1f's follow-up n (operator directive 2026-11-24): CLAIM needs n>=3 per arm before any claim
+# can be made, so W1f is 3 boots per arm - the only prepared window where INTERLEAVE_PAIRS
+# (n=2) does not apply.
+W1F_REPS = 3
+
+# W1's approved contract range (5,400-9,000 s for its 4 claim boots = 1,350-2,250 s per boot).
+# W1f's contract budget is DERIVED from it, never invented: W1f spends 8 boots - 6 claim
+# (3 per arm, i.e. 1.5x W1's claim count) + the same 2 discarded warmups - so its range is
+# W1's per-boot rate x 8.
+W1_CONTRACT_BUDGET_S = [5400, 9000]
+W1F_CLAIM_BOOTS = 2 * W1F_REPS                       # 6
+W1F_BOOTS = W1F_CLAIM_BOOTS + 2                      # 6 claim + 2 warmup = 8
+W1F_CONTRACT_BUDGET_S = [int(round(x * W1F_BOOTS / (2 * REPS))) for x in W1_CONTRACT_BUDGET_S]
+
+
+def _abba_pairs(n):
+    """Claim boots in mirrored interleave order: n=2 -> A B B A, n=3 -> A B B A A B.
+
+    The ABBA block is continued, not restarted, so every arm's boots stay as far apart as the
+    order allows and the first and last boot of a window belong to different arms. Reps are
+    numbered 1..n per arm in their order of appearance, so n=2 reproduces INTERLEAVE_PAIRS
+    exactly and W1's runbook cannot change.
+    """
+    block = ("A", "B", "B", "A")
+    seen = {"A": 0, "B": 0}
+    pairs = []
+    i = 0
+    while len(pairs) < 2 * n:
+        arm = block[i % 4]
+        seen[arm] += 1
+        pairs.append((arm, seen[arm]))
+        i += 1
+    return tuple(pairs)
+
 
 # A window's boots are grouped by the SHAPE they carry, and the group name is part of the
 # boot key (W2-A-dec-r1 vs W2-A-sht-r1): two boot shapes of one window must never share a
@@ -194,6 +237,48 @@ WINDOWS = {
         "boot_identity_note": "engine-default margins: --vram-reserve-mib and "
                               "--vram-reserve-later-mib absent from the engine argv, so the "
                               "leg runner's tuple gate expects BOTH absent for a W1d boot",
+    },
+    # Operator directive 2026-11-24: arm B was re-pinned from 936efcc7 to the promoted
+    # pool-fix engine 15d330ea (commit e39905a674), so W1's four claim records - measured on
+    # the OLD pin - are the PRE-AMENDMENT BASELINE and stay exactly as they are (records,
+    # evidence and manifest pins are never re-derived or overwritten). W1f is the
+    # CLAIM-CAPABLE FOLLOW-UP window the contract demands before any claim can be made:
+    # 3 boots per arm (3v3 gives C(6,3) = 20 allocations and a minimum exact two-sided
+    # p = 0.10), so CLAIM["level"] (90 %, exact/Hodges-Lehmann) applies to THIS window and to
+    # no other prepared one. It has its own window id and therefore its own boot keys
+    # (W1f-*) and config paths, so W1's evidence cannot be disturbed.
+    #
+    # Boot shape is W1's unchanged: one 239,663-token prefill leg per boot, explicit margins
+    # (256/192 from TUPLE), the same 5 % pre-registered prefill delta. Only n differs (3, not
+    # 2), which is why the budget below is derived for 8 boots: 6 claim + 2 discarded
+    # first-touch warmups (one per arm, as W1 spends).
+    "W1f": {
+        "name": "prefill rate, 239,663-token frozen corpus, follow-up at n=3/arm "
+                "(claim-capable; arm B re-pinned to 15d330ea)",
+        "margins": "explicit",         # both reserve flags written from TUPLE (256/192), as W1
+        "boot_groups": {"pp": ["pp239k"]},
+        "legs_per_boot": {"pp": 1},
+        "boots_per_arm": W1F_REPS,     # the follow-up n: CLAIM["level"] applies at n>=3
+        "warmup_boots": 2,             # discarded first-touch boot per arm, exactly as W1
+        "budget_s": None,              # derived below, INCLUDING the two warmup boots (8)
+        # W1's 5,400-9,000 s per-boot rate applied to W1f's 8 boots (see W1F_BOOTS): the claim
+        # share is 6 boots = 1.5x W1's 4 claim boots, and the other two are the same discarded
+        # first-touch warmups W1 spends. Nothing new is claimed about a per-boot cost.
+        "contract_budget_s": W1F_CONTRACT_BUDGET_S,
+        "contract_budget_note": "8 boots (6 claim + 2 warmup)",
+        # 3 boots per arm in the ABBA order continued to n=3: A1 B1 B2 A2 A3 B3 (see
+        # _abba_pairs). Every other prepared window keeps the n=2 INTERLEAVE_PAIRS.
+        "interleave_pairs": _abba_pairs(W1F_REPS),
+        "gate_metric": "read_tps",
+        "delta": 0.05,
+        "delta_note": "the same pre-registered 5 % prefill delta as W1, and the only prepared "
+                      "window whose 90 % exact/HL interval is a claim; W1/W1d/W2/W3 stay "
+                      "descriptive-only",
+        "claim": "CLAIM-CAPABLE: 3v3 interleaved (C(6,3)=20 allocations, minimum exact "
+                 "two-sided p = 0.10), so the contract's CLAIM level/method applies here - the "
+                 "90 % interval must exclude 0 AND exceed the pre-registered 5 % delta. W1's "
+                 "four records (old arm-B pin) are the baseline this window is read against; "
+                 "they are never pooled into it.",
     },
     "W2": {
         "name": "144k decode + short-PP 2k/8k + 3-turn TTFT",
@@ -307,6 +392,10 @@ def budget_derivation() -> dict:
     # 2 arms x REPS claim boots, plus the discarded boots each window spends
     claim = 2 * REPS                                              # n=2/arm -> 4 claim boots
     w1_total = claim + WINDOWS["W1"]["warmup_boots"]              # 4 claim + 2 warmup = 6
+    # W1f is the follow-up: the same boot shape as W1, 3 claim boots per arm plus the same two
+    # discarded warmups. Its anchor rates are W1's (same leg, same boot), only the count differs.
+    w1f_claim = 2 * WINDOWS["W1f"]["boots_per_arm"]                # 3/arm -> 6 claim boots
+    w1f_total = w1f_claim + WINDOWS["W1f"]["warmup_boots"]         # 6 claim + 2 warmup = 8
     # W1d carries the identical boot shape (one 239,663 prefill leg per boot, 2 warmups), so
     # its range is W1's arithmetic and nothing new is claimed about default-margins speed.
     w1d_total = claim + WINDOWS["W1d"]["warmup_boots"]            # 4 claim + 2 warmup = 6
@@ -327,6 +416,17 @@ def budget_derivation() -> dict:
                      "(2 per arm) + 2 warmup; 690-1,150 s per leg, 180-300 s per boot",
             "range_s": [w1_total * W1_LEG_S[0] + w1_total * BOOT_S[0],
                         w1_total * W1_LEG_S[1] + w1_total * BOOT_S[1]],
+        },
+        "W1f": {
+            "boots": {"claim": w1f_claim, "warmup": WINDOWS["W1f"]["warmup_boots"],
+                      "total": w1f_total},
+            "terms": str(w1f_total) + " boots x (239,663 prefill leg + boot) = 6 claim "
+                     "(3 per arm, 1.5x W1's claim count) + 2 warmup; 690-1,150 s per leg, "
+                     "180-300 s per boot - W1's anchors, W1's leg, only n differs",
+            "range_s": [w1f_total * W1_LEG_S[0] + w1f_total * BOOT_S[0],
+                        w1f_total * W1_LEG_S[1] + w1f_total * BOOT_S[1]],
+            "note": "the follow-up window: derived from W1's measured anchors, never from a new "
+                    "per-boot estimate",
         },
         "W1d": {
             "boots": {"claim": claim, "warmup": WINDOWS["W1d"]["warmup_boots"],
@@ -378,6 +478,15 @@ def margins_mode(window):
                        why such a result is not attributable to the reserves alone.
     """
     return WINDOWS[window].get("margins", "explicit")
+
+
+def claim_pairs(window):
+    """(arm, rep) in boot order for the window's CLAIM boots.
+
+    W1f is the one prepared window at n=3/arm (its own ABBA-continued order, A B B A A B);
+    every n=2 window keeps INTERLEAVE_PAIRS, so its boot order cannot move.
+    """
+    return tuple(WINDOWS[window].get("interleave_pairs") or INTERLEAVE_PAIRS)
 
 
 def shapes_of(window):
@@ -435,6 +544,12 @@ CLAIM = {
     },
     "n_per_arm": REPS,
     "interleave": list(INTERLEAVE),
+    "claim_window": "W1f",
+    "claim_window_note": "W1f is the FOLLOW-UP at n=3/arm (arm B re-pinned to 15d330ea on "
+                         "2026-11-24): 3v3 gives C(6,3)=20 allocations and a minimum exact "
+                         "two-sided p = 0.10, so level/method/confirm_when above apply to W1f "
+                         "and to no n=2 window. W1's four records are the pre-amendment "
+                         "baseline it is read against and are never pooled into it.",
 }
 
 # The W2 pilot's delta slots. Null until port_ab_legs.py --freeze-pilot W2 fills them from the

@@ -99,6 +99,10 @@ def schedule(window):
     Every row names its boot group, because the group is part of the boot key. W2's short
     group pilot (rep 0) and decode warmup (rep 0) come first; the claim boots follow,
     interleaved A B B A (n=2/arm, operator directive 2026-11-23) inside each group.
+
+    The claim order is the WINDOW's (C.claim_pairs): every n=2 window gets the frozen
+    INTERLEAVE_PAIRS unchanged, and W1f - the n=3/arm follow-up - gets its own ABBA-continued
+    order (A1 B1 B2 A2 A3 B3). Boots per arm is the window's, never the module-wide REPS.
     """
     spec = C.WINDOWS[window]
     rows = []
@@ -127,7 +131,7 @@ def schedule(window):
             rows.append({"group": "warmup", "boot": boot, "arm": arm, "rep": 0,
                          "shapes": list(groups[boot]), "pilot": False, "warmup": True})
     for name, shapes in groups.items():
-        for arm, rep in C.INTERLEAVE_PAIRS:
+        for arm, rep in C.claim_pairs(window):
             rows.append({"group": name, "boot": name, "arm": arm, "rep": rep,
                          "shapes": list(shapes), "pilot": False})
     return rows
@@ -180,7 +184,9 @@ def runbook(out, window):
              "# planning budget " + str([round(x / 3600, 2) for x in budget]) + " h (derived, "
              + "includes the discarded boots)"
              + (("  [contract: " + str([round(x / 3600, 2) for x in contract])
-                 + " h, claim boots only]") if contract else "  [the contract had no budget here]"),
+                 + " h, "
+                 + C.WINDOWS[window].get("contract_budget_note", "claim boots only") + "]")
+                if contract else "  [the contract had no budget here]"),
              "# boot: port_ab_boot.sh WINDOW ARM BOOT REP [--server-arm A|B]",
              "# stop: port_ab_stop.sh WINDOW ARM BOOT REP"]
     if C.margins_mode(window) == "engine-default":
