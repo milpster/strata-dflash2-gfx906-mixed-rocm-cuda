@@ -2893,37 +2893,37 @@
    "use": "W1 prefill rate, W3 prefill half of the 240k decode leg"
   },
   {
-   "bytes": 194193,
-   "head_tag": "[champs work=dec144k pair=0 ctx=194193]",
-   "path": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/dec144k.ctx194193.bin",
-   "sha256": "ae952003d607fba7d9f2609acb5dc5328e7c76ec81c40ef7061be2db658321f1",
+   "bytes": 796618,
+   "head_tag": "[champs work=dec144k pair=0 ctx=796618]",
+   "path": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/dec144k.ctx796618.bin",
+   "sha256": "65594503429e1cc5af490ee0622a205442b7a91f5bbed6823911893124d33bb0",
    "shape": "dec144k",
    "tokens_expected": 144000,
    "use": "W2 144k decode (one prefill + 1024 generated), W4 2x2 decode shape"
   },
   {
-   "bytes": 2697,
-   "head_tag": "[champs work=pp2k pair=0 ctx=2697]",
-   "path": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/pp2k.ctx2697.bin",
-   "sha256": "b38471d3d9d1ed6b9522ebf25b7153822b9acf977f727d4c6c5a625e2bad535b",
+   "bytes": 11064,
+   "head_tag": "[champs work=pp2k pair=0 ctx=11064]",
+   "path": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/pp2k.ctx11064.bin",
+   "sha256": "96627a38d1bb2bedb13220beaed0873020cfd95576a335f66bac67cdd9c7f934",
    "shape": "pp2k",
    "tokens_expected": 2000,
    "use": "W2 short-PP 2k"
   },
   {
-   "bytes": 10788,
-   "head_tag": "[champs work=pp8k pair=0 ctx=10788]",
-   "path": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/pp8k.ctx10788.bin",
-   "sha256": "0d77817c68a43cb5df2638330ecf197e76e6c85b59527f24eaf734870facfcc1",
+   "bytes": 44257,
+   "head_tag": "[champs work=pp8k pair=0 ctx=44257]",
+   "path": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/pp8k.ctx44257.bin",
+   "sha256": "a7823bb9fb3d332badcdd955950625a4005ee0ef3942d046c07e9d615efc2362",
    "shape": "pp8k",
    "tokens_expected": 8000,
    "use": "W2 short-PP 8k"
   },
   {
-   "bytes": 2697,
-   "head_tag": "[champs work=ttft2k pair=0 ctx=2697]",
-   "path": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/ttft2k.ctx2697.bin",
-   "sha256": "48a449fc77a55c2d74182c9adabef76498560ba297919709fd59193ddff0cddc",
+   "bytes": 11064,
+   "head_tag": "[champs work=ttft2k pair=0 ctx=11064]",
+   "path": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/ttft2k.ctx11064.bin",
+   "sha256": "349827f01baac1c03ca2173c1074ad0d4e28b511ac92536a9748596c15aa45a7",
    "shape": "ttft2k",
    "tokens_expected": 2000,
    "use": "W2 3-turn TTFT leg turn-1 prompt (distinct from pp2k: cold on purpose)"
@@ -3045,12 +3045,12 @@
   }
  },
  "git_branch": "recovery-startup-watchdog",
- "git_head_at_prepare": "c1272cc6fd7adbb090b772776c1b0054b5cf8b3e",
+ "git_head_at_prepare": "97d54cced5f5a3f47c40f111e68fcd0852d67156",
  "harness_script_shas": {
   "port_ab_boot.sh": "fd738f9aaf85aab0d6e359da8d3c2c3f8955e301fbb1c0aa6718e33a68f55bfb",
   "port_ab_boot_plan.py": "c146042d3c8610a84412f58dd31c959140f8030829fcc782852bbdd21e63eb85",
   "port_ab_configs.py": "da7044ce522d74519214bc53ecacb2d923423e5567cb5950cbf68528b7c26055",
-  "port_ab_contract.py": "3eb4ac542a9ca62996a54835967364593cbc5bd39abec6c01edd3f024cef6efc",
+  "port_ab_contract.py": "8c0ba3ca8b6dd4ba2e0402ad3843bd68cfc5dab7291fdfaa88b98c329360be41",
   "port_ab_legs.py": "36ebeea3bb18ab173e210dad46dd3c2ad7f1a7aadbd4f6c93f6ab6aa15dc3a6f",
   "port_ab_preflight.py": "3d8b4bafcafb5cd75ed932a8161dd7f5758141fbc5d3943c2cddbcc43253d90b",
   "port_ab_prepare.py": "b3df4684867a205009c4c43236d917e01dc1c6cadead11838174b524aeac496c",
@@ -3331,7 +3331,7 @@
    "resolution": "per-engine configs (A without the flag, B with '0'); both cross cells then boot, and 'no spill' holds in both"
   }
  },
- "prepared_at": "2026-11-24T17:45:52",
+ "prepared_at": "2026-11-24T17:53:32",
  "prerequisite0": {
   "cache_free_gib_min": 40,
   "command": "python3 bench/ab-v0210/rpcprof/port_ab_prereq0.py --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123",
@@ -4040,12 +4040,12 @@
    "legs": {
     "dec144k": {
      "boot_group": "dec",
-     "bytes": 194193,
-     "command_A": "python3 /mnt/srcds/Strata/bench/ab-v0210/rpcprof/ab9_driver.py --arm A --leg dec144k --kind tg --ctx 194193 --max-tokens 1024 --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/records/W2-A-dec-r1 --elog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-dec-r1.engine.log --hlog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-dec-r1-helper.log --url http://127.0.0.1:8009/v1/chat/completions --prompt-file /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/dec144k.ctx194193.bin --prompt-sha256 ae952003d607fba7d9f2609acb5dc5328e7c76ec81c40ef7061be2db658321f1 --request-template /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/request-template.json --request-template-sha256 1367e0c041b3e7e6abceef27587f9ffbb8ff1d8b2ea4cc7d0141d9e945a18abd --timeout 5400 --champs-shape dec144k --champs-pair 0 --champs-measured   # --engine-pid is added by --run",
-     "command_B": "python3 /mnt/srcds/Strata/bench/ab-v0210/rpcprof/ab9_driver.py --arm B --leg dec144k --kind tg --ctx 194193 --max-tokens 1024 --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/records/W2-B-dec-r1 --elog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-dec-r1.engine.log --hlog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-dec-r1-helper.log --url http://127.0.0.1:8009/v1/chat/completions --prompt-file /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/dec144k.ctx194193.bin --prompt-sha256 ae952003d607fba7d9f2609acb5dc5328e7c76ec81c40ef7061be2db658321f1 --request-template /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/request-template.json --request-template-sha256 1367e0c041b3e7e6abceef27587f9ffbb8ff1d8b2ea4cc7d0141d9e945a18abd --timeout 5400 --champs-shape dec144k --champs-pair 0 --champs-measured   # --engine-pid is added by --run",
+     "bytes": 796618,
+     "command_A": "python3 /mnt/srcds/Strata/bench/ab-v0210/rpcprof/ab9_driver.py --arm A --leg dec144k --kind tg --ctx 796618 --max-tokens 1024 --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/records/W2-A-dec-r1 --elog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-dec-r1.engine.log --hlog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-dec-r1-helper.log --url http://127.0.0.1:8009/v1/chat/completions --prompt-file /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/dec144k.ctx796618.bin --prompt-sha256 65594503429e1cc5af490ee0622a205442b7a91f5bbed6823911893124d33bb0 --request-template /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/request-template.json --request-template-sha256 1367e0c041b3e7e6abceef27587f9ffbb8ff1d8b2ea4cc7d0141d9e945a18abd --timeout 5400 --champs-shape dec144k --champs-pair 0 --champs-measured   # --engine-pid is added by --run",
+     "command_B": "python3 /mnt/srcds/Strata/bench/ab-v0210/rpcprof/ab9_driver.py --arm B --leg dec144k --kind tg --ctx 796618 --max-tokens 1024 --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/records/W2-B-dec-r1 --elog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-dec-r1.engine.log --hlog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-dec-r1-helper.log --url http://127.0.0.1:8009/v1/chat/completions --prompt-file /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/dec144k.ctx796618.bin --prompt-sha256 65594503429e1cc5af490ee0622a205442b7a91f5bbed6823911893124d33bb0 --request-template /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/request-template.json --request-template-sha256 1367e0c041b3e7e6abceef27587f9ffbb8ff1d8b2ea4cc7d0141d9e945a18abd --timeout 5400 --champs-shape dec144k --champs-pair 0 --champs-measured   # --engine-pid is added by --run",
      "config_variant": null,
-     "corpus": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/dec144k.ctx194193.bin",
-     "corpus_sha256": "ae952003d607fba7d9f2609acb5dc5328e7c76ec81c40ef7061be2db658321f1",
+     "corpus": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/dec144k.ctx796618.bin",
+     "corpus_sha256": "65594503429e1cc5af490ee0622a205442b7a91f5bbed6823911893124d33bb0",
      "delta_key": "decode_gen_tps",
      "expected_engine_lines": [
       "strata serve: prompt (\\d+) tokens = (\\d+) reused \\+ (\\d+)(?: of (\\d+))? read in (\\d+) ms \\(([\\d.]+) tok/s\\), (\\d+) generated in (\\d+) ms \\(([\\d.]+) tok/s\\)",
@@ -4081,12 +4081,12 @@
     },
     "pp2k": {
      "boot_group": "sht",
-     "bytes": 2697,
-     "command_A": "python3 /mnt/srcds/Strata/bench/ab-v0210/rpcprof/ab9_driver.py --arm A --leg pp2k --kind prefill --ctx 2697 --max-tokens 32 --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/records/W2-A-sht-r1 --elog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-sht-r1.engine.log --hlog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-sht-r1-helper.log --url http://127.0.0.1:8009/v1/chat/completions --prompt-file /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/pp2k.ctx2697.bin --prompt-sha256 b38471d3d9d1ed6b9522ebf25b7153822b9acf977f727d4c6c5a625e2bad535b --request-template /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/request-template.json --request-template-sha256 1367e0c041b3e7e6abceef27587f9ffbb8ff1d8b2ea4cc7d0141d9e945a18abd --timeout 5400 --champs-shape pp2k --champs-pair 0 --champs-measured   # --engine-pid is added by --run",
-     "command_B": "python3 /mnt/srcds/Strata/bench/ab-v0210/rpcprof/ab9_driver.py --arm B --leg pp2k --kind prefill --ctx 2697 --max-tokens 32 --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/records/W2-B-sht-r1 --elog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-sht-r1.engine.log --hlog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-sht-r1-helper.log --url http://127.0.0.1:8009/v1/chat/completions --prompt-file /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/pp2k.ctx2697.bin --prompt-sha256 b38471d3d9d1ed6b9522ebf25b7153822b9acf977f727d4c6c5a625e2bad535b --request-template /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/request-template.json --request-template-sha256 1367e0c041b3e7e6abceef27587f9ffbb8ff1d8b2ea4cc7d0141d9e945a18abd --timeout 5400 --champs-shape pp2k --champs-pair 0 --champs-measured   # --engine-pid is added by --run",
+     "bytes": 11064,
+     "command_A": "python3 /mnt/srcds/Strata/bench/ab-v0210/rpcprof/ab9_driver.py --arm A --leg pp2k --kind prefill --ctx 11064 --max-tokens 32 --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/records/W2-A-sht-r1 --elog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-sht-r1.engine.log --hlog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-sht-r1-helper.log --url http://127.0.0.1:8009/v1/chat/completions --prompt-file /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/pp2k.ctx11064.bin --prompt-sha256 96627a38d1bb2bedb13220beaed0873020cfd95576a335f66bac67cdd9c7f934 --request-template /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/request-template.json --request-template-sha256 1367e0c041b3e7e6abceef27587f9ffbb8ff1d8b2ea4cc7d0141d9e945a18abd --timeout 5400 --champs-shape pp2k --champs-pair 0 --champs-measured   # --engine-pid is added by --run",
+     "command_B": "python3 /mnt/srcds/Strata/bench/ab-v0210/rpcprof/ab9_driver.py --arm B --leg pp2k --kind prefill --ctx 11064 --max-tokens 32 --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/records/W2-B-sht-r1 --elog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-sht-r1.engine.log --hlog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-sht-r1-helper.log --url http://127.0.0.1:8009/v1/chat/completions --prompt-file /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/pp2k.ctx11064.bin --prompt-sha256 96627a38d1bb2bedb13220beaed0873020cfd95576a335f66bac67cdd9c7f934 --request-template /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/request-template.json --request-template-sha256 1367e0c041b3e7e6abceef27587f9ffbb8ff1d8b2ea4cc7d0141d9e945a18abd --timeout 5400 --champs-shape pp2k --champs-pair 0 --champs-measured   # --engine-pid is added by --run",
      "config_variant": null,
-     "corpus": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/pp2k.ctx2697.bin",
-     "corpus_sha256": "b38471d3d9d1ed6b9522ebf25b7153822b9acf977f727d4c6c5a625e2bad535b",
+     "corpus": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/pp2k.ctx11064.bin",
+     "corpus_sha256": "96627a38d1bb2bedb13220beaed0873020cfd95576a335f66bac67cdd9c7f934",
      "delta_key": "short_pp_read_tps",
      "expected_engine_lines": [
       "strata serve: prompt (\\d+) tokens = (\\d+) reused \\+ (\\d+)(?: of (\\d+))? read in (\\d+) ms \\(([\\d.]+) tok/s\\), (\\d+) generated in (\\d+) ms \\(([\\d.]+) tok/s\\)",
@@ -4124,12 +4124,12 @@
     },
     "pp8k": {
      "boot_group": "sht",
-     "bytes": 10788,
-     "command_A": "python3 /mnt/srcds/Strata/bench/ab-v0210/rpcprof/ab9_driver.py --arm A --leg pp8k --kind prefill --ctx 10788 --max-tokens 32 --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/records/W2-A-sht-r1 --elog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-sht-r1.engine.log --hlog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-sht-r1-helper.log --url http://127.0.0.1:8009/v1/chat/completions --prompt-file /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/pp8k.ctx10788.bin --prompt-sha256 0d77817c68a43cb5df2638330ecf197e76e6c85b59527f24eaf734870facfcc1 --request-template /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/request-template.json --request-template-sha256 1367e0c041b3e7e6abceef27587f9ffbb8ff1d8b2ea4cc7d0141d9e945a18abd --timeout 5400 --champs-shape pp8k --champs-pair 0 --champs-measured   # --engine-pid is added by --run",
-     "command_B": "python3 /mnt/srcds/Strata/bench/ab-v0210/rpcprof/ab9_driver.py --arm B --leg pp8k --kind prefill --ctx 10788 --max-tokens 32 --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/records/W2-B-sht-r1 --elog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-sht-r1.engine.log --hlog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-sht-r1-helper.log --url http://127.0.0.1:8009/v1/chat/completions --prompt-file /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/pp8k.ctx10788.bin --prompt-sha256 0d77817c68a43cb5df2638330ecf197e76e6c85b59527f24eaf734870facfcc1 --request-template /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/request-template.json --request-template-sha256 1367e0c041b3e7e6abceef27587f9ffbb8ff1d8b2ea4cc7d0141d9e945a18abd --timeout 5400 --champs-shape pp8k --champs-pair 0 --champs-measured   # --engine-pid is added by --run",
+     "bytes": 44257,
+     "command_A": "python3 /mnt/srcds/Strata/bench/ab-v0210/rpcprof/ab9_driver.py --arm A --leg pp8k --kind prefill --ctx 44257 --max-tokens 32 --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/records/W2-A-sht-r1 --elog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-sht-r1.engine.log --hlog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-sht-r1-helper.log --url http://127.0.0.1:8009/v1/chat/completions --prompt-file /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/pp8k.ctx44257.bin --prompt-sha256 a7823bb9fb3d332badcdd955950625a4005ee0ef3942d046c07e9d615efc2362 --request-template /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/request-template.json --request-template-sha256 1367e0c041b3e7e6abceef27587f9ffbb8ff1d8b2ea4cc7d0141d9e945a18abd --timeout 5400 --champs-shape pp8k --champs-pair 0 --champs-measured   # --engine-pid is added by --run",
+     "command_B": "python3 /mnt/srcds/Strata/bench/ab-v0210/rpcprof/ab9_driver.py --arm B --leg pp8k --kind prefill --ctx 44257 --max-tokens 32 --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/records/W2-B-sht-r1 --elog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-sht-r1.engine.log --hlog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-sht-r1-helper.log --url http://127.0.0.1:8009/v1/chat/completions --prompt-file /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/pp8k.ctx44257.bin --prompt-sha256 a7823bb9fb3d332badcdd955950625a4005ee0ef3942d046c07e9d615efc2362 --request-template /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/request-template.json --request-template-sha256 1367e0c041b3e7e6abceef27587f9ffbb8ff1d8b2ea4cc7d0141d9e945a18abd --timeout 5400 --champs-shape pp8k --champs-pair 0 --champs-measured   # --engine-pid is added by --run",
      "config_variant": null,
-     "corpus": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/pp8k.ctx10788.bin",
-     "corpus_sha256": "0d77817c68a43cb5df2638330ecf197e76e6c85b59527f24eaf734870facfcc1",
+     "corpus": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/pp8k.ctx44257.bin",
+     "corpus_sha256": "a7823bb9fb3d332badcdd955950625a4005ee0ef3942d046c07e9d615efc2362",
      "delta_key": "short_pp_read_tps",
      "expected_engine_lines": [
       "strata serve: prompt (\\d+) tokens = (\\d+) reused \\+ (\\d+)(?: of (\\d+))? read in (\\d+) ms \\(([\\d.]+) tok/s\\), (\\d+) generated in (\\d+) ms \\(([\\d.]+) tok/s\\)",
@@ -4167,12 +4167,12 @@
     },
     "ttft3": {
      "boot_group": "sht",
-     "bytes": 2697,
-     "command_A": "python3 /mnt/srcds/Strata/bench/ab-v0210/rpcprof/port_ab_ttft.py --arm A --leg ttft3 --url http://127.0.0.1:8009 --corpus /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/ttft2k.ctx2697.bin --turns 3 --max-tokens 64 --template /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/request-template.json --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/records/W2-A-sht-r1 --elog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-sht-r1.engine.log --hlog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-sht-r1-helper.log   # --engine-pid is added by --run",
-     "command_B": "python3 /mnt/srcds/Strata/bench/ab-v0210/rpcprof/port_ab_ttft.py --arm B --leg ttft3 --url http://127.0.0.1:8009 --corpus /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/ttft2k.ctx2697.bin --turns 3 --max-tokens 64 --template /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/request-template.json --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/records/W2-B-sht-r1 --elog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-sht-r1.engine.log --hlog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-sht-r1-helper.log   # --engine-pid is added by --run",
+     "bytes": 11064,
+     "command_A": "python3 /mnt/srcds/Strata/bench/ab-v0210/rpcprof/port_ab_ttft.py --arm A --leg ttft3 --url http://127.0.0.1:8009 --corpus /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/ttft2k.ctx11064.bin --turns 3 --max-tokens 64 --template /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/request-template.json --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/records/W2-A-sht-r1 --elog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-sht-r1.engine.log --hlog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-sht-r1-helper.log   # --engine-pid is added by --run",
+     "command_B": "python3 /mnt/srcds/Strata/bench/ab-v0210/rpcprof/port_ab_ttft.py --arm B --leg ttft3 --url http://127.0.0.1:8009 --corpus /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/ttft2k.ctx11064.bin --turns 3 --max-tokens 64 --template /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/request-template.json --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/records/W2-B-sht-r1 --elog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-sht-r1.engine.log --hlog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-sht-r1-helper.log   # --engine-pid is added by --run",
      "config_variant": null,
-     "corpus": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/ttft2k.ctx2697.bin",
-     "corpus_sha256": "48a449fc77a55c2d74182c9adabef76498560ba297919709fd59193ddff0cddc",
+     "corpus": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/ttft2k.ctx11064.bin",
+     "corpus_sha256": "349827f01baac1c03ca2173c1074ad0d4e28b511ac92536a9748596c15aa45a7",
      "delta_key": "ttft_turn1_s",
      "expected_engine_lines": [
       "strata serve: prompt (\\d+) tokens = (\\d+) reused \\+ (\\d+)(?: of (\\d+))? read in (\\d+) ms \\(([\\d.]+) tok/s\\), (\\d+) generated in (\\d+) ms \\(([\\d.]+) tok/s\\)",
@@ -4752,12 +4752,12 @@
    "legs": {
     "dec144k": {
      "boot_group": "dec",
-     "bytes": 194193,
-     "command_A": "python3 /mnt/srcds/Strata/bench/ab-v0210/rpcprof/ab9_driver.py --arm A --leg dec144k --kind tg --ctx 194193 --max-tokens 1024 --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/records/W4-A-dec-r1 --elog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W4-A-dec-r1.engine.log --hlog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W4-A-dec-r1-helper.log --url http://127.0.0.1:8009/v1/chat/completions --prompt-file /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/dec144k.ctx194193.bin --prompt-sha256 ae952003d607fba7d9f2609acb5dc5328e7c76ec81c40ef7061be2db658321f1 --request-template /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/request-template.json --request-template-sha256 1367e0c041b3e7e6abceef27587f9ffbb8ff1d8b2ea4cc7d0141d9e945a18abd --timeout 5400 --champs-shape dec144k --champs-pair 0 --champs-measured   # --engine-pid is added by --run",
-     "command_B": "python3 /mnt/srcds/Strata/bench/ab-v0210/rpcprof/ab9_driver.py --arm B --leg dec144k --kind tg --ctx 194193 --max-tokens 1024 --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/records/W4-B-dec-r1 --elog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W4-B-dec-r1.engine.log --hlog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W4-B-dec-r1-helper.log --url http://127.0.0.1:8009/v1/chat/completions --prompt-file /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/dec144k.ctx194193.bin --prompt-sha256 ae952003d607fba7d9f2609acb5dc5328e7c76ec81c40ef7061be2db658321f1 --request-template /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/request-template.json --request-template-sha256 1367e0c041b3e7e6abceef27587f9ffbb8ff1d8b2ea4cc7d0141d9e945a18abd --timeout 5400 --champs-shape dec144k --champs-pair 0 --champs-measured   # --engine-pid is added by --run",
+     "bytes": 796618,
+     "command_A": "python3 /mnt/srcds/Strata/bench/ab-v0210/rpcprof/ab9_driver.py --arm A --leg dec144k --kind tg --ctx 796618 --max-tokens 1024 --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/records/W4-A-dec-r1 --elog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W4-A-dec-r1.engine.log --hlog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W4-A-dec-r1-helper.log --url http://127.0.0.1:8009/v1/chat/completions --prompt-file /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/dec144k.ctx796618.bin --prompt-sha256 65594503429e1cc5af490ee0622a205442b7a91f5bbed6823911893124d33bb0 --request-template /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/request-template.json --request-template-sha256 1367e0c041b3e7e6abceef27587f9ffbb8ff1d8b2ea4cc7d0141d9e945a18abd --timeout 5400 --champs-shape dec144k --champs-pair 0 --champs-measured   # --engine-pid is added by --run",
+     "command_B": "python3 /mnt/srcds/Strata/bench/ab-v0210/rpcprof/ab9_driver.py --arm B --leg dec144k --kind tg --ctx 796618 --max-tokens 1024 --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/records/W4-B-dec-r1 --elog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W4-B-dec-r1.engine.log --hlog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W4-B-dec-r1-helper.log --url http://127.0.0.1:8009/v1/chat/completions --prompt-file /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/dec144k.ctx796618.bin --prompt-sha256 65594503429e1cc5af490ee0622a205442b7a91f5bbed6823911893124d33bb0 --request-template /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/request-template.json --request-template-sha256 1367e0c041b3e7e6abceef27587f9ffbb8ff1d8b2ea4cc7d0141d9e945a18abd --timeout 5400 --champs-shape dec144k --champs-pair 0 --champs-measured   # --engine-pid is added by --run",
      "config_variant": null,
-     "corpus": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/dec144k.ctx194193.bin",
-     "corpus_sha256": "ae952003d607fba7d9f2609acb5dc5328e7c76ec81c40ef7061be2db658321f1",
+     "corpus": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/dec144k.ctx796618.bin",
+     "corpus_sha256": "65594503429e1cc5af490ee0622a205442b7a91f5bbed6823911893124d33bb0",
      "delta_key": null,
      "expected_engine_lines": [
       "strata serve: prompt (\\d+) tokens = (\\d+) reused \\+ (\\d+)(?: of (\\d+))? read in (\\d+) ms \\(([\\d.]+) tok/s\\), (\\d+) generated in (\\d+) ms \\(([\\d.]+) tok/s\\)",

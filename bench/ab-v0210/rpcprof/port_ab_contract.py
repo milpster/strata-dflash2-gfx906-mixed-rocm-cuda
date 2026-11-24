@@ -9,10 +9,11 @@ drift between them.
 
 Sources (plan/measurement-contract-speed-attribution-faults.md, approved 2026-11-23):
   * byte target 323,200 B, frozen as corpus/pp239k.ctx323200.bin (sha256 210b16b3...): the
-    engine served 58,423 prompt tokens on it in every W1 leg, both arms. The 239,663-token
-    figure is the generator's old estimate (323,200 / 239,663 = 1.3486 B per token,
-    ctx-threshold.sh documents ~0.742 tok/B); it still scales the other shapes' byte targets,
-    but the frozen bytes, not the token estimate, are the contract;
+    engine served 58,423 prompt tokens on it in every W1 leg, both arms. That measured pair
+    (323,200 B / 58,423 tokens = 5.5321 B per token) is the byte-per-token basis every other
+    shape's byte target is scaled from. The 239,663-token figure was the generator's
+    pre-freeze estimate (1.3486 B/token); it was ~4.1x off and no longer scales anything -
+    see the corpus-shapes section for what it cost and the self-check that guards the basis;
   * prefill 287.1-348.2 tok/s and decode 21.6-22.1 tok/s measured on the 239,663 prompt;
   * boot 3-5 min (full-residency init);
   * pre-registered deltas: prefill 5 %, decode 8 %; n=2/arm (operator directive 2026-11-23
@@ -37,15 +38,39 @@ from __future__ import annotations
 
 # ---------------------------------------------------------------------------- corpus shapes
 # bytes are what champions_prepare.build_paired_prompt takes (exact byte length); tokens is
-# the count the engine reports for that byte target. The generator freezes the BYTE target;
-# every engine leg measured 58,423 prompt tokens on the 323,200-byte corpus (5.53 B/token),
-# not the 239,663 the ratio below was estimated from. BYTES_PER_TOKEN still scales the other
-# shapes' byte targets (their measured token counts are not in yet), so it is left unchanged.
-BYTES_PER_TOKEN = 323200 / 239663
+# the count the engine reports for that byte target. The generator freezes the BYTE target.
+#
+# THE BASIS IS THE MEASURED PAIR (corrected 2026-11-24), not the generator's old estimate:
+#   measured   323,200 B  <->  58,423 prompt tokens   (the engine's own judge line, every W1
+#              claim leg, both arms, on the frozen file corpus/pp239k.ctx323200.bin)
+#   basis      323,200 / 58,423 = 5.5321 B per token
+# The 239,663 figure this constant was first built on was the generator's pre-freeze estimate
+# (323,200 / 239,663 = 1.3486 B/token, the ctx-threshold.sh ~0.742 tok/B rule of thumb). It
+# said ~4.1x too few bytes per token, so every shape scaled through it came out ~4.1x SHORT:
+# dec144k held ~35k tokens instead of 144k, pp2k/ttft2k held ~490 instead of 2,000 - below
+# --conversation-cache-min-tokens 2048, so the TTFT leg's turns 2-3 would never have been
+# served from a parked prefix, and port_ab_legs.py --check would have failed every W2 leg on
+# the 0.9 served-token guard AFTER the boots were spent. Do not reintroduce that estimate.
+MEASURED_PAIR = {"bytes": 323200, "tokens": 58423,
+                 "file": "corpus/pp239k.ctx323200.bin",
+                 "sha256": "210b16b32b8658e68b863442d3c2d9ebde7eb3c9d50b0cea8c28e7d045c0ea68",
+                 "source": "engine judge line 'prompt N tokens ... read in', every W1 leg"}
+BYTES_PER_TOKEN = MEASURED_PAIR["bytes"] / MEASURED_PAIR["tokens"]   # 5.5321 B/token
 
 
 def bytes_for(tokens: int) -> int:
     return int(round(tokens * BYTES_PER_TOKEN))
+
+
+# Self-check: the basis must reproduce the measured pair it was derived from, to within one
+# page (4 KiB). A future edit to BYTES_PER_TOKEN (or to the pair) that would silently shrink
+# every corpus again fails HERE, at import, instead of at boot time on the leg runner's guard.
+assert abs(bytes_for(MEASURED_PAIR["tokens"]) - MEASURED_PAIR["bytes"]) <= 4096, (
+    "BYTES_PER_TOKEN does not reproduce the measured pair: bytes_for("
+    + str(MEASURED_PAIR["tokens"]) + ") = " + str(bytes_for(MEASURED_PAIR["tokens"]))
+    + " B but the measured corpus is " + str(MEASURED_PAIR["bytes"]) + " B ("
+    + MEASURED_PAIR["file"] + "). Re-derive the basis from a measured pair, never from an "
+    "estimate.")
 
 
 SHAPES = {
@@ -57,19 +82,32 @@ SHAPES = {
     # target (323,200), not the token estimate, is what the corpus generator freezes.
     "pp239k": {"tokens_expected": 58423, "bytes": 323200, "head_tag": "champs work=pp239k",
                "use": "W1 prefill rate, W3 prefill half of the 240k decode leg"},
+    # 144,000 x 5.5321 B/token = 796,618 B -> expect ~144,000 served tokens (basis: the
+    # measured 323,200 B <-> 58,423 tokens pair)
     "dec144k": {"tokens_expected": 144000, "bytes": bytes_for(144000),
                 "use": "W2 144k decode (one prefill + 1024 generated), W4 2x2 decode shape"},
+    # 2,000 x 5.5321 B/token = 11,064 B -> expect ~2,000 served tokens (same measured pair)
     "pp2k": {"tokens_expected": 2000, "bytes": bytes_for(2000),
              "use": "W2 short-PP 2k"},
+    # 8,000 x 5.5321 B/token = 44,257 B -> expect ~8,000 served tokens (same measured pair)
     "pp8k": {"tokens_expected": 8000, "bytes": bytes_for(8000), "use": "W2 short-PP 8k"},
     # The TTFT leg has its OWN 2k prompt. Sharing pp2k's bytes would make its first turn a
     # conversation-cache hit inside a boot that already ran pp2k, so turn 1 would not be the
     # cold prefill the turn-latency shape means to measure. A different head tag diverges at
     # token zero (champions_prepare.build_paired_prompt).
+    # 2,000 x 5.5321 B/token = 11,064 B -> expect ~2,000 served tokens (same measured pair);
+    # it must stay well ABOVE --conversation-cache-min-tokens 2048 or turns 2-3 park nothing
     "ttft2k": {"tokens_expected": 2000, "bytes": bytes_for(2000),
                "head_tag": "champs work=ttft2k",
                "use": "W2 3-turn TTFT leg turn-1 prompt (distinct from pp2k: cold on purpose)"},
 }
+
+# The frozen 239k corpus is pinned as LITERALS above and is never recomputed through
+# bytes_for(): it is the measured pair itself. This holds that pin against a drifted basis.
+assert SHAPES["pp239k"]["bytes"] == MEASURED_PAIR["bytes"] and \
+    SHAPES["pp239k"]["tokens_expected"] == MEASURED_PAIR["tokens"], (
+        "pp239k must stay pinned at the measured 323,200 B / 58,423 tokens; it is the basis, "
+        "not a shape derived from it")
 
 # Generation caps and request kinds per leg. kind=prefill is one request: a fresh prefill
 # plus the generation cap; the judge line reports both rates.
