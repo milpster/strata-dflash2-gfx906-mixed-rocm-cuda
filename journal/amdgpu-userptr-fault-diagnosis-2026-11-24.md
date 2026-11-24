@@ -139,3 +139,14 @@ reclaim as the trigger the knobs merely damped (`swappiness=0` lowers, never sto
    policy; `STRATA_ARENA_MLOCK` is the other half, separately default-off.
 2. Restore the sysctls (`page_stability.sh restore`) and re-test — the missing control for the p = 0.095.
 3. Longer exposure: 4-6 cold prefills per boot, two boots per arm.
+
+See also: `journal/pool-nohuge-verification-2026-11-24.md` §7 counts every `GPU reset begin` in the six boots this
+journal still retains and describes two reset classes that are not this fault. The one worth naming here is the
+permission fault's own card: boot -1 (2026-11-23, before the 22:04 reboot) logged **692** resets on
+`amdgpu 0000:09:00.0` at `Source: 1` between 21:43:15 and 22:02:24, all `device lost from bus!` / `GPU reset end
+with ret = -19`, 59 s after the SMU began answering every message with `0xffffffff` (`Failed to send message
+0x10, response 0xffffffff`, `[powerplay] Failed to export SMU metrics table!`). That window holds **zero**
+`no-retry page fault` records, so nothing links the storm to the VM/permission class measured above; the pool
+fix was not in the binary that met it, and the SMU/powerplay path is a different subsystem from GPU
+translation. The single `Source: 4` `qcm fence wait loop` → BACO reset at 02:02:57 sits on `0000:04:00.0`, the card
+that never takes this fault.

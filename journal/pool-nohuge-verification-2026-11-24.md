@@ -104,7 +104,7 @@ experiment — `page_stability.sh stable`, four boots at 00:57:50 / 01:04:26 / 0
    expired`, `The cp might be in an unrecoverable state due to an unsuccessful queues preemption`, `GPU reset
    begin!. Source: 4`, `BACO reset`; 02:02:58 `VRAM is lost due to GPU reset!`, `GPU reset(1) succeeded!`. A
    reset/hang class, not a permission fault (`grep -c '04:00.0.*no-retry page fault'` = 0): separate, unexplained,
-   on the other card, not evidence for or against the knob.
+   on the other card, not evidence for or against the knob; counted across boots in **§7**.
 3. **The override flag was wrong in the first TSV.** The driver writes `engine_exe`, `engine_sha256`,
    `engine_identity_reason` and no `engine_override` (`records/cb-2/B-pp239k.json`), so the old `record_engine` printed
    0 — a runner bug fixed in `674a1cf0ca` (flag derived from digest-vs-pin, hence TSV2's 1). **The digest is the
@@ -134,8 +134,8 @@ included) — against the 251–282 s at which the historic faults landed (§4).
 
 `AnonHugePages` is the number that matters: **3.6 GiB of huge pages were still resident in the process's other
 mappings** while the pool mapping — the one under `MADV_NOHUGEPAGE` — produced no fault across the 21 minutes of
-parking, restoring and disk spill that the load drove (15 parks, 16 restores: the first request has nothing to park). The exclusion is specific to that mapping, not a global THP effect. The reading was taken
-at 03:26:20 through `bench/fault-va/engine_pid.sh` (it resolves the real engine, never a shell wrapper) as
+parking, restoring and disk spill that the load drove (15 parks, 16 restores: the first request has nothing to park).
+The exclusion is specific to that mapping, not a global THP effect. The reading was taken at 03:26:20 through `bench/fault-va/engine_pid.sh` (it resolves the real engine, never a shell wrapper) as
 `engine_pid.sh | xargs -r -I{} sh -c 'grep VmRSS /proc/{}/status; grep -i anonhugepages /proc/{}/smaps_rollup'`;
 the same pid, 1047021, is in every load record's `mem.engine_pid`. `/proc/1047021` is gone now, so the figure lives
 in the session's shell output, not in a repo artifact — the command above is what produced it.
@@ -159,8 +159,9 @@ variance (313–749 tokens actually generated per request), not a measured leg a
 - **The pool is not the only registered range.** `AnonHugePages` after the prefill stayed **4.15-5.70 GiB** (§3), so
   other anonymous mappings — prefill ring slots, PLE host buffers, the arena — keep transparent huge pages. A fault
   originating there would not be stopped by this knob.
-- **The `0000:04:00.0` reset is untouched and unexplained.** One occurrence, no coredump analysed, no attempt to
-  attribute it to the pool, the knob, load or the card.
+- **The `0000:04:00.0` reset is untouched and unexplained.** One occurrence in this boot, and its shape recurs
+  in earlier boots (**§7**); no coredump analysed, no attempt to attribute it to the pool, the knob, load
+  or the card.
 - **No speed claim.** 195.7-280.1 tok/s over 4 boots, one binary, swap 7.1-8.8 GiB: descriptive, a prompt-read rate.
 - **Not built into the serving binary.** `:8009`'s pin (`run/port0218-bin/rpcw-hip/strata`) lacks the string; inert.
 
@@ -175,3 +176,54 @@ variance (313–749 tokens actually generated per request), not a measured leg a
    candidates to the pool's neighbours.
 3. **Track `0000:04:00.0` as its own class**: the `qcm fence wait loop timeout` → BACO → `VRAM is lost` signature has
    its own history (`gpu-crash-attribution-2026-10-26.md:14-17`) and is not part of this work.
+
+## 7. Addendum: 692 resets at the reboot, one fence loop since
+
+Added 2026-11-24 from the kernel journal and two logs; bare `journalctl -k` means **this** boot. `R0` /
+`R0.elog` = `out/port-ab-20261123/logs/W1-B-pp-r0{-boot.log,.engine.log}`; `elog` unqualified is the §3 one.
+
+| boot | resets | card, `Source:` | first → last |
+|---|---|---|---|
+| 0 (22:04:09 →) | **1** | `04:00.0`, 4 | 02:02:57 |
+| -1 (16:53:07 → 22:02:24) | **692** | `09:00.0`, 1 all | 21:43:15 → 22:02:24 |
+| -2 (14:55:10 → 16:52:34) | 2 | `04:00.0`, 4, 4 | 15:55:48, 16:29:23 |
+| -3 (12:26:56 → 14:54:32) | 2 | `04:00.0`, 1, 4 | 12:27:13, 14:48:35 |
+| -4 | 0 | — | — |
+| -5 (22:32:12 → 23:05:29) | 2 | `09:00.0`, 1, 1 | 23:01:26, 23:01:29 |
+
+**The storm.** 692 in 1149 s (465 gaps of 2 s, 198 of 1 s, 21 of 0 s, 7 of 3 s), one block repeated with the fence
+never advancing (`page1 1836/1838` 571, `page0 2391/2395` 118, `2391/2403` 3): `ring page1 timeout, signaled
+seq=1836, emitted seq=1838` / `GPU reset begin!. Source:  1` / `device lost from bus!` / `GPU reset end with ret =
+-19` / `GPU Recovery Failed: -19`. `device lost from bus!` is in the **first** block, so the card was already off the
+bus and the other 691 re-ran a reset that could not work (692 coredumps). The SMU failed first — first `0xffffffff`
+reply 21:42:16, 59 s ahead, 20,521 `0x10` failures and 30,179 `powerplay` lines that boot — and at 21:42:17 the audio
+function too (`snd_hda_intel 0000:09:00.1: Unable to change power state from D3hot to D0, device inaccessible`).
+At 21:43:10, seconds before the first reset: `Failed to send message 0x10, response 0xffffffff`, `[powerplay] Failed
+to export SMU metrics table!`, `[GetActivityMonitor] Attempt to Set Dram Addr High Failed!`, `[GetPowerProfile] Failed
+to get activity monitor!`, `Failed to send message 0x3c, response 0xffffffff`.
+
+The failures sit between boots: `W1-A-pp-r0` was stopped at 21:41:05 (`supervisor-events.log:1`) and its record
+closed at 21:42:32, and `W1-B-pp-r0`'s first engine line is 21:43:12. Gen 1 sat at `still starting (880 s)` (R0
+7-50) and gen 2 (21:58:16) at `still starting (240 s)` (R0 94) until the reboot cut it;
+R0.elog holds no line between one `engine started` and the next (6, 12). The supervisor logged `gen 1 recovering:
+helper did not attach and fill before the startup deadline` at 21:58:10
+(`run/W1-B-pp-r0.supervisor-events.log:1`). That leg's one `ready:` (R0 116) is gen 3 at 22:22:03, after the
+reboot, which served 301.6 tok/s (R0.elog 117): **the engine never became ready during the storm**; the operator
+reboot is what ended it (`systemd-logind: The system will reboot now!` 22:02:16, shutdown 22:02:24, next boot
+22:04:09).
+
+**The other class, 02:02:57, `04:00.0`, this boot:** `qcm fence wait loop timeout expired`, `The cp might be in an
+unrecoverable state due to an unsuccessful queues preemption`, `GPU reset begin!. Source:  4`, `BACO reset`, `VRAM is
+lost due to GPU reset!`; that cycle's engine (up 01:59:47) printed `HW Exception by GPU node-1 … reason :GPU Hang`
+(elog 298) and `the engine stopped unexpectedly (exit code -6)` (`pool-nohuge-boot.log:125`), and the next boot at
+02:04:08 was clean. **One occurrence here, unexplained, on the card that never permission-faults** — the shape
+recurs in boot -2 (15:55:48, 16:29:23) and -3 (14:48:35), a `ring page0` variant with `Source: 1` there at 12:27:13.
+
+**What §7 does NOT show.** No link to the permission fault: zero `page fault` records in 21:40-22:03, while that boot
+had three permission-fault events 4 h earlier (17:00:04, 17:07:39, 17:21:47; 10 records each, XDMA) — no
+co-occurrence, and a gap in time is not a mechanism; SMU/powerplay is another subsystem than VM translation. No
+cause: nothing separates power delivery, thermals, a bus fault or a driver path, and 692 identical failures are one
+fault, not 692. Nothing about the knob: the storm met `936efcc798aab395…`, which has no `STRATA_POOL_NOHUGEPAGE` string, and the
+04:00.0 reset happened *with* the knob and is no permission fault either. No trend: one storm in six retained boots,
+the others 0-2. **What would test it:** the fault-differential legs on the fixed binary (see **Next**) and a soak long
+enough for a reset to appear on its own.
