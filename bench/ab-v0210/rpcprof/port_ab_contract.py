@@ -77,13 +77,20 @@ LEGS = {
     # kind=tg issues the SAME prompt twice: request 1 is the fresh prefill, request 2 the
     # cached re-run. The decode rate is request 2's gen rate (the contract's "request 2 of the
     # boot, 1024-token cap"); request 1's read rate is the prefill, already owned by W1.
+    # Operator directive 2026-11-24 ("same infill as before plus 1024tg"): every pp239k window
+    # generates 1,024 tokens in the SAME request as the 58,423-token prefill, so one judge line
+    # yields both the prefill read rate and a TG rate that clears TG_CLAIM_MIN_GENERATED below.
+    # The cap is a plain int because no window needs a different one (W3 already generated
+    # 1,024). W1/W1d/W1f stay kind=prefill: ONE request, never the two-request cached re-run a
+    # tg leg issues - the window's prefill claim metric is still request 1's read_tps, and its
+    # gen_tps comes off that same judge line.
     "pp239k": {"kind": "prefill",
-               # W1f is W1's follow-up (same prefill leg, same 8-token tail); it is listed
-               # here because gen_tokens/kind_for fall back through entry["W2"] and pp239k has
-               # no W2 slot - an unlisted window would raise, not silently default.
+               # every prepared window names its kind here; kind_for otherwise falls back to
+               # "prefill", and W3's tg (the cached re-run) is the one kind that must never be
+               # lost to that default.
                "kind_by_window": {"W1": "prefill", "W1d": "prefill", "W1f": "prefill",
                                   "W3": "tg"},
-               "max_tokens": {"W1": 8, "W1d": 8, "W1f": 8, "W3": 1024}},
+               "max_tokens": 1024},
     "dec144k": {"kind": "prefill", "kind_by_window": {"W2": "tg", "W4": "tg"},
                 "max_tokens": {"W2": 1024, "W4": 1024}},
     "pp2k": {"kind": "prefill", "max_tokens": {"W2": 32}},
@@ -94,9 +101,11 @@ LEGS = {
 
 # TG claim floor (operator directive 2026-11-24, contract line "Decode/TG measurement
 # floor"): a gen_tps figure supports a TG statement only when that leg actually GENERATED at
-# least this many tokens - the count the judge line reports, never the max_tokens cap. A
-# shorter tail is context only: W1's 8-token tail is a prefill leg and its gen rate is not a
-# TG measurement. A decode leg below the floor cannot enter a TG claim sample.
+# least this many tokens - the count the judge line reports, never the max_tokens cap, so a
+# leg that stops early fails loudly instead of passing on its cap. A shorter tail is context
+# only, never a TG rate. Every pp239k window now generates 1,024 tokens (operator directive
+# 2026-11-24 "same infill as before plus 1024tg"), so its gen rate clears the floor; a leg
+# below it cannot enter a TG claim sample.
 TG_CLAIM_MIN_GENERATED = 1000
 
 
@@ -108,7 +117,9 @@ def gen_tokens(shape, window):
     """How many tokens this leg's kind is meant to generate in this window (its own cap).
 
     The single place the TG gate reads a leg's intended generation count from; it is the same
-    number port_ab_legs.commands() passes as --max-tokens.
+    number port_ab_legs.commands() passes as --max-tokens. A plain int cap (pp239k: 1,024 in
+    every window) applies as written; a per-window dict takes the window's own entry, and any
+    window it does not name keeps the W2 cap the shape was built with.
     """
     entry = LEGS[shape]["max_tokens"]
     return int(entry) if isinstance(entry, int) else int(entry.get(window) or entry["W2"])

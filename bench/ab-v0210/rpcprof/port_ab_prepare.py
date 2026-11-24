@@ -202,7 +202,12 @@ def leg_section(out, window):
                        if C.kind_for(shape, window) == "ttft"
                        else ("request 2 gen_tps (cached re-run); request 1 read_tps recorded"
                              if C.kind_for(shape, window) == "tg"
-                             else "read_tps from the single fresh request")),
+                             else "read_tps from the single fresh request"
+                                  + (" plus gen_tps off the SAME judge line ("
+                                     + str(cap) + " generated tokens clear the "
+                                     + str(C.TG_CLAIM_MIN_GENERATED) + "-token floor; the "
+                                     "prefill claim metric stays read_tps)"
+                                     if C.claims_tg(shape, window) else ""))),
             "delta_key": DELTA_KEY.get(shape, {}).get(window),
         }
     return rows

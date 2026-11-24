@@ -741,6 +741,8 @@ def check(out, window, manifest_path=None):
                      "decode_from_request": 2 if decode else 1,
                      "reused_second": decode and decode["reused"],
                      "tg": (leg in C.LEGS and C.claims_tg(leg, window)),
+                     "cap": (leg in C.LEGS and C.gen_tokens(leg, window)) or None,
+                     "record_cap": rec.get("max_tokens"),
                      "helper": tail.groups() if tail else None,
                      "non_finite": len(re.findall(C.EXPECTED_LINES["non_finite"], text)),
                      "gpu_fault": len(re.findall(C.EXPECTED_LINES["gpu_fault"], text)),
@@ -768,10 +770,21 @@ def check(out, window, manifest_path=None):
                                     + " tokens, expected ~" + str(expected))
                 if entry["tg"] and (entry["gen_tok"] is None
                                     or entry["gen_tok"] < C.TG_CLAIM_MIN_GENERATED):
-                    problems.append(bkey + "/" + leg + ": TG leg generated "
-                                    + str(entry["gen_tok"]) + " token(s), below the "
-                                    + str(C.TG_CLAIM_MIN_GENERATED) + "-token TG floor "
-                                    + "(operator directive 2026-11-24): not a TG measurement")
+                    short = bkey + "/" + leg + ": TG leg generated " + str(entry["gen_tok"]) \
+                            + " token(s), below the " + str(C.TG_CLAIM_MIN_GENERATED) \
+                            + "-token TG floor"
+                    rec_cap = entry["record_cap"]
+                    if isinstance(rec_cap, int) and rec_cap < C.TG_CLAIM_MIN_GENERATED:
+                        # The leg was RUN under a cap below the floor (a record from before the
+                        # 2026-11-24 "+1024tg" directive, when pp239k's tail was 8 tokens). It is
+                        # a pre-amendment record the contract keeps untouched, not a shortfall of
+                        # a 1,024-token leg: context only, said out loud, never a TG rate.
+                        warnings.append(short + " (the record's own cap was " + str(rec_cap)
+                                        + ", so it predates the 1,024-token directive: context "
+                                        "only, not a TG measurement)")
+                    else:
+                        problems.append(short + " (operator directive 2026-11-24): not a TG "
+                                        "measurement")
             if tail and (tail.group(7) != "0" or tail.group(8) != "0"):
                 problems.append(bkey + "/" + leg + ": helper timeouts=" + tail.group(7)
                                 + " fallbacks=" + tail.group(8))
@@ -799,9 +812,11 @@ def check(out, window, manifest_path=None):
         if len({tuple(v) for v in values.values()}) > 1:
             problems.append(shape + ": served prompt-N differs across arms: " + str(values))
 
-    # TG: "tg" = this row's gen_tps is claim-grade (a TG leg that generated >= 1,000 tokens);
-    # "ctx" = context only, never a TG rate - W1's 8-token prefill tail, or a TG leg that
-    # stopped short of the floor (which the gate also fails, loudly). "-" = no gen rate.
+    # TG: "tg" = this row's gen_tps is claim-grade (the leg generated >= 1,000 tokens: every
+    # pp239k window since the 2026-11-24 "+1024tg" directive, and the 1024-capped dec144k);
+    # "ctx" = context only, never a TG rate - a short-tail leg whose cap is under the floor
+    # (pp2k/pp8k, 32 tokens), or a TG leg that stopped short of the floor (which the gate also
+    # fails, loudly). "-" = no gen rate.
     # engine: the leading 12 hex of the digest of the engine binary the leg's record names,
     # so the table says which build produced the rate. "-" means the record carries no
     # identity (records written before the field existed, or an unreadable /proc link:
@@ -926,7 +941,7 @@ SELFTEST_JUDGE2 = ("strata serve: prompt {n} tokens = {reused} reused + 10 read 
 def _fixture(root, key, arm, shape, *, spec="5", rows=3680, gib="6.84", restart_line="",
              second_reused=None, ttft_first=True, generation=None, started=1.0, ended=None,
              supervisor_events=None, legacy_events=None, tokens=None, generated=None,
-             engine_sha=None, boot_engine_sha=None):
+             record_cap=None, engine_sha=None, boot_engine_sha=None):
     import tempfile  # noqa: F401 - the caller owns the temp dir
     d = pathlib.Path(root) / "records" / key
     d.mkdir(parents=True, exist_ok=True)
@@ -941,14 +956,18 @@ def _fixture(root, key, arm, shape, *, spec="5", rows=3680, gib="6.84", restart_
                "mem": {"max_rss_mib": 40000}}
     else:
         n = tokens if tokens is not None else (58423 if shape == "pp239k" else 144000)
+        # the shape's own contract cap is what the record was SCHEDULED under; "generated"
+        # overrides only the judge line's count, so a fixture can be a 1,024-capped leg that
+        # stopped short (a real defect) or a leg whose cap itself was under the floor
+        cap = C.gen_tokens(shape, "W1")
         body += SELFTEST_JUDGE.format(
-            n=n, reused=0,
-            gen=(generated if generated is not None
-                 else (1024 if shape == "dec144k" else 8)))
+            n=n, reused=0, gen=(generated if generated is not None else cap))
+        if record_cap is not None:
+            cap = record_cap      # a record written under an older, shorter cap
         if second_reused is not None:
             body += SELFTEST_JUDGE2.format(n=n, reused=second_reused)
         rec = {"arm": arm, "leg": shape, "kind": "tg" if second_reused is not None else "prefill",
-               "ctx": n, "max_tokens": 8, "ts": 1, "walls": [1], "wall_s": 1,
+               "ctx": n, "max_tokens": cap, "ts": 1, "walls": [1], "wall_s": 1,
                "content_from": "content", "prompt_bytes": n, "prompt_sha256": "x", "requests": [],
                "sha256": "y", "elog": str(pathlib.Path(root) / (key + "-" + shape + ".engine.log")),
                "elog_start": len(boot.encode()), "elog_end": len(body.encode()), "hlog": "",
@@ -1125,12 +1144,45 @@ def selftest():
                 two_arms((None, None)), 0,
                 "cannot be attributed to a build")
 
+    # the pre-amendment baseline: pp239k legs recorded under the old 8-token cap are context
+    # only. They must WARN (a record whose own cap was under the floor is not a shortfall of a
+    # 1,024-token leg), never fail - W1's four contract records are never re-derived.
+    with tempfile.TemporaryDirectory(dir=_tmpdir()) as root:
+        _fixture(root, "W1-A-pp-r1", "A", "pp239k", generated=8, record_cap=8, ended=6.0)
+        _fixture(root, "W1-B-pp-r1", "B", "pp239k", generated=8, record_cap=8, ended=6.0)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = check(pathlib.Path(root), "W1")
+        text = buf.getvalue()
+        ok = (rc == 0 and "TG leg generated 8" in text and "WARN: " in text
+              and text.count("ctx") == 2)
+        print(("ok   " if ok else "FAIL ") + "old-8-token-record-is-context-warn: rc " + str(rc)
+              + " (a record written under the old 8-token cap warns, never fails the window)")
+        if not ok:
+            failures.append("old-8-token-record-is-context-warn")
+
+    # pp239k generates 1,024 tokens in every window since the 2026-11-24 "+1024tg"
+    # directive, so W1's prefill legs now print TG=tg from the SAME judge line, while a leg
+    # whose own cap is under the floor (pp2k, 32) stays "ctx" - context only, never a rate
     rc, text = run(lambda r: clean(r))
-    ok = rc == 0 and text.count("ctx") >= 2 and " tg" not in text
-    print(("ok   " if ok else "FAIL ") + "w1-8-token-tail-is-context: rc " + str(rc)
-          + " (W1's prefill legs must print TG=ctx, not tg)")
+    ok = rc == 0 and " tg" in text and text.count("ctx") == 0
+    print(("ok   " if ok else "FAIL ") + "pp239k-1024-tail-is-tg: rc " + str(rc)
+          + " (a 1,024-token generation clears the floor, so W1's prefill legs print TG=tg)")
     if not ok:
-        failures.append("w1-8-token-tail-is-context")
+        failures.append("pp239k-1024-tail-is-tg")
+
+    with tempfile.TemporaryDirectory(dir=_tmpdir()) as root:
+        _fixture(root, "W1-A-pp2k", "A", "pp2k", tokens=2000)
+        _fixture(root, "W1-B-pp2k", "B", "pp2k", tokens=2000)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = check(pathlib.Path(root), "W1")
+        text = buf.getvalue()
+        ok = rc == 0 and text.count("ctx") == 2 and " tg" not in text
+        print(("ok   " if ok else "FAIL ") + "short-32-token-tail-is-context: rc " + str(rc)
+              + " (a cap under the 1,000 floor stays TG=ctx)")
+        if not ok:
+            failures.append("short-32-token-tail-is-context")
 
     # the boot's own engine-log segment: a previous boot's fault under the same key must not
     # fail this boot, an in-boot fault before the request must, and no offsets means whole file
@@ -1214,7 +1266,9 @@ def selftest():
           "engine is not the one its boot started; a clean stop is not a restart, a previous "
           "boot's events are not this boot's, the kernel window ends with the boot, a record "
           "with no engine sha is informational only, and the per-boot evidence is written "
-          "beside the boot record")
+          "beside the boot record; a 1,024-token pp239k leg is TG=tg, a 32-token tail stays "
+          "TG=ctx, and a record written under the old 8-token cap warns instead of failing "
+          "the window it is the untouched baseline of")
     return 0
 
 
