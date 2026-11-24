@@ -1,5 +1,23 @@
 # Promotion record: prod serves the pool-MADV_NOHUGEPAGE engine — 2026-11-24
 
+> ## CORRECTION — 2026-11-25. The promotion happened; it was not a fault fix.
+>
+> This record is accurate about what was deployed and when. What it is **not** entitled to claim is stability. The
+> evidence behind the promotion covered two workloads only — **four cold prefills** and a **40-minute soak with
+> thinking off** (§9 below is right that it is one boot each, and the soak is `journal/pool-nohuge-verification-2026-11-24.md`
+> §8). It did not cover sustained park/restore churn. **The promoted binary faults on that workload.**
+>
+> | Event | When | Evidence |
+> |---|---|---|
+> | engine pid 2676741, `15d330ea…`, `0.2.18` + knob, booted on `:8009` | 2026-11-24 20:19:24 | `bench/fault-va/out/logs/prod-soak-2020.log:1` |
+> | **fault**, 2 records, `XDMA (0x0)`, `PERMISSION_FAULTS: 0x3`, status `0x00800030`; VA unresolved (no sampler for this pid) | 2026-11-24 20:30:37 | `journalctl -k`; engine gone at request 10 of an alternating 80,000/16,000 soak (`prod-soak-2020.log:33`) |
+> | engine pid 681814, same binary, same config | 20:36:56 | `prod-soak-maps.log:1` |
+> | **fault**, 10 records, same client and status family (`0x00800031`), faulting VA inside the 32 GiB pool VMA | 2026-11-24 20:44:13 | `journalctl -k`; VA `0x7f788b3bc000` resolves to `7f7520800000-7f7d20800000 rw-p` = 34,359,738,368 B (`bench/fault-va/out/maps-soak/maps-1795549452.txt`) |
+>
+> So the promotion stands as a **fact about what prod runs**. It is not evidence that the fault is fixed, and §6's
+> "that is the mechanism the knob removes" is withdrawn below. §8(a)'s "no demonstrated cost" is now also stale in
+> both directions: no cost was demonstrated, and no benefit was either.
+
 The RAM-pool fault fix (`STRATA_POOL_NOHUGEPAGE`: `MADV_NOHUGEPAGE` on the engine's 32 GiB pool mapping) is **live on
 prod `:8009`**, promoted by the parent session at 10:21 CET under the operator's directive. The writing lane ran no
 boot, no GPU work and no process control: every number is read from an artifact or from the read-only command beside
@@ -87,6 +105,16 @@ The 8.9 tok/s in that line is a **4-token tail** (`max_tokens` 8) and is not a d
 
 The faulted VA sat inside the pool's VMA while it was still mapped, and the pool carried AnonHugePages 1.27 GiB at
 fault time (`db5bc3ab10` message; `bench/fault-va/maps_sampler.sh`). That is the mechanism the knob removes.
+
+> **CORRECTED 2026-11-25 — both sentences are withdrawn.** (a) The 1.27 GiB figure is not a measurement: it exists
+> only in a commit message, and at the time of that fault the sampler read `smaps_rollup` only — process-wide, no
+> per-VMA output (`journal/amdgpu-userptr-fault-diagnosis-2026-11-24.md:128` says the same). The per-VMA sampler
+> arrived the evening of 2026-11-24, after this promotion. (b) "That is the mechanism the knob removes" is false.
+> The knob-on binary faulted twice on 2026-11-24 evening (20:30:37, 20:44:13), and the per-VMA reading taken on the
+> same promoted configuration puts the pool VMA at `AnonHugePages: 0 kB` with `VmFlags: … lo … nh`
+> (`bench/fault-va/out/sampler-selftest/huge-1795557323.txt:3`). The 0 kB reading is from 22:55, not from a fault
+> second — no per-VMA reading exists for either fault — but it shows the fault needs no huge pages in that mapping,
+> so removing them cannot be the mechanism. See `journal/fault-investigation-corrections-2026-11-24.md` §4.
 
 ## 7. Rollback (one invocation, no rebuild)
 

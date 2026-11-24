@@ -1,5 +1,26 @@
 # The engine-side fix for the amdgpu userptr fault: verified — 2026-11-24
 
+> ## CORRECTION — 2026-11-25. Three claims below are disproven. Nothing is deleted; the wrong text stays where it
+> was written and is marked at the point where it appears.
+>
+> This record's title says **verified**. As evidence about the fault, that framing does not stand: the promoted
+> binary faulted again on 2026-11-24 at 20:30:37 and at 20:44:13. The 20:44:13 fault resolves inside the 32 GiB pool
+> VMA; the 20:30:37 one has no snapshot and is unresolved
+> (`journal/fault-investigation-corrections-2026-11-24.md` §4). What this record did establish is narrower — that
+> the knob fires, that the pool VMA carries `AnonHugePages: 0 kB`, and that the prefill and soak workload of
+> 2026-11-24 01:45-04:37 did not fault.
+>
+> | # | Claim written here | Status | Disproven by |
+> |---|---|---|---|
+> | 1 | `STRATA_ARENA_MLOCK=1` fixed the fault, and mlock costs 7-14 % on prefill | **both false** | the pool is mlocked unconditionally in `Pool::create` (`engine/src/core/ram_pool.cpp:260`, no `getenv` gate); a live engine booted **without** `STRATA_ARENA_MLOCK` reads `VmLck: 33718272 kB` with the pool VMA flagged `lo`. `STRATA_ARENA_MLOCK` locks only spans passed to `arena_mlock_span` (`include/strata/core/pin_budget.hpp:154-187`), and this tuple registers none — the arena never opens. The "mlock on" and "mlock off" runs were **the same pool configuration** |
+> | 2 | The pool got huge pages anyway despite `MADV_NOHUGEPAGE` | **false, and it was inference from a process-wide number** | per-VMA `/proc/<pid>/smaps` puts the 32 GiB pool VMA at `AnonHugePages: 0 kB` with flags `rd wr mr mw me lo ac sd nh` (`bench/fault-va/out/sampler-selftest/huge-1795557323.txt:3`). The cited `smaps_rollup` figure is process-wide and cannot be attributed to a mapping |
+> | 3 | The relief/re-rank unregister path revokes the GPU's translation | **false** | `release_pair` has one caller and `refill_pair` two, all inside gates that need `srcp == &arena_src` (`engine/src/program/generate.cpp:26756-26773`, `engine/src/core/expert_source.cpp:7691`, `:8043`, `:8050`). With `STRATA_RAM_BUDGET_MIB=36864` the expert source is the pool adapter (`generate.cpp:9550`), so `ArenaExpertSource::open` never runs and every boot says so: `nothing dropped: this run's expert source is not the arena` (25 times in `logs/engine-prod-port0218.log`) |
+>
+> What still stands: the fault recurs **inside the 32 GiB pool VMA**, that VMA has **0 kB huge pages and is locked,
+> and it faults anyway** — so `MADV_NOHUGEPAGE` never addressed the cause. See
+> `journal/fault-investigation-corrections-2026-11-24.md` for the ordered story, the dates, and the sampler
+> upgrade that produced the per-VMA evidence.
+
 Verification record for `STRATA_POOL_NOHUGEPAGE`, the opt-in `MADV_NOHUGEPAGE` on the engine's 32 GiB RAM pool
 mapping. Fixer lane, branch `recovery-startup-watchdog`, box GUAM, nothing serving, GPU idle. **I ran no boot and no
 GPU work**: every number is read from an artifact and cites the file and line, or the command that produced it. No
@@ -132,6 +153,14 @@ included) — against the 251–282 s at which the historic faults landed (§4).
 | faults | 0 / 0 | `journalctl -k --since '2026-11-24 03:00'`: `grep -c 'no-retry page fault'` 0, `grep -c 'GPU reset begin'` 0 |
 | at stop, engine alive (03:26:20) | `VmRSS 42,337,732 kB` (40.4 GiB), `AnonHugePages 3,778,560 kB` (3.6 GiB) | `/proc/1047021/status`, `/proc/1047021/smaps_rollup` |
 
+> **CORRECTION (2026-11-25) to the paragraph below.** `AnonHugePages` here is `smaps_rollup`, which is
+> process-wide; it cannot say which mapping held the pages, and at this hour the sampler had no per-VMA reading at
+> all (`bench/fault-va/maps_sampler.sh` gained the per-VMA `huge-*.txt` output only later that evening, 22:55).
+> The claim "3.6 GiB in the process's **other** mappings" is therefore an inference, not a measurement — the
+> subtraction assumes the pool held none, which is exactly the question. A later per-VMA reading does put the pool
+> at `AnonHugePages: 0 kB` (`sampler-selftest/huge-1795557323.txt:3`), but that is a different boot, taken ~19 h
+> after this one. What this boot measured is the process-wide total and nothing finer.
+
 `AnonHugePages` is the number that matters: **3.6 GiB of huge pages were still resident in the process's other
 mappings** while the pool mapping — the one under `MADV_NOHUGEPAGE` — produced no fault across the 21 minutes of
 parking, restoring and disk spill that the load drove (15 parks, 16 restores: the first request has nothing to park).
@@ -159,6 +188,9 @@ variance (313–749 tokens actually generated per request), not a measured leg a
 - **The pool is not the only registered range.** `AnonHugePages` after the prefill stayed **4.15-5.70 GiB** (§3), so
   other anonymous mappings — prefill ring slots, PLE host buffers, the arena — keep transparent huge pages. A fault
   originating there would not be stopped by this knob.
+  **CORRECTED 2026-11-25:** that figure is process-wide, so it does not show which mappings kept the pages; the
+  attribution to "other mappings" was an inference (see the note in §6). The part that survives is the plain one:
+  the knob is scoped to the pool's own VMA and says nothing about any other mapping.
 - **The `0000:04:00.0` reset is untouched and unexplained.** One occurrence in this boot, and its shape recurs
   in earlier boots (**§7**); no coredump analysed, no attempt to attribute it to the pool, the knob, load
   or the card.
