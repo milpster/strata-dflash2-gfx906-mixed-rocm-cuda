@@ -79,7 +79,7 @@ DROP_KEYS = ("derived_from", "derived_note", "managed_budget_mib")
 
 LEG_ORDER = ("default-margins", "parking-off", "park-on-no-evict", "dflash-off",
              "single-card-0", "single-card-1", "xnack-1", "xnack-0", "arena-mlock",
-             "pageable-h2d", "pool-nohuge")
+             "pageable-h2d", "pool-nohuge", "pool-huge")
 
 # The legs whose one lever is an engine environment key: leg -> (key, value). The two new
 # knobs parse differently on purpose: STRATA_ARENA_MLOCK is on for ANY value (a presence test,
@@ -92,6 +92,10 @@ ENV_LEVER = {
     "arena-mlock": ("STRATA_ARENA_MLOCK", "1"),
     "pageable-h2d": ("STRATA_TEST_PAGEABLE", "1"),
     "pool-nohuge": ("STRATA_POOL_NOHUGEPAGE", "1"),
+    # pool-huge is the CONTROL twin of pool-nohuge: the identical config with the knob
+    # absent, so a PP+TG pair differs by exactly one env line. Its "value" is only a
+    # marker - derive() drops the key for it instead of setting it.
+    "pool-huge": ("STRATA_POOL_NOHUGEPAGE", "<absent>"),
 }
 
 
@@ -482,6 +486,23 @@ LEGS = {
                     "the memory shape beside the result: MemAvailable, swap used, per-card VRAM - the knob costs no "
                     "memory, so a delta there is a confound to name"],
     },
+    "pool-huge": {
+        "purpose": "CONTROL twin of pool-nohuge: the identical config with STRATA_POOL_NOHUGEPAGE absent, so a "
+                   "pool-huge/pool-nohuge pair differs by exactly one env line (used for PP+TG A/B on one binary)",
+        "narrows": "nothing on its own - it is the baseline the pool-nohuge arm is differenced against",
+        "cannot_exclude": "everything the knob could matter for: this leg is the uncontrolled condition, so a "
+                          "fault here is the expected baseline behaviour and a clean run says only that this boot "
+                          "was lucky. Never report it as evidence against the fix",
+        "declared": [],   # no lever: this leg IS the base with the harness paths, nothing else
+        "present": [r"engine started: .*--serve "],
+        "absent": [r"strata: RAM pool: .* mapping: transparent huge pages off"],
+        "observe": ["the absence of the 'RAM pool: ... transparent huge pages off' line IS the assertion that the "
+                    "knob is not applied; the boot must look like the promoted-tuple boots before 2026-11-24",
+                    "on a PP+TG pair: prefill rate from request 1 and decode rate from request 2 of the same judge "
+                    "line, so the two arms are compared on identical prompt bytes",
+                    "the kernel slice's fault class - a fault here is not a defect of the control, it is the "
+                    "baseline risk that the fix is meant to remove"],
+    },
 }
 
 
@@ -545,7 +566,11 @@ def derive(leg, out=OUT_DEFAULT):
         set_arg(pairs, "--gpu", card)
     elif leg in ENV_LEVER:
         env = dict(cfg.get("env") or {})
-        env[ENV_LEVER[leg][0]] = ENV_LEVER[leg][1]
+        key, value = ENV_LEVER[leg]
+        if value == "<absent>":       # the control twin: the key must NOT be present
+            env.pop(key, None)
+        else:
+            env[key] = value
         cfg["env"] = env
     else:                                        # pragma: no cover - guarded above
         raise SystemExit("no transform for " + leg)
@@ -697,7 +722,11 @@ def verify(leg, out=OUT_DEFAULT):
             problems.append(leg + ": helper slots moved")
     if leg in ENV_LEVER:
         env_key, env_value = ENV_LEVER[leg]
-        if (cfg.get("env") or {}).get(env_key) != env_value:
+        # "<absent>" marks a control twin: the key must not be present at all.
+        if env_value == "<absent>":
+            if env_key in (cfg.get("env") or {}):
+                problems.append(leg + ": " + env_key + " is present but this leg is its control")
+        elif (cfg.get("env") or {}).get(env_key) != env_value:
             problems.append(leg + ": " + env_key + " is not " + env_value)
         if (cfg.get("env") or {}).get("HSA_OVERRIDE_GFX_VERSION") != "9.0.6":
             problems.append(leg + ": HSA_OVERRIDE_GFX_VERSION left the env block")

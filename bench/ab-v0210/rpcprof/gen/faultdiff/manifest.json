@@ -363,6 +363,58 @@
    "purpose": "Is the park path necessary for the fault? (parking truly OFF: mib 0, no dir, no idle-save)",
    "sha256": "f4f91dc367ac02d6fd661662eb0ce278cba845e00e896a7a6a2e1dd84c3d22f1"
   },
+  "pool-huge": {
+   "absent": [
+    "strata: RAM pool: .* mapping: transparent huge pages off"
+   ],
+   "cannot_exclude": "everything the knob could matter for: this leg is the uncontrolled condition, so a fault here is the expected baseline behaviour and a clean run says only that this boot was lucky. Never report it as evidence against the fix",
+   "diff_from_base": {
+    "args/--conversation-cache-dir": [
+     "/mnt/srcds/Strata/run/prod-port0218-cache",
+     "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/faultdiff-r1/cache/pool-huge"
+    ],
+    "derived_from": [
+     "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/trial-managed-pool-38g-230k.json",
+     "<absent>"
+    ],
+    "derived_note": [
+     "port-0218 test-window base on :8019: the champion measurement config with the engine, cwd, sockets, log and conversation-cache-dir repointed at the port tree, and --conversation-spill-mib 0 added (upstream spill tier off; the fork DISK tier under --conversation-cache-dir is this rig's only disk tier). Boots are the operator's, never the fixer's.",
+     "<absent>"
+    ],
+    "expert_helper_socket": [
+     "/mnt/srcds/Strata/run/prod-iq3xxs-ud-mixed.sock",
+     "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/faultdiff-r1/run/fd-pool-huge.sock"
+    ],
+    "expert_helper_socket2": [
+     "/mnt/srcds/Strata/run/prod-iq3xxs-ud-mixed2.sock",
+     "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/faultdiff-r1/run/fd-pool-huge-2.sock"
+    ],
+    "log": [
+     "/mnt/srcds/Strata/logs/engine-prod-port0218.log",
+     "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/faultdiff-r1/logs/pool-huge.engine.log"
+    ],
+    "managed_budget_mib": [
+     "40960",
+     "<absent>"
+    ],
+    "trial_note": [
+     "<base note>",
+     "<leg note>"
+    ]
+   },
+   "file": "pool-huge.json",
+   "narrows": "nothing on its own - it is the baseline the pool-nohuge arm is differenced against",
+   "observe": [
+    "the absence of the 'RAM pool: ... transparent huge pages off' line IS the assertion that the knob is not applied; the boot must look like the promoted-tuple boots before 2026-11-24",
+    "on a PP+TG pair: prefill rate from request 1 and decode rate from request 2 of the same judge line, so the two arms are compared on identical prompt bytes",
+    "the kernel slice's fault class - a fault here is not a defect of the control, it is the baseline risk that the fix is meant to remove"
+   ],
+   "present": [
+    "engine started: .*--serve "
+   ],
+   "purpose": "CONTROL twin of pool-nohuge: the identical config with STRATA_POOL_NOHUGEPAGE absent, so a pool-huge/pool-nohuge pair differs by exactly one env line (used for PP+TG A/B on one binary)",
+   "sha256": "cd9b5eff06f12e819c9ddbd4b74cba0097a7db2d5c340835efde2cf18897e215"
+  },
   "pool-nohuge": {
    "absent": [
     "strata: RAM pool: WARNING: MADV_NOHUGEPAGE"
