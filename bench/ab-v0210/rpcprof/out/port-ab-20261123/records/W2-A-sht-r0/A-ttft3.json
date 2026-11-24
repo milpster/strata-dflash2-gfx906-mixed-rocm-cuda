@@ -1,0 +1,91 @@
+{
+ "arm": "A",
+ "leg": "ttft3",
+ "kind": "ttft",
+ "turns": 3,
+ "max_tokens": 64,
+ "ts": 1795539469.733,
+ "corpus": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/ttft2k.ctx11064.bin",
+ "corpus_sha256": "349827f01baac1c03ca2173c1074ad0d4e28b511ac92536a9748596c15aa45a7",
+ "request": {
+  "template": {
+   "enable_thinking": false,
+   "reasoning_effort": "low",
+   "temperature": 0
+  },
+  "stream": true,
+  "template_sha256": "ac4b38626a931a12d53a553880d88d881196fa0b06570f34d71e9c1a9144a2e3"
+ },
+ "turn_rows": [
+  {
+   "ttft_client_s": 21.407,
+   "wall_s": 24.124,
+   "first_delta_at": 1795539447.8639805,
+   "finished_at": 1795539450.5814836,
+   "text_sha256": "3567524b749786e1047cbefa74e43e36d743a861b0ca451f39375f950e28f76f",
+   "chars": 242,
+   "finish_reason": "length",
+   "usage": {
+    "prompt_tokens": 2057,
+    "completion_tokens": 64,
+    "total_tokens": 2121,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "inter_turn_wall_s": null
+  },
+  {
+   "ttft_client_s": 6.966,
+   "wall_s": 9.955,
+   "first_delta_at": 1795539457.5473437,
+   "finished_at": 1795539460.5365422,
+   "text_sha256": "cd78c579d5073b68a2465da6474a208ad74cd43bb60185db1031a68d0e2aeca3",
+   "chars": 236,
+   "finish_reason": "length",
+   "usage": {
+    "prompt_tokens": 2151,
+    "completion_tokens": 64,
+    "total_tokens": 2215,
+    "prompt_tokens_details": {
+     "cached_tokens": 2052
+    }
+   },
+   "inter_turn_wall_s": 6.966
+  },
+  {
+   "ttft_client_s": 6.83,
+   "wall_s": 9.179,
+   "first_delta_at": 1795539467.3664908,
+   "finished_at": 1795539469.7160826,
+   "text_sha256": "971feef417127b141f97b77fd0bfcf05416580c630e6655f0f858501db091521",
+   "chars": 218,
+   "finish_reason": "length",
+   "usage": {
+    "prompt_tokens": 2170,
+    "completion_tokens": 64,
+    "total_tokens": 2234,
+    "prompt_tokens_details": {
+     "cached_tokens": 2052
+    }
+   },
+   "inter_turn_wall_s": 6.83
+  }
+ ],
+ "server_turns": [],
+ "elog": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-sht-r0.engine.log",
+ "hlog": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-A-sht-r0-helper.log",
+ "mem": {
+  "cached_start_mib": 11376,
+  "cached_end_mib": 11489,
+  "max_rss_mib": 40862,
+  "min_avail_mib": 12940,
+  "max_swap_used_mib": 2115,
+  "max_vram_mib": {
+   "card3": 16166,
+   "card4": 287,
+   "card2": 16198,
+   "nvidia0": 7354
+  }
+ }
+}

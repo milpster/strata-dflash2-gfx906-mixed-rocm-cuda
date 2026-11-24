@@ -1,0 +1,77 @@
+{
+ "arm": "B",
+ "leg": "pp239k",
+ "kind": "prefill",
+ "ctx": 323200,
+ "max_tokens": 8,
+ "ts": 1795524397.301,
+ "walls": [
+  188.419
+ ],
+ "wall_s": 188.42,
+ "content_from": "reasoning",
+ "prompt_bytes": 323200,
+ "prompt_sha256": "210b16b32b8658e68b863442d3c2d9ebde7eb3c9d50b0cea8c28e7d045c0ea68",
+ "requests": [
+  {
+   "index": 0,
+   "wall_s": 188.419,
+   "content_from": "reasoning",
+   "response_sha256": "b3482dfb59888b1ecf3e63ad4b7fcbc8588e0f2ba47a8edc07de37d37a6da3eb",
+   "elog_start": 24671,
+   "elog_end": 27541,
+   "hlog_start": 3755,
+   "hlog_end": 3755,
+   "model": "ud-iq3_xxs"
+  }
+ ],
+ "sha256": "b3482dfb59888b1ecf3e63ad4b7fcbc8588e0f2ba47a8edc07de37d37a6da3eb",
+ "elog": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1f-B-pp-r3.engine.log",
+ "elog_start": 24671,
+ "elog_end": 27541,
+ "hlog": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1f-B-pp-r3-helper.log",
+ "hlog_start": 3755,
+ "hlog_end": 3755,
+ "mem": {
+  "engine_pid": 77012,
+  "cached_start_mib": 11020,
+  "cached_end_mib": 6595,
+  "max_rss_mib": 41669,
+  "min_avail_mib": 6582,
+  "max_swap_used_mib": 28,
+  "max_vram_mib": {
+   "card3": 16240,
+   "card4": 461,
+   "card2": 16305,
+   "nvidia0": 7328
+  }
+ },
+ "engine_exe": "/mnt/srcds/Strata/run/port0218-nohuge-bin/rpcw-hip/strata",
+ "engine_sha256": "15d330ea4d0eec4ca64ef3973e52d332253a981c25dde42b70567bf8b3ae7577",
+ "engine_identity_reason": null,
+ "request": {
+  "template_path": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/request-template.json",
+  "template_sha256": "1367e0c041b3e7e6abceef27587f9ffbb8ff1d8b2ea4cc7d0141d9e945a18abd",
+  "settings": {
+   "enable_thinking": false,
+   "reasoning_effort": "low",
+   "stream": false,
+   "temperature": 0,
+   "messages": [
+    {
+     "role": "user",
+     "content_sha256": "210b16b32b8658e68b863442d3c2d9ebde7eb3c9d50b0cea8c28e7d045c0ea68"
+    }
+   ],
+   "max_tokens": 8
+  },
+  "settings_sha256": "9263b37fae46b9e2066bbc781dcd96d48758c4c4ddce53ffe0751fa180c2e65c",
+  "url": "http://127.0.0.1:8009/v1/chat/completions"
+ },
+ "champs": {
+  "shape": "pp239k",
+  "pair": 0,
+  "measured": true,
+  "retries": 0
+ }
+}

@@ -1,0 +1,61 @@
+{
+ "cache_slots": 5739,
+ "fill": {
+  "gib": 6.83,
+  "rows": 3683
+ },
+ "granted_fs_slots": [
+  0,
+  0
+ ],
+ "kernel_fingerprint": {
+  "available": true,
+  "count": 7,
+  "matches": [
+   "amdgpu 0000:09:00.0: ring page1 timeout, signaled seq=32746, emitted seq=32748",
+   "amdgpu 0000:09:00.0: GPU reset begin!. Source:  1",
+   "amdgpu 0000:09:00.0: BACO reset",
+   "amdgpu 0000:09:00.0: GPU reset succeeded, trying to resume",
+   "amdgpu 0000:09:00.0: VRAM is lost due to GPU reset!",
+   "amdgpu 0000:09:00.0: GPU reset(1) succeeded!",
+   "amdgpu 0000:09:00.0: [drm] device wedged, but no recovery needed"
+  ],
+  "reason": "",
+  "window": {
+   "bound_by": "ended_epoch",
+   "since": 1795545125.4899077,
+   "until": 1795545229.024
+  }
+ },
+ "key": "W2-B-sht-r1",
+ "low_warning_count": 1,
+ "page_cache": {
+  "cached_delta_mib": 6376,
+  "cached_mib_at_boot": 10436,
+  "cached_mib_now": 16812,
+  "majfault_delta": 1451650
+ },
+ "problems": [
+  "W2-B-sht-r1: boot contains a restart (generation 1, 1 supervisor event(s), 0 engine line(s))",
+  "W2-B-sht-r1: kernel journal fingerprint is not clean: amdgpu 0000:09:00.0: ring page1 timeout, signaled seq=32746, emitted seq=32748"
+ ],
+ "restart": {
+  "engine_lines": 0,
+  "generation": 1,
+  "restarts": 0,
+  "supervisor_events": [
+   "2026-11-24T19:33:48 gen 1 recovering: engine exited"
+  ]
+ },
+ "tuple": {
+  "--dflash-block": "7",
+  "--expert-helper-slots": "4600",
+  "--layer-split": "30",
+  "--spec": "5",
+  "--vram-reserve-later-mib": "192",
+  "--vram-reserve-mib": "256"
+ },
+ "warnings": [],
+ "written_at": "2026-11-24T19:45:31",
+ "written_by": "port_ab_legs.py --check"
+}

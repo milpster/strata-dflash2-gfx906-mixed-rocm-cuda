@@ -1,0 +1,161 @@
+{
+ "arm": "B",
+ "leg": "ttft3",
+ "kind": "ttft",
+ "turns": 3,
+ "max_tokens": 64,
+ "ts": 1795539761.377,
+ "corpus": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/ttft2k.ctx11064.bin",
+ "corpus_sha256": "349827f01baac1c03ca2173c1074ad0d4e28b511ac92536a9748596c15aa45a7",
+ "request": {
+  "template": {
+   "enable_thinking": false,
+   "reasoning_effort": "low",
+   "temperature": 0
+  },
+  "stream": true,
+  "template_sha256": "ac4b38626a931a12d53a553880d88d881196fa0b06570f34d71e9c1a9144a2e3"
+ },
+ "turn_rows": [
+  {
+   "ttft_client_s": 14.917,
+   "wall_s": 17.065,
+   "first_delta_at": 1795539747.4961746,
+   "finished_at": 1795539749.6442022,
+   "text_sha256": "3567524b749786e1047cbefa74e43e36d743a861b0ca451f39375f950e28f76f",
+   "chars": 242,
+   "finish_reason": "length",
+   "usage": {
+    "prompt_tokens": 2057,
+    "completion_tokens": 64,
+    "total_tokens": 2121,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "inter_turn_wall_s": null
+  },
+  {
+   "ttft_client_s": 3.425,
+   "wall_s": 5.954,
+   "first_delta_at": 1795539753.0690274,
+   "finished_at": 1795539755.5981688,
+   "text_sha256": "cd78c579d5073b68a2465da6474a208ad74cd43bb60185db1031a68d0e2aeca3",
+   "chars": 236,
+   "finish_reason": "length",
+   "usage": {
+    "prompt_tokens": 2151,
+    "completion_tokens": 64,
+    "total_tokens": 2215,
+    "prompt_tokens_details": {
+     "cached_tokens": 2052
+    }
+   },
+   "inter_turn_wall_s": 3.425
+  },
+  {
+   "ttft_client_s": 3.71,
+   "wall_s": 5.764,
+   "first_delta_at": 1795539759.3080635,
+   "finished_at": 1795539761.362095,
+   "text_sha256": "1f572f3e977ad37fea40c28ac36bb00d0137fe33875efef139b0763bb8526f24",
+   "chars": 220,
+   "finish_reason": "length",
+   "usage": {
+    "prompt_tokens": 2170,
+    "completion_tokens": 64,
+    "total_tokens": 2234,
+    "prompt_tokens_details": {
+     "cached_tokens": 2052
+    }
+   },
+   "inter_turn_wall_s": 3.71
+  }
+ ],
+ "server_turns": [
+  {
+   "request_id": "be550fb9129e",
+   "ttft_server_s": 14.915,
+   "wall_s": 17.063,
+   "events": [
+    {
+     "event": "queued",
+     "at": 1795539732.5811644
+    },
+    {
+     "event": "admitted",
+     "at": 1795539732.581176
+    },
+    {
+     "event": "first_token",
+     "at": 1795539747.4959455
+    },
+    {
+     "event": "finished",
+     "at": 1795539749.6439974
+    }
+   ]
+  },
+  {
+   "request_id": "2ce856acd3e8",
+   "ttft_server_s": 3.423,
+   "wall_s": 5.952,
+   "events": [
+    {
+     "event": "queued",
+     "at": 1795539749.6462145
+    },
+    {
+     "event": "admitted",
+     "at": 1795539749.6462245
+    },
+    {
+     "event": "first_token",
+     "at": 1795539753.0687346
+    },
+    {
+     "event": "finished",
+     "at": 1795539755.597974
+    }
+   ]
+  },
+  {
+   "request_id": "e1e88a86c29a",
+   "ttft_server_s": 3.707,
+   "wall_s": 5.761,
+   "events": [
+    {
+     "event": "queued",
+     "at": 1795539755.6005354
+    },
+    {
+     "event": "admitted",
+     "at": 1795539755.6005476
+    },
+    {
+     "event": "first_token",
+     "at": 1795539759.3078773
+    },
+    {
+     "event": "finished",
+     "at": 1795539761.3618276
+    }
+   ]
+  }
+ ],
+ "elog": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-sht-r0.engine.log",
+ "hlog": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-sht-r0-helper.log",
+ "mem": {
+  "cached_start_mib": 12294,
+  "cached_end_mib": 12288,
+  "max_rss_mib": 41645,
+  "min_avail_mib": 13424,
+  "max_swap_used_mib": 2478,
+  "max_vram_mib": {
+   "card3": 16187,
+   "card4": 287,
+   "card2": 16226,
+   "nvidia0": 7354
+  }
+ }
+}

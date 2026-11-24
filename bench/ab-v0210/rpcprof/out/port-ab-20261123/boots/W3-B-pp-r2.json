@@ -1,0 +1,67 @@
+{
+ "arm": "B",
+ "boot_group": "pp",
+ "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W3-B-pp-r2",
+ "cache_empty_at_boot": true,
+ "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W3-B-pp-r2.json",
+ "config_sha256": "f83818139ced7a13622ec1fcf01d15b32f1c6542d9b2fd5c1e65369de4fd2af4",
+ "ended_at": "2026-11-24T17:09:31",
+ "ended_by": "port_ab_stop.sh",
+ "ended_epoch": 1795536571.519,
+ "engine": "/mnt/srcds/Strata/run/port0218-nohuge-bin/rpcw-hip/strata",
+ "engine_sha256": "15d330ea4d0eec4ca64ef3973e52d332253a981c25dde42b70567bf8b3ae7577",
+ "final_generation": 1,
+ "helper": "/mnt/srcds/Strata/run/port0218-nohuge-bin/rpcw-cuda/strata-expert-helper",
+ "helper_argv": [
+  "/mnt/srcds/Strata/run/port0218-nohuge-bin/rpcw-cuda/strata-expert-helper",
+  "--pack",
+  "/mnt/srcds/ai/iq3xxs-ud",
+  "--experts",
+  "../Qwen3.8-Flash-Next-UD-IQ3_XXS-00002-of-00004.gguf",
+  "--device",
+  "0",
+  "--slots",
+  "4600",
+  "--reserve-mib",
+  "0",
+  "--timeout",
+  "63115200000",
+  "--begin-timeout",
+  "63115200000",
+  "--socket",
+  "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W3-B-pp-r2.sock",
+  "--fill-mib",
+  "7000",
+  "--socket2",
+  "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W3-B-pp-r2-2.sock"
+ ],
+ "helper_env": {
+  "HOME": "/home/srcds",
+  "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+  "STRATA_HELPER_REPLY_TIMEOUT_MS": "600000",
+  "TERM": "dumb"
+ },
+ "helper_sha256": "58c3ae020a7479a13c622627544507f5b43f284f9be4b5222ac90c3421b88bb2",
+ "key": "W3-B-pp-r2",
+ "loadavg": [
+  "1.03",
+  "0.60",
+  "1.22"
+ ],
+ "page_cache": {
+  "cached_mib": 10842,
+  "pgmajfault": 2105436
+ },
+ "plan_file": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/W3-B-pp-r2.env",
+ "port": 8009,
+ "rep": 2,
+ "server_arm": "B",
+ "server_tree": "/mnt/srcds/Strata/run/port0218-server",
+ "sockets": [
+  "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W3-B-pp-r2.sock",
+  "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W3-B-pp-r2-2.sock"
+ ],
+ "started_at": "2026-11-24T17:04:30",
+ "started_epoch": 1795536270.418688,
+ "window": "W3"
+}

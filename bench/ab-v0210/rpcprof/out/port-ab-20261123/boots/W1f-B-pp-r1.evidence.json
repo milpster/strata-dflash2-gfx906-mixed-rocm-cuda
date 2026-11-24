@@ -1,0 +1,48 @@
+{
+ "cache_slots": 5739,
+ "fill": {
+  "gib": 6.83,
+  "rows": 3683
+ },
+ "granted_fs_slots": [
+  0,
+  0
+ ],
+ "kernel_fingerprint": {
+  "available": true,
+  "count": 0,
+  "matches": [],
+  "reason": "",
+  "window": {
+   "bound_by": "ended_epoch",
+   "since": 1795522289.3136795,
+   "until": 1795522609.811
+  }
+ },
+ "key": "W1f-B-pp-r1",
+ "low_warning_count": 1,
+ "page_cache": {
+  "cached_delta_mib": 284,
+  "cached_mib_at_boot": 12608,
+  "cached_mib_now": 12892,
+  "majfault_delta": -1196655
+ },
+ "problems": [],
+ "restart": {
+  "engine_lines": 0,
+  "generation": 1,
+  "restarts": 0,
+  "supervisor_events": []
+ },
+ "tuple": {
+  "--dflash-block": "7",
+  "--expert-helper-slots": "4600",
+  "--layer-split": "30",
+  "--spec": "5",
+  "--vram-reserve-later-mib": "192",
+  "--vram-reserve-mib": "256"
+ },
+ "warnings": [],
+ "written_at": "2026-11-24T19:46:27",
+ "written_by": "port_ab_legs.py --check"
+}
