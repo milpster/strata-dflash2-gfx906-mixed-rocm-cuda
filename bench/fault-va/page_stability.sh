@@ -49,6 +49,7 @@ save() {
   {
     echo "thp_enabled=$(read_thp $THP/enabled)"
     echo "thp_defrag=$(read_thp $THP/defrag)"
+    echo "khugepaged_defrag=$(cat $THP/khugepaged/defrag 2>/dev/null)"
     echo "vm_compaction_proactiveness=$(sysctl -n vm.compaction_proactiveness)"
     echo "vm_swappiness=$(sysctl -n vm.swappiness)"
     echo "saved_at=$(date -Is)"
@@ -77,11 +78,14 @@ apply_thp_only() {
 
 restore() {
   [[ -f $STATE ]] || die "no saved state at $STATE - nothing to restore"
-  local thp_enabled thp_defrag vm_compaction_proactiveness vm_swappiness
+  local thp_enabled thp_defrag khugepaged_defrag vm_compaction_proactiveness vm_swappiness
   # shellcheck disable=SC1090
   . "$STATE"
   echo "$thp_enabled" > "$THP/enabled"
   echo "$thp_defrag"  > "$THP/defrag"
+  # The probe sets this one too, so it must be saved and restored like the rest
+  # (it was missed in the first version: an operator had to put it back by hand).
+  [[ -n ${khugepaged_defrag:-} ]] && echo "$khugepaged_defrag" > "$THP/khugepaged/defrag" || true
   sysctl -qw "vm.compaction_proactiveness=$vm_compaction_proactiveness"
   sysctl -qw "vm.swappiness=$vm_swappiness"
   echo 'page_stability: restored'
