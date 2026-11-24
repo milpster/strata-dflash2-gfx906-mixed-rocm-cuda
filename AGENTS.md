@@ -126,9 +126,9 @@ The mixed-GPU serving lane (2× Radeon VII engine + RTX 3080 expert helper, prod
 
 ### Agents and prod
 - **Exactly one subagent at a time.** Never spawn a second while one lives; if two are
-  somehow alive, stop one.
-- **Subagent model calls ride prod `:8009`.** The parent session (remote model) is the
-  only one that stops and starts prod, and only between subagent turns.
+  somehow alive, stop one. This only applies to agents run on our local backend Strata, all other agents can be run in multiples.
+- **Some Subagent model calls ride prod `:8009`.** The parent session (remote model) is the
+  only one that stops and starts prod, and only between subagent turns. Subagents that do not run on our local backend are exempt from this rule.
 - **Never take `:8009` down while a subagent is mid-turn** (it dies with
   ConnectionRefused). Spawn subagents only when prod is *verified serving* — health-ok
   is not enough; probe with a real completion first.

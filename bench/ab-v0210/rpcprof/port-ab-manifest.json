@@ -4221,22 +4221,53 @@
    "pilot_deltas": {
     "deltas": {
      "pp2k": {
-      "gen_tps": null,
-      "read_tps": null
+      "gen_tps": 0.11157,
+      "read_tps": 0.161074
      },
      "pp8k": {
-      "gen_tps": null,
-      "read_tps": null
+      "gen_tps": 0.446352,
+      "read_tps": 0.120318
      },
      "ttft3": {
-      "inter_turn_s": null,
-      "ttft_turn1_s": null
+      "inter_turn_s": -0.482821,
+      "ttft_turn1_s": -0.303172
      }
     },
-    "frozen": false,
-    "frozen_at": null,
-    "samples": {},
-    "source": "records of the W2 pilot boots (group sht, rep 0), 1 boot per arm",
+    "frozen": true,
+    "frozen_at": "2026-11-24T18:06:42",
+    "samples": {
+     "pp2k": {
+      "A": {
+       "gen_tps": 24.2,
+       "read_tps": 74.5
+      },
+      "B": {
+       "gen_tps": 26.9,
+       "read_tps": 86.5
+      }
+     },
+     "pp8k": {
+      "A": {
+       "gen_tps": 23.3,
+       "read_tps": 176.2
+      },
+      "B": {
+       "gen_tps": 33.7,
+       "read_tps": 197.4
+      }
+     },
+     "ttft3": {
+      "A": {
+       "inter_turn_s": 6.898,
+       "ttft_turn1_s": 21.407
+      },
+      "B": {
+       "inter_turn_s": 3.5675,
+       "ttft_turn1_s": 14.917
+      }
+     }
+    },
+    "source": "records of the W2 pilot boots (group sht, rep 0)",
     "window": "W2"
    },
    "poolable_with_claim_legs": true,
