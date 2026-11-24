@@ -227,3 +227,53 @@ fault, not 692. Nothing about the knob: the storm met `936efcc798aab395…`, whi
 04:00.0 reset happened *with* the knob and is no permission fault either. No trend: one storm in six retained boots,
 the others 0-2. **What would test it:** the fault-differential legs on the fixed binary (see **Next**) and a soak long
 enough for a reset to appear on its own.
+
+## 8. Addendum: the 40-minute soak — 2,873 s up, no fault, no reset
+
+Added 2026-11-24. This closes the open item at the end of **§7** ("a soak long enough for a reset to appear on its
+own") for this exposure. Same leg and binary, booted again with `faultdiff_run.py --leg pool-nohuge --boot
+--waive-nonengine` and the override naming `run/port0218-nohuge-bin/rpcw-hip/strata` (sha
+`15d330ea4d0eec4c…`, `/tmp/opencode/soak2-boot.log:3`). Prerequisite 0 opened at 03:49:31
+(`prereq0-20261124-034931.json`, `VERDICT: OPEN`); the engine start line is **03:49:34** (**elog 804**) and the
+knob line is **824**, with no `RAM pool: WARNING` line in the file and both `expected.present`/`absent` assertions
+true (`run/pool-nohuge.state.json`). NUL-stripped elog is now **1,245 lines**; this soak is **804-1,245**
+(442 lines).
+
+| what | value | source |
+|---|---|---|
+| requests | **29** `kind: tg`, ctx alternating 80,000 / 16,000, `max_tokens 1024`, two completions each | `records/pool-nohuge/load/` |
+| prefill | **35.7-118.5 s** per request, median **77.4** | `walls[0]` |
+| decode | **10.3-27.2 s** per request, median **16.9**, **514.0 s** total | `walls[1]` |
+| load wall | **2,482.7 s summed = 41.4 min**; first request 03:50:47, last reply 04:32:13 | `wall_s`; `/tmp/opencode/soak2-load.log` |
+| parks / restores | **28 / 29** in this boot's slice — **43 / 45** over the whole file, which still carries §6's 15 / 16 | `grep -c 'parked [0-9]* tokens'`, `grep -c restored` on the stripped elog |
+| engine | up **2,873 s** at the last live watch reading; **2,884 s** from the 03:49:34 start line to the 04:37:38 close (47.9 / 48.1 min) | session watch output (not a repo artifact); `state.json: ended_at`, `ran_s` 2886.8 |
+| kernel, the soak's own window | **0 / 0 / 0** | `journalctl -k --since '2026-11-24 03:50:00'` → `no-retry page fault` 0, `GPU reset begin` 0, `grep -cE 'no-retry page fault|GPU reset begin|qcm fence|unrecoverable'` 0; state's `kernel_fingerprint.count` 0 over 03:49:31-04:37:38 |
+| engine fault lines | **0** | `state.json: engine_fault_count` |
+
+**The monitoring mistake, recorded.** An early check ran `journalctl -k --since '-130 min'` and reported "1 reset" at
+04:02. That window opens at ~01:52 and therefore contains the **02:02:57** `0000:04:00.0` `qcm fence`/`Source: 4`
+reset of the *previous* cycle (§5.2, §7) — a relative window is not a boot anchor. The shape reproduces exactly:
+`--since '-172 min'` (opens ~01:50) returns 1 and it is the 02:02:57 line, while `--since '2026-11-24 03:50:00'`
+returns 0. A windowing mistake, not an event.
+
+**Memory.** Engine RSS per record (`max_rss_mib`, VmHWM) stayed **40,640-41,910 MiB (39.7-40.9 GiB)** across
+all 29 records; the two live VmRSS samples taken during the soak (04:25, 04:31) read **40.3 and 40.6 GiB**, and
+`min_avail_mib` bottomed at **11,214 MiB** with swap peaking at **8,469 MiB** — no cheaper regime than §3's. The
+live samples are session shell output, not a repo artifact (the pid, 2146452, is gone; it is the same pid in every
+load record's `mem.engine_pid`). The pool's own exclusion was in force the whole time: `RAM pool: … mapping:
+transparent huge pages off (MADV_NOHUGEPAGE; STRATA_POOL_NOHUGEPAGE)` (elog 824).
+
+**Against the baseline.** §4's four fatal permission faults landed **251-282 s after boot**. This engine ran
+**2,873 s**, **10.2-11.4×** that horizon, through 41.4 min of parking, restoring and disk spill.
+
+**What it does NOT show.** Still **n = 1** for each of the two soaks (four prefills, two soaks, one binary), so
+"the knob holds" rests on 6 boots, not on repetition. The traffic is a synthetic alternating filler, sequential,
+**not real use**. **No speed claim**: 10.3-27.2 s per request is load traffic with draft-accept variance
+(336-1,006 tokens actually generated per decode request, 26.3-39.8 tok/s; 27 of the 29 under 1,000, the bar a tg
+rate needs). And the `0000:04:00.0` `qcm fence` class recurs historically (§7: 02:02:57 this boot, 15:55:48 and
+16:29:23 in boot -2, 14:48:35 in boot -3), so **40 clean minutes is one sample that it did not appear, not proof it
+cannot**.
+
+**What it closes.** The §7 "what would test it" item — a longer soak watching for a reset — is **satisfied at this
+exposure** (2,873 s up, 41.4 min of load, 0 faults, 0 resets) and **remains open at longer horizons** and under real
+traffic.
