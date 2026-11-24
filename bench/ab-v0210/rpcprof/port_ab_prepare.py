@@ -108,23 +108,44 @@ def prepare_corpus(out):
     return entries
 
 
-def prepare_template(out):
-    path = out / "request-template.json"
-    path.write_text(json.dumps(C.REQUEST_TEMPLATE, indent=1, sort_keys=True) + "\n")
-    return {"path": str(path), "sha256": sha256_path(path), "settings": C.REQUEST_TEMPLATE,
-            "note": "the driver adds messages + max_tokens only; the TTFT leg sets stream=true itself"}
+TEMPLATE_NOTES = {
+    "claim": "the driver adds messages + max_tokens only; the TTFT leg sets stream=true itself",
+    "prodshape": "W3p only (prod serving shape): thinking ON, no reasoning_effort override, so "
+                 "the config's \"high\" applies. Not the claim template and never swapped with it",
+}
+
+
+def prepare_template(out, name="claim"):
+    """Write one frozen request template (its own file, its own pin).
+
+    "claim" is request-template.json - the template every existing record was measured with.
+    "prodshape" is request-template-prodshape.json, W3p's thinking-on shape. Two files, two
+    pins: a prod-shape run can never overwrite the claim template's bytes or sha.
+    """
+    spec = C.REQUEST_TEMPLATES[name]
+    path = out / spec["file"]
+    path.write_text(json.dumps(spec["settings"], indent=1, sort_keys=True) + "\n")
+    return {"name": name, "path": str(path), "sha256": sha256_path(path),
+            "settings": spec["settings"], "note": TEMPLATE_NOTES[name]}
+
+
+def prepare_templates(out):
+    return {name: prepare_template(out, name) for name in C.REQUEST_TEMPLATES}
 
 
 def prepare_configs(out):
     """One config per scheduled boot, keyed by window-arm-bootgroup-rep."""
     written = {}
     for window in C.WINDOWS:
+        variant = C.config_variant(window)      # None for every claim window
         for row in legs.schedule(window):
             arm, boot, rep = row["arm"], row["boot"], row["rep"]
-            cfg, deltas, paths = pc.derive(arm, window=window, rep=rep, out=out, boot=boot)
-            # the window decides the margins mode: a W1d config must prove BOTH reserve flags
-            # absent instead of carrying the tuple's 256/192
-            problems = pc.check_tuple(cfg, arm, window=window)
+            cfg, deltas, paths = pc.derive(arm, window=window, rep=rep, out=out, boot=boot,
+                                           variant=variant)
+            # the window decides the margins mode (a W1d config must prove BOTH reserve flags
+            # absent, not carry the tuple's 256/192) AND the serving identity it measures (a
+            # W3p config must prove the prod shape's two keys; every claim config the tuple's)
+            problems = pc.check_tuple(cfg, arm, window=window, variant=variant)
             if problems:
                 raise SystemExit("; ".join(problems))
             target = pathlib.Path(paths["config"])
@@ -134,7 +155,15 @@ def prepare_configs(out):
                      "window": window, "arm": arm, "boot_group": boot, "rep": rep,
                      "pilot": bool(row.get("pilot")), "warmup": bool(row.get("warmup")),
                      "socket": paths["socket"], "socket2": paths["socket2"],
-                     "cache_dir": paths["cache_dir"], "engine_log": cfg["log"]}
+                     "cache_dir": paths["cache_dir"], "engine_log": cfg["log"],
+                     "config_variant": variant}
+            if variant:
+                # the exact keys this config does NOT take from the claim tuple, so a reader of
+                # the manifest sees the serving-shape delta without diffing two configs
+                entry["variant_overrides"] = {k: v for k, v in pc.VARIANTS[variant].items()
+                                              if k != "note"}
+                entry["claim_config_note"] = ("NOT the claim config: this boot measures the "
+                                              + variant + " serving shape")
             if row.get("server_arm"):
                 entry["server_arm"] = row["server_arm"]
                 entry["cell"] = row["cell"]
@@ -152,8 +181,11 @@ def arm_diffs(out, window="W1", rep=1):
                                               "so two identical-setting arms hash equal"}}
 
 
+# The pre-registered delta a leg's rate is read against. None (as W4 and W3p have) means
+# the leg has no pre-registered delta to move against: it is descriptive, never a claim input.
 DELTA_KEY = {"pp239k": {"W1": "prefill_read_tps", "W1f": "prefill_read_tps",
                        "W3": "decode_gen_tps"},
+             "pp239k-prodshape": {"W3p": None},
              "dec144k": {"W2": "decode_gen_tps", "W4": None},
              "pp2k": {"W2": "short_pp_read_tps"},
              "pp8k": {"W2": "short_pp_read_tps"},
@@ -163,11 +195,15 @@ DELTA_KEY = {"pp239k": {"W1": "prefill_read_tps", "W1f": "prefill_read_tps",
 def leg_section(out, window):
     """The exact invocation and gates for every leg shape of a window."""
     rows = {}
+    variant = C.config_variant(window)
+    template = C.REQUEST_TEMPLATES[C.request_template(window)]
     for shape in C.shapes_of(window):
         cap = legs.leg_cap(shape, window)
         boot = pc.boot_for_shape(window, shape)
         example = {}
-        for arm in ("A", "B"):
+        # only the window's own arms: W3p boots arm B only, and a fabricated arm-A command
+        # would read as an arm-A row the window never runs
+        for arm in C.window_arms(window):
             _, _, cmds = legs.commands(out, window, arm, 1, [shape], boot=boot)
             words = list(cmds[0]["cmd"])
             if "--engine-pid" in words:
@@ -182,6 +218,12 @@ def leg_section(out, window):
             gates.append("engine-default margins (operator directive 2026-11-23 23:00): "
                          "--vram-reserve-mib and --vram-reserve-later-mib must be ABSENT from "
                          "the engine boot line - a reserve flag here means the wrong boot")
+        if variant:
+            gates.append("config variant " + variant + " ("
+                         + json.dumps({k: v for k, v in pc.VARIANTS[variant].items()
+                                       if k != "note"}, sort_keys=True)
+                         + "): the booted config MUST carry it and the request MUST be sent "
+                         "with " + template["file"] + " - this boot is NOT the claim shape")
         rows[shape] = {
             "kind": C.kind_for(shape, window),
             "boot_group": boot,
@@ -191,8 +233,13 @@ def leg_section(out, window):
             "turns": C.LEGS[shape].get("turns"),
             "corpus": str(legs.corpus_path(out, shape)),
             "corpus_sha256": sha256_path(legs.corpus_path(out, shape)),
-            "command_A": example["A"],
-            "command_B": example["B"],
+            # the request shape this leg is fired with, pinned by path and sha like the corpus
+            "request_template": template["file"],
+            "request_template_sha256": sha256_path(out / template["file"]),
+            "request_settings": template["settings"],
+            "config_variant": variant,
+            "command_A": example.get("A"),
+            "command_B": example.get("B"),
             "expected_engine_lines": [C.EXPECTED_LINES[k] for k in
                                       ("judge", "judge_tail", "dflash", "boot_started",
                                        "boot_helper", "boot_helper_proxy", "boot_cache",
@@ -201,6 +248,9 @@ def leg_section(out, window):
             "metric": ("TTFT per turn + inter-turn wall (next first token - previous finish)"
                        if C.kind_for(shape, window) == "ttft"
                        else ("request 2 gen_tps (cached re-run); request 1 read_tps recorded"
+                             + (" - PROD SHAPE (thinking ON): comparable to prod's serving "
+                                "shape, never pooled with a thinking-off prefill leg"
+                                if variant else "")
                              if C.kind_for(shape, window) == "tg"
                              else "read_tps from the single fresh request"
                                   + (" plus gen_tps off the SAME judge line ("
@@ -223,7 +273,8 @@ def prepare(out, do_preflight=True, previous_manifest=None):
     started = time.strftime("%Y-%m-%dT%H:%M:%S")
     out.mkdir(parents=True, exist_ok=True)
     corpus = prepare_corpus(out)
-    template = prepare_template(out)
+    template = prepare_template(out, "claim")      # the claim manifest slot is unchanged
+    templates = prepare_templates(out)             # every template, claim + variants
     configs = prepare_configs(out)
     preflight = None
     if do_preflight:
@@ -270,6 +321,13 @@ def prepare(out, do_preflight=True, previous_manifest=None):
             # 256/192, "engine-default" (W1d, operator directive 2026-11-23 23:00) removes both
             # flags so the engine's own margins apply
             "margins": C.margins_mode(window),
+            # the serving SHAPE this window's configs and requests carry: "claim" for every
+            # existing window, "prodshape" for W3p. Named in the manifest so no reader has to
+            # infer from a config diff whether a rate is poolable with the claim legs.
+            "config_variant": C.config_variant(window),
+            "request_template": C.REQUEST_TEMPLATES[C.request_template(window)]["file"],
+            "arms": list(C.window_arms(window)),
+            "poolable_with_claim_legs": spec.get("poolable_with_claim_legs", True),
             "boot_groups": spec["boot_groups"],
             "legs_per_boot": spec["legs_per_boot"],
             "boots_per_arm": spec.get("boots_per_arm"),
@@ -303,6 +361,10 @@ def prepare(out, do_preflight=True, previous_manifest=None):
         if window == "W2":
             entry["pilot_deltas"] = (carried_pilot if (carried_pilot or {}).get("frozen")
                                      else C.pilot_deltas_template())
+        if spec.get("measurement_caveat"):
+            # the caveat the window's rates must always be reported with, carried by the
+            # manifest rather than left to whoever writes the summary
+            entry["measurement_caveat"] = spec["measurement_caveat"]
         windows[window] = entry
 
     manifest = {
@@ -343,7 +405,11 @@ def prepare(out, do_preflight=True, previous_manifest=None):
         },
         "arm_config_equality": arm_diffs(out),
         "corpus": corpus,
-        "request_template": template,
+        # "request_template" stays the CLAIM template at the same key and shape, so every
+        # existing pin and reader is untouched; "request_templates" names each window's own
+        # file and sha (W3p's prod-shape template lives here, at its own path).
+        "request_template": {k: v for k, v in template.items() if k != "name"},
+        "request_templates": templates,
         "claim": C.CLAIM,
         "windows": windows,
         "preflight": preflight,
@@ -431,6 +497,32 @@ def verify():
             problems.append("corpus not reproducible from its seed: " + row["shape"])
     if sha256_path(manifest["request_template"]["path"]) != manifest["request_template"]["sha256"]:
         problems.append("request template drift")
+    # every window's template is pinned at its own path with its own sha: the prod-shape one is
+    # a separate artifact, so a prod-shape run can never pass by having rewritten the claim one
+    templates = manifest.get("request_templates") or {}
+    for name, spec in C.REQUEST_TEMPLATES.items():
+        row = templates.get(name)
+        if not row:
+            problems.append("request template " + name + " is not pinned in the manifest")
+            continue
+        path = pathlib.Path(row["path"])
+        if path.name != spec["file"]:
+            problems.append("request template " + name + " is " + path.name + ", the contract "
+                            "names " + spec["file"])
+        if not path.is_file() or sha256_path(path) != row["sha256"]:
+            problems.append("request template drift: " + name + " (" + str(path) + ")")
+        elif path.read_bytes() != (json.dumps(spec["settings"], indent=1,
+                                              sort_keys=True) + "\n").encode():
+            problems.append("request template " + name + " does not match the contract's settings")
+        if row.get("settings") != spec["settings"]:
+            problems.append("request template " + name + " settings drifted from the contract")
+    claim_tpl = templates.get("claim") or {}
+    if claim_tpl.get("sha256") != manifest["request_template"]["sha256"]:
+        problems.append("the claim template's two manifest slots disagree")
+    prod_tpl = templates.get("prodshape") or {}
+    if prod_tpl.get("sha256") and prod_tpl.get("sha256") == claim_tpl.get("sha256"):
+        problems.append("the prod-shape template has the claim template's sha: they are not "
+                        "two artifacts")
     for name, path in manifest["harness_scripts"].items():
         if sha256_path(path) != manifest["harness_script_shas"][name]:
             problems.append("harness script changed since prepare: " + name)
@@ -449,10 +541,32 @@ def verify():
             continue
         cfg = json.loads(path.read_text())
         arm = row.get("arm") or key.split("-")[1]
+        window = row.get("window") or key.split("-")[0]
         # a frozen engine-default config (W1d) must prove both reserve flags ABSENT, not carry
-        # the tuple's 256/192; an explicit-margins window (W1, W1f, ...) must carry both
-        for p in pc.check_tuple(cfg, arm, window=row.get("window") or key.split("-")[0]):
+        # the tuple's 256/192; an explicit-margins window (W1, W1f, ...) must carry both. The
+        # serving identity follows the same rule: a variant window proves the variant's keys,
+        # every claim window proves the tuple's (a leaked 2,000-token budget fails here).
+        variant = row.get("config_variant", C.config_variant(window)
+                          if window in C.WINDOWS else None)
+        for p in pc.check_tuple(cfg, arm, window=window, variant=variant):
             problems.append(key + ": " + p)
+        if variant:
+            if cfg.get("reasoning_budget_tokens") == pc.TUPLE["reasoning_budget_tokens"]:
+                problems.append(key + ": config_variant says " + variant + " but the config "
+                                "carries the claim tuple's budget")
+            if row.get("deltas") is not None:
+                # a variant key that MOVED away from the tuple must be recorded as a variant
+                # delta (that is the config proving what it changed). A variant key whose value
+                # IS the tuple's value (prodshape's reasoning_effort "high") records nothing,
+                # because nothing changed - check_tuple above already proves the value it holds.
+                seen = {d.get("field") for d in row["deltas"] if d.get("kind") == "variant"}
+                want = {k for k, v in pc.VARIANTS[variant].items()
+                        if k != "note" and v != pc.TUPLE.get(k)}
+                if seen != want:
+                    problems.append(key + ": variant delta set " + str(sorted(seen))
+                                    + " != the keys the variant actually moves " + str(sorted(want)))
+        elif any(d.get("kind") == "variant" for d in (row.get("deltas") or [])):
+            problems.append(key + ": a claim config carries variant deltas")
     for key in scheduled:
         if key not in manifest["configs"]:
             problems.append("scheduled boot has no frozen config: " + key)

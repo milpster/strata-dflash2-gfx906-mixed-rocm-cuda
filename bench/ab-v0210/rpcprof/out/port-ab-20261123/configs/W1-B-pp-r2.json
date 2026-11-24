@@ -96,6 +96,7 @@
   "STRATA_HIP_PROMPT_F16": "1",
   "STRATA_MMVF_ROWS": "1",
   "STRATA_NO_PCIE_GROUP": "1",
+  "STRATA_POOL_NOHUGEPAGE": "1",
   "STRATA_PREFILL_CPU_SHARE": "auto",
   "STRATA_PREFILL_HELPER": "1",
   "STRATA_PREFILL_HELPER_TIMEOUT_MS": "600000",
@@ -107,7 +108,7 @@
   "STRATA_WATCHDOG_S": "900"
  },
  "env_to_user": true,
- "exe": "/mnt/srcds/Strata/run/port0218-bin/rpcw-hip/strata",
+ "exe": "/mnt/srcds/Strata/run/port0218-nohuge-bin/rpcw-hip/strata",
  "expert_helper_slots": 4600,
  "expert_helper_socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1-B-pp-r2.sock",
  "expert_helper_socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1-B-pp-r2-2.sock",

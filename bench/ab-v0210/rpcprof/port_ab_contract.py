@@ -96,6 +96,14 @@ LEGS = {
     "pp2k": {"kind": "prefill", "max_tokens": {"W2": 32}},
     "pp8k": {"kind": "prefill", "max_tokens": {"W2": 32}},
     "ttft3": {"kind": "ttft", "turns": 3, "max_tokens": 64, "corpus": "ttft2k"},
+    # The PROD-SHAPE TG leg (W3p only). Same frozen pp239k corpus, same 1,024-token cap and the
+    # same two-request tg shape as W3's leg, but served on the PROD SERVING SHAPE: thinking ON
+    # (the config's 2,000-token reasoning budget and "high" effort apply, the request template
+    # drops the effort override and sets enable_thinking true). Why it exists: with thinking
+    # off the model ends its reply at EOS after ~518 tokens, so a thinking-off pp239k tail can
+    # never clear TG_CLAIM_MIN_GENERATED; prod serves with thinking on, and its budget keeps
+    # generation running to the cap. Not a claim leg and never pooled with one - see W3p.
+    "pp239k-prodshape": {"kind": "tg", "corpus": "pp239k", "max_tokens": 1024},
 }
 
 
@@ -144,6 +152,23 @@ REQUEST_TEMPLATE = {
     "stream": False,
 }
 TTFT_TEMPLATE = {**REQUEST_TEMPLATE, "stream": True}
+
+# The PROD-SHAPE request template (W3p only): the same sampling, with thinking ON and no
+# reasoning_effort override, so the config's own "high" applies - exactly the shape the
+# promoted prod config serves. It is a SEPARATE frozen artifact (its own path and sha) so the
+# claim template above can never be edited by a prod-shape run, and vice versa.
+#   temperature 0 and stream false stay, as the claim template has them; the only differences
+#   are enable_thinking true and the absence of reasoning_effort.
+PRODSHAPE_TEMPLATE = {
+    "temperature": 0,
+    "enable_thinking": True,
+    "stream": False,
+}
+
+REQUEST_TEMPLATES = {
+    "claim": {"file": "request-template.json", "settings": REQUEST_TEMPLATE},
+    "prodshape": {"file": "request-template-prodshape.json", "settings": PRODSHAPE_TEMPLATE},
+}
 
 # ------------------------------------------------------------------------------- windows
 # n per arm. Operator directive 2026-11-23 (evening) reduced it to 2 (it was 3, then 5).
@@ -347,7 +372,64 @@ WINDOWS = {
                  "claim (the effect follows the server, or the cells disagree) but can never "
                  "establish one. Pair attribution stands until a cell vetoes it.",
     },
+    # ---------------------------------------------------------------------------- W3p
+    # Operator request 2026-11-24: a PROD-SHAPE TG leg, opt-in and clearly labelled.
+    #
+    # The problem it measures: every thinking-off leg (W1/W1d/W1f/W3, template enable_thinking
+    # false + config reasoning_budget_tokens 0) asks for 1,024 tokens but the model ends its
+    # reply at EOS after ~518, so gen_tok never clears TG_CLAIM_MIN_GENERATED. The engine has
+    # no EOS suppression (--min-tokens is a conversation-cache threshold, not a generation
+    # floor) and no rebuild is wanted, so the only fix available is the shape prod actually
+    # serves: the promoted prod config carries reasoning_budget_tokens 2000 and
+    # reasoning_effort "high". With thinking on the model works through its budget, so
+    # generation runs to the cap instead of stopping at EOS.
+    #
+    # What it is NOT: a claim leg, and not poolable with anything. It differs from the W3
+    # claim leg in the request SHAPE (thinking on, 2,000-token budget) and therefore in the
+    # tokens it generates, so a W3p rate may never be pooled with a W3/prefill rate - it is
+    # comparable to prod's real serving shape and to nothing else in this harness. Its own
+    # window id gives it its own boot keys (W3p-*) and its own config pins, so no W1/W1d/
+    # W1f/W3 config, record or pin can be touched by running it.
+    #
+    # Arm B only: the variant exists to reproduce the PROMOTED PROD PAIR's serving shape
+    # (port engine 15d330ea + run/port0218-server). Arm A runs a different server tree with
+    # its own reasoning plumbing, so an A leg would answer a different question; booting it
+    # would also spend wall clock on a shape nobody serves.
+    "W3p": {
+        "name": "prod-shape TG leg (thinking ON: reasoning_budget_tokens 2000, effort high; "
+                "same 239,663-token frozen corpus and 1,024-token cap)",
+        "margins": "explicit",          # as W3: the frozen 256/192 tuple
+        "boot_groups": {"pp": ["pp239k-prodshape"]},
+        "legs_per_boot": {"pp": 1},
+        "arms": ("B",),
+        "boots_per_arm": REPS,          # 2 claim-shape boots; descriptive only (see claim)
+        "warmup_boots": 1,              # discarded first-touch boot per arm = 1 (arm B only)
+        "budget_s": None,               # derived below, W3's arithmetic (same corpus + cap)
+        "contract_budget_s": None,      # the contract predates this leg and states no number
+        "gate_metric": "gen_tps",
+        "delta": None,
+        "delta_note": "no pre-registered delta: this leg has no thinking-off counterpart to "
+                      "move against, because the thinking-off shape stops at EOS below the "
+                      "1,000-generated floor",
+        "request_template": "prodshape",   # out/request-template-prodshape.json (its own pin)
+        "config_variant": "prodshape",    # port_ab_configs.VARIANTS["prodshape"] overlay
+        # explicit, so a summary generator can ask instead of inferring from the variant name
+        "poolable_with_claim_legs": False,
+        "claim": "NOT A CLAIM LEG and never poolable: thinking is ON here, so the tokens "
+                 "generated (the budget keeps generation running to the cap) are a different "
+                 "quantity from every thinking-off prefill leg's. Its rates are comparable to "
+                 "prod's real serving shape only; any A/B statement it supports is against "
+                 "ANOTHER prod-shape boot, never against W1/W1d/W1f/W3.",
+        "measurement_caveat": "TG with thinking ON: not poolable with the thinking-off prefill "
+                              "legs. The one thing it settles is the earlier failure - a leg "
+                              "that must clear TG_CLAIM_MIN_GENERATED can do so on this shape.",
+    },
 }
+
+
+def window_arms(window):
+    """The arms a window boots (both, unless the window names its own)."""
+    return tuple(WINDOWS[window].get("arms") or ("A", "B"))
 
 # --------------------------------------------------------------- helper fill (frozen band)
 # The helper's own boot line is authoritative: "<rows> rows on <sock> (mirrored N/M slots,
@@ -416,6 +498,10 @@ def budget_derivation() -> dict:
     w2_dec = claim + w2_dec_warmup                                # 4 claim + 2 warmup = 6
     w2_sht = claim + w2_sht_pilot                                 # 4 claim + 2 pilot  = 6
     w3_total = claim + WINDOWS["W3"]["warmup_boots"]              # 4 claim + 2 warmup = 6
+    # W3p is W3's leg and W3's corpus on the prod serving shape, one arm only (B): its claim
+    # boots are W3's two B reps and it spends one discarded first-touch boot.
+    w3p_claim = len([p for p in claim_pairs("W3p")])               # arms(B) x REPS = 2
+    w3p_total = w3p_claim + WINDOWS["W3p"]["warmup_boots"]         # 2 claim + 1 warmup = 3
     w4_total = 4                                                  # 2 cells x 2 boots
     return {
         "anchors": {"prefill_tps": PREFILL_TPS, "decode_tps": DECODE_TPS, "boot_s": BOOT_S,
@@ -471,6 +557,18 @@ def budget_derivation() -> dict:
             "note": "the contract states 1.2-2 h for the claim boots; adding the two warmup "
                     "boots and the cached second generation is why the planning range is wider",
         },
+        "W3p": {
+            "boots": {"claim": w3p_claim, "warmup": WINDOWS["W3p"]["warmup_boots"],
+                      "total": w3p_total},
+            "terms": str(w3p_total) + " boots x (239,663 prefill + 2 x 1024 gen (fresh then "
+                     "cached) + boot) = 2 claim (arm B only) + 1 warmup; W3's arithmetic, "
+                     "unchanged - the same corpus and the same cap, only the request shape "
+                     "(thinking on) differs",
+            "range_s": [w3p_total * (w3_fast + BOOT_S[0]), w3p_total * (w3_slow + BOOT_S[1])],
+            "note": "W3's anchors, W3's leg and cap: thinking on changes what the model writes, "
+                    "not the wall-clock terms (a 2,000-token thinking budget is inside the "
+                    "1,024-token cap the leg sets, so the generation still ends at the cap)",
+        },
         "W4": {
             "boots": {"total": w4_total},
             "terms": str(w4_total) + " boots x (144k prefill + 2 x 1024 gen + boot)",
@@ -491,13 +589,38 @@ def margins_mode(window):
     return WINDOWS[window].get("margins", "explicit")
 
 
+def config_variant(window):
+    """The port_ab_configs.VARIANTS overlay this window's configs carry (None for the claim
+    windows). W3p names "prodshape"; every other window names nothing, so its config is the
+    frozen claim tuple unchanged."""
+    return WINDOWS[window].get("config_variant")
+
+
+def request_template(window):
+    """Which frozen request template this window's legs send: "claim" (request-template.json,
+    thinking off, the sampling/template every claim leg pins) or a named variant file
+    (W3p: "prodshape" -> request-template-prodshape.json, thinking ON).
+
+    The file NAME is fixed here so a leg can never be handed the wrong one by accident: the
+    claim template is the one every existing record was measured with, and a window that wants
+    another has to say which.
+    """
+    return WINDOWS[window].get("request_template") or "claim"
+
+
 def claim_pairs(window):
     """(arm, rep) in boot order for the window's CLAIM boots.
 
     W1f is the one prepared window at n=3/arm (its own ABBA-continued order, A B B A A B);
-    every n=2 window keeps INTERLEAVE_PAIRS, so its boot order cannot move.
+    every n=2 window keeps INTERLEAVE_PAIRS, so its boot order cannot move. A window that
+    names its own arms (W3p: arm B only, the prod pair's shape) keeps only those rows: the
+    order is the frozen one, the absent arm's boots are dropped, and no rep is renumbered
+    (W3p boots B r1 and B r2, exactly as W3's B rows are, so a rep number never means two
+    different things across windows).
     """
-    return tuple(WINDOWS[window].get("interleave_pairs") or INTERLEAVE_PAIRS)
+    pairs = tuple(WINDOWS[window].get("interleave_pairs") or INTERLEAVE_PAIRS)
+    arms = window_arms(window)
+    return tuple((arm, rep) for arm, rep in pairs if arm in arms)
 
 
 def shapes_of(window):

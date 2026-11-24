@@ -92,6 +92,26 @@ TUPLE = {
     "port": 8009,                 # unused by serve/server.py; the launcher's --port wins
 }
 
+# Per-window CONFIG VARIANTS: a variant keeps everything the arm config has and overrides
+# only the named serving-identity keys. It is how one window measures a DIFFERENT serving shape
+# without touching a single existing pin: no arm base config, no TUPLE value and no recorded
+# sha moves, because the variant is applied on top of the same derivation.
+#
+#   prodshape - the PROMOTED PROD serving shape (prod-config-port0218-nohuge.json carries
+#               reasoning_budget_tokens 2000 and reasoning_effort "high"). The harness tuple
+#               zeroes the budget and the request template pins thinking off, which is why a
+#               thinking-off pp239k leg ends at EOS around 518 tokens and never clears the
+#               1,000-generated TG floor. With the budget back the model works through it and
+#               generation runs to the leg's cap. Nothing else is overridden, so the variant
+#               config differs from arm B's claim config in these two keys alone.
+VARIANTS = {
+    "prodshape": {
+        "reasoning_budget_tokens": 2000,
+        "reasoning_effort": "high",
+        "note": "prod's serving shape: the thinking budget prod serves with, not a speed lever",
+    },
+}
+
 # Keys the harness owns per arm. Blanked by settings_only() so arms compare on settings.
 HARNESS_FIELDS = ("exe", "cwd", "log", "expert_helper_socket", "expert_helper_socket2",
                   "port", "trial_note")
@@ -187,15 +207,33 @@ def leg_paths(out, window, arm, rep, boot=None):
     }
 
 
-def derive(arm, *, window, rep, out, port=None, base_override=None, boot=None):
+def derive(arm, *, window, rep, out, port=None, base_override=None, boot=None,
+           variant=None):
     """The config for one leg of one arm, the deltas that produced it, and its paths.
 
     The engine arm decides the structural flags (spill) and the base config; the server tree
     is chosen by the launcher, never by this file, so a 2x2 cell uses its engine arm's config
     unchanged and only the server process differs.
+
+    variant applies one VARIANTS overlay on top of that derived config (W3p: the prod serving
+    shape). It is opt-in and per call: every window that passes no variant derives exactly the
+    config it derived before, so no existing pin can move. A variant's keys are recorded as
+    "variant" deltas, so a config says of itself which two keys are not the claim tuple.
     """
     if arm not in ARMS:
         raise SystemExit("unknown arm " + repr(arm) + ": choose A or B")
+    if window in C.WINDOWS and arm not in C.window_arms(window):
+        # a one-arm window (W3p boots only the prod pair's shape) must not quietly derive a
+        # config for the arm it does not run: the boot would then exist outside the schedule
+        raise SystemExit("window " + window + " boots arm(s) "
+                         + ", ".join(C.window_arms(window)) + ", not " + arm)
+    if variant is None and window in C.WINDOWS:
+        # the WINDOW owns its variant, so no caller (boot plan, prepare, leg runner,
+        # preflight) can forget it and measure the claim shape by accident
+        variant = C.config_variant(window)
+    if variant is not None and variant not in VARIANTS:
+        raise SystemExit("unknown config variant " + repr(variant) + ": choose "
+                         + ", ".join(sorted(VARIANTS)))
     spec = ARMS[arm]
     base_path = ROOT / (base_override or spec["base_config"])
     cfg = json.loads(base_path.read_text())
@@ -211,6 +249,20 @@ def derive(arm, *, window, rep, out, port=None, base_override=None, boot=None):
         if old != TUPLE[key]:
             deltas.append({"field": key, "from": old, "to": TUPLE[key], "kind": "tuple"})
         cfg[key] = TUPLE[key]
+
+    # 1b. the window's serving-shape VARIANT, if it names one. It overrides only the keys it
+    #     lists (W3p: reasoning_budget_tokens + reasoning_effort, i.e. prod's thinking shape)
+    #     and every such key is recorded as a "variant" delta, so the config proves it carries
+    #     the prod shape and nothing else: no tuple value, arg, env key or path moves with it.
+    if variant is not None:
+        overlay = VARIANTS[variant]
+        for key, value in overlay.items():
+            if key == "note":
+                continue
+            old = cfg.get(key)
+            if old != value:
+                deltas.append({"field": key, "from": old, "to": value, "kind": "variant"})
+            cfg[key] = value
 
     # 2. helper channels: stripped from the base, re-added per leg (strip-then-repoint)
     args = strip_args(args, HELPER_SOCKET_ARGS)
@@ -291,7 +343,12 @@ def derive(arm, *, window, rep, out, port=None, base_override=None, boot=None):
                          + ", budget " + str(TUPLE["ram_budget_mib"]) + ", spec " + str(TUPLE["spec"])
                          + ", dflash-block " + str(TUPLE["dflash_block"]) + ", layer-split "
                          + str(TUPLE["layer_split"]) + ", helper slots " + str(TUPLE["helper_slots"])
-                         + "); engine arm " + arm + "; fresh cache dir; trial sockets. Generated by "
+                         + "); engine arm " + arm
+                         + (("; CONFIG VARIANT " + variant + ": " + str({k: v for k, v in
+                             VARIANTS[variant].items() if k != "note"})
+                             + " replaced the claim values (prod serving shape, NOT the claim "
+                               "config)") if variant else "")
+                         + "; fresh cache dir; trial sockets. Generated by "
                          "port_ab_configs.py - do not hand-edit.")
     return cfg, deltas, paths
 
@@ -367,13 +424,38 @@ def cross_arm_diffs(a, b):
     return diffs
 
 
-def check_tuple(cfg, arm, *, window=None):
+IDENTITY_KEYS = ("model_name", "reasoning_budget_tokens", "reasoning_effort")
+
+
+def expected_identity(variant=None):
+    """The serving-identity keys a config must carry: the frozen tuple, or the tuple with the
+    variant's two keys on top (W3p: prod's 2,000-token budget on the same "high" effort).
+
+    One function for both the writer (derive) and the reader (check_tuple/verify), so a
+    variant can never be measured with a budget nobody wrote and a claim config can never
+    quietly gain one.
+    """
+    expected = {key: TUPLE[key] for key in IDENTITY_KEYS}
+    if variant is not None:
+        expected.update({k: v for k, v in VARIANTS[variant].items() if k != "note"})
+    return expected
+
+
+def check_tuple(cfg, arm, *, window=None, variant=None):
     """Fail-closed check that the config the server execs carries the whole frozen tuple.
 
     window selects the margins mode: an absent window means "explicit" (both reserves written
     from TUPLE), an engine-default window (W1d) must carry NEITHER reserve flag, so their
     presence there is the failure and their absence is what a W1d config must prove.
+
+    variant selects the serving identity a window measures: W3p runs the prod shape, so its
+    config MUST carry the variant's reasoning budget and effort and every other tuple value
+    unchanged. With no variant (every claim window) the tuple's own values are the only ones
+    that pass - a leaked 2,000-token budget on a claim config is a failure, not a warning.
+    An explicit None from a WINDOW is resolved the same way derive() resolves it.
     """
+    if variant is None and window in C.WINDOWS:
+        variant = C.config_variant(window)
     problems = []
     args = cfg["args"]
     margins = C.margins_mode(window) if window in C.WINDOWS else "explicit"
@@ -415,11 +497,12 @@ def check_tuple(cfg, arm, *, window=None):
                         + " but arm " + arm + " has no pool fix")
     if cfg.get("expert_helper_slots") != TUPLE["helper_slots"]:
         problems.append(arm + ": expert_helper_slots key")
-    if cfg.get("model_name") != TUPLE["model_name"]:
-        problems.append(arm + ": model_name " + repr(cfg.get("model_name")))
-    if cfg.get("reasoning_budget_tokens") != TUPLE["reasoning_budget_tokens"]:
-        problems.append(arm + ": reasoning_budget_tokens "
-                        + repr(cfg.get("reasoning_budget_tokens")))
+    expected = expected_identity(variant)
+    for key in IDENTITY_KEYS:
+        if cfg.get(key) != expected[key]:
+            problems.append(arm + ": " + key + " " + repr(cfg.get(key)) + ", "
+                            + ("variant " + repr(variant) if variant else "tuple") + " says "
+                            + repr(expected[key]))
     if cfg["exe"] != str(ROOT / ARMS[arm]["engine"]):
         problems.append(arm + ": exe " + str(cfg["exe"]))
     for p in (cfg["expert_helper_socket"], cfg["expert_helper_socket2"], cfg["log"],
@@ -467,14 +550,16 @@ def main():
     ap.add_argument("--window", default="W1", choices=sorted(C.WINDOWS))
     ap.add_argument("--boot", default=None, help="boot group (W2: dec or sht)")
     ap.add_argument("--rep", type=int, default=1)
+    ap.add_argument("--variant", default=None, choices=sorted(VARIANTS),
+                    help="serving-shape overlay (W3p uses prodshape)")
     ap.add_argument("--out-dir", type=pathlib.Path, default=OUT_DEFAULT)
     ap.add_argument("--port", type=int, default=None)
     ap.add_argument("--write", action="store_true", help="write the config under <out>/configs/")
     ap.add_argument("--print", dest="show", action="store_true", help="print the config JSON")
     a = ap.parse_args()
     cfg, deltas, paths = derive(a.arm, window=a.window, rep=a.rep, out=a.out_dir,
-                                port=a.port, boot=a.boot)
-    problems = check_tuple(cfg, a.arm, window=a.window)
+                                port=a.port, boot=a.boot, variant=a.variant)
+    problems = check_tuple(cfg, a.arm, window=a.window, variant=a.variant)
     for p in problems:
         print("PROBLEM: " + p, file=sys.stderr)
     if problems:

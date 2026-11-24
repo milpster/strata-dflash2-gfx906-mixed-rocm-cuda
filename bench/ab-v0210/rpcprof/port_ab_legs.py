@@ -52,8 +52,19 @@ def corpus_path(out, shape):
     return out / "corpus" / (shape + ".ctx" + str(C.SHAPES[shape]["bytes"]) + ".bin")
 
 
-def template_path(out):
-    return out / "request-template.json"
+def template_path(out, window=None):
+    """The frozen request template a window's legs send (its own file, its own pin).
+
+    "claim" is request-template.json - the thinking-off sampling template every W1/W1d/W1f/W3
+    record was measured with. W3p names "prodshape" and gets request-template-prodshape.json
+    (thinking ON, no effort override), so a prod-shape run can never overwrite or hash-bind the
+    claim template, and a claim leg can never be handed the prod-shape one.
+
+    A missing window means the claim template, so a caller that predates the variants keeps the
+    template it always used instead of raising.
+    """
+    name = C.request_template(window) if window in C.WINDOWS else "claim"
+    return out / C.REQUEST_TEMPLATES[name]["file"]
 
 
 def hashlib_sha(path):
@@ -117,16 +128,19 @@ def schedule(window):
     groups = spec["boot_groups"]
     pilot = spec.get("pilot")
     warm = spec.get("decode_warmup")
+    # the window's arms, never a hardcoded pair: W3p boots arm B only (the prod pair's shape),
+    # so it must not schedule an A warmup boot that would never be used or keyed
+    arms = C.window_arms(window)
     if pilot:
-        for arm in ("A", "B"):
+        for arm in arms:
             rows.append({"group": "pilot", "boot": pilot["group"], "arm": arm, "rep": 0,
                          "shapes": list(groups[pilot["group"]]), "pilot": True})
     if warm:
-        for arm in ("A", "B"):
+        for arm in arms:
             rows.append({"group": "warmup", "boot": warm["group"], "arm": arm, "rep": 0,
                          "shapes": list(groups[warm["group"]]), "pilot": False, "warmup": True})
     elif spec["warmup_boots"]:
-        for arm in ("A", "B"):
+        for arm in arms:
             boot = next(iter(groups))
             rows.append({"group": "warmup", "boot": boot, "arm": arm, "rep": 0,
                          "shapes": list(groups[boot]), "pilot": False, "warmup": True})
@@ -138,11 +152,16 @@ def schedule(window):
 
 
 def commands(out, window, arm, rep, shapes, *, port=8009, boot=None):
-    """The exact commands of one boot's legs, with the engine pid pinned at call time."""
+    """The exact commands of one boot's legs, with the engine pid pinned at call time.
+
+    The template is the WINDOW's (claim: request-template.json; W3p: the prod-shape one), so a
+    leg can never be fired on the other window's request shape.
+    """
     boot = boot or pc.boot_for_shape(window, shapes[0])
     cfg, _, paths = pc.derive(arm, window=window, rep=rep, out=out, port=port, boot=boot)
     exe = pc.ROOT / pc.ARMS[arm]["engine"]
     pid = engine_pid(exe, cfg["expert_helper_socket"])
+    template = template_path(out, window)
     cmds = []
     for shape in shapes:
         if C.LEGS[shape]["kind"] == "ttft":
@@ -151,7 +170,7 @@ def commands(out, window, arm, rep, shapes, *, port=8009, boot=None):
                    "--corpus", str(corpus_path(out, shape)),
                    "--turns", str(C.LEGS[shape]["turns"]),
                    "--max-tokens", str(C.LEGS[shape]["max_tokens"]),
-                   "--template", str(template_path(out)),
+                   "--template", str(template),
                    "--out", paths["records"], "--elog", cfg["log"], "--hlog", paths["helper_log"]]
             if pid:
                 cmd += ["--engine-pid", str(pid)]
@@ -166,8 +185,8 @@ def commands(out, window, arm, rep, shapes, *, port=8009, boot=None):
                "--out", paths["records"], "--elog", cfg["log"], "--hlog", paths["helper_log"],
                "--url", URL,
                "--prompt-file", str(corpus), "--prompt-sha256", hashlib_sha(corpus),
-               "--request-template", str(template_path(out)),
-               "--request-template-sha256", hashlib_sha(template_path(out)),
+               "--request-template", str(template),
+               "--request-template-sha256", hashlib_sha(template),
                "--timeout", "5400",
                "--champs-shape", shape, "--champs-pair", "0", "--champs-measured"]
         if pid:
@@ -198,6 +217,19 @@ def runbook(out, window):
         lines.append("# margins: ENGINE-DEFAULT - neither --vram-reserve-mib nor "
                      "--vram-reserve-later-mib is in the engine argv; the boot gate expects "
                      "both ABSENT")
+    variant = C.config_variant(window)
+    if variant:
+        # said out loud at the top of the runbook: this window measures a serving shape that is
+        # NOT the claim tuple, and its rates are not poolable with the claim legs'
+        lines.append("# request shape: CONFIG VARIANT " + variant + " ("
+                     + str({k: v for k, v in pc.VARIANTS[variant].items() if k != "note"})
+                     + ") + template " + str(template_path(out, window))
+                     + " - NOT the claim shape; never pool with a claim leg")
+    if C.window_arms(window) != ("A", "B"):
+        # every prepared claim window boots both arms; a one-arm window says so, so nobody
+        # reads a missing A row as a boot that failed
+        lines.append("# arms: " + ", ".join(C.window_arms(window))
+                     + " only (not an A/B window)")
     for row in rows:
         key = pc.boot_key(window, row["arm"], row["rep"], row["boot"])
         label = ("pilot, excluded from the claim" if row["pilot"] else
@@ -741,6 +773,11 @@ def check(out, window, manifest_path=None):
                      "decode_from_request": 2 if decode else 1,
                      "reused_second": decode and decode["reused"],
                      "tg": (leg in C.LEGS and C.claims_tg(leg, window)),
+                     # a prod-shape leg clears the TG floor on a DIFFERENT request shape
+                     # (thinking on). It is TG-claim-capable in the sense that its gen rate can
+                     # enter a TG statement, but it is not poolable with the claim legs and the
+                     # table says so in its own column instead of mixing the two.
+                     "prodshape": C.config_variant(window) is not None,
                      "cap": (leg in C.LEGS and C.gen_tokens(leg, window)) or None,
                      "record_cap": rec.get("max_tokens"),
                      "helper": tail.groups() if tail else None,
@@ -774,7 +811,16 @@ def check(out, window, manifest_path=None):
                             + " token(s), below the " + str(C.TG_CLAIM_MIN_GENERATED) \
                             + "-token TG floor"
                     rec_cap = entry["record_cap"]
-                    if isinstance(rec_cap, int) and rec_cap < C.TG_CLAIM_MIN_GENERATED:
+                    if entry["prodshape"]:
+                        # The prod-shape leg exists BECAUSE thinking off stops at EOS around
+                        # 518 tokens. Its whole purpose is to clear this floor, so falling
+                        # short is the failure it was built to fix - never quietly accepted,
+                        # and never excused by the request shape it ran on.
+                        problems.append(short + " (prod-shape leg: thinking ON is what is "
+                                        "meant to carry it past EOS to the cap; a short "
+                                        "generation means the budget did not bind)")
+                    elif isinstance(rec_cap, int) and \
+                            rec_cap < C.TG_CLAIM_MIN_GENERATED:
                         # The leg was RUN under a cap below the floor (a record from before the
                         # 2026-11-24 "+1024tg" directive, when pp239k's tail was 8 tokens). It is
                         # a pre-amendment record the contract keeps untouched, not a shortfall of
@@ -814,6 +860,8 @@ def check(out, window, manifest_path=None):
 
     # TG: "tg" = this row's gen_tps is claim-grade (the leg generated >= 1,000 tokens: every
     # pp239k window since the 2026-11-24 "+1024tg" directive, and the 1024-capped dec144k);
+    # "tg*" = the same floor cleared on the PROD SHAPE (thinking ON) - a TG-claim-capable rate
+    # that is NOT poolable with the "tg" rows and is never mixed into their sample;
     # "ctx" = context only, never a TG rate - a short-tail leg whose cap is under the floor
     # (pp2k/pp8k, 32 tokens), or a TG leg that stopped short of the floor (which the gate also
     # fails, loudly). "-" = no gen rate.
@@ -835,9 +883,16 @@ def check(out, window, manifest_path=None):
             r["shape"], r["arm"], r["boot"], r.get("prompt_tok") or "-",
             r.get("reused") if r.get("reused") is not None else "-",
             r.get("read_tps") or (r.get("ttft_s") and "ttft " + str(r["ttft_s"][0])) or "-",
-            r.get("gen_tps") or "-", "-" if tg is None else ("tg" if claim_grade else "ctx"),
+            r.get("gen_tps") or "-",
+            "-" if tg is None else (("tg*" if r.get("prodshape") else "tg")
+                                    if claim_grade else "ctx"),
             fill.get("rows") or "-", r.get("cache_slots") or "-", r.get("low", "-"),
             (r.get("engine") or "-")[:12])))
+    for r in sorted(rows, key=lambda x: (x["shape"], x["boot"])):
+        if r.get("prodshape"):
+            print("NOTE: " + r["boot"] + "/" + r["shape"] + " ran the PROD SHAPE (thinking ON): "
+                  "comparable to prod's serving shape, NOT poolable with the thinking-off "
+                  "prefill legs - its TG rate belongs to no A/B sample they are in")
     missing = [r for r in rows if not r.get("engine")]
     if missing:
         print("engine: " + str(len(missing)) + " of " + str(len(rows)) + " leg record(s) name no "
@@ -1184,6 +1239,40 @@ def selftest():
         if not ok:
             failures.append("short-32-token-tail-is-context")
 
+    # The PROD-SHAPE TG leg (W3p, operator request 2026-11-24): thinking on, so generation runs
+    # from the 58,423-token prefill past EOS to the 1,024 cap. It clears the SAME floor the
+    # thinking-off shape could not, but on a different request shape, so the table marks it
+    # "tg*" and says out loud that it is not poolable with the "tg" rows. A prod-shape leg that
+    # STOPS SHORT is the failure the leg exists to fix: a hard FAIL, never the old-record WARN.
+    with tempfile.TemporaryDirectory(dir=_tmpdir()) as root:
+        _fixture(root, "W3p-B-pp-r1", "B", "pp239k-prodshape", tokens=58423, generated=1024,
+                 second_reused=58423, ended=6.0)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = check(pathlib.Path(root), "W3p")
+        text = buf.getvalue()
+        ok = (rc == 0 and " tg*" in text and " tg " not in text
+              and "NOT poolable" in text and text.count("ctx") == 0)
+        print(("ok   " if ok else "FAIL ") + "prodshape-tg-clears-floor-is-tg-star: rc " + str(rc)
+              + " (prod shape clears the 1,000 floor, prints tg*, and says it is not poolable)")
+        if not ok:
+            failures.append("prodshape-tg-clears-floor-is-tg-star")
+
+    with tempfile.TemporaryDirectory(dir=_tmpdir()) as root:
+        # 518 is the EOS stop the thinking-off shape measured; on the prod shape it must fail
+        _fixture(root, "W3p-B-pp-r1", "B", "pp239k-prodshape", tokens=58423, generated=518,
+                 second_reused=58423, ended=6.0)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = check(pathlib.Path(root), "W3p")
+        text = buf.getvalue()
+        ok = (rc == 1 and "prod-shape leg: thinking ON is what is meant" in text
+              and "predates the 1,024-token directive" not in text)
+        print(("ok   " if ok else "FAIL ") + "prodshape-tg-short-fails-loudly: rc " + str(rc)
+              + " (a prod-shape leg under the floor is a FAIL, never the old-record WARN)")
+        if not ok:
+            failures.append("prodshape-tg-short-fails-loudly")
+
     # the boot's own engine-log segment: a previous boot's fault under the same key must not
     # fail this boot, an in-boot fault before the request must, and no offsets means whole file
     with tempfile.TemporaryDirectory(dir=_tmpdir()) as root:
@@ -1267,8 +1356,9 @@ def selftest():
           "boot's events are not this boot's, the kernel window ends with the boot, a record "
           "with no engine sha is informational only, and the per-boot evidence is written "
           "beside the boot record; a 1,024-token pp239k leg is TG=tg, a 32-token tail stays "
-          "TG=ctx, and a record written under the old 8-token cap warns instead of failing "
-          "the window it is the untouched baseline of")
+          "TG=ctx, a record written under the old 8-token cap warns instead of failing "
+          "the window it is the untouched baseline of, and the prod-shape leg prints tg* when "
+          "it clears the floor and FAILs when it does not")
     return 0
 
 
