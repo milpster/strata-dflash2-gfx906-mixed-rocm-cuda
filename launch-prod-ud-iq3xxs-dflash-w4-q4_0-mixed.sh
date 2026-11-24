@@ -33,10 +33,10 @@ WORK=${STRATA_PROD_WORK:-"$ROOT/run/port0218-server"}   # 2026-11-23: the ported
 # -> 38 GiB pool + 4 GiB outside area, CUDA0 VRAM margin 256 (one +64 step after the
 # 40 GiB run exhausted the card at 7 MiB free), CUDA1 192, helper reserve 0 (the component
 # clamps it to 64), fill 7400 MiB, relief hot 2048 / arena cap 4096.
-BIN=${STRATA_PROD_BIN:-"$ROOT/run/port0218-bin"}   # 2026-11-23: promoted 0.2.18 port (936efcc7 + helper 58c3ae02)
+BIN=${STRATA_PROD_BIN:-"$ROOT/run/port0218-nohuge-bin"}   # 2026-11-24: promoted 0.2.18 port + pool MADV_NOHUGEPAGE (15d330ea; helper 58c3ae02 unchanged)
 export STRATA_RAM_BUDGET_MIB=${STRATA_RAM_BUDGET_MIB:-43008}
 PY="$ROOT/.venv/bin/python"
-CONFIG=${STRATA_PROD_CONFIG:-"$ROOT/prod-config-port0218.json"}   # 2026-11-23: the port serving config (validated window tuple)
+CONFIG=${STRATA_PROD_CONFIG:-"$ROOT/prod-config-port0218-nohuge.json"}   # 2026-11-24: promoted tuple = 0.2.18 + STRATA_POOL_NOHUGEPAGE=1 (fault fix; numerics byte-identical to the fork REF, journal/pool-nohuge-quality-gate-2026-11-24.md)
 SOCKET="$ROOT/run/prod-iq3xxs-ud-mixed.sock"
 SOCKET2="$ROOT/run/prod-iq3xxs-ud-mixed2.sock"
 HELPER="$BIN/rpcw-cuda/strata-expert-helper"   # 2026-11-23: the port helper build (58c3ae02)
