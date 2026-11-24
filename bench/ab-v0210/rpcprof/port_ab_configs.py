@@ -49,14 +49,20 @@ ARMS = {
         "spill_flag": False,
     },
     "B": {
-        "label": "promoted 0.2.18 port engine + port server",
-        "engine": "run/port0218-bin/rpcw-hip/strata",
-        "engine_sha256": "936efcc798aab3952551281f2f328c1b8b19311fee9d0298142e702809a58394",
-        "helper": "run/port0218-bin/rpcw-cuda/strata-expert-helper",
+        # 2026-11-24 operator directive: arm B re-pinned from 936efcc7 (the 0.2.18 port) to
+        # 15d330ea (the same port + MADV_NOHUGEPAGE on the 32 GiB RAM pool, the promoted prod
+        # binary). Measuring the old pin would answer a question nothing serves. W1's existing
+        # records stay as the OLD-B baseline and are not re-derived; every window from this
+        # amendment on measures what prod actually runs.
+        "label": "promoted port + pool MADV_NOHUGEPAGE + port server",
+        "engine": "run/port0218-nohuge-bin/rpcw-hip/strata",
+        "engine_sha256": "15d330ea4d0eec4ca64ef3973e52d332253a981c25dde42b70567bf8b3ae7577",
+        "helper": "run/port0218-nohuge-bin/rpcw-cuda/strata-expert-helper",
         "helper_sha256": "58c3ae020a7479a13c622627544507f5b43f284f9be4b5222ac90c3421b88bb2",
         "server_tree": "run/port0218-server",
-        "base_config": "prod-config-port0218.json",
+        "base_config": "prod-config-port0218-nohuge.json",
         "spill_flag": True,
+        "pool_nohuge": True,   # REQUIRED in every B config: the binary runs the fix only when set
     },
 }
 
@@ -301,23 +307,40 @@ def settings_only(cfg):
     return out
 
 
-def settings_sha256(cfg):
-    """Digest of the settings with the harness paths AND the declared spill pair blanked.
+def blank_declared(cfg, who):
+    """Remove both DECLARED structural differences from a config copy.
 
-    The spill flag is the one structural difference between the arms (A cannot carry it), so
-    a digest that kept it would differ between two configs whose settings are identical.
+    A cannot carry either: the fork engine has no --conversation-spill-mib, and it has no
+    pool MADV_NOHUGEPAGE path (so no STRATA_POOL_NOHUGEPAGE consumer). B carries both - the
+    spill tier off, and the pool fix on. They mean "no spill" and "pool pages not huge" in
+    both arms; leaving them in a digest or a diff would report the declared pair as a
+    settings drift and hide a real one behind the noise.
     """
-    args = ensure_absent(list(cfg["args"]), "--conversation-spill-mib", [], "digest")
-    blanked = settings_only({**cfg, "args": args})
+    args = ensure_absent(list(cfg["args"]), "--conversation-spill-mib", [], who)
+    env = {k: v for k, v in (cfg.get("env") or {}).items() if k != "STRATA_POOL_NOHUGEPAGE"}
+    return {**cfg, "args": args, "env": env}
+
+
+def settings_sha256(cfg):
+    """Digest of the settings with the harness paths and both declared pairs blanked."""
+    blanked = settings_only(blank_declared(cfg, "digest"))
     return hashlib.sha256(json.dumps(blanked, sort_keys=True).encode()).hexdigest()
 
 
 def structural_difference(a, b):
-    """The one declared structural difference: arm B carries --conversation-spill-mib 0,
-    arm A cannot (its engine has no such option). Both mean "spill off"."""
+    """The two DECLARED structural differences between the arms.
+
+    1. arm B carries --conversation-spill-mib 0, arm A cannot (no such option). Both = no spill.
+    2. arm B carries STRATA_POOL_NOHUGEPAGE=1 (the promoted pool fix); arm A has no such code
+       path. Declared 2026-11-24 with the operator re-pin of arm B to 15d330ea.
+    """
     return {"spill_flag": {"A": arg_value(a["args"], "--conversation-spill-mib"),
                            "B": arg_value(b["args"], "--conversation-spill-mib"),
-                           "meaning": "no spill tier in A (flag absent), tier present and off in B"}}
+                           "meaning": "no spill tier in A (flag absent), tier present and off in B"},
+            "pool_nohuge": {"A": (a.get("env") or {}).get("STRATA_POOL_NOHUGEPAGE"),
+                            "B": (b.get("env") or {}).get("STRATA_POOL_NOHUGEPAGE"),
+                            "meaning": "A has no pool THP exclusion (no consumer in the fork); "
+                                       "B maps the 32 GiB pool with MADV_NOHUGEPAGE"}}
 
 
 def cross_arm_diffs(a, b):
@@ -326,9 +349,10 @@ def cross_arm_diffs(a, b):
     if arg_value(b["args"], "--conversation-spill-mib") != "0" or \
             arg_value(a["args"], "--conversation-spill-mib") is not None:
         raise SystemExit("spill flags are not the declared structural pair (A absent, B 0)")
-    aa = ensure_absent(list(a["args"]), "--conversation-spill-mib", [], "diff")
-    bb = ensure_absent(list(b["args"]), "--conversation-spill-mib", [], "diff")
-    sa, sb = settings_only({**a, "args": aa}), settings_only({**b, "args": bb})
+    if (b.get("env") or {}).get("STRATA_POOL_NOHUGEPAGE") != "1" or \
+            (a.get("env") or {}).get("STRATA_POOL_NOHUGEPAGE") is not None:
+        raise SystemExit("pool knob is not the declared structural pair (A absent, B 1)")
+    sa, sb = settings_only(blank_declared(a, "diff")), settings_only(blank_declared(b, "diff"))
     diffs = {}
     for key in sorted(set(sa) | set(sb)):
         if key == "args":
@@ -378,6 +402,17 @@ def check_tuple(cfg, arm, *, window=None):
         problems.append(arm + ": layer_split " + repr(cfg.get("layer_split")))
     if cfg["env"].get("STRATA_RAM_BUDGET_MIB") != str(TUPLE["ram_budget_mib"]):
         problems.append(arm + ": RAM budget " + repr(cfg["env"].get("STRATA_RAM_BUDGET_MIB")))
+    # 2026-11-24 re-pin: arm B is the pool-MADV_NOHUGEPAGE build, so its config MUST carry the
+    # knob (1) or the binary runs the fix off and the window measures the wrong behaviour. Arm A
+    # carries no knob - the fork has no such code path.
+    knob = cfg["env"].get("STRATA_POOL_NOHUGEPAGE")
+    if ARMS[arm].get("pool_nohuge"):
+        if knob != "1":
+            problems.append(arm + ": STRATA_POOL_NOHUGEPAGE is " + repr(knob)
+                            + " but arm " + arm + " runs the pool fix (must be \"1\")")
+    elif knob is not None:
+        problems.append(arm + ": STRATA_POOL_NOHUGEPAGE is " + repr(knob)
+                        + " but arm " + arm + " has no pool fix")
     if cfg.get("expert_helper_slots") != TUPLE["helper_slots"]:
         problems.append(arm + ": expert_helper_slots key")
     if cfg.get("model_name") != TUPLE["model_name"]:

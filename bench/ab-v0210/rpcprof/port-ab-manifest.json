@@ -7,6 +7,11 @@
    "note": "the declared spill flag is blanked before hashing, so two identical-setting arms hash equal"
   },
   "structural": {
+   "pool_nohuge": {
+    "A": null,
+    "B": "1",
+    "meaning": "A has no pool THP exclusion (no consumer in the fork); B maps the 32 GiB pool with MADV_NOHUGEPAGE"
+   },
    "spill_flag": {
     "A": null,
     "B": "0",
@@ -52,21 +57,21 @@
   "B": {
    "arm": "B",
    "base_config": {
-    "path": "/mnt/srcds/Strata/prod-config-port0218.json",
-    "sha256": "0068f4bb0dd38d7b4c66235d3c94806f68ca7c9ab88814ef9def595ee8e38cf1"
+    "path": "/mnt/srcds/Strata/prod-config-port0218-nohuge.json",
+    "sha256": "b6d2e1215668b1cb20f6821328660a56850126ed885d3abdb22f530bf94867e0"
    },
    "engine": {
-    "bytes": 30555416,
-    "mtime_epoch": 1795433779,
-    "path": "/mnt/srcds/Strata/run/port0218-bin/rpcw-hip/strata",
-    "sha256": "936efcc798aab3952551281f2f328c1b8b19311fee9d0298142e702809a58394"
+    "bytes": 30555608,
+    "mtime_epoch": 1795480244,
+    "path": "/mnt/srcds/Strata/run/port0218-nohuge-bin/rpcw-hip/strata",
+    "sha256": "15d330ea4d0eec4ca64ef3973e52d332253a981c25dde42b70567bf8b3ae7577"
    },
    "helper": {
     "bytes": 55541552,
-    "path": "/mnt/srcds/Strata/run/port0218-bin/rpcw-cuda/strata-expert-helper",
+    "path": "/mnt/srcds/Strata/run/port0218-nohuge-bin/rpcw-cuda/strata-expert-helper",
     "sha256": "58c3ae020a7479a13c622627544507f5b43f284f9be4b5222ac90c3421b88bb2"
    },
-   "label": "promoted 0.2.18 port engine + port server",
+   "label": "promoted port + pool MADV_NOHUGEPAGE + port server",
    "serve_subtree": {
     "digest": "27a683e82ae68efb7d87fba0ae6bee30aa3c796a84f6e92ebb0824cbaef1ee5c",
     "files": 295,
@@ -289,13 +294,13 @@
     },
     {
      "field": "derived_from",
-     "from": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/trial-managed-pool-38g-230k.json",
+     "from": "prod-config-port0218.json",
      "kind": "harness",
      "to": "<absent>"
     },
     {
      "field": "derived_note",
-     "from": "port-0218 test-window base on :8019: the champion measurement config with the engine, cwd, sockets, log and conversation-cache-dir repointed at the port tree, and --conversation-spill-mib 0 added (upstream spill tier off; the fork DISK tier under --conversation-cache-dir is this rig's only disk tier). Boots are the operator's, never the fixer's.",
+     "from": "PROMOTED 2026-11-24 (commit c511059c5c): the prod launcher defaults to this config and to run/port0218-nohuge-bin. The engine maps its 32 GiB RAM pool with MADV_NOHUGEPAGE (engine/src/core/ram_pool.cpp:243-252, gated by STRATA_POOL_NOHUGEPAGE, set to 1 below) because the recurring amdgpu no-retry permission fault hit host pages of that pool while the mapping was still present. Numerics gated byte-identical to the fork reference (journal/pool-nohuge-quality-gate-2026-11-24.md). Rollback: STRATA_PROD_BIN=$PWD/run/port0218-bin STRATA_PROD_CONFIG=$PWD/prod-config-port0218.json ./launch-prod-ud-iq3xxs-dflash-w4-q4_0-mixed.sh",
      "kind": "harness",
      "to": "<absent>"
     },
@@ -333,7 +338,7 @@
    "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1-B-pp-r0.engine.log",
    "pilot": false,
    "rep": 0,
-   "sha256": "3ef32533207ac36706d1f92f738564ed9386b8bcac9f8927bf9d2d42cd472029",
+   "sha256": "e2c9e71d5afd27e7576c6d2583e3cce4f8dcba975827fa8e9eac9161ccb72ab1",
    "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1-B-pp-r0.sock",
    "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1-B-pp-r0-2.sock",
    "warmup": true,
@@ -353,13 +358,13 @@
     },
     {
      "field": "derived_from",
-     "from": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/trial-managed-pool-38g-230k.json",
+     "from": "prod-config-port0218.json",
      "kind": "harness",
      "to": "<absent>"
     },
     {
      "field": "derived_note",
-     "from": "port-0218 test-window base on :8019: the champion measurement config with the engine, cwd, sockets, log and conversation-cache-dir repointed at the port tree, and --conversation-spill-mib 0 added (upstream spill tier off; the fork DISK tier under --conversation-cache-dir is this rig's only disk tier). Boots are the operator's, never the fixer's.",
+     "from": "PROMOTED 2026-11-24 (commit c511059c5c): the prod launcher defaults to this config and to run/port0218-nohuge-bin. The engine maps its 32 GiB RAM pool with MADV_NOHUGEPAGE (engine/src/core/ram_pool.cpp:243-252, gated by STRATA_POOL_NOHUGEPAGE, set to 1 below) because the recurring amdgpu no-retry permission fault hit host pages of that pool while the mapping was still present. Numerics gated byte-identical to the fork reference (journal/pool-nohuge-quality-gate-2026-11-24.md). Rollback: STRATA_PROD_BIN=$PWD/run/port0218-bin STRATA_PROD_CONFIG=$PWD/prod-config-port0218.json ./launch-prod-ud-iq3xxs-dflash-w4-q4_0-mixed.sh",
      "kind": "harness",
      "to": "<absent>"
     },
@@ -397,7 +402,7 @@
    "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1-B-pp-r1.engine.log",
    "pilot": false,
    "rep": 1,
-   "sha256": "ac53a39a71dd313613cbc660a04a38d8c6f13a581981f51fba524f993c020fee",
+   "sha256": "8f944b3a59911dc65296b53efa1d7ddee34cf2b3f3d2fb7988e9f697943a93a6",
    "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1-B-pp-r1.sock",
    "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1-B-pp-r1-2.sock",
    "warmup": false,
@@ -417,13 +422,13 @@
     },
     {
      "field": "derived_from",
-     "from": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/trial-managed-pool-38g-230k.json",
+     "from": "prod-config-port0218.json",
      "kind": "harness",
      "to": "<absent>"
     },
     {
      "field": "derived_note",
-     "from": "port-0218 test-window base on :8019: the champion measurement config with the engine, cwd, sockets, log and conversation-cache-dir repointed at the port tree, and --conversation-spill-mib 0 added (upstream spill tier off; the fork DISK tier under --conversation-cache-dir is this rig's only disk tier). Boots are the operator's, never the fixer's.",
+     "from": "PROMOTED 2026-11-24 (commit c511059c5c): the prod launcher defaults to this config and to run/port0218-nohuge-bin. The engine maps its 32 GiB RAM pool with MADV_NOHUGEPAGE (engine/src/core/ram_pool.cpp:243-252, gated by STRATA_POOL_NOHUGEPAGE, set to 1 below) because the recurring amdgpu no-retry permission fault hit host pages of that pool while the mapping was still present. Numerics gated byte-identical to the fork reference (journal/pool-nohuge-quality-gate-2026-11-24.md). Rollback: STRATA_PROD_BIN=$PWD/run/port0218-bin STRATA_PROD_CONFIG=$PWD/prod-config-port0218.json ./launch-prod-ud-iq3xxs-dflash-w4-q4_0-mixed.sh",
      "kind": "harness",
      "to": "<absent>"
     },
@@ -461,11 +466,395 @@
    "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1-B-pp-r2.engine.log",
    "pilot": false,
    "rep": 2,
-   "sha256": "f51de7a796a90bc1d54a9407b333848773a9a4b54d16b395f64aad4dfdc46166",
+   "sha256": "95026f336bb0e3e2ebdf9141f7cf1b9f3a7699113d83983de0aa7462c5c96f68",
    "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1-B-pp-r2.sock",
    "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1-B-pp-r2-2.sock",
    "warmup": false,
    "window": "W1"
+  },
+  "W1d-A-pp-r0": {
+   "arm": "A",
+   "boot_group": "pp",
+   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W1d-A-pp-r0",
+   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W1d-A-pp-r0.json",
+   "deltas": [
+    {
+     "field": "reasoning_budget_tokens",
+     "from": 55000,
+     "kind": "tuple",
+     "to": 0
+    },
+    {
+     "field": "args/--vram-reserve-mib",
+     "from": "144",
+     "kind": "operator-directive",
+     "to": "<absent>"
+    },
+    {
+     "field": "args/--vram-reserve-later-mib",
+     "from": "144",
+     "kind": "operator-directive",
+     "to": "<absent>"
+    },
+    {
+     "field": "cwd",
+     "from": "/mnt/srcds/Strata",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/v0215"
+    },
+    {
+     "field": "log",
+     "from": "/mnt/srcds/Strata/logs/engine-prod-ud-iq3xxs-v0233.log",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1d-A-pp-r0.engine.log"
+    },
+    {
+     "field": "args/--conversation-cache-dir",
+     "from": "/mnt/srcds/Strata-wt-helper-ipc/run/diet-prod-38g",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W1d-A-pp-r0"
+    }
+   ],
+   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1d-A-pp-r0.engine.log",
+   "pilot": false,
+   "rep": 0,
+   "sha256": "c831f06bba217624cdb1e93fe862c2a75c61e478871a3851add74283a2dde749",
+   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1d-A-pp-r0.sock",
+   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1d-A-pp-r0-2.sock",
+   "warmup": true,
+   "window": "W1d"
+  },
+  "W1d-A-pp-r1": {
+   "arm": "A",
+   "boot_group": "pp",
+   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W1d-A-pp-r1",
+   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W1d-A-pp-r1.json",
+   "deltas": [
+    {
+     "field": "reasoning_budget_tokens",
+     "from": 55000,
+     "kind": "tuple",
+     "to": 0
+    },
+    {
+     "field": "args/--vram-reserve-mib",
+     "from": "144",
+     "kind": "operator-directive",
+     "to": "<absent>"
+    },
+    {
+     "field": "args/--vram-reserve-later-mib",
+     "from": "144",
+     "kind": "operator-directive",
+     "to": "<absent>"
+    },
+    {
+     "field": "cwd",
+     "from": "/mnt/srcds/Strata",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/v0215"
+    },
+    {
+     "field": "log",
+     "from": "/mnt/srcds/Strata/logs/engine-prod-ud-iq3xxs-v0233.log",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1d-A-pp-r1.engine.log"
+    },
+    {
+     "field": "args/--conversation-cache-dir",
+     "from": "/mnt/srcds/Strata-wt-helper-ipc/run/diet-prod-38g",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W1d-A-pp-r1"
+    }
+   ],
+   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1d-A-pp-r1.engine.log",
+   "pilot": false,
+   "rep": 1,
+   "sha256": "7b912712551006e24837f6b44c98c26ad89e7c64aa5293ea74651a0dc0b37ca4",
+   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1d-A-pp-r1.sock",
+   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1d-A-pp-r1-2.sock",
+   "warmup": false,
+   "window": "W1d"
+  },
+  "W1d-A-pp-r2": {
+   "arm": "A",
+   "boot_group": "pp",
+   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W1d-A-pp-r2",
+   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W1d-A-pp-r2.json",
+   "deltas": [
+    {
+     "field": "reasoning_budget_tokens",
+     "from": 55000,
+     "kind": "tuple",
+     "to": 0
+    },
+    {
+     "field": "args/--vram-reserve-mib",
+     "from": "144",
+     "kind": "operator-directive",
+     "to": "<absent>"
+    },
+    {
+     "field": "args/--vram-reserve-later-mib",
+     "from": "144",
+     "kind": "operator-directive",
+     "to": "<absent>"
+    },
+    {
+     "field": "cwd",
+     "from": "/mnt/srcds/Strata",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/v0215"
+    },
+    {
+     "field": "log",
+     "from": "/mnt/srcds/Strata/logs/engine-prod-ud-iq3xxs-v0233.log",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1d-A-pp-r2.engine.log"
+    },
+    {
+     "field": "args/--conversation-cache-dir",
+     "from": "/mnt/srcds/Strata-wt-helper-ipc/run/diet-prod-38g",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W1d-A-pp-r2"
+    }
+   ],
+   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1d-A-pp-r2.engine.log",
+   "pilot": false,
+   "rep": 2,
+   "sha256": "01644ca714803bb5acfe6cd7fd40aaa9b68af97bdf800ad39e4a91cc565f6afa",
+   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1d-A-pp-r2.sock",
+   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1d-A-pp-r2-2.sock",
+   "warmup": false,
+   "window": "W1d"
+  },
+  "W1d-B-pp-r0": {
+   "arm": "B",
+   "boot_group": "pp",
+   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W1d-B-pp-r0",
+   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W1d-B-pp-r0.json",
+   "deltas": [
+    {
+     "field": "trial_note",
+     "from": "PROMOTED to prod 2026-11-23 per operator order: the port validated by the full window (quality parity, 240k, helper, park/restore). Serving shape = the validated trial tuple (256/192, budget 36864, spill off).",
+     "kind": "harness",
+     "to": "<absent>"
+    },
+    {
+     "field": "derived_from",
+     "from": "prod-config-port0218.json",
+     "kind": "harness",
+     "to": "<absent>"
+    },
+    {
+     "field": "derived_note",
+     "from": "PROMOTED 2026-11-24 (commit c511059c5c): the prod launcher defaults to this config and to run/port0218-nohuge-bin. The engine maps its 32 GiB RAM pool with MADV_NOHUGEPAGE (engine/src/core/ram_pool.cpp:243-252, gated by STRATA_POOL_NOHUGEPAGE, set to 1 below) because the recurring amdgpu no-retry permission fault hit host pages of that pool while the mapping was still present. Numerics gated byte-identical to the fork reference (journal/pool-nohuge-quality-gate-2026-11-24.md). Rollback: STRATA_PROD_BIN=$PWD/run/port0218-bin STRATA_PROD_CONFIG=$PWD/prod-config-port0218.json ./launch-prod-ud-iq3xxs-dflash-w4-q4_0-mixed.sh",
+     "kind": "harness",
+     "to": "<absent>"
+    },
+    {
+     "field": "managed_budget_mib",
+     "from": 40960,
+     "kind": "harness",
+     "to": "<absent>"
+    },
+    {
+     "field": "model_name",
+     "from": "swift-1.5-ud-iq3xxs-managed",
+     "kind": "tuple",
+     "to": "ud-iq3_xxs"
+    },
+    {
+     "field": "reasoning_budget_tokens",
+     "from": 2000,
+     "kind": "tuple",
+     "to": 0
+    },
+    {
+     "field": "args/--vram-reserve-mib",
+     "from": "256",
+     "kind": "operator-directive",
+     "to": "<absent>"
+    },
+    {
+     "field": "args/--vram-reserve-later-mib",
+     "from": "192",
+     "kind": "operator-directive",
+     "to": "<absent>"
+    },
+    {
+     "field": "log",
+     "from": "/mnt/srcds/Strata/logs/engine-prod-port0218.log",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1d-B-pp-r0.engine.log"
+    },
+    {
+     "field": "args/--conversation-cache-dir",
+     "from": "/mnt/srcds/Strata/run/prod-port0218-cache",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W1d-B-pp-r0"
+    }
+   ],
+   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1d-B-pp-r0.engine.log",
+   "pilot": false,
+   "rep": 0,
+   "sha256": "3fdaf3a07bb0a2ecf990585bf4e8c4221d65c246733ce12193d0e00683bccf1b",
+   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1d-B-pp-r0.sock",
+   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1d-B-pp-r0-2.sock",
+   "warmup": true,
+   "window": "W1d"
+  },
+  "W1d-B-pp-r1": {
+   "arm": "B",
+   "boot_group": "pp",
+   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W1d-B-pp-r1",
+   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W1d-B-pp-r1.json",
+   "deltas": [
+    {
+     "field": "trial_note",
+     "from": "PROMOTED to prod 2026-11-23 per operator order: the port validated by the full window (quality parity, 240k, helper, park/restore). Serving shape = the validated trial tuple (256/192, budget 36864, spill off).",
+     "kind": "harness",
+     "to": "<absent>"
+    },
+    {
+     "field": "derived_from",
+     "from": "prod-config-port0218.json",
+     "kind": "harness",
+     "to": "<absent>"
+    },
+    {
+     "field": "derived_note",
+     "from": "PROMOTED 2026-11-24 (commit c511059c5c): the prod launcher defaults to this config and to run/port0218-nohuge-bin. The engine maps its 32 GiB RAM pool with MADV_NOHUGEPAGE (engine/src/core/ram_pool.cpp:243-252, gated by STRATA_POOL_NOHUGEPAGE, set to 1 below) because the recurring amdgpu no-retry permission fault hit host pages of that pool while the mapping was still present. Numerics gated byte-identical to the fork reference (journal/pool-nohuge-quality-gate-2026-11-24.md). Rollback: STRATA_PROD_BIN=$PWD/run/port0218-bin STRATA_PROD_CONFIG=$PWD/prod-config-port0218.json ./launch-prod-ud-iq3xxs-dflash-w4-q4_0-mixed.sh",
+     "kind": "harness",
+     "to": "<absent>"
+    },
+    {
+     "field": "managed_budget_mib",
+     "from": 40960,
+     "kind": "harness",
+     "to": "<absent>"
+    },
+    {
+     "field": "model_name",
+     "from": "swift-1.5-ud-iq3xxs-managed",
+     "kind": "tuple",
+     "to": "ud-iq3_xxs"
+    },
+    {
+     "field": "reasoning_budget_tokens",
+     "from": 2000,
+     "kind": "tuple",
+     "to": 0
+    },
+    {
+     "field": "args/--vram-reserve-mib",
+     "from": "256",
+     "kind": "operator-directive",
+     "to": "<absent>"
+    },
+    {
+     "field": "args/--vram-reserve-later-mib",
+     "from": "192",
+     "kind": "operator-directive",
+     "to": "<absent>"
+    },
+    {
+     "field": "log",
+     "from": "/mnt/srcds/Strata/logs/engine-prod-port0218.log",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1d-B-pp-r1.engine.log"
+    },
+    {
+     "field": "args/--conversation-cache-dir",
+     "from": "/mnt/srcds/Strata/run/prod-port0218-cache",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W1d-B-pp-r1"
+    }
+   ],
+   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1d-B-pp-r1.engine.log",
+   "pilot": false,
+   "rep": 1,
+   "sha256": "1b911b72bb2f42074ca1ca1d68782ed997a30fa4660a03e7fc4060de4ac1868f",
+   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1d-B-pp-r1.sock",
+   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1d-B-pp-r1-2.sock",
+   "warmup": false,
+   "window": "W1d"
+  },
+  "W1d-B-pp-r2": {
+   "arm": "B",
+   "boot_group": "pp",
+   "cache_dir": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W1d-B-pp-r2",
+   "config": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/configs/W1d-B-pp-r2.json",
+   "deltas": [
+    {
+     "field": "trial_note",
+     "from": "PROMOTED to prod 2026-11-23 per operator order: the port validated by the full window (quality parity, 240k, helper, park/restore). Serving shape = the validated trial tuple (256/192, budget 36864, spill off).",
+     "kind": "harness",
+     "to": "<absent>"
+    },
+    {
+     "field": "derived_from",
+     "from": "prod-config-port0218.json",
+     "kind": "harness",
+     "to": "<absent>"
+    },
+    {
+     "field": "derived_note",
+     "from": "PROMOTED 2026-11-24 (commit c511059c5c): the prod launcher defaults to this config and to run/port0218-nohuge-bin. The engine maps its 32 GiB RAM pool with MADV_NOHUGEPAGE (engine/src/core/ram_pool.cpp:243-252, gated by STRATA_POOL_NOHUGEPAGE, set to 1 below) because the recurring amdgpu no-retry permission fault hit host pages of that pool while the mapping was still present. Numerics gated byte-identical to the fork reference (journal/pool-nohuge-quality-gate-2026-11-24.md). Rollback: STRATA_PROD_BIN=$PWD/run/port0218-bin STRATA_PROD_CONFIG=$PWD/prod-config-port0218.json ./launch-prod-ud-iq3xxs-dflash-w4-q4_0-mixed.sh",
+     "kind": "harness",
+     "to": "<absent>"
+    },
+    {
+     "field": "managed_budget_mib",
+     "from": 40960,
+     "kind": "harness",
+     "to": "<absent>"
+    },
+    {
+     "field": "model_name",
+     "from": "swift-1.5-ud-iq3xxs-managed",
+     "kind": "tuple",
+     "to": "ud-iq3_xxs"
+    },
+    {
+     "field": "reasoning_budget_tokens",
+     "from": 2000,
+     "kind": "tuple",
+     "to": 0
+    },
+    {
+     "field": "args/--vram-reserve-mib",
+     "from": "256",
+     "kind": "operator-directive",
+     "to": "<absent>"
+    },
+    {
+     "field": "args/--vram-reserve-later-mib",
+     "from": "192",
+     "kind": "operator-directive",
+     "to": "<absent>"
+    },
+    {
+     "field": "log",
+     "from": "/mnt/srcds/Strata/logs/engine-prod-port0218.log",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1d-B-pp-r2.engine.log"
+    },
+    {
+     "field": "args/--conversation-cache-dir",
+     "from": "/mnt/srcds/Strata/run/prod-port0218-cache",
+     "kind": "harness",
+     "to": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/cache/W1d-B-pp-r2"
+    }
+   ],
+   "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1d-B-pp-r2.engine.log",
+   "pilot": false,
+   "rep": 2,
+   "sha256": "964e67733f49deac983725aa69175be5f45326220d64ba0fb84ce30406745480",
+   "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1d-B-pp-r2.sock",
+   "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W1d-B-pp-r2-2.sock",
+   "warmup": false,
+   "window": "W1d"
   },
   "W2-A-dec-r0": {
    "arm": "A",
@@ -793,13 +1182,13 @@
     },
     {
      "field": "derived_from",
-     "from": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/trial-managed-pool-38g-230k.json",
+     "from": "prod-config-port0218.json",
      "kind": "harness",
      "to": "<absent>"
     },
     {
      "field": "derived_note",
-     "from": "port-0218 test-window base on :8019: the champion measurement config with the engine, cwd, sockets, log and conversation-cache-dir repointed at the port tree, and --conversation-spill-mib 0 added (upstream spill tier off; the fork DISK tier under --conversation-cache-dir is this rig's only disk tier). Boots are the operator's, never the fixer's.",
+     "from": "PROMOTED 2026-11-24 (commit c511059c5c): the prod launcher defaults to this config and to run/port0218-nohuge-bin. The engine maps its 32 GiB RAM pool with MADV_NOHUGEPAGE (engine/src/core/ram_pool.cpp:243-252, gated by STRATA_POOL_NOHUGEPAGE, set to 1 below) because the recurring amdgpu no-retry permission fault hit host pages of that pool while the mapping was still present. Numerics gated byte-identical to the fork reference (journal/pool-nohuge-quality-gate-2026-11-24.md). Rollback: STRATA_PROD_BIN=$PWD/run/port0218-bin STRATA_PROD_CONFIG=$PWD/prod-config-port0218.json ./launch-prod-ud-iq3xxs-dflash-w4-q4_0-mixed.sh",
      "kind": "harness",
      "to": "<absent>"
     },
@@ -837,7 +1226,7 @@
    "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-dec-r0.engine.log",
    "pilot": false,
    "rep": 0,
-   "sha256": "33bc2fa24037fe94ef53b7087f30e74efcf335f3a9fffb972a411926bd5a361c",
+   "sha256": "ca67cd153f91aba1aafbece1308d019cde64952acec4cefe60ec8da0dc4e2809",
    "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-B-dec-r0.sock",
    "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-B-dec-r0-2.sock",
    "warmup": true,
@@ -857,13 +1246,13 @@
     },
     {
      "field": "derived_from",
-     "from": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/trial-managed-pool-38g-230k.json",
+     "from": "prod-config-port0218.json",
      "kind": "harness",
      "to": "<absent>"
     },
     {
      "field": "derived_note",
-     "from": "port-0218 test-window base on :8019: the champion measurement config with the engine, cwd, sockets, log and conversation-cache-dir repointed at the port tree, and --conversation-spill-mib 0 added (upstream spill tier off; the fork DISK tier under --conversation-cache-dir is this rig's only disk tier). Boots are the operator's, never the fixer's.",
+     "from": "PROMOTED 2026-11-24 (commit c511059c5c): the prod launcher defaults to this config and to run/port0218-nohuge-bin. The engine maps its 32 GiB RAM pool with MADV_NOHUGEPAGE (engine/src/core/ram_pool.cpp:243-252, gated by STRATA_POOL_NOHUGEPAGE, set to 1 below) because the recurring amdgpu no-retry permission fault hit host pages of that pool while the mapping was still present. Numerics gated byte-identical to the fork reference (journal/pool-nohuge-quality-gate-2026-11-24.md). Rollback: STRATA_PROD_BIN=$PWD/run/port0218-bin STRATA_PROD_CONFIG=$PWD/prod-config-port0218.json ./launch-prod-ud-iq3xxs-dflash-w4-q4_0-mixed.sh",
      "kind": "harness",
      "to": "<absent>"
     },
@@ -901,7 +1290,7 @@
    "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-dec-r1.engine.log",
    "pilot": false,
    "rep": 1,
-   "sha256": "0592b04c478a6061195b006bd832b2f393920caf76badd492695c31225fdc4bb",
+   "sha256": "c71069f9e9c2545398968bfdaf7edcdd71302eca40a1f9a6332170f199f3b894",
    "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-B-dec-r1.sock",
    "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-B-dec-r1-2.sock",
    "warmup": false,
@@ -921,13 +1310,13 @@
     },
     {
      "field": "derived_from",
-     "from": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/trial-managed-pool-38g-230k.json",
+     "from": "prod-config-port0218.json",
      "kind": "harness",
      "to": "<absent>"
     },
     {
      "field": "derived_note",
-     "from": "port-0218 test-window base on :8019: the champion measurement config with the engine, cwd, sockets, log and conversation-cache-dir repointed at the port tree, and --conversation-spill-mib 0 added (upstream spill tier off; the fork DISK tier under --conversation-cache-dir is this rig's only disk tier). Boots are the operator's, never the fixer's.",
+     "from": "PROMOTED 2026-11-24 (commit c511059c5c): the prod launcher defaults to this config and to run/port0218-nohuge-bin. The engine maps its 32 GiB RAM pool with MADV_NOHUGEPAGE (engine/src/core/ram_pool.cpp:243-252, gated by STRATA_POOL_NOHUGEPAGE, set to 1 below) because the recurring amdgpu no-retry permission fault hit host pages of that pool while the mapping was still present. Numerics gated byte-identical to the fork reference (journal/pool-nohuge-quality-gate-2026-11-24.md). Rollback: STRATA_PROD_BIN=$PWD/run/port0218-bin STRATA_PROD_CONFIG=$PWD/prod-config-port0218.json ./launch-prod-ud-iq3xxs-dflash-w4-q4_0-mixed.sh",
      "kind": "harness",
      "to": "<absent>"
     },
@@ -965,7 +1354,7 @@
    "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-dec-r2.engine.log",
    "pilot": false,
    "rep": 2,
-   "sha256": "b6b7cf55069a908563d12bed7bc0348b20b2881dfdf97cc8fafc984b9469d7b9",
+   "sha256": "7c65deb712b05dce35bf39baea70d41b0f17d0b855fa84df92e1233849aa05b4",
    "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-B-dec-r2.sock",
    "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-B-dec-r2-2.sock",
    "warmup": false,
@@ -985,13 +1374,13 @@
     },
     {
      "field": "derived_from",
-     "from": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/trial-managed-pool-38g-230k.json",
+     "from": "prod-config-port0218.json",
      "kind": "harness",
      "to": "<absent>"
     },
     {
      "field": "derived_note",
-     "from": "port-0218 test-window base on :8019: the champion measurement config with the engine, cwd, sockets, log and conversation-cache-dir repointed at the port tree, and --conversation-spill-mib 0 added (upstream spill tier off; the fork DISK tier under --conversation-cache-dir is this rig's only disk tier). Boots are the operator's, never the fixer's.",
+     "from": "PROMOTED 2026-11-24 (commit c511059c5c): the prod launcher defaults to this config and to run/port0218-nohuge-bin. The engine maps its 32 GiB RAM pool with MADV_NOHUGEPAGE (engine/src/core/ram_pool.cpp:243-252, gated by STRATA_POOL_NOHUGEPAGE, set to 1 below) because the recurring amdgpu no-retry permission fault hit host pages of that pool while the mapping was still present. Numerics gated byte-identical to the fork reference (journal/pool-nohuge-quality-gate-2026-11-24.md). Rollback: STRATA_PROD_BIN=$PWD/run/port0218-bin STRATA_PROD_CONFIG=$PWD/prod-config-port0218.json ./launch-prod-ud-iq3xxs-dflash-w4-q4_0-mixed.sh",
      "kind": "harness",
      "to": "<absent>"
     },
@@ -1029,7 +1418,7 @@
    "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-sht-r0.engine.log",
    "pilot": true,
    "rep": 0,
-   "sha256": "bc7ba40228a081c107d0cc544a1cc9c0e5bb1537bada0394d67f2b1f4c10ade6",
+   "sha256": "3adacd3c6f615d424eb7a5aa0ab13074089aa1d7453f98b5ab47650ebd96227c",
    "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-B-sht-r0.sock",
    "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-B-sht-r0-2.sock",
    "warmup": false,
@@ -1049,13 +1438,13 @@
     },
     {
      "field": "derived_from",
-     "from": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/trial-managed-pool-38g-230k.json",
+     "from": "prod-config-port0218.json",
      "kind": "harness",
      "to": "<absent>"
     },
     {
      "field": "derived_note",
-     "from": "port-0218 test-window base on :8019: the champion measurement config with the engine, cwd, sockets, log and conversation-cache-dir repointed at the port tree, and --conversation-spill-mib 0 added (upstream spill tier off; the fork DISK tier under --conversation-cache-dir is this rig's only disk tier). Boots are the operator's, never the fixer's.",
+     "from": "PROMOTED 2026-11-24 (commit c511059c5c): the prod launcher defaults to this config and to run/port0218-nohuge-bin. The engine maps its 32 GiB RAM pool with MADV_NOHUGEPAGE (engine/src/core/ram_pool.cpp:243-252, gated by STRATA_POOL_NOHUGEPAGE, set to 1 below) because the recurring amdgpu no-retry permission fault hit host pages of that pool while the mapping was still present. Numerics gated byte-identical to the fork reference (journal/pool-nohuge-quality-gate-2026-11-24.md). Rollback: STRATA_PROD_BIN=$PWD/run/port0218-bin STRATA_PROD_CONFIG=$PWD/prod-config-port0218.json ./launch-prod-ud-iq3xxs-dflash-w4-q4_0-mixed.sh",
      "kind": "harness",
      "to": "<absent>"
     },
@@ -1093,7 +1482,7 @@
    "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-sht-r1.engine.log",
    "pilot": false,
    "rep": 1,
-   "sha256": "6c850dcced52e203aea3ce3b24de80bda171944a7be4172689af9da80b8c7ce0",
+   "sha256": "0e0fd550a115002902afe83c4f05b1d704cce62cbd83e1477612d8076698f594",
    "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-B-sht-r1.sock",
    "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-B-sht-r1-2.sock",
    "warmup": false,
@@ -1113,13 +1502,13 @@
     },
     {
      "field": "derived_from",
-     "from": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/trial-managed-pool-38g-230k.json",
+     "from": "prod-config-port0218.json",
      "kind": "harness",
      "to": "<absent>"
     },
     {
      "field": "derived_note",
-     "from": "port-0218 test-window base on :8019: the champion measurement config with the engine, cwd, sockets, log and conversation-cache-dir repointed at the port tree, and --conversation-spill-mib 0 added (upstream spill tier off; the fork DISK tier under --conversation-cache-dir is this rig's only disk tier). Boots are the operator's, never the fixer's.",
+     "from": "PROMOTED 2026-11-24 (commit c511059c5c): the prod launcher defaults to this config and to run/port0218-nohuge-bin. The engine maps its 32 GiB RAM pool with MADV_NOHUGEPAGE (engine/src/core/ram_pool.cpp:243-252, gated by STRATA_POOL_NOHUGEPAGE, set to 1 below) because the recurring amdgpu no-retry permission fault hit host pages of that pool while the mapping was still present. Numerics gated byte-identical to the fork reference (journal/pool-nohuge-quality-gate-2026-11-24.md). Rollback: STRATA_PROD_BIN=$PWD/run/port0218-bin STRATA_PROD_CONFIG=$PWD/prod-config-port0218.json ./launch-prod-ud-iq3xxs-dflash-w4-q4_0-mixed.sh",
      "kind": "harness",
      "to": "<absent>"
     },
@@ -1157,7 +1546,7 @@
    "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W2-B-sht-r2.engine.log",
    "pilot": false,
    "rep": 2,
-   "sha256": "682faa23511804a010b0ed1641574daf98020f48de7536c6c22c91239d841378",
+   "sha256": "2563806aa1259166c6908c342369d75ed5c18730f36ee71d7d8311dae3fc2fb6",
    "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-B-sht-r2.sock",
    "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W2-B-sht-r2-2.sock",
    "warmup": false,
@@ -1333,13 +1722,13 @@
     },
     {
      "field": "derived_from",
-     "from": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/trial-managed-pool-38g-230k.json",
+     "from": "prod-config-port0218.json",
      "kind": "harness",
      "to": "<absent>"
     },
     {
      "field": "derived_note",
-     "from": "port-0218 test-window base on :8019: the champion measurement config with the engine, cwd, sockets, log and conversation-cache-dir repointed at the port tree, and --conversation-spill-mib 0 added (upstream spill tier off; the fork DISK tier under --conversation-cache-dir is this rig's only disk tier). Boots are the operator's, never the fixer's.",
+     "from": "PROMOTED 2026-11-24 (commit c511059c5c): the prod launcher defaults to this config and to run/port0218-nohuge-bin. The engine maps its 32 GiB RAM pool with MADV_NOHUGEPAGE (engine/src/core/ram_pool.cpp:243-252, gated by STRATA_POOL_NOHUGEPAGE, set to 1 below) because the recurring amdgpu no-retry permission fault hit host pages of that pool while the mapping was still present. Numerics gated byte-identical to the fork reference (journal/pool-nohuge-quality-gate-2026-11-24.md). Rollback: STRATA_PROD_BIN=$PWD/run/port0218-bin STRATA_PROD_CONFIG=$PWD/prod-config-port0218.json ./launch-prod-ud-iq3xxs-dflash-w4-q4_0-mixed.sh",
      "kind": "harness",
      "to": "<absent>"
     },
@@ -1377,7 +1766,7 @@
    "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W3-B-pp-r0.engine.log",
    "pilot": false,
    "rep": 0,
-   "sha256": "6ee6e9e4c9aad2f4bc54656817180f9cc19245847bcbefd586fc50999381939f",
+   "sha256": "589d5d9fee998f0acdc69841851ce4bd622c6fa85905f4ef16dd362463bb4a70",
    "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W3-B-pp-r0.sock",
    "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W3-B-pp-r0-2.sock",
    "warmup": true,
@@ -1397,13 +1786,13 @@
     },
     {
      "field": "derived_from",
-     "from": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/trial-managed-pool-38g-230k.json",
+     "from": "prod-config-port0218.json",
      "kind": "harness",
      "to": "<absent>"
     },
     {
      "field": "derived_note",
-     "from": "port-0218 test-window base on :8019: the champion measurement config with the engine, cwd, sockets, log and conversation-cache-dir repointed at the port tree, and --conversation-spill-mib 0 added (upstream spill tier off; the fork DISK tier under --conversation-cache-dir is this rig's only disk tier). Boots are the operator's, never the fixer's.",
+     "from": "PROMOTED 2026-11-24 (commit c511059c5c): the prod launcher defaults to this config and to run/port0218-nohuge-bin. The engine maps its 32 GiB RAM pool with MADV_NOHUGEPAGE (engine/src/core/ram_pool.cpp:243-252, gated by STRATA_POOL_NOHUGEPAGE, set to 1 below) because the recurring amdgpu no-retry permission fault hit host pages of that pool while the mapping was still present. Numerics gated byte-identical to the fork reference (journal/pool-nohuge-quality-gate-2026-11-24.md). Rollback: STRATA_PROD_BIN=$PWD/run/port0218-bin STRATA_PROD_CONFIG=$PWD/prod-config-port0218.json ./launch-prod-ud-iq3xxs-dflash-w4-q4_0-mixed.sh",
      "kind": "harness",
      "to": "<absent>"
     },
@@ -1441,7 +1830,7 @@
    "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W3-B-pp-r1.engine.log",
    "pilot": false,
    "rep": 1,
-   "sha256": "bce11f73e64679167707259e3300b6e24afcf0294a01108e19962caf214f078b",
+   "sha256": "1fd70bfa095497cd760f0d87c08133780a3d64bda0fddba98bc6f14a0ece4480",
    "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W3-B-pp-r1.sock",
    "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W3-B-pp-r1-2.sock",
    "warmup": false,
@@ -1461,13 +1850,13 @@
     },
     {
      "field": "derived_from",
-     "from": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/trial-managed-pool-38g-230k.json",
+     "from": "prod-config-port0218.json",
      "kind": "harness",
      "to": "<absent>"
     },
     {
      "field": "derived_note",
-     "from": "port-0218 test-window base on :8019: the champion measurement config with the engine, cwd, sockets, log and conversation-cache-dir repointed at the port tree, and --conversation-spill-mib 0 added (upstream spill tier off; the fork DISK tier under --conversation-cache-dir is this rig's only disk tier). Boots are the operator's, never the fixer's.",
+     "from": "PROMOTED 2026-11-24 (commit c511059c5c): the prod launcher defaults to this config and to run/port0218-nohuge-bin. The engine maps its 32 GiB RAM pool with MADV_NOHUGEPAGE (engine/src/core/ram_pool.cpp:243-252, gated by STRATA_POOL_NOHUGEPAGE, set to 1 below) because the recurring amdgpu no-retry permission fault hit host pages of that pool while the mapping was still present. Numerics gated byte-identical to the fork reference (journal/pool-nohuge-quality-gate-2026-11-24.md). Rollback: STRATA_PROD_BIN=$PWD/run/port0218-bin STRATA_PROD_CONFIG=$PWD/prod-config-port0218.json ./launch-prod-ud-iq3xxs-dflash-w4-q4_0-mixed.sh",
      "kind": "harness",
      "to": "<absent>"
     },
@@ -1505,7 +1894,7 @@
    "engine_log": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W3-B-pp-r2.engine.log",
    "pilot": false,
    "rep": 2,
-   "sha256": "75624800efe0493b7955bc1494a8f4e72622607df91c3bdadeb89d86ec5fb83f",
+   "sha256": "f83818139ced7a13622ec1fcf01d15b32f1c6542d9b2fd5c1e65369de4fd2af4",
    "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W3-B-pp-r2.sock",
    "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W3-B-pp-r2-2.sock",
    "warmup": false,
@@ -1634,13 +2023,13 @@
     },
     {
      "field": "derived_from",
-     "from": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/trial-managed-pool-38g-230k.json",
+     "from": "prod-config-port0218.json",
      "kind": "harness",
      "to": "<absent>"
     },
     {
      "field": "derived_note",
-     "from": "port-0218 test-window base on :8019: the champion measurement config with the engine, cwd, sockets, log and conversation-cache-dir repointed at the port tree, and --conversation-spill-mib 0 added (upstream spill tier off; the fork DISK tier under --conversation-cache-dir is this rig's only disk tier). Boots are the operator's, never the fixer's.",
+     "from": "PROMOTED 2026-11-24 (commit c511059c5c): the prod launcher defaults to this config and to run/port0218-nohuge-bin. The engine maps its 32 GiB RAM pool with MADV_NOHUGEPAGE (engine/src/core/ram_pool.cpp:243-252, gated by STRATA_POOL_NOHUGEPAGE, set to 1 below) because the recurring amdgpu no-retry permission fault hit host pages of that pool while the mapping was still present. Numerics gated byte-identical to the fork reference (journal/pool-nohuge-quality-gate-2026-11-24.md). Rollback: STRATA_PROD_BIN=$PWD/run/port0218-bin STRATA_PROD_CONFIG=$PWD/prod-config-port0218.json ./launch-prod-ud-iq3xxs-dflash-w4-q4_0-mixed.sh",
      "kind": "harness",
      "to": "<absent>"
     },
@@ -1679,7 +2068,7 @@
    "pilot": false,
    "rep": 1,
    "server_arm": "A",
-   "sha256": "ffa1a9a7470aa0788fdfbe84dfadb8625421765c497c47b0bc9163ecb8f2be41",
+   "sha256": "a613883a699a5b4e39fada66e93e6fe622dbfa56c077a7f41ee2f8a3a615bf3f",
    "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W4-B-dec-r1.sock",
    "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W4-B-dec-r1-2.sock",
    "warmup": false,
@@ -1700,13 +2089,13 @@
     },
     {
      "field": "derived_from",
-     "from": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/trial-managed-pool-38g-230k.json",
+     "from": "prod-config-port0218.json",
      "kind": "harness",
      "to": "<absent>"
     },
     {
      "field": "derived_note",
-     "from": "port-0218 test-window base on :8019: the champion measurement config with the engine, cwd, sockets, log and conversation-cache-dir repointed at the port tree, and --conversation-spill-mib 0 added (upstream spill tier off; the fork DISK tier under --conversation-cache-dir is this rig's only disk tier). Boots are the operator's, never the fixer's.",
+     "from": "PROMOTED 2026-11-24 (commit c511059c5c): the prod launcher defaults to this config and to run/port0218-nohuge-bin. The engine maps its 32 GiB RAM pool with MADV_NOHUGEPAGE (engine/src/core/ram_pool.cpp:243-252, gated by STRATA_POOL_NOHUGEPAGE, set to 1 below) because the recurring amdgpu no-retry permission fault hit host pages of that pool while the mapping was still present. Numerics gated byte-identical to the fork reference (journal/pool-nohuge-quality-gate-2026-11-24.md). Rollback: STRATA_PROD_BIN=$PWD/run/port0218-bin STRATA_PROD_CONFIG=$PWD/prod-config-port0218.json ./launch-prod-ud-iq3xxs-dflash-w4-q4_0-mixed.sh",
      "kind": "harness",
      "to": "<absent>"
     },
@@ -1745,7 +2134,7 @@
    "pilot": false,
    "rep": 2,
    "server_arm": "A",
-   "sha256": "0e43802c310b36d7e28e84b92e87849a266214639ea61fb99de992bec1a6ca6e",
+   "sha256": "9da2205f64c37a828439ee6f012e4f881df1341494a9bd5ed75b219e74ffed16",
    "socket": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W4-B-dec-r2.sock",
    "socket2": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/run/pa-W4-B-dec-r2-2.sock",
    "warmup": false,
@@ -1764,7 +2153,7 @@
    "path": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/pp239k.ctx323200.bin",
    "sha256": "210b16b32b8658e68b863442d3c2d9ebde7eb3c9d50b0cea8c28e7d045c0ea68",
    "shape": "pp239k",
-   "tokens_expected": 239663,
+   "tokens_expected": 58423,
    "use": "W1 prefill rate, W3 prefill half of the 240k decode leg"
   },
   {
@@ -1845,7 +2234,7 @@
     "<sock2>"
    ],
    "B": [
-    "/mnt/srcds/Strata/run/port0218-bin/rpcw-cuda/strata-expert-helper",
+    "/mnt/srcds/Strata/run/port0218-nohuge-bin/rpcw-cuda/strata-expert-helper",
     "--pack",
     "/mnt/srcds/ai/iq3xxs-ud",
     "--experts",
@@ -1919,15 +2308,15 @@
   }
  },
  "git_branch": "recovery-startup-watchdog",
- "git_head_at_prepare": "81e34c065ff706b668bf40787036515a5c8949b2",
+ "git_head_at_prepare": "9cfd5f716284e58097f7308d2232038802969586",
  "harness_script_shas": {
   "port_ab_boot.sh": "80b4848e3e6142abf65a315007a67f45f84f252537af7d0b51500aea6fb66e13",
-  "port_ab_boot_plan.py": "e17befa8c8c7c42b0bc85e90001fe772e1ba1970779bbcce847f7c294a75b25a",
-  "port_ab_configs.py": "5b72653b69be523b7fdab28ed93ff46b777e56c39237e010f1845857e5fee289",
-  "port_ab_contract.py": "e801f2ac876c556d8bf8d88453207019e9be328d81d4c138925ffa9155cecea6",
-  "port_ab_legs.py": "103ada991841260fc62994494c5ff569aee2d3b67945f4ef677820e2e33c2a92",
+  "port_ab_boot_plan.py": "0430ff36f10c6bc9cc409c2d5040c50f37fccfacb43759f8fd0b890f091a2fdc",
+  "port_ab_configs.py": "e7f85276588534d9d4dc9f2d754c651a49e12f5b7b81fd970a1a6fe4307b4b53",
+  "port_ab_contract.py": "5416c765acfe3fe03389441b64cf05bdf436481d69b22ed872c01ac8e4ed2253",
+  "port_ab_legs.py": "1ff2dc3347083781e9816173823dc64646719d73f9c0ba9289eb05221554a743",
   "port_ab_preflight.py": "3d8b4bafcafb5cd75ed932a8161dd7f5758141fbc5d3943c2cddbcc43253d90b",
-  "port_ab_prepare.py": "749fcc4ef17e0c1bda6849e773e91046a1671e6b5092353fcde327a9209906ef",
+  "port_ab_prepare.py": "2fe3df970fb395eb90687f9336f5a8d80d89d55da944d2d3e83b25cfc15ebd84",
   "port_ab_prereq0.py": "d147d876a94aaf6395e6883f1a9f07faecd11680a38d5eea1f12912ae58c875c",
   "port_ab_stop.sh": "e490afbc386f12b32e37cc3cabbb20771147bd41d48b1bd3eb4fc1d7f359317f",
   "port_ab_ttft.py": "8dd1de272cb193145439743d82cbac5610a439f6eb1e024f6202dcdf1bad206b"
@@ -2011,8 +2400,8 @@
     "engine": {
      "accepted_flag_literals": 226,
      "arm": "B",
-     "path": "run/port0218-bin/rpcw-hip/strata",
-     "sha256": "936efcc798aab3952551281f2f328c1b8b19311fee9d0298142e702809a58394"
+     "path": "run/port0218-nohuge-bin/rpcw-hip/strata",
+     "sha256": "15d330ea4d0eec4ca64ef3973e52d332253a981c25dde42b70567bf8b3ae7577"
     },
     "reason": "every flag the server emits (config args + its own additions) is a literal in this engine binary",
     "server": {
@@ -2105,8 +2494,8 @@
     "engine": {
      "accepted_flag_literals": 226,
      "arm": "B",
-     "path": "run/port0218-bin/rpcw-hip/strata",
-     "sha256": "936efcc798aab3952551281f2f328c1b8b19311fee9d0298142e702809a58394"
+     "path": "run/port0218-nohuge-bin/rpcw-hip/strata",
+     "sha256": "15d330ea4d0eec4ca64ef3973e52d332253a981c25dde42b70567bf8b3ae7577"
     },
     "reason": "every flag the server emits (config args + its own additions) is a literal in this engine binary",
     "server": {
@@ -2203,7 +2592,7 @@
    "resolution": "per-engine configs (A without the flag, B with '0'); both cross cells then boot, and 'no spill' holds in both"
   }
  },
- "prepared_at": "2026-11-23T21:26:44",
+ "prepared_at": "2026-11-24T12:15:37",
  "prerequisite0": {
   "cache_free_gib_min": 40,
   "command": "python3 bench/ab-v0210/rpcprof/port_ab_prereq0.py --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123",
@@ -2326,14 +2715,180 @@
      "kind": "prefill",
      "max_tokens": 8,
      "metric": "read_tps from the single fresh request",
-     "tokens_expected": 239663,
+     "tokens_expected": 58423,
      "turns": null
     }
    },
    "legs_per_boot": {
     "pp": 1
    },
+   "margins": "explicit",
    "name": "prefill rate, 239,663-token frozen corpus",
+   "pilot": null,
+   "schedule": [
+    {
+     "arm": "A",
+     "boot": "pp",
+     "group": "warmup",
+     "pilot": false,
+     "rep": 0,
+     "shapes": [
+      "pp239k"
+     ],
+     "warmup": true
+    },
+    {
+     "arm": "B",
+     "boot": "pp",
+     "group": "warmup",
+     "pilot": false,
+     "rep": 0,
+     "shapes": [
+      "pp239k"
+     ],
+     "warmup": true
+    },
+    {
+     "arm": "A",
+     "boot": "pp",
+     "group": "pp",
+     "pilot": false,
+     "rep": 1,
+     "shapes": [
+      "pp239k"
+     ]
+    },
+    {
+     "arm": "B",
+     "boot": "pp",
+     "group": "pp",
+     "pilot": false,
+     "rep": 1,
+     "shapes": [
+      "pp239k"
+     ]
+    },
+    {
+     "arm": "B",
+     "boot": "pp",
+     "group": "pp",
+     "pilot": false,
+     "rep": 2,
+     "shapes": [
+      "pp239k"
+     ]
+    },
+    {
+     "arm": "A",
+     "boot": "pp",
+     "group": "pp",
+     "pilot": false,
+     "rep": 2,
+     "shapes": [
+      "pp239k"
+     ]
+    }
+   ],
+   "warmup_boots": 2
+  },
+  "W1d": {
+   "boot_groups": {
+    "pp": [
+     "pp239k"
+    ]
+   },
+   "boots": {
+    "claim": 4,
+    "total": 6,
+    "warmup": 2
+   },
+   "boots_per_arm": 2,
+   "boots_per_cell": null,
+   "budget_derivation": {
+    "boots": {
+     "claim": 4,
+     "total": 6,
+     "warmup": 2
+    },
+    "note": "inherits W1's anchors; a default-margins boot has no separate speed anchor and must not be given one before it is measured",
+    "range_s": [
+     5220,
+     8700
+    ],
+    "terms": "6 boots x (239,663 prefill leg + boot) = 4 claim (2 per arm) + 2 warmup; same shape as W1 (engine-default margins change the boot, not the leg)"
+   },
+   "budget_h": [
+    1.45,
+    2.42
+   ],
+   "budget_s": [
+    5220,
+    8700
+   ],
+   "budget_source": "derived at harness-prep from the contract's measured anchors, including the discarded first-touch boots",
+   "claim": "descriptive only at n=2/arm (per-leg rates, ranges, memory, an UNCONFIRMED direction); any confirm / no-difference / within-delta statement needs a follow-up window at n>=3 - see the top-level claim block",
+   "contract_budget_h": [
+    1.5,
+    2.5
+   ],
+   "contract_budget_s": [
+    5400,
+    9000
+   ],
+   "decode_warmup": null,
+   "delta": 0.05,
+   "delta_note": "W1's pre-registered 5 % prefill delta is kept for reference only: W1d is a separate, descriptive-only window (n=2/arm, and the boot differs in more than the reserves)",
+   "gate_metric": "read_tps",
+   "interleave": [
+    "W1d-A-pp-r0",
+    "W1d-B-pp-r0",
+    "W1d-A-pp-r1",
+    "W1d-B-pp-r1",
+    "W1d-B-pp-r2",
+    "W1d-A-pp-r2"
+   ],
+   "legs": {
+    "pp239k": {
+     "boot_group": "pp",
+     "bytes": 323200,
+     "command_A": "python3 /mnt/srcds/Strata/bench/ab-v0210/rpcprof/ab9_driver.py --arm A --leg pp239k --kind prefill --ctx 323200 --max-tokens 8 --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/records/W1d-A-pp-r1 --elog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1d-A-pp-r1.engine.log --hlog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1d-A-pp-r1-helper.log --url http://127.0.0.1:8009/v1/chat/completions --prompt-file /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/pp239k.ctx323200.bin --prompt-sha256 210b16b32b8658e68b863442d3c2d9ebde7eb3c9d50b0cea8c28e7d045c0ea68 --request-template /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/request-template.json --request-template-sha256 1367e0c041b3e7e6abceef27587f9ffbb8ff1d8b2ea4cc7d0141d9e945a18abd --timeout 5400 --champs-shape pp239k --champs-pair 0 --champs-measured   # --engine-pid is added by --run",
+     "command_B": "python3 /mnt/srcds/Strata/bench/ab-v0210/rpcprof/ab9_driver.py --arm B --leg pp239k --kind prefill --ctx 323200 --max-tokens 8 --out /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/records/W1d-B-pp-r1 --elog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1d-B-pp-r1.engine.log --hlog /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/logs/W1d-B-pp-r1-helper.log --url http://127.0.0.1:8009/v1/chat/completions --prompt-file /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/pp239k.ctx323200.bin --prompt-sha256 210b16b32b8658e68b863442d3c2d9ebde7eb3c9d50b0cea8c28e7d045c0ea68 --request-template /mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/request-template.json --request-template-sha256 1367e0c041b3e7e6abceef27587f9ffbb8ff1d8b2ea4cc7d0141d9e945a18abd --timeout 5400 --champs-shape pp239k --champs-pair 0 --champs-measured   # --engine-pid is added by --run",
+     "corpus": "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/port-ab-20261123/corpus/pp239k.ctx323200.bin",
+     "corpus_sha256": "210b16b32b8658e68b863442d3c2d9ebde7eb3c9d50b0cea8c28e7d045c0ea68",
+     "delta_key": null,
+     "expected_engine_lines": [
+      "strata serve: prompt (\\d+) tokens = (\\d+) reused \\+ (\\d+)(?: of (\\d+))? read in (\\d+) ms \\(([\\d.]+) tok/s\\), (\\d+) generated in (\\d+) ms \\(([\\d.]+) tok/s\\)",
+      "drafts accepted (\\d+) of (\\d+), (\\d+) checkpoints helper=reqs=(\\d+) rows=(\\d+) bytes=(\\d+) timeouts=(\\d+) fallbacks=(\\d+)",
+      "dflash: .* trained block (\\d+)",
+      "engine started: ",
+      "expert-helper: (\\d+) rows on .* \\(mirrored \\d+/\\d+ slots, ([\\d.]+) GiB",
+      "expert-helper proxy: (\\d+) experts on .* \\(fill report\\)",
+      "strata generate: expert cache (\\d+) slots",
+      "layer split: .* runs layers 30-47",
+      "foresight swap: .*granted (\\d+) slots.*leaving (\\d+) MiB",
+      " - LOW:",
+      "pair supervisor:.*(restart|recovered|recovering|exited)"
+     ],
+     "gates": [
+      "judge line present with reused == 0 (cold prompt, no cache reuse)",
+      "served prompt-N equal across arms for the same shape (truncation guard)",
+      "no non-finite logits; no GPU memory-access fault; no supervisor restart in the boot",
+      "the engine's own 'engine started:' line carries the frozen tuple (parsed flag/value pairs: spec 5, reserves 256/192, dflash-block 7, helper slots 4,600)",
+      "the helper's boot line reports a fill inside the frozen band, and the arms' fills differ by no more than the band's drift limit",
+      "engine-default margins (operator directive 2026-11-23 23:00): --vram-reserve-mib and --vram-reserve-later-mib must be ABSENT from the engine boot line - a reserve flag here means the wrong boot"
+     ],
+     "kind": "prefill",
+     "max_tokens": 8,
+     "metric": "read_tps from the single fresh request",
+     "tokens_expected": 58423,
+     "turns": null
+    }
+   },
+   "legs_per_boot": {
+    "pp": 1
+   },
+   "margins": "engine-default",
+   "name": "prefill rate, 239,663-token frozen corpus, engine-default VRAM margins (operator-directed rerun of W1)",
    "pilot": null,
    "schedule": [
     {
@@ -2617,6 +3172,7 @@
     "dec": 1,
     "sht": 3
    },
+   "margins": "explicit",
    "name": "144k decode + short-PP 2k/8k + 3-turn TTFT",
    "pilot": {
     "boots_per_arm": 1,
@@ -2868,13 +3424,14 @@
      "kind": "tg",
      "max_tokens": 1024,
      "metric": "request 2 gen_tps (cached re-run); request 1 read_tps recorded",
-     "tokens_expected": 239663,
+     "tokens_expected": 58423,
      "turns": null
     }
    },
    "legs_per_boot": {
     "pp": 1
    },
+   "margins": "explicit",
    "name": "240k decode (each boot carries its own 239,663 prefill)",
    "pilot": null,
    "schedule": [
@@ -3029,6 +3586,7 @@
    "legs_per_boot": {
     "dec": 1
    },
+   "margins": "explicit",
    "name": "2x2 engine x server cell (veto-only)",
    "pilot": null,
    "schedule": [
