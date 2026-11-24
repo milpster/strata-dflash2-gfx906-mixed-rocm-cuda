@@ -363,6 +363,64 @@
    "purpose": "Is the park path necessary for the fault? (parking truly OFF: mib 0, no dir, no idle-save)",
    "sha256": "f4f91dc367ac02d6fd661662eb0ce278cba845e00e896a7a6a2e1dd84c3d22f1"
   },
+  "pool-nohuge": {
+   "absent": [
+    "strata: RAM pool: WARNING: MADV_NOHUGEPAGE"
+   ],
+   "cannot_exclude": "the probe changed four kernel knobs at once (THP enabled, THP defrag, khugepaged defrag, compaction proactiveness, swappiness), so the experiment implicates THP/compaction without separating collapse from split from compaction migration; and this leg's knob covers the POOL only - other registered ranges (prefill ring slots, PLE host buffers, helper staging) keep the kernel's THP policy, so a fault that moves to those buffers would look like 'still faulting'",
+   "diff_from_base": {
+    "args/--conversation-cache-dir": [
+     "/mnt/srcds/Strata/run/prod-port0218-cache",
+     "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/faultdiff-r1/cache/pool-nohuge"
+    ],
+    "derived_from": [
+     "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/trial-managed-pool-38g-230k.json",
+     "<absent>"
+    ],
+    "derived_note": [
+     "port-0218 test-window base on :8019: the champion measurement config with the engine, cwd, sockets, log and conversation-cache-dir repointed at the port tree, and --conversation-spill-mib 0 added (upstream spill tier off; the fork DISK tier under --conversation-cache-dir is this rig's only disk tier). Boots are the operator's, never the fixer's.",
+     "<absent>"
+    ],
+    "env/STRATA_POOL_NOHUGEPAGE": [
+     "<absent>",
+     "1"
+    ],
+    "expert_helper_socket": [
+     "/mnt/srcds/Strata/run/prod-iq3xxs-ud-mixed.sock",
+     "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/faultdiff-r1/run/fd-pool-nohuge.sock"
+    ],
+    "expert_helper_socket2": [
+     "/mnt/srcds/Strata/run/prod-iq3xxs-ud-mixed2.sock",
+     "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/faultdiff-r1/run/fd-pool-nohuge-2.sock"
+    ],
+    "log": [
+     "/mnt/srcds/Strata/logs/engine-prod-port0218.log",
+     "/mnt/srcds/Strata/bench/ab-v0210/rpcprof/out/faultdiff-r1/logs/pool-nohuge.engine.log"
+    ],
+    "managed_budget_mib": [
+     "40960",
+     "<absent>"
+    ],
+    "trial_note": [
+     "<base note>",
+     "<leg note>"
+    ]
+   },
+   "file": "pool-nohuge.json",
+   "narrows": "THP collapse/split of the pool as the trigger: with the advice in place no 2 MiB page of the pool exists, so khugepaged cannot rewrite the CPU page tables under the registered range while the copy engine reads it. Measured basis (2026-11-24): the faulting VA of the 00:49:26 fault sat inside this pool's 32.0 GiB anonymous VMA while that VMA was still mapped (bench/fault-va/maps_sampler.sh), and with THP/compaction switched off system-wide, four fresh boots completed the same 58,423-token prefill with zero faults and AnonHugePages 0 kB",
+   "observe": [
+    "the boot's own line 'strata: RAM pool: N MiB (N bytes) mapping: transparent huge pages off (MADV_NOHUGEPAGE; STRATA_POOL_NOHUGEPAGE)' - that line IS the assertion that the knob fired; a boot without it has not applied the leg",
+    "the engine's per-process AnonHugePages over the leg (grep AnonHugePages /proc/<engine>/smaps_rollup): expected 0 kB for the pool; a non-zero value on a fresh boot means some other mapping, and the maps sampler is what localizes it",
+    "the kernel slice's fault class and the boot's survivability against the base's ~4.5-minute window at matched exposure (one cold 58,423-token prefill)",
+    "the memory shape beside the result: MemAvailable, swap used, per-card VRAM - the knob costs no memory, so a delta there is a confound to name"
+   ],
+   "present": [
+    "engine started: .*--serve ",
+    "strata: RAM pool: .* mapping: transparent huge pages off"
+   ],
+   "purpose": "Does keeping TRANSPARENT HUGE PAGES out of the 32 GiB RAM pool mapping stop the fault? (STRATA_POOL_NOHUGEPAGE=1: MADV_NOHUGEPAGE on the pool's own mapping)",
+   "sha256": "b3d4028711299cfcbf12e9499ad9fd40a959c936b096efbc96d73f8c674a1d41"
+  },
   "single-card-0": {
    "absent": [
     "layer split across GPUs",

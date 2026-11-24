@@ -16,9 +16,11 @@ n=0
 while kill -0 "$PID" 2>/dev/null; do
   ts=$(date +%s)
   { echo "# pid=$PID ts=$ts iso=$(date -Is)"; cat "/proc/$PID/maps" 2>/dev/null; } > "$OUT/maps-$ts.txt" 2>/dev/null || true
-  { echo "# pid=$PID ts=$ts"; grep -E '^(Rss|Pss|Anonymous|Shared_Clean|Shared_Dirty|Private_Clean|Private_Dirty|Swap):' "/proc/$PID/smaps_rollup" 2>/dev/null; } > "$OUT/rollup-$ts.txt" 2>/dev/null || true
+  # AnonHugePages/ShmemHugePages are the THP evidence: the journal found the 1.27 GiB
+  # fault-time figure was uncorroborated because this list omitted them.
+  { echo "# pid=$PID ts=$ts"; grep -E '^(Rss|Pss|Anonymous|AnonHugePages|ShmemHugePages|Shared_Clean|Shared_Dirty|Private_Clean|Private_Dirty|Swap):' "/proc/$PID/smaps_rollup" 2>/dev/null; } > "$OUT/rollup-$ts.txt" 2>/dev/null || true
   n=$((n+1))
-  if [ "$n" -gt "$KEEP" ]; then rm -f "$(ls -1 "$OUT"/maps-*.txt | head -1)" "$(ls -1 "$OUT"/rollup-*.txt | head -1)" 2>/dev/null || true; fi
+  if [ "$n" -gt "$KEEP" ]; then rm -f "$(find "$OUT" -maxdepth 1 -name 'maps-*.txt' -print -quit)" "$(find "$OUT" -maxdepth 1 -name 'rollup-*.txt' -print -quit)" 2>/dev/null || true; fi
   sleep "$IV"
 done
 echo "sampler: pid $PID gone; $n snapshots in $OUT"

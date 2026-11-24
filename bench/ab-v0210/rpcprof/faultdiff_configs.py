@@ -79,7 +79,7 @@ DROP_KEYS = ("derived_from", "derived_note", "managed_budget_mib")
 
 LEG_ORDER = ("default-margins", "parking-off", "park-on-no-evict", "dflash-off",
              "single-card-0", "single-card-1", "xnack-1", "xnack-0", "arena-mlock",
-             "pageable-h2d")
+             "pageable-h2d", "pool-nohuge")
 
 # The legs whose one lever is an engine environment key: leg -> (key, value). The two new
 # knobs parse differently on purpose: STRATA_ARENA_MLOCK is on for ANY value (a presence test,
@@ -91,6 +91,7 @@ ENV_LEVER = {
     "xnack-0": ("HSA_XNACK", "0"),
     "arena-mlock": ("STRATA_ARENA_MLOCK", "1"),
     "pageable-h2d": ("STRATA_TEST_PAGEABLE", "1"),
+    "pool-nohuge": ("STRATA_POOL_NOHUGEPAGE", "1"),
 }
 
 
@@ -450,6 +451,36 @@ LEGS = {
                     "the absence of any 'strata: pinned upload of N bytes failed' / 'upload of N bytes failed' line",
                     "exposure (requests, tokens, parks) and the decode rate, recorded as NOT comparable with the "
                     "base's: every staged upload waits for its stream"],
+    },
+    "pool-nohuge": {
+        "purpose": "Does keeping TRANSPARENT HUGE PAGES out of the 32 GiB RAM pool mapping stop the fault? "
+                   "(STRATA_POOL_NOHUGEPAGE=1: MADV_NOHUGEPAGE on the pool's own mapping)",
+        "narrows": "THP collapse/split of the pool as the trigger: with the advice in place no 2 MiB page of the "
+                   "pool exists, so khugepaged cannot rewrite the CPU page tables under the registered range while "
+                   "the copy engine reads it. Measured basis (2026-11-24): the faulting VA of the 00:49:26 fault sat "
+                   "inside this pool's 32.0 GiB anonymous VMA while that VMA was still mapped "
+                   "(bench/fault-va/maps_sampler.sh), and with THP/compaction switched off system-wide, four fresh "
+                   "boots completed the same 58,423-token prefill with zero faults and AnonHugePages 0 kB",
+        "cannot_exclude": "the probe changed four kernel knobs at once (THP enabled, THP defrag, khugepaged defrag, "
+                          "compaction proactiveness, swappiness), so the experiment implicates THP/compaction "
+                          "without separating collapse from split from compaction migration; and this leg's knob "
+                          "covers the POOL only - other registered ranges (prefill ring slots, PLE host buffers, "
+                          "helper staging) keep the kernel's THP policy, so a fault that moves to those buffers "
+                          "would look like 'still faulting'",
+        "declared": [("env/STRATA_POOL_NOHUGEPAGE", "<absent>", "1")],
+        "present": [r"engine started: .*--serve ",
+                    r"strata: RAM pool: .* mapping: transparent huge pages off"],
+        "absent": [r"strata: RAM pool: WARNING: MADV_NOHUGEPAGE"],
+        "observe": ["the boot's own line 'strata: RAM pool: N MiB (N bytes) mapping: transparent huge pages off "
+                    "(MADV_NOHUGEPAGE; STRATA_POOL_NOHUGEPAGE)' - that line IS the assertion that the knob fired; "
+                    "a boot without it has not applied the leg",
+                    "the engine's per-process AnonHugePages over the leg (grep AnonHugePages "
+                    "/proc/<engine>/smaps_rollup): expected 0 kB for the pool; a non-zero value on a fresh boot "
+                    "means some other mapping, and the maps sampler is what localizes it",
+                    "the kernel slice's fault class and the boot's survivability against the base's ~4.5-minute "
+                    "window at matched exposure (one cold 58,423-token prefill)",
+                    "the memory shape beside the result: MemAvailable, swap used, per-card VRAM - the knob costs no "
+                    "memory, so a delta there is a confound to name"],
     },
 }
 
