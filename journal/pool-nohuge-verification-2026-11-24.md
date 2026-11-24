@@ -113,6 +113,43 @@ experiment — `page_stability.sh stable`, four boots at 00:57:50 / 01:04:26 / 0
    and carries a `212588 ms` judge line — the previous run's, inherited through the appended elog. That is the cycle
    that died with `-6`; the record-stamp and elog-offset fix in `674a1cf0ca`/its amend is the repair.
 
+## 6. The mixed-workload soak that followed
+
+The same patched binary was then booted once more (**03:02:25**, sha `15d330ea4d0eec4c`; the boot repeats the rig-pin
+override warning, `/tmp/opencode/mixed-boot.log:3`) and driven with `--load --minutes 20`: two conversations
+alternating at **80,000 and 16,000** tokens, one request in flight (`faultdiff_run.py:750-775`), so every switch parks
+one and restores the other. The engine's start line is `2026-11-24 03:02:27` (elog 515); the watcher's last line,
+six seconds before the memory sample, read `engine 1047021 up 1427s`; the last log write is 03:26:45, **1,458 s
+after the start line**, and the leg closed at 03:27:44 (`run/pool-nohuge.state.json`: `ran_s` 1519.7, teardown
+included) — against the 251–282 s at which the historic faults landed (§4).
+
+| what | value | source |
+|---|---|---|
+| requests | 16 `tg`, `max_tokens 1024`, ctx alternating 80,000 / 16,000 | `records/pool-nohuge/load/faultdiff-pool-nohuge-n{1..16}.json` |
+| decode (request 2 of each) | **10.3–25.6 s** per request, **277.5 s** total | `walls[1]` in those records |
+| prefill (request 1 of each) | 35.5–88.6 s | `walls[0]` |
+| parks / restores | 15 / 16 | `grep -c 'parked [0-9]* tokens'`, `grep -c restored` on the elog |
+| faults | 0 / 0 | `journalctl -k --since '2026-11-24 03:00'`: `grep -c 'no-retry page fault'` 0, `grep -c 'GPU reset begin'` 0 |
+| at stop, engine alive (03:26:20) | `VmRSS 42,337,732 kB` (40.4 GiB), `AnonHugePages 3,778,560 kB` (3.6 GiB) | `/proc/1047021/status`, `/proc/1047021/smaps_rollup` |
+
+`AnonHugePages` is the number that matters: **3.6 GiB of huge pages were still resident in the process's other
+mappings** while the pool mapping — the one under `MADV_NOHUGEPAGE` — produced no fault across the 21 minutes of
+parking, restoring and disk spill that the load drove (15 parks, 16 restores: the first request has nothing to park). The exclusion is specific to that mapping, not a global THP effect. The reading was taken
+at 03:26:20 through `bench/fault-va/engine_pid.sh` (it resolves the real engine, never a shell wrapper) as
+`engine_pid.sh | xargs -r -I{} sh -c 'grep VmRSS /proc/{}/status; grep -i anonhugepages /proc/{}/smaps_rollup'`;
+the same pid, 1047021, is in every load record's `mem.engine_pid`. `/proc/1047021` is gone now, so the figure lives
+in the session's shell output, not in a repo artifact — the command above is what produced it.
+
+`--stop` printed `NOT QUIET: still alive [1046631, 1046178]` (`faultdiff_run.py:733`), but that is a reaping
+artefact of the helper: both are `Zs` `<defunct>` (`python`, `strata-expert-h`), `/dev/kfd` has no holder and `:8009`
+no listener. Nothing was left running. The `exit -6` cycle on `0000:04:00.0` belongs to the prefill runs (§5.2) and is
+not counted again here.
+
+**Soak limits.** n = 1 boot, 16 requests, one binary. The load is a synthetic alternating-filler pattern, not real
+traffic, and sequential by design. **No speed claim**: 10.3–25.6 s per request is load traffic with draft-accept
+variance (313–749 tokens actually generated per request), not a measured leg and not a tg rate. And the
+`0000:04:00.0` reset class stays unexplained and untouched — this soak not reproducing it is one sample, not a closure.
+
 ## What this does NOT show
 
 - **No controlled A/B.** n = 4 prefills on one binary with the knob on; that binary without `STRATA_POOL_NOHUGEPAGE`
