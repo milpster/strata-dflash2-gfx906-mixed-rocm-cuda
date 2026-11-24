@@ -108,7 +108,7 @@
   "STRATA_POOL_NOHUGEPAGE": "1"
  },
  "env_to_user": true,
- "exe": "/mnt/srcds/Strata/run/port0218-bin/rpcw-hip/strata",
+ "exe": "/mnt/srcds/Strata/run/port0218-nohuge-bin/rpcw-hip/strata",
  "expert_helper_slots": 4600,
  "expert_helper_socket": "/mnt/srcds/Strata/run/prod-iq3xxs-ud-mixed.sock",
  "expert_helper_socket2": "/mnt/srcds/Strata/run/prod-iq3xxs-ud-mixed2.sock",
