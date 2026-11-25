@@ -41,6 +41,13 @@ SERVING = ("strata", "strata-expert-helper", "strata-expert-helper-patient", "st
 GIB = 1 << 20    # KiB per GiB (meminfo)
 MIB = 1024       # MiB per GiB (VmsumRSS and the ps snapshot)
 
+# `ps` reports %CPU as cputime/elapsed, which is unbounded as elapsed approaches zero: the
+# gate's own `ps` child shows 300 % for microseconds of work and lands on a stage core by
+# chance (observed 2026-11-25, 1 sample in 15). A process younger than this cannot have
+# competed with a prefill leg either, so age is the honest test, and such rows are reported
+# as `young` instead of being flagged.
+HOT_MIN_AGE_S = 5
+
 
 def meminfo():
     out = {}
@@ -102,17 +109,21 @@ def parse_core_snapshot(text, classify_fn=None, self_pid=None):
 
     The pinned threads are the ENGINE's stage threads (--stage-cpus 3,5,7,9,11,13,15): their
     using those cores is the design. Everything else on a stage core is competition and is
-    flagged. Split out from the ps call so the rule can be tested without a hot process.
+    flagged — except a process younger than HOT_MIN_AGE_S, whose %CPU is an artefact of a
+    near-zero lifetime rather than a rate (the gate's own ps child is the usual case).
+    Split out from the ps call so the rule can be tested without a hot process.
     """
     classify_fn = classify_fn or classify
     self_pid = os.getpid() if self_pid is None else self_pid
-    hot, threads = [], {}
+    hot, young, threads = [], [], {}
     stage = set(C.PREREQ0["stage_cores"])
     for line in text.splitlines():
         parts = line.split(None, 5)
         if len(parts) < 6 or not parts[0].isdigit():
             continue
         pid, tid, psr, pcpu = int(parts[0]), parts[1], int(parts[2]), float(parts[3])
+        # etimes is bare seconds; a non-numeric elapsed column (the etime form) is unknown age
+        age = int(parts[4]) if parts[4].isdigit() else -1
         comm = parts[5].strip()
         threads[psr] = threads.get(psr, 0) + 1
         if pid == self_pid or psr not in stage:
@@ -122,9 +133,14 @@ def parse_core_snapshot(text, classify_fn=None, self_pid=None):
         kind = classify_fn(pid)
         if kind == "serving":
             continue          # the engine's own stage threads: pinned there on purpose
-        hot.append({"pid": pid, "tid": tid, "psr": psr, "pcpu": pcpu, "comm": comm,
-                    "kind": kind, "cmd": cmdline(pid)[:120]})
-    return {"threads_per_cpu": {str(k): v for k, v in sorted(threads.items())}, "hot": hot}
+        row = {"pid": pid, "tid": tid, "psr": psr, "pcpu": pcpu, "comm": comm,
+               "kind": kind, "age_s": age, "cmd": cmdline(pid)[:120]}
+        if 0 <= age < HOT_MIN_AGE_S:
+            young.append(row)  # %CPU is not a rate at this age: the ps child at 300 %
+            continue
+        hot.append(row)
+    return {"threads_per_cpu": {str(k): v for k, v in sorted(threads.items())},
+            "hot": hot, "young": young}
 
 
 def temp_core_snapshot():
@@ -251,6 +267,18 @@ def selftest():
     assert flagged == [3003, 4004], flagged
     assert snap["threads_per_cpu"]["5"] == 1 and snap["threads_per_cpu"]["0"] == 1, snap
 
+    # 2026-11-25: the gate's own `ps` child appears in its own listing at a meaningless
+    # 300 % (%CPU is cputime/elapsed, and elapsed is ~0). Age decides: young rows are
+    # reported, never flagged; an old hot process on the same cores still is.
+    young_text = (
+        "  501   5010  11 300.0     0 ps\n"        # our own ps child, on a stage core
+        " 5002   5002   5  88.0   900 borg\n"      # old and genuinely hot
+        " 5003   5003   7  51.0     4 ps\n"        # young, just under the age floor
+    )
+    young_snap = parse_core_snapshot(young_text, classify_fn=lambda pid: "other", self_pid=1)
+    assert [r["pid"] for r in young_snap["hot"]] == [5002], young_snap
+    assert [r["pid"] for r in young_snap["young"]] == [501, 5003], young_snap
+
     procs = [{"pid": 4001, "rss_mib": 900, "kind": "other", "cmd": "python one.py"}]
     clean = gate_verdict(40 * GIB, 900, procs, {"hot": []}, [], 100.0)
     assert clean["failures"] == [] and clean["skipped"] == [], clean
@@ -359,7 +387,9 @@ def main() -> int:
         "rss": {"nonengine_gib": round(other_mib / MIB, 2), "engine_gib": round(sum(p["rss_mib"] for p in serving) / MIB, 2),
                 "top": top, "over_2_gib": big},
         "cpu": {"loadavg": loadavg, "threads_per_cpu": cores.get("threads_per_cpu"),
-                "hot_stage_core_threads": cores.get("hot"), "stage_cores": C.PREREQ0["stage_cores"]},
+                "hot_stage_core_threads": cores.get("hot"),
+                "young_stage_core_threads": cores.get("young"),
+                "stage_cores": C.PREREQ0["stage_cores"]},
         "disk": {"probe": str(cache_probe), "free_gib": None if free_gib is None else round(free_gib, 1)},
         "gates": {"evaluated": verdict["evaluated"], "not_evaluated": verdict["skipped"],
                   "waived": [w["gate"] for w in waived]},
