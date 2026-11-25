@@ -350,12 +350,17 @@ fire_leg() {   # KEY WIN ARM BOOT REP SINCE SHAPE [SHAPE ...] -> 0 all measured,
   timeout 3600 $PY "$LEGS" --window "$win" --arm "$arm" --boot "$group" --rep "$rep" \
     "${announce[@]}" --run > "$LOGD/$key-leg.log" 2>&1
   rc=$?
+  # A non-zero exit means AT LEAST ONE shape's subprocess failed, not that all did. The
+  # records are still judged below: a shape that ran to completion leaves a valid record and
+  # must be counted, or a half-failed boot would silently discard good evidence. Only a
+  # timeout (124) aborts judging, because the call was killed and the run is truncated.
   if [ "$rc" -eq 124 ]; then
-    say "  LEG-TIMEOUT $key after 3600s - see $LOGD/$key-leg.log"
-    CELLS_FAILED=$((CELLS_FAILED + 1)); return 2
+    say "  LEG-TIMEOUT $key after 3600s - judging whatever records exist"
+    CELLS_FAILED=$((CELLS_FAILED + 1))
   elif [ "$rc" -ne 0 ]; then
-    say "  leg command failed for $key (exit $rc) - see $LOGD/$key-leg.log"
-    CELLS_FAILED=$((CELLS_FAILED + 1)); return 2
+    say "  leg command reported failure for $key (exit $rc) - judging per-shape records anyway"
+    say "    see $LOGD/$key-leg.log"
+    CELLS_FAILED=$((CELLS_FAILED + 1))
   fi
   say '  leg finished; cold-read check:'
   tr -d '\000' < "$OUT/logs/$key.engine.log" 2>/dev/null \
