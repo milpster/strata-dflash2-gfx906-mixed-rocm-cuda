@@ -239,7 +239,32 @@ if reused != 0:
 # default, so a tg leg must not be judged on request 1's reuse.
 leg = C.LEGS.get(shape, {})
 kind = (leg.get("kind_by_window") or {}).get(win) or leg.get("kind")
-if kind != "tg":
+GEN = re.compile(r"prompt \d+ tokens = \d+ reused \+ \d+(?: of \d+)? read in [^,]*, (\d+) generated")
+if kind == "tg":
+    # A tg leg is defined by its SECOND request: the same prompt again, cached, then generation.
+    # Request 0 alone proves only that a cold prefill happened, so a record whose decode request
+    # never ran would pass as measured and could then supply a decode rate. That is the shape of
+    # the W4-B-dec-r1 leg, whose first attempt really did stop after the prefill.
+    if len(reqs) < 2:
+        bad("a tg leg needs 2 requests; this record has %d, so the decode request is missing"
+            % len(reqs))
+    second = reqs[1]
+    s2, e2 = second.get("elog_start"), second.get("elog_end")
+    if not (isinstance(s2, int) and isinstance(e2, int) and e2 > s2):
+        bad("request 1 has no engine-log window; refusing to accept a decode that cannot be shown")
+    try:
+        with open(rec["elog"], "rb") as f:
+            f.seek(s2)
+            blob2 = f.read(e2 - s2).replace(b"\0", b"").decode("utf-8", "replace")
+    except (OSError, KeyError, TypeError) as error:
+        bad("cannot read request 1's engine-log window: %s" % error)
+    gen = GEN.findall(blob2)
+    if not gen:
+        bad("no judge line with a generation count in request 1's window")
+    if int(gen[0]) <= 0:
+        bad("request 1 generated %s tokens; a decode request that produced nothing is not a leg"
+            % gen[0])
+else:
     rest = [int(r) for _, r, _ in hits[1:]]
     if any(rest):
         bad("reused %s on a %s leg (every request must be cold)" % (rest, kind))
@@ -329,7 +354,26 @@ print("|".join(str(d.get(k) or "-") for k in ("engine_sha256","engine","port","s
     bad=$((bad + 1))
   fi
 
-  IDENTITY_FOUND="boot-log engine ${blew_sha:0:12} helper ${blew_helper:0:8} | engine-log ${elog_exe:-none} | record engine ${rec_sha:0:12} server '${rec_srv_arm:-?}' '${rec_srv_tree:-?}' helper ${rec_helper:0:8} port ${rec_port:-?} | live pid ${pid:-none} ${live_exe:-none}"
+  # The server half, live. Until now it was proven only by the boot record, which the boot
+  # itself writes: a record can say "server A" while a different tree answers the port. The
+  # boot launches "$PY $TREE/serve/server.py --engine strata --config .. --port <port>", so
+  # the tree's own path in a live argv is the evidence, not the record.
+  local srv_pid=""
+  for cand in $(ps -eo pid= | tail -n +2); do
+    cand_cmd=$(tr '\000' ' ' < "/proc/$cand/cmdline" 2>/dev/null || true)
+    case "$cand_cmd" in
+      *"$want_srv/serve/server.py"*)
+        case "$cand_cmd" in
+          *"--port $want_port"*) srv_pid=$cand; break ;;
+        esac ;;
+    esac
+  done
+  if [ -z "$srv_pid" ]; then
+    say "    no live server runs '$want_srv/serve/server.py --port $want_port'"
+    bad=$((bad + 1))
+  fi
+
+  IDENTITY_FOUND="boot-log engine ${blew_sha:0:12} helper ${blew_helper:0:8} | engine-log ${elog_exe:-none} | record engine ${rec_sha:0:12} server '${rec_srv_arm:-?}' '${rec_srv_tree:-?}' helper ${rec_helper:0:8} port ${rec_port:-?} | live engine ${pid:-none} ${live_exe:-none} | live server ${srv_pid:-none} $want_srv"
   return "$bad"
 }
 
@@ -355,7 +399,7 @@ fire_leg() {   # KEY WIN ARM BOOT REP SINCE SHAPE [SHAPE ...] -> 0 all measured,
   # must be counted, or a half-failed boot would silently discard good evidence. Only a
   # timeout (124) aborts judging, because the call was killed and the run is truncated.
   if [ "$rc" -eq 124 ]; then
-    say "  LEG-TIMEOUT $key after 3600s - judging whatever records exist"
+    say "  LEG-TIMEOUT $key after 3600s - records are still judged below, but the run is truncated"
     CELLS_FAILED=$((CELLS_FAILED + 1))
   elif [ "$rc" -ne 0 ]; then
     say "  leg command reported failure for $key (exit $rc) - judging per-shape records anyway"
