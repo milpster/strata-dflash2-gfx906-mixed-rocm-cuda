@@ -26,9 +26,11 @@ tree `v0215`. **B** = upstream port 0.2.18 engine 0.1.64 (`15d330ea`, `run/port0
    is a direction from two boots per arm, and it may be real — but it is small and unproven.
 3. **The largest engine-side signal is short-shape prefill in B's favour (+13.6…15.7 %), and
    it is n=1.** The cheapest next move there is boots, not code.
-4. The sign flips with context length (B faster at 2k/8k, A faster at 144k). That is the
-   signature of a size-dependent path selection, and the boot lines name one: A reports
-   `prefill mmq built=1`, B `built=0`.
+4. The sign flips with context length (B faster at 2k/8k, A faster at 144k), and the static
+   diff found why: the two engines use **different expert kernel classes** (FP16 dequant + GEMM
+   against B's own int8 dot kernels) and B additionally gains residency by trimming stage
+   weights. B pays a kernel handicap and collects a residency bonus in the same number. The
+   mmq `built=` difference is a red herring: both arms run mmq **off**.
 
 ---
 
@@ -105,26 +107,53 @@ promote a code change on n=1 evidence, and 3 boots are much cheaper than a build
 
 ---
 
-## 5. Action 3 — the mmq / size-threshold lead (PENDING static diff)
+## 5. Action 3 — the prefill gap is a kernel-class swap plus a residency default (static diff done)
 
-The boot lines differ by one letter that matters: A `prefill mmq built=1`, B `built=0`. A also
-holds more on-device state: 301 dense/native matrices (2,331.54 MiB) vs B's 188 (1,474.17 MiB);
-4,951 vs 5,739 cache slots; 9,125 vs 11,149 resident experts.
+**The mmq lead is dead.** Both arms run with mmq off, and their own boot lines say so:
 
-The sign flip is the hypothesis: B wins at 2k and 8k, A wins at 144k. A size-dependent path —
-one that has per-chunk or per-launch overhead at small sizes and a throughput payoff at long
-context — produces exactly that. mmq selection is the obvious candidate.
+| arm | line |
+|---|---|
+| A | `prefill mmq: off (env=0) [built=1]` (`W2-A-dec-r1.engine.log`) |
+| B | `prefill mmq: off (env=0) [built=0]` (`W2-B-dec-r1.engine.log`) |
 
-**PENDING:** `bench/fault-va/out/static-diff-ab-prefill.md` (static analysis lane, in progress)
-establishes whether `built=` is a compile-time option, a capability probe or a size heuristic,
-and what the engine does when it is 0.
+`built=` is a compile-time link property, not a runtime choice: A links llama.cpp's MMQ kernels;
+B's lineage deleted them and `engine/src/prefill/mmq_absent.cpp:19` is
+`bool built() { return false; }` (verified in `/mnt/srcds/Strata-wt-0218`, the 0.1.64 lineage,
+tip `db5bc3ab10`). The guard is `built() && env != 0` and `env` is 0 on both sides, so the
+flag cannot move any timing, and a "size threshold" on it would change nothing.
 
-**If true, the fix is a threshold, not a choice:** keep mmq above the size where it pays and
-fall back below it. That would capture both shapes instead of trading one for the other.
+**What actually differs, verified in source:**
 
-**How to verify, once the static diff lands:** W3s span pair at 2k/8k and at 144k. Prediction
-if the hypothesis holds: A's per-chunk cost is higher in one named stage at 2k, and lower in
-the same stage at 144k. Any other pattern kills it.
+| difference | A (0.1.57 fork) | B (0.1.64 port) | evidence |
+|---|---|---|---|
+| expert kernel class with mmq off | FP16 dequant + GEMM | its own int8 dot kernels on **48 of 48 layers** | A `prefill.cpp:1565,7986`; B's own boot line: `prompt kernels: every chunk runs 48 of 48 layers on the int8 kernels` |
+| `trim_stage_weights` default | **false** (`src/program/generate.cpp:943`) | **true** (`engine/src/program/generate.cpp:1291`) | source, both trees |
+| dense matrices resident | 301 (2,331.54 MiB) | 188 (1,474.17 MiB) | W2 records |
+| cache slots / resident experts | 4,951 / 9,125 | 5,739 / 11,149 | W2 records |
+
+The residency rows are not independent of the trim row: trimming stage weights frees dense
+weights per layer, and B's extra ~850 MiB of device memory is the kind of room that buys 788
+more cache slots and 2,024 more resident experts. **So B pays a kernel handicap and collects a
+residency bonus in the same measurement**, which is the most direct reading of the sign flip: at
+2k/8k the per-chunk kernel cost dominates and B still wins, while at 144k the whole-prompt rate
+and resident coverage dominate.
+
+**Two knob legs decide it without a build:**
+
+| leg | what it isolates | prediction if this account is right |
+|---|---|---|
+| B with `--no-trim-stage-weights` | residency | B's slots and resident experts fall toward A's, and its 2k/8k lead shrinks |
+| B with `STRATA_EXPERT_I8=0` | kernel class | B's prompt kernels fall back to FP16 and its 2k/8k lead disappears |
+
+One boot each, no build, and run them at 2k/8k where the effect is largest rather than at 144k.
+
+**Ruled out in source** (`journal/prefill-static-diff-ab-2026-11-25.md`): chunk geometry is
+identical (`--prefill 16384` explicitly, so 8×16,384 + 12,821 in both), 46 files including
+`moe_mmq.cu` are byte-identical across the lineages, and helper volume is near-identical
+(270 / 68,775 against 270 / 69,116).
+
+**Honest limit:** these are engine-internal differences, so W4 cannot separate them — its
+server side carries identical argv. The knob legs and W3s spans are the separators.
 
 ---
 
@@ -134,9 +163,10 @@ the same stage at 144k. Any other pattern kills it.
 |---|---|---|---|---|---|
 | 1 | Raise `--conversation-cache-ram-mib` to ~1024 so nothing drops | two live snapshots 294 + 375 MiB against a 512 MiB ceiling; the drop line is `W2-A-sht-r1.engine.log:121` | removes the restore for **both** arms: ~3.4 s/turn (B), ~6.8 s (A) | config + ~512 MiB RSS | 1 pair of boots |
 | 2 | 3 more B short boots | B n=1 | turns a +14 % lead into a decision | 3 boots | yes |
-| 3 | mmq size threshold | `built=1` vs `built=0`; sign flip | both shapes, size unknown | code + build | yes |
-| 4 | Backport the 0.1.64 restore path to the fork engine | same 99-token re-read: 6,865 ms vs 3,382 ms, identical cache config | −3.4 s/turn at zero memory cost | engine work + build | yes |
-| 5 | Finish W4 cells 3–4 + W3s spans | attribution | decides engine-vs-server (veto-only) | ~50 min | yes |
+| 3 | B with `--no-trim-stage-weights` (residency leg) | trim default true vs false; 188 vs 301 dense matrices | decides the residency half of B's +14 % | 1 boot, no build | yes |
+| 4 | B with `STRATA_EXPERT_I8=0` (kernel leg) | FP16 vs own int8, 48/48 layers | decides the kernel half | 1 boot, no build | yes |
+| 5 | Backport the 0.1.64 restore path to the fork engine | same 99-token re-read: 6,865 ms vs 3,382 ms, identical cache config | −3.4 s/turn at zero memory cost | engine work + build | yes |
+| 6 | Finish W4 cells 3–4 + W3s spans | attribution of the parking/restore path | decides engine-vs-server (veto-only) | ~50 min | yes |
 
 ---
 
@@ -158,9 +188,11 @@ the same stage at 144k. Any other pattern kills it.
 |---|---|---|---|
 | P1 | W4 cells 3–4 (B-engine+A-server r2, A-engine+B-server r2) | engine vs server, veto-only | prereq 0 (backup + MCP RSS) |
 | P2 | W3s span pair (`dec144k-spans`, A and B) | which stage loses the 144k prefill ms | same |
-| P3 | Static diff A-vs-B prefill path | whether mmq is compile-time or heuristic | running now |
+| P3 | **done** — mmq is compile-time and off in both; the axes are kernel class and the trim default | — | `journal/prefill-static-diff-ab-2026-11-25.md` |
 | P4 | `--conversation-cache-ram-mib 1024` pair (action 1, lever A) | whether the drop/restore is the inter-turn cost, and whether it helps both arms | needs a window |
-| P5 | Restore-path diff 0.1.57 vs 0.1.64 (action 1, lever B) | names the function behind the 2.1× restore cost | static lane, secondary task |
+| P5 | Restore-path diff 0.1.57 vs 0.1.64 (action 1, lever B) | names the function behind the 2.1× restore cost | not started |
+| P6 | B `--no-trim-stage-weights` at 2k/8k (action 3) | the residency half of B's lead | needs a window |
+| P7 | B `STRATA_EXPERT_I8=0` at 2k/8k (action 3) | the kernel half of B's lead | needs a window |
 
 ---
 
@@ -172,6 +204,7 @@ the same stage at 144k. Any other pattern kills it.
 | W1f 239k prefill (p=1.00) | W1f records, `out/port-ab-20261123/records/W1f-*` |
 | park/re-read log lines | `out/port-ab-20261123/logs/W2-{A,B}-sht-r*.engine.log` |
 | contract constants, claim rule, TG floor | `bench/ab-v0210/rpcprof/port_ab_contract.py` |
+| prefill static diff (UNCONFIRMED STATIC ANALYSIS) | `journal/prefill-static-diff-ab-2026-11-25.md` |
 | fault fix evidence | `journal/userptr0-cold58k-2026-11-25.md` |
 | retractions | `journal/fault-investigation-corrections-2026-11-24.md` |
 | arm pins | `bench/ab-v0210/rpcprof/port_ab_configs.py` |
