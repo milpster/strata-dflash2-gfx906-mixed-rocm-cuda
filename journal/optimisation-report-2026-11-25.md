@@ -92,9 +92,21 @@ Inter-turn mean over turns 2–3: **A 6.904 s, B 3.577 s** (`journal/w2-window-2
 **What the logs do not say.** `grep -c 'conversation cache: restored'` is **0 in all twelve
 W2 engine logs**; the only "restored" lines concern a draft ring, not a snapshot. The prefix
 was served from cache (`2052 reused`), which is why the cost is a 99-token continuation rather
-than a snapshot read. So the 3.5 s gap is real and unexplained: candidates are the per-request
-fixed cost of the post-eviction path, the host-side plan for a 99-token continuation, or the
-stream setup. **Instrumenting that path is the prerequisite for any fix**, not a knob guess.
+than a snapshot read. So the 3.5 s gap is real and unexplained by anything currently logged.
+
+**The instrument already exists and needs no code.** `STRATA_TRACE` makes the engine print, per
+admission, exactly the decomposition this question needs (`src/program/generate.cpp:23493-23506`):
+
+```
+strata trace: admission of slot N: drain <ms>, prompt <ms> (read <ms>, windows <ms>,
+  K checkpoint(s) <ms> = sync <ms> + save <ms> + evict <ms>, rest <ms>), first window <ms>,
+  slot copy <ms>, slot freed <ms>, checkpoint copy <ms>
+```
+
+None of the twelve W2 boots had it set (`grep -c 'strata trace:'` = 0 in every log), which is
+why the gap is unattributed. **One ttft3 pair with `STRATA_TRACE=1` turns the 6.9 s vs 3.6 s
+question into a named term** — evict, sync, save, windows, or "rest" — at the cost of two boots
+and no build. That is rank 1 precisely because it is the cheapest decisive measurement left.
 
 **Do not** raise the ceiling on faith. The drop message prints resident bytes *after* eviction
 (`src/program/generate.cpp:13497-13516`), so "294 + 375 MiB against 512" is not a working set;
@@ -158,7 +170,7 @@ own-int8 per-layer host work and group planning, the helper binary, and memory s
 
 | # | Action | Why | Cost | Decides |
 |---|---|---|---|---|
-| 1 | **Instrument the post-eviction continuation path** | 6.9 s vs 3.6 s per turn is the biggest measured cost, and **no log line explains it**; the restore hypothesis has zero supporting lines | ~half a day of engine logging | what the 3.5 s actually is |
+| 1 | **Run one ttft3 pair with `STRATA_TRACE=1`** | 6.9 s vs 3.6 s per turn is the biggest measured cost; the engine already prints drain / prompt(read, windows, checkpoints = sync+save+evict, rest) / slot copy / checkpoint copy, and **no W2 boot had the flag set** | 2 boots, no build | which term the 3.5 s sits in |
 | 2 | **A `max_tokens 2048` leg (or `answer_room: false`)** | 6 of 12 W2 legs produced **no TG number at all**: thinking is capped at 512 by the answer-room rule, so every decode figure is below the 1,000-token floor. Nothing about decode can be claimed without this | 1 boot | a legitimate TG rate for the first time |
 | 3 | **Establish the 144k noise floor**: A and B interleaved, 4–5 legs each, swap recorded per leg, **all in one session** | the current between-arm delta (4.7 %) is **smaller than B's own spread (4.5 %)**; the later-session legs run ~9 % slower, and only an interleaved design can tell session from swap | ~8 boots | whether any engine delta exists at all |
 | 4 | **3 more B short boots** (pp2k/pp8k/ttft3) | B is n=1 there; the +13.6…15.7 % is a lead from one boot | 3 boots | a 3 v 3 descriptive range |
