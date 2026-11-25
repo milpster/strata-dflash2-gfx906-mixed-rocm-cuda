@@ -30,6 +30,12 @@ import sys
 import time
 
 HERE = pathlib.Path(__file__).resolve().parent
+
+# --refresh-evidence recomputes boots/<key>.evidence.json for boots that already have one.
+# Off by default: page_cache and the journal fingerprint are CURRENT box state, so recomputing
+# a finished window's evidence rewrites its history (2026-11-25: one --check replaced all
+# twelve W2 files, moving majfault_delta from 3452753 to 9787947).
+EVIDENCE_REFRESH = False
 sys.path.insert(0, str(HERE))
 import port_ab_configs as pc
 import port_ab_contract as C
@@ -668,13 +674,23 @@ def bookend(out, key):
     return 0
 
 
-def write_boot_evidence(out, key, checks):
+def write_boot_evidence(out, key, checks, refresh=False):
     """Persist the computed per-boot evidence beside the boot record (boots/<key>.evidence.json).
 
     The journal's claim is that every boot carries the page-cache proxy, the kernel-journal
     fingerprint, the LOW count, the granted FS slots, the cache slot count and the restart
     flag. check() computes them; without this they die with the console.
+
+    IMMUTABLE BY DEFAULT, and that matters. Two of these readings are *current box state*
+    (page_cache_now() and the journal window), so re-running the check on a finished window
+    rewrites history with today's numbers: on 2026-11-25 a single --check replaced all twelve
+    W2 evidence files, turning cached_delta_mib 6138 into 3333 and majfault_delta 3452753 into
+    9787947, and moved written_at forward by five hours. An existing file is therefore left
+    alone unless refresh=True, and the caller is told which files were left as recorded.
     """
+    path = pathlib.Path(out) / "boots" / (key + ".evidence.json")
+    if path.exists() and not refresh:
+        return ("kept", path)
     evidence = {
         "key": key, "written_at": time.strftime("%Y-%m-%dT%H:%M:%S"), "written_by": "port_ab_legs.py --check",
         "kernel_fingerprint": checks["fingerprint"], "page_cache": checks["page_cache"],
@@ -683,12 +699,11 @@ def write_boot_evidence(out, key, checks):
         "fill": checks["fill"], "tuple": checks["tuple"],
         "problems": checks["problems"], "warnings": checks["warnings"],
     }
-    path = pathlib.Path(out) / "boots" / (key + ".evidence.json")
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_suffix(path.suffix + ".new")
     temp.write_text(json.dumps(evidence, indent=1, sort_keys=True) + "\n")
     temp.replace(path)
-    return path
+    return ("wrote", path)
 
 
 # ------------------------------------------------------------------------------- gate check
@@ -921,7 +936,12 @@ def check(out, window, manifest_path=None):
             bkey = d.name
             if bkey not in boot_seen:
                 boot_seen[bkey] = boot_checks(out, bkey, rec)
-                write_boot_evidence(out, bkey, boot_seen[bkey])
+                state, epath = write_boot_evidence(out, bkey, boot_seen[bkey],
+                                                   refresh=EVIDENCE_REFRESH)
+                if state == "kept":
+                    warnings.append(bkey + ": evidence kept as recorded (" + str(epath)
+                                    + "); pass --refresh-evidence to recompute it against "
+                                    "the box's CURRENT state")
                 problems.extend(boot_seen[bkey]["problems"])
                 warnings.extend(boot_seen[bkey]["warnings"])
                 fill = boot_seen[bkey]["fill"]
@@ -1808,11 +1828,16 @@ def main():
     ap.add_argument("--runbook", metavar="WINDOW", help="print the whole window plan and exit")
     ap.add_argument("--run", action="store_true", help="execute the leg command(s)")
     ap.add_argument("--check", metavar="WINDOW", help="gate-check every leg record of a window")
+    ap.add_argument("--refresh-evidence", action="store_true",
+                    help="recompute boots/<key>.evidence.json even when one exists; page_cache "
+                         "and the journal fingerprint describe the box NOW, not the boot, so this "
+                         "rewrites a finished window's history and is never the default")
     ap.add_argument("--freeze-pilot", metavar="WINDOW", help="freeze the W2 pilot deltas")
     ap.add_argument("--bookend", metavar="KEY",
                     help="record ended_epoch + final generation in boots/KEY.json (stop time)")
     ap.add_argument("--selftest", action="store_true", help="exercise the gates on synthetic records")
     a = ap.parse_args()
+    globals()["EVIDENCE_REFRESH"] = bool(a.refresh_evidence)
 
     if a.selftest:
         return selftest()
