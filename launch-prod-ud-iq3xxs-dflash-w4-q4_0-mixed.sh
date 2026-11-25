@@ -36,7 +36,7 @@ WORK=${STRATA_PROD_WORK:-"$ROOT/run/port0218-server"}   # 2026-11-23: the ported
 BIN=${STRATA_PROD_BIN:-"$ROOT/run/port0218-nohuge-bin"}   # 2026-11-24: promoted 0.2.18 port + pool MADV_NOHUGEPAGE (15d330ea; helper 58c3ae02 unchanged)
 export STRATA_RAM_BUDGET_MIB=${STRATA_RAM_BUDGET_MIB:-43008}
 PY="$ROOT/.venv/bin/python"
-CONFIG=${STRATA_PROD_CONFIG:-"$ROOT/prod-config-port0218-nohuge.json"}   # 2026-11-24: promoted tuple = 0.2.18 + STRATA_POOL_NOHUGEPAGE=1 (fault fix; numerics byte-identical to the fork REF, journal/pool-nohuge-quality-gate-2026-11-24.md)
+CONFIG=${STRATA_PROD_CONFIG:-"$ROOT/prod-config-port0218-userptr0.json"}   # 2026-11-25: promoted tuple = 0.2.18 + STRATA_POOL_NOHUGEPAGE=1 + HSA_USERPTR_FOR_PAGED_MEM=0. The last one disables ROCclr pageable-to-userptr conversion (pin-in-place of our 2.54 MiB pool blobs); 10/10 cold 58k prefills clean vs a 4-in-9 baseline (P=0.003), journal/userptr0-cold58k-2026-11-25.md. THP and mlock were both disproven - see journal/fault-investigation-corrections-2026-11-24.md
 SOCKET="$ROOT/run/prod-iq3xxs-ud-mixed.sock"
 SOCKET2="$ROOT/run/prod-iq3xxs-ud-mixed2.sock"
 HELPER="$BIN/rpcw-cuda/strata-expert-helper"   # 2026-11-23: the port helper build (58c3ae02)
