@@ -515,9 +515,16 @@ def gate_verdict(avail_kib, other_mib, others, cores, serving, free_gib, waive_n
                       if p["rss_mib"] >= C.PREREQ0["single_process_rss_gib_warn"] * 1024),
                      key=lambda p: -p["rss_mib"])[:10]
         if big:
+            # "or reported" used to appear here. Nothing implements a report: the only flags are
+            # --waive-nonengine/--no-waive-nonengine, WAIVER["scope"] says this rule "still fails
+            # closed", and WAIVER covers the SUM only. The message must not promise a mechanism
+            # that does not exist, so it now says what is true and names the sizes.
             failures.append("process(es) >= " + str(C.PREREQ0["single_process_rss_gib_warn"])
-                            + " GiB RSS must be resolved or reported: "
-                            + ", ".join(str(p["pid"]) + " " + p["cmd"].split()[0] for p in big[:3]))
+                            + " GiB RSS must be resolved before a window (this rule is never "
+                            "waived; close or shrink the process): "
+                            + ", ".join(str(p["pid"]) + " " + p["cmd"].split()[0]
+                                        + " (" + str(round(p["rss_mib"] / 1024, 2)) + " GiB)"
+                                        for p in big[:3]))
         if cores.get("error"):
             # a listing we could not take is not evidence of a quiet box: fail closed
             failures.append("stage-core snapshot failed (" + str(cores["error"]) + "): "
