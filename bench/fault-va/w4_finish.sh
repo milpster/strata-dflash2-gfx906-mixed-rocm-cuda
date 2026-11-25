@@ -239,7 +239,7 @@ if reused != 0:
 # default, so a tg leg must not be judged on request 1's reuse.
 leg = C.LEGS.get(shape, {})
 kind = (leg.get("kind_by_window") or {}).get(win) or leg.get("kind")
-GEN = re.compile(r"prompt \d+ tokens = \d+ reused \+ \d+(?: of \d+)? read in [^,]*, (\d+) generated")
+GEN = re.compile(r"prompt (\d+) tokens = (\d+) reused \+ \d+(?: of \d+)? read in [^,]*, (\d+) generated")
 if kind == "tg":
     # A tg leg is defined by its SECOND request: the same prompt again, cached, then generation.
     # Request 0 alone proves only that a cold prefill happened, so a record whose decode request
@@ -261,9 +261,19 @@ if kind == "tg":
     gen = GEN.findall(blob2)
     if not gen:
         bad("no judge line with a generation count in request 1's window")
-    if int(gen[0]) <= 0:
+    tok2, gen2 = int(gen[0][0]), int(gen[0][2])
+    if gen2 <= 0:
         bad("request 1 generated %s tokens; a decode request that produced nothing is not a leg"
-            % gen[0])
+            % gen2)
+    # Request 1 must be the SAME prompt as request 0, or a short foreign decode could supply the
+    # rate. Same 10% band as request 0, which still separates every shape in the contract.
+    if nominal and abs(tok2 - nominal) > 0.10 * nominal:
+        bad("request 1 serves %d tokens, which is not the same prompt as request 0 (%d, ~%d)"
+            % (tok2, tokens, nominal))
+    # Bounded by the shape's own cap: a rate above the configured maximum is not this leg.
+    cap = C.gen_tokens(shape, win) if (shape in C.LEGS and win in C.WINDOWS) else None
+    if isinstance(cap, int) and gen2 > cap:
+        bad("request 1 generated %d tokens, above the shape's cap of %d" % (gen2, cap))
 else:
     rest = [int(r) for _, r, _ in hits[1:]]
     if any(rest):
@@ -283,7 +293,10 @@ identity_check() {   # KEY ARM BOOT_EPOCH SERVER_ARM -> 0 when the boot is the e
   local blew_sha="" blew_helper="" elog_exe="" rec_line="" bad=0 pid="" live_exe=""
   local blo="$LOGD/$key-boot.log" elog="$OUT/logs/$key.engine.log" rec="$OUT/boots/$key.json"
   read -r want_sha want_exe want_helper want_srv want_port < <(arm_identity "$arm")
-  want_srv=$(server_tree_of "$srv_arm")
+  # BOTH paths must be absolute: the boot record stores an absolute server_tree
+  # (e.g. /mnt/srcds/Strata/run/port0218-server), and comparing it to the relative
+  # "run/port0218-server" from the arm configs would fail every legitimate boot.
+  want_srv="$ROOT/$(server_tree_of "$srv_arm")"
   want_exe="$ROOT/$want_exe"
   IDENTITY_EXPECTED="engine $arm ${want_sha:0:12} $want_exe + helper ${want_helper:0:8} | server $srv_arm $want_srv | port $want_port"
 
@@ -359,7 +372,8 @@ print("|".join(str(d.get(k) or "-") for k in ("engine_sha256","engine","port","s
   # boot launches "$PY $TREE/serve/server.py --engine strata --config .. --port <port>", so
   # the tree's own path in a live argv is the evidence, not the record.
   local srv_pid=""
-  for cand in $(ps -eo pid= | tail -n +2); do
+  # ps -eo pid= already suppresses the header, so there is nothing to skip here
+  for cand in $(ps -eo pid=); do
     cand_cmd=$(tr '\000' ' ' < "/proc/$cand/cmdline" 2>/dev/null || true)
     case "$cand_cmd" in
       *"$want_srv/serve/server.py"*)
