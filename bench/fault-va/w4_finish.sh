@@ -5,56 +5,104 @@
 # the retry silently resumed from a parked checkpoint (reused 131072) instead of doing
 # a cold read. Every step here is detached and every leg's reuse is asserted.
 #
-# Four guards, each for a failure this runner has already had:
+# Five guards, each for a failure this runner has had or would have had:
+#   0. SERVER ARM IS DERIVED, NEVER ASSUMED. W4's whole purpose is to cross engine and
+#      server, but port_ab_boot.sh defaults SERVER_ARM=$ARM. On 2026-11-25 a "cross" cell
+#      was booted through that default and measured as a native control under a cross-cell
+#      key (boots/W4-B-dec-r1.json: arm B, server_arm B), which is what produced a wrong
+#      published conclusion. Every boot now takes --server-arm read from the window's own
+#      schedule, and a cell the schedule does not know is refused rather than guessed.
 #   1. prerequisite 0 runs ONCE before any boot. A refusal prints its FAIL/WAIVED lines and
-#      exits 3. On 2026-11-25 a 2.03 GiB process and a backup process refused every boot in
-#      about a second; the runner looped over the cells, logging "boot <cell>" and looking
-#      alive for an hour while nothing ever reached the GPU.
+#      exits 3 (4 when the precheck could not be read at all). On 2026-11-25 a 2.03 GiB
+#      process and a backup refused every boot in about a second; the runner looped over the
+#      cells, logging "boot <cell>" and looking alive for an hour while nothing reached the GPU.
 #   2. one run at a time: an flock on out/w4-finish.lock. A held lock prints the holder and
 #      exits 2 (a second runner would boot into the first one's sockets and port).
-#   3. per-boot identity, checked after the health probe and BEFORE the leg: the boot log, the
-#      engine log and the boot record must name the arm's engine sha256 (ARMS in
-#      port_ab_configs.py), the arm's engine path and the expected port. A boot can otherwise
-#      be served by a stale launcher from an interrupted boot, and the leg would then measure
-#      the wrong binary tuple. A mismatch is BOOT-IDENTITY-MISMATCH: stop, fail the cell, go on.
-#   4. per-leg coldness: the leg record's judge line(s) must read "0 reused". A killed leg
-#      leaves a parked checkpoint and the retry silently resumes it; such a leg is INVALID,
-#      its reused count is logged, and it is not counted as measured.
+#   3. per-boot identity, checked after the health probe and BEFORE the leg: engine sha256 and
+#      path, the SERVER arm and its tree, the HELPER sha256, the port, a boot record written
+#      after this boot started, and the live process's own /proc/<pid>/exe. The record alone
+#      cannot prove which process answers :8009. A mismatch is BOOT-IDENTITY-MISMATCH: stop,
+#      fail the cell, go on.
+#   4. per-leg coldness and freshness: the first request's judge line must read "0 reused", its
+#      token count must belong to this shape, the record must be newer than this leg and must
+#      name this engine. A killed leg leaves a parked checkpoint and the retry silently resumes
+#      it; such a leg is INVALID, its reused count is logged, and it is not counted as measured.
 #
-# --dry-run prints the planned cells in order (engine identity, port, prompt shape) and runs
-# only the prerequisite check: it boots nothing, starts nothing and is safe with no GPU.
+# --dry-run prints the planned cells (engine, server, port, shape) and runs only the
+# prerequisite check: it boots nothing, starts nothing and is safe with no GPU.
+# --waive-nonengine passes the operator's non-engine RSS waiver to the pre-gate as well as to
+# the boots; it is OFF by default so the waiver is always an explicit act.
 set -uo pipefail
 cd /mnt/srcds/Strata || exit 1
 ROOT=/mnt/srcds/Strata
 PY=python3
 LEGS=bench/ab-v0210/rpcprof/port_ab_legs.py
+BOOT=bench/ab-v0210/rpcprof/port_ab_boot.sh
+STOP=bench/ab-v0210/rpcprof/port_ab_stop.sh
 OUT=bench/ab-v0210/rpcprof/out/port-ab-20261123
 LOGD=bench/fault-va/out/logs
 LOCK=bench/fault-va/out/w4-finish.lock
 DRY=0
+WAIVE=0
 CELLS_FAILED=0
 LEGS_MEASURED=0
 LEGS_INVALID=0
 IDENTITY_EXPECTED=""
 IDENTITY_FOUND=""
 
-case "${1:-}" in
-  --dry-run) DRY=1 ;;
-  "") ;;
-  -h|--help) echo "usage: w4_finish.sh [--dry-run]"; exit 0 ;;
-  *) echo "w4_finish: unknown argument: $1" >&2; echo "usage: w4_finish.sh [--dry-run]" >&2; exit 2 ;;
-esac
+CHECK_LEG=""
+CHECK_ARGS=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dry-run) DRY=1; shift ;;
+    --waive-nonengine) WAIVE=1; shift ;;
+    --check-leg)   # RECORD ARM WINDOW SHAPE SINCE - audit one leg record, no GPU, no boot
+      CHECK_LEG=$2; shift 2
+      CHECK_ARGS=("$1" "$2" "$3" "$4"); shift 4 ;;
+    -h|--help) echo "usage: w4_finish.sh [--dry-run] [--waive-nonengine]"
+               echo "       w4_finish.sh --check-leg RECORD ARM WINDOW SHAPE SINCE_EPOCH"
+               exit 0 ;;
+    *) echo "w4_finish: unknown argument: $1" >&2
+       echo "usage: w4_finish.sh [--dry-run] [--waive-nonengine]" >&2
+       echo "       w4_finish.sh --check-leg RECORD ARM WINDOW SHAPE SINCE_EPOCH" >&2; exit 2 ;;
+  esac
+done
 
 mkdir -p "$LOGD"
 say() { echo "[$(date +%H:%M:%S)] $*"; }
 
-arm_identity() {   # ARM -> "engine_sha256 engine_path server_tree port" (from port_ab_configs)
+# cell_spec WINDOW ARM BOOT REP -> "server_arm" from the window's own schedule.
+# A cell the schedule does not plan is a bug in this runner, never a guess.
+cell_spec() {
+  $PY - "$ROOT" "$1" "$2" "$3" "$4" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1] + "/bench/ab-v0210/rpcprof")
+import port_ab_legs as L
+win, arm, boot, rep = sys.argv[2], sys.argv[3], sys.argv[4], int(sys.argv[5])
+for row in L.schedule(win):
+    if row["arm"] == arm and row["boot"] == boot and int(row["rep"]) == rep:
+        print(row.get("server_arm") or arm)
+        raise SystemExit(0)
+raise SystemExit("no schedule row for %s arm %s boot %s rep %s" % (win, arm, boot, rep))
+PY
+}
+
+arm_identity() {   # ARM -> "engine_sha256 engine_path helper_sha256 server_tree port"
   $PY - "$ROOT" "$1" <<'PY'
 import sys
 sys.path.insert(0, sys.argv[1] + "/bench/ab-v0210/rpcprof")
 import port_ab_configs as pc
 spec = pc.ARMS[sys.argv[2]]
-print(spec["engine_sha256"], spec["engine"], spec["server_tree"], pc.TUPLE["port"])
+print(spec["engine_sha256"], spec["engine"], spec["helper_sha256"], spec["server_tree"], pc.TUPLE["port"])
+PY
+}
+
+server_tree_of() {  # SERVER_ARM -> the tree path that arm's server must run from
+  $PY - "$ROOT" "$1" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1] + "/bench/ab-v0210/rpcprof")
+import port_ab_configs as pc
+print(pc.ARMS[sys.argv[2]]["server_tree"])
 PY
 }
 
@@ -82,92 +130,141 @@ take_lock() {
 }
 
 # prerequisite 0 (read-only: /proc, ps, statvfs; no signals, no GPU). The tool's verdict is
-# OPEN, OPEN (WAIVED: nonengine_rss by operator) or REFUSED - it never prints "PASS", so an
-# open verdict is what a run needs here.
+# OPEN, OPEN (WAIVED: ...) or REFUSED - it never prints "PASS". Its EXIT STATUS is checked
+# too: a precheck that prints OPEN and then fails while writing its snapshot has not opened
+# anything. Tolerant of indentation so a formatting change cannot masquerade as a crash.
 prereq_gate() {
-  local log verdict=""
+  local log rc verdict
   log="$LOGD/prereq-w4run-$(date +%Y%m%d-%H%M%S).log"
   say "prerequisite 0 (pre-boot gate) -> $log"
-  $PY bench/ab-v0210/rpcprof/port_ab_prereq0.py \
-    --out bench/fault-va/out/prereq-w4run \
-    --cache-dir bench/ab-v0210/rpcprof/out/port-ab-20261123 > "$log" 2>&1
-  verdict=$(grep -a '^VERDICT: ' "$log" | tail -1)
-  case "$verdict" in
-    "VERDICT: OPEN"*|"VERDICT: PASS"*)
+  local args=(--out bench/fault-va/out/prereq-w4run --cache-dir "$OUT")
+  [ "$WAIVE" -eq 1 ] && args+=(--waive-nonengine)
+  $PY bench/ab-v0210/rpcprof/port_ab_prereq0.py "${args[@]}" > "$log" 2>&1
+  rc=$?
+  verdict=$(grep -aE '^[[:space:]]*VERDICT:[[:space:]]*' "$log" | tail -1 | sed 's/^[[:space:]]*//')
+  case "$verdict|$rc" in
+    "VERDICT: OPEN"*"|0")
       say "  gate $verdict"
       return 0 ;;
   esac
-  if [ -n "$verdict" ]; then say "  gate $verdict"; else say "  gate: no VERDICT line (the precheck did not finish)"; fi
+  if [ -n "$verdict" ]; then say "  gate $verdict (exit $rc)"; else say "  gate: NO VERDICT LINE (exit $rc) - the precheck did not finish"; fi
   say "  REFUSING to boot any cell - the gate's FAIL/WAIVED lines:"
   grep -aE 'FAIL:|WAIVED' "$log" | sed 's/^ */    /' || say "    (none printed; read $log)"
   say "  full snapshot and output: $log"
-  say "  (this gate is the strict form; the boot below runs with --waive-nonengine, so export"
-  say "   PREREQ0_WAIVE_NONENGINE=1 if the operator's desktop RSS sum is the waived baseline)"
+  [ -n "$verdict" ] || { say "  an absent verdict is a broken precheck, not a refusal"; return 4; }
+  if [ "$WAIVE" -eq 0 ]; then
+    say "  (this gate ran without --waive-nonengine while the boots pass it; re-run with"
+    say "   --waive-nonengine if the operator's desktop RSS sum is the waived baseline)"
+  fi
   return 3
 }
 
 wait_vram() {
   local i v
   for i in $(seq 1 40); do
-    v=$(rocm-smi --showmeminfo vram --csv 2>/dev/null | awk -F, '/^card0|^card1/{s+=$3} END{print s+0}')
-    [ "$v" -lt 2000000000 ] && { say "  VRAM clear (${i}0s)"; return 0; }
+    # The engine's cards are what matter; the harness records card2/card3 plus nvidia0, so a
+    # card0/card1 sum can read zero forever. Sum every card and treat the GPU row as advisory.
+    v=$(rocm-smi --showmeminfo vram --csv 2>/dev/null | awk -F, '/^card[0-9]+/{s+=$3} END{print s+0}')
+    [ "${v:-0}" -lt 2000000000 ] && { say "  VRAM clear (${i}0s)"; return 0; }
     sleep 10
   done
-  say '  WARNING: VRAM still held'; return 1
+  say '  WARNING: VRAM still held after 400s'; return 1
 }
 
-# The leg's own judge lines, read inside each request's recorded engine-log window. A judge
-# line is "strata serve: prompt N tokens = R reused + K read in ..."; the first request of a
-# leg must read R = 0 (a cold read), and a prefill leg has no warm request at all.
-leg_coldness() {   # RECORD -> "VALID <reused per request>" or "INVALID <reason>"
-  $PY - "$1" <<'PY'
+# The leg's own judge lines, read inside each request's recorded engine-log window.
+# A judge line is "strata serve: prompt N tokens = R reused + K read in ...". Only the FIRST
+# request decides coldness: a tg leg sends the same prompt twice and request 1 is cached by
+# design. A request without its own window is INVALID - the engine log is shared, so falling
+# back to the whole file would validate this leg on a previous leg's cold line.
+leg_coldness() {   # RECORD ARM WINDOW SHAPE SINCE -> "VALID ..." or "INVALID <reason>"
+  $PY - "$1" "$2" "$3" "$4" "$5" "$ROOT" <<'PY'
 import json, re, sys
 JUDGE = re.compile(r"prompt (\d+) tokens = (\d+) reused \+ (\d+)")
-path = sys.argv[1]
+path, arm, win, shape, since, root = sys.argv[1:7]
+sys.path.insert(0, root + "/bench/ab-v0210/rpcprof")
+import port_ab_configs as pc
+import port_ab_contract as C
+
+def bad(reason):
+    print("INVALID " + reason)
+    raise SystemExit(0)
+
 try:
     rec = json.load(open(path))
 except (OSError, ValueError):
-    print("INVALID no leg record at " + path)
-    raise SystemExit(0)
+    bad("no leg record at " + path)
+
+want_sha = pc.ARMS[arm]["engine_sha256"]
+if rec.get("engine_sha256") != want_sha:
+    bad("record engine_sha256 %s != arm %s %s" % (str(rec.get("engine_sha256"))[:12], arm, want_sha[:12]))
 try:
-    blob = open(rec["elog"], "rb").read() if rec.get("elog") else b""
-except OSError:
-    blob = b""
-counts = []
-for req in rec.get("requests") or []:
-    start, end = req.get("elog_start"), req.get("elog_end")
-    seg = blob[start:end] if isinstance(start, int) and isinstance(end, int) else blob
-    counts += [int(m[1]) for m in JUDGE.findall(seg.replace(b"\0", b"").decode("utf-8", "replace"))]
-if not counts:
-    print("INVALID no judge line in the leg's engine-log window (" + path + ")")
-    raise SystemExit(0)
-kind = rec.get("kind") or "-"
-joined = ",".join(str(c) for c in counts)
-if counts[0] != 0:
-    print("INVALID reused " + str(counts[0]) + " on the first request != 0 (per-request " + joined + ")")
-    raise SystemExit(0)
-if kind != "tg" and any(c != 0 for c in counts):
-    print("INVALID reused " + joined + " on a " + kind + " leg (every request must be cold)")
-    raise SystemExit(0)
-print("VALID reused " + joined)
+    ts, started = float(rec.get("ts") or 0), float(since)
+except (TypeError, ValueError):
+    bad("record ts or leg start is not a number")
+if ts < started - 1:
+    bad("record ts %.0f predates this leg (%.0f): a previous run's file" % (ts, started))
+
+expected_bytes = C.SHAPES[C.corpus_shape(shape)]["bytes"]
+if rec.get("prompt_bytes") not in (None, expected_bytes):
+    bad("record prompt_bytes %s != shape %s %d" % (rec.get("prompt_bytes"), shape, expected_bytes))
+
+reqs = rec.get("requests") or []
+if not reqs:
+    bad("record has no requests")
+first = reqs[0]
+start, end = first.get("elog_start"), first.get("elog_end")
+if not (isinstance(start, int) and isinstance(end, int) and end > start):
+    bad("request 0 has no engine-log window; refusing to judge it on the whole file")
+try:
+    with open(rec["elog"], "rb") as f:
+        f.seek(start)
+        blob = f.read(end - start).replace(b"\0", b"").decode("utf-8", "replace")
+except (OSError, KeyError, TypeError) as error:
+    bad("cannot read the engine-log window: %s" % error)
+
+hits = JUDGE.findall(blob)
+if not hits:
+    bad("no judge line in request 0's window")
+tokens, reused = int(hits[0][0]), int(hits[0][1])
+# tokens_expected is the corpus's nominal size (144000 for dec144k) while the engine reports
+# the tokens it actually tokenised (143893). A 10% band still separates every shape in the
+# contract, which differ by 10x and 70x, so it catches a cross-shape judge line.
+nominal = C.SHAPES[C.corpus_shape(shape)].get("tokens_expected") or 0
+if nominal and abs(tokens - nominal) > 0.10 * nominal:
+    bad("judge line serves %d tokens, which is not shape %s (~%d)" % (tokens, shape, nominal))
+if reused != 0:
+    bad("reused %d on the first request != 0 (warm; a resumed checkpoint)" % reused)
+# The leg's KIND is per window: dec144k is a tg leg (two requests, the second cached by
+# design) in W2 and W4 but a plain prefill elsewhere. LEGS[shape]["kind"] is only the
+# default, so a tg leg must not be judged on request 1's reuse.
+leg = C.LEGS.get(shape, {})
+kind = (leg.get("kind_by_window") or {}).get(win) or leg.get("kind")
+if kind != "tg":
+    rest = [int(r) for _, r, _ in hits[1:]]
+    if any(rest):
+        bad("reused %s on a %s leg (every request must be cold)" % (rest, kind))
+print("VALID reused=0 tokens=%d kind=%s" % (tokens, kind))
 PY
 }
 
-# The expected tuple, proven from three places: the boot wrapper's own identity line (the plan
-# it sourced after prerequisite 0 passed), the engine log's "engine started:" path (the binary
-# actually started) and the boot record (sha, path, port, and that this boot wrote it at all).
-identity_check() {   # KEY ARM BOOT_EPOCH -> 0 when the boot is the expected tuple
-  local key=$1 arm=$2 since=$3
-  local want_sha="" want_exe="" want_srv="" want_port=""
-  local blew_sha="" elog_exe="" rec_sha="" rec_exe="" rec_port="" rec_started=0
+# The expected tuple, proven from five places: the boot wrapper's identity line (the plan it
+# sourced after prerequisite 0 passed), the engine log's "engine started:" path, the boot
+# record (engine sha, path, SERVER arm, server tree, helper sha, port, start time), the record's
+# own mtime, and the live process's /proc/<pid>/exe. The record alone proves a plan ran; only
+# the live process proves what is answering the port.
+identity_check() {   # KEY ARM BOOT_EPOCH SERVER_ARM -> 0 when the boot is the expected tuple
+  local key=$1 arm=$2 since=$3 srv_arm=$4
+  local want_sha="" want_exe="" want_helper="" want_srv="" want_port="" want_srv_arm="$srv_arm"
+  local blew_sha="" blew_helper="" elog_exe="" rec_line="" bad=0 pid="" live_exe=""
   local blo="$LOGD/$key-boot.log" elog="$OUT/logs/$key.engine.log" rec="$OUT/boots/$key.json"
-  local bad=0
-  read -r want_sha want_exe want_srv want_port < <(arm_identity "$arm")
+  read -r want_sha want_exe want_helper want_srv want_port < <(arm_identity "$arm")
+  want_srv=$(server_tree_of "$srv_arm")
   want_exe="$ROOT/$want_exe"
-  IDENTITY_EXPECTED="engine $arm sha256 ${want_sha:0:12} $want_exe + server $want_srv port $want_port"
+  IDENTITY_EXPECTED="engine $arm ${want_sha:0:12} $want_exe + helper ${want_helper:0:8} | server $srv_arm $want_srv | port $want_port"
 
   if [ -f "$blo" ]; then
     blew_sha=$(grep -a -m1 "^port_ab_boot: $key engine " "$blo" | awk '{print $4}')
+    blew_helper=$(grep -a -m1 "^port_ab_boot: $key engine " "$blo" | awk '{print $6}')
     if grep -qa 'REFUSING' "$blo"; then
       say "    boot log carries a REFUSING line: $(grep -a -m1 'REFUSING' "$blo" | cut -c1-120)"
       bad=$((bad + 1))
@@ -179,6 +276,9 @@ identity_check() {   # KEY ARM BOOT_EPOCH -> 0 when the boot is the expected tup
   [ "${blew_sha:0:12}" = "${want_sha:0:12}" ] || {
     say "    boot log engine sha '${blew_sha:-none}' != expected arm $arm '${want_sha:0:12}'"
     bad=$((bad + 1)); }
+  [ "${blew_helper:0:8}" = "${want_helper:0:8}" ] || {
+    say "    boot log helper sha '${blew_helper:-none}' != expected '${want_helper:0:8}'"
+    bad=$((bad + 1)); }
 
   if [ -f "$elog" ]; then
     elog_exe=$(tr -d '\000' < "$elog" | grep -a 'engine started: ' | tail -1 \
@@ -189,47 +289,119 @@ identity_check() {   # KEY ARM BOOT_EPOCH -> 0 when the boot is the expected tup
     bad=$((bad + 1)); }
 
   if [ -f "$rec" ]; then
-    read -r rec_sha rec_exe rec_port rec_started < <($PY -c 'import json, sys
-try:
-    d = json.load(open(sys.argv[1]))
-except Exception:
-    d = {}
-print(d.get("engine_sha256") or "-", d.get("engine") or "-", d.get("port") or "-", d.get("started_epoch") or 0)' "$rec")
+    rec_line=$($PY -c 'import json,sys
+try: d=json.load(open(sys.argv[1]))
+except Exception: d={}
+print("|".join(str(d.get(k) or "-") for k in ("engine_sha256","engine","port","server_arm","server_tree","helper_sha256","started_epoch")))' "$rec")
   fi
-  [ "$rec_sha" = "$want_sha" ] || {
-    say "    boot record engine_sha256 '${rec_sha:-missing}' != expected '$want_sha'"
+  local rec_sha rec_exe rec_port rec_srv_arm rec_srv_tree rec_helper rec_started
+  IFS='|' read -r rec_sha rec_exe rec_port rec_srv_arm rec_srv_tree rec_helper rec_started <<< "${rec_line:------}"
+  [ "$rec_sha" = "$want_sha" ] || { say "    boot record engine_sha256 '${rec_sha:-missing}' != expected '$want_sha'"; bad=$((bad + 1)); }
+  [ "$rec_exe" = "$want_exe" ] || { say "    boot record engine '${rec_exe:-missing}' != expected '$want_exe'"; bad=$((bad + 1)); }
+  [ "$rec_port" = "$want_port" ] || { say "    boot record port '${rec_port:-missing}' != expected '$want_port'"; bad=$((bad + 1)); }
+  # The server half: the arm with the same config cwd would pass every engine check and still
+  # measure a native control, which is exactly the 2026-11-25 defect.
+  [ "$rec_srv_arm" = "$want_srv_arm" ] || { say "    boot record server_arm '${rec_srv_arm:-missing}' != expected '$want_srv_arm'"; bad=$((bad + 1)); }
+  [ "$rec_srv_tree" = "$want_srv" ] || { say "    boot record server_tree '${rec_srv_tree:-missing}' != expected '$want_srv'"; bad=$((bad + 1)); }
+  [ "$rec_helper" = "$want_helper" ] || { say "    boot record helper_sha256 '${rec_helper:-missing}' != expected '$want_helper'"; bad=$((bad + 1)); }
+  awk -v started="$rec_started" -v since="$since" 'BEGIN{exit !(started + 0 >= since - 1)}' || {
+    say "    boot record started_epoch ${rec_started} predates this boot ($since)"
     bad=$((bad + 1)); }
-  [ "$rec_exe" = "$want_exe" ] || {
-    say "    boot record engine '${rec_exe:-missing}' != expected '$want_exe'"
-    bad=$((bad + 1)); }
-  [ "$rec_port" = "$want_port" ] || {
-    say "    boot record port '${rec_port:-missing}' != expected '$want_port'"
-    bad=$((bad + 1)); }
-  awk -v started="$rec_started" -v since="$since" 'BEGIN{exit !(started + 5 >= since)}' || {
-    say "    boot record started_epoch ${rec_started} is older than this boot ($since): the boot never reached its record step, so something else is answering"
-    bad=$((bad + 1)); }
+  if [ -f "$rec" ]; then
+    [ "$(stat -c %Y "$rec")" -ge "$((since - 1))" ] || {
+      say "    boot record mtime is older than this boot; it is a previous run's file"
+      bad=$((bad + 1)); }
+  fi
 
-  IDENTITY_FOUND="boot-log '${blew_sha:0:12}' engine-log '${elog_exe:-none}' record '${rec_sha:0:12}' path '${rec_exe:-none}' port '${rec_port:-none}' started ${rec_started}"
+  # What is actually answering the port, independent of any record.
+  pid=$(./bench/fault-va/engine_pid.sh 2>/dev/null || true)
+  if [ -n "$pid" ]; then
+    live_exe=$(readlink "/proc/$pid/exe" 2>/dev/null || true)
+    [ "$live_exe" = "$want_exe" ] || {
+      say "    live engine pid $pid runs '${live_exe:-none}', not '$want_exe'"
+      bad=$((bad + 1)); }
+  else
+    say "    no serving engine process found, so the port is answered by something unknown"
+    bad=$((bad + 1))
+  fi
+
+  IDENTITY_FOUND="boot-log engine ${blew_sha:0:12} helper ${blew_helper:0:8} | engine-log ${elog_exe:-none} | record engine ${rec_sha:0:12} server '${rec_srv_arm:-?}' '${rec_srv_tree:-?}' helper ${rec_helper:0:8} port ${rec_port:-?} | live pid ${pid:-none} ${live_exe:-none}"
   return "$bad"
 }
 
-one_boot() {
-  local win=$1 arm=$2 group=$3 rep=$4 shape=$5
+wait_for_driver() {  # ARM -> 0 when the driver ran and exited, 1 when it never appeared
+  local arm=$1 i appeared=0
+  # port_ab_legs.py spawns ab9_driver.py a few seconds AFTER the detached launch, so
+  # "not there yet" must not be read as "finished". That mistake made this runner kill its own
+  # pair mid-prefill and manufacture the resumed-checkpoint leg it exists to prevent.
+  for i in $(seq 1 24); do
+    if pgrep -f "ab9_driver.py --arm $arm" >/dev/null; then appeared=1; break; fi
+    sleep 5
+  done
+  if [ "$appeared" -eq 0 ]; then return 1; fi
+  for i in $(seq 1 120); do
+    pgrep -f "ab9_driver.py --arm $arm" >/dev/null || return 0
+    sleep 10
+  done
+  return 2
+}
+
+fire_leg() {   # KEY WIN ARM BOOT REP SHAPE SINCE -> 0 measured, 1 invalid, 2 failed
+  local key=$1 win=$2 arm=$3 group=$4 rep=$5 shape=$6 since=$7 verdict rc
+  say "  firing $shape"
+  setsid nohup $PY "$LEGS" --window "$win" --arm "$arm" --boot "$group" --rep "$rep" --shape "$shape" --run \
+    > "$LOGD/$key-leg-$shape.log" 2>&1 < /dev/null &
+  wait_for_driver "$arm"
+  rc=$?
+  if [ "$rc" -eq 1 ]; then
+    say "  DRIVER-NEVER-APPEARED $key/$shape - see $LOGD/$key-leg-$shape.log"
+    CELLS_FAILED=$((CELLS_FAILED + 1)); return 2
+  elif [ "$rc" -eq 2 ]; then
+    say "  DRIVER-DID-NOT-EXIT $key/$shape within 1200s"
+    CELLS_FAILED=$((CELLS_FAILED + 1)); return 2
+  fi
+  say '  leg finished; cold-read check:'
+  tr -d '\000' < "$OUT/logs/$key.engine.log" 2>/dev/null \
+    | grep -aE 'prompt [0-9]+ tokens = ' | tail -2 | sed 's/^/    /' | cut -c1-150
+  verdict=$(leg_coldness "$OUT/records/$key/$arm-$shape.json" "$arm" "$win" "$shape" "$since")
+  case "$verdict" in
+    VALID*)
+      say "  LEG VALID $key/$shape: $verdict"
+      LEGS_MEASURED=$((LEGS_MEASURED + 1)); return 0 ;;
+    *)
+      say "  LEG INVALID $key/$shape: ${verdict#INVALID } - not counted"
+      LEGS_INVALID=$((LEGS_INVALID + 1)); return 1 ;;
+  esac
+}
+
+one_boot() {   # WIN ARM GROUP REP SHAPE [SHAPE2 ...] - server arm from the schedule
+  local win=$1 arm=$2 group=$3 rep=$4; shift 4
+  local shapes=("$@")
   local key="$win-$arm-$group-r$rep"
-  local i h since
+  local srv_arm i h since shape
+  if ! srv_arm=$(cell_spec "$win" "$arm" "$group" "$rep"); then
+    say "REFUSING cell $key: the window's schedule has no such boot (engine $arm, boot $group, rep $rep)"
+    CELLS_FAILED=$((CELLS_FAILED + 1)); return 1
+  fi
   if [ "$DRY" = 1 ]; then
-    local d_sha="" d_exe="" d_srv="" d_port="" s_bytes="" s_tok="" s_cap="" s_kind=""
-    read -r d_sha d_exe d_srv d_port < <(arm_identity "$arm")
-    read -r s_bytes s_tok s_cap s_kind < <(shape_info "$win" "$shape")
-    say "  DRY $key: engine $arm ${d_sha:0:12} $d_exe + server $d_srv, port $d_port,"
-    say "      shape $shape ($s_kind: $s_bytes B corpus ~$s_tok tokens, max_tokens $s_cap)"
+    local d_sha d_exe d_helper d_tree d_port s_bytes s_tok s_cap s_kind
+    read -r d_sha d_exe d_helper d_tree d_port < <(arm_identity "$arm")
+    : "$d_tree"   # field order is arm_identity's; the server tree printed below is the one used
+    say "  DRY $key: engine $arm ${d_sha:0:12} $d_exe + helper ${d_helper:0:8}"
+    say "      server $srv_arm $(server_tree_of "$srv_arm") (passes --server-arm $srv_arm), port $d_port"
+    for shape in "${shapes[@]}"; do
+      read -r s_bytes s_tok s_cap s_kind < <(shape_info "$win" "$shape")
+      say "      shape $shape ($s_kind: $s_bytes B corpus ~$s_tok tokens, max_tokens $s_cap)"
+    done
     return 0
   fi
-  say "boot $key"
-  wait_vram
+  say "boot $key (engine $arm, server $srv_arm)"
+  wait_vram || { say "  VRAM held; not booting $key"; CELLS_FAILED=$((CELLS_FAILED + 1)); return 1; }
   since=$(date +%s)
-  setsid nohup bash bench/ab-v0210/rpcprof/port_ab_boot.sh "$win" "$arm" "$group" "$rep" --waive-nonengine \
-    > "$LOGD/$key-boot.log" 2>&1 < /dev/null &
+  local boot_args=("$win" "$arm" "$group" "$rep" --server-arm "$srv_arm")
+  [ "$WAIVE" -eq 1 ] && boot_args+=(--waive-nonengine)
+  setsid nohup bash "$BOOT" "${boot_args[@]}" > "$LOGD/$key-boot.log" 2>&1 < /dev/null &
+  h=""
   for i in $(seq 1 45); do
     h=$(curl -fsS -m 2 http://127.0.0.1:8009/health 2>/dev/null | head -c 12 || true)
     [ -n "$h" ] && { say "  healthy after ~$((i*10))s"; break; }
@@ -239,58 +411,61 @@ one_boot() {
     say "  NOT HEALTHY - skipping"; tail -3 "$LOGD/$key-boot.log"
     CELLS_FAILED=$((CELLS_FAILED + 1)); return 1
   fi
-  if ! identity_check "$key" "$arm" "$since"; then
+  if ! identity_check "$key" "$arm" "$since" "$srv_arm"; then
     say "BOOT-IDENTITY-MISMATCH $key expected=[$IDENTITY_EXPECTED] found=[$IDENTITY_FOUND]"
-    bash bench/ab-v0210/rpcprof/port_ab_stop.sh "$win" "$arm" "$group" "$rep" 2>&1 | tail -2 | sed 's/^/    /'
+    bash "$STOP" "$win" "$arm" "$group" "$rep" 2>&1 | tail -2 | sed 's/^/    /'
     CELLS_FAILED=$((CELLS_FAILED + 1)); return 1
   fi
   say "  identity ok: $IDENTITY_FOUND"
-  say "  firing $shape"
-  setsid nohup $PY "$LEGS" --window "$win" --arm "$arm" --boot "$group" --rep "$rep" --shape "$shape" --run \
-    > "$LOGD/$key-leg.log" 2>&1 < /dev/null &
-  local _d
-  for _d in $(seq 1 90); do
-    pgrep -f "ab9_driver.py --arm $arm" >/dev/null || break
-    sleep 10
+  for shape in "${shapes[@]}"; do
+    fire_leg "$key" "$win" "$arm" "$group" "$rep" "$shape" "$since"
   done
-  say '  leg finished; cold-read check:'
-  tr -d '\000' < "$OUT/logs/$key.engine.log" 2>/dev/null \
-    | grep -aE 'prompt [0-9]+ tokens = ' | tail -3 | sed 's/^/    /' | cut -c1-150
-  local verdict
-  verdict=$(leg_coldness "$OUT/records/$key/$arm-$shape.json")
-  case "$verdict" in
-    VALID*)
-      say "  LEG VALID $key/$shape: first-request reused 0 ($verdict)"
-      LEGS_MEASURED=$((LEGS_MEASURED + 1)) ;;
-    *)
-      say "  LEG INVALID $key/$shape: ${verdict#INVALID } - not a cold read, not counted"
-      LEGS_INVALID=$((LEGS_INVALID + 1)) ;;
-  esac
-  bash bench/ab-v0210/rpcprof/port_ab_stop.sh "$win" "$arm" "$group" "$rep" 2>&1 | tail -2 | sed 's/^/    /'
+  bash "$STOP" "$win" "$arm" "$group" "$rep" 2>&1 | tail -2 | sed 's/^/    /'
 }
+
+run_plan() {
+  say 'W4 cells 3-4 (rep 2 of each cross cell)'
+  one_boot W4 B dec 2 dec144k
+  one_boot W4 A dec 2 dec144k
+  say 'W3s span pair: discarded warmup r0, then claim r1, both shapes each boot'
+  one_boot W3s A spans 0 dec144k-spans pp239k-spans
+  one_boot W3s B spans 0 dec144k-spans pp239k-spans
+  one_boot W3s A spans 1 dec144k-spans pp239k-spans
+  one_boot W3s B spans 1 dec144k-spans pp239k-spans
+  say 'note: W3s r2 exists in the schedule and is NOT run here, so W3s is n=1/arm (descriptive)'
+}
+
+# --check-leg: judge one existing leg record with the same guard the runner uses. This exists
+# so the guard itself can be audited against known-cold and known-warm records without a GPU.
+if [ -n "$CHECK_LEG" ]; then
+  if [ "${#CHECK_ARGS[@]}" -ne 4 ]; then
+    echo "--check-leg needs RECORD ARM WINDOW SHAPE SINCE_EPOCH; got ${#CHECK_ARGS[@]} of 4" >&2
+    exit 2
+  fi
+  [ -r "$CHECK_LEG" ] || { echo "cannot read $CHECK_LEG" >&2; exit 2; }
+  verdict=$(leg_coldness "$CHECK_LEG" "${CHECK_ARGS[0]}" "${CHECK_ARGS[1]}" "${CHECK_ARGS[2]}" "${CHECK_ARGS[3]}")
+  echo "$verdict"
+  case "$verdict" in VALID*) exit 0 ;; *) exit 1 ;; esac
+fi
 
 if [ "$DRY" != 1 ]; then take_lock; fi
 prereq_gate
 gate=$?
 if [ "$DRY" = 1 ]; then
-  say 'DRY RUN: prerequisite check + argument parsing only; no boot, no leg, no process started'
-  say 'W4 cells 3-4'
-  one_boot W4 B dec 2 dec144k
-  one_boot W4 A dec 2 dec144k
-  say 'W3s span pair (144k, instrumented)'
-  one_boot W3s B spans 1 dec144k-spans
-  one_boot W3s A spans 1 dec144k-spans
+  say 'DRY RUN: prerequisite check and argument parsing only; no boot, no leg, no process started'
+  run_plan
   if [ "$gate" -eq 0 ]; then say 'DRY RUN: the gate would open the window'; exit 0; fi
-  say 'DRY RUN: the gate refuses - a real run would boot nothing and exit 3'
+  say 'DRY RUN: the gate does not open a window - a real run would boot nothing and exit with that code'
   exit "$gate"
 fi
 [ "$gate" -eq 0 ] || exit "$gate"
 
-say 'W4 cells 3-4'
-one_boot W4 B dec 2 dec144k
-one_boot W4 A dec 2 dec144k
-say 'W3s span pair (144k, instrumented)'
-one_boot W3s B spans 1 dec144k-spans
-one_boot W3s A spans 1 dec144k-spans
-say "done: $LEGS_MEASURED leg(s) measured cold, $LEGS_INVALID leg(s) INVALID, $CELLS_FAILED cell(s) failed"
+run_plan
+say "done: $LEGS_MEASURED leg(s) measured cold, $LEGS_INVALID leg(s) INVALID, $CELLS_FAILED failure(s)"
 $PY "$LEGS" --check W4 2>&1 | tail -12
+$PY "$LEGS" --check W3s 2>&1 | tail -8
+if [ "$CELLS_FAILED" -ne 0 ] || [ "$LEGS_INVALID" -ne 0 ]; then
+  say "exiting non-zero: $CELLS_FAILED cell failure(s), $LEGS_INVALID invalid leg(s)"
+  exit 1
+fi
+exit 0
