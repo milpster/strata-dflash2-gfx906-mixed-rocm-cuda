@@ -112,6 +112,45 @@ session's changes. The two suites that import the changed modules
 | `5f631b6118` | record the two W4 boots that ran, with the mis-keyed one kept visible |
 | `20afcbe323` | w4_finish: resolve the serving pid by exact exe path, not name prefix |
 | `17410aea01` | report: the phase decomposition already exists behind STRATA_TRACE |
+| `20afcbe323` … `3698653be2` | w4_finish hardened through three review rounds: exact-path pid resolution, foreground leg call, a tg leg must carry both requests, live server proof, absolute server tree |
+| `17b0338685` | regression test for evidence immutability, mutation-checked |
+| `9d65a82cff` | w4_preflight: names the blockers and prints the window command |
+
+## The review loop, and what it caught
+
+Oracle rejected the first repair round with **39 findings**, including one that had already
+corrupted published evidence (`--server-arm` never passed). The second round rejected again on
+one blocker, confirmed against a synthetic record: `leg_coldness` judged a `tg` leg on request 0
+alone, so a record whose decode request never ran passed as measured. A one-request copy of
+`W2-A-dec-r1` returned VALID before the fix and INVALID after. The third round returned
+**APPROVED**, and its two residual points (request 1 must be the same prompt, bounded by the
+shape's cap) were applied anyway.
+
+One defect was found by the parent rather than a reviewer: `want_srv` was built from the arm
+config's relative `server_tree` (`"v0215"`) while the boot record stores an absolute one
+(`"/mnt/srcds/Strata/v0215"`), so the equality check would have failed **every** legitimate
+boot. Both paths are absolute now and match both real W4 boot records.
+
+## Opening the window is now one command
+
+`bench/fault-va/w4_preflight.sh` is read-only and prints, on this box, exactly what blocks it:
+
+```
+BLOCKED: gate: VERDICT: REFUSED (exit 1)
+  FAIL: process(es) >= 2 GiB RSS must be resolved or reported: 66182, 132596
+      pid 66182  2.12 GiB  up 172 min  /usr/bin/borg create …
+      pid 132596 2.04 GiB  up 169 min  …/uv/archive-v0/…/bin/python
+```
+
+and then the invocation:
+
+```
+setsid nohup ./bench/fault-va/w4_finish.sh --waive-nonengine > bench/fault-va/out/logs/w4-finish.log 2>&1 < /dev/null &
+```
+
+All three blockers are the operator's: the backup, the game, and the agent host's own MCP
+python, which sits inside the **unwaivable** per-process rule because the session doing the
+measuring is itself a 2 GiB process.
 
 ## Open, and who owns it
 
