@@ -129,8 +129,16 @@ LEGS = {
                "kind_by_window": {"W1": "prefill", "W1d": "prefill", "W1f": "prefill",
                                   "W3": "tg"},
                "max_tokens": 1024},
+    # dec144k, 144k context. W2 keeps the two-request tg shape (request 1 the cold prefill,
+    # request 2 the cached re-run, whose gen rate is the window's decode metric). W4 keeps the
+    # same SHAPE - the same corpus, the same 1,024-token cap, the same two requests, so its boots
+    # stay comparable to W2's - but makes NO TG CLAIM on it: its gate metric is request 1's
+    # read_tps (see the W4 entry for why the TG floor cannot be met here). The decode numbers a
+    # W4 leg still records are context only. tg_claim_by_window is the one switch that turns the
+    # 1,000-generated floor off for that window, and claims_tg() is the only reader of it.
     "dec144k": {"kind": "prefill", "kind_by_window": {"W2": "tg", "W4": "tg"},
-                "max_tokens": {"W2": 1024, "W4": 1024}},
+                "max_tokens": {"W2": 1024, "W4": 1024},
+                "tg_claim_by_window": {"W4": False}},
     "pp2k": {"kind": "prefill", "max_tokens": {"W2": 32}},
     "pp8k": {"kind": "prefill", "max_tokens": {"W2": 32}},
     "ttft3": {"kind": "ttft", "turns": 3, "max_tokens": 64, "corpus": "ttft2k"},
@@ -180,7 +188,16 @@ def gen_tokens(shape, window):
 
 
 def claims_tg(shape, window):
-    """True when this leg's kind produces a TG (decode) claim in this window."""
+    """True when this leg's kind produces a TG (decode) claim in this window.
+
+    A leg's KIND and CAP are not the whole rule: a window can run a two-request tg-shaped leg
+    and still make no TG claim on it, because its gate metric is a prefill rate. W4 is exactly
+    that case (its 144k leg stops at ~512 generated, under the floor - see the W4 entry), so
+    tg_claim_by_window names the windows where the leg is run for context only. Nothing else
+    reads that key, and a window it does not name keeps the kind-and-cap rule unchanged.
+    """
+    if not LEGS[shape].get("tg_claim_by_window", {}).get(window, True):
+        return False
     return LEGS[shape]["kind"] != "ttft" and gen_tokens(shape, window) >= TG_CLAIM_MIN_GENERATED
 
 
@@ -421,6 +438,43 @@ WINDOWS = {
         "gate_metric": "gen_tps",
         "delta": 0.08,
     },
+    # ---------------------------------------------------------------------------- W4
+    # The contract's 2x2 attribution window: A-engine+B-server and B-engine+A-server, two
+    # boots per cross cell. It answers one question - does the A-vs-B effect follow the ENGINE
+    # or the SERVER? - and its answer can only ever VETO an engine claim, never establish one.
+    #
+    # WHY THE GATE METRIC IS read_tps AND NOT gen_tps (changed 2026-11-25):
+    #   W4's leg is dec144k with kind tg and a 1,024-token cap, so the harness's TG floor
+    #   demands >= 1,000 tokens actually generated (TG_CLAIM_MIN_GENERATED) on every leg. This
+    #   model cannot produce them at that cap in this harness. On all four W2 decode boots the
+    #   server printed "thinking limited to 512 of max_tokens 1024 so the answer has room
+    #   ("answer_room": false in the config turns this off)" and the legs generated 512-513
+    #   tokens (measured 2026-11-24: W2-A-dec-r1 513, W2-A-dec-r2 513, W2-B-dec-r1 512,
+    #   W2-B-dec-r2 512; W3-B-pp-r1 is the same 518/512 at the same cap).
+    #   That is the answer-room guard: with thinking on and no budget of the request's own, the
+    #   thinking is closed at max_tokens - min(max(ANSWER_RESERVE_MIN 512, max_tokens // 4),
+    #   max_tokens // 2). At this cap the binding term is the 512 floor, NOT max_tokens // 4
+    #   (which is 256 here): 1,024 - min(max(512, 256), 512) = 1,024 - 512 = 512. The reply
+    #   then writes its answer and ends at EOS, so the judge line counts 512-518 generated, not
+    #   the 1,024 cap. Code: serve/server.py:5501-5513 in run/port0218-server and :6399-6411 in
+    #   v0215 (ANSWER_ROOM_MIN_CAP 1024 / ANSWER_RESERVE_MIN 512 at :222-225).
+    #   It BITES because thinking is on: the claim request template's top-level
+    #   "enable_thinking": false is not read by the chat path (serve/frontend.py:669-680 and
+    #   :173-187 in run/port0218-server: only chat_template_kwargs.enable_thinking, or a
+    #   reasoning_effort of "none", turns thinking off; the template's reasoning_effort "low"
+    #   leaves it ON). Not this window's business to fix - it is why the cap, not the 1,024-token
+    #   max_tokens, decides how many tokens a leg generates.
+    #   The decode metric is therefore UNAVAILABLE at 144k in this harness at any cap the
+    #   contract allows - raising it does not help (W3p measured 1,536 generated under a 2,048
+    #   cap, and W3p only clears the floor because it runs with thinking ON and a 2,000-token
+    #   budget, which is a different serving shape, a different window and not poolable here).
+    #   read_tps is what the SAME legs already yield: request 1 of the same boot is a 143,893-
+    #   token COLD prefill, measured A 322.4/318.9 (median 320.65) and B 298.7/312.5 (median
+    #   305.60) tok/s across the W2 boots (n=2, descriptive). It is EOS-independent, above every
+    #   floor, and it is the exact shape at which the arms differ - so it is the discriminating
+    #   metric for this 2x2. The leg keeps its two-request tg shape (the decode numbers a W4
+    #   boot records stay context only, tg_claim_by_window), and the cap stays 1,024: nothing
+    #   about what the boot RUNS changes, only what the window is judged on.
     "W4": {
         "name": "2x2 engine x server cell (veto-only)",
         "margins": "explicit",
@@ -433,9 +487,23 @@ WINDOWS = {
         "boots_per_cell": 2,
         "warmup_boots": 0,
         "budget_s": None,
-        "contract_budget_s": [2700, 3900],   # ~1 h
-        "gate_metric": "gen_tps",
-        "delta": None,
+        "contract_budget_s": [2700, 3900],   # ~1 h - unchanged by the metric re-scope
+        "metric_note": "read_tps of the leg's request 1 (the 143,893-token cold prefill, the same "
+                       "judge line a decode leg already produces). The read rate is judged against "
+                       "the pre-registered 5 % prefill delta, and it is the rate the cells must "
+                       "reproduce for the pair's direction to stand",
+        "gate_metric": "read_tps",
+        # the SAME pre-registered prefill delta W1/W1d/W1f are read against (CLAIM
+        # delta_pre_registered prefill_read_tps 0.05). Copied, not invented; the leg now gates on
+        # the quantity that delta was stated for.
+        "delta": 0.05,
+        "delta_note": "decode 8 % pre-registered (CLAIM delta_pre_registered decode_gen_tps) is "
+                      "KEPT AS HISTORY ONLY: when W4 gated on gen_tps this was its delta. The "
+                      "decode metric cannot be measured at 144k here (all four W2 decode boots "
+                      "generated 512-513 tokens at a 1,024 cap, under the 1,000-token TG floor), "
+                      "so W4 gates on read_tps and carries the same 5 % prefill delta as W1 - "
+                      "descriptive at 2 boots/cell, never a threshold this window can clear into "
+                      "a claim",
         "claim": "VETO ONLY: with 2 boots/cell min exact p = 0.33; the cell can reject an engine "
                  "claim (the effect follows the server, or the cells disagree) but can never "
                  "establish one. Pair attribution stands until a cell vetoes it.",

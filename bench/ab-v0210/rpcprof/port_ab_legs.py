@@ -1385,21 +1385,50 @@ def selftest():
             failures.append("supervisor-normal-stop")
 
     # the TG floor (operator directive 2026-11-24): a decode leg needs >= 1,000 tokens
-    # actually generated; W1's 8-token prefill tail is context only, never a TG rate
+    # actually generated; W1's 8-token prefill tail is context only, never a TG rate.
+    # The fixture is W3 (pp239k, kind tg, 1,024 cap) - the window whose metric IS gen_tps.
+    # W4 must NOT be used here any more: its gate metric is read_tps, so it makes no TG claim
+    # and the floor is deliberately not applied to it (see the W4 case just below).
     for name, generated, want in (("tg-999-generated-fails", 999, 1),
                                   ("tg-1000-generated-passes", 1000, 0)):
         with tempfile.TemporaryDirectory(dir=_tmpdir()) as root:
-            _fixture(root, "W4-A-dec-r1", "A", "dec144k", generated=generated)
-            _fixture(root, "W4-B-dec-r1", "B", "dec144k", generated=generated)
+            _fixture(root, "W3-A-pp-r1", "A", "pp239k", generated=generated)
+            _fixture(root, "W3-B-pp-r1", "B", "pp239k", generated=generated)
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
-                rc = check(pathlib.Path(root), "W4")
+                rc = check(pathlib.Path(root), "W3")
             text = buf.getvalue()
             ok = (rc == want and (("TG leg generated " + str(generated)) in text) == bool(want))
             print(("ok   " if ok else "FAIL ") + name + ": rc " + str(rc) + " (want "
                   + str(want) + ")")
             if not ok:
                 failures.append(name)
+    # W4's re-scope (2026-11-25): the SAME short generation that FAILS as a TG leg in W3
+    # PASSES in W4, because W4 is judged on request 1's read_tps and makes no TG claim at all.
+    # 513 is the number all four W2 decode boots actually generated at the 1,024 cap, so this
+    # is the exact case the preflight found: it must not fail the window any more, and the TG
+    # column must say "ctx" rather than quietly counting it as a TG sample.
+    with tempfile.TemporaryDirectory(dir=_tmpdir()) as root:
+        for key, arm in (("W4-A-dec-r1", "A"), ("W4-B-dec-r1", "B")):
+            _fixture(root, key, arm, "dec144k", generated=513, second_reused=144405)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = check(pathlib.Path(root), "W4")
+        text = buf.getvalue()
+        # columns: shape arm boot promptN reused read_tps gen_tps TG ...
+        # only the per-leg table (its third column is the boot key); the claim-n table below it
+        # prints rows that also start with the shape name
+        cells = [ln.split() for ln in text.splitlines()
+                 if ln.startswith("dec144k") and " W4-" in ln]
+        ctx_only = bool(cells) and all(len(c) > 7 and c[7] == "ctx" for c in cells)
+        read_ok = bool(cells) and all(c[5] not in ("-", "0") for c in cells)
+        ok = rc == 0 and "TG leg generated" not in text and ctx_only and read_ok
+        print(("ok   " if ok else "FAIL ") + "w4-short-generation-passes-on-read_tps: rc "
+              + str(rc) + " (want 0; 513 generated at the 1,024 cap must be context, not a "
+              "TG shortfall; read_tps must be the judged column)")
+        if not ok:
+            failures.append("w4-short-generation-passes-on-read_tps")
+            print(text)
     # the engine identity gate: a leg record's engine must be the arm's pinned build AND the
     # engine its own boot record started. A record naming no engine stays informational (the
     # historical windows are not retro-failed), but says it cannot be attributed to a build.
@@ -1751,8 +1780,10 @@ def selftest():
           "with no engine sha is informational only, and the per-boot evidence is written "
           "beside the boot record; a 1,024-token pp239k leg is TG=tg, a 32-token tail stays "
           "TG=ctx, a record written under the old 8-token cap warns instead of failing "
-          "the window it is the untouched baseline of, and the prod-shape leg prints tg* when "
-          "it clears the floor and FAILs when it does not; an unbalanced claim sample is a "
+          "the window it is the untouched baseline of, the prod-shape leg prints tg* when "
+          "it clears the floor and FAILs when it does not, and W4's 513-generated leg PASSES "
+          "on read_tps where W3's same short generation FAILs on the TG floor (W4 makes no TG "
+          "claim); an unbalanced claim sample is a "
           "problem line carrying both arms' counts (a balanced one is not reported), a "
           "restarted boot's legs are out of the sample, the low-VRAM count sees the fork's "
           "'- LOW:'/'(below 512 MiB)' and the port's reworded sentence alike so two arms' "

@@ -181,8 +181,17 @@ def arm_diffs(out, window="W1", rep=1):
                                               "so two identical-setting arms hash equal"}}
 
 
-# The pre-registered delta a leg's rate is read against. None (as W4 and W3p have) means
-# the leg has no pre-registered delta to move against: it is descriptive, never a claim input.
+# The pre-registered delta a leg's rate is read against. None (as W3p has) means the leg has
+# no pre-registered delta to move against: it is descriptive, never a claim input.
+#
+# W4 was None until 2026-11-25, which was right while it gated on gen_tps and so had no
+# pre-registered decode delta of its own; it is now "prefill_read_tps" because the window's
+# gate metric is read_tps (port_ab_contract W4 entry). The key names the CLAIM block's
+# pre-registered 5 % prefill delta - the same one W1/W1d/W1f are read against - not a number
+# invented for W4. The decode 8 % W2 key stays on W2, where the decode rate is measured and
+# claimed; W4 cannot measure it (all four W2 decode boots generated 512-513 tokens at a
+# 1,024 cap, under the 1,000-token TG floor). The delta is still CONTEXT here: at 2 boots per
+# cell W4 is veto-only, so no interval exists that could clear it (see the window's claim).
 DELTA_KEY = {"pp239k": {"W1": "prefill_read_tps", "W1f": "prefill_read_tps",
                        "W3": "decode_gen_tps"},
              "pp239k-prodshape": {"W3p": None},
@@ -190,7 +199,7 @@ DELTA_KEY = {"pp239k": {"W1": "prefill_read_tps", "W1f": "prefill_read_tps",
              # against, and neither span shape is a claim shape.
              "dec144k-spans": {"W3s": None},
              "pp239k-spans": {"W3s": None},
-             "dec144k": {"W2": "decode_gen_tps", "W4": None},
+             "dec144k": {"W2": "decode_gen_tps", "W4": "prefill_read_tps"},
              "pp2k": {"W2": "short_pp_read_tps"},
              "pp8k": {"W2": "short_pp_read_tps"},
              "ttft3": {"W2": "ttft_turn1_s"}}
@@ -266,6 +275,16 @@ def leg_section(out, window):
                              + (" - PROD SHAPE (thinking ON): comparable to prod's serving "
                                 "shape, never pooled with a thinking-off prefill leg"
                                 if variant else "")
+                             # A tg-shaped leg whose window makes NO TG claim (W4): the window
+                             # gates on request 1's read rate, and the decode numbers the boot
+                             # still records are context only. Named here so a reader of the
+                             # manifest never takes the leg's kind for its claim.
+                             + ("" if C.claims_tg(shape, window) else
+                                "; THIS WINDOW GATES ON " + str(C.WINDOWS[window]["gate_metric"])
+                                + ": no TG claim is made on this leg (it cannot clear the "
+                                + str(C.TG_CLAIM_MIN_GENERATED) + "-token floor at a "
+                                + str(cap) + "-token cap in this harness), so the decode rate "
+                                  "is context only")
                              if C.kind_for(shape, window) == "tg"
                              else "read_tps from the single fresh request"
                                   + (" plus gen_tps off the SAME judge line ("
@@ -366,6 +385,9 @@ def prepare(out, do_preflight=True, previous_manifest=None):
             "delta": spec.get("delta"),
             "delta_note": spec.get("delta_note"),
             "gate_metric": spec["gate_metric"],
+            # what the gate metric is measured on, when the window needs to say (W4: request 1's
+            # read_tps, the one number its 144k legs yield that can be judged)
+            "metric_note": spec.get("metric_note"),
             # W1f carries its own claim text (it is the n=3 follow-up); every other window
             # gets the n=2/arm descriptive-only statement the contract's claim rule requires
             "claim": spec.get("claim", "descriptive only at n=2/arm (per-leg rates, ranges, "
@@ -627,6 +649,16 @@ def verify():
             problems.append(window + ": contract_budget_s does not match the contract table")
         if spec.get("interleave") != schedule_interleave(window):
             problems.append(window + ": interleave does not match the schedule")
+        # The window's GATE DECISION, not just its schedule: which number it is judged on and
+        # against which delta. These were written into the manifest but never re-derived, so a
+        # contract change to gate_metric/delta could leave a manifest (and every report that
+        # reads it) still judging a window on the old metric. W4's move from gen_tps to read_tps
+        # (2026-11-25) is exactly that kind of change, so it is pinned here.
+        for field in ("gate_metric", "delta", "delta_note", "metric_note"):
+            if spec.get(field) != C.WINDOWS[window].get(field):
+                problems.append(window + ": " + field + " in the manifest does not match the "
+                                "contract (" + repr(spec.get(field)) + " vs "
+                                + repr(C.WINDOWS[window].get(field)) + ")")
         for row in spec.get("schedule") or []:
             if row.get("boot") not in C.WINDOWS[window]["boot_groups"]:
                 problems.append(window + ": scheduled boot group " + str(row.get("boot"))
