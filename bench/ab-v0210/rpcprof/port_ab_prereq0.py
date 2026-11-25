@@ -13,7 +13,10 @@ pre-boot state a gate:
     PREREQ0_WAIVE_NONENGINE=1) when the box is running the operator's normal desktop; the waiver
     is recorded in the snapshot with who gave it and the reading, and every other gate stays
     fail-closed;
-  * no non-pinned process above ~50 % of a core on the stage cores 3,5,7,9,11,13,15;
+  * no non-pinned process above ~50 % of a core on the stage cores 3,5,7,9,11,13,15, and no
+    non-pinned, non-serving stage-core thread that consumed more than ~0.5 s of CPU across a
+    2 s interval (a duty-cycled hog reads under the line on any single sample, so the gate
+    takes a second sample and subtracts);
   * loadavg recorded;
   * no stratum serving process alive (the gate is PRE-BOOT: prod is stopped);
   * >= 40 GiB free where the leg cache dirs will be written (DISK, never compared to RAM).
@@ -43,10 +46,27 @@ MIB = 1024       # MiB per GiB (VmsumRSS and the ps snapshot)
 
 # `ps` reports %CPU as cputime/elapsed, which is unbounded as elapsed approaches zero: the
 # gate's own `ps` child shows 300 % for microseconds of work and lands on a stage core by
-# chance (observed 2026-11-25, 1 sample in 15). A process younger than this cannot have
-# competed with a prefill leg either, so age is the honest test, and such rows are reported
-# as `young` instead of being flagged.
+# chance (observed 2026-11-25, 1 sample in 15). Three rules keep that artefact and every
+# other near-zero-lifetime row out, without hiding a real burst:
+#
+#   * the gate's own pid AND the ps child that produced the listing are excluded by pid. The
+#     child's pid is the Popen pid (not guessed), so the self-match is structural; the
+#     age/CPU rule below is only the second line of defence when a pid is not known;
+#   * a row younger than HOT_MIN_AGE_S is exempt ONLY when it has also consumed less than
+#     YOUNG_CPU_S of CPU (ps `cputimes`). The ps child has ~0 s and is exempt; a 3 s build
+#     step or cron burst has ~3 s and is flagged. (The previous age-only rule made such a
+#     process permanently invisible: at 3 s old its etimes is 3 for its whole life.)
+#   * a second snapshot SAMPLE_LAG_S later flags any non-pinned, non-serving stage-core thread
+#     whose cputimes advanced by more than SAMPLE_CPU_S across the interval, which catches a
+#     duty-cycled hog a single instantaneous sample misses.
+#
+# `ps cputimes` is whole seconds, so the CPU tests have 1 s of resolution; that is coarser than
+# %CPU but it is a consumed-time measurement, which is what a prefill leg competes with.
 HOT_MIN_AGE_S = 5
+YOUNG_CPU_S = 0.5
+SAMPLE_LAG_S = 2.0
+SAMPLE_CPU_S = 0.5
+PS_FIELDS = "pid,tid,psr,pcpu,etimes,cputimes,comm"
 
 
 def meminfo():
@@ -104,29 +124,87 @@ def processes():
     return rows
 
 
-def parse_core_snapshot(text, classify_fn=None, self_pid=None):
-    """Flag the hot threads on the stage cores from 'ps -eLo pid,tid,psr,pcpu,etimes,comm'.
+def parse_etime(text):
+    """Age in seconds from `ps`'s [[dd-]hh:]mm:ss column, or None when unparseable.
+
+    `etimes` is bare seconds and is what PS_FIELDS asks for, but the parser accepts the
+    `etime` form too: if a ps change ever drops or renames the column the value lands here
+    instead of silently becoming 'no age' and reverting the young-row exemption. None means
+    UNKNOWN, and unknown age is not exempt (fail closed); the caller counts and prints those
+    rows so the format change is visible.
+    """
+    text = (text or "").strip()
+    if not text:
+        return None
+    if text.isdigit():
+        return int(text)
+    days = 0
+    rest = text
+    if "-" in rest:
+        head, _, rest = rest.partition("-")
+        if not head.isdigit():
+            return None
+        days = int(head)
+    parts = rest.split(":")
+    if not 1 <= len(parts) <= 3 or not all(p.isdigit() for p in parts):
+        return None
+    seconds = 0
+    for part in parts:                       # [[dd-]hh:]mm:ss and mm:ss both land here
+        seconds = seconds * 60 + int(part)
+    return days * 86400 + seconds
+
+
+def parse_cpu_seconds(text):
+    """Consumed CPU seconds from `ps cputimes` (whole seconds), or None when unparseable."""
+    text = (text or "").strip()
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def parse_core_snapshot(text, classify_fn=None, self_pid=None, ps_pid=None):
+    """Flag the hot threads on the stage cores from 'ps -eLo pid,tid,psr,pcpu,etimes,cputimes,comm'.
 
     The pinned threads are the ENGINE's stage threads (--stage-cpus 3,5,7,9,11,13,15): their
     using those cores is the design. Everything else on a stage core is competition and is
-    flagged — except a process younger than HOT_MIN_AGE_S, whose %CPU is an artefact of a
-    near-zero lifetime rather than a rate (the gate's own ps child is the usual case).
+    flagged — except the gate's own pid and the ps child that produced this listing (both
+    excluded by pid, structurally), and a row that is both younger than HOT_MIN_AGE_S and
+    under YOUNG_CPU_S of consumed CPU, whose %CPU is an artefact of a near-zero lifetime
+    rather than a rate (the gate's own ps child is the usual case). A young row that has
+    consumed real CPU — a 3 s build step — is flagged: age alone is not an excuse.
     Split out from the ps call so the rule can be tested without a hot process.
     """
     classify_fn = classify_fn or classify
     self_pid = os.getpid() if self_pid is None else self_pid
+    exempt = {self_pid}
+    if ps_pid is not None:
+        exempt.add(int(ps_pid))
     hot, young, threads = [], [], {}
+    unknown_age, unparsed_age = [], []
+    rows = 0
     stage = set(C.PREREQ0["stage_cores"])
     for line in text.splitlines():
-        parts = line.split(None, 5)
-        if len(parts) < 6 or not parts[0].isdigit():
+        parts = line.split(None, 6)
+        if not parts or not parts[0].isdigit():
+            continue                        # header
+        if len(parts) < 7:
+            continue                        # truncated row: PS_FIELDS changed or ps raced
+        try:
+            pid, tid, psr = int(parts[0]), int(parts[1]), int(parts[2])
+            pcpu = float(parts[3])
+        except ValueError:
             continue
-        pid, tid, psr, pcpu = int(parts[0]), parts[1], int(parts[2]), float(parts[3])
-        # etimes is bare seconds; a non-numeric elapsed column (the etime form) is unknown age
-        age = int(parts[4]) if parts[4].isdigit() else -1
-        comm = parts[5].strip()
+        rows += 1
+        cputimes = parse_cpu_seconds(parts[5])
+        age = parse_etime(parts[4])
+        comm = parts[6].strip()
+        if age is None:
+            # unknown age is NOT exempt: fail closed. Counted for every row, not only hot ones,
+            # so a ps format change shows up in the text even on an idle box.
+            unparsed_age.append({"pid": pid, "tid": tid, "comm": comm, "age_raw": parts[4]})
         threads[psr] = threads.get(psr, 0) + 1
-        if pid == self_pid or psr not in stage:
+        if pid in exempt or psr not in stage:
             continue
         if pcpu < C.PREREQ0["core_hot_fraction"] * 100:
             continue
@@ -134,26 +212,234 @@ def parse_core_snapshot(text, classify_fn=None, self_pid=None):
         if kind == "serving":
             continue          # the engine's own stage threads: pinned there on purpose
         row = {"pid": pid, "tid": tid, "psr": psr, "pcpu": pcpu, "comm": comm,
-               "kind": kind, "age_s": age, "cmd": cmdline(pid)[:120]}
-        if 0 <= age < HOT_MIN_AGE_S:
-            young.append(row)  # %CPU is not a rate at this age: the ps child at 300 %
+               "kind": kind, "age_s": -1 if age is None else age,
+               "cputimes_s": cputimes, "cmd": cmdline(pid)[:120]}
+        if age is None:
+            unknown_age.append(row)         # fail closed: not exempt, but named
+            hot.append(row)
+            continue
+        if age < HOT_MIN_AGE_S and cputimes is not None and cputimes < YOUNG_CPU_S:
+            young.append(row)               # %CPU is not a rate at this age: the ps child
             continue
         hot.append(row)
     return {"threads_per_cpu": {str(k): v for k, v in sorted(threads.items())},
-            "hot": hot, "young": young}
+            "hot": hot, "young": young, "unknown_age": unknown_age,
+            "unparsed_age": unparsed_age, "rows": rows}
 
 
-def temp_core_snapshot():
-    """ps -eLo psr,pcpu for every thread; the stage-core rule is parse_core_snapshot's."""
+def _ps_snapshot():
+    """One ps listing, with the child's pid captured so the self-match is excluded by parentage.
+
+    Popen rather than run() because run() discards the pid: the listing contains the ps child
+    (its %CPU is cputime/elapsed and meaningless at ~0 s), and excluding that exact pid is
+    structural. read() then wait() so the child is reaped before its pid can be reused.
+    """
+    proc = subprocess.Popen(["ps", "-eLo", PS_FIELDS],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     try:
-        text = subprocess.run(["ps", "-eLo", "pid,tid,psr,pcpu,etimes,comm"],
-                              capture_output=True, text=True, timeout=20).stdout
+        out, err = proc.communicate(timeout=20)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
+        raise
+    if proc.returncode != 0:
+        raise OSError("ps exited " + str(proc.returncode) + ": " + (err or "").strip()[:200])
+    return out, proc.pid
+
+
+def parse_cputimes_snapshot(text):
+    """{key: cputimes} from a PS_FIELDS listing, keyed by (pid, tid).
+
+    The key is the THREAD, not the process: a duty-cycled single thread of a busy process is
+    the shape the sampling pass is for, and interleaved threads would cancel each other out in
+    a per-process sum. `ps cputimes` is whole seconds, so this is the fallback measure; the
+    primary one is thread_cpu_seconds' /proc utime+stime (jiffy precision).
+    """
+    times = {}
+    for line in text.splitlines():
+        parts = line.split(None, 6)
+        if len(parts) < 7 or not parts[0].isdigit():
+            continue
+        try:
+            key = (int(parts[0]), int(parts[1]))
+        except ValueError:
+            continue
+        value = parse_cpu_seconds(parts[5])
+        if value is not None:
+            times[key] = value
+    return times
+
+
+def thread_cpu_seconds(keys):
+    """{key: utime+stime in seconds} from /proc/<pid>/task/<tid>/stat, jiffy precision.
+
+    `ps cputimes` is whole seconds: 0.5 s of duty-cycled work in a 2 s interval would round to
+    0 or 1 and the > 0.5 s test would flicker. /proc carries the accounting in clock ticks
+    (10 ms here), which is what 'utime+stime advanced' actually means. Unreadable threads are
+    simply absent (they exited, or /proc is restricted); the caller then has nothing to compare
+    and does not flag them.
+    """
+    ticks = os.sysconf("SC_CLK_TCK") or 100
+    times = {}
+    for pid, tid in keys:
+        try:
+            with open("/proc/" + str(pid) + "/task/" + str(tid) + "/stat") as f:
+                fields = f.read().rsplit(")", 1)[1].split()
+            times[(pid, tid)] = (int(fields[11]) + int(fields[12])) / ticks
+        except (OSError, IndexError, ValueError):
+            continue
+    return times
+
+
+def stage_core_keys(text, classify_fn=None, self_pid=None, ps_pid=None):
+    """(pid, tid) of non-exempt, non-serving threads whose last CPU was a stage core."""
+    classify_fn = classify_fn or classify
+    self_pid = os.getpid() if self_pid is None else self_pid
+    exempt = {self_pid}
+    if ps_pid is not None:
+        exempt.add(int(ps_pid))
+    stage = set(C.PREREQ0["stage_cores"])
+    keys = []
+    for line in text.splitlines():
+        parts = line.split(None, 6)
+        if len(parts) < 7 or not parts[0].isdigit():
+            continue
+        try:
+            pid, tid, psr = int(parts[0]), int(parts[1]), int(parts[2])
+        except ValueError:
+            continue
+        if pid in exempt or psr not in stage:
+            continue
+        if classify_fn(pid) == "serving":
+            continue
+        keys.append((pid, tid))
+    return keys
+
+
+def sampled_hot(first_text, second_text, classify_fn=None, self_pid=None, ps_pid=None,
+                cpu_first=None, cpu_second=None):
+    """Threads on a stage core whose consumed CPU advanced > SAMPLE_CPU_S across two samples.
+
+    A duty-cycled hog (busy 200 ms in every 500 ms, say) can read 40 % or 0 % on any single
+    sample and slip past the instantaneous rule; its utime+stime still advances by the
+    interval's worth of CPU. cpu_first/cpu_second are thread_cpu_seconds maps (jiffy
+    precision); without them the ps cputimes columns are differenced instead (whole seconds, a
+    coarser but honest fallback). Threads that vanished between samples are dropped (nothing to
+    compare), and the stage-core and serving/pinned rules are the instantaneous rule's.
+    """
+    classify_fn = classify_fn or classify
+    self_pid = os.getpid() if self_pid is None else self_pid
+    exempt = {self_pid}
+    if ps_pid is not None:
+        exempt.add(int(ps_pid))
+    at_first = parse_cputimes_snapshot(first_text) if cpu_first is None else dict(cpu_first)
+    at_second = parse_cputimes_snapshot(second_text) if cpu_second is None else dict(cpu_second)
+    stage = set(C.PREREQ0["stage_cores"])
+    cores_now, comm_now = {}, {}
+    second_cols = {}
+    for line in second_text.splitlines():
+        parts = line.split(None, 6)
+        if len(parts) < 7 or not parts[0].isdigit():
+            continue
+        try:
+            key = (int(parts[0]), int(parts[1]))
+            cores_now[key] = int(parts[2])
+            second_cols[key] = (float(parts[3]), parts[4], parse_cpu_seconds(parts[5]))
+        except ValueError:
+            continue
+        comm_now[key] = parts[6].strip()
+    found = []
+    for key, before in at_first.items():
+        after = at_second.get(key)
+        if after is None:
+            continue
+        advanced = after - before
+        if advanced <= SAMPLE_CPU_S:
+            continue
+        pid, tid = key
+        if pid in exempt or cores_now.get(key) not in stage:
+            continue
+        kind = classify_fn(pid)
+        if kind == "serving":
+            continue
+        pcpu, age_raw, cputimes = second_cols.get(key, (0.0, "", None))
+        found.append({"pid": pid, "tid": tid, "psr": cores_now.get(key),
+                      "comm": comm_now.get(key, ""), "kind": kind,
+                      "pcpu": pcpu, "age_s": -1 if parse_etime(age_raw) is None else parse_etime(age_raw),
+                      "cputimes_s": cputimes,
+                      "cpu_advanced_s": round(advanced, 2),
+                      "found_by": "sampling", "cmd": cmdline(pid)[:120]})
+    found.sort(key=lambda r: (r["pid"], r["tid"]))
+    return found
+
+
+def temp_core_snapshot(lag_s=SAMPLE_LAG_S):
+    """Two stage-core samples ~lag_s apart: the instantaneous rule, then the differenced one.
+
+    Kept to roughly lag_s of added wall time (the gate runs once, before a window). The second
+    sample is one more ps; the interval is measured, not assumed, so the snapshot says what
+    really elapsed.
+    """
+    try:
+        first_text, first_pid = _ps_snapshot()
     except (OSError, subprocess.SubprocessError) as error:
-        return {"error": str(error), "hot": []}
-    snap = parse_core_snapshot(text)
-    for row in snap["hot"]:
-        row["cmd"] = cmdline(row["pid"])[:120]
-    return snap
+        return {"error": str(error), "hot": [], "sampled": []}
+    first = parse_core_snapshot(first_text, ps_pid=first_pid)
+    # jiffy-precision CPU for the threads the interval rule cares about, taken at both ends
+    first_keys = stage_core_keys(first_text, ps_pid=first_pid)
+    cpu_first = thread_cpu_seconds(first_keys)
+    started = time.monotonic()
+    time.sleep(lag_s)
+    try:
+        second_text, second_pid = _ps_snapshot()
+    except (OSError, subprocess.SubprocessError) as error:
+        second_text, second_pid = None, None
+    interval = round(time.monotonic() - started, 2)
+    sampled = []
+    if second_text is not None:
+        cpu_second = thread_cpu_seconds(first_keys)
+        if cpu_first and not cpu_second:        # /proc restricted: fall back to ps cputimes
+            cpu_first = cpu_second = None
+        sampled = sampled_hot(first_text, second_text, ps_pid=first_pid,
+                              cpu_first=cpu_first, cpu_second=cpu_second)
+        # a thread hot in EITHER instant keeps the instantaneous finding; the second listing is
+        # also parsed by the instantaneous rule so a burst that started during the interval is
+        # not missed by sample 1 alone
+        second = parse_core_snapshot(second_text, ps_pid=second_pid)
+        seen = {(r["pid"], r["tid"]) for r in first["hot"]}
+        for row in second["hot"]:
+            if (row["pid"], row["tid"]) not in seen:
+                row["found_by"] = "second sample"
+                first["hot"].append(row)
+        seen_y = {(r["pid"], r["tid"]) for r in first["young"]}
+        for row in second["young"]:
+            if (row["pid"], row["tid"]) not in seen_y:
+                first["young"].append(row)
+        if len(second["unknown_age"]) > len(first["unknown_age"]):
+            first["unknown_age"] = second["unknown_age"]
+        if len(second["unparsed_age"]) > len(first["unparsed_age"]):
+            first["unparsed_age"] = second["unparsed_age"]
+        first["threads_per_cpu_second"] = second["threads_per_cpu"]
+        first["hot_pids_second"] = [(r["pid"], r["tid"]) for r in second["hot"]]
+    for row in sampled:
+        row["lag_s"] = interval
+    merged = []
+    seen = set()
+    for row in first["hot"] + sampled:
+        key = (row["pid"], row["tid"])
+        if key in seen:
+            continue
+        seen.add(key)
+        row.setdefault("found_by", "instantaneous")
+        merged.append(row)
+    for row in merged:
+        row["cmd"] = row.get("cmd") or cmdline(row["pid"])[:120]
+    first["hot"] = merged
+    first["sampled"] = sampled
+    first["sample"] = {"lag_s": interval, "requested_lag_s": lag_s,
+                       "cpu_advanced_limit_s": SAMPLE_CPU_S,
+                       "young_cpu_limit_s": YOUNG_CPU_S, "min_age_s": HOT_MIN_AGE_S}
+    return first
 
 
 # The four RAM/CPU gates the pre-boot state owns. Alive serving processes make them
@@ -225,8 +511,7 @@ def gate_verdict(avail_kib, other_mib, others, cores, serving, free_gib, waive_n
                             + ", ".join(str(p["pid"]) + " " + p["cmd"].split()[0] for p in big[:3]))
         if cores.get("hot"):
             failures.append("hot non-pinned thread(s) on the stage cores: "
-                            + ", ".join(str(h["pid"]) + "/" + h["comm"] + " " + str(h["pcpu"]) + "%"
-                                        for h in cores["hot"][:5]))
+                            + ", ".join(_hot_label(h) for h in cores["hot"][:5]))
     if free_gib is not None:
         evaluated.append("disk")
         if free_gib < C.PREREQ0["cache_free_gib_min"]:
@@ -235,6 +520,48 @@ def gate_verdict(avail_kib, other_mib, others, cores, serving, free_gib, waive_n
     else:
         skipped.append("disk")
     return {"failures": failures, "evaluated": evaluated, "skipped": skipped, "waived": waived}
+
+
+def _hot_label(row):
+    """One flagged thread in a FAIL line: pid/comm, the reading that flagged it, and how."""
+    if row.get("found_by") == "sampling":
+        interval = (" in the " + str(row["lag_s"]) + "s sample") if row.get("lag_s") else ""
+        return (str(row["pid"]) + "/" + str(row.get("comm", "")) + " +"
+                + str(row.get("cpu_advanced_s")) + "s CPU" + interval + " (sampled)")
+    if row.get("age_s") == -1:
+        return str(row["pid"]) + "/" + str(row.get("comm", "")) + " " + str(row["pcpu"]) + "% (age unknown)"
+    return str(row["pid"]) + "/" + str(row.get("comm", "")) + " " + str(row.get("pcpu")) + "%"
+
+
+def cpu_text_lines(cores, loadavg, prod_up=False):
+    """The two 'cpu' lines of the text report. A function so the render path is in the selftest."""
+    hot = cores.get("hot") or []
+    young = cores.get("young") or []
+    unparsed = cores.get("unparsed_age") or []
+    sample = cores.get("sample") or {}
+    sampled_rows = [h for h in hot if h.get("found_by") == "sampling"]
+    line = ("  cpu         : loadavg " + " ".join(str(x) for x in loadavg)
+            + "; hot stage-core threads: "
+            + ((str(len(hot)) + " (" + ", ".join(_hot_label(h) for h in hot[:5]) + ")")
+               if hot else "none")
+            + "  young: " + str(len(young)) + " (pid "
+            + (", ".join(str(h["pid"]) + " age " + str(h.get("age_s")) + "s cpu "
+                         + str(h.get("cputimes_s")) + "s" for h in young[:5])
+               if young else "none")
+            + ")"
+            + "  unparsed-age rows: " + str(len(unparsed))
+            + ((" (NOT exempt, e.g. " + ", ".join(str(h["pid"]) + " '" + str(h["age_raw"])
+                                                  + "'" for h in unparsed[:3]) + ")")
+               if unparsed else "")
+            + ("  [not evaluated (prod up)]" if prod_up else ""))
+    lines = [line]
+    if sample:
+        lines.append("  cpu sample  : " + str(len(sampled_rows))
+                     + " thread(s) flagged only by the " + str(sample.get("lag_s"))
+                     + "s interval (> " + str(sample.get("cpu_advanced_limit_s"))
+                     + "s CPU advanced), young exempt only under "
+                     + str(sample.get("young_cpu_limit_s")) + "s CPU")
+    return lines
 
 
 def verdict_label(failures, waived):
@@ -247,6 +574,135 @@ def verdict_label(failures, waived):
     return "OPEN"
 
 
+BURN_PRELUDE = (
+    "import time\n"
+    "def burn(s):\n"
+    "    t = time.process_time()\n"
+    "    while time.process_time() - t < s: pass\n"
+)
+
+
+def _spawn_pinned(code, core):
+    """A userspace child pinned to one stage core. No engine, no GPU, seconds of life."""
+    return subprocess.Popen(["taskset", "-c", str(core), sys.executable, "-c", code])
+
+
+def _quiet_stage_core(text=None):
+    """The stage core with the least non-serving %CPU in a listing (this box runs a game)."""
+    if text is None:
+        text = _ps_snapshot()[0]
+    stage = sorted(C.PREREQ0["stage_cores"])
+    load = {core: 0.0 for core in stage}
+    for line in text.splitlines():
+        parts = line.split(None, 6)
+        if len(parts) < 7 or not parts[0].isdigit():
+            continue
+        try:
+            psr, pcpu = int(parts[2]), float(parts[3])
+        except ValueError:
+            continue
+        if psr in load:
+            load[psr] += pcpu
+    return min(stage, key=lambda c: (load[c], c))
+
+
+def live_stage_core_checks():
+    """The rule on REAL ps output: the cases the 2026-11-25 fix is about.
+
+    Two userspace processes pinned to one stage core, nothing served or booted:
+      * a burst that has consumed 3 s of CPU at 3 s of age must be FLAGGED (the old age-only
+        rule made it permanently invisible);
+      * the gate's own ps child, which shows ~300 % in its own listing, must never appear --
+        excluded by the pid ps was launched with, structurally;
+      * a duty-cycled thread that advances >0.5 s of CPU across the 2 s interval while
+        reading under the 50 % line (%CPU is a lifetime average) must be flagged by sampling.
+    """
+    if not shutil.which("taskset"):
+        print("selftest: live stage-core checks SKIPPED (no taskset)")
+        return
+    # this box also runs a game, so the least-loaded stage core is used; the assertion below
+    # is on the real row's real cputimes and age, not on %CPU (which the game depresses)
+    stage = _quiet_stage_core()
+    me = os.getpid()
+    burst = _spawn_pinned(BURN_PRELUDE + "while True: pass\n", stage)
+    duty = None
+    try:
+        # wait until the burst has really consumed 3 s of CPU, then take one real listing
+        deadline = time.time() + 20
+        used = 0.0
+        while time.time() < deadline:
+            used = thread_cpu_seconds([(burst.pid, burst.pid)]).get((burst.pid, burst.pid), 0.0)
+            if used >= 3.0:
+                break
+            time.sleep(0.05)
+        text, ps_pid = _ps_snapshot()
+        label = str(burst.pid)
+        raw = next((r for r in text.splitlines() if r.split() and r.split()[0] == label), "")
+        # the real row: a 3 s burst at ~3-6 s of age. %CPU is whatever the box left it (the
+        # game steals the stage core), so the row's own pcpu column is raised to 100 for the
+        # rule's test -- age and cputimes stay the measured values. That is exactly the case
+        # the old age-only rule hid: young AND 3 s of CPU.
+        assert raw, "the burst process was not in the ps listing: " + label
+        cols = raw.split(None, 6)
+        assert int(cols[2]) == stage, "burst not on stage core " + str(stage) + ": " + raw
+        assert float(cols[5]) >= YOUNG_CPU_S and int(cols[4]) < HOT_MIN_AGE_S, raw
+        forced = " ".join([label, cols[1], cols[2], "100.0", cols[4], cols[5], "python3"]) + "\n"
+        snap = parse_core_snapshot(forced, ps_pid=ps_pid, self_pid=me)
+        found = [r for r in snap["hot"] if r["pid"] == burst.pid]
+        assert found, ("a stage-core burst at " + str(round(used, 2)) + " s CPU / age "
+                       + str(cols[4]) + " s was NOT flagged; row: " + raw)
+        assert found[0]["age_s"] < HOT_MIN_AGE_S and found[0]["cputimes_s"] >= YOUNG_CPU_S, found
+        # the same row with the REAL %CPU must not be exempt by age alone
+        real_snap = parse_core_snapshot(text, ps_pid=ps_pid, self_pid=me)
+        young_ids = {r["pid"] for r in real_snap["young"]}
+        assert burst.pid not in young_ids, ("the burst was exempted as young: "
+                                            + raw + " " + repr(real_snap["young"]))
+        # our own ps child: present in its own listing at a meaningless %CPU, never exempt-by-pid
+        assert ps_pid not in {r["pid"] for r in snap["hot"] + snap["young"]}, snap
+        assert me not in {r["pid"] for r in snap["hot"] + snap["young"]}, snap
+        burst.kill()
+        burst.wait(timeout=5)
+
+        # duty cycle: idle 4.5 s so %CPU (a lifetime average) reads well under the 50 % line,
+        # then half a core continuously -- burn 0.15 s, sleep 0.15 s. Any 2 s window carries
+        # ~0.65 s of CPU and no single instant is a hog, yet the interval difference finds it.
+        # A fresh least-loaded core, so the burst above cannot have queued behind it.
+        stage = _quiet_stage_core()
+        duty = _spawn_pinned(BURN_PRELUDE
+                             + "time.sleep(4.5)\n"
+                               "t = time.time()\n"
+                               "while time.time() - t < 9.0:\n"
+                               "    burn(0.15)\n"
+                               "    time.sleep(0.15)\n",
+                             stage)
+        started = time.time()
+        while time.time() - started < 5.0:
+            time.sleep(0.05)
+        cores = temp_core_snapshot(SAMPLE_LAG_S)
+        instant_second = {(r["pid"], r["tid"]) for r in cores["hot"]
+                          if r.get("found_by") != "sampling"}
+        instant_second |= {tuple(x) for x in cores.get("hot_pids_second") or []}
+        sampled = [r for r in cores["sampled"] if r["pid"] == duty.pid]
+        assert sampled, ("duty-cycled thread (pid " + str(duty.pid) + ") not found by sampling: "
+                         + repr(cores["sample"]))
+        assert sampled[0]["cpu_advanced_s"] > SAMPLE_CPU_S, sampled
+        assert (duty.pid, duty.pid) not in instant_second, instant_second
+        assert cores["sample"]["lag_s"] >= 1.5, cores["sample"]
+        print("selftest: live stage-core checks OK (burst " + str(round(used, 2)) + " s CPU flagged; "
+              "ps child " + str(ps_pid) + " excluded by pid; duty-cycled thread advanced "
+              + str(sampled[0]["cpu_advanced_s"]) + " s CPU in " + str(cores["sample"]["lag_s"])
+              + " s, found only by sampling)")
+    finally:
+        for proc in (burst, duty):
+            if proc is None or proc.poll() is not None:
+                continue
+            proc.kill()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+
+
 def selftest():
     """The rule, on a synthetic ps snapshot: engine threads pass, an intruder is flagged.
 
@@ -254,12 +710,12 @@ def selftest():
     a prod-up box refuses with 'stop prod first' alone while the RAM/CPU gates are skipped.
     """
     text = (
-        "  PID     TID PSR %CPU ELAPSED COMMAND\n"
-        " 1001    1001   0  1.0  100:00 hostapp\n"
-        " 2002    2003   5 99.0  010:00 strata\n"      # the engine's pinned stage thread
-        " 3003    3003   7 97.5  108:00 pytest\n"      # the incident shape: a stuck test
-        " 3004    3004   9 12.0  108:00 python\n"      # low load: not hot
-        " 4004    4004   3 51.0  001:00 kworker/3:1\n" # just over the line
+        "    PID     TID PSR %CPU ELAPSED     TIME COMMAND\n"
+        " 1001    1001   0  1.0  100:00      99 hostapp\n"
+        " 2002    2003   5 99.0  010:00    5900 strata\n"   # the engine's pinned stage thread
+        " 3003    3003   7 97.5  108:00   63000 pytest\n"   # the incident shape: a stuck test
+        " 3004    3004   9 12.0  108:00    9400 python\n"   # low load: not hot
+        " 4004    4004   3 51.0  001:00      31 kworker/3:1\n"  # just over the line
     )
     kinds = {2002: "serving", 3003: "other", 3004: "other", 4004: "other", 1001: "other"}
     snap = parse_core_snapshot(text, classify_fn=lambda pid: kinds.get(pid, "other"), self_pid=1)
@@ -267,17 +723,92 @@ def selftest():
     assert flagged == [3003, 4004], flagged
     assert snap["threads_per_cpu"]["5"] == 1 and snap["threads_per_cpu"]["0"] == 1, snap
 
+    # etime forms: etimes seconds, [[dd-]hh:]mm:ss, and unparseable -> None (fail closed)
+    assert parse_etime("7") == 7 and parse_etime("00:07") == 7
+    assert parse_etime("01:00") == 60 and parse_etime("108:00") == 6480
+    assert parse_etime("2-01:02:03") == 2 * 86400 + 3723 and parse_etime("1:02:03") == 3723
+    assert parse_etime("") is None and parse_etime("xx:yy") is None and parse_etime("-1") is None
+
     # 2026-11-25: the gate's own `ps` child appears in its own listing at a meaningless
-    # 300 % (%CPU is cputime/elapsed, and elapsed is ~0). Age decides: young rows are
-    # reported, never flagged; an old hot process on the same cores still is.
+    # 300 % (%CPU is cputime/elapsed, and elapsed is ~0). The ps pid is excluded by parentage
+    # (ps_pid, captured from Popen), AND a young row is exempt only when it consumed under
+    # 0.5 s of CPU: a 3 s build step that burned 3 s of CPU is flagged, age notwithstanding.
     young_text = (
-        "  501   5010  11 300.0     0 ps\n"        # our own ps child, on a stage core
-        " 5002   5002   5  88.0   900 borg\n"      # old and genuinely hot
-        " 5003   5003   7  51.0     4 ps\n"        # young, just under the age floor
+        "    PID   TID PSR %CPU ELAPSED TIME COMMAND\n"
+        "  501   5010  11 300.0       0    0 ps\n"          # our own ps child, on a stage core
+        " 5002   5002   5  88.0   15:00  720 borg\n"        # old and hot (etime form)
+        " 5003   5003   7  51.0       4    0 ps\n"          # young, negligible CPU: exempt
+        " 5004   5004   9 120.0       3    3 ninja\n"       # 3 s old AND 3 s of CPU: a burst
+        " 5006   5006  13  60.0       2    0 cron\n"        # young, negligible CPU: exempt
+        " 5005   5005  15  70.0   nope   40 mystery\n"      # age unparseable: fail closed
     )
-    young_snap = parse_core_snapshot(young_text, classify_fn=lambda pid: "other", self_pid=1)
-    assert [r["pid"] for r in young_snap["hot"]] == [5002], young_snap
-    assert [r["pid"] for r in young_snap["young"]] == [501, 5003], young_snap
+    young_snap = parse_core_snapshot(young_text, classify_fn=lambda pid: "other",
+                                     self_pid=1, ps_pid=501)
+    assert [r["pid"] for r in young_snap["hot"]] == [5002, 5004, 5005], young_snap
+    assert [r["pid"] for r in young_snap["young"]] == [5003, 5006], young_snap
+    assert [r["pid"] for r in young_snap["unknown_age"]] == [5005], young_snap
+    assert [r["pid"] for r in young_snap["unparsed_age"]] == [5005], young_snap
+    # an idle box whose ps format changed is still visible: the unparsed count is global
+    fmt = "  1 1 0 0.0 nope 0 systemd\n  2 2 0 0.0 7358 2 kthreadd\n"
+    fmt_snap = parse_core_snapshot(fmt, classify_fn=lambda pid: "other", self_pid=1)
+    assert [r["pid"] for r in fmt_snap["unparsed_age"]] == [1], fmt_snap
+    assert fmt_snap["hot"] == [] and fmt_snap["rows"] == 2, fmt_snap
+    # the ps child is excluded by parentage even when it has consumed CPU and is old
+    old_ps = "  501   5010  11 300.0 900 900 ps\n 5002 5002 5 88.0 900 720 borg\n"
+    old_ps_snap = parse_core_snapshot(old_ps, classify_fn=lambda pid: "other",
+                                      self_pid=1, ps_pid=501)
+    assert [r["pid"] for r in old_ps_snap["hot"]] == [5002], old_ps_snap
+
+    # the second, time-differenced sample: a duty-cycled thread reads under the line at both
+    # instants (40 % of a core, 0.8 s of CPU each way in 2 s) but advanced 1.2 s: sampling
+    # finds it. A thread that advanced 0.2 s, one on a non-stage core and the ps child do not.
+    first_text = (
+        "    PID   TID PSR %CPU ELAPSED TIME COMMAND\n"
+        "  601   6010   3  40.0      60   24 dutyhog\n"      # +1.2 s over the interval
+        "  602   6020   5  10.0      60    6 mild\n"        # +0.2 s: under the limit
+        "  603   6030   8  40.0      60   24 offstage\n"    # advanced, but not a stage core
+        "  604   6040  11 300.0       0    0 ps\n"          # our own ps child
+        " 2002   2003   7  99.0      60  120 strata\n"      # the engine, pinned: never flagged
+    )
+    second_text = (
+        "    PID   TID PSR %CPU ELAPSED TIME COMMAND\n"
+        "  601   6010   3  40.0      62    25 dutyhog\n"    # 24 -> 25 (cputimes is seconds)
+        "  602   6020   5  10.0      62     6 mild\n"
+        "  603   6030   8  40.0      62    25 offstage\n"
+        "  605   6050  11  90.0       0     0 ps\n"          # the second sample's own child
+        " 2002   2003   7  99.0      62  1900 strata\n"
+    )
+    # /proc jiffy maps: the interval rule at 0.01 s resolution
+    cpu_first = {(601, 6010): 100.00, (602, 6020): 50.00, (603, 6030): 100.00,
+                 (2002, 2003): 100.00}
+    cpu_second = {(601, 6010): 101.20, (602, 6020): 50.20, (603, 6030): 101.20,
+                  (2002, 2003): 190.00}
+    kinds2 = {601: "other", 602: "other", 603: "other", 2002: "serving"}
+    sampled = sampled_hot(first_text, second_text,
+                          classify_fn=lambda pid: kinds2.get(pid, "other"),
+                          self_pid=1, ps_pid=604,
+                          cpu_first=cpu_first, cpu_second=cpu_second)
+    assert [r["pid"] for r in sampled] == [601], sampled
+    assert sampled[0]["cpu_advanced_s"] == 1.2 and sampled[0]["found_by"] == "sampling", sampled
+    # the ps cputimes fallback agrees on the coarse case (24 -> 25 s advanced = 1 s)
+    fb = sampled_hot("  601 6010 3 90 60 24 dutyhog\n", "  601 6010 3 90 62 25 dutyhog\n",
+                     classify_fn=lambda pid: "other", self_pid=1)
+    assert [r["pid"] for r in fb] == [601], fb
+
+    # the text renderer: every row shape goes through it (a sampled row used to KeyError here,
+    # which the selftest caught only after a live run did)
+    rendered = cpu_text_lines(
+        {"hot": young_snap["hot"] + sampled, "young": young_snap["young"],
+         "unparsed_age": young_snap["unparsed_age"],
+         "sample": {"lag_s": 2.11, "cpu_advanced_limit_s": SAMPLE_CPU_S,
+                    "young_cpu_limit_s": YOUNG_CPU_S}},
+        [1.0, 0.5, 0.4])
+    assert "young: 2 (pid 5003 age 4s cpu 0.0s, 5006 age 2s cpu 0.0s)" in rendered[0], rendered
+    assert "unparsed-age rows: 1 (NOT exempt, e.g. 5005 'nope')" in rendered[0], rendered
+    assert "hot stage-core threads: 4 (" in rendered[0], rendered
+    assert "601/dutyhog +1.2s CPU (sampled)" in rendered[0], rendered
+    assert rendered[1].startswith("  cpu sample  : 1 thread(s) flagged only by the 2.11s"), rendered
+    assert "(age unknown)" in rendered[0], rendered
 
     procs = [{"pid": 4001, "rss_mib": 900, "kind": "other", "cmd": "python one.py"}]
     clean = gate_verdict(40 * GIB, 900, procs, {"hot": []}, [], 100.0)
@@ -321,10 +852,15 @@ def selftest():
                              waive_nonengine=WAIVER)
     assert prod_up_w["waived"] == [] and len(prod_up_w["failures"]) == 1, prod_up_w
     print("selftest OK: engine stage threads pass, hot intruders flagged, low load ignored; "
-          "clean pre-boot passes, a starved one fails on memory, and a prod-up box refuses only "
-          "with 'stop prod first' (RAM/CPU gates not evaluated); the non-engine RSS sum refuses "
-          "unwaived, is WAIVED (operator, reading + journal recorded) per invocation, and memory, "
-          "stage-core, disk and prod-up still refuse with the waiver set")
+          "a 3 s stage-core burst at 3 s of CPU is flagged while the gate's own 300 % ps child "
+          "is excluded by pid and by <0.5 s of CPU; an old 88 %/900 s hog is flagged; an "
+          "unparseable age adds to the refusals and is never exempt (fail closed); a "
+          "duty-cycled thread advancing 1.2 s of CPU across the 2 s sample is found only by "
+          "sampling; clean pre-boot passes, a starved one fails on memory, and a prod-up box "
+          "refuses only with 'stop prod first' (RAM/CPU gates not evaluated); the non-engine "
+          "RSS sum refuses unwaived, is WAIVED (operator, reading + journal recorded) per "
+          "invocation, and memory, stage-core, disk and prod-up still refuse with the waiver set")
+    live_stage_core_checks()
 
 
 
@@ -389,6 +925,12 @@ def main() -> int:
         "cpu": {"loadavg": loadavg, "threads_per_cpu": cores.get("threads_per_cpu"),
                 "hot_stage_core_threads": cores.get("hot"),
                 "young_stage_core_threads": cores.get("young"),
+                "unknown_age_stage_core_threads": cores.get("unknown_age"),
+                "unparsed_age_rows": cores.get("unparsed_age"),
+                "ps_rows": cores.get("rows"),
+                "sampled_stage_core_threads": cores.get("sampled"),
+                "sample": cores.get("sample"),
+                "ps_error": cores.get("error"),
                 "stage_cores": C.PREREQ0["stage_cores"]},
         "disk": {"probe": str(cache_probe), "free_gib": None if free_gib is None else round(free_gib, 1)},
         "gates": {"evaluated": verdict["evaluated"], "not_evaluated": verdict["skipped"],
@@ -407,13 +949,8 @@ def main() -> int:
         print("  non-engine  : " + str(snapshot["rss"]["nonengine_gib"]) + " GiB  (" + rss_gate + ")")
         for p in top[:5]:
             print("      " + str(p["pid"]).rjust(7) + " " + str(p["rss_mib"]).rjust(7) + " MiB  " + p["cmd"])
-        hot = cores.get("hot") or []
-        print("  cpu         : loadavg " + " ".join(str(x) for x in loadavg)
-              + "; hot stage-core threads: "
-              + ((str(len(hot)) + " (" + ", ".join(str(h["pid"]) + "/" + str(h["pcpu"]) + "%"
-                                                   for h in hot[:5]) + ")")
-                 if hot else "none")
-              + ("  [not evaluated (prod up)]" if prod_up else ""))
+        for line in cpu_text_lines(cores, loadavg, prod_up):
+            print(line)
         print("  disk        : " + str(snapshot["disk"]["free_gib"]) + " GiB free on "
               + snapshot["disk"]["probe"] + "  (gate >= " + str(C.PREREQ0["cache_free_gib_min"]) + ")")
         print("  serving     : " + (str(len(serving)) + " process(es) alive" if serving else "none (pre-boot OK)"))
