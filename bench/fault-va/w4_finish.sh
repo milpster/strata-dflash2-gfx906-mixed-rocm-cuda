@@ -333,49 +333,45 @@ print("|".join(str(d.get(k) or "-") for k in ("engine_sha256","engine","port","s
   return "$bad"
 }
 
-wait_for_driver() {  # ARM -> 0 when the driver ran and exited, 1 when it never appeared
-  local arm=$1 i appeared=0
-  # port_ab_legs.py spawns ab9_driver.py a few seconds AFTER the detached launch, so
-  # "not there yet" must not be read as "finished". That mistake made this runner kill its own
-  # pair mid-prefill and manufacture the resumed-checkpoint leg it exists to prevent.
-  for i in $(seq 1 24); do
-    if pgrep -f "ab9_driver.py --arm $arm" >/dev/null; then appeared=1; break; fi
-    sleep 5
-  done
-  if [ "$appeared" -eq 0 ]; then return 1; fi
-  for i in $(seq 1 120); do
-    pgrep -f "ab9_driver.py --arm $arm" >/dev/null || return 0
-    sleep 10
-  done
-  return 2
-}
-
-fire_leg() {   # KEY WIN ARM BOOT REP SHAPE SINCE -> 0 measured, 1 invalid, 2 failed
-  local key=$1 win=$2 arm=$3 group=$4 rep=$5 shape=$6 since=$7 verdict rc
-  say "  firing $shape"
-  setsid nohup $PY "$LEGS" --window "$win" --arm "$arm" --boot "$group" --rep "$rep" --shape "$shape" --run \
-    > "$LOGD/$key-leg-$shape.log" 2>&1 < /dev/null &
-  wait_for_driver "$arm"
+# Fire every shape of this boot in ONE foreground call, then judge each record.
+#
+# Why foreground: port_ab_legs.py --run is a sequential subprocess.call per shape and returns a
+# real exit code, so waiting on it needs no process-name polling. The previous version polled
+# pgrep and its first poll ran before port_ab_legs had spawned ab9_driver: "not there yet" read
+# as "finished", the record looked missing, and the runner stopped its own pair mid-prefill -
+# manufacturing the resumed-checkpoint leg this script exists to prevent. Passing all shapes in
+# one call also removes the window in which a second call could match the first driver's
+# still-reaping process.
+fire_leg() {   # KEY WIN ARM BOOT REP SINCE SHAPE [SHAPE ...] -> 0 all measured, 1 any invalid
+  local key=$1 win=$2 arm=$3 group=$4 rep=$5 since=$6; shift 6
+  local shapes=("$@") shape announce=() verdict rc bad=0
+  for shape in "${shapes[@]}"; do announce+=(--shape "$shape"); done
+  say "  firing ${shapes[*]}"
+  timeout 3600 $PY "$LEGS" --window "$win" --arm "$arm" --boot "$group" --rep "$rep" \
+    "${announce[@]}" --run > "$LOGD/$key-leg.log" 2>&1
   rc=$?
-  if [ "$rc" -eq 1 ]; then
-    say "  DRIVER-NEVER-APPEARED $key/$shape - see $LOGD/$key-leg-$shape.log"
+  if [ "$rc" -eq 124 ]; then
+    say "  LEG-TIMEOUT $key after 3600s - see $LOGD/$key-leg.log"
     CELLS_FAILED=$((CELLS_FAILED + 1)); return 2
-  elif [ "$rc" -eq 2 ]; then
-    say "  DRIVER-DID-NOT-EXIT $key/$shape within 1200s"
+  elif [ "$rc" -ne 0 ]; then
+    say "  leg command failed for $key (exit $rc) - see $LOGD/$key-leg.log"
     CELLS_FAILED=$((CELLS_FAILED + 1)); return 2
   fi
   say '  leg finished; cold-read check:'
   tr -d '\000' < "$OUT/logs/$key.engine.log" 2>/dev/null \
     | grep -aE 'prompt [0-9]+ tokens = ' | tail -2 | sed 's/^/    /' | cut -c1-150
-  verdict=$(leg_coldness "$OUT/records/$key/$arm-$shape.json" "$arm" "$win" "$shape" "$since")
-  case "$verdict" in
-    VALID*)
-      say "  LEG VALID $key/$shape: $verdict"
-      LEGS_MEASURED=$((LEGS_MEASURED + 1)); return 0 ;;
-    *)
-      say "  LEG INVALID $key/$shape: ${verdict#INVALID } - not counted"
-      LEGS_INVALID=$((LEGS_INVALID + 1)); return 1 ;;
-  esac
+  for shape in "${shapes[@]}"; do
+    verdict=$(leg_coldness "$OUT/records/$key/$arm-$shape.json" "$arm" "$win" "$shape" "$since")
+    case "$verdict" in
+      VALID*)
+        say "  LEG VALID $key/$shape: $verdict"
+        LEGS_MEASURED=$((LEGS_MEASURED + 1)) ;;
+      *)
+        say "  LEG INVALID $key/$shape: ${verdict#INVALID } - not counted"
+        LEGS_INVALID=$((LEGS_INVALID + 1)); bad=1 ;;
+    esac
+  done
+  return "$bad"
 }
 
 one_boot() {   # WIN ARM GROUP REP SHAPE [SHAPE2 ...] - server arm from the schedule
@@ -421,9 +417,7 @@ one_boot() {   # WIN ARM GROUP REP SHAPE [SHAPE2 ...] - server arm from the sche
     CELLS_FAILED=$((CELLS_FAILED + 1)); return 1
   fi
   say "  identity ok: $IDENTITY_FOUND"
-  for shape in "${shapes[@]}"; do
-    fire_leg "$key" "$win" "$arm" "$group" "$rep" "$shape" "$since"
-  done
+  fire_leg "$key" "$win" "$arm" "$group" "$rep" "$since" "${shapes[@]}"
   bash "$STOP" "$win" "$arm" "$group" "$rep" 2>&1 | tail -2 | sed 's/^/    /'
 }
 
