@@ -57,11 +57,13 @@ MIB = 1024       # MiB per GiB (VmsumRSS and the ps snapshot)
 #     step or cron burst has ~3 s and is flagged. (The previous age-only rule made such a
 #     process permanently invisible: at 3 s old its etimes is 3 for its whole life.)
 #   * a second snapshot SAMPLE_LAG_S later flags any non-pinned, non-serving stage-core thread
-#     whose cputimes advanced by more than SAMPLE_CPU_S across the interval, which catches a
-#     duty-cycled hog a single instantaneous sample misses.
+#     whose utime+stime (from /proc/<pid>/task/<tid>/stat, clock ticks) advanced by more than
+#     SAMPLE_CPU_S across the interval, which catches a duty-cycled hog a single instantaneous
+#     sample misses.
 #
-# `ps cputimes` is whole seconds, so the CPU tests have 1 s of resolution; that is coarser than
-# %CPU but it is a consumed-time measurement, which is what a prefill leg competes with.
+# `ps cputimes` is whole seconds, so the young-row test has 1 s of resolution; that is coarser
+# than %CPU but it is a consumed-time measurement, which is what a prefill leg competes with.
+# The interval rule reads /proc instead and so keeps 10 ms resolution.
 HOT_MIN_AGE_S = 5
 YOUNG_CPU_S = 0.5
 SAMPLE_LAG_S = 2.0
@@ -363,10 +365,10 @@ def sampled_hot(first_text, second_text, classify_fn=None, self_pid=None, ps_pid
         if kind == "serving":
             continue
         pcpu, age_raw, cputimes = second_cols.get(key, (0.0, "", None))
+        age = parse_etime(age_raw)
         found.append({"pid": pid, "tid": tid, "psr": cores_now.get(key),
-                      "comm": comm_now.get(key, ""), "kind": kind,
-                      "pcpu": pcpu, "age_s": -1 if parse_etime(age_raw) is None else parse_etime(age_raw),
-                      "cputimes_s": cputimes,
+                      "comm": comm_now.get(key, ""), "kind": kind, "pcpu": pcpu,
+                      "age_s": -1 if age is None else age, "cputimes_s": cputimes,
                       "cpu_advanced_s": round(advanced, 2),
                       "found_by": "sampling", "cmd": cmdline(pid)[:120]})
     found.sort(key=lambda r: (r["pid"], r["tid"]))
@@ -390,10 +392,12 @@ def temp_core_snapshot(lag_s=SAMPLE_LAG_S):
     cpu_first = thread_cpu_seconds(first_keys)
     started = time.monotonic()
     time.sleep(lag_s)
+    second_error = None
     try:
         second_text, second_pid = _ps_snapshot()
     except (OSError, subprocess.SubprocessError) as error:
         second_text, second_pid = None, None
+        second_error = str(error)
     interval = round(time.monotonic() - started, 2)
     sampled = []
     if second_text is not None:
@@ -419,7 +423,7 @@ def temp_core_snapshot(lag_s=SAMPLE_LAG_S):
             first["unknown_age"] = second["unknown_age"]
         if len(second["unparsed_age"]) > len(first["unparsed_age"]):
             first["unparsed_age"] = second["unparsed_age"]
-        first["threads_per_cpu_second"] = second["threads_per_cpu"]
+        # the second instant's own findings, for the live selftest's "found only by sampling"
         first["hot_pids_second"] = [(r["pid"], r["tid"]) for r in second["hot"]]
     for row in sampled:
         row["lag_s"] = interval
@@ -438,7 +442,12 @@ def temp_core_snapshot(lag_s=SAMPLE_LAG_S):
     first["sampled"] = sampled
     first["sample"] = {"lag_s": interval, "requested_lag_s": lag_s,
                        "cpu_advanced_limit_s": SAMPLE_CPU_S,
-                       "young_cpu_limit_s": YOUNG_CPU_S, "min_age_s": HOT_MIN_AGE_S}
+                       "young_cpu_limit_s": YOUNG_CPU_S, "min_age_s": HOT_MIN_AGE_S,
+                       # the ps children excluded by parentage, for audit: neither may ever
+                       # appear in hot/young/sampled
+                       "excluded_ps_pids": [first_pid] + ([second_pid] if second_pid else []),
+                       # a failed second sample disables the interval rule; said out loud
+                       "second_sample_error": second_error}
     return first
 
 
@@ -509,6 +518,10 @@ def gate_verdict(avail_kib, other_mib, others, cores, serving, free_gib, waive_n
             failures.append("process(es) >= " + str(C.PREREQ0["single_process_rss_gib_warn"])
                             + " GiB RSS must be resolved or reported: "
                             + ", ".join(str(p["pid"]) + " " + p["cmd"].split()[0] for p in big[:3]))
+        if cores.get("error"):
+            # a listing we could not take is not evidence of a quiet box: fail closed
+            failures.append("stage-core snapshot failed (" + str(cores["error"]) + "): "
+                            "cannot rule out a hog on the stage cores")
         if cores.get("hot"):
             failures.append("hot non-pinned thread(s) on the stage cores: "
                             + ", ".join(_hot_label(h) for h in cores["hot"][:5]))
@@ -588,7 +601,10 @@ def _spawn_pinned(code, core):
 
 
 def _quiet_stage_core(text=None):
-    """The stage core with the least non-serving %CPU in a listing (this box runs a game)."""
+    """The stage core carrying the least %CPU in a listing (this box also runs a game).
+
+    Only used by the selftest, to give its synthetic hogs a core that is actually free.
+    """
     if text is None:
         text = _ps_snapshot()[0]
     stage = sorted(C.PREREQ0["stage_cores"])
@@ -759,6 +775,27 @@ def selftest():
                                       self_pid=1, ps_pid=501)
     assert [r["pid"] for r in old_ps_snap["hot"]] == [5002], old_ps_snap
 
+    # the exact case from 2026-11-25: the gate's own ps child, 300 % on a stage core, 0.01 s of
+    # CPU. Exempt by pid (structural); also exempt by age+cputimes if the pid were unknown,
+    # and never in the hot list either way.
+    child = "  777   7770  13 300.0       0    0 ps\n"
+    by_pid = parse_core_snapshot(child, classify_fn=lambda pid: "other", self_pid=1, ps_pid=777)
+    assert by_pid["hot"] == [] and by_pid["young"] == [], by_pid
+    by_rule = parse_core_snapshot(child, classify_fn=lambda pid: "other", self_pid=1)
+    assert by_rule["hot"] == [] and [r["pid"] for r in by_rule["young"]] == [777], by_rule
+    # ... and an OLD ps child is still excluded by pid, so age never has to cover for it
+    assert parse_core_snapshot("  777 7770 13 300.0 900 900 ps\n",
+                               classify_fn=lambda pid: "other", self_pid=1,
+                               ps_pid=777)["hot"] == []
+
+    # the 2 s interval at 1.2 s of advance: found by sampling, with the ps child and the engine
+    # excluded even though both advanced
+    dur_first = "  801 8010 5 1 100 100 dutyhog\n  802 8020 11 1 0 0 ps\n 2002 2003 7 1 100 100 strata\n"
+    dur_second = "  801 8010 5 1 102 101.2 dutyhog\n  802 8020 11 1 0 0 ps\n 2002 2003 7 1 102 106 strata\n"
+    dur = sampled_hot(dur_first, dur_second, classify_fn=lambda pid: "serving" if pid == 2002 else "other",
+                      self_pid=1, ps_pid=802)
+    assert [(r["pid"], r["cpu_advanced_s"]) for r in dur] == [(801, 1.2)], dur
+
     # the second, time-differenced sample: a duty-cycled thread reads under the line at both
     # instants (40 % of a core, 0.8 s of CPU each way in 2 s) but advanced 1.2 s: sampling
     # finds it. A thread that advanced 0.2 s, one on a non-stage core and the ps child do not.
@@ -815,6 +852,9 @@ def selftest():
     assert clean["failures"] == [] and clean["skipped"] == [], clean
     starved = gate_verdict(10 * GIB, 900, procs, {"hot": []}, [], 100.0)
     assert len(starved["failures"]) == 1 and "MemAvailable" in starved["failures"][0], starved
+    # a ps failure is a refusal, not a quiet box (it used to pass the stage-core gate)
+    blind = gate_verdict(40 * GIB, 900, procs, {"error": "ps exited 1: nope", "hot": []}, [], 100.0)
+    assert len(blind["failures"]) == 1 and "stage-core snapshot failed" in blind["failures"][0], blind
     hot = [{"pid": 3003, "comm": "pytest", "pcpu": 97.5}]
     serving = [{"pid": 2002, "rss_mib": 4000, "kind": "serving", "cmd": "strata --serve"}]
     prod_up = gate_verdict(10 * GIB, 20000, procs, {"hot": hot}, serving, 100.0)
