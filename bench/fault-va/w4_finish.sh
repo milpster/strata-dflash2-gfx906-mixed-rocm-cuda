@@ -313,15 +313,19 @@ print("|".join(str(d.get(k) or "-") for k in ("engine_sha256","engine","port","s
       bad=$((bad + 1)); }
   fi
 
-  # What is actually answering the port, independent of any record.
-  pid=$(./bench/fault-va/engine_pid.sh 2>/dev/null || true)
-  if [ -n "$pid" ]; then
-    live_exe=$(readlink "/proc/$pid/exe" 2>/dev/null || true)
-    [ "$live_exe" = "$want_exe" ] || {
-      say "    live engine pid $pid runs '${live_exe:-none}', not '$want_exe'"
-      bad=$((bad + 1)); }
-  else
-    say "    no serving engine process found, so the port is answered by something unknown"
+  # What is actually answering the port, independent of any record. Resolve the pid by EXACT
+  # exe path rather than through bench/fault-va/engine_pid.sh: that helper accepts any basename
+  # matching strata-*, which is meant to cover the expert helper too, and it returns the first
+  # match. A helper matched first would make this check fail closed on a legitimate boot, so the
+  # expected path itself is the search key here.
+  pid=""
+  live_exe=""
+  for cand in $(ps -eo pid=,args= | awk '$3=="--serve" {print $1}'); do
+    cand_exe=$(readlink "/proc/$cand/exe" 2>/dev/null || true)
+    if [ "$cand_exe" = "$want_exe" ]; then pid=$cand; live_exe=$cand_exe; break; fi
+  done
+  if [ -z "$pid" ]; then
+    say "    no process runs '$want_exe --serve', so the port is answered by something unknown"
     bad=$((bad + 1))
   fi
 
