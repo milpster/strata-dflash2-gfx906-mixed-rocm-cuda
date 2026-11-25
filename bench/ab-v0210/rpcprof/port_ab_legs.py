@@ -36,6 +36,11 @@ HERE = pathlib.Path(__file__).resolve().parent
 # a finished window's evidence rewrites its history (2026-11-25: one --check replaced all
 # twelve W2 files, moving majfault_delta from 3452753 to 9787947).
 EVIDENCE_REFRESH = False
+
+# How long after a boot ends page_cache_now() is still a proxy for THAT boot's page-cache
+# churn. Beyond this the reading describes whatever the box is doing now, so the delta is not
+# computed at all. One hour is generous for a boot whose legs run minutes apart.
+PAGE_CACHE_FRESH_S = 3600
 sys.path.insert(0, str(HERE))
 import port_ab_configs as pc
 import port_ab_contract as C
@@ -629,16 +634,36 @@ def boot_checks(out, key, rec):
                 checks["problems"].append(key + ": kernel journal fingerprint is not clean: "
                                           + checks["fingerprint"]["matches"][0])
                 checks["discard"].append("kernel fault fingerprint")
+        # page_cache_now() describes THE MOMENT OF THE CHECK, not the boot. Taken near the boot's
+        # end it is a real proxy for that boot's page-cache churn; taken hours later it is a
+        # measurement of something else wearing the boot's name. A file that was set aside (or
+        # never written) and is then recomputed would be exactly that fabrication, so the delta
+        # is only computed while the boot is fresh. The boot-time reading is always kept: it came
+        # from the record the boot itself wrote.
         start_cache = record.get("page_cache") or {}
-        now = page_cache_now()
+        ended = record.get("ended_epoch")
+        age_s = (time.time() - float(ended)) if isinstance(ended, (int, float)) and ended else None
+        fresh = age_s is not None and age_s <= PAGE_CACHE_FRESH_S
+        now = page_cache_now() if fresh else {"cached_mib": None, "pgmajfault": None}
         checks["page_cache"] = {"cached_mib_at_boot": start_cache.get("cached_mib"),
                                 "cached_mib_now": now["cached_mib"],
-                                "cached_delta_mib": (None if not start_cache.get("cached_mib")
+                                "boot_age_at_check_s": None if age_s is None else round(age_s),
+                                "collected_at_window": bool(fresh),
+                                "cached_delta_mib": (None if not fresh
+                                                     or not start_cache.get("cached_mib")
                                                      or now["cached_mib"] is None
                                                      else now["cached_mib"] - start_cache["cached_mib"]),
-                                "majfault_delta": (None if start_cache.get("pgmajfault") is None
+                                "majfault_delta": (None if not fresh
+                                                   or start_cache.get("pgmajfault") is None
                                                    or now["pgmajfault"] is None
                                                    else now["pgmajfault"] - start_cache["pgmajfault"])}
+        if not fresh:
+            checks["warnings"].append(
+                key + ": page_cache not collected - the boot ended "
+                + ("at an unknown time" if age_s is None
+                   else str(round(age_s / 3600, 1)) + " h before this check")
+                + ", so a 'now' reading would describe this check and not the boot; the "
+                  "boot-time reading is kept and the delta is left empty")
     else:
         checks["warnings"].append(key + ": no boot record under boots/ (tuple checked from the log)")
     return checks

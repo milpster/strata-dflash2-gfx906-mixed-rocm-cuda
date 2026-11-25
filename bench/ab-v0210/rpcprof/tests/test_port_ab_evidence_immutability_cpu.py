@@ -87,6 +87,57 @@ class EvidenceImmutability(unittest.TestCase):
         self.assertFalse(LEGS.EVIDENCE_REFRESH)
 
 
+class PageCacheFreshness(unittest.TestCase):
+    """page_cache_now() describes the moment of the check, not the boot.
+
+    The immutability guard stops an existing file being overwritten, but a file that was set
+    aside or never written would still be COMPUTED fresh - and on 2026-11-25 both real W4 boots
+    would have been recomputed 4.7 h and 23 h after they ended, recording today's page-cache
+    state under a boot's name. boot_checks now only derives the delta while the boot is fresh.
+    """
+
+    def fixture(self, age_s):
+        import tempfile
+        import time
+        root = tempfile.TemporaryDirectory(dir=RPC / "out")
+        self.addCleanup(root.cleanup)
+        out = pathlib.Path(root.name)
+        (out / "boots").mkdir(parents=True)
+        (out / "logs").mkdir()
+        now = time.time()
+        (out / "boots" / "W1-A-pp-r1.json").write_text(json.dumps({
+            "key": "W1-A-pp-r1", "arm": "A", "rep": 1, "boot": "pp",
+            "started_epoch": now - age_s - 540, "ended_epoch": now - age_s,
+            "page_cache": {"cached_mib": 1000, "pgmajfault": 10},
+            "tuple": {"--vram-reserve-mib": "256"}, "engine_sha256": "x"}))
+        (out / "logs" / "W1-A-pp-r1.engine.log").write_text("engine started: /x/strata --serve\n")
+        return LEGS.boot_checks(out, "W1-A-pp-r1", {"arm": "A", "leg": "pp239k"})
+
+    def test_a_boot_checked_just_after_it_ended_still_measures(self):
+        page = self.fixture(60)["page_cache"]
+        self.assertTrue(page["collected_at_window"])
+        self.assertEqual(page["boot_age_at_check_s"], 60)
+        self.assertIsNotNone(page["cached_delta_mib"])
+        self.assertIsNotNone(page["majfault_delta"])
+
+    def test_a_boot_checked_hours_later_records_no_delta(self):
+        page = self.fixture(4.7 * 3600)["page_cache"]
+        self.assertFalse(page["collected_at_window"])
+        self.assertIsNone(page["cached_delta_mib"],
+                          "a 'now' delta taken hours after the boot describes the check")
+        self.assertIsNone(page["majfault_delta"])
+
+    def test_the_boot_time_reading_is_always_kept(self):
+        # The authentic half: it came from the record the boot itself wrote.
+        for age in (60, 4.7 * 3600):
+            self.assertEqual(self.fixture(age)["page_cache"]["cached_mib_at_boot"], 1000)
+
+    def test_the_warning_names_the_problem(self):
+        warnings = self.fixture(4.7 * 3600)["warnings"]
+        self.assertTrue(any("page_cache not collected" in w for w in warnings), warnings)
+        self.assertTrue(any("not the boot" in w for w in warnings), warnings)
+
+
 class CheckKeepsEvidence(unittest.TestCase):
     """End to end through check(): the command that actually rewrote the W2 window."""
 
